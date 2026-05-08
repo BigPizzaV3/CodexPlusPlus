@@ -3,11 +3,17 @@ from pathlib import Path
 import pytest
 
 from codex_session_delete import cli, launcher
-from codex_session_delete.launcher import launch_codex
+from codex_session_delete.launcher import build_windows_activation_source, launch_codex
 
 
 class FakeServer:
     port = 57321
+
+    def __init__(self):
+        self.shutdown_called = False
+
+    def shutdown(self):
+        self.shutdown_called = True
 
 
 def test_launch_codex_windows_adds_remote_debugging_port(monkeypatch):
@@ -30,6 +36,26 @@ def test_launch_codex_windows_allows_devtools_websocket_origin(monkeypatch):
     launch_codex(app_dir, 9229)
 
     assert "--remote-allow-origins=http://127.0.0.1:9229" in popen_calls[0]
+
+
+def test_launch_codex_windows_default_uses_app_user_model_id(monkeypatch):
+    launched = []
+    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    monkeypatch.setattr(launcher, "find_codex_app_user_model_id", lambda: "OpenAI.Codex_abc!App")
+    monkeypatch.setattr(launcher, "activate_windows_app", lambda app_id, port: launched.append((app_id, port)))
+
+    proc = launch_codex(None, 9229)
+
+    assert proc is None
+    assert launched == [("OpenAI.Codex_abc!App", 9229)]
+
+
+def test_build_windows_activation_source_uses_app_activation_manager():
+    source = build_windows_activation_source()
+
+    assert "IApplicationActivationManager" in source
+    assert "ActivateApplication" in source
+    assert "45BA127D-10A8-46EA-8AB7-56EA9078943C" in source
 
 
 def test_launch_codex_macos_uses_open_command(monkeypatch, tmp_path):
@@ -95,6 +121,19 @@ def test_cli_uninstall_dispatches_to_platform_installer(monkeypatch, tmp_path):
     assert calls[0].remove_data is True
 
 
+def test_launch_shuts_down_helper_when_codex_activation_fails(monkeypatch, tmp_path):
+    server = FakeServer()
+    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    monkeypatch.setattr(launcher, "start_helper", lambda *args, **kwargs: server)
+    monkeypatch.setattr(launcher, "launch_codex", lambda *args: (_ for _ in ()).throw(RuntimeError("activation failed")))
+
+    with pytest.raises(RuntimeError, match="activation failed"):
+        launcher.launch_and_inject(None, None, tmp_path / "backups", 9229, 57321)
+
+    assert server.shutdown_called is True
+
+
+
 def test_launch_retries_injection_until_codex_page_is_ready(monkeypatch, tmp_path):
     attempts = []
     monkeypatch.setattr(launcher, "resolve_codex_app_dir", lambda app_dir=None: tmp_path)
@@ -122,6 +161,7 @@ def test_launch_uses_resolved_app_dir(monkeypatch, tmp_path):
     executable = mac_app / "Contents" / "MacOS" / "Codex"
     executable.parent.mkdir(parents=True)
     executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
     monkeypatch.setattr(launcher, "resolve_codex_app_dir", lambda app_dir=None: mac_app)
     monkeypatch.setattr(launcher, "start_helper", lambda *args, **kwargs: FakeServer())
     monkeypatch.setattr(launcher.subprocess, "run", lambda args, **kw: launched.append(args))

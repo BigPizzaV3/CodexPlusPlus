@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from codex_session_delete.app_paths import resolve_codex_app_dir
+from codex_session_delete.app_paths import find_codex_app_user_model_id, resolve_codex_app_dir
 from codex_session_delete.api_adapter import ApiAdapter, UnavailableApiAdapter
 from codex_session_delete.backup_store import BackupStore
 from codex_session_delete.cdp import inject_file
@@ -39,20 +39,79 @@ class InjectedHelperServer(HelperServer):
     bridge_socket: Any = None
 
 
-def launch_codex(app_dir: Path, debug_port: int) -> subprocess.Popen | None:
+def codex_launch_args(debug_port: int) -> list[str]:
+    return [
+        f"--remote-debugging-port={debug_port}",
+        f"--remote-allow-origins=http://127.0.0.1:{debug_port}",
+    ]
+
+
+def build_windows_activation_source() -> str:
+    return r'''
+using System;
+using System.Runtime.InteropServices;
+
+[ComImport]
+[Guid("2E941141-7F97-4756-BA1D-9DECDE894A3D")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IApplicationActivationManager
+{
+    void ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId, [MarshalAs(UnmanagedType.LPWStr)] string arguments, uint options, out uint processId);
+    void ActivateForFile();
+    void ActivateForProtocol();
+}
+
+public class Launcher
+{
+    public static int Main(string[] args)
+    {
+        if (args.Length != 2) return 64;
+        var type = Type.GetTypeFromCLSID(new Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C"));
+        if (type == null) return 65;
+        var manager = (IApplicationActivationManager)Activator.CreateInstance(type);
+        uint processId;
+        manager.ActivateApplication(args[0], args[1], 0, out processId);
+        return 0;
+    }
+}
+'''.strip()
+
+
+def activate_windows_app(app_user_model_id: str, debug_port: int) -> None:
+    script = (
+        "$source = @'\n"
+        + build_windows_activation_source()
+        + "\n'@\n"
+        + "Add-Type -TypeDefinition $source -Language CSharp\n"
+        + "[Launcher]::Main(@($args[0], $args[1])) | Out-Null\n"
+    )
+    subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+            app_user_model_id,
+            " ".join(codex_launch_args(debug_port)),
+        ],
+        check=True,
+    )
+
+
+def launch_codex(app_dir: Path | None, debug_port: int) -> subprocess.Popen | None:
+    if app_dir is None and sys.platform == "win32" and (app_user_model_id := find_codex_app_user_model_id()):
+        activate_windows_app(app_user_model_id, debug_port)
+        return None
+    if app_dir is None:
+        raise RuntimeError("Codex App directory not found")
     if app_dir.suffix == ".app":
-        subprocess.run(
-            ["open", "-a", str(app_dir), "--args", f"--remote-debugging-port={debug_port}", f"--remote-allow-origins=http://127.0.0.1:{debug_port}"],
-            check=True,
-        )
+        subprocess.run(["open", "-a", str(app_dir), "--args", *codex_launch_args(debug_port)], check=True)
         return None
     candidates = [app_dir / "Codex.exe", app_dir / "codex.exe"]
     exe = next((path for path in candidates if path.exists()), candidates[-1])
-    return subprocess.Popen([
-        str(exe),
-        f"--remote-debugging-port={debug_port}",
-        f"--remote-allow-origins=http://127.0.0.1:{debug_port}",
-    ])
+    return subprocess.Popen([str(exe), *codex_launch_args(debug_port)])
 
 
 def start_helper(service, host: str = "127.0.0.1", port: int = 57321) -> HelperServer:
@@ -76,15 +135,19 @@ def inject_with_retry(debug_port: int, script_path: Path, helper_port: int, serv
 
 
 def launch_and_inject(app_dir: Path | None, db_path: Path | None, backup_dir: Path, debug_port: int, helper_port: int) -> tuple[HelperServer, subprocess.Popen | None]:
-    resolved_app_dir = resolve_codex_app_dir(app_dir)
-    if resolved_app_dir is None:
+    resolved_app_dir = None if app_dir is None and sys.platform == "win32" else resolve_codex_app_dir(app_dir)
+    if resolved_app_dir is None and not (app_dir is None and sys.platform == "win32"):
         raise RuntimeError("Codex App directory not found")
     service = ApiFirstDeleteService(UnavailableApiAdapter(), db_path, backup_dir)
     server = start_helper(service, port=helper_port)
-    codex_proc = launch_codex(resolved_app_dir, debug_port)
-    script_path = Path(__file__).parent / "inject" / "renderer-inject.js"
-    server.bridge_socket = inject_with_retry(debug_port, script_path, server.port, service)
-    return server, codex_proc
+    try:
+        codex_proc = launch_codex(resolved_app_dir, debug_port)
+        script_path = Path(__file__).parent / "inject" / "renderer-inject.js"
+        server.bridge_socket = inject_with_retry(debug_port, script_path, server.port, service)
+        return server, codex_proc
+    except Exception:
+        server.shutdown()
+        raise
 
 
 def handle_bridge_request(service: ApiFirstDeleteService, path: str, payload: dict[str, object]) -> dict[str, object]:

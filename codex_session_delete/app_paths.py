@@ -10,6 +10,26 @@ from pathlib import Path
 _VERSION_RE = re.compile(r"OpenAI\.Codex_([0-9.]+)_")
 
 
+def find_codex_app_user_model_id() -> str | None:
+    cmd = 'Get-AppxPackage -Name "OpenAI.Codex" | ForEach-Object { $_.PackageFamilyName + "!App" }'
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", cmd],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    app_user_model_id = result.stdout.strip()
+    if result.returncode != 0 or not app_user_model_id:
+        return None
+    return app_user_model_id
+
+
 def _version_tuple(path: Path) -> tuple[int, ...]:
     match = _VERSION_RE.search(path.name)
     if not match:

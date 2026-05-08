@@ -1,6 +1,19 @@
 from pathlib import Path
 
-from codex_session_delete.app_paths import find_latest_codex_app_dir, find_macos_codex_app, resolve_codex_app_dir, user_data_candidates
+from codex_session_delete.app_paths import find_codex_app_user_model_id, find_latest_codex_app_dir, find_macos_codex_app, resolve_codex_app_dir, user_data_candidates
+
+
+def test_find_codex_app_user_model_id_reads_package_family_name(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = "OpenAI.Codex_2p2nqsd0c76g0!App\n"
+
+    calls = []
+    monkeypatch.setattr("codex_session_delete.app_paths.subprocess.run", lambda *args, **kwargs: calls.append((args, kwargs)) or Result())
+
+    assert find_codex_app_user_model_id() == "OpenAI.Codex_2p2nqsd0c76g0!App"
+    assert "Get-AppxPackage" in calls[0][0][0][-1]
+
 
 
 def test_find_latest_codex_app_dir_uses_highest_version(tmp_path):
