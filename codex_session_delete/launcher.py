@@ -146,7 +146,10 @@ def launch_and_inject(app_dir: Path | None, db_path: Path | None, backup_dir: Pa
         server.bridge_socket = inject_with_retry(debug_port, script_path, server.port, service)
         return server, codex_proc
     except Exception:
-        server.shutdown()
+        try:
+            server.shutdown()
+        finally:
+            server.server_close()
         raise
 
 
