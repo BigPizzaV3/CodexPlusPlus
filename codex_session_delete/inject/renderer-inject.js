@@ -354,26 +354,57 @@
     return true;
   }
 
-  function enablePluginEntry() {
-    if (!codexPlusSettings().pluginEntryUnlock) return;
-    const buttons = Array.from(document.querySelectorAll("button"));
-    const pluginButton = buttons.find((element) => (element.textContent || "").trim() === "插件");
-    if (!pluginButton) return;
-    spoofChatGPTAuthMethod(pluginButton);
+  function pluginEntryLabel(element) {
+    return [element.textContent, element.getAttribute("aria-label"), element.getAttribute("title")]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+  }
+
+  function isPluginEntry(element) {
+    return /^(插件|Plugins?)$/i.test(pluginEntryLabel(element));
+  }
+
+  function pluginEntryButton() {
+    return Array.from(document.querySelectorAll("button, [role='button']")).find(isPluginEntry);
+  }
+
+  function unlockPluginButton(pluginButton) {
     pluginButton.disabled = false;
     pluginButton.removeAttribute("disabled");
+    pluginButton.removeAttribute("aria-disabled");
     pluginButton.style.display = "";
+    pluginButton.style.pointerEvents = "auto";
+    pluginButton.classList.remove("disabled", "opacity-50", "cursor-not-allowed", "pointer-events-none");
     pluginButton.querySelectorAll("*").forEach((node) => {
       node.style.display = "";
+      node.style.pointerEvents = "";
     });
     const reactPropsKey = Object.keys(pluginButton).find((key) => key.startsWith("__reactProps"));
     if (reactPropsKey) {
       pluginButton[reactPropsKey].disabled = false;
+      pluginButton[reactPropsKey]["aria-disabled"] = false;
     }
+  }
+
+  function enablePluginEntry() {
+    if (!codexPlusSettings().pluginEntryUnlock) return;
+    const pluginButton = pluginEntryButton();
+    if (!pluginButton) return;
+    unlockPluginButton(pluginButton);
+    spoofChatGPTAuthMethod(pluginButton);
+    requestAnimationFrame(() => {
+      const currentPluginButton = pluginEntryButton();
+      if (currentPluginButton) unlockPluginButton(currentPluginButton);
+    });
     if (pluginButton.dataset.codexPluginEnabled === "true") return;
     pluginButton.dataset.codexPluginEnabled = "true";
     pluginButton.addEventListener("click", () => {
       spoofChatGPTAuthMethod(pluginButton);
+      requestAnimationFrame(() => {
+        const currentPluginButton = pluginEntryButton();
+        if (currentPluginButton) unlockPluginButton(currentPluginButton);
+      });
     }, true);
   }
 

@@ -41,6 +41,8 @@ def test_renderer_script_enables_plugin_entry_for_api_key_users():
     assert "removeAttribute(\"disabled\")" in text
     assert "setAuthMethod(\"chatgpt\")" in text
     assert "__reactFiber" in text
+    assert "Plugins?" in text
+    assert "aria-disabled" in text
     assert "/skills/plugins" not in text
     assert "skillProps.onClick" not in text
 
