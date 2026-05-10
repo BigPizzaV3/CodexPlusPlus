@@ -82,6 +82,7 @@ def test_launch_uses_packaged_activation_for_windowsapps(monkeypatch):
     activated = []
     launched = []
     monkeypatch.setattr(launcher.sys, "platform", "win32")
+    monkeypatch.setattr(launcher, "packaged_app_local_executable", lambda app_dir: None)
     monkeypatch.setattr(
         launcher,
         "activate_packaged_app",
@@ -96,6 +97,31 @@ def test_launch_uses_packaged_activation_for_windowsapps(monkeypatch):
         "--remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229",
     )]
     assert launched == []
+
+
+def test_launch_windows_packaged_app_uses_local_executable_when_present(monkeypatch, tmp_path):
+    app_dir = Path("C:/Program Files/WindowsApps/OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0/app")
+    local_executable = tmp_path / "codex.exe"
+    launched = []
+    activated = []
+    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    monkeypatch.setattr(launcher, "packaged_app_local_executable", lambda app_dir: local_executable)
+    monkeypatch.setattr(launcher.subprocess, "Popen", lambda command: launched.append(command) or FakeProcess())
+    monkeypatch.setattr(
+        launcher,
+        "activate_packaged_app",
+        lambda aumid, arguments: activated.append((aumid, arguments)) or 1234,
+    )
+
+    proc = launcher.launch_codex_app(app_dir, 9229)
+
+    assert isinstance(proc, FakeProcess)
+    assert launched == [[
+        str(local_executable),
+        "--remote-debugging-port=9229",
+        "--remote-allow-origins=http://127.0.0.1:9229",
+    ]]
+    assert activated == []
 
 
 def test_windows_port_selector_uses_ephemeral_port_when_default_is_busy(monkeypatch):
@@ -206,6 +232,19 @@ def test_launch_and_inject_closes_helper_when_injection_fails(monkeypatch, tmp_p
 
     assert server.shutdown_called is True
     assert server.server_close_called is True
+
+
+def test_launch_and_inject_stops_windows_codex_before_launch(monkeypatch, tmp_path):
+    events = []
+    monkeypatch.setattr(launcher, "resolve_codex_app_dir", lambda app_dir=None: tmp_path)
+    monkeypatch.setattr(launcher, "stop_windows_codex_processes", lambda: events.append("stop"))
+    monkeypatch.setattr(launcher, "start_helper", lambda *args, **kwargs: FakeServer())
+    monkeypatch.setattr(launcher, "launch_codex_app", lambda *args: events.append("launch") or 1234)
+    monkeypatch.setattr(launcher, "inject_with_retry", lambda *args, **kwargs: {"result": {}})
+
+    launcher.launch_and_inject(None, None, tmp_path / "backups", 9229, 57321)
+
+    assert events == ["stop", "launch"]
 
 
 def test_launch_uses_resolved_app_dir(monkeypatch, tmp_path):

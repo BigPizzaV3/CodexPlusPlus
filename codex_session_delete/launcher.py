@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import socket
 import subprocess
 import sys
@@ -103,6 +104,30 @@ def packaged_app_user_model_id(app_dir: Path) -> str | None:
     return f"{identity_name}_{publisher_id}!App"
 
 
+def packaged_app_local_executable(app_dir: Path) -> Path | None:
+    package_dir = app_dir.parent if app_dir.name.lower() == "app" else app_dir
+    if not package_dir.name.startswith("OpenAI.Codex_") or "__" not in package_dir.name:
+        return None
+    publisher_id = package_dir.name.rsplit("__", 1)[1]
+    if not publisher_id:
+        return None
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return None
+    executable = (
+        Path(local_app_data)
+        / "Packages"
+        / f"OpenAI.Codex_{publisher_id}"
+        / "LocalCache"
+        / "Local"
+        / "OpenAI"
+        / "Codex"
+        / "bin"
+        / "codex.exe"
+    )
+    return executable if executable.exists() else None
+
+
 class _GUID(ctypes.Structure):
     _fields_ = [
         ("Data1", ctypes.c_uint32),
@@ -183,6 +208,10 @@ def activate_packaged_app(app_user_model_id: str, arguments: str) -> int:
 
 
 def launch_codex_app(app_dir: Path, debug_port: int) -> Any:
+    if sys.platform == "win32":
+        executable = build_codex_executable(app_dir)
+        if executable.exists():
+            return subprocess.Popen([str(executable), *build_codex_arguments(debug_port)])
     app_user_model_id = packaged_app_user_model_id(app_dir) if sys.platform == "win32" else None
     if app_user_model_id:
         return activate_packaged_app(app_user_model_id, subprocess.list2cmdline(build_codex_arguments(debug_port)))
@@ -190,6 +219,30 @@ def launch_codex_app(app_dir: Path, debug_port: int) -> Any:
         subprocess.run(["open", "-a", str(app_dir), "--args", *build_codex_arguments(debug_port)], check=True)
         return None
     return subprocess.Popen(build_codex_command(app_dir, debug_port))
+
+
+def stop_windows_codex_processes() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-CimInstance Win32_Process -Filter \"Name='Codex.exe' OR Name='codex.exe'\" | "
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=6,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        time.sleep(1.0)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def start_helper(service, host: str = "127.0.0.1", port: int = 57321) -> HelperServer:
@@ -204,7 +257,7 @@ def shutdown_helper(server: HelperServer) -> None:
     server.server_close()
 
 
-def inject_with_retry(debug_port: int, script_path: Path, helper_port: int, service: ApiFirstDeleteService, attempts: int = 20, delay: float = 0.5) -> Any:
+def inject_with_retry(debug_port: int, script_path: Path, helper_port: int, service: ApiFirstDeleteService, attempts: int = 90, delay: float = 1.0) -> Any:
     last_error: Exception | None = None
     for _ in range(attempts):
         try:
@@ -221,8 +274,9 @@ def launch_and_inject(app_dir: Path | None, db_path: Path | None, backup_dir: Pa
     resolved_app_dir = resolve_codex_app_dir(app_dir)
     if resolved_app_dir is None:
         raise RuntimeError("Codex App directory not found")
-    debug_port = select_windows_loopback_port(debug_port)
+    debug_port = _find_available_loopback_port() if sys.platform == "win32" else select_windows_loopback_port(debug_port)
     helper_port = select_windows_loopback_port(helper_port)
+    stop_windows_codex_processes()
     service = ApiFirstDeleteService(UnavailableApiAdapter(), db_path, backup_dir)
     server = start_helper(service, port=helper_port)
     codex_proc = None
@@ -235,25 +289,7 @@ def launch_and_inject(app_dir: Path | None, db_path: Path | None, backup_dir: Pa
         shutdown_helper(server)
         # Kill any Codex process we just activated so the next attempt starts from a clean state
         # instead of staring at a half-rendered white window.
-        if sys.platform == "win32":
-            try:
-                subprocess.run(
-                    [
-                        "powershell.exe",
-                        "-NoProfile",
-                        "-NonInteractive",
-                        "-Command",
-                        "Get-CimInstance Win32_Process -Filter \"Name='Codex.exe' OR Name='codex.exe'\" | "
-                        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
-                    ],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=6,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-            except (OSError, subprocess.SubprocessError):
-                pass
+        stop_windows_codex_processes()
         raise
 
 

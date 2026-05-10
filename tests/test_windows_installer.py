@@ -15,6 +15,8 @@ def test_build_install_shortcut_script_contains_codex_plus_shortcuts(tmp_path):
     assert "-m codex_session_delete launch" in script
     assert "CreateShortcut" in script
     assert "TargetPath = $Pythonw" in script
+    assert "$Python = '" in script
+    assert "Get-Command python" not in script
     assert "pythonw.exe" in script
     assert "TargetPath = $Python\n" not in script
     assert "IconLocation" in script

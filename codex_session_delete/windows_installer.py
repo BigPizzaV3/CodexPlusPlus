@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,6 +44,7 @@ def build_install_shortcut_script(options: "InstallOptions") -> str:
     root = _install_root_expr(options)
     project_root = _project_root_expr()
     icon_path = _icon_path_expr()
+    python_path = _ps_quote(sys.executable)
     target, arguments = _split_launcher_command(_launcher_command(options))
     target_expr = "$Pythonw" if target == "python" else _ps_quote(target)
     arguments_expr = _ps_quote(arguments)
@@ -52,7 +54,7 @@ $ProjectRoot = {project_root}
 $CodexPlusIcon = {icon_path}
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
 $ShortcutPath = Join-Path $InstallRoot 'Codex++.lnk'
-$Python = (Get-Command python).Source
+$Python = {python_path}
 $PythonwCandidate = Join-Path (Split-Path $Python -Parent) 'pythonw.exe'
 $Pythonw = if (Test-Path $PythonwCandidate) {{ $PythonwCandidate }} else {{ $Python }}
 $Shell = New-Object -ComObject WScript.Shell

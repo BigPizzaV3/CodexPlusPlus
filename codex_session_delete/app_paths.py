@@ -26,6 +26,21 @@ def find_latest_codex_app_dir(root: Path | None = None) -> Path | None:
         app = latest / "app"
         return app if app.is_dir() else latest
 
+    discovered = _find_codex_app_dir_with_appx()
+    if discovered is not None:
+        return discovered
+
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    windows_apps = Path(program_files) / "WindowsApps"
+    if windows_apps.is_dir():
+        try:
+            return find_latest_codex_app_dir(windows_apps)
+        except OSError:
+            return None
+    return None
+
+
+def _find_codex_app_dir_with_appx() -> Path | None:
     cmd = 'Get-AppxPackage -Name "OpenAI.Codex" | Select-Object -ExpandProperty InstallLocation'
     try:
         r = subprocess.run(

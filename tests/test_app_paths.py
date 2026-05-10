@@ -12,6 +12,16 @@ def test_find_latest_codex_app_dir_uses_highest_version(tmp_path):
     assert find_latest_codex_app_dir(tmp_path) == newer
 
 
+def test_find_latest_codex_app_dir_falls_back_to_windowsapps(monkeypatch, tmp_path):
+    windows_apps = tmp_path / "WindowsApps"
+    app = windows_apps / "OpenAI.Codex_26.506.3741.0_x64__abc" / "app"
+    app.mkdir(parents=True)
+    monkeypatch.setattr("codex_session_delete.app_paths._find_codex_app_dir_with_appx", lambda: None)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+
+    assert find_latest_codex_app_dir() == app
+
+
 def test_user_data_candidates_include_local_appdata(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))

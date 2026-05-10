@@ -24,3 +24,6 @@ codex_session_delete = ["assets/*", "inject/*.js"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["codex_session_delete*"]
