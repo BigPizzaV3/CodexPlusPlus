@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from codex_session_delete import cli, launcher
-from codex_session_delete.launcher import build_codex_command, launch_codex_app, packaged_app_user_model_id
+from codex_session_delete.launcher import build_codex_command, high_performance_gpu_arguments, launch_codex_app, packaged_app_user_model_id
 
 
 class FakeServer:
@@ -48,6 +48,17 @@ def test_launch_codex_windows_allows_devtools_websocket_origin(monkeypatch):
     launch_codex_app(app_dir, 9229)
 
     assert "--remote-allow-origins=http://127.0.0.1:9229" in popen_calls[0]
+
+
+def test_high_performance_gpu_switch_only_applies_to_intel_macos(monkeypatch):
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    monkeypatch.setattr(launcher.platform, "machine", lambda: "x86_64")
+
+    assert high_performance_gpu_arguments() == ["--force_high_performance_gpu"]
+
+    monkeypatch.setattr(launcher.platform, "machine", lambda: "arm64")
+
+    assert high_performance_gpu_arguments() == []
 
 
 def test_launch_codex_injects_detected_local_proxy(monkeypatch):

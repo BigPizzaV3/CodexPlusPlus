@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import platform
 import socket
 import subprocess
 import sys
@@ -113,7 +114,14 @@ def build_codex_arguments(debug_port: int) -> list[str]:
     return [
         f"--remote-debugging-port={debug_port}",
         f"--remote-allow-origins=http://127.0.0.1:{debug_port}",
+        *high_performance_gpu_arguments(),
     ]
+
+
+def high_performance_gpu_arguments() -> list[str]:
+    if sys.platform == "darwin" and platform.machine().lower() in {"x86_64", "amd64"}:
+        return ["--force_high_performance_gpu"]
+    return []
 
 
 def has_proxy_environment(env: dict[str, str] | None = None) -> bool:

@@ -12,8 +12,18 @@
   const codexActionGroupVersion = "1";
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
-  const codexPlusVersion = "1.0.5";;
+  const codexPlusVersion = "1.0.5";
   const codexPlusSettingsKey = "codexPlusSettings";
+  const codexPlusBridgePatchVersion = "1";
+  const codexThreadListPageLimit = 1000;
+  const codexThreadListMaxPages = 20;
+  const codexFastModeUnlockVersion = "1";
+  const codexStatsigUnlockVersion = "1";
+  const codexPlusStatsigGateOverrides = {
+    "410262010": true,
+    "410065390": true,
+    "2929582856": false,
+  };
   const selectors = {
     sidebarThread: "[data-app-action-sidebar-thread-id]",
     threadTitle: "[data-thread-title]",
@@ -269,7 +279,16 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, forcePluginInstall: true, sessionDelete: true, markdownExport: true, nativeMenuPlacement: true };
+    return {
+      pluginEntryUnlock: true,
+      forcePluginInstall: true,
+      sessionDelete: true,
+      markdownExport: true,
+      sessionLimitUnlock: true,
+      fastModeUnlock: true,
+      haleclipseCompatUnlock: true,
+      nativeMenuPlacement: true,
+    };
   }
 
   function codexPlusSettings() {
@@ -425,6 +444,18 @@
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">Markdown 导出</div><div class="codex-plus-row-description">在会话列表显示导出按钮，按本地 rollout 导出带时间戳的 Markdown。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="markdownExport"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">会话列表扩容</div><div class="codex-plus-row-description">自动分页合并最近会话请求，避免侧边栏只加载前 50 条。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionLimitUnlock"><span></span></button>
+            </div>
+            <div class="codex-plus-row codex-fast-mode-row">
+              <div><div class="codex-plus-row-title">Fast 模式解锁</div><div class="codex-plus-row-description">允许 API Key / 第三方 API 模式显示并使用 Fast 速度选项。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="fastModeUnlock"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">哈雷彗星兼容补丁</div><div class="codex-plus-row-description">外置启用 i18n、Browser-use 相关 gate，并关闭 sunset 强制更新遮罩。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="haleclipseCompatUnlock"><span></span></button>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">原生菜单栏位置</div><div class="codex-plus-row-description">把 Codex++ 菜单插入顶部原生菜单栏；默认关闭以避免页面重渲染冲突。</div></div>
@@ -678,6 +709,452 @@
       unblockButtonElement(button);
       labelForcedInstallButton(button);
     });
+  }
+
+  function codexPlusDiagnostics() {
+    window.__codexPlusPlusDiagnostics = window.__codexPlusPlusDiagnostics || {
+      sessionList: {},
+      fastMode: {},
+      statsig: {},
+      bridgeErrors: [],
+    };
+    return window.__codexPlusPlusDiagnostics;
+  }
+
+  function recordCodexPlusDiagnostic(scope, detail) {
+    const diagnostics = codexPlusDiagnostics();
+    diagnostics[scope] = { ...(diagnostics[scope] || {}), ...detail, updatedAt: Date.now() };
+  }
+
+  function recordFastModeDiagnostic(detail) {
+    recordCodexPlusDiagnostic("fastMode", detail);
+  }
+
+  function clonePlainObject(value) {
+    try {
+      if (typeof structuredClone === "function") return structuredClone(value);
+    } catch {}
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch {
+      return value;
+    }
+  }
+
+  function isPlainObject(value) {
+    return !!value && typeof value === "object";
+  }
+
+  function requestFromCodexMessage(message) {
+    const request = message?.request;
+    return request && typeof request === "object" ? request : null;
+  }
+
+  function isRecentThreadListRequest(message) {
+    if (!codexPlusSettings().sessionLimitUnlock) return false;
+    if (message?.type !== "mcp-request") return false;
+    const request = requestFromCodexMessage(message);
+    if (request?.method !== "thread/list") return false;
+    const params = request.params || {};
+    if (params.archived === true) return false;
+    const limit = Number(params.limit || 0);
+    return !limit || limit <= codexThreadListPageLimit;
+  }
+
+  function responseEnvelopeFromMessageEvent(event) {
+    const data = event?.data;
+    if (!data || data.type !== "mcp-response") return null;
+    const message = data.message || data.response;
+    if (!message || typeof message !== "object") return null;
+    const id = message.id ?? message.requestId;
+    if (id == null) return null;
+    return { data, message, id: String(id) };
+  }
+
+  function postSyntheticMcpResponse(hostId, id, result, error = null) {
+    const message = error ? { id, error } : { id, result };
+    const payload = { type: "mcp-response", hostId, message };
+    const targetOrigin = window.location.origin && window.location.origin !== "null" ? window.location.origin : "*";
+    setTimeout(() => window.postMessage(payload, targetOrigin), 0);
+  }
+
+  function mergeThreadListPages(pages) {
+    const merged = [];
+    const seen = new Set();
+    for (const page of pages) {
+      for (const thread of page?.data || []) {
+        const key = thread?.id || thread?.sessionId || JSON.stringify(thread);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(thread);
+      }
+    }
+    const lastPage = pages[pages.length - 1] || {};
+    return { ...lastPage, data: merged, nextCursor: lastPage.nextCursor || null };
+  }
+
+  function sendThreadListPage(job, cursor) {
+    if (typeof job.originalSend !== "function") {
+      postSyntheticMcpResponse(job.hostId, job.originalId, mergeThreadListPages(job.pages));
+      recordCodexPlusDiagnostic("sessionList", { active: false, error: "electronBridge.sendMessageFromView unavailable" });
+      return;
+    }
+    const pageIndex = job.pages.length + 1;
+    const shadowId = `${job.originalId}:codex-plus-thread-list:${pageIndex}`;
+    const pageMessage = clonePlainObject(job.originalMessage);
+    pageMessage.request = {
+      ...pageMessage.request,
+      id: shadowId,
+      params: {
+        ...(pageMessage.request?.params || {}),
+        cursor,
+        limit: codexThreadListPageLimit,
+      },
+    };
+    window.__codexPlusThreadListRequests.set(shadowId, job);
+    recordCodexPlusDiagnostic("sessionList", {
+      active: true,
+      lastShadowId: shadowId,
+      pageLimit: codexThreadListPageLimit,
+      maxPages: codexThreadListMaxPages,
+    });
+    Promise.resolve(job.originalSend.call(job.thisArg, pageMessage)).catch((error) => {
+      window.__codexPlusThreadListRequests.delete(shadowId);
+      postSyntheticMcpResponse(job.hostId, job.originalId, null, { message: String(error?.message || error) });
+      recordCodexPlusDiagnostic("sessionList", { active: false, error: String(error?.stack || error) });
+    });
+  }
+
+  function startThreadListPagination(message, originalSend, thisArg) {
+    const request = requestFromCodexMessage(message);
+    const originalId = String(request.id);
+    const params = request.params || {};
+    const job = {
+      originalId,
+      originalMessage: clonePlainObject(message),
+      hostId: message.hostId,
+      originalSend,
+      thisArg,
+      pages: [],
+    };
+    sendThreadListPage(job, params.cursor ?? null);
+    return Promise.resolve();
+  }
+
+  function trackThreadListPagination(message) {
+    const request = requestFromCodexMessage(message);
+    if (!request?.id || window.__codexPlusThreadListRequests?.has(String(request.id))) return;
+    window.__codexPlusThreadListRequests = window.__codexPlusThreadListRequests || new Map();
+    window.__codexPlusThreadListRequests.set(String(request.id), {
+      originalId: String(request.id),
+      originalMessage: clonePlainObject(message),
+      hostId: message.hostId,
+      originalSend: window.electronBridge?.sendMessageFromView,
+      thisArg: window.electronBridge,
+      pages: [],
+    });
+    recordCodexPlusDiagnostic("sessionList", {
+      active: true,
+      trackedOriginalId: String(request.id),
+      pageLimit: codexThreadListPageLimit,
+      maxPages: codexThreadListMaxPages,
+    });
+  }
+
+  function handleThreadListPageResponse(event, envelope) {
+    const job = window.__codexPlusThreadListRequests?.get(envelope.id);
+    if (!job) return false;
+    event.stopImmediatePropagation?.();
+    event.stopPropagation?.();
+    window.__codexPlusThreadListRequests.delete(envelope.id);
+    if (envelope.message.error) {
+      postSyntheticMcpResponse(job.hostId, job.originalId, null, envelope.message.error);
+      recordCodexPlusDiagnostic("sessionList", { active: false, error: String(envelope.message.error?.message || envelope.message.error) });
+      return true;
+    }
+    const result = envelope.message.result;
+    if (!result || !Array.isArray(result.data)) {
+      postSyntheticMcpResponse(job.hostId, job.originalId, result);
+      recordCodexPlusDiagnostic("sessionList", { active: false, bypassed: true });
+      return true;
+    }
+    job.pages.push(result);
+    const nextCursor = result.nextCursor ?? null;
+    if (nextCursor && job.pages.length < codexThreadListMaxPages) {
+      sendThreadListPage(job, nextCursor);
+      return true;
+    }
+    const merged = mergeThreadListPages(job.pages);
+    merged.nextCursor = nextCursor && job.pages.length >= codexThreadListMaxPages ? nextCursor : null;
+    postSyntheticMcpResponse(job.hostId, job.originalId, merged);
+    recordCodexPlusDiagnostic("sessionList", {
+      active: false,
+      pages: job.pages.length,
+      threads: merged.data.length,
+      hasMore: !!merged.nextCursor,
+    });
+    return true;
+  }
+
+  function trackCodexRequest(message) {
+    const request = requestFromCodexMessage(message);
+    if (!request?.id) return;
+    window.__codexPlusRequestMethods = window.__codexPlusRequestMethods || new Map();
+    window.__codexPlusRequestMethods.set(String(request.id), request.method || "");
+  }
+
+  function ensureFastTier(model) {
+    if (!model || typeof model !== "object") return 0;
+    const tiers = Array.isArray(model.additionalSpeedTiers) ? model.additionalSpeedTiers : [];
+    if (!tiers.includes("fast")) {
+      model.additionalSpeedTiers = [...tiers, "fast"];
+      return 1;
+    }
+    return 0;
+  }
+
+  function patchFastModeGateOnObject(value, seen = new WeakSet(), depth = 0) {
+    if (!codexPlusSettings().fastModeUnlock) return 0;
+    if (!value || typeof value !== "object" || seen.has(value) || depth > 5) return 0;
+    seen.add(value);
+    let patches = 0;
+    if (Array.isArray(value)) {
+      for (const item of value.slice(0, 120)) patches += patchFastModeGateOnObject(item, seen, depth + 1);
+      return patches;
+    }
+    if ("additionalSpeedTiers" in value || ("model" in value && ("id" in value || "slug" in value || "name" in value))) {
+      patches += ensureFastTier(value);
+    }
+    if (value.canUseFastMode === false) {
+      value.canUseFastMode = true;
+      patches += 1;
+    }
+    if (value.isDisabledByRequirement === true) {
+      value.isDisabledByRequirement = false;
+      patches += 1;
+    }
+    if (value.featureRequirements && typeof value.featureRequirements === "object" && value.featureRequirements.fast_mode === false) {
+      value.featureRequirements.fast_mode = true;
+      patches += 1;
+    }
+    if (value.requirements?.featureRequirements?.fast_mode === false) {
+      value.requirements.featureRequirements.fast_mode = true;
+      patches += 1;
+    }
+    const models = value.models || value.availableModels;
+    if (Array.isArray(models)) {
+      for (const model of models) patches += ensureFastTier(model);
+    }
+    for (const key of ["data", "result", "value", "model", "models", "requirements", "featureRequirements", "serviceTierSettings"]) {
+      patches += patchFastModeGateOnObject(value[key], seen, depth + 1);
+    }
+    return patches;
+  }
+
+  function patchExperimentalFeatures(value) {
+    if (!codexPlusSettings().haleclipseCompatUnlock) return 0;
+    if (!value || typeof value !== "object") return 0;
+    const features = Array.isArray(value) ? value : Array.isArray(value.data) ? value.data : Array.isArray(value.features) ? value.features : null;
+    if (!features) return 0;
+    let patches = 0;
+    const names = new Set(features.map((feature) => feature?.name).filter(Boolean));
+    for (const feature of features) {
+      if (!feature || typeof feature !== "object") continue;
+      if (["plugins", "browser_use", "browser_use_external", "in_app_browser"].includes(feature.name) && feature.enabled !== true) {
+        feature.enabled = true;
+        patches += 1;
+      }
+    }
+    for (const name of ["plugins", "browser_use", "browser_use_external", "in_app_browser"]) {
+      if (!names.has(name)) {
+        features.push({ name, enabled: true });
+        patches += 1;
+      }
+    }
+    return patches;
+  }
+
+  function patchCodexResponseForUnlocks(result, method = "") {
+    let patches = 0;
+    if (method === "model/list" || method === "configRequirements/read" || method === "config/read" || method === "") {
+      patches += patchFastModeGateOnObject(result);
+    }
+    if (method === "experimentalFeature/list" || method === "") {
+      patches += patchExperimentalFeatures(result);
+    }
+    if (patches > 0) recordFastModeDiagnostic({ lastResponseMethod: method || "unknown", responsePatches: patches, version: codexFastModeUnlockVersion });
+    return patches;
+  }
+
+  function patchMcpResponseBeforeCodex(event, envelope) {
+    const method = window.__codexPlusRequestMethods?.get(envelope.id) || "";
+    if (method) window.__codexPlusRequestMethods.delete(envelope.id);
+    if (envelope.message?.result) patchCodexResponseForUnlocks(envelope.message.result, method);
+  }
+
+  function installMcpResponseInterceptor() {
+    if (window.__codexPlusMcpResponseInterceptorVersion === codexPlusBridgePatchVersion) return;
+    window.__codexPlusThreadListRequests = window.__codexPlusThreadListRequests || new Map();
+    window.addEventListener("message", (event) => {
+      try {
+        const envelope = responseEnvelopeFromMessageEvent(event);
+        if (!envelope) return;
+        if (handleThreadListPageResponse(event, envelope)) return;
+        patchMcpResponseBeforeCodex(event, envelope);
+      } catch (error) {
+        const diagnostics = codexPlusDiagnostics();
+        diagnostics.bridgeErrors.push(String(error?.stack || error));
+      }
+    }, true);
+    window.__codexPlusMcpResponseInterceptorVersion = codexPlusBridgePatchVersion;
+  }
+
+  function installCodexMessageFromViewInterceptor() {
+    if (window.__codexPlusMessageFromViewInterceptorVersion === codexPlusBridgePatchVersion) return;
+    window.addEventListener("codex-message-from-view", (event) => {
+      try {
+        const message = event?.detail;
+        const request = requestFromCodexMessage(message);
+        if (!request) return;
+        trackCodexRequest(message);
+        if (isRecentThreadListRequest(message)) {
+          trackThreadListPagination(message);
+        }
+      } catch (error) {
+        const diagnostics = codexPlusDiagnostics();
+        diagnostics.bridgeErrors.push(String(error?.stack || error));
+      }
+    }, true);
+    window.__codexPlusMessageFromViewInterceptorVersion = codexPlusBridgePatchVersion;
+  }
+
+  function patchCodexOutboundRequest(message) {
+    const next = clonePlainObject(message);
+    const request = requestFromCodexMessage(next);
+    if (!request) return next;
+    trackCodexRequest(next);
+    if (codexPlusSettings().fastModeUnlock && ["thread/start", "thread/resume", "turn/start"].includes(request.method)) {
+      const params = request.params || {};
+      if (params.serviceTier === "fast" || params.service_tier === "fast") {
+        recordFastModeDiagnostic({ lastFastServiceTierRequest: request.method, version: codexFastModeUnlockVersion });
+      }
+    }
+    return next;
+  }
+
+  function installCodexBridgeRequestPatches() {
+    installMcpResponseInterceptor();
+    installCodexMessageFromViewInterceptor();
+    const descriptor = Object.getOwnPropertyDescriptor(window.electronBridge || {}, "sendMessageFromView");
+    recordCodexPlusDiagnostic("sessionList", {
+      installed: true,
+      strategy: "codex-message-from-view",
+      bridgeWritable: descriptor ? descriptor.writable !== false || !!descriptor.set : null,
+      pageLimit: codexThreadListPageLimit,
+      maxPages: codexThreadListMaxPages,
+    });
+    return true;
+  }
+
+  function statsigGlobal() {
+    return window.__STATSIG__ || globalThis.__STATSIG__ || null;
+  }
+
+  function statsigClients() {
+    const statsig = statsigGlobal();
+    if (!statsig) return [];
+    const clients = [];
+    if (statsig.firstInstance) clients.push(statsig.firstInstance);
+    if (typeof statsig.instance === "function") {
+      try {
+        const client = statsig.instance();
+        if (client) clients.push(client);
+      } catch {}
+    }
+    if (statsig.instances && typeof statsig.instances === "object") {
+      clients.push(...Object.values(statsig.instances).filter(Boolean));
+    }
+    return [...new Set(clients)];
+  }
+
+  function patchStatsigLayer(layer, name) {
+    const originalLayer = layer || { name };
+    if (originalLayer.__codexPlusStatsigLayerVersion === codexStatsigUnlockVersion) return originalLayer;
+    const originalGet = typeof originalLayer.get === "function" ? originalLayer.get : null;
+    originalLayer.get = function(field, fallback) {
+      if (name === "72216192" && field === "enable_i18n" && codexPlusSettings().haleclipseCompatUnlock) return true;
+      return originalGet ? originalGet.call(this, field, fallback) : fallback;
+    };
+    originalLayer.__codexPlusStatsigLayerVersion = codexStatsigUnlockVersion;
+    return originalLayer;
+  }
+
+  function patchStatsigClient(client) {
+    if (!client || typeof client !== "object" || client.__codexPlusStatsigUnlockVersion === codexStatsigUnlockVersion) return false;
+    const originalCheckGate = typeof client.checkGate === "function" ? client.checkGate : null;
+    client.checkGate = function(name, ...args) {
+      const key = String(name);
+      if (codexPlusSettings().haleclipseCompatUnlock && key in codexPlusStatsigGateOverrides) {
+        return codexPlusStatsigGateOverrides[key];
+      }
+      return originalCheckGate ? originalCheckGate.call(this, name, ...args) : false;
+    };
+    const originalFeatureGate = typeof client.getFeatureGate === "function" ? client.getFeatureGate : null;
+    client.getFeatureGate = function(name, ...args) {
+      const key = String(name);
+      const original = originalFeatureGate ? originalFeatureGate.call(this, name, ...args) : null;
+      if (codexPlusSettings().haleclipseCompatUnlock && key in codexPlusStatsigGateOverrides) {
+        return { ...(original || {}), name, value: codexPlusStatsigGateOverrides[key], rule_id: "codex_plus_plus" };
+      }
+      return original;
+    };
+    const originalGetLayer = typeof client.getLayer === "function" ? client.getLayer : null;
+    client.getLayer = function(name, ...args) {
+      const layer = originalGetLayer ? originalGetLayer.call(this, name, ...args) : null;
+      return patchStatsigLayer(layer, String(name));
+    };
+    client.__codexPlusStatsigUnlockVersion = codexStatsigUnlockVersion;
+    return true;
+  }
+
+  function patchHaleclipseCompatGates() {
+    if (!codexPlusSettings().haleclipseCompatUnlock) return;
+    const patched = statsigClients().map(patchStatsigClient).filter(Boolean).length;
+    recordCodexPlusDiagnostic("statsig", {
+      version: codexStatsigUnlockVersion,
+      patchedClients: patched,
+      gates: Object.keys(codexPlusStatsigGateOverrides),
+      i18nLayer: "72216192",
+    });
+  }
+
+  function forceChatGPTAuthForFastMode() {
+    if (!codexPlusSettings().fastModeUnlock) return false;
+    const nodes = [pluginEntryButton(), document.body, ...Array.from(document.querySelectorAll("button, nav, main, [data-testid], [role='dialog']")).slice(0, 200)].filter(Boolean);
+    for (const node of nodes) {
+      const auth = authContextValueFrom(node);
+      if (!auth || auth.authMethod === "chatgpt" || typeof auth.setAuthMethod !== "function") continue;
+      auth.setAuthMethod("chatgpt");
+      recordFastModeDiagnostic({ authMethodSpoofed: true, version: codexFastModeUnlockVersion });
+      return true;
+    }
+    return false;
+  }
+
+  function patchFastModeGates() {
+    if (!codexPlusSettings().fastModeUnlock) return;
+    forceChatGPTAuthForFastMode();
+    let patches = 0;
+    const nodes = [document.body, ...Array.from(document.querySelectorAll("button, nav, main, [data-testid], [role='dialog']")).slice(0, 250)].filter(Boolean);
+    const seenObjects = new WeakSet();
+    for (const node of nodes) {
+      for (let fiber = reactFiberFrom(node), depth = 0; fiber && depth < 20; fiber = fiber.return, depth += 1) {
+        patches += patchFastModeGateOnObject(fiber.memoizedProps, seenObjects);
+        patches += patchFastModeGateOnObject(fiber.pendingProps, seenObjects);
+        patches += patchFastModeGateOnObject(fiber.memoizedState, seenObjects);
+      }
+    }
+    if (patches > 0) recordFastModeDiagnostic({ fiberPatches: patches, version: codexFastModeUnlockVersion });
   }
 
   let cachedSessionRows = [];
@@ -1211,10 +1688,13 @@
     installStyle();
     installCodexPlusMenu();
     scheduleBackendHeartbeat();
+    installCodexBridgeRequestPatches();
+    patchHaleclipseCompatGates();
     installDeleteButtonEventDelegation();
   }
 
   function scanDeferred() {
+    patchFastModeGates();
     enablePluginEntry();
     unblockPluginInstallButtons();
     sessionRows().forEach(tryAttachButton);

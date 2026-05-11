@@ -287,18 +287,55 @@ def test_renderer_script_uses_chinese_delete_toast_fallbacks():
     assert "Undo finished" not in text
 
 
-def test_renderer_script_does_not_include_fast_mode_patch():
+def test_renderer_script_includes_session_limit_unlock_patch():
     text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
-    assert "codexFastModeUnlockVersion" not in text
-    assert "enableFastModeFeatureFlags" not in text
-    assert "patchFastModeGates" not in text
-    assert "patchGeneralSettingsSpeedGate" not in text
-    assert "patchCodexPostForFastMode" not in text
-    assert "recordFastModeDiagnostic" not in text
-    assert "additionalSpeedTiers" not in text
-    assert "bodyJsonString" not in text
-    assert "forceChatGPTAuthForFastMode" not in text
-    assert "codex-fast-mode-row" not in text
+    assert "sessionLimitUnlock: true" in text
+    assert "会话列表扩容" in text
+    assert "codexThreadListPageLimit = 1000" in text
+    assert "codexThreadListMaxPages = 20" in text
+    assert "installCodexBridgeRequestPatches" in text
+    assert "installCodexMessageFromViewInterceptor" in text
+    assert "codex-message-from-view" in text
+    assert "sendMessageFromView" in text
+    assert "isRecentThreadListRequest" in text
+    assert "thread/list" in text
+    assert "trackThreadListPagination" in text
+    assert "startThreadListPagination" in text
+    assert "sendThreadListPage" in text
+    assert "mergeThreadListPages" in text
+    assert "postSyntheticMcpResponse" in text
+    assert "codex-plus-thread-list" in text
+    assert "window.__codexPlusThreadListRequests" in text
+    assert "mcp-response" in text
+    assert "fetch(" not in text
+    assert "XMLHttpRequest" not in text
+
+
+def test_renderer_script_includes_haleclipse_fast_and_statsig_unlocks():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    assert "codexFastModeUnlockVersion" in text
+    assert "fastModeUnlock: true" in text
+    assert "haleclipseCompatUnlock: true" in text
+    assert "Fast 模式解锁" in text
+    assert "哈雷彗星兼容补丁" in text
+    assert "recordFastModeDiagnostic" in text
+    assert "forceChatGPTAuthForFastMode" in text
+    assert "patchFastModeGates" in text
+    assert "patchFastModeGateOnObject" in text
+    assert "additionalSpeedTiers" in text
+    assert "fast_mode" in text
+    assert "serviceTier" in text
+    assert "codex-fast-mode-row" in text
+    assert "codexPlusStatsigGateOverrides" in text
+    assert "\"410262010\": true" in text
+    assert "\"410065390\": true" in text
+    assert "\"2929582856\": false" in text
+    assert "\"72216192\"" in text
+    assert "enable_i18n" in text
+    assert "patchStatsigClient" in text
+    assert "getFeatureGate" in text
+    assert "checkGate" in text
+    assert "getLayer" in text
 
 
 def test_renderer_script_includes_user_script_manager_ui_contract():
@@ -344,7 +381,7 @@ def test_renderer_script_includes_user_script_manager_ui_contract():
     assert "/backend/repair" in text
 
     assert "setAuthMethod(\"chatgpt\")" in text
-    assert "patchFastModeGateOnObject" not in text
+    assert "patchFastModeGateOnObject" in text
     assert "Codex++" in text
     assert "codexPlusVersion = \"1.0.5\"" in text
     assert "Codex++ ${codexPlusVersion}" in text
@@ -364,6 +401,13 @@ def test_renderer_script_includes_user_script_manager_ui_contract():
     assert "forcePluginInstall" in text
     assert "sessionDelete" in text
     assert "markdownExport" in text
+    assert "sessionLimitUnlock" in text
+    assert "fastModeUnlock" in text
+    assert "haleclipseCompatUnlock" in text
+    assert "Markdown 导出" in text
+    assert "会话列表扩容" in text
+    assert "Fast 模式解锁" in text
+    assert "哈雷彗星兼容补丁" in text
     assert "codex-plus-modal-overlay" in text
     assert "codex-plus-modal-content" in text
     assert "codex-plus-modal-header" in text

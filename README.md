@@ -39,6 +39,10 @@ Codex++ 是一个面向 Codex App 的外部增强启动器。它不修改 Codex 
   - 插件选项解锁
   - 特殊插件强制安装
   - 会话删除
+  - 会话列表扩容，自动分页合并最近会话，避免只显示前 50 条
+  - Fast 模式解锁，允许 API Key / 第三方 API 模式使用 Fast 速度选项
+  - 哈雷彗星兼容补丁：i18n、Browser-use gate、sunset 强制更新遮罩等前端 gate 外置解锁
+- 启动 Intel Mac 版 Codex 时自动附加高性能 GPU Chromium 参数
 - 支持 Windows 快捷方式安装/卸载
 - 支持 macOS 生成 `/Applications/Codex++.app`
 - 支持基于 GitHub Release 检查和更新 Codex++
@@ -86,6 +90,10 @@ Codex++ 使用外部启动方式运行 Codex：
 3. 通过 CDP 注入 `renderer-inject.js`。
 4. 渲染端通过 CDP bridge 调用本地删除服务；默认不开放 HTTP 删除/撤销入口，避免本机其他页面误触发删除类操作。
 5. 启动 Codex 时会继承现有 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`；如果这些环境变量未设置，会自动探测常见本地代理端口（如 `127.0.0.1:7897`），帮助 Codex 加载需要访问 GitHub 的技能资源。
+6. 通过外置 renderer 注入拦截 Codex 前端的 `mcp-request` / `mcp-response` 消息：
+   - `thread/list` 自动分页并合并结果，用于解除最近会话前 50 条的显示限制。
+   - `model/list` / 配置需求响应会补齐 Fast speed tier，让第三方 API 模式也能显示 Fast 选项。
+   - Statsig gate 在运行时被外置包装，用于启用 i18n、Browser-use 相关入口，并关闭 sunset 强制更新 gate。
 
 这种方式不会修改 Codex 的 `app.asar`，也不需要往 Codex 安装目录写 DLL。
 
