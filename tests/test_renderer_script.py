@@ -324,6 +324,14 @@ def test_renderer_script_includes_haleclipse_fast_and_statsig_unlocks():
     assert "patchFastModeGates" in text
     assert "patchFastModeGateOnObject" in text
     assert "additionalSpeedTiers" in text
+    assert "serviceTiers" in text
+    assert "codexFastServiceTier" in text
+    assert "list-models-for-host" in text
+    assert "ipc-request" in text
+    assert "fetchMethodFromJsonBody" in text
+    assert "getQueryCache" in text
+    assert "setQueryData" in text
+    assert "scheduleFastModePatchRefresh" in text
     assert "fast_mode" in text
     assert "serviceTier" in text
     assert "fetch-response" in text

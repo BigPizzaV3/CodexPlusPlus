@@ -24,10 +24,18 @@
   const codexArchiveDeleteAllVersion = "2";
   const codexPlusVersion = "1.0.5";
   const codexPlusSettingsKey = "codexPlusSettings";
-  const codexPlusBridgePatchVersion = "1";
+  const codexPlusBridgePatchVersion = "2";
   const codexThreadListPageLimit = 1000;
   const codexThreadListMaxPages = 20;
-  const codexFastModeUnlockVersion = "1";
+  const codexFastModeUnlockVersion = "2";
+  const codexFastModePatchMaxDepth = 9;
+  const codexFastModePatchMaxArrayItems = 300;
+  const codexFastModePatchMaxObjectKeys = 100;
+  const codexFastServiceTier = {
+    id: "fast",
+    name: "Fast",
+    description: "1.5x speed, increased plan usage",
+  };
   const codexStatsigUnlockVersion = "1";
   const codexPlusStatsigGateOverrides = {
     "410262010": true,
@@ -820,7 +828,21 @@
     const url = String(message.url || "");
     const prefix = "vscode://codex/";
     const path = url.includes(prefix) ? url.slice(url.indexOf(prefix) + prefix.length) : url;
-    return path.split(/[?#]/)[0] || "";
+    const methodFromBody = fetchMethodFromJsonBody(message.bodyJsonString)
+      || fetchMethodFromJsonBody(message.body)
+      || fetchMethodFromJsonBody(message.options?.body)
+      || fetchMethodFromJsonBody(message.init?.body);
+    return methodFromBody || path.split(/[?#]/)[0] || "";
+  }
+
+  function fetchMethodFromJsonBody(body) {
+    if (!body || typeof body !== "string") return "";
+    try {
+      const parsed = JSON.parse(body);
+      return typeof parsed?.method === "string" ? parsed.method : "";
+    } catch {
+      return "";
+    }
   }
 
   function isRecentThreadListRequest(message) {
@@ -981,26 +1003,74 @@
     }
   }
 
+  function serviceTierId(tier) {
+    if (typeof tier === "string") return tier;
+    if (!tier || typeof tier !== "object") return "";
+    return String(tier.id || tier.value || tier.name || "");
+  }
+
+  function looksLikeCodexModel(value) {
+    if (!value || typeof value !== "object") return false;
+    if ("additionalSpeedTiers" in value || "serviceTiers" in value) return true;
+    if (!("model" in value) || !("id" in value || "slug" in value || "name" in value || "displayName" in value)) return false;
+    return Array.isArray(value.supportedReasoningEfforts) || typeof value.displayName === "string" || typeof value.description === "string";
+  }
+
   function ensureFastTier(model) {
     if (!model || typeof model !== "object") return 0;
+    let patches = 0;
     const tiers = Array.isArray(model.additionalSpeedTiers) ? model.additionalSpeedTiers : [];
     if (!tiers.includes("fast")) {
       model.additionalSpeedTiers = [...tiers, "fast"];
-      return 1;
+      patches += 1;
     }
-    return 0;
+    const serviceTiers = Array.isArray(model.serviceTiers) ? model.serviceTiers : [];
+    if (!serviceTiers.some((tier) => serviceTierId(tier) === "fast")) {
+      model.serviceTiers = [...serviceTiers, { ...codexFastServiceTier }];
+      patches += 1;
+    }
+    return patches;
+  }
+
+  function shouldTraverseFastModeValue(value) {
+    if (!value || typeof value !== "object") return false;
+    if (value === window || value === document || value === document.body) return false;
+    if (typeof Node !== "undefined" && value instanceof Node) return false;
+    if (typeof Window !== "undefined" && value instanceof Window) return false;
+    return true;
+  }
+
+  function patchFastModeQueryClient(value, seen) {
+    if (!value || typeof value.getQueryCache !== "function" || typeof value.setQueryData !== "function") return 0;
+    let patches = 0;
+    try {
+      const queries = value.getQueryCache()?.getAll?.();
+      if (!Array.isArray(queries)) return 0;
+      for (const query of queries.slice(0, 120)) {
+        const data = query?.state?.data;
+        const queryPatches = patchFastModeGateOnObject(data, seen, 0);
+        if (queryPatches > 0) {
+          patches += queryPatches;
+          value.setQueryData(query.queryKey, data);
+        }
+      }
+    } catch (error) {
+      recordFastModeDiagnostic({ queryCachePatchError: String(error?.message || error), version: codexFastModeUnlockVersion });
+    }
+    return patches;
   }
 
   function patchFastModeGateOnObject(value, seen = new WeakSet(), depth = 0) {
     if (!codexPlusSettings().fastModeUnlock) return 0;
-    if (!value || typeof value !== "object" || seen.has(value) || depth > 5) return 0;
+    if (!shouldTraverseFastModeValue(value) || seen.has(value) || depth > codexFastModePatchMaxDepth) return 0;
     seen.add(value);
     let patches = 0;
     if (Array.isArray(value)) {
-      for (const item of value.slice(0, 120)) patches += patchFastModeGateOnObject(item, seen, depth + 1);
+      for (const item of value.slice(0, codexFastModePatchMaxArrayItems)) patches += patchFastModeGateOnObject(item, seen, depth + 1);
       return patches;
     }
-    if ("additionalSpeedTiers" in value || ("model" in value && ("id" in value || "slug" in value || "name" in value))) {
+    patches += patchFastModeQueryClient(value, seen);
+    if (looksLikeCodexModel(value)) {
       patches += ensureFastTier(value);
     }
     if (value.authMethod && value.authMethod !== "chatgpt") {
@@ -1039,8 +1109,16 @@
     if (Array.isArray(models)) {
       for (const model of models) patches += ensureFastTier(model);
     }
-    for (const key of ["data", "result", "value", "model", "models", "requirements", "featureRequirements", "serviceTierSettings", "authState"]) {
-      patches += patchFastModeGateOnObject(value[key], seen, depth + 1);
+    const keys = Object.keys(value).slice(0, codexFastModePatchMaxObjectKeys);
+    for (const key of keys) {
+      if (key === "stateNode" || key === "return" || key === "child" || key === "sibling" || key === "alternate" || key === "_owner") continue;
+      let child;
+      try {
+        child = value[key];
+      } catch {
+        continue;
+      }
+      patches += patchFastModeGateOnObject(child, seen, depth + 1);
     }
     return patches;
   }
@@ -1048,6 +1126,9 @@
   function fastPatchableResponseMethod(method) {
     return [
       "",
+      "ipc-request",
+      "list-models-for-host",
+      "model/list-for-host",
       "model/list",
       "configRequirements/read",
       "config/read",
@@ -1287,6 +1368,22 @@
       }
     }
     if (patches > 0) recordFastModeDiagnostic({ fiberPatches: patches, version: codexFastModeUnlockVersion });
+  }
+
+  function scheduleFastModePatchRefresh() {
+    if (!codexPlusSettings().fastModeUnlock) return;
+    if (window.__codexPlusFastModePatchRefreshVersion === codexFastModeUnlockVersion) return;
+    window.__codexPlusFastModePatchRefreshVersion = codexFastModeUnlockVersion;
+    [50, 250, 750, 1500, 3000, 6000, 10000].forEach((delay) => {
+      setTimeout(() => {
+        try {
+          patchFastModeGates();
+        } catch (error) {
+          const diagnostics = codexPlusDiagnostics();
+          diagnostics.bridgeErrors.push(String(error?.stack || error));
+        }
+      }, delay);
+    });
   }
 
   let cachedSessionRows = [];
@@ -2756,6 +2853,7 @@
     installCodexPlusMenu();
     scheduleBackendHeartbeat();
     installCodexBridgeRequestPatches();
+    scheduleFastModePatchRefresh();
     patchHaleclipseCompatGates();
     installDeleteButtonEventDelegation();
   }
