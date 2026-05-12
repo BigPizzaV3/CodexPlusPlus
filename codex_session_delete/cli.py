@@ -265,11 +265,14 @@ Write-Output ("watch-install: Startup shortcut = " + $ShortcutPath)
     if result.stdout:
         print(result.stdout.strip())
     # Start the watcher right now as well.
+    stderr_log = Path.home() / ".codex-session-delete" / "watcher.stderr.log"
+    stderr_log.parent.mkdir(parents=True, exist_ok=True)
+    stderr_file = stderr_log.open("a", encoding="utf-8")
     subprocess.Popen(
         [exe, "-m", "codex_session_delete", "watch", "--debug-port", str(debug_port)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=stderr_file,
         close_fds=True,
         creationflags=(
             subprocess.CREATE_NEW_PROCESS_GROUP
@@ -306,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
         uninstall_watcher_logon_task()
         return 0
     if args.command == "watch":
-        return watcher.watch_loop(debug_port=args.debug_port)
+        return watcher.run_with_restart(debug_port=args.debug_port)
     if args.command == "watch-install":
         install_watcher_logon_task(args.debug_port)
         return 0

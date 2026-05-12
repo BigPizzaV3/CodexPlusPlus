@@ -118,3 +118,89 @@ def test_takeover_skips_kill_when_cdp_appears(monkeypatch):
 
 def test_takeover_failure_backoff_is_not_too_short():
     assert watcher.TAKEOVER_FAILURE_BACKOFF_SECONDS >= 30.0
+
+
+def test_log_does_not_raise_when_path_unwritable(tmp_path, monkeypatch):
+    unwritable = tmp_path / "no-such-dir" / "nested"
+    monkeypatch.setattr(watcher, "watcher_log_path", lambda: unwritable / "watcher.log")
+    monkeypatch.setattr(watcher, "data_root", lambda: unwritable)
+    # Make parent read-only on Windows by pointing to a file instead of dir
+    (tmp_path / "no-such-dir").write_text("block", encoding="utf-8")
+    # Should not raise
+    watcher.log("test message")
+
+
+def test_pid_file_written_and_singleton_acquired(tmp_path, monkeypatch):
+    monkeypatch.setattr(watcher, "data_root", lambda: tmp_path)
+    assert watcher._acquire_singleton() is True
+    pid_path = tmp_path / "watcher.pid"
+    assert pid_path.exists()
+    import os
+    assert pid_path.read_text(encoding="utf-8").strip() == str(os.getpid())
+    watcher._release_singleton()
+    assert not pid_path.exists()
+
+
+def test_singleton_rejects_duplicate_when_alive(tmp_path, monkeypatch):
+    monkeypatch.setattr(watcher, "data_root", lambda: tmp_path)
+    import os
+    real_pid = os.getpid()
+    pid_path = tmp_path / "watcher.pid"
+    pid_path.write_text(str(real_pid), encoding="utf-8")
+    monkeypatch.setattr(watcher, "_is_process_alive", lambda pid: True)
+    monkeypatch.setattr(watcher.os, "getpid", lambda: real_pid + 1)
+    assert watcher._acquire_singleton() is False
+
+
+def test_singleton_allows_stale_pid(tmp_path, monkeypatch):
+    monkeypatch.setattr(watcher, "data_root", lambda: tmp_path)
+    pid_path = tmp_path / "watcher.pid"
+    pid_path.write_text("99999", encoding="utf-8")
+    monkeypatch.setattr(watcher, "_is_process_alive", lambda pid: False)
+    assert watcher._acquire_singleton() is True
+
+
+def test_heartbeat_file_updated(tmp_path, monkeypatch):
+    monkeypatch.setattr(watcher, "data_root", lambda: tmp_path)
+    hb = tmp_path / "watcher.heartbeat"
+    assert not hb.exists()
+    watcher._touch_heartbeat()
+    assert hb.exists()
+    content = hb.read_text(encoding="utf-8")
+    assert float(content) > 0
+
+
+def test_run_with_restart_retries_on_crash(monkeypatch, tmp_path):
+    monkeypatch.setattr(watcher, "data_root", lambda: tmp_path)
+    attempts = []
+
+    def crashing_loop(debug_port=9229):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise RuntimeError("simulated crash")
+        return 0
+
+    monkeypatch.setattr(watcher, "watch_loop", crashing_loop)
+    monkeypatch.setattr(watcher.time, "sleep", lambda s: None)
+
+    result = watcher.run_with_restart(debug_port=9229)
+
+    assert result == 0
+    assert len(attempts) == 3
+
+
+def test_run_with_restart_gives_up_after_max_attempts(monkeypatch, tmp_path):
+    monkeypatch.setattr(watcher, "data_root", lambda: tmp_path)
+    attempts = []
+
+    def always_crash(debug_port=9229):
+        attempts.append(1)
+        raise RuntimeError("always crash")
+
+    monkeypatch.setattr(watcher, "watch_loop", always_crash)
+    monkeypatch.setattr(watcher.time, "sleep", lambda s: None)
+
+    result = watcher.run_with_restart(debug_port=9229)
+
+    assert result == 1
+    assert len(attempts) == watcher.RESTART_MAX_ATTEMPTS

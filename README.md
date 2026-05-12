@@ -267,6 +267,8 @@ Windows 可以注册一个常驻 watcher 解决这个问题。它会每 3 秒探
 
 - 每次 Codex 通过原生路径启动，仍可能先打开一瞬间，再被 kill，再被 launcher 带 CDP 重开；watcher 会通过等待、二次确认和失败 backoff 尽量减少频繁闪烁。
 - watcher 以 `pythonw.exe` 常驻运行，登录时自动启动（通过 `HKCU\...\Run` 和 Startup 文件夹双路径注册，后者防止某些注册表清理工具干扰）。
+- watcher 具备自动重启能力：如果因意外异常退出，会在几秒后自动恢复，无需手动干预。
+- 运行状态文件位于 `~/.codex-session-delete/`：`watcher.log`（日志）、`watcher.pid`（进程锁）、`watcher.heartbeat`（心跳）。
 
 ### 安装
 
