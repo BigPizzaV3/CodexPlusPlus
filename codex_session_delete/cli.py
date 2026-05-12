@@ -103,11 +103,9 @@ def wait_for_shutdown(server: HelperServer, codex_proc) -> None:
         if isinstance(codex_proc, int):
             wait_for_windows_process_id(codex_proc)
         elif codex_proc is None and sys.platform == "darwin":
-            import subprocess as _sp
             import time as _time
             while True:
-                result = _sp.run(["pgrep", "-f", "^/Applications/Codex\\.app/Contents/MacOS/Codex"], capture_output=True)
-                if result.returncode != 0:
+                if not is_macos_codex_running():
                     break
                 _time.sleep(2)
         elif codex_proc is not None:
@@ -116,6 +114,11 @@ def wait_for_shutdown(server: HelperServer, codex_proc) -> None:
         pass
     finally:
         shutdown_helper(server)
+
+
+def is_macos_codex_running() -> bool:
+    result = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, check=False)
+    return any("/Codex.app/Contents/MacOS/Codex " in f"{line} " for line in result.stdout.splitlines())
 
 
 def stop_existing_windows_launchers() -> None:

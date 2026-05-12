@@ -48,6 +48,21 @@ class ApiFirstDeleteService:
             return None
         return self.local_adapter.find_archived_thread_by_title(title)
 
+    def move_thread_workspace(self, session: SessionRef, target_cwd: str) -> dict[str, object]:
+        if self.local_adapter is None:
+            return {"status": DeleteStatus.FAILED.value, "session_id": session.session_id, "message": "No local database configured"}
+        return self.local_adapter.move_codex_thread_workspace(session, target_cwd)
+
+    def thread_sort_key(self, session: SessionRef) -> dict[str, object]:
+        if self.local_adapter is None:
+            return {"status": DeleteStatus.FAILED.value, "session_id": session.session_id, "message": "No local database configured"}
+        return self.local_adapter.codex_thread_sort_key(session)
+
+    def thread_sort_keys(self, sessions: list[SessionRef]) -> dict[str, object]:
+        if self.local_adapter is None:
+            return {"status": DeleteStatus.FAILED.value, "message": "No local database configured", "sort_keys": []}
+        return self.local_adapter.codex_thread_sort_keys(sessions)
+
 
 class InjectedHelperServer(HelperServer):
     bridge_socket: Any = None
@@ -388,10 +403,24 @@ def handle_bridge_request(
         return service.delete(session).to_dict()
     if path == "/undo":
         return service.undo(str(payload.get("undo_token", ""))).to_dict()
-    if path == "/archived-thread":
-        session = service.find_archived_thread_by_title(str(payload.get("title", "")))
-        return {"session_id": session.session_id, "title": session.title} if session else {"session_id": "", "title": ""}
     if path == "/export-markdown":
         session = SessionRef(session_id=str(payload.get("session_id", "")), title=str(payload.get("title", "")))
         return export_service.export(session).to_dict()
+    if path == "/archived-thread":
+        session = service.find_archived_thread_by_title(str(payload.get("title", "")))
+        return {"session_id": session.session_id, "title": session.title} if session else {"session_id": "", "title": ""}
+    if path == "/move-thread-workspace":
+        session = SessionRef(session_id=str(payload.get("session_id", "")), title=str(payload.get("title", "")))
+        return service.move_thread_workspace(session, str(payload.get("target_cwd", "")))
+    if path == "/thread-sort-key":
+        session = SessionRef(session_id=str(payload.get("session_id", "")), title=str(payload.get("title", "")))
+        return service.thread_sort_key(session)
+    if path == "/thread-sort-keys":
+        raw_sessions = payload.get("sessions", [])
+        sessions = [
+            SessionRef(session_id=str(item.get("session_id", "")), title=str(item.get("title", "")))
+            for item in raw_sessions
+            if isinstance(item, dict)
+        ] if isinstance(raw_sessions, list) else []
+        return service.thread_sort_keys(sessions)
     return {"status": DeleteStatus.FAILED.value, "session_id": str(payload.get("session_id", "")), "message": "Unknown bridge path"}

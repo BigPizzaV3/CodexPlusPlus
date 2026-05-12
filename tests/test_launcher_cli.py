@@ -458,3 +458,12 @@ def test_wait_for_shutdown_waits_for_popen_like_process():
     assert proc.waited is True
     assert server.shutdown_called is True
     assert server.server_close_called is True
+
+
+def test_is_macos_codex_running_uses_ps_comm(monkeypatch):
+    class Result:
+        stdout = "123 /Applications/Codex.app/Contents/MacOS/Codex --remote-debugging-port=9229\n456 /usr/bin/other\n"
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: Result())
+
+    assert cli.is_macos_codex_running() is True

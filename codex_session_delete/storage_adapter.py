@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,81 @@ class SQLiteStorageAdapter:
             ).fetchone()
             return SessionRef(session_id=str(row["id"]), title=str(row["title"] or title)) if row else None
 
+    def move_codex_thread_workspace(self, session: SessionRef, target_cwd: str) -> dict[str, object]:
+        target = target_cwd.strip()
+        if not target:
+            return {"status": "failed", "session_id": session.session_id, "message": "目标项目路径为空"}
+        if not self.db_path.exists():
+            return {"status": "failed", "session_id": session.session_id, "message": f"Database not found: {self.db_path}"}
+
+        with sqlite3.connect(self.db_path) as db:
+            db.row_factory = sqlite3.Row
+            if self._schema_kind(db) != "codex_threads" or not self._has_columns(db, "threads", {"cwd", "rollout_path"}):
+                return {"status": "failed", "session_id": session.session_id, "message": "Unsupported local storage schema"}
+            thread_id = self._normalize_codex_thread_id(session.session_id)
+            columns = ["id", "title", "cwd", "rollout_path", *self._codex_thread_timestamp_columns(db)]
+            row = db.execute(f"SELECT {', '.join(columns)} FROM threads WHERE id = ?", (thread_id,)).fetchone()
+            if row is None:
+                return {"status": "failed", "session_id": thread_id, "message": "Thread not found in local storage"}
+            previous_cwd = str(row["cwd"] or "")
+            db.execute("UPDATE threads SET cwd = ? WHERE id = ?", (target, thread_id))
+            db.commit()
+
+        rollout_result = self._update_rollout_session_meta_cwd(str(row["rollout_path"] or ""), thread_id, target)
+        return {
+            "status": "moved",
+            "session_id": thread_id,
+            "message": "已移动对话",
+            "previous_cwd": previous_cwd,
+            "target_cwd": target,
+            "rollout_updated": rollout_result["updated"],
+            "rollout_error": rollout_result["error"],
+            **self._codex_thread_timestamp_payload(row),
+        }
+
+    def codex_thread_sort_key(self, session: SessionRef) -> dict[str, object]:
+        if not self.db_path.exists():
+            return {"status": "failed", "session_id": session.session_id, "message": f"Database not found: {self.db_path}"}
+
+        with sqlite3.connect(self.db_path) as db:
+            db.row_factory = sqlite3.Row
+            if self._schema_kind(db) != "codex_threads":
+                return {"status": "failed", "session_id": session.session_id, "message": "Unsupported local storage schema"}
+            thread_id = self._normalize_codex_thread_id(session.session_id)
+            columns = ["id", *self._codex_thread_timestamp_columns(db)]
+            row = db.execute(f"SELECT {', '.join(columns)} FROM threads WHERE id = ?", (thread_id,)).fetchone()
+            if row is None:
+                return {"status": "failed", "session_id": thread_id, "message": "Thread not found in local storage"}
+            return {
+                "status": "ok",
+                "session_id": thread_id,
+                **self._codex_thread_timestamp_payload(row),
+            }
+
+    def codex_thread_sort_keys(self, sessions: list[SessionRef]) -> dict[str, object]:
+        if not self.db_path.exists():
+            return {"status": "failed", "message": f"Database not found: {self.db_path}", "sort_keys": []}
+
+        thread_ids = list(dict.fromkeys(self._normalize_codex_thread_id(session.session_id) for session in sessions if session.session_id))[:200]
+        if not thread_ids:
+            return {"status": "ok", "sort_keys": []}
+
+        with sqlite3.connect(self.db_path) as db:
+            db.row_factory = sqlite3.Row
+            if self._schema_kind(db) != "codex_threads":
+                return {"status": "failed", "message": "Unsupported local storage schema", "sort_keys": []}
+            columns = ["id", *self._codex_thread_timestamp_columns(db)]
+            placeholders = ", ".join("?" for _ in thread_ids)
+            rows_by_id = {
+                str(row["id"]): {
+                    "session_id": str(row["id"]),
+                    **self._codex_thread_timestamp_payload(row),
+                }
+                for row in db.execute(f"SELECT {', '.join(columns)} FROM threads WHERE id IN ({placeholders})", tuple(thread_ids)).fetchall()
+            }
+            sort_keys = [rows_by_id[thread_id] for thread_id in thread_ids if thread_id in rows_by_id]
+            return {"status": "ok", "sort_keys": sort_keys}
+
     def _delete_generic_session(self, db: sqlite3.Connection, session: SessionRef) -> DeleteResult:
         session_rows = self._select_dicts(db, "SELECT * FROM sessions WHERE id = ?", (session.session_id,))
         if not session_rows:
@@ -123,6 +199,14 @@ class SQLiteStorageAdapter:
     def _normalize_codex_thread_id(self, session_id: str) -> str:
         return session_id.removeprefix("local:")
 
+    def _codex_thread_timestamp_columns(self, db: sqlite3.Connection) -> list[str]:
+        existing = {row[1] for row in db.execute('PRAGMA table_info("threads")')}
+        return [column for column in ("updated_at", "updated_at_ms", "created_at_ms") if column in existing]
+
+    def _codex_thread_timestamp_payload(self, row: sqlite3.Row) -> dict[str, object]:
+        keys = set(row.keys())
+        return {column: row[column] if column in keys else None for column in ("updated_at", "updated_at_ms", "created_at_ms")}
+
     def _schema_kind(self, db: sqlite3.Connection) -> str | None:
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         if "sessions" in tables:
@@ -156,6 +240,35 @@ class SQLiteStorageAdapter:
             if path.is_file():
                 file_backups.append({"path": str(path), "content_b64": base64.b64encode(path.read_bytes()).decode("ascii")})
         return file_backups
+
+    def _update_rollout_session_meta_cwd(self, rollout_path: str, thread_id: str, target_cwd: str) -> dict[str, object]:
+        if not rollout_path:
+            return {"updated": False, "error": ""}
+        path = Path(rollout_path)
+        if not path.is_file():
+            return {"updated": False, "error": ""}
+        changed = False
+        lines = []
+        try:
+            for raw_line in path.read_text(encoding="utf-8").splitlines(keepends=True):
+                line_body = raw_line[:-1] if raw_line.endswith("\n") else raw_line
+                line_end = "\n" if raw_line.endswith("\n") else ""
+                try:
+                    item = json.loads(line_body)
+                except json.JSONDecodeError:
+                    lines.append(raw_line)
+                    continue
+                payload = item.get("payload")
+                if item.get("type") == "session_meta" and isinstance(payload, dict) and payload.get("id") == thread_id and payload.get("cwd") != target_cwd:
+                    payload["cwd"] = target_cwd
+                    raw_line = json.dumps(item, ensure_ascii=False, separators=(",", ":")) + line_end
+                    changed = True
+                lines.append(raw_line)
+            if changed:
+                path.write_text("".join(lines), encoding="utf-8")
+            return {"updated": changed, "error": ""}
+        except OSError as exc:
+            return {"updated": False, "error": str(exc)}
 
     def _local_deleted(self, session_id: str, token: str) -> DeleteResult:
         return DeleteResult(

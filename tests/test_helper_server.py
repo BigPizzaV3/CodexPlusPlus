@@ -25,6 +25,15 @@ class FakeDeleteService:
         self.archived_title_queries.append(title)
         return SessionRef(session_id="archived-t1", title=title)
 
+    def move_thread_workspace(self, session: SessionRef, target_cwd: str):
+        return {"status": "moved", "session_id": session.session_id, "target_cwd": target_cwd}
+
+    def thread_sort_key(self, session: SessionRef):
+        return {"status": "ok", "session_id": session.session_id, "updated_at_ms": 123}
+
+    def thread_sort_keys(self, sessions: list[SessionRef]):
+        return {"status": "ok", "sort_keys": [{"session_id": session.session_id, "updated_at_ms": index + 1} for index, session in enumerate(sessions)]}
+
 
 class FakeExportService:
     def __init__(self):
@@ -140,6 +149,51 @@ def test_helper_server_accepts_http_mutation_token():
 
     assert deleted["status"] == "local_deleted"
     assert service.deleted[0].session_id == "s1"
+
+
+def test_helper_server_moves_thread_workspace_without_http_mutation_token():
+    service = FakeDeleteService()
+    server = HelperServer("127.0.0.1", 0, service)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.port}"
+        moved = post_json(base + "/move-thread-workspace", {"session_id": "s1", "title": "First", "target_cwd": "/project/a"})
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+
+    assert moved == {"status": "moved", "session_id": "s1", "target_cwd": "/project/a"}
+
+
+def test_helper_server_returns_thread_sort_key():
+    service = FakeDeleteService()
+    server = HelperServer("127.0.0.1", 0, service)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.port}"
+        sort_key = post_json(base + "/thread-sort-key", {"session_id": "s1", "title": "First"})
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+
+    assert sort_key == {"status": "ok", "session_id": "s1", "updated_at_ms": 123}
+
+
+def test_helper_server_returns_thread_sort_keys():
+    service = FakeDeleteService()
+    server = HelperServer("127.0.0.1", 0, service)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.port}"
+        sort_keys = post_json(base + "/thread-sort-keys", {"sessions": [{"session_id": "s1", "title": "First"}, {"session_id": "s2", "title": "Second"}]})
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+
+    assert sort_keys == {"status": "ok", "sort_keys": [{"session_id": "s1", "updated_at_ms": 1}, {"session_id": "s2", "updated_at_ms": 2}]}
 
 
 def test_helper_server_allows_private_network_preflight():

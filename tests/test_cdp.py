@@ -5,7 +5,7 @@ from pathlib import Path
 import codex_session_delete.cdp as cdp
 import websocket
 
-from codex_session_delete.cdp import BRIDGE_BINDING_NAME, _bridge_loop, build_bridge_script, evaluate_user_scripts, install_bridge, list_targets, open_devtools, pick_page_target
+from codex_session_delete.cdp import BRIDGE_BINDING_NAME, _bridge_loop, add_script_to_new_documents, build_bridge_script, evaluate_user_scripts, install_bridge, list_targets, open_devtools, pick_page_target
 
 
 class TimeoutThenMessageSocket:
@@ -31,15 +31,16 @@ class TimeoutThenMessageSocket:
 class SingleResponseSocket:
     def __init__(self):
         self.sent = []
+        self.closed = False
 
     def send(self, payload):
         self.sent.append(json.loads(payload))
 
     def recv(self):
-        return json.dumps({"id": 1, "result": {}})
+        return json.dumps({"id": 1, "result": {"identifier": "script-1"}})
 
     def close(self):
-        pass
+        self.closed = True
 
 
 class BridgeInstallSocket:
@@ -116,15 +117,31 @@ def test_bridge_binding_name_is_versioned_for_reinjection():
     assert BRIDGE_BINDING_NAME == "codexSessionDeleteV2"
 
 
+def test_add_script_to_new_documents_registers_reload_injection(monkeypatch):
+    ws = SingleResponseSocket()
+    monkeypatch.setattr(websocket, "create_connection", lambda *args, **kwargs: ws)
+
+    result = add_script_to_new_documents("ws://page", "window.__codexPlusTest = true;")
+
+    assert result["result"]["identifier"] == "script-1"
+    assert ws.sent[0]["method"] == "Page.addScriptToEvaluateOnNewDocument"
+    assert ws.sent[0]["params"]["source"] == "window.__codexPlusTest = true;"
+    assert ws.closed is True
+
+
 def test_install_bridge_enables_runtime_before_adding_binding(monkeypatch):
     ws = BridgeInstallSocket()
     monkeypatch.setattr(websocket, "create_connection", lambda url, timeout: ws)
     monkeypatch.setattr(cdp.threading, "Thread", lambda **kwargs: type("FakeThread", (), {"start": lambda self: None})())
 
-    install_bridge("ws://page", BRIDGE_BINDING_NAME, lambda path, payload: {})
+    install_bridge("ws://page", BRIDGE_BINDING_NAME, lambda path, payload: {}, ["window.__codexPlusTest = true;"])
 
     assert ws.sent[0] == {"id": 1, "method": "Runtime.enable", "params": {}}
-    assert ws.sent[1]["method"] == "Runtime.addBinding"
+    assert ws.sent[1]["method"] == "Runtime.removeBinding"
+    assert ws.sent[2]["method"] == "Runtime.addBinding"
+    assert ws.sent[3]["method"] == "Page.addScriptToEvaluateOnNewDocument"
+    assert ws.sent[5]["method"] == "Page.addScriptToEvaluateOnNewDocument"
+    assert ws.sent[5]["params"]["source"] == "window.__codexPlusTest = true;"
 
 
 def test_open_devtools_opens_chrome_devtools_frontend(monkeypatch):

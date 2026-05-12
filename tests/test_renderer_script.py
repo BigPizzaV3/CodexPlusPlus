@@ -109,7 +109,8 @@ def test_renderer_script_debounces_mutation_observer_scan():
     assert "new MutationObserver(scheduleScan)" in text
     assert "new MutationObserver(scan)" not in text
     assert "scan();" in text
-    assert "  scan();\n  window.__codexSessionDeleteObserver" in text
+    assert "window.__codexProjectMoveApplyProjection" in text
+    assert "window.__codexSessionDeleteObserver" in text
 
 
 def test_renderer_script_ignores_chat_content_mutations_before_scheduling_scan():
@@ -193,7 +194,7 @@ def test_renderer_script_sidebar_delete_opens_on_pointerup_when_click_is_unrelia
 
     text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
     assert "updateDeleteButtonOffsets" in text
-    assert "codexDeleteStyleVersion = \"5\"" in text
+    assert "codexDeleteStyleVersion = \"6\"" in text
     assert "right: 66px" in text
     assert "确认" in text
     assert "归档对话" in text
@@ -325,6 +326,13 @@ def test_renderer_script_includes_haleclipse_fast_and_statsig_unlocks():
     assert "additionalSpeedTiers" in text
     assert "fast_mode" in text
     assert "serviceTier" in text
+    assert "fetch-response" in text
+    assert "bodyJsonString" in text
+    assert "get-config-requirements-for-host" in text
+    assert "read-config-for-host" in text
+    assert "value.authMethod = \"chatgpt\"" in text
+    assert "value.authState.authMethod = \"chatgpt\"" in text
+    assert "value.id === \"speed\"" in text
     assert "codex-fast-mode-row" in text
     assert "codexPlusStatsigGateOverrides" in text
     assert "\"410262010\": true" in text
@@ -408,6 +416,9 @@ def test_renderer_script_includes_user_script_manager_ui_contract():
     assert "会话列表扩容" in text
     assert "Fast 模式解锁" in text
     assert "哈雷彗星兼容补丁" in text
+    assert "projectMove" in text
+    assert "会话项目移动" in text
+    assert "移动按钮" in text
     assert "codex-plus-modal-overlay" in text
     assert "codex-plus-modal-content" in text
     assert "codex-plus-modal-header" in text
@@ -432,3 +443,81 @@ def test_renderer_script_includes_user_script_manager_ui_contract():
     assert "codexPlusMenuVersion = \"5\"" in text
     assert "codexPlusTriggerInstalled = \"5\"" in text
     assert ".codex-plus-trigger:hover" not in text
+
+
+def test_renderer_script_can_move_sidebar_threads_between_projects():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "codex-project-move-button" in text
+    assert "codex-project-move-overlay" in text
+    assert "codexProjectMoveVersion = \"1\"" in text
+    assert "function moveSessionToProjectless" in text
+    assert "function moveSessionToProject" in text
+    assert "function projectMoveTargets" in text
+    assert "function nativeProjectTargets" in text
+    assert "data-app-action-sidebar-project-row" in text
+    assert "data-app-action-sidebar-project-id" in text
+    assert "data-app-action-sidebar-project-label" in text
+    assert "get-global-state" in text
+    assert "set-global-state" in text
+    assert "projectless-thread-ids" in text
+    assert "thread-workspace-root-hints" in text
+    assert "electron-saved-workspace-roots" not in text
+    assert "active-workspace-roots" not in text
+    assert "project-order" not in text
+    assert "function threadIdVariants" in text
+    assert '`local:${bareId}`' in text
+    assert "uniqueValues([...ids, ...variants])" in text
+    assert "const variantSet = new Set(variants)" in text
+    assert "ids.filter((id) => !variantSet.has(id))" in text
+    assert "/thread-workspaces" not in text
+    assert "/move-thread-workspace" in text
+    assert "/thread-sort-key" in text
+    assert "/thread-sort-keys" in text
+    assert "hintKeys.forEach((id) => delete hints[id])" in text
+    assert "hints[id] = targetCwd" not in text
+    assert "codexProjectMoveProjection" in text
+    assert "legacyProjectMoveOverridesKey" in text
+    assert "function applyProjectMoveProjection" in text
+    assert "scheduleProjectMoveProjection" in text
+    assert "saveProjectMoveProjection(ref, target, target.sortMs || rowSortMs(row, ref, target))" in text
+    assert "clearProjectMoveProjection(ref)" in text
+    assert "refresh-recent-conversations-for-host" in text
+    assert "function refreshAfterProjectMove" in text
+    assert "function insertRowItemByTime" in text
+    assert "function sortStateFromMoveResult" in text
+    assert "function timestampMsFromPayload" in text
+    assert "function relativeTimeLabel" in text
+    assert "function updateRowTimeLabel" in text
+    assert "dataset.codexProjectMoveTime" in text
+    assert "function rowTimeLabelCandidates" in text
+    assert "function cleanupRowTimeLabels" in text
+    assert "function cleanupManagedStatusIconTimeNodes" in text
+    assert "function nodeInsideStatusIcon" in text
+    assert "function nodeLooksLikeTimeLabel" in text
+    assert "className.includes(\"animate-spin\")" in text
+    assert "node.children.length > 0" in text
+    assert "data-codex-project-move-time-wrapper" in text
+    assert "node.dataset?.codexProjectMoveTime !== \"true\"" in text
+    assert "function rowSortMs" in text
+    assert "function uuidV7TimestampMs" in text
+    assert "function projectThreadList" in text
+    assert "function applyChatsSortCorrection" in text
+    assert "function scheduleChatsSortCorrection" in text
+    assert "function reorderChatsRows" in text
+    assert "window.__codexProjectMoveSortChats" in text
+    assert "window.__codexProjectMoveRuntimeId" in text
+    assert "__codexProjectMoveChatsSortTimer" in text
+    assert "sortMsTrusted" in text
+    assert "chatsSortDbRefreshIntervalMs" in text
+    assert "data-app-action-sidebar-section-heading=\"Chats\"" in text
+    assert "data-app-action-sidebar-project-list-id" in text
+    assert "codexProjectMoveSortMs" in text
+    assert "data-codex-project-move-injected-list" in text
+    assert "codex-project-move-hidden" in text
+    assert "window.__codexProjectMoveApplyProjection" in text
+    assert "window.__codexProjectMoveTargets" in text
+    assert "projectMoveButtonClass" in text
+    assert "openProjectMoveMenuForRow" in text
+    assert "existingMoveButton" in text
+    assert "普通对话" in text
