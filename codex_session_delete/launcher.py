@@ -155,6 +155,18 @@ def codex_process_environment() -> dict[str, str]:
         env.setdefault("HTTP_PROXY", proxy)
         env.setdefault("HTTPS_PROXY", proxy)
         env.setdefault("ALL_PROXY", proxy)
+        no_proxy = env.get("NO_PROXY", env.get("no_proxy", ""))
+        bypass = {"localhost", "127.0.0.1", "::1"}
+        from pathlib import Path as _P
+        for line in (_P.home() / ".codex" / "config.toml").read_text().splitlines() if _P.home().joinpath(".codex", "config.toml").exists() else []:
+            stripped = line.strip()
+            if stripped.startswith("base_url"):
+                import re as _re
+                m = _re.search(r"https?://([^\s:/\"]*)", stripped)
+                if m:
+                    bypass.add(m.group(1))
+        parts = [h for h in no_proxy.split(",") if h.strip()] + list(bypass)
+        env["NO_PROXY"] = ",".join(parts)
     return env
 
 

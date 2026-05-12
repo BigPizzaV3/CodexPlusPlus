@@ -686,7 +686,6 @@
     if (!codexPlusSettings().pluginEntryUnlock) return;
     const pluginButton = pluginEntryButton();
     if (!pluginButton) return;
-    spoofChatGPTAuthMethod(pluginButton);
     pluginButton.disabled = false;
     pluginButton.removeAttribute("disabled");
     pluginButton.style.display = "";
@@ -701,7 +700,10 @@
     if (pluginButton.dataset.codexPluginEnabled === "true") return;
     pluginButton.dataset.codexPluginEnabled = "true";
     pluginButton.addEventListener("click", () => {
-      spoofChatGPTAuthMethod(pluginButton);
+      const reactPropsKey2 = Object.keys(pluginButton).find((key) => key.startsWith("__reactProps"));
+      if (reactPropsKey2 && typeof pluginButton[reactPropsKey2].onClick === "function") {
+        pluginButton[reactPropsKey2].onClick(new MouseEvent("click", { bubbles: true }));
+      }
     }, true);
   }
 
