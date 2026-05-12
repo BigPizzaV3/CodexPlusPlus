@@ -24,6 +24,11 @@
   const codexArchiveDeleteAllVersion = "2";
   const codexPlusVersion = "1.0.5";
   const codexPlusSettingsKey = "codexPlusSettings";
+  const codexPlusRetryControlsMaxAttempts = 100;
+  const codexPlusRetryControlsDefaultAttempts = 100;
+  const codexPlusRetryControlsDefaultDelayMs = 1000;
+  const codexPlusBestOfNAtomKey = "composer-best-of-n";
+  const codexPlusPersistedAtomPrefix = "codex:persisted-atom:";
   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
   clearTimeout(window.__codexProjectMoveProjectionTimer);
@@ -303,6 +308,16 @@
       }
       .codex-plus-toggle[data-enabled="true"] { background: #10a37f; }
       .codex-plus-toggle[data-enabled="true"] span { transform: translateX(18px); }
+      .codex-plus-number-input {
+        width: 74px;
+        border: 1px solid rgba(255,255,255,.14);
+        border-radius: 7px;
+        background: #18181b;
+        color: #f3f4f6;
+        font: 12px system-ui, sans-serif;
+        padding: 6px 8px;
+      }
+      .codex-plus-number-input:disabled { opacity: .45; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-tabs { display: flex; gap: 8px; padding: 0 20px 8px; }
       .codex-plus-tab-button { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: transparent; color: #d1d5db; font: 12px system-ui, sans-serif; padding: 5px 10px; }
@@ -329,7 +344,17 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, forcePluginInstall: true, sessionDelete: true, markdownExport: true, projectMove: true, nativeMenuPlacement: true };
+    return {
+      pluginEntryUnlock: true,
+      forcePluginInstall: true,
+      sessionDelete: true,
+      markdownExport: true,
+      projectMove: true,
+      nativeMenuPlacement: true,
+      retryAttemptControls: true,
+      retryAttemptLimit: codexPlusRetryControlsDefaultAttempts,
+      retryFixedDelay: true,
+    };
   }
 
   function codexPlusSettings() {
@@ -344,13 +369,30 @@
     const next = { ...codexPlusSettings(), [key]: value };
     localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
     renderCodexPlusMenu();
+    applyRetryAttemptControls();
     scan();
+  }
+
+  function numericCodexPlusSetting(key, fallback, min, max) {
+    const value = Number(codexPlusSettings()[key]);
+    if (!Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, Math.round(value)));
+  }
+
+  function setCodexPlusNumericSetting(key, value, fallback, min, max) {
+    setCodexPlusSetting(key, Math.min(max, Math.max(min, Math.round(Number(value) || fallback))));
   }
 
   function renderCodexPlusMenu() {
     document.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-plus-setting");
       button.dataset.enabled = String(!!codexPlusSettings()[key]);
+    });
+    const settings = codexPlusSettings();
+    document.querySelectorAll("[data-codex-plus-number-setting]").forEach((input) => {
+      const key = input.getAttribute("data-codex-plus-number-setting");
+      if (key === "retryAttemptLimit") input.value = String(numericCodexPlusSetting(key, codexPlusRetryControlsDefaultAttempts, 1, codexPlusRetryControlsMaxAttempts));
+      input.disabled = !settings.retryAttemptControls;
     });
   }
 
@@ -495,6 +537,18 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="nativeMenuPlacement"><span></span></button>
             </div>
             <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">尝试/重试上限解锁</div><div class="codex-plus-row-description">把 Codex best-of 尝试数和当前 provider 的请求/流式重试上限提升到最多 100。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="retryAttemptControls"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">重试上限次数</div><div class="codex-plus-row-description">默认写入 100；Codex core 会把 provider retry 上限限制在 100 以内。</div></div>
+              <input type="number" class="codex-plus-number-input" min="1" max="${codexPlusRetryControlsMaxAttempts}" step="1" data-codex-plus-number-setting="retryAttemptLimit">
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">固定间隔重试</div><div class="codex-plus-row-description">把前端指数退避 retry timer 调整为固定 1 秒间隔。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="retryFixedDelay"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户脚本报错。</div></div>
               <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
             </div>
@@ -566,6 +620,14 @@
       if (!toggle) return;
       const key = toggle.getAttribute("data-codex-plus-setting");
       setCodexPlusSetting(key, !codexPlusSettings()[key]);
+    }, true);
+    overlay.addEventListener("change", (event) => {
+      const input = event.target.closest("[data-codex-plus-number-setting]");
+      if (!input) return;
+      const key = input.getAttribute("data-codex-plus-number-setting");
+      if (key === "retryAttemptLimit") {
+        setCodexPlusNumericSetting(key, input.value, codexPlusRetryControlsDefaultAttempts, 1, codexPlusRetryControlsMaxAttempts);
+      }
     }, true);
     document.body.appendChild(overlay);
     renderCodexPlusMenu();
@@ -641,6 +703,104 @@
       document.documentElement.appendChild(menu);
     }
     removeDuplicateCodexPlusMenus(menu);
+  }
+
+  function codexPlusRetryAttemptLimit() {
+    return numericCodexPlusSetting("retryAttemptLimit", codexPlusRetryControlsDefaultAttempts, 1, codexPlusRetryControlsMaxAttempts);
+  }
+
+  function retryDelayLooksExponential(delay) {
+    const ms = Math.round(Number(delay));
+    return [2000, 4000, 8000, 16000, 30000].includes(ms);
+  }
+
+  function retryTimerStackLooksRelevant() {
+    try {
+      const stack = String(new Error().stack || "");
+      return /vscode-api|app-server-manager|fetch|query|mutation|retry/i.test(stack);
+    } catch {
+      return false;
+    }
+  }
+
+  function installRetryFixedDelayPatch() {
+    if (window.__codexPlusRetryFixedDelayPatchInstalled) return;
+    window.__codexPlusRetryFixedDelayPatchInstalled = true;
+    const originalSetTimeout = window.setTimeout.bind(window);
+    window.__codexPlusOriginalSetTimeout = window.__codexPlusOriginalSetTimeout || originalSetTimeout;
+    window.setTimeout = (handler, delay, ...args) => {
+      let nextDelay = delay;
+      const settings = codexPlusSettings();
+      if (settings.retryAttemptControls && settings.retryFixedDelay && retryDelayLooksExponential(delay) && retryTimerStackLooksRelevant()) {
+        nextDelay = Math.min(Number(delay), codexPlusRetryControlsDefaultDelayMs);
+      }
+      return originalSetTimeout(handler, nextDelay, ...args);
+    };
+  }
+
+  function setPersistedCodexAtom(key, value, signals = null) {
+    try {
+      localStorage.setItem(`${codexPlusPersistedAtomPrefix}${key}`, JSON.stringify(value));
+      window.dispatchEvent(new StorageEvent("storage", { key: `${codexPlusPersistedAtomPrefix}${key}`, newValue: JSON.stringify(value), storageArea: localStorage }));
+    } catch {
+      // StorageEvent can fail under some embedded contexts; the imported atom setter below still updates live state.
+    }
+    try {
+      if (signals && typeof signals.Tr === "function") signals.Tr(key, value);
+    } catch (error) {
+      window.__codexPlusRetryAttemptWarnings = window.__codexPlusRetryAttemptWarnings || [];
+      window.__codexPlusRetryAttemptWarnings.push(String(error?.stack || error));
+    }
+  }
+
+  function codexProviderIdsFromConfig(configPayload) {
+    const config = configPayload?.config || configPayload || {};
+    const active = typeof config.model_provider === "string" ? config.model_provider : "";
+    const ids = [active || "openai"].filter((id) => /^[A-Za-z0-9_-]+$/.test(id));
+    return uniqueValues(ids);
+  }
+
+  function retryConfigEditsForProvider(providerId, attempts) {
+    return [
+      { keyPath: `model_providers.${providerId}.request_max_retries`, value: attempts, mergeStrategy: "upsert" },
+      { keyPath: `model_providers.${providerId}.stream_max_retries`, value: attempts, mergeStrategy: "upsert" },
+    ];
+  }
+
+  async function writeCodexRetryConfig(signals, attempts) {
+    if (typeof signals.rn !== "function") return { status: "failed", message: "Codex config bridge unavailable" };
+    const hostId = new URLSearchParams(window.location.search).get("hostId") || "local";
+    const configPayload = await signals.rn("read-config", { hostId, includeLayers: false, cwd: null }).catch(() => null);
+    const providerIds = codexProviderIdsFromConfig(configPayload);
+    if (providerIds.length === 0) return { status: "skipped", message: "No active model provider found" };
+    const edits = providerIds.flatMap((providerId) => retryConfigEditsForProvider(providerId, attempts));
+    return signals.rn("batch-write-config-value", { hostId, edits, filePath: null, expectedVersion: null, reloadUserConfig: true });
+  }
+
+  async function applyRetryAttemptControls() {
+    const settings = codexPlusSettings();
+    installRetryFixedDelayPatch();
+    if (!settings.retryAttemptControls) return;
+    const attempts = codexPlusRetryAttemptLimit();
+    const signature = `${attempts}:${!!settings.retryFixedDelay}`;
+    if (window.__codexPlusRetryAttemptSignature === signature) return;
+    if (window.__codexPlusRetryAttemptInFlight === signature) return;
+    window.__codexPlusRetryAttemptInFlight = signature;
+    try {
+      const signals = await import("./assets/app-server-manager-signals-C1h8B-R-.js");
+      setPersistedCodexAtom(codexPlusBestOfNAtomKey, attempts, signals);
+      const result = await writeCodexRetryConfig(signals, attempts);
+      window.__codexPlusRetryAttemptSignature = signature;
+      window.__codexPlusRetryAttemptFailures = [];
+      window.__codexPlusRetryAttemptControls = { status: "ok", attempts, fixedDelay: !!settings.retryFixedDelay, configResult: result };
+    } catch (error) {
+      setPersistedCodexAtom(codexPlusBestOfNAtomKey, attempts, null);
+      window.__codexPlusRetryAttemptControls = { status: "failed", attempts, fixedDelay: !!settings.retryFixedDelay, message: String(error?.message || error) };
+      window.__codexPlusRetryAttemptFailures = window.__codexPlusRetryAttemptFailures || [];
+      window.__codexPlusRetryAttemptFailures.push(String(error?.stack || error));
+    } finally {
+      if (window.__codexPlusRetryAttemptInFlight === signature) window.__codexPlusRetryAttemptInFlight = null;
+    }
   }
 
   function reactFiberFrom(element) {
@@ -2216,6 +2376,7 @@
   function scanDeferred() {
     enablePluginEntry();
     unblockPluginInstallButtons();
+    applyRetryAttemptControls();
     sessionRows().forEach(tryAttachButton);
     updateDeleteButtonOffsets();
     scheduleProjectMoveProjection();

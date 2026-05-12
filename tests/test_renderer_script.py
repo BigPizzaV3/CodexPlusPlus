@@ -366,8 +366,26 @@ def test_renderer_script_includes_user_script_manager_ui_contract():
     assert "sessionDelete" in text
     assert "markdownExport" in text
     assert "projectMove" in text
+    assert "retryAttemptControls" in text
+    assert "retryAttemptLimit" in text
+    assert "retryFixedDelay" in text
     assert "会话项目移动" in text
     assert "移动按钮" in text
+    assert "尝试/重试上限解锁" in text
+    assert "重试上限次数" in text
+    assert "固定间隔重试" in text
+    assert "codexPlusRetryControlsMaxAttempts = 100" in text
+    assert "composer-best-of-n" in text
+    assert "codex:persisted-atom:" in text
+    assert "request_max_retries" in text
+    assert "stream_max_retries" in text
+    assert "batch-write-config-value" in text
+    assert "read-config" in text
+    assert "get(\"hostId\") || \"local\"" in text
+    assert "signals.Tr" in text
+    assert "retryDelayLooksExponential" in text
+    assert "window.__codexPlusRetryAttemptFailures = []" in text
+    assert "window.__codexPlusRetryAttemptControls" in text
     assert "codex-plus-modal-overlay" in text
     assert "codex-plus-modal-content" in text
     assert "codex-plus-modal-header" in text
