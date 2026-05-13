@@ -4,6 +4,10 @@
   const exportButtonClass = "codex-export-button";
   const projectMoveButtonClass = "codex-project-move-button";
   const contextHandoffButtonClass = "codex-context-handoff-button";
+  const actionMoreButtonClass = "codex-session-action-more-button";
+  const actionMenuOverlayClass = "codex-session-action-menu-overlay";
+  const actionMenuPanelClass = "codex-session-action-menu-panel";
+  const actionMenuItemClass = "codex-session-action-menu-item";
   const projectMoveOverlayClass = "codex-project-move-overlay";
   const actionButtonClass = "codex-session-action-button";
   const actionGroupClass = "codex-session-actions";
@@ -68,7 +72,7 @@
         opacity: 0;
         display: inline-flex;
         align-items: center;
-        gap: 6px;
+        gap: 0;
       }
       .${actionButtonClass},
       .codex-archive-row-button {
@@ -103,6 +107,54 @@
         border-color: #10a37f;
         background: #d1fae5;
         color: #065f46;
+      }
+      .${actionMoreButtonClass} {
+        min-width: 26px;
+        width: 26px;
+        height: 24px;
+        padding: 0;
+        border-color: #d1d5db;
+        background: #f9fafb;
+        color: #374151;
+        font-size: 17px;
+        line-height: 20px;
+      }
+      .${actionMenuOverlayClass} {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483190;
+        background: transparent;
+      }
+      .${actionMenuPanelClass} {
+        position: fixed;
+        min-width: 112px;
+        padding: 5px;
+        border: 1px solid rgba(15,23,42,.14);
+        border-radius: 8px;
+        background: #ffffff;
+        color: #111827;
+        box-shadow: 0 12px 36px rgba(15,23,42,.2);
+      }
+      .${actionMenuItemClass} {
+        display: block;
+        width: 100%;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: #111827;
+        font: 13px system-ui, sans-serif;
+        line-height: 18px;
+        padding: 7px 9px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .${actionMenuItemClass}:hover,
+      .${actionMenuItemClass}:focus-visible {
+        background: #f3f4f6;
+        outline: none;
+      }
+      .${actionMenuItemClass}[data-codex-action-kind="delete"] {
+        color: #991b1b;
       }
       [data-codex-delete-row="true"]:hover .${actionGroupClass} { opacity: 1; }
       [data-codex-delete-row="true"].codex-archive-confirm-visible .${actionGroupClass} { right: 66px; }
@@ -2379,6 +2431,67 @@
     originalButton.replaceWith(replacement);
   }
 
+  function sessionActionSettingsSignature(settings) {
+    return JSON.stringify({
+      contextGuard: !!settings.contextGuard,
+      projectMove: !!settings.projectMove,
+      markdownExport: !!settings.markdownExport,
+      sessionDelete: !!settings.sessionDelete,
+    });
+  }
+
+  function closeSessionActionMenus() {
+    document.querySelectorAll(`.${actionMenuOverlayClass}`).forEach((node) => node.remove());
+  }
+
+  function openSessionActionMenu(row, button, ref, event) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation?.();
+    releaseDeleteFocus(row, button);
+    closeSessionActionMenus();
+    const settings = codexPlusSettings();
+    const actions = [];
+    if (settings.contextGuard) actions.push({ kind: "context", label: "交接", run: () => createContextHandoff(ref, false) });
+    if (settings.projectMove) actions.push({ kind: "move", label: "移动", run: (itemEvent, item) => openProjectMoveMenuForRow(row, item, ref, itemEvent) });
+    if (settings.markdownExport) actions.push({ kind: "export", label: "导出", run: () => exportMarkdown(ref) });
+    if (settings.sessionDelete) actions.push({ kind: "delete", label: "删除", run: (itemEvent, item) => openDeleteConfirmForRow(row, item, ref, itemEvent) });
+    if (!actions.length) return;
+    const overlay = document.createElement("div");
+    overlay.className = actionMenuOverlayClass;
+    const panel = document.createElement("div");
+    panel.className = actionMenuPanelClass;
+    const rect = button.getBoundingClientRect();
+    panel.style.top = `${Math.max(8, Math.min(window.innerHeight - 180, rect.bottom + 6))}px`;
+    panel.style.left = `${Math.max(8, Math.min(window.innerWidth - 128, rect.right - 112))}px`;
+    overlay.appendChild(panel);
+    overlay.addEventListener("click", (clickEvent) => {
+      if (clickEvent.target === overlay) closeSessionActionMenus();
+    }, true);
+    overlay.addEventListener("keydown", (keyEvent) => {
+      if (keyEvent.key === "Escape") {
+        keyEvent.preventDefault();
+        closeSessionActionMenus();
+      }
+    }, true);
+    for (const action of actions) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = actionMenuItemClass;
+      item.dataset.codexActionKind = action.kind;
+      item.textContent = action.label;
+      item.addEventListener("click", (itemEvent) => {
+        itemEvent.preventDefault();
+        itemEvent.stopPropagation();
+        action.run(itemEvent, item);
+        closeSessionActionMenus();
+      }, true);
+      panel.appendChild(item);
+    }
+    document.body.appendChild(overlay);
+    panel.querySelector("button")?.focus();
+  }
+
   function attachButton(row) {
     const settings = codexPlusSettings();
     if (!settings.sessionDelete && !settings.markdownExport && !settings.projectMove && !settings.contextGuard) {
@@ -2388,24 +2501,10 @@
       return;
     }
     const existingGroup = actionGroupFromRow(row);
-    const existingDeleteButton = existingGroup?.querySelector(`.${buttonClass}`);
-    const existingExportButton = existingGroup?.querySelector(`.${exportButtonClass}`);
-    const existingMoveButton = existingGroup?.querySelector(`.${projectMoveButtonClass}`);
-    const existingContextButton = existingGroup?.querySelector(`.${contextHandoffButtonClass}`);
-    const hasUnexpectedDelete = !settings.sessionDelete && !!existingDeleteButton;
-    const hasUnexpectedExport = !settings.markdownExport && !!existingExportButton;
-    const hasUnexpectedMove = !settings.projectMove && !!existingMoveButton;
-    const hasUnexpectedContext = !settings.contextGuard && !!existingContextButton;
-    const missingDelete = settings.sessionDelete && !existingDeleteButton;
-    const missingExport = settings.markdownExport && !existingExportButton;
-    const missingMove = settings.projectMove && !existingMoveButton;
-    const missingContext = settings.contextGuard && !existingContextButton;
-    const deleteReady = !settings.sessionDelete || existingDeleteButton?.dataset.codexDeleteVersion === codexDeleteVersion;
-    const exportReady = !settings.markdownExport || existingExportButton?.dataset.codexExportVersion === codexExportVersion;
-    const moveReady = !settings.projectMove || existingMoveButton?.dataset.codexProjectMoveVersion === codexProjectMoveVersion;
-    const contextReady = !settings.contextGuard || existingContextButton?.dataset.codexContextHandoffVersion === codexContextHandoffVersion;
+    const existingMoreButton = existingGroup?.querySelector(`.${actionMoreButtonClass}`);
     const groupReady = existingGroup?.dataset.codexActionGroupVersion === codexActionGroupVersion;
-    if (groupReady && deleteReady && exportReady && moveReady && contextReady && !hasUnexpectedDelete && !hasUnexpectedExport && !hasUnexpectedMove && !hasUnexpectedContext && !missingDelete && !missingExport && !missingMove && !missingContext) return;
+    const settingsReady = existingGroup?.dataset.codexActionSettings === sessionActionSettingsSignature(settings);
+    if (groupReady && settingsReady && existingMoreButton?.dataset.codexContextHandoffVersion === codexContextHandoffVersion) return;
     removeActionGroups(row);
     row.dataset.codexDeleteRow = "false";
     row.dataset.codexProjectMoveRow = "false";
@@ -2416,56 +2515,18 @@
     const group = document.createElement("div");
     group.className = actionGroupClass;
     group.dataset.codexActionGroupVersion = codexActionGroupVersion;
-    if (settings.contextGuard) {
-      const contextButton = document.createElement("button");
-      contextButton.type = "button";
-      contextButton.className = `${actionButtonClass} ${contextHandoffButtonClass}`;
-      contextButton.dataset.codexContextHandoffVersion = codexContextHandoffVersion;
-      contextButton.textContent = "交接";
-      const openContextHandoff = (event) => {
-        stopActionButtonEvent(row, contextButton, event);
-        createContextHandoff(ref, false);
-      };
-      installActionButtonEvents(row, contextButton, openContextHandoff);
-      group.appendChild(contextButton);
-      setTimeout(() => refreshActionButton(contextButton, row, openContextHandoff), 0);
-    }
-    if (settings.projectMove) {
-      const moveButton = document.createElement("button");
-      moveButton.type = "button";
-      moveButton.className = `${actionButtonClass} ${projectMoveButtonClass}`;
-      moveButton.dataset.codexProjectMoveVersion = codexProjectMoveVersion;
-      moveButton.textContent = "移动";
-      const openProjectMove = (event) => openProjectMoveMenuForRow(row, moveButton, ref, event);
-      installActionButtonEvents(row, moveButton, openProjectMove);
-      group.appendChild(moveButton);
-      setTimeout(() => refreshActionButton(moveButton, row, openProjectMove), 0);
-    }
-    if (settings.markdownExport) {
-      const exportButton = document.createElement("button");
-      exportButton.type = "button";
-      exportButton.className = `${actionButtonClass} ${exportButtonClass}`;
-      exportButton.dataset.codexExportVersion = codexExportVersion;
-      exportButton.textContent = "导出";
-      const openExport = (event) => {
-        stopActionButtonEvent(row, exportButton, event);
-        exportMarkdown(ref);
-      };
-      installActionButtonEvents(row, exportButton, openExport);
-      group.appendChild(exportButton);
-      setTimeout(() => refreshActionButton(exportButton, row, openExport), 0);
-    }
-    if (settings.sessionDelete) {
-      const deleteButton = document.createElement("button");
-      deleteButton.type = "button";
-      deleteButton.className = `${actionButtonClass} ${buttonClass}`;
-      deleteButton.dataset.codexDeleteVersion = codexDeleteVersion;
-      deleteButton.textContent = "删除";
-      const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, ref, event);
-      installActionButtonEvents(row, deleteButton, openDeleteConfirm);
-      group.appendChild(deleteButton);
-      setTimeout(() => refreshActionButton(deleteButton, row, openDeleteConfirm), 0);
-    }
+    group.dataset.codexActionSettings = sessionActionSettingsSignature(settings);
+    const moreButton = document.createElement("button");
+    moreButton.type = "button";
+    moreButton.className = `${actionButtonClass} ${actionMoreButtonClass}`;
+    moreButton.dataset.codexContextHandoffVersion = codexContextHandoffVersion;
+    moreButton.textContent = "⋯";
+    moreButton.title = "会话操作";
+    moreButton.setAttribute("aria-label", "会话操作");
+    const openMenu = (event) => openSessionActionMenu(row, moreButton, ref, event);
+    installActionButtonEvents(row, moreButton, openMenu);
+    group.appendChild(moreButton);
+    setTimeout(() => refreshActionButton(moreButton, row, openMenu), 0);
     row.appendChild(group);
   }
 

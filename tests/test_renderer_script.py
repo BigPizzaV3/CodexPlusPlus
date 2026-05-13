@@ -286,7 +286,8 @@ def test_renderer_script_sidebar_delete_opens_on_pointerup_when_click_is_unrelia
     assert "codexSessionDeleteDocumentDeleteHandler" in text
     assert "document.addEventListener(\"pointerup\", handler, true)" in text
     assert "document.addEventListener(\"click\", handler, true)" in text
-    assert "deleteButton.dataset.codexDeleteVersion = codexDeleteVersion" in text
+    assert "openSessionActionMenu" in text
+    assert "data-codex-action-kind=\"delete\"" in text or "item.dataset.codexActionKind = action.kind" in text
 
 
     text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
@@ -621,5 +622,6 @@ def test_renderer_script_context_guard_takeover_uses_dom_without_process_control
     assert "window.__codexProjectMoveTargets" in text
     assert "projectMoveButtonClass" in text
     assert "openProjectMoveMenuForRow" in text
-    assert "existingMoveButton" in text
+    assert "actionMoreButtonClass" in text
+    assert "sessionActionSettingsSignature" in text
     assert "普通对话" in text
