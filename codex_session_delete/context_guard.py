@@ -31,8 +31,10 @@ HIGH_RISK_MARKERS = (
     "publish",
     "release",
     "deploy",
-    "delete ",
-    "remove ",
+    "delete file",
+    "delete data",
+    "remove file",
+    "remove data",
     "rm -rf",
     "stop-process",
     "set-itemproperty",
@@ -543,6 +545,15 @@ def report_contains_high_risk_action(report: HandoffReport) -> bool:
     return any(marker in text for marker in HIGH_RISK_MARKERS)
 
 
+def high_risk_marker(report: HandoffReport) -> str:
+    user_messages = [message.text for message in report.messages if message.role == "user"]
+    text = (user_messages[-1] if user_messages else "").lower()
+    for marker in HIGH_RISK_MARKERS:
+        if marker in text:
+            return marker
+    return ""
+
+
 def steward_once(
     *,
     cwd: str,
@@ -569,8 +580,11 @@ def steward_once(
 
     state["source_thread_id"] = state.get("source_thread_id") or report.stats.thread_id
     thread_id = report.stats.thread_id or str(report.stats.path)
-    if report_contains_high_risk_action(report):
-        state["last_error"] = "high-risk action detected"
+    marker = high_risk_marker(report)
+    if marker:
+        state["source_thread_id"] = thread_id
+        state["last_error"] = f"high-risk action detected: {marker}"
+        save_steward_state(state, root)
         stopped = stop_steward("high-risk action detected", root=root)
         return StewardResult(
             status="stopped",
