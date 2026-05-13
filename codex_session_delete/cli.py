@@ -10,6 +10,7 @@ from pathlib import Path
 from codex_session_delete.helper_server import HelperServer
 from codex_session_delete.installers import InstallOptions, install_codex_plus_plus, uninstall_codex_plus_plus
 from codex_session_delete.launcher import launch_and_inject, shutdown_helper
+from codex_session_delete import context_guard
 from codex_session_delete import updater
 from codex_session_delete import watcher
 
@@ -57,6 +58,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("check-update", help="Check GitHub Releases for a newer Codex++ version")
     subparsers.add_parser("update", help="Update Codex++ from the latest GitHub Release")
+
+    context_parser = subparsers.add_parser("context-guard", help="Create lightweight handoffs for Codex threads that hit the context window")
+    context_subparsers = context_parser.add_subparsers(dest="context_command", required=True)
+
+    handoff_parser = context_subparsers.add_parser("handoff", help="Write a handoff for a rollout or thread id")
+    handoff_parser.add_argument("target", nargs="?", help="Rollout path, filename substring, or thread id. Defaults to the newest rollout.")
+    handoff_parser.add_argument("--messages", type=int, default=context_guard.DEFAULT_MESSAGES)
+    handoff_parser.add_argument("--message-chars", type=int, default=context_guard.DEFAULT_MESSAGE_CHARS)
+    handoff_parser.add_argument("--copy", action="store_true", help="Copy a short new-thread prompt to the clipboard")
+
+    watch_context_parser = context_subparsers.add_parser("watch-once", help="Scan recent rollouts once and prepare UI handoffs when needed")
+    watch_context_parser.add_argument("--recent", type=int, default=context_guard.DEFAULT_RECENT)
+    watch_context_parser.add_argument("--max-age-seconds", type=int, default=context_guard.DEFAULT_MAX_AGE_SECONDS)
+    watch_context_parser.add_argument("--token-ratio", type=float, default=context_guard.DEFAULT_TOKEN_RATIO)
+    watch_context_parser.add_argument("--copy", action="store_true", help="Copy a short new-thread prompt to the clipboard")
 
     add_launch_arguments(parser)
     return parser
@@ -204,6 +220,31 @@ def run_update() -> int:
     return 0
 
 
+def run_context_guard(args: argparse.Namespace) -> int:
+    if args.context_command == "handoff":
+        output = context_guard.handoff(
+            args.target,
+            copy=args.copy,
+            messages=args.messages,
+            message_chars=args.message_chars,
+        )
+        print(f"handoff written: {output}")
+        return 0
+    if args.context_command == "watch-once":
+        outputs = context_guard.watch_once(
+            recent=args.recent,
+            max_age_seconds=args.max_age_seconds,
+            token_ratio=args.token_ratio,
+            copy=args.copy,
+        )
+        if not outputs:
+            print("no context handoffs needed")
+        for output in outputs:
+            print(f"handoff written: {output}")
+        return 0
+    raise ValueError(f"unknown context guard command: {args.context_command}")
+
+
 WATCHER_RUN_NAME = "CodexPlusPlusWatcher"
 WATCHER_RUN_KEY = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 WATCHER_STARTUP_SHORTCUT_NAME = "CodexPlusPlusWatcher.lnk"
@@ -323,6 +364,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_check_update()
     if args.command == "update":
         return run_update()
+    if args.command == "context-guard":
+        return run_context_guard(args)
     return run_launch(args)
 
 

@@ -95,6 +95,7 @@ python -m codex_session_delete setup
 - 特殊插件强制安装：解除 App unavailable / 应用不可用导致的前端安装禁用。
 - 会话删除：在会话列表悬停显示删除按钮，删除前确认并支持撤销。
 - Markdown 导出：按本地 rollout 导出带时间戳的会话 Markdown。
+- Context Guard / UI handoff：线程接近上下文窗口上限时，生成轻量交接文件，辅助在新聊天里继续任务。
 - 会话项目移动：把会话移动到普通对话或其他本地项目。
 - 对话 Timeline：在对话右侧显示用户提问时间线，悬停查看摘要并快速跳转。
 - Provider 同步：切换 model_provider 或供应商时不丢历史会话。
@@ -396,6 +397,18 @@ python -m codex_session_delete launch
 ### 切换供应商后旧会话不见了
 
 打开 `Codex++` 设置面板，启用 `Provider 同步` 后重新启动 Codex++。它会在启动 Codex 前同步当前 `model_provider`，让历史会话重新匹配当前供应商。
+
+### 长任务提示 context window 不够
+
+当 Codex 报出 `Codex ran out of room in the model's context window` 时，可以生成一个轻量交接包，再开新聊天继续，不需要把旧 rollout、完整日志或 base64 图片重新塞进上下文。
+
+```bash
+python -m codex_session_delete context-guard handoff <thread-id-or-rollout-file>
+python -m codex_session_delete context-guard handoff <thread-id> --copy
+python -m codex_session_delete context-guard watch-once --copy
+```
+
+这个能力提炼自 [codex-context-guard](https://github.com/zjq12333/codex-context-guard)。Codex++ 集成的是保守 UI handoff 流程：只写本地 Markdown 交接文件、可选复制提示，不直接修改 Codex Desktop 内部数据库，不自动打开或重启 Codex Desktop，也不会替用户自动发送消息。
 
 ### Windows 系统卸载失败
 
