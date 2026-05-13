@@ -115,3 +115,35 @@ def test_handle_bridge_request_exports_markdown(tmp_path):
     assert exported["status"] == "exported"
     assert exported["filename"] == "thread.md"
 
+
+def test_handle_bridge_request_runs_context_guard_steward_once(monkeypatch, tmp_path):
+    manager = UserScriptManager(tmp_path / "builtin", tmp_path / "user", tmp_path / "config.json")
+    runtime = FakeRuntime(manager)
+
+    class FakeResult:
+        def to_dict(self):
+            return {"status": "handoff_ready", "prompt": "continue", "handoff_path": "handoff.md"}
+
+    monkeypatch.setattr("codex_session_delete.launcher.context_guard.steward_once", lambda **kwargs: FakeResult())
+
+    result = handle_bridge_request(FakeDeleteService(), FakeExportService(), "/context-guard/steward/once", {"cwd": "C:/tmp/demo"}, runtime)
+
+    assert result["status"] == "handoff_ready"
+    assert result["prompt"] == "continue"
+
+
+def test_handle_bridge_request_starts_and_stops_context_guard_steward(monkeypatch, tmp_path):
+    manager = UserScriptManager(tmp_path / "builtin", tmp_path / "user", tmp_path / "config.json")
+    runtime = FakeRuntime(manager)
+
+    monkeypatch.setattr("codex_session_delete.launcher.context_guard.start_steward", lambda cwd, max_handoffs=2: {"enabled": True, "cwd": cwd})
+    monkeypatch.setattr("codex_session_delete.launcher.context_guard.stop_steward", lambda reason: {"enabled": False, "stop_reason": reason})
+
+    started = handle_bridge_request(FakeDeleteService(), FakeExportService(), "/context-guard/steward/start", {"cwd": "C:/tmp/demo"}, runtime)
+    stopped = handle_bridge_request(FakeDeleteService(), FakeExportService(), "/context-guard/steward/stop", {"reason": "done"}, runtime)
+
+    assert started["status"] == "ok"
+    assert started["enabled"] is True
+    assert stopped["status"] == "stopped"
+    assert stopped["stop_reason"] == "done"
+

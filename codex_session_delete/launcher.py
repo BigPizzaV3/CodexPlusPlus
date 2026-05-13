@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from codex_session_delete import cdp
+from codex_session_delete import context_guard
 from codex_session_delete.app_paths import resolve_codex_app_dir
 from codex_session_delete.api_adapter import ApiAdapter, UnavailableApiAdapter
 from codex_session_delete.backup_store import BackupStore
@@ -404,6 +405,34 @@ def handle_bridge_request(
         return runtime.backend_status()
     if path == "/backend/repair" and runtime:
         return runtime.repair_backend()
+    if path == "/context-guard/handoff":
+        result = context_guard.handoff_result(
+            str(payload.get("session_id") or payload.get("target") or "") or None,
+            copy=bool(payload.get("copy", True)),
+        )
+        return result.to_dict()
+    if path == "/context-guard/steward/start":
+        cwd = str(payload.get("cwd") or "") or context_guard.infer_recent_cwd()
+        if not cwd:
+            return {"status": "failed", "message": "cwd is required and no recent rollout cwd was found"}
+        max_handoffs = int(payload.get("max_handoffs") or context_guard.DEFAULT_MAX_HANDOFFS)
+        state = context_guard.start_steward(cwd, max_handoffs=max_handoffs)
+        return {"status": "ok", "message": "睡觉托管已开启", **state}
+    if path == "/context-guard/steward/stop":
+        reason = str(payload.get("reason") or "stopped by user")
+        state = context_guard.stop_steward(reason)
+        return {"status": "stopped", "message": "睡觉托管已停止", **state}
+    if path == "/context-guard/steward/status":
+        state = context_guard.load_steward_state()
+        return {"status": "ok", "message": "睡觉托管状态已读取", **state}
+    if path == "/context-guard/steward/once":
+        cwd = str(payload.get("cwd") or "")
+        result = context_guard.steward_once(
+            cwd=cwd,
+            max_handoffs=int(payload.get("max_handoffs") or context_guard.DEFAULT_MAX_HANDOFFS),
+            copy=bool(payload.get("copy", True)),
+        )
+        return result.to_dict()
     if path == "/delete":
         session = SessionRef(session_id=str(payload.get("session_id", "")), title=str(payload.get("title", "")))
         return service.delete(session).to_dict()

@@ -582,6 +582,36 @@ def test_renderer_script_can_move_sidebar_threads_between_projects():
     assert "__codexProjectMoveChatsSortTimer" in text
     assert "sortMsTrusted" in text
     assert "chatsSortDbRefreshIntervalMs" in text
+
+
+def test_renderer_script_exposes_context_guard_steward_ui():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "contextGuard: true" in text
+    assert "contextGuardSteward: false" in text
+    assert "Context Guard 交接" in text
+    assert "睡觉托管" in text
+    assert "data-codex-context-steward-toggle" in text
+    assert "data-codex-context-steward-status" in text
+    assert "data-codex-context-steward-start" in text
+    assert "data-codex-context-steward-stop" in text
+    assert "交接" in text
+    assert "/context-guard/steward/once" in text
+    assert "/context-guard/handoff" in text
+
+
+def test_renderer_script_context_guard_takeover_uses_dom_without_process_control():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    start = text.index("async function takeoverContextGuardPrompt")
+    end = text.index("\n\n  async function runContextGuardStewardOnce", start)
+    takeover_code = text[start:end]
+
+    assert "findContextGuardNewChatControl" in takeover_code
+    assert "setContextGuardComposerValue" in takeover_code
+    assert "findContextGuardSendButton" in takeover_code
+    assert "Stop-Process" not in takeover_code
+    assert "codex_session_delete launch" not in takeover_code
+    assert "state_5.sqlite" not in takeover_code
     assert "data-app-action-sidebar-section-heading=\"Chats\"" in text
     assert "data-app-action-sidebar-project-list-id" in text
     assert "codexProjectMoveSortMs" in text

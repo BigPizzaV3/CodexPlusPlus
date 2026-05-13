@@ -74,6 +74,17 @@ def build_parser() -> argparse.ArgumentParser:
     watch_context_parser.add_argument("--token-ratio", type=float, default=context_guard.DEFAULT_TOKEN_RATIO)
     watch_context_parser.add_argument("--copy", action="store_true", help="Copy a short new-thread prompt to the clipboard")
 
+    steward_parser = context_subparsers.add_parser("steward", help="Run conservative overnight handoff steward mode")
+    steward_parser.add_argument("--cwd", type=Path, required=True)
+    steward_parser.add_argument("--max-handoffs", type=int, default=context_guard.DEFAULT_MAX_HANDOFFS)
+    steward_parser.add_argument("--interval-seconds", type=float, default=context_guard.DEFAULT_STEWARD_INTERVAL_SECONDS)
+
+    steward_once_parser = context_subparsers.add_parser("steward-once", help="Run one conservative steward scan")
+    steward_once_parser.add_argument("--cwd", type=Path, required=True)
+    steward_once_parser.add_argument("--max-handoffs", type=int, default=context_guard.DEFAULT_MAX_HANDOFFS)
+    steward_once_parser.add_argument("--recent", type=int, default=context_guard.DEFAULT_RECENT)
+    steward_once_parser.add_argument("--no-copy", action="store_true", help="Do not copy the takeover prompt to the clipboard")
+
     add_launch_arguments(parser)
     return parser
 
@@ -242,6 +253,27 @@ def run_context_guard(args: argparse.Namespace) -> int:
         for output in outputs:
             print(f"handoff written: {output}")
         return 0
+    if args.context_command == "steward-once":
+        result = context_guard.steward_once(
+            cwd=str(args.cwd),
+            max_handoffs=args.max_handoffs,
+            recent=args.recent,
+            copy=not args.no_copy,
+        )
+        print(result.message)
+        if result.handoff_path:
+            print(f"handoff written: {result.handoff_path}")
+        if result.log_path:
+            print(f"log: {result.log_path}")
+        if result.summary_path:
+            print(f"summary: {result.summary_path}")
+        return 0
+    if args.context_command == "steward":
+        return context_guard.steward_loop(
+            cwd=str(args.cwd),
+            max_handoffs=args.max_handoffs,
+            interval_seconds=args.interval_seconds,
+        )
     raise ValueError(f"unknown context guard command: {args.context_command}")
 
 

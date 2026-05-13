@@ -16,9 +16,35 @@ DEFAULT_MESSAGE_CHARS = 1200
 DEFAULT_TOKEN_RATIO = 0.72
 DEFAULT_MAX_AGE_SECONDS = 30 * 60
 DEFAULT_RECENT = 20
+DEFAULT_STEWARD_INTERVAL_SECONDS = 15.0
+DEFAULT_MAX_HANDOFFS = 2
 CONTEXT_ERROR_MARKERS = (
     "ran out of room in the model's context window",
     "start a new thread or clear earlier history",
+)
+HIGH_RISK_MARKERS = (
+    "git push",
+    "gh pr create",
+    "gh pr merge",
+    "submit pr",
+    "create pr",
+    "publish",
+    "release",
+    "deploy",
+    "delete ",
+    "remove ",
+    "rm -rf",
+    "stop-process",
+    "set-itemproperty",
+    "scheduledtask",
+    "提交pr",
+    "创建pr",
+    "合并pr",
+    "发布",
+    "部署",
+    "删除",
+    "卸载",
+    "系统配置",
 )
 
 
@@ -46,6 +72,37 @@ class HandoffReport:
     messages: list[HandoffMessage]
     last_token_count: dict[str, Any] | None
     context_error: bool
+
+
+@dataclass
+class StewardResult:
+    status: str
+    message: str
+    handoff_path: str = ""
+    prompt: str = ""
+    copied: bool = False
+    trigger: str = ""
+    stop_reason: str = ""
+    log_path: str = ""
+    summary_path: str = ""
+    thread_id: str = ""
+    cwd: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "message": self.message,
+            "handoff_path": self.handoff_path,
+            "path": self.handoff_path,
+            "prompt": self.prompt,
+            "copied": self.copied,
+            "trigger": self.trigger,
+            "stop_reason": self.stop_reason,
+            "log_path": self.log_path,
+            "summary_path": self.summary_path,
+            "thread_id": self.thread_id,
+            "cwd": self.cwd,
+        }
 
 
 def codex_home() -> Path:
@@ -256,6 +313,19 @@ def clipboard_prompt(path: Path) -> str:
     )
 
 
+def takeover_prompt(path: Path, report: HandoffReport) -> str:
+    cwd = report.stats.cwd or "(unknown)"
+    return (
+        "Continue the same task from this handoff in the same working folder.\n\n"
+        f"Handoff file:\n{path}\n"
+        f"Working directory:\n{cwd}\n\n"
+        "First read the handoff file and inspect only the files or commands needed for the next step. "
+        "Confirm the current working directory and git status before changing files. Continue the original task only; "
+        "do not expand scope. Stop and report if the next action would delete data, publish/deploy, submit or merge a PR, "
+        "change system configuration, install a global service, or otherwise require user approval."
+    )
+
+
 def copy_to_clipboard(text: str) -> bool:
     if sys_platform() != "win32":
         return False
@@ -288,6 +358,23 @@ def handoff(target: str | None, *, copy: bool = False, messages: int = DEFAULT_M
     return output
 
 
+def handoff_result(target: str | None, *, copy: bool = False, messages: int = DEFAULT_MESSAGES, message_chars: int = DEFAULT_MESSAGE_CHARS) -> StewardResult:
+    report = collect_handoff_report(resolve_rollout(target), messages=messages, message_chars=message_chars)
+    output = write_handoff(report)
+    prompt = takeover_prompt(output, report)
+    copied = copy_to_clipboard(prompt) if copy else False
+    return StewardResult(
+        status="ok",
+        message="handoff written",
+        handoff_path=str(output),
+        prompt=prompt,
+        copied=copied,
+        trigger="manual",
+        thread_id=report.stats.thread_id,
+        cwd=report.stats.cwd,
+    )
+
+
 def watch_once(*, recent: int = DEFAULT_RECENT, max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS, token_ratio: float = DEFAULT_TOKEN_RATIO, copy: bool = False) -> list[Path]:
     now = time.time()
     outputs: list[Path] = []
@@ -303,3 +390,269 @@ def watch_once(*, recent: int = DEFAULT_RECENT, max_age_seconds: int = DEFAULT_M
         if copy:
             copy_to_clipboard(clipboard_prompt(output))
     return outputs
+
+
+def context_guard_root(root: Path | None = None) -> Path:
+    return (root or codex_home()) / "context-guard"
+
+
+def steward_state_path(root: Path | None = None) -> Path:
+    return context_guard_root(root) / "steward-state.json"
+
+
+def overnight_runs_dir(root: Path | None = None) -> Path:
+    return context_guard_root(root) / "overnight-runs"
+
+
+def now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def default_steward_state(cwd: str = "", max_handoffs: int = DEFAULT_MAX_HANDOFFS) -> dict[str, Any]:
+    stamp = now_iso()
+    return {
+        "enabled": False,
+        "cwd": cwd,
+        "source_thread_id": "",
+        "handled_thread_ids": [],
+        "handoff_count": 0,
+        "max_handoffs": max_handoffs,
+        "last_handoff_path": "",
+        "last_error": "",
+        "stop_reason": "",
+        "log_path": "",
+        "summary_path": "",
+        "started_at": stamp,
+        "updated_at": stamp,
+    }
+
+
+def load_steward_state(root: Path | None = None) -> dict[str, Any]:
+    path = steward_state_path(root)
+    if not path.exists():
+        return default_steward_state()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default_steward_state()
+    state = default_steward_state(str(data.get("cwd") or ""), int(data.get("max_handoffs") or DEFAULT_MAX_HANDOFFS))
+    state.update(data)
+    if not isinstance(state.get("handled_thread_ids"), list):
+        state["handled_thread_ids"] = []
+    return state
+
+
+def save_steward_state(state: dict[str, Any], root: Path | None = None) -> Path:
+    state["updated_at"] = now_iso()
+    path = steward_state_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def start_steward(cwd: str, *, max_handoffs: int = DEFAULT_MAX_HANDOFFS, root: Path | None = None) -> dict[str, Any]:
+    state = default_steward_state(cwd, max_handoffs)
+    state["enabled"] = True
+    save_steward_state(state, root)
+    append_steward_log(state, "steward started", root)
+    return state
+
+
+def stop_steward(reason: str, *, root: Path | None = None) -> dict[str, Any]:
+    state = load_steward_state(root)
+    state["enabled"] = False
+    state["stop_reason"] = reason
+    append_steward_log(state, f"steward stopped: {reason}", root)
+    summary = write_steward_summary(state, reason, root)
+    state["summary_path"] = str(summary)
+    save_steward_state(state, root)
+    return state
+
+
+def append_steward_log(state: dict[str, Any], line: str, root: Path | None = None) -> Path:
+    raw_log_path = str(state.get("log_path") or "")
+    if raw_log_path:
+        log_path = Path(raw_log_path)
+    else:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_path = overnight_runs_dir(root) / f"{stamp}-steward.log"
+        state["log_path"] = str(log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(f"[{now_iso()}] {line}\n")
+    save_steward_state(state, root)
+    return log_path
+
+
+def write_steward_summary(state: dict[str, Any], reason: str, root: Path | None = None) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    summary_path = overnight_runs_dir(root) / f"{stamp}-steward-summary.md"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Codex Context Guard Steward Summary",
+        "",
+        f"- status: `stopped`",
+        f"- reason: `{reason}`",
+        f"- cwd: `{state.get('cwd') or ''}`",
+        f"- source_thread_id: `{state.get('source_thread_id') or ''}`",
+        f"- handoff_count: `{state.get('handoff_count') or 0}`",
+        f"- last_handoff_path: `{state.get('last_handoff_path') or ''}`",
+        f"- last_error: `{state.get('last_error') or ''}`",
+        f"- log_path: `{state.get('log_path') or ''}`",
+        "",
+        "Review the handoff and log before continuing unattended work.",
+        "",
+    ]
+    summary_path.write_text("\n".join(lines), encoding="utf-8")
+    return summary_path
+
+
+def normalize_cwd(value: str | Path) -> str:
+    return str(Path(value).expanduser().resolve())
+
+
+def report_matches_cwd(report: HandoffReport, cwd: str) -> bool:
+    if not cwd:
+        return True
+    if not report.stats.cwd:
+        return False
+    try:
+        return Path(report.stats.cwd).expanduser().resolve() == Path(cwd).expanduser().resolve()
+    except OSError:
+        return report.stats.cwd == cwd
+
+
+def find_recent_report_for_cwd(cwd: str, *, recent: int = DEFAULT_RECENT, root: Path | None = None) -> HandoffReport | None:
+    for path in recent_rollouts(recent, root):
+        report = collect_handoff_report(path)
+        if report_matches_cwd(report, cwd):
+            return report
+    return None
+
+
+def infer_recent_cwd(*, root: Path | None = None) -> str:
+    for path in recent_rollouts(10, root):
+        report = collect_handoff_report(path)
+        if report.stats.cwd:
+            return normalize_cwd(report.stats.cwd)
+    return ""
+
+
+def report_contains_high_risk_action(report: HandoffReport) -> bool:
+    text = "\n".join(message.text for message in report.messages).lower()
+    return any(marker in text for marker in HIGH_RISK_MARKERS)
+
+
+def steward_once(
+    *,
+    cwd: str,
+    max_handoffs: int = DEFAULT_MAX_HANDOFFS,
+    recent: int = DEFAULT_RECENT,
+    copy: bool = True,
+    root: Path | None = None,
+) -> StewardResult:
+    resolved_cwd = normalize_cwd(cwd) if cwd else infer_recent_cwd(root=root)
+    if not resolved_cwd:
+        return StewardResult(status="failed", message="cwd is required and no recent rollout cwd was found")
+    state = load_steward_state(root)
+    if not state.get("enabled"):
+        state = start_steward(resolved_cwd, max_handoffs=max_handoffs, root=root)
+    else:
+        state["cwd"] = resolved_cwd
+        state["max_handoffs"] = max_handoffs
+        save_steward_state(state, root)
+
+    report = find_recent_report_for_cwd(resolved_cwd, recent=recent, root=root)
+    if report is None:
+        append_steward_log(state, f"no rollout found for cwd: {resolved_cwd}", root)
+        return StewardResult(status="idle", message="no rollout found for cwd", log_path=str(state.get("log_path") or ""), cwd=resolved_cwd)
+
+    state["source_thread_id"] = state.get("source_thread_id") or report.stats.thread_id
+    thread_id = report.stats.thread_id or str(report.stats.path)
+    if report_contains_high_risk_action(report):
+        state["last_error"] = "high-risk action detected"
+        stopped = stop_steward("high-risk action detected", root=root)
+        return StewardResult(
+            status="stopped",
+            message="high-risk action detected; steward stopped",
+            stop_reason=str(stopped.get("stop_reason") or ""),
+            log_path=str(stopped.get("log_path") or ""),
+            summary_path=str(stopped.get("summary_path") or ""),
+            thread_id=thread_id,
+            cwd=resolved_cwd,
+        )
+
+    if thread_id in set(str(item) for item in state.get("handled_thread_ids", [])):
+        append_steward_log(state, f"thread already handled: {thread_id}", root)
+        return StewardResult(status="idle", message="thread already handled", log_path=str(state.get("log_path") or ""), thread_id=thread_id, cwd=resolved_cwd)
+
+    if int(state.get("handoff_count") or 0) >= max_handoffs:
+        stopped = stop_steward("max handoffs reached", root=root)
+        return StewardResult(
+            status="stopped",
+            message="max handoffs reached; steward stopped",
+            stop_reason=str(stopped.get("stop_reason") or ""),
+            log_path=str(stopped.get("log_path") or ""),
+            summary_path=str(stopped.get("summary_path") or ""),
+            thread_id=thread_id,
+            cwd=resolved_cwd,
+        )
+
+    if not report.context_error:
+        if token_pressure(report.last_token_count):
+            output = write_handoff(report)
+            state["last_handoff_path"] = str(output)
+            append_steward_log(state, f"token pressure observed; prewrote handoff without takeover: {output}", root)
+            return StewardResult(
+                status="prepared",
+                message="token pressure observed; handoff prepared without takeover",
+                handoff_path=str(output),
+                trigger="token_pressure",
+                log_path=str(state.get("log_path") or ""),
+                thread_id=thread_id,
+                cwd=resolved_cwd,
+            )
+        append_steward_log(state, f"no context error for thread: {thread_id}", root)
+        return StewardResult(status="idle", message="no context error detected", log_path=str(state.get("log_path") or ""), thread_id=thread_id, cwd=resolved_cwd)
+
+    output = write_handoff(report)
+    prompt = takeover_prompt(output, report)
+    copied = copy_to_clipboard(prompt) if copy else False
+    handled = [str(item) for item in state.get("handled_thread_ids", [])]
+    handled.append(thread_id)
+    state["handled_thread_ids"] = handled
+    state["handoff_count"] = int(state.get("handoff_count") or 0) + 1
+    state["last_handoff_path"] = str(output)
+    state["last_error"] = ""
+    append_steward_log(state, f"context error handoff ready: thread={thread_id} path={output}", root)
+    save_steward_state(state, root)
+    return StewardResult(
+        status="handoff_ready",
+        message="context error detected; handoff ready for takeover",
+        handoff_path=str(output),
+        prompt=prompt,
+        copied=copied,
+        trigger="context_error",
+        log_path=str(state.get("log_path") or ""),
+        thread_id=thread_id,
+        cwd=resolved_cwd,
+    )
+
+
+def steward_loop(
+    *,
+    cwd: str,
+    max_handoffs: int = DEFAULT_MAX_HANDOFFS,
+    interval_seconds: float = DEFAULT_STEWARD_INTERVAL_SECONDS,
+    root: Path | None = None,
+) -> int:
+    resolved_cwd = normalize_cwd(cwd) if cwd else infer_recent_cwd(root=root)
+    if not resolved_cwd:
+        raise ValueError("cwd is required and no recent rollout cwd was found")
+    start_steward(resolved_cwd, max_handoffs=max_handoffs, root=root)
+    while load_steward_state(root).get("enabled"):
+        result = steward_once(cwd=resolved_cwd, max_handoffs=max_handoffs, root=root)
+        if result.status == "stopped":
+            return 0
+        time.sleep(interval_seconds)
+    return 0

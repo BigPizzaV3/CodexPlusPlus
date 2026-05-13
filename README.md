@@ -406,9 +406,13 @@ python -m codex_session_delete launch
 python -m codex_session_delete context-guard handoff <thread-id-or-rollout-file>
 python -m codex_session_delete context-guard handoff <thread-id> --copy
 python -m codex_session_delete context-guard watch-once --copy
+python -m codex_session_delete context-guard steward --cwd <path>
+python -m codex_session_delete context-guard steward-once --cwd <path>
 ```
 
 这个能力提炼自 [codex-context-guard](https://github.com/zjq12333/codex-context-guard)。Codex++ 集成的是保守 UI handoff 流程：只写本地 Markdown 交接文件、可选复制提示，不直接修改 Codex Desktop 内部数据库，不自动打开或重启 Codex Desktop，也不会替用户自动发送消息。
+
+实验性的“睡觉托管”默认关闭，需要在 Codex++ 面板里手动开启。它只在看到明确的 context window 报错时尝试接管到新对话；token 压力高时只预生成 handoff。托管日志和醒来总结会写入 `.codex/context-guard/overnight-runs/`，状态写入 `.codex/context-guard/steward-state.json`。遇到删除、发布、提交 PR、改系统配置、安装全局服务等高风险动作会停止并留下总结。
 
 ### Windows 系统卸载失败
 

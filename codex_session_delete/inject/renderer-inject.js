@@ -3,6 +3,7 @@
   const buttonClass = "codex-delete-button";
   const exportButtonClass = "codex-export-button";
   const projectMoveButtonClass = "codex-project-move-button";
+  const contextHandoffButtonClass = "codex-context-handoff-button";
   const projectMoveOverlayClass = "codex-project-move-overlay";
   const actionButtonClass = "codex-session-action-button";
   const actionGroupClass = "codex-session-actions";
@@ -26,7 +27,8 @@
   const codexDeleteVersion = "6";
   const codexExportVersion = "1";
   const codexProjectMoveVersion = "1";
-  const codexActionGroupVersion = "2";
+  const codexContextHandoffVersion = "1";
+  const codexActionGroupVersion = "3";
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationTimelineVersion = "1";
@@ -459,7 +461,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, forcePluginInstall: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, nativeMenuPlacement: true };
+    return { pluginEntryUnlock: true, forcePluginInstall: true, sessionDelete: true, markdownExport: true, projectMove: true, contextGuard: true, contextGuardSteward: false, conversationTimeline: true, nativeMenuPlacement: true };
   }
 
   function codexPlusSettings() {
@@ -482,6 +484,7 @@
       const key = button.getAttribute("data-codex-plus-setting");
       button.dataset.enabled = String(!!codexPlusSettings()[key]);
     });
+    renderContextGuardStewardToggle();
   }
 
   let codexPlusBackendSettings = { providerSyncEnabled: false };
@@ -648,6 +651,19 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="markdownExport"><span></span></button>
             </div>
             <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">Context Guard 交接</div><div class="codex-plus-row-description">在上下文爆满时生成轻量 handoff，复制新对话继续提示，不写数据库、不重启 Codex。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="contextGuard"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">睡觉托管</div><div class="codex-plus-row-description" data-codex-context-steward-status="true">未运行</div></div>
+              <div class="codex-plus-user-script-actions">
+                <button type="button" class="codex-plus-toggle" data-codex-context-steward-toggle="true"><span></span></button>
+                <button type="button" class="codex-plus-action-button" data-codex-context-steward-start="true">开始托管当前任务</button>
+                <button type="button" class="codex-plus-action-button" data-codex-context-steward-once="true">检查一次</button>
+                <button type="button" class="codex-plus-action-button" data-codex-context-steward-stop="true">停止托管</button>
+              </div>
+            </div>
+            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">会话项目移动</div><div class="codex-plus-row-description">在会话列表悬停显示移动按钮，可移动到普通对话或其他本地项目。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="projectMove"><span></span></button>
             </div>
@@ -751,6 +767,22 @@
         loadUserScripts("/user-scripts/reload", {});
         return;
       }
+      if (target?.closest("[data-codex-context-steward-start]")) {
+        startContextGuardSteward();
+        return;
+      }
+      if (target?.closest("[data-codex-context-steward-once]")) {
+        runContextGuardStewardOnce();
+        return;
+      }
+      if (target?.closest("[data-codex-context-steward-stop]")) {
+        stopContextGuardSteward();
+        return;
+      }
+      if (target?.closest("[data-codex-context-steward-toggle]")) {
+        toggleContextGuardSteward();
+        return;
+      }
       const toggle = target?.closest("[data-codex-plus-setting]");
       if (toggle) {
         const key = toggle.getAttribute("data-codex-plus-setting");
@@ -770,6 +802,7 @@
     renderBackendStatus();
     loadBackendSettings();
     loadUserScripts();
+    refreshContextGuardStewardStatus();
   }
 
   function findNativeMenuInsertionPoint() {
@@ -1045,7 +1078,7 @@
     const sessionId = codexThreadId || (idMatch && idMatch[1]) || fallbackId;
     const titleNode = row.querySelector(`${selectors.threadTitle}, .truncate.select-none, .truncate.text-base`);
     const rawTitle = (titleNode?.textContent || (titleNode ? "" : (row.textContent || "Untitled session")));
-    const title = (titleNode ? rawTitle : rawTitle.replace(/\s*(导出|删除|移动|移出项目)(\s*(导出|删除|移动|移出项目))*$/g, "")).trim().slice(0, 160);
+    const title = (titleNode ? rawTitle : rawTitle.replace(/\s*(导出|删除|移动|交接|移出项目)(\s*(导出|删除|移动|交接|移出项目))*$/g, "")).trim().slice(0, 160);
     return { session_id: sessionId, title };
   }
 
@@ -2033,6 +2066,176 @@
     showToast(result.message || "导出失败", null);
   }
 
+  async function createContextHandoff(ref, takeover = false) {
+    const result = await postJson("/context-guard/handoff", { ...ref, copy: true });
+    if (result.status !== "ok" && result.status !== "handoff_ready") {
+      showToast(result.message || "交接失败", null);
+      return result;
+    }
+    if (takeover) {
+      await takeoverContextGuardPrompt(result.prompt || "");
+      showToast("已接管到新对话", null);
+    } else {
+      showToast(result.copied ? "交接提示已复制" : "交接文件已生成", null);
+    }
+    return result;
+  }
+
+  function contextGuardCurrentCwdHint() {
+    return document.querySelector("[data-codex-context-cwd]")?.getAttribute("data-codex-context-cwd")
+      || window.__codexContextGuardCwd
+      || "";
+  }
+
+  function contextGuardStatusLabel(result) {
+    if (!result) return "未运行";
+    if (result.enabled === true) return `运行中 · ${result.cwd || "等待识别工作目录"}`;
+    if (result.stop_reason) return `已停止 · ${result.stop_reason}`;
+    return result.message || "未运行";
+  }
+
+  function renderContextGuardStewardStatus(result) {
+    const label = document.querySelector("[data-codex-context-steward-status]");
+    if (!label) return;
+    const parts = [contextGuardStatusLabel(result)];
+    if (result?.last_handoff_path || result?.handoff_path) parts.push(`最近交接：${result.last_handoff_path || result.handoff_path}`);
+    if (result?.log_path) parts.push(`日志：${result.log_path}`);
+    label.textContent = parts.join("  ");
+    if (typeof result?.enabled === "boolean") {
+      const next = { ...codexPlusSettings(), contextGuardSteward: result.enabled };
+      localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
+      renderContextGuardStewardToggle();
+    }
+  }
+
+  function renderContextGuardStewardToggle() {
+    document.querySelectorAll("[data-codex-context-steward-toggle]").forEach((button) => {
+      button.dataset.enabled = String(!!codexPlusSettings().contextGuardSteward);
+    });
+  }
+
+  async function refreshContextGuardStewardStatus() {
+    const result = await postJson("/context-guard/steward/status", {});
+    renderContextGuardStewardStatus(result);
+    return result;
+  }
+
+  function visibleText(value) {
+    return (value || "").replace(/\s+/g, " ").trim();
+  }
+
+  function findContextGuardNewChatControl() {
+    const candidates = Array.from(document.querySelectorAll("a, button")).filter((node) => {
+      const label = visibleText(node.getAttribute("aria-label") || node.getAttribute("title") || node.textContent);
+      return /^(新建对话|新对话|New chat|New conversation)$/i.test(label) || /新建|新对话|new chat|new conversation/i.test(label);
+    });
+    return candidates.find((node) => node.getBoundingClientRect().width > 0 && node.getBoundingClientRect().height > 0) || candidates[0] || null;
+  }
+
+  function findContextGuardComposer() {
+    const candidates = Array.from(document.querySelectorAll("textarea, [contenteditable='true'], [role='textbox']"));
+    return candidates.find((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.width > 120 && rect.height > 20 && !node.disabled && node.getAttribute("aria-disabled") !== "true";
+    }) || null;
+  }
+
+  function setContextGuardComposerValue(composer, value) {
+    if (!composer) throw new Error("未找到输入框");
+    composer.focus();
+    if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) {
+      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(composer), "value")?.set;
+      setter?.call(composer, value);
+      composer.dispatchEvent(new Event("input", { bubbles: true }));
+      composer.dispatchEvent(new Event("change", { bubbles: true }));
+      return;
+    }
+    composer.textContent = value;
+    composer.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
+  }
+
+  function findContextGuardSendButton() {
+    const candidates = Array.from(document.querySelectorAll("button")).filter((button) => {
+      const label = visibleText(button.getAttribute("aria-label") || button.getAttribute("title") || button.textContent);
+      return /发送|send|submit/i.test(label) || button.type === "submit";
+    });
+    return candidates.find((button) => !button.disabled && button.getAttribute("aria-disabled") !== "true") || null;
+  }
+
+  async function waitForContextGuardElement(factory, timeoutMs = 6000) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const value = factory();
+      if (value) return value;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    return null;
+  }
+
+  async function takeoverContextGuardPrompt(prompt) {
+    if (!prompt) throw new Error("接管提示为空");
+    const newChat = findContextGuardNewChatControl();
+    if (!newChat) throw new Error("未找到新对话入口，已保留剪贴板提示");
+    newChat.click();
+    const composer = await waitForContextGuardElement(findContextGuardComposer);
+    setContextGuardComposerValue(composer, prompt);
+    const send = await waitForContextGuardElement(findContextGuardSendButton);
+    if (!send) throw new Error("未找到发送按钮，已保留剪贴板提示");
+    send.click();
+  }
+
+  async function runContextGuardStewardOnce() {
+    const result = await postJson("/context-guard/steward/once", { cwd: contextGuardCurrentCwdHint(), copy: true, max_handoffs: 2 });
+    renderContextGuardStewardStatus(result);
+    if (result.status === "handoff_ready" && result.prompt) {
+      try {
+        await takeoverContextGuardPrompt(result.prompt);
+        showToast("睡觉托管已接管到新对话", null);
+      } catch (error) {
+        showToast(`自动接管失败：${error?.message || error}`, null);
+      }
+    }
+    if (result.status === "stopped") stopContextGuardStewardTimer();
+    return result;
+  }
+
+  function startContextGuardStewardTimer() {
+    stopContextGuardStewardTimer();
+    window.__codexContextGuardStewardTimer = setInterval(runContextGuardStewardOnce, 15000);
+  }
+
+  function stopContextGuardStewardTimer() {
+    clearInterval(window.__codexContextGuardStewardTimer);
+    window.__codexContextGuardStewardTimer = null;
+  }
+
+  async function startContextGuardSteward() {
+    const result = await postJson("/context-guard/steward/start", { cwd: contextGuardCurrentCwdHint(), max_handoffs: 2 });
+    renderContextGuardStewardStatus(result);
+    if (result.status === "ok") {
+      startContextGuardStewardTimer();
+      showToast("睡觉托管已开启", null);
+      runContextGuardStewardOnce();
+    } else {
+      showToast(result.message || "睡觉托管启动失败", null);
+    }
+  }
+
+  async function stopContextGuardSteward() {
+    stopContextGuardStewardTimer();
+    const result = await postJson("/context-guard/steward/stop", { reason: "stopped by user" });
+    renderContextGuardStewardStatus(result);
+    showToast("睡觉托管已停止", null);
+  }
+
+  async function toggleContextGuardSteward() {
+    if (codexPlusSettings().contextGuardSteward) {
+      await stopContextGuardSteward();
+    } else {
+      await startContextGuardSteward();
+    }
+  }
+
   function sortStateFromMoveResult(result, ref, row) {
     const trustedSortMs = timestampMsFromPayload(result);
     return { sortMs: trustedSortMs || rowSortMs(row, ref), sortMsTrusted: !!trustedSortMs };
@@ -2178,7 +2381,7 @@
 
   function attachButton(row) {
     const settings = codexPlusSettings();
-    if (!settings.sessionDelete && !settings.markdownExport && !settings.projectMove) {
+    if (!settings.sessionDelete && !settings.markdownExport && !settings.projectMove && !settings.contextGuard) {
       removeActionGroups(row);
       row.dataset.codexDeleteRow = "false";
       row.dataset.codexProjectMoveRow = "false";
@@ -2188,17 +2391,21 @@
     const existingDeleteButton = existingGroup?.querySelector(`.${buttonClass}`);
     const existingExportButton = existingGroup?.querySelector(`.${exportButtonClass}`);
     const existingMoveButton = existingGroup?.querySelector(`.${projectMoveButtonClass}`);
+    const existingContextButton = existingGroup?.querySelector(`.${contextHandoffButtonClass}`);
     const hasUnexpectedDelete = !settings.sessionDelete && !!existingDeleteButton;
     const hasUnexpectedExport = !settings.markdownExport && !!existingExportButton;
     const hasUnexpectedMove = !settings.projectMove && !!existingMoveButton;
+    const hasUnexpectedContext = !settings.contextGuard && !!existingContextButton;
     const missingDelete = settings.sessionDelete && !existingDeleteButton;
     const missingExport = settings.markdownExport && !existingExportButton;
     const missingMove = settings.projectMove && !existingMoveButton;
+    const missingContext = settings.contextGuard && !existingContextButton;
     const deleteReady = !settings.sessionDelete || existingDeleteButton?.dataset.codexDeleteVersion === codexDeleteVersion;
     const exportReady = !settings.markdownExport || existingExportButton?.dataset.codexExportVersion === codexExportVersion;
     const moveReady = !settings.projectMove || existingMoveButton?.dataset.codexProjectMoveVersion === codexProjectMoveVersion;
+    const contextReady = !settings.contextGuard || existingContextButton?.dataset.codexContextHandoffVersion === codexContextHandoffVersion;
     const groupReady = existingGroup?.dataset.codexActionGroupVersion === codexActionGroupVersion;
-    if (groupReady && deleteReady && exportReady && moveReady && !hasUnexpectedDelete && !hasUnexpectedExport && !hasUnexpectedMove && !missingDelete && !missingExport && !missingMove) return;
+    if (groupReady && deleteReady && exportReady && moveReady && contextReady && !hasUnexpectedDelete && !hasUnexpectedExport && !hasUnexpectedMove && !hasUnexpectedContext && !missingDelete && !missingExport && !missingMove && !missingContext) return;
     removeActionGroups(row);
     row.dataset.codexDeleteRow = "false";
     row.dataset.codexProjectMoveRow = "false";
@@ -2209,6 +2416,20 @@
     const group = document.createElement("div");
     group.className = actionGroupClass;
     group.dataset.codexActionGroupVersion = codexActionGroupVersion;
+    if (settings.contextGuard) {
+      const contextButton = document.createElement("button");
+      contextButton.type = "button";
+      contextButton.className = `${actionButtonClass} ${contextHandoffButtonClass}`;
+      contextButton.dataset.codexContextHandoffVersion = codexContextHandoffVersion;
+      contextButton.textContent = "交接";
+      const openContextHandoff = (event) => {
+        stopActionButtonEvent(row, contextButton, event);
+        createContextHandoff(ref, false);
+      };
+      installActionButtonEvents(row, contextButton, openContextHandoff);
+      group.appendChild(contextButton);
+      setTimeout(() => refreshActionButton(contextButton, row, openContextHandoff), 0);
+    }
     if (settings.projectMove) {
       const moveButton = document.createElement("button");
       moveButton.type = "button";
