@@ -20,18 +20,55 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "7";
+  const codexDeleteStyleVersion = "8";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "6";
   const codexExportVersion = "1";
   const codexProjectMoveVersion = "1";
-  const codexActionGroupVersion = "2";
-  const codexArchiveRowActionsVersion = "1";
-  const codexArchiveDeleteAllVersion = "2";
+  const codexActionGroupVersion = "3";
+  const codexActionIconVersion = "2";
+  const codexArchiveRowActionsVersion = "2";
+  const codexArchiveDeleteAllVersion = "3";
   const codexConversationTimelineVersion = "1";
   const codexPlusVersion = "1.0.6";
   const codexPlusSettingsKey = "codexPlusSettings";
+  const archiveTitleTexts = new Set(["已归档对话", "Archived conversations"]);
+  const actionButtonConfigs = {
+    move: {
+      label: "移动会话",
+      icon: `
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M7 7h10" />
+          <path d="m14 4 3 3-3 3" />
+          <path d="M17 17H7" />
+          <path d="m10 14-3 3 3 3" />
+        </svg>
+      `,
+    },
+    export: {
+      label: "导出 Markdown",
+      icon: `
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 3v12" />
+          <path d="m7 10 5 5 5-5" />
+          <path d="M5 21h14" />
+        </svg>
+      `,
+    },
+    delete: {
+      label: "删除会话",
+      icon: `
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M4 7h16" />
+          <path d="M10 11v6" />
+          <path d="M14 11v6" />
+          <path d="M6 7l1 14h10l1-14" />
+          <path d="M9 7V4h6v3" />
+        </svg>
+      `,
+    },
+  };
   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
   clearTimeout(window.__codexProjectMoveProjectionTimer);
@@ -66,41 +103,70 @@
         opacity: 0;
         display: inline-flex;
         align-items: center;
-        gap: 6px;
+        justify-content: center;
+        gap: 4px;
+        height: 20px;
+        min-height: 20px;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
       }
-      .${actionButtonClass},
-      .codex-archive-row-button {
-        border: 1px solid #ef4444;
-        border-radius: 6px;
-        background: #f3f4f6;
-        color: #374151;
-        font-size: 12px;
-        line-height: 16px;
-        padding: 1px 6px;
+      .${actionButtonClass} {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        min-width: 20px;
+        min-height: 20px;
+        margin: 0;
+        padding: 0;
+        border: 1px solid transparent;
+        border-radius: 10px;
+        background: transparent;
+        color: rgb(26, 28, 31);
+        font-size: 0;
+        line-height: 0;
+        opacity: .5;
+        box-shadow: none;
         cursor: pointer;
+        transition: color .12s ease, opacity .12s ease, transform .12s ease;
       }
-      .codex-archive-row-button {
-        border-radius: 7px;
-        font: 12px system-ui, sans-serif;
-        line-height: 16px;
-        padding: 3px 8px;
+      .${actionButtonClass} svg {
+        width: 14px;
+        height: 14px;
+        display: block;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        pointer-events: none;
       }
-      .${buttonClass},
-      .codex-archive-row-button.${buttonClass} {
-        border-color: #ef4444;
-        background: #fee2e2;
-        color: #991b1b;
+      .${actionButtonClass}:hover,
+      .${actionButtonClass}:focus-visible {
+        background: transparent;
+        color: rgb(26, 28, 31);
+        opacity: 1;
+        outline: none;
       }
-      .${exportButtonClass},
-      .codex-archive-row-button.${exportButtonClass} {
-        border-color: #93c5fd;
-        background: #dbeafe;
-        color: #1d4ed8;
+      .${actionButtonClass}:active {
+        transform: translateY(1px);
+        background: transparent;
       }
-      .${projectMoveButtonClass} {
-        border-color: #10a37f;
-        background: #d1fae5;
-        color: #065f46;
+      .${actionButtonClass}[data-codex-action-kind="delete"] {
+        color: rgb(26, 28, 31);
+        opacity: .5;
+      }
+      .${actionButtonClass}[data-codex-action-kind="delete"]:hover,
+      .${actionButtonClass}[data-codex-action-kind="delete"]:focus-visible {
+        background: transparent;
+        color: #dc2626;
+        opacity: 1;
       }
       [data-codex-delete-row="true"]:hover .${actionGroupClass} { opacity: 1; }
       [data-codex-delete-row="true"].codex-archive-confirm-visible .${actionGroupClass} { right: 66px; }
@@ -143,22 +209,77 @@
       .codex-project-move-empty { padding: 18px 12px; color: #6b7280; text-align: center; }
       .codex-project-move-hidden { display: none !important; }
       [data-codex-project-move-injected-list="true"] { display: flex; flex-direction: column; }
-      .codex-archive-delete-all {
-        border: 1px solid #ef4444;
-        border-radius: 7px;
-        background: #fee2e2;
-        color: #991b1b;
-        font: 12px system-ui, sans-serif;
-        line-height: 16px;
-        padding: 3px 8px;
+      :is([data-codex-archive-row-action], [data-codex-archive-delete-all="true"]) {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        min-width: auto;
+        height: 28px;
+        min-height: 28px;
+        margin: 0;
+        padding: 0 8px;
+        border: 1px solid transparent;
+        border-radius: 999px;
+        background: transparent;
+        box-shadow: none;
+        color: rgba(26, 28, 31, .66);
+        font: 13px system-ui, sans-serif;
+        line-height: 1;
+        white-space: nowrap;
         cursor: pointer;
+        opacity: 1;
+        pointer-events: auto;
+        vertical-align: middle;
+        transition: background-color .12s ease, border-color .12s ease, color .12s ease, opacity .12s ease;
+      }
+      :is([data-codex-archive-row-action], [data-codex-archive-delete-all="true"]):hover,
+      :is([data-codex-archive-row-action], [data-codex-archive-delete-all="true"]):focus-visible {
+        background: rgba(26, 28, 31, .06);
+        border-color: rgba(26, 28, 31, .12);
+        color: rgb(26, 28, 31);
+        opacity: 1;
+        outline: none;
+      }
+      [data-codex-archive-row-action] {
+        min-width: 46px;
+        height: 28px;
+        min-height: 28px;
+        padding: 0 8px;
+        border-radius: 12.5px;
+        background: oklab(0.22559 -0.00131416 -0.00642684 / 0.05);
+        color: rgb(26, 28, 31);
+        transition: none;
+      }
+      [data-codex-archive-row-action="delete"]:hover,
+      [data-codex-archive-row-action="delete"]:focus-visible,
+      [data-codex-archive-delete-all="true"]:hover,
+      [data-codex-archive-delete-all="true"]:focus-visible {
+        background: rgba(220, 38, 38, .07);
+        border-color: rgba(220, 38, 38, .18);
+        color: #dc2626;
       }
       .codex-archive-action-bar {
-        position: fixed;
-        right: 28px;
-        top: 86px;
         z-index: 2147482999;
-        box-shadow: 0 8px 24px rgba(0,0,0,.18);
+        margin-left: 8px;
+        transform: none;
+      }
+      [data-codex-archive-title-inline="true"] {
+        display: block;
+        flex: 0 0 auto;
+        width: auto;
+        min-width: 0;
+        max-width: 100%;
+      }
+      [data-codex-archive-title-row="true"] {
+        display: flex;
+        align-items: center;
+        flex-direction: row;
+        flex: 0 0 auto;
+        width: auto;
+        min-width: 0;
+        max-width: 100%;
+        gap: 0;
       }
       .codex-delete-toast {
         position: fixed;
@@ -2061,10 +2182,23 @@
     return { sortMs: trustedSortMs || rowSortMs(row, ref), sortMsTrusted: !!trustedSortMs };
   }
 
+  function configureActionButton(button, kind, labelOverride) {
+    const config = actionButtonConfigs[kind];
+    if (!config) return;
+    const label = labelOverride || config.label;
+    button.dataset.codexActionKind = kind;
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    if (button.dataset.codexActionIconVersion !== codexActionIconVersion || !button.querySelector("svg")) {
+      button.innerHTML = config.icon.trim();
+      button.dataset.codexActionIconVersion = codexActionIconVersion;
+    }
+  }
+
   function finishProjectMove(row, button, ref, target, message) {
     releaseDeleteFocus(row, button);
     button.disabled = false;
-    button.textContent = "移动";
+    configureActionButton(button, "move");
     saveProjectMoveProjection(ref, target, target.sortMs || rowSortMs(row, ref, target));
     if (target.kind === "projectless") moveRowToChats(row, target);
     refreshAfterProjectMove();
@@ -2073,7 +2207,7 @@
 
   async function applyProjectMove(row, button, ref, target) {
     button.disabled = true;
-    button.textContent = "移动中";
+    configureActionButton(button, "move", "移动中");
     try {
       if (target.kind === "projectless") {
         const result = await moveSessionToProjectless(ref);
@@ -2084,7 +2218,7 @@
       }
     } catch (error) {
       button.disabled = false;
-      button.textContent = "移动";
+      configureActionButton(button, "move");
       showToast(`移动失败：${error?.message || error}`, null);
     }
   }
@@ -2232,12 +2366,14 @@
     const group = document.createElement("div");
     group.className = actionGroupClass;
     group.dataset.codexActionGroupVersion = codexActionGroupVersion;
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "会话操作");
     if (settings.projectMove) {
       const moveButton = document.createElement("button");
       moveButton.type = "button";
       moveButton.className = `${actionButtonClass} ${projectMoveButtonClass}`;
       moveButton.dataset.codexProjectMoveVersion = codexProjectMoveVersion;
-      moveButton.textContent = "移动";
+      configureActionButton(moveButton, "move");
       const openProjectMove = (event) => openProjectMoveMenuForRow(row, moveButton, ref, event);
       installActionButtonEvents(row, moveButton, openProjectMove);
       group.appendChild(moveButton);
@@ -2248,7 +2384,7 @@
       exportButton.type = "button";
       exportButton.className = `${actionButtonClass} ${exportButtonClass}`;
       exportButton.dataset.codexExportVersion = codexExportVersion;
-      exportButton.textContent = "导出";
+      configureActionButton(exportButton, "export");
       const openExport = (event) => {
         stopActionButtonEvent(row, exportButton, event);
         exportMarkdown(ref);
@@ -2262,7 +2398,7 @@
       deleteButton.type = "button";
       deleteButton.className = `${actionButtonClass} ${buttonClass}`;
       deleteButton.dataset.codexDeleteVersion = codexDeleteVersion;
-      deleteButton.textContent = "删除";
+      configureActionButton(deleteButton, "delete");
       const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, ref, event);
       installActionButtonEvents(row, deleteButton, openDeleteConfirm);
       group.appendChild(deleteButton);
@@ -2331,16 +2467,73 @@
     event.stopImmediatePropagation?.();
   }
 
+  function visibleText(element) {
+    return (element?.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
+  function directText(element) {
+    return Array.from(element?.childNodes || [])
+      .filter((node) => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.textContent || "")
+      .join("")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   function isArchiveTitleText(value) {
-    return value === "已归档对话" || value === "Archived conversations";
+    return archiveTitleTexts.has(value);
+  }
+
+  function archiveTitleScore(element) {
+    const rect = element.getBoundingClientRect();
+    const hasOwnTitleText = isArchiveTitleText(directText(element));
+    const looksLikeHeading = element.matches("h1, h2, h3, .heading-base, [class*='heading']");
+    return (
+      (hasOwnTitleText ? 0 : 20)
+      + (looksLikeHeading ? 0 : 4)
+      + (element.childElementCount === 0 ? 0 : 2)
+      + (rect.width > 320 ? 1 : 0)
+    );
   }
 
   function archiveTitleContainer() {
-    const heading = Array.from(document.querySelectorAll("h1, h2, h3"))
-      .find((element) => isArchiveTitleText((element.textContent || "").trim()));
-    if (heading) return heading;
-    return Array.from(document.querySelectorAll("h1, h2, h3, div, span"))
-      .find((element) => isArchiveTitleText((element.textContent || "").trim()) && element.getBoundingClientRect().x > 350);
+    const candidates = Array.from(document.querySelectorAll("h1, h2, h3, div, span"))
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+        if (rect.x < 320) return false;
+        if (element.closest(".window-fx-sidebar-surface, nav")) return false;
+        if (element.querySelector("[data-codex-archive-delete-all]")) return false;
+        return isArchiveTitleText(directText(element)) || isArchiveTitleText(visibleText(element));
+      });
+    return candidates
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return archiveTitleScore(left) - archiveTitleScore(right) || leftRect.y - rightRect.y || leftRect.x - rightRect.x;
+      })[0] || null;
+  }
+
+  function placeArchiveDeleteAllButton(button) {
+    const title = archiveTitleContainer();
+    if (!title) {
+      document.body.appendChild(button);
+      return;
+    }
+    const titleRow = title.parentElement && !title.parentElement.closest(".window-fx-sidebar-surface, nav")
+      ? title.parentElement
+      : title;
+    document.querySelectorAll("[data-codex-archive-title-inline]").forEach((element) => {
+      if (element !== title) delete element.dataset.codexArchiveTitleInline;
+    });
+    document.querySelectorAll("[data-codex-archive-title-row]").forEach((element) => {
+      if (element !== titleRow) delete element.dataset.codexArchiveTitleRow;
+    });
+    title.dataset.codexArchiveTitleInline = "true";
+    titleRow.dataset.codexArchiveTitleRow = "true";
+    if (button.parentElement !== titleRow) {
+      title.insertAdjacentElement("afterend", button);
+    }
   }
 
   async function deleteArchivedSessions(rows) {
@@ -2373,6 +2566,8 @@
       exportButton.className = `codex-archive-delete-all codex-archive-row-button ${exportButtonClass}`;
       exportButton.dataset.codexArchiveRowAction = "export";
       exportButton.textContent = "导出";
+      exportButton.title = "导出 Markdown";
+      exportButton.setAttribute("aria-label", "导出 Markdown");
       ["pointerdown", "mousedown", "mouseup", "touchstart"].forEach((eventName) => {
         exportButton.addEventListener(eventName, stopArchivedButtonEvent, true);
       });
@@ -2394,6 +2589,8 @@
       deleteButton.className = `codex-archive-delete-all codex-archive-row-button ${buttonClass}`;
       deleteButton.dataset.codexArchiveRowAction = "delete";
       deleteButton.textContent = "删除";
+      deleteButton.title = "删除归档对话";
+      deleteButton.setAttribute("aria-label", "删除归档对话");
       ["pointerdown", "mousedown", "mouseup", "touchstart"].forEach((eventName) => {
         deleteButton.addEventListener(eventName, stopArchivedButtonEvent, true);
       });
@@ -2428,24 +2625,18 @@
       existingButton?.remove();
       return;
     }
-    if (existingButton?.dataset.codexArchiveDeleteAllVersion === codexArchiveDeleteAllVersion) return;
+    if (existingButton?.dataset.codexArchiveDeleteAllVersion === codexArchiveDeleteAllVersion) {
+      placeArchiveDeleteAllButton(existingButton);
+      return;
+    }
     existingButton?.remove();
     const button = document.createElement("button");
     button.type = "button";
     button.className = "codex-archive-delete-all codex-archive-action-bar";
-    Object.assign(button.style, {
-      position: "static",
-      marginLeft: "12px",
-      verticalAlign: "middle",
-      zIndex: "2147482999",
-      cursor: "pointer",
-      pointerEvents: "auto",
-      maxWidth: "fit-content",
-      alignSelf: "flex-start",
-    });
     button.dataset.codexArchiveDeleteAll = "true";
     button.dataset.codexArchiveDeleteAllVersion = codexArchiveDeleteAllVersion;
     button.textContent = "删除全部归档";
+    button.title = "删除全部归档";
     ["pointerdown", "mousedown", "mouseup", "touchstart"].forEach((eventName) => {
       button.addEventListener(eventName, stopArchivedButtonEvent, true);
     });
@@ -2460,12 +2651,7 @@
     };
     button.addEventListener("pointerup", openArchivedDeleteAllConfirm, true);
     button.addEventListener("click", openArchivedDeleteAllConfirm, true);
-    const title = archiveTitleContainer();
-    if (title) {
-      title.insertAdjacentElement("afterend", button);
-    } else {
-      document.body.appendChild(button);
-    }
+    placeArchiveDeleteAllButton(button);
   }
 
   function truncateTimelineQuestion(text) {
@@ -2635,7 +2821,10 @@
     '[data-app-action-sidebar-section-heading="Projects"]',
     '[data-codex-project-move-row="true"]',
     '[data-codex-archive-page-row="true"]',
+    '[data-codex-archive-row-action]',
     "[data-codex-archive-delete-all]",
+    "[data-codex-archive-title-inline]",
+    "[data-codex-archive-title-row]",
     '[data-message-author-role]',
     '[data-testid="conversation-turn"]',
     'main .prose',

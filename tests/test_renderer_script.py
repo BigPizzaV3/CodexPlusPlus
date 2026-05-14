@@ -289,9 +289,58 @@ def test_renderer_script_sidebar_delete_opens_on_pointerup_when_click_is_unrelia
     assert "deleteButton.dataset.codexDeleteVersion = codexDeleteVersion" in text
 
 
+def test_renderer_script_uses_native_icon_session_action_group():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    assert "codexActionIconVersion = \"2\"" in text
+    assert "codexActionGroupVersion = \"3\"" in text
+    assert "data-codex-action-kind" in text
+    assert "group.setAttribute(\"role\", \"group\")" in text
+    assert "group.setAttribute(\"aria-label\", \"会话操作\")" in text
+    assert "setAttribute(\"aria-label\", label)" in text
+    assert "button.title = label" in text
+    assert "移动会话" in text
+    assert "导出 Markdown" in text
+    assert "删除会话" in text
+    assert "<path d=\"M7 7h10\" />" in text
+    assert "<path d=\"M12 3v12\" />" in text
+    assert "<path d=\"M4 7h16\" />" in text
+    assert "height: 20px" in text
+    assert "width: 20px" in text
+    assert "width: 14px" in text
+    assert "height: 14px" in text
+    assert "[data-codex-action-kind=\"delete\"]:hover" in text
+    assert "color: #dc2626" in text
+    assert "configureActionButton(button, \"move\", \"移动中\")" in text
+    assert "button.textContent = \"移动\"" not in text
+
+
+def test_renderer_script_archive_actions_use_core_native_layout():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    assert "codexArchiveRowActionsVersion = \"2\"" in text
+    assert "codexArchiveDeleteAllVersion = \"3\"" in text
+    assert "archiveTitleTexts = new Set([\"已归档对话\", \"Archived conversations\"])" in text
+    assert "function visibleText" in text
+    assert "function directText" in text
+    assert "function archiveTitleScore" in text
+    assert "function placeArchiveDeleteAllButton" in text
+    assert "rect.x < 320" in text
+    assert "element.closest(\".window-fx-sidebar-surface, nav\")" in text
+    assert "data-codex-archive-title-inline" in text
+    assert "data-codex-archive-title-row" in text
+    assert ":is([data-codex-archive-row-action], [data-codex-archive-delete-all=\"true\"])" in text
+    assert "[data-codex-archive-row-action=\"delete\"]:hover" in text
+    assert "placeArchiveDeleteAllButton(existingButton)" in text
+    assert "placeArchiveDeleteAllButton(button)" in text
+    assert "exportButton.setAttribute(\"aria-label\", \"导出 Markdown\")" in text
+    assert "deleteButton.setAttribute(\"aria-label\", \"删除归档对话\")" in text
+    assert "'[data-codex-archive-row-action]'" in text
+    assert "\"[data-codex-archive-title-inline]\"" in text
+    assert "\"[data-codex-archive-title-row]\"" in text
+
+
     text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
     assert "updateDeleteButtonOffsets" in text
-    assert "codexDeleteStyleVersion = \"7\"" in text
+    assert "codexDeleteStyleVersion = \"8\"" in text
     assert "right: 66px" in text
     assert "确认" in text
     assert "归档对话" in text
@@ -332,23 +381,17 @@ def test_renderer_script_sidebar_delete_opens_on_pointerup_when_click_is_unrelia
     assert "const titleMatches = sessionRows().map(sessionRefFromRow)" not in text
     assert "document.querySelectorAll(\"[data-codex-archive-delete-all]\").forEach((node) => node.remove())" not in text
     assert "const existingButton = document.querySelector(\"[data-codex-archive-delete-all]\")" in text
-    assert "if (existingButton?.dataset.codexArchiveDeleteAllVersion === codexArchiveDeleteAllVersion) return" in text
+    assert "if (existingButton?.dataset.codexArchiveDeleteAllVersion === codexArchiveDeleteAllVersion) {" in text
     assert "existingButton?.remove()" in text
     assert "button.dataset.codexArchiveDeleteAllVersion = codexArchiveDeleteAllVersion" in text
     assert "data-codex-archive-delete-all" in text
     assert "codex-archive-action-bar" in text
     assert "codexDeleteStyleVersion" in text
     assert "style.dataset.codexDeleteStyleVersion" in text
-    assert "position: fixed" in text
     assert "archiveTitleContainer" in text
-    assert "element.getBoundingClientRect().x > 350" in text
+    assert "rect.x < 320" in text
     assert "已归档对话" in text
     assert "insertAdjacentElement(\"afterend\", button)" in text
-    assert "maxWidth: \"fit-content\"" in text
-    assert "alignSelf: \"flex-start\"" in text
-    assert "Object.assign(button.style" in text
-    assert "cursor: \"pointer\"" in text
-    assert "position: \"static\"" in text
     assert "data-codex-archive-page-row" in text
     assert "data-app-action-sidebar-thread-id" in text
     assert "取消归档" in text
