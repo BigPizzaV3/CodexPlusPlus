@@ -309,9 +309,30 @@ def test_renderer_script_uses_native_icon_session_action_group():
     assert "width: 14px" in text
     assert "height: 14px" in text
     assert "[data-codex-action-kind=\"delete\"]:hover" in text
-    assert "color: #dc2626" in text
+    assert "color: var(--codex-plus-danger-color)" in text
     assert "configureActionButton(button, \"move\", \"移动中\")" in text
     assert "button.textContent = \"移动\"" not in text
+
+
+def test_renderer_script_action_buttons_support_dark_mode_colors():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    assert "codexDeleteStyleVersion = \"9\"" in text
+    assert "--codex-plus-action-color" in text
+    assert "--codex-plus-action-hover-color" in text
+    assert "--codex-plus-archive-color" in text
+    assert "--codex-plus-archive-background" in text
+    assert "--codex-plus-danger-color" in text
+    assert "@media (prefers-color-scheme: dark)" in text
+    assert "html.dark" in text
+    assert "body.dark" in text
+    assert "html[data-theme=\"dark\"]" in text
+    assert "body[data-theme=\"dark\"]" in text
+    assert "rgba(255, 255, 255, .72)" in text
+    assert "#f87171" in text
+    assert "color: var(--codex-plus-action-color)" in text
+    assert "color: var(--codex-plus-archive-color)" in text
+    assert "background: var(--codex-plus-archive-background)" in text
+    assert "background: var(--codex-plus-danger-background)" in text
 
 
 def test_renderer_script_archive_actions_use_core_native_layout():
@@ -340,7 +361,7 @@ def test_renderer_script_archive_actions_use_core_native_layout():
 
     text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
     assert "updateDeleteButtonOffsets" in text
-    assert "codexDeleteStyleVersion = \"8\"" in text
+    assert "codexDeleteStyleVersion = \"9\"" in text
     assert "right: 66px" in text
     assert "确认" in text
     assert "归档对话" in text

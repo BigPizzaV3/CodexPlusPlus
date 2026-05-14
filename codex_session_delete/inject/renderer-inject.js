@@ -20,7 +20,7 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "8";
+  const codexDeleteStyleVersion = "9";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "6";
@@ -94,6 +94,47 @@
     style.id = styleId;
     style.dataset.codexDeleteStyleVersion = codexDeleteStyleVersion;
     style.textContent = `
+      :root {
+        --codex-plus-action-color: rgb(26, 28, 31);
+        --codex-plus-action-hover-color: rgb(26, 28, 31);
+        --codex-plus-archive-color: rgba(26, 28, 31, .66);
+        --codex-plus-archive-hover-color: rgb(26, 28, 31);
+        --codex-plus-archive-background: rgba(26, 28, 31, .05);
+        --codex-plus-archive-hover-background: rgba(26, 28, 31, .08);
+        --codex-plus-archive-hover-border: rgba(26, 28, 31, .12);
+        --codex-plus-danger-color: #dc2626;
+        --codex-plus-danger-background: rgba(220, 38, 38, .07);
+        --codex-plus-danger-border: rgba(220, 38, 38, .18);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --codex-plus-action-color: rgba(255, 255, 255, .72);
+          --codex-plus-action-hover-color: rgb(255, 255, 255);
+          --codex-plus-archive-color: rgba(255, 255, 255, .72);
+          --codex-plus-archive-hover-color: rgb(255, 255, 255);
+          --codex-plus-archive-background: rgba(255, 255, 255, .08);
+          --codex-plus-archive-hover-background: rgba(255, 255, 255, .12);
+          --codex-plus-archive-hover-border: rgba(255, 255, 255, .20);
+          --codex-plus-danger-color: #f87171;
+          --codex-plus-danger-background: rgba(248, 113, 113, .14);
+          --codex-plus-danger-border: rgba(248, 113, 113, .30);
+        }
+      }
+      html.dark,
+      body.dark,
+      html[data-theme="dark"],
+      body[data-theme="dark"] {
+        --codex-plus-action-color: rgba(255, 255, 255, .72);
+        --codex-plus-action-hover-color: rgb(255, 255, 255);
+        --codex-plus-archive-color: rgba(255, 255, 255, .72);
+        --codex-plus-archive-hover-color: rgb(255, 255, 255);
+        --codex-plus-archive-background: rgba(255, 255, 255, .08);
+        --codex-plus-archive-hover-background: rgba(255, 255, 255, .12);
+        --codex-plus-archive-hover-border: rgba(255, 255, 255, .20);
+        --codex-plus-danger-color: #f87171;
+        --codex-plus-danger-background: rgba(248, 113, 113, .14);
+        --codex-plus-danger-border: rgba(248, 113, 113, .30);
+      }
       .${actionGroupClass} {
         position: absolute;
         right: 28px;
@@ -128,7 +169,7 @@
         border: 1px solid transparent;
         border-radius: 10px;
         background: transparent;
-        color: rgb(26, 28, 31);
+        color: var(--codex-plus-action-color);
         font-size: 0;
         line-height: 0;
         opacity: .5;
@@ -150,7 +191,7 @@
       .${actionButtonClass}:hover,
       .${actionButtonClass}:focus-visible {
         background: transparent;
-        color: rgb(26, 28, 31);
+        color: var(--codex-plus-action-hover-color);
         opacity: 1;
         outline: none;
       }
@@ -159,13 +200,13 @@
         background: transparent;
       }
       .${actionButtonClass}[data-codex-action-kind="delete"] {
-        color: rgb(26, 28, 31);
+        color: var(--codex-plus-action-color);
         opacity: .5;
       }
       .${actionButtonClass}[data-codex-action-kind="delete"]:hover,
       .${actionButtonClass}[data-codex-action-kind="delete"]:focus-visible {
         background: transparent;
-        color: #dc2626;
+        color: var(--codex-plus-danger-color);
         opacity: 1;
       }
       [data-codex-delete-row="true"]:hover .${actionGroupClass} { opacity: 1; }
@@ -223,7 +264,7 @@
         border-radius: 999px;
         background: transparent;
         box-shadow: none;
-        color: rgba(26, 28, 31, .66);
+        color: var(--codex-plus-archive-color);
         font: 13px system-ui, sans-serif;
         line-height: 1;
         white-space: nowrap;
@@ -235,9 +276,9 @@
       }
       :is([data-codex-archive-row-action], [data-codex-archive-delete-all="true"]):hover,
       :is([data-codex-archive-row-action], [data-codex-archive-delete-all="true"]):focus-visible {
-        background: rgba(26, 28, 31, .06);
-        border-color: rgba(26, 28, 31, .12);
-        color: rgb(26, 28, 31);
+        background: var(--codex-plus-archive-hover-background);
+        border-color: var(--codex-plus-archive-hover-border);
+        color: var(--codex-plus-archive-hover-color);
         opacity: 1;
         outline: none;
       }
@@ -247,17 +288,17 @@
         min-height: 28px;
         padding: 0 8px;
         border-radius: 12.5px;
-        background: oklab(0.22559 -0.00131416 -0.00642684 / 0.05);
-        color: rgb(26, 28, 31);
+        background: var(--codex-plus-archive-background);
+        color: var(--codex-plus-archive-hover-color);
         transition: none;
       }
       [data-codex-archive-row-action="delete"]:hover,
       [data-codex-archive-row-action="delete"]:focus-visible,
       [data-codex-archive-delete-all="true"]:hover,
       [data-codex-archive-delete-all="true"]:focus-visible {
-        background: rgba(220, 38, 38, .07);
-        border-color: rgba(220, 38, 38, .18);
-        color: #dc2626;
+        background: var(--codex-plus-danger-background);
+        border-color: var(--codex-plus-danger-border);
+        color: var(--codex-plus-danger-color);
       }
       .codex-archive-action-bar {
         z-index: 2147482999;
