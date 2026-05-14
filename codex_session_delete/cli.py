@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import requests
 import subprocess
 import sys
 import traceback
@@ -98,14 +99,14 @@ def wait_for_windows_process_id(process_id: int) -> None:
         kernel32.CloseHandle(handle)
 
 
-def wait_for_shutdown(server: HelperServer, codex_proc) -> None:
+def wait_for_shutdown(server: HelperServer, codex_proc, debug_port: int = 9229) -> None:
     try:
         if isinstance(codex_proc, int):
             wait_for_windows_process_id(codex_proc)
         elif codex_proc is None and sys.platform == "darwin":
             import time as _time
             while True:
-                if not is_macos_codex_running():
+                if not is_macos_codex_running(debug_port):
                     break
                 _time.sleep(2)
         elif codex_proc is not None:
@@ -116,9 +117,23 @@ def wait_for_shutdown(server: HelperServer, codex_proc) -> None:
         shutdown_helper(server)
 
 
-def is_macos_codex_running() -> bool:
+def is_macos_codex_running(debug_port: int = 9229) -> bool:
+    try:
+        session = requests.Session()
+        session.trust_env = False
+        response = session.get(f"http://127.0.0.1:{debug_port}/json", timeout=1)
+        response.raise_for_status()
+        targets = response.json()
+        if any(
+            target.get("type") == "page"
+            and "codex" in f"{target.get('title', '')} {target.get('url', '')}".lower()
+            for target in targets
+        ):
+            return True
+    except Exception:
+        pass
     result = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, check=False)
-    return any("/Codex.app/Contents/MacOS/Codex " in f"{line} " for line in result.stdout.splitlines())
+    return any(".app/Contents/MacOS/Codex " in f"{line} " for line in result.stdout.splitlines())
 
 
 def stop_existing_windows_launchers() -> None:
@@ -156,7 +171,7 @@ def run_launch(args: argparse.Namespace) -> int:
         raise
     print(f"Codex session delete helper running on http://127.0.0.1:{server.port}")
     print("Keep this terminal open while using the delete buttons. Press Ctrl+C to stop.")
-    wait_for_shutdown(server, codex_proc)
+    wait_for_shutdown(server, codex_proc, args.debug_port)
     return 0
 
 

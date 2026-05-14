@@ -140,24 +140,24 @@ def test_non_windows_port_selector_keeps_requested_port(monkeypatch):
 def test_cli_keeps_helper_server_alive_after_injection(monkeypatch):
     waited = []
     monkeypatch.setattr(cli, "launch_and_inject", lambda *args: (FakeServer(), None))
-    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc: waited.append(server.port))
+    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc, debug_port=9229: waited.append((server.port, debug_port)))
 
     exit_code = cli.main([])
 
     assert exit_code == 0
-    assert waited == [57321]
+    assert waited == [(57321, 9229)]
 
 
 def test_cli_launch_subcommand_keeps_helper_server_alive_after_injection(monkeypatch):
     waited = []
     calls = []
     monkeypatch.setattr(cli, "launch_and_inject", lambda *args: calls.append(args) or (FakeServer(), None))
-    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc: waited.append(server.port))
+    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc, debug_port=9229: waited.append((server.port, debug_port)))
 
     exit_code = cli.main(["launch"])
 
     assert exit_code == 0
-    assert waited == [57321]
+    assert waited == [(57321, 9229)]
     assert len(calls) == 1
 
 
@@ -310,7 +310,7 @@ def test_cli_launch_runs_launcher_cleanup_before_injection(monkeypatch):
     events = []
     monkeypatch.setattr(cli, "stop_existing_windows_launchers", lambda: events.append("cleanup"))
     monkeypatch.setattr(cli, "launch_and_inject", lambda *args: events.append("launch") or (FakeServer(), None))
-    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc: events.append("wait"))
+    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc, debug_port=9229: events.append("wait"))
 
     exit_code = cli.main(["launch"])
 
@@ -323,7 +323,7 @@ def test_cli_launch_checks_update_before_injection(monkeypatch):
     monkeypatch.setattr(cli, "stop_existing_windows_launchers", lambda: events.append("cleanup"))
     monkeypatch.setattr(cli, "maybe_print_update_notice", lambda: events.append("check-update"))
     monkeypatch.setattr(cli, "launch_and_inject", lambda *args: events.append("launch") or (FakeServer(), None))
-    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc: events.append("wait"))
+    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc, debug_port=9229: events.append("wait"))
 
     exit_code = cli.main(["launch"])
 
@@ -478,9 +478,61 @@ def test_wait_for_shutdown_waits_for_popen_like_process():
 
 
 def test_is_macos_codex_running_uses_ps_comm(monkeypatch):
+    class Session:
+        trust_env = True
+
+        def get(self, *args, **kwargs):
+            raise RuntimeError("cdp unavailable")
+
     class Result:
         stdout = "123 /Applications/Codex.app/Contents/MacOS/Codex --remote-debugging-port=9229\n456 /usr/bin/other\n"
 
+    monkeypatch.setattr(cli.requests, "Session", lambda: Session())
     monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: Result())
 
     assert cli.is_macos_codex_running() is True
+
+
+def test_is_macos_codex_running_prefers_cdp_page(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [{"type": "page", "title": "Codex", "url": "app://-/index.html?hostId=local"}]
+
+    class Session:
+        trust_env = True
+
+        def get(self, url, timeout):
+            assert url == "http://127.0.0.1:9229/json"
+            assert timeout == 1
+            assert self.trust_env is False
+            return Response()
+
+    monkeypatch.setattr(cli.requests, "Session", lambda: Session())
+    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ps fallback should not run")))
+
+    assert cli.is_macos_codex_running() is True
+
+
+def test_is_macos_codex_running_uses_custom_debug_port(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [{"type": "page", "title": "Codex", "url": "app://-/index.html?hostId=local"}]
+
+    class Session:
+        trust_env = True
+
+        def get(self, url, timeout):
+            assert url == "http://127.0.0.1:9333/json"
+            assert timeout == 1
+            assert self.trust_env is False
+            return Response()
+
+    monkeypatch.setattr(cli.requests, "Session", lambda: Session())
+
+    assert cli.is_macos_codex_running(9333) is True
