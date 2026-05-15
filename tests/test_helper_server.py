@@ -30,6 +30,9 @@ class FakeDeleteService:
     def move_thread_workspace(self, session: SessionRef, target_cwd: str):
         return {"status": "moved", "session_id": session.session_id, "target_cwd": target_cwd}
 
+    def move_thread_projectless(self, session: SessionRef):
+        return {"status": "moved", "session_id": session.session_id, "target_cwd": ""}
+
     def thread_sort_key(self, session: SessionRef):
         return {"status": "ok", "session_id": session.session_id, "updated_at_ms": 123}
 
@@ -248,6 +251,21 @@ def test_helper_server_moves_thread_workspace_without_http_mutation_token():
         thread.join(timeout=3)
 
     assert moved == {"status": "moved", "session_id": "s1", "target_cwd": "/project/a"}
+
+
+def test_helper_server_moves_thread_to_projectless_without_http_mutation_token():
+    service = FakeDeleteService()
+    server = HelperServer("127.0.0.1", 0, service)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.port}"
+        moved = post_json(base + "/move-thread-projectless", {"session_id": "s1", "title": "First"})
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+
+    assert moved == {"status": "moved", "session_id": "s1", "target_cwd": ""}
 
 
 def test_helper_server_returns_thread_sort_key():

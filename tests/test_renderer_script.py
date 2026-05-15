@@ -316,7 +316,8 @@ def test_renderer_script_debounces_mutation_observer_scan():
     assert "setTimeout(() => runScanStep(scanDeferred), 50)" not in text
     assert "codexSessionDeleteAttachButtonFailures" in text
     assert "tryAttachButton" in text
-    assert "sessionRows().forEach(tryAttachButton)" in text
+    assert "tryAttachButton(row)" in text
+    assert "installBulkMoveSelectionControl(row)" in text
     assert "sessionRows().forEach(attachButton)" not in text
     assert "new MutationObserver(scheduleScan)" in text
     assert "new MutationObserver(scan)" not in text
@@ -605,7 +606,7 @@ def test_renderer_script_includes_user_script_manager_ui_contract():
     assert "removeDuplicateCodexPlusMenus" in text
     assert "data-codex-plus-menu" in text
     assert "textContent || \"\").trim() === `Codex++ ${codexPlusVersion}`" in text
-    assert "codexPlusMenuVersion !== \"6\"" in text
+    assert "codexPlusMenuVersion !== \"7\"" in text
     assert "codexPlusTriggerInstalled = \"5\"" in text
     assert ".codex-plus-trigger:hover" not in text
     assert "function headerTitleRegion" in text
@@ -678,6 +679,7 @@ def test_renderer_script_can_move_sidebar_threads_between_projects():
     assert "ids.filter((id) => !variantSet.has(id))" in text
     assert "/thread-workspaces" not in text
     assert "/move-thread-workspace" in text
+    assert "/move-thread-projectless" in text
     assert "/thread-sort-key" in text
     assert "/thread-sort-keys" in text
     assert "hintKeys.forEach((id) => delete hints[id])" in text
@@ -727,3 +729,53 @@ def test_renderer_script_can_move_sidebar_threads_between_projects():
     assert "openProjectMoveMenuForRow" in text
     assert "existingMoveButton" in text
     assert "普通对话" in text
+
+
+def test_renderer_script_can_bulk_move_selected_sidebar_sessions():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "bulkMoveCheckboxClass" in text
+    assert "bulkMoveBarClass" in text
+    assert "bulkMoveProgressClass" in text
+    assert "codexBulkMoveSelection" in text
+    assert "codexBulkMoveProgress" in text
+    assert "bulkMoveProgressMinVisibleMs" in text
+    assert "function waitForBulkMovePaint" in text
+    assert "function sleep(ms)" in text
+    assert "toggleBulkMoveMode()" in text
+    assert "installBulkMoveSelectionControl(row)" in text
+    assert "openBulkProjectMoveMenu(" in text
+    assert "moveSelectedSessionsToTarget(target)" in text
+    assert "selectedBulkMoveSessions()" in text
+    assert "placement: \"center\"" in text
+    assert "openProjectMoveMenu(`移动 ${sessions.length} 个会话`, null" in text
+    assert 'data-codex-bulk-move-toggle' in text
+    assert 'data-codex-bulk-move-submit' in text
+    assert 'data-codex-bulk-move-cancel' in text
+    assert 'data-codex-bulk-move-progress' in text
+    assert 'data-codex-bulk-move-progress-fill' in text
+    assert "批量移动" in text
+    assert "正在移动 ${processed}/${codexBulkMoveProgress.total}" in text
+    assert "移动到..." in text
+    assert "for (const session of sessions)" in text
+    assert "moveSessionToProjectless(session.ref)" in text
+    assert 'postJson("/move-thread-projectless", ref)' in text
+    assert "moveSessionToProject(session.ref, target)" in text
+    assert "const movedTarget = { ...target, ...sortState }" in text
+    assert "saveProjectMoveProjection(session.ref, movedTarget, sortState.sortMs)" in text
+    assert "refreshAfterProjectMove()" in text
+    assert "showToast(`已移动 ${moved} 个会话到“${target.label}”`, null)" in text
+    assert "showToast(`已移动 ${moved} 个会话，失败 ${failures.length} 个`, null)" in text
+    assert "codexBulkMoveProgress = { total: sessions.length, done: 0, moved: 0, failed: 0 }" in text
+    assert "codexBulkMoveProgress = { ...codexBulkMoveProgress, done: moved + failures.length, moved, failed: failures.length }" in text
+    assert "await waitForBulkMovePaint()" in text
+    assert "await sleep(Math.max(0, bulkMoveProgressMinVisibleMs - (Date.now() - progressStartedAt)))" in text
+    assert "checkbox.disabled = codexBulkMoveInFlight" in text
+    assert "closeProjectMoveOverlay(overlay)" in text
+    assert "data-codex-project-move-closing" in text
+    assert "transition: opacity 200ms ease" in text
+    assert "overlay.getBoundingClientRect()" in text
+    assert "overlay.remove()" in text
+    assert "}, 200)" in text
+    assert "await close();" in text
+    assert "await onSelect(target);" in text

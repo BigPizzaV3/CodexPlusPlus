@@ -69,6 +69,12 @@ class SQLiteStorageAdapter:
         target = target_cwd.strip()
         if not target:
             return {"status": "failed", "session_id": session.session_id, "message": "目标项目路径为空"}
+        return self._move_codex_thread_cwd(session, target)
+
+    def move_codex_thread_to_projectless(self, session: SessionRef) -> dict[str, object]:
+        return self._move_codex_thread_cwd(session, "")
+
+    def _move_codex_thread_cwd(self, session: SessionRef, target: str) -> dict[str, object]:
         if not self.db_path.exists():
             return {"status": "failed", "session_id": session.session_id, "message": f"Database not found: {self.db_path}"}
 
