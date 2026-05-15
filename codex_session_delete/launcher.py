@@ -55,11 +55,6 @@ class ApiFirstDeleteService:
             return {"status": DeleteStatus.FAILED.value, "session_id": session.session_id, "message": "No local database configured"}
         return self.local_adapter.move_codex_thread_workspace(session, target_cwd)
 
-    def move_thread_projectless(self, session: SessionRef) -> dict[str, object]:
-        if self.local_adapter is None:
-            return {"status": DeleteStatus.FAILED.value, "session_id": session.session_id, "message": "No local database configured"}
-        return self.local_adapter.move_codex_thread_to_projectless(session)
-
     def thread_sort_key(self, session: SessionRef) -> dict[str, object]:
         if self.local_adapter is None:
             return {"status": DeleteStatus.FAILED.value, "session_id": session.session_id, "message": "No local database configured"}
@@ -429,9 +424,6 @@ def handle_bridge_request(
     if path == "/move-thread-workspace":
         session = SessionRef(session_id=str(payload.get("session_id", "")), title=str(payload.get("title", "")))
         return service.move_thread_workspace(session, str(payload.get("target_cwd", "")))
-    if path == "/move-thread-projectless":
-        session = SessionRef(session_id=str(payload.get("session_id", "")), title=str(payload.get("title", "")))
-        return service.move_thread_projectless(session)
     if path == "/thread-sort-key":
         session = SessionRef(session_id=str(payload.get("session_id", "")), title=str(payload.get("title", "")))
         return service.thread_sort_key(session)

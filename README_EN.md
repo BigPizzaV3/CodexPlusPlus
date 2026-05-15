@@ -74,7 +74,7 @@ If Codex++ has helped you, you can buy me a coffee or send a small tip to suppor
 - Forced plugin install when the frontend blocks App unavailable states.
 - Session delete with confirmation and undo.
 - Markdown export from local rollout files.
-- Project move for single or selected conversations across normal conversations and local projects.
+- Project move for normal conversations and local projects.
 - Conversation Timeline with question markers, hover summaries, and quick jump.
 - Provider Sync so historical conversations remain visible after switching `model_provider`.
 - Windows shortcuts, uninstall entries, optional watcher takeover, and GitHub Release updates.

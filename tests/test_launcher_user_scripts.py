@@ -14,9 +14,6 @@ class FakeDeleteService:
     def find_archived_thread_by_title(self, title):
         return None
 
-    def move_thread_projectless(self, session):
-        return {"status": "moved", "session_id": session.session_id, "target_cwd": ""}
-
 
 class FakeExportService:
     def export(self, session):
@@ -122,15 +119,6 @@ def test_handle_bridge_request_returns_ads(tmp_path):
     assert result["ads"][0]["id"] == "runtime-ad"
 
 
-def test_handle_bridge_request_moves_thread_to_projectless(tmp_path):
-    manager = UserScriptManager(tmp_path / "builtin", tmp_path / "user", tmp_path / "config.json")
-    runtime = FakeRuntime(manager)
-
-    result = handle_bridge_request(FakeDeleteService(), FakeExportService(), "/move-thread-projectless", {"session_id": "s1", "title": "First"}, runtime)
-
-    assert result == {"status": "moved", "session_id": "s1", "target_cwd": ""}
-
-
 
 def test_handle_bridge_request_exports_markdown(tmp_path):
     manager = UserScriptManager(tmp_path / "builtin", tmp_path / "user", tmp_path / "config.json")
@@ -140,3 +128,4 @@ def test_handle_bridge_request_exports_markdown(tmp_path):
 
     assert exported["status"] == "exported"
     assert exported["filename"] == "thread.md"
+

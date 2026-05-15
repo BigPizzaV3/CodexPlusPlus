@@ -4,10 +4,6 @@
   const exportButtonClass = "codex-export-button";
   const projectMoveButtonClass = "codex-project-move-button";
   const projectMoveOverlayClass = "codex-project-move-overlay";
-  const bulkMoveCheckboxClass = "codex-bulk-move-checkbox";
-  const bulkMoveBarClass = "codex-bulk-move-bar";
-  const bulkMoveProgressClass = "codex-bulk-move-progress";
-  const bulkMoveTriggerClass = "codex-bulk-move-trigger";
   const actionButtonClass = "codex-session-action-button";
   const actionGroupClass = "codex-session-actions";
   const timelineClass = "codex-conversation-timeline";
@@ -24,7 +20,6 @@
   const projectMoveProjectionTtlMs = 24 * 60 * 60 * 1000;
   const projectMoveProjectionSettleMs = 5 * 60 * 1000;
   const projectMoveRefreshDelaysMs = [50, 250, 750, 1500];
-  const bulkMoveProgressMinVisibleMs = 700;
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
@@ -118,12 +113,6 @@
         inset: 0;
         z-index: 2147483200;
         background: rgba(15,23,42,.28);
-        opacity: 1;
-        transition: opacity 200ms ease;
-      }
-      .${projectMoveOverlayClass}[data-codex-project-move-closing="true"] {
-        opacity: 0;
-        pointer-events: none;
       }
       .codex-project-move-panel {
         position: fixed;
@@ -158,66 +147,6 @@
       .codex-project-move-empty { padding: 18px 12px; color: #6b7280; text-align: center; }
       .codex-project-move-hidden { display: none !important; }
       [data-codex-project-move-injected-list="true"] { display: flex; flex-direction: column; }
-      .${bulkMoveCheckboxClass} {
-        position: absolute;
-        left: 8px;
-        top: 50%;
-        width: 16px;
-        height: 16px;
-        transform: translateY(-50%);
-        z-index: 22;
-        accent-color: #10a37f;
-      }
-      [data-codex-bulk-move-mode="true"] { padding-left: 30px !important; }
-      [data-codex-bulk-move-selected="true"] { background: rgba(16,163,127,.12) !important; }
-      .${bulkMoveBarClass} {
-        position: fixed;
-        left: 50%;
-        bottom: 18px;
-        transform: translateX(-50%);
-        z-index: 2147483000;
-        display: grid;
-        grid-template-columns: 1fr auto auto;
-        align-items: center;
-        gap: 8px 10px;
-        min-width: min(420px, calc(100vw - 32px));
-        border: 1px solid rgba(15,23,42,.18);
-        border-radius: 10px;
-        background: #111827;
-        color: white;
-        font: 13px system-ui, sans-serif;
-        padding: 10px 12px;
-        box-shadow: 0 8px 30px rgba(0,0,0,.25);
-      }
-      .${bulkMoveBarClass} button {
-        border: 1px solid rgba(255,255,255,.22);
-        border-radius: 7px;
-        background: transparent;
-        color: white;
-        font: 12px system-ui, sans-serif;
-        padding: 5px 9px;
-        cursor: pointer;
-      }
-      .${bulkMoveBarClass} button[data-codex-bulk-move-submit] {
-        border-color: #10a37f;
-        background: #10a37f;
-      }
-      .${bulkMoveBarClass} button:disabled { cursor: default; opacity: .45; }
-      .${bulkMoveProgressClass} {
-        grid-column: 1 / -1;
-        height: 3px;
-        overflow: hidden;
-        border-radius: 999px;
-        background: rgba(255,255,255,.16);
-      }
-      .${bulkMoveProgressClass} > span {
-        display: block;
-        width: var(--codex-bulk-move-progress, 0%);
-        height: 100%;
-        border-radius: inherit;
-        background: #10a37f;
-        transition: width 160ms ease;
-      }
       .codex-archive-delete-all {
         border: 1px solid #ef4444;
         border-radius: 7px;
@@ -330,7 +259,6 @@
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
-      .${bulkMoveTriggerClass} { margin-left: 6px; }
       .codex-plus-modal-overlay {
         position: fixed;
         inset: 0;
@@ -567,7 +495,6 @@
   function setCodexPlusSetting(key, value) {
     const next = { ...codexPlusSettings(), [key]: value };
     localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
-    if (key === "projectMove" && !value) setBulkMoveMode(false);
     renderCodexPlusMenu();
     scan();
   }
@@ -576,9 +503,6 @@
     document.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-plus-setting");
       button.dataset.enabled = String(!!codexPlusSettings()[key]);
-    });
-    document.querySelectorAll("[data-codex-bulk-move-toggle]").forEach((button) => {
-      button.hidden = !codexPlusSettings().projectMove;
     });
   }
 
@@ -1044,7 +968,7 @@
     const existing = document.getElementById(codexPlusMenuId);
     removeDuplicateCodexPlusMenus(existing);
     let insertionPoint = findNativeMenuInsertionPoint();
-    if (existing && existing.dataset.codexPlusMenuVersion !== "7") {
+    if (existing && existing.dataset.codexPlusMenuVersion !== "6") {
       existing.remove();
       insertionPoint = findNativeMenuInsertionPoint();
     } else if (existing && insertionPoint && existing.parentElement === insertionPoint.parent) {
@@ -1055,7 +979,7 @@
     const menu = document.createElement("div");
     menu.id = codexPlusMenuId;
     menu.dataset.codexPlusMenu = "true";
-    menu.dataset.codexPlusMenuVersion = "7";
+    menu.dataset.codexPlusMenuVersion = "6";
     const trigger = document.createElement("button");
     trigger.type = "button";
     trigger.textContent = `Codex++ ${codexPlusVersion}`;
@@ -1067,19 +991,6 @@
     const nativeButtonClass = insertionPoint?.nativeButtonClass || "codex-plus-trigger";
     configureCodexPlusTrigger(menu, trigger, nativeButtonClass);
     menu.appendChild(trigger);
-    const bulkMoveButton = document.createElement("button");
-    bulkMoveButton.type = "button";
-    bulkMoveButton.textContent = "批量移动";
-    bulkMoveButton.className = `${nativeButtonClass} ${bulkMoveTriggerClass}`.trim();
-    bulkMoveButton.setAttribute("data-codex-bulk-move-toggle", "true");
-    bulkMoveButton.dataset.codexBulkMoveToggle = "true";
-    bulkMoveButton.hidden = !codexPlusSettings().projectMove;
-    bulkMoveButton.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      toggleBulkMoveMode();
-    }, true);
-    menu.appendChild(bulkMoveButton);
     if (insertionPoint) {
       menu.className = "";
       const safeBefore = insertionPoint.before?.parentElement === insertionPoint.parent ? insertionPoint.before : null;
@@ -2080,16 +1991,10 @@
 
   async function moveSessionToProjectless(ref) {
     if (!ref.session_id) throw new Error("未找到会话 ID");
-    const result = await postJson("/move-thread-projectless", ref);
-    if (result.status !== "moved") throw new Error(result.message || "移动到普通对话失败");
-    try {
-      await setProjectlessThreadIds(ref, "add");
-      await clearThreadWorkspaceHints(ref);
-    } catch (error) {
-      window.__codexProjectlessStateSyncFailures = window.__codexProjectlessStateSyncFailures || [];
-      window.__codexProjectlessStateSyncFailures.push(String(error?.stack || error));
-    }
-    return result;
+    await setProjectlessThreadIds(ref, "add");
+    await clearThreadWorkspaceHints(ref);
+    const sortKey = await postJson("/thread-sort-key", ref).catch(() => ({}));
+    return { status: "moved", session_id: ref.session_id, updated_at: sortKey?.updated_at, updated_at_ms: sortKey?.updated_at_ms, created_at_ms: sortKey?.created_at_ms };
   }
 
   function isNativeProjectTarget(target) {
@@ -2254,104 +2159,6 @@
     return { sortMs: trustedSortMs || rowSortMs(row, ref), sortMsTrusted: !!trustedSortMs };
   }
 
-  function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  function waitForBulkMovePaint() {
-    return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  }
-
-  const codexBulkMoveSelection = new Map();
-  let codexBulkMoveMode = false;
-  let codexBulkMoveInFlight = false;
-  let codexBulkMoveProgress = { total: 0, done: 0, moved: 0, failed: 0 };
-
-  function selectedBulkMoveSessions() {
-    return Array.from(codexBulkMoveSelection.values());
-  }
-
-  function setBulkMoveMode(enabled) {
-    codexBulkMoveMode = !!enabled && !!codexPlusSettings().projectMove;
-    if (!codexBulkMoveMode) codexBulkMoveSelection.clear();
-    sessionRows(true).forEach((row) => installBulkMoveSelectionControl(row));
-    renderBulkMoveBar();
-  }
-
-  function toggleBulkMoveMode() {
-    setBulkMoveMode(!codexBulkMoveMode);
-  }
-
-  function updateBulkMoveRowSelection(row, ref, selected) {
-    if (selected) {
-      codexBulkMoveSelection.set(ref.session_id, { ref, row });
-    } else {
-      codexBulkMoveSelection.delete(ref.session_id);
-    }
-    row.dataset.codexBulkMoveSelected = String(!!selected);
-    const checkbox = row.querySelector(`.${bulkMoveCheckboxClass}`);
-    if (checkbox) checkbox.checked = !!selected;
-    renderBulkMoveBar();
-  }
-
-  function installBulkMoveSelectionControl(row) {
-    const existing = row.querySelector(`.${bulkMoveCheckboxClass}`);
-    if (!codexBulkMoveMode || !codexPlusSettings().projectMove) {
-      existing?.remove();
-      row.dataset.codexBulkMoveMode = "false";
-      row.dataset.codexBulkMoveSelected = "false";
-      return;
-    }
-    const ref = sessionRefFromRow(row);
-    if (!ref.session_id) return;
-    row.dataset.codexBulkMoveMode = "true";
-    row.dataset.codexBulkMoveSelected = String(codexBulkMoveSelection.has(ref.session_id));
-    const checkbox = existing || document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.className = bulkMoveCheckboxClass;
-    checkbox.setAttribute("aria-label", `选择移动：${ref.title || ref.session_id}`);
-    checkbox.checked = codexBulkMoveSelection.has(ref.session_id);
-    checkbox.disabled = codexBulkMoveInFlight;
-    checkbox.addEventListener("click", (event) => {
-      event.stopPropagation();
-      event.stopImmediatePropagation?.();
-      updateBulkMoveRowSelection(row, ref, checkbox.checked);
-    }, true);
-    if (!existing) row.appendChild(checkbox);
-  }
-
-  function renderBulkMoveBar() {
-    document.querySelectorAll(`.${bulkMoveBarClass}`).forEach((node) => node.remove());
-    if (!codexBulkMoveMode) return;
-    const selectedCount = selectedBulkMoveSessions().length;
-    const processed = Math.min(codexBulkMoveProgress.done, codexBulkMoveProgress.total);
-    const percent = codexBulkMoveProgress.total ? Math.round((processed / codexBulkMoveProgress.total) * 100) : 0;
-    const label = codexBulkMoveInFlight
-      ? `正在移动 ${processed}/${codexBulkMoveProgress.total} · 成功 ${codexBulkMoveProgress.moved} · 失败 ${codexBulkMoveProgress.failed}`
-      : `已选择 ${selectedCount} 个会话`;
-    const bar = document.createElement("div");
-    bar.className = bulkMoveBarClass;
-    bar.innerHTML = `
-      <span>${escapeHtml(label)}</span>
-      <button type="button" data-codex-bulk-move-submit ${selectedCount && !codexBulkMoveInFlight ? "" : "disabled"}>移动到...</button>
-      <button type="button" data-codex-bulk-move-cancel ${codexBulkMoveInFlight ? "disabled" : ""}>取消</button>
-      ${codexBulkMoveInFlight ? `<div class="${bulkMoveProgressClass}" data-codex-bulk-move-progress style="--codex-bulk-move-progress: ${percent}%"><span data-codex-bulk-move-progress-fill></span></div>` : ""}
-    `;
-    bar.addEventListener("click", (event) => {
-      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      event.preventDefault();
-      event.stopPropagation();
-      if (target?.closest("[data-codex-bulk-move-cancel]")) {
-        if (!codexBulkMoveInFlight) setBulkMoveMode(false);
-        return;
-      }
-      if (target?.closest("[data-codex-bulk-move-submit]")) {
-        if (!codexBulkMoveInFlight) openBulkProjectMoveMenu();
-      }
-    }, true);
-    document.body.appendChild(bar);
-  }
-
   function finishProjectMove(row, button, ref, target, message) {
     releaseDeleteFocus(row, button);
     button.disabled = false;
@@ -2380,85 +2187,28 @@
     }
   }
 
-  async function moveSelectedSessionsToTarget(target) {
-    const sessions = selectedBulkMoveSessions().filter((session) => session?.ref?.session_id);
-    if (!sessions.length) {
-      showToast("请选择要移动的会话", null);
-      return;
-    }
-    codexBulkMoveInFlight = true;
-    codexBulkMoveProgress = { total: sessions.length, done: 0, moved: 0, failed: 0 };
-    const progressStartedAt = Date.now();
-    sessionRows(true).forEach((row) => installBulkMoveSelectionControl(row));
-    renderBulkMoveBar();
-    await waitForBulkMovePaint();
-    let moved = 0;
-    const failures = [];
-    for (const session of sessions) {
-      try {
-        const result = target.kind === "projectless"
-          ? await moveSessionToProjectless(session.ref)
-          : await moveSessionToProject(session.ref, target);
-        const sortState = sortStateFromMoveResult(result, session.ref, session.row);
-        const movedTarget = { ...target, ...sortState };
-        saveProjectMoveProjection(session.ref, movedTarget, sortState.sortMs);
-        if (target.kind === "projectless") moveRowToChats(session.row, movedTarget);
-        moved += 1;
-      } catch (error) {
-        failures.push(`${session.ref.title || session.ref.session_id}: ${error?.message || error}`);
-      }
-      codexBulkMoveProgress = { ...codexBulkMoveProgress, done: moved + failures.length, moved, failed: failures.length };
-      renderBulkMoveBar();
-      await waitForBulkMovePaint();
-    }
-    await sleep(Math.max(0, bulkMoveProgressMinVisibleMs - (Date.now() - progressStartedAt)));
-    codexBulkMoveInFlight = false;
-    refreshAfterProjectMove();
-    if (failures.length === 0) {
-      showToast(`已移动 ${moved} 个会话到“${target.label}”`, null);
-      setBulkMoveMode(false);
-      return;
-    }
-    renderBulkMoveBar();
-    showToast(`已移动 ${moved} 个会话，失败 ${failures.length} 个`, null);
-    window.__codexBulkMoveFailures = failures;
-  }
-
-  function closeProjectMoveOverlay(overlay) {
-    if (!overlay?.isConnected) return Promise.resolve();
-    overlay.getBoundingClientRect();
-    overlay.dataset.codexProjectMoveClosing = "true";
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        overlay.remove();
-        resolve();
-      }, 200);
-    });
-  }
-
-  async function openProjectMoveMenu(title, anchorRect, onSelect, options = {}) {
+  async function openProjectMoveMenuForRow(row, button, ref, event) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation?.();
+    releaseDeleteFocus(row, button);
     document.querySelectorAll(`.${projectMoveOverlayClass}`).forEach((node) => node.remove());
     const overlay = document.createElement("div");
     overlay.className = projectMoveOverlayClass;
     overlay.innerHTML = `
       <div class="codex-project-move-panel" role="dialog" aria-modal="true" aria-label="移动对话">
         <div class="codex-project-move-header">
-          <div class="codex-project-move-title">${escapeHtml(title)}</div>
+          <div class="codex-project-move-title">移动“${escapeHtml(ref.title || ref.session_id)}”</div>
         </div>
         <div class="codex-project-move-list"><div class="codex-project-move-empty">加载项目中...</div></div>
       </div>
     `;
     const panel = overlay.querySelector(".codex-project-move-panel");
+    const rect = button.getBoundingClientRect();
     const panelWidth = Math.min(360, Math.max(240, window.innerWidth - 32));
-    if (options.placement === "center") {
-      panel.style.left = `${Math.max(16, (window.innerWidth - panelWidth) / 2)}px`;
-      panel.style.top = `${Math.max(16, (window.innerHeight - Math.min(520, window.innerHeight - 32)) / 2)}px`;
-    } else {
-      const rect = anchorRect || { right: window.innerWidth / 2, bottom: window.innerHeight / 2 };
-      panel.style.left = `${Math.max(16, Math.min(window.innerWidth - panelWidth - 16, rect.right - panelWidth))}px`;
-      panel.style.top = `${Math.max(16, Math.min(window.innerHeight - 120, rect.bottom + 6))}px`;
-    }
-    const close = () => closeProjectMoveOverlay(overlay);
+    panel.style.left = `${Math.max(16, Math.min(window.innerWidth - panelWidth - 16, rect.right - panelWidth))}px`;
+    panel.style.top = `${Math.max(16, Math.min(window.innerHeight - 120, rect.bottom + 6))}px`;
+    const close = () => overlay.remove();
     overlay.addEventListener("click", (clickEvent) => {
       if (clickEvent.target === overlay) close();
     }, true);
@@ -2489,33 +2239,16 @@
         item.addEventListener("click", async (selectEvent) => {
           selectEvent.preventDefault();
           selectEvent.stopPropagation();
-          await close();
-          await onSelect(target);
+          close();
+          await applyProjectMove(row, button, ref, target);
         }, true);
         list.appendChild(item);
       }
       list.querySelector("button")?.focus();
     } catch (error) {
-      await close();
+      close();
       showToast(`加载项目失败：${error?.message || error}`, null);
     }
-  }
-
-  async function openProjectMoveMenuForRow(row, button, ref, event) {
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation?.();
-    releaseDeleteFocus(row, button);
-    await openProjectMoveMenu(`移动“${ref.title || ref.session_id}”`, button.getBoundingClientRect(), (target) => applyProjectMove(row, button, ref, target));
-  }
-
-  function openBulkProjectMoveMenu() {
-    const sessions = selectedBulkMoveSessions();
-    if (!sessions.length) {
-      showToast("请选择要移动的会话", null);
-      return;
-    }
-    openProjectMoveMenu(`移动 ${sessions.length} 个会话`, null, (target) => moveSelectedSessionsToTarget(target), { placement: "center" });
   }
 
   function installDeleteButtonEventDelegation() {
@@ -3068,10 +2801,7 @@
   function scanDeferred() {
     enablePluginEntry();
     unblockPluginInstallButtons();
-    sessionRows().forEach((row) => {
-      tryAttachButton(row);
-      installBulkMoveSelectionControl(row);
-    });
+    sessionRows().forEach(tryAttachButton);
     updateDeleteButtonOffsets();
     scheduleProjectMoveProjection();
     scheduleChatsSortCorrection();
@@ -3095,7 +2825,7 @@
   }
 
   function isExtensionUiNode(node) {
-    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${projectMoveOverlayClass}, .${timelineClass}, .codex-conversation-timeline, .${bulkMoveBarClass}, .${bulkMoveCheckboxClass}, #codex-plus-menu`);
+    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${projectMoveOverlayClass}, .${timelineClass}, .codex-conversation-timeline, #codex-plus-menu`);
   }
 
   const scanRelevantSelector = [
