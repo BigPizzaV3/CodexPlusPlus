@@ -2185,10 +2185,9 @@
     checkbox.setAttribute("aria-label", `选择导出：${ref.title || ref.session_id}`);
     checkbox.checked = codexBulkExportSelection.has(ref.session_id);
     checkbox.addEventListener("click", (event) => {
-      event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation?.();
-      updateBulkExportRowSelection(row, ref, !codexBulkExportSelection.has(ref.session_id));
+      updateBulkExportRowSelection(row, ref, checkbox.checked);
     }, true);
     if (!existing) row.appendChild(checkbox);
   }

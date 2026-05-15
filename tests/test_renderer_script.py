@@ -63,6 +63,17 @@ def test_renderer_script_can_bulk_export_selected_sidebar_sessions_as_zip():
     assert "sessionRows().forEach((row) => installBulkExportSelectionControl(row))" in text
 
 
+def test_renderer_script_allows_bulk_export_checkbox_native_checked_state():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    start = text.index("function installBulkExportSelectionControl")
+    end = text.index("\n\n  function renderBulkExportBar", start)
+    checkbox_code = text[start:end]
+
+    assert "checkbox.addEventListener(\"click\"" in checkbox_code
+    assert "event.preventDefault()" not in checkbox_code
+    assert "updateBulkExportRowSelection(row, ref, checkbox.checked)" in checkbox_code
+
+
 
 
 def test_renderer_script_keeps_sponsors_separate_from_author_support():
