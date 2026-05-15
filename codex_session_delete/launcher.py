@@ -418,6 +418,14 @@ def handle_bridge_request(
     if path == "/export-markdown":
         session = SessionRef(session_id=str(payload.get("session_id", "")), title=str(payload.get("title", "")))
         return export_service.export(session).to_dict()
+    if path == "/export-markdown-zip":
+        raw_sessions = payload.get("sessions", [])
+        sessions = [
+            SessionRef(session_id=str(item.get("session_id", "")), title=str(item.get("title", "")))
+            for item in raw_sessions
+            if isinstance(item, dict) and item.get("session_id")
+        ] if isinstance(raw_sessions, list) else []
+        return export_service.export_zip(sessions).to_dict()
     if path == "/archived-thread":
         session = service.find_archived_thread_by_title(str(payload.get("title", "")))
         return {"session_id": session.session_id, "title": session.title} if session else {"session_id": "", "title": ""}

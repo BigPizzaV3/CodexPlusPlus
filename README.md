@@ -73,7 +73,7 @@ python -m codex_session_delete setup
 - 插件入口解锁：API Key 模式下显示并启用插件入口。
 - 特殊插件强制安装：解除 App unavailable / 应用不可用导致的前端安装禁用。
 - 会话删除：悬停显示删除按钮，删除前确认并支持撤销。
-- Markdown 导出：按本地 rollout 导出带时间戳的会话 Markdown。
+- Markdown 导出：按本地 rollout 导出带时间戳的会话 Markdown，并支持多选会话批量导出为 ZIP。
 - 会话项目移动：把会话移动到普通对话或其他本地项目。
 - 对话 Timeline：右侧显示用户提问时间线，悬停摘要，点击跳转。
 - Provider 同步：切换 model_provider 或供应商时不丢历史会话。

@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 
 from codex_session_delete.helper_server import HelperServer
-from codex_session_delete.models import DeleteResult, DeleteStatus, ExportResult, ExportStatus, SessionRef
+from codex_session_delete.models import BulkExportResult, DeleteResult, DeleteStatus, ExportResult, ExportStatus, SessionRef
 
 
 class FakeDeleteService:
@@ -40,10 +40,23 @@ class FakeDeleteService:
 class FakeExportService:
     def __init__(self):
         self.exported = []
+        self.zip_exported = []
 
     def export(self, session: SessionRef):
         self.exported.append(session)
         return ExportResult(ExportStatus.EXPORTED, session.session_id, "Exported", filename="thread.md", markdown="# Thread\n")
+
+    def export_zip(self, sessions: list[SessionRef]):
+        self.zip_exported.extend(sessions)
+        return BulkExportResult(
+            ExportStatus.EXPORTED,
+            f"Exported {len(sessions)} sessions",
+            filename="codex-sessions.zip",
+            zip_base64="UEsDBAo=",
+            exported_count=len(sessions),
+            failed_count=0,
+            failures=[],
+        )
 
 
 def post_json(url, payload, headers=None):
@@ -190,6 +203,25 @@ def test_helper_server_exports_markdown_when_authorized():
     assert export_service.exported[0].session_id == "s1"
 
 
+def test_helper_server_exports_selected_sessions_as_zip_when_authorized():
+    delete_service = FakeDeleteService()
+    export_service = FakeExportService()
+    server = HelperServer("127.0.0.1", 0, delete_service, export_service, allow_http_mutation=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.port}"
+        exported = post_json(base + "/export-markdown-zip", {"sessions": [{"session_id": "s1", "title": "First"}, {"session_id": "s2", "title": "Second"}]})
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+
+    assert exported["status"] == "exported"
+    assert exported["filename"] == "codex-sessions.zip"
+    assert exported["exported_count"] == 2
+    assert [session.session_id for session in export_service.zip_exported] == ["s1", "s2"]
+
+
 def test_helper_server_rejects_http_mutation_by_default():
     service = FakeDeleteService()
     server = HelperServer("127.0.0.1", 0, service)
@@ -204,6 +236,11 @@ def test_helper_server_rejects_http_mutation_by_default():
             assert exc.code == 403
         try:
             post_json(base + "/export-markdown", {"session_id": "s1", "title": "First"})
+            assert False, "expected forbidden response"
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 403
+        try:
+            post_json(base + "/export-markdown-zip", {"sessions": [{"session_id": "s1", "title": "First"}]})
             assert False, "expected forbidden response"
         except urllib.error.HTTPError as exc:
             assert exc.code == 403

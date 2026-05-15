@@ -1,4 +1,6 @@
 import sqlite3
+import zipfile
+from io import BytesIO
 from datetime import datetime
 
 from codex_session_delete.markdown_exporter import MarkdownExportService
@@ -7,7 +9,7 @@ from codex_session_delete.models import ExportStatus, SessionRef
 
 def create_codex_thread_db(path, rollout_path, *, thread_id="t1", title="Codex Thread"):
     with sqlite3.connect(path) as db:
-        db.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT, archived INTEGER, archived_at INTEGER)")
+        db.execute("CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT, archived INTEGER, archived_at INTEGER)")
         db.execute(
             "INSERT INTO threads (id, rollout_path, title, archived, archived_at) VALUES (?, ?, ?, 0, NULL)",
             (thread_id, str(rollout_path), title),
@@ -180,3 +182,40 @@ def test_markdown_exporter_fails_when_thread_missing_rollout_missing_or_no_messa
     assert missing_thread.status == ExportStatus.FAILED
     assert missing_rollout.status == ExportStatus.FAILED
     assert no_messages.status == ExportStatus.FAILED
+
+
+def test_markdown_exporter_exports_multiple_sessions_as_zip_with_failure_summary(tmp_path):
+    db_path = tmp_path / "state_5.sqlite"
+    first_rollout = tmp_path / "first.jsonl"
+    second_rollout = tmp_path / "second.jsonl"
+    first_rollout.write_text(
+        '{"type":"response_item","timestamp":"2026-05-10T13:12:06Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"First body"}]}}\n',
+        encoding="utf-8",
+    )
+    second_rollout.write_text(
+        '{"type":"response_item","timestamp":"2026-05-10T13:12:07Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Second body"}]}}\n',
+        encoding="utf-8",
+    )
+    create_codex_thread_db(db_path, first_rollout, thread_id="t1", title="First Thread")
+    create_codex_thread_db(db_path, second_rollout, thread_id="t2", title="First Thread")
+
+    result = MarkdownExportService(db_path).export_zip([
+        SessionRef(session_id="t1", title="First"),
+        SessionRef(session_id="missing", title="Missing Thread"),
+        SessionRef(session_id="t2", title="Second"),
+    ])
+
+    assert result.status == ExportStatus.EXPORTED
+    assert result.filename == "codex-sessions-2-of-3.zip"
+    assert result.exported_count == 2
+    assert result.failed_count == 1
+    assert result.failures == [{"session_id": "missing", "title": "Missing Thread", "message": "未找到对应会话"}]
+    assert result.zip_base64 is not None
+    with zipfile.ZipFile(BytesIO(result.zip_bytes())) as archive:
+        names = set(archive.namelist())
+        assert "First Thread-t1.md" in names
+        assert "First Thread-t2.md" in names
+        assert "export-failures.md" in names
+        assert "First body" in archive.read("First Thread-t1.md").decode("utf-8")
+        assert "Second body" in archive.read("First Thread-t2.md").decode("utf-8")
+        assert "Missing Thread" in archive.read("export-failures.md").decode("utf-8")

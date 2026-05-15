@@ -2,6 +2,8 @@
   const helperBase = window.__CODEX_SESSION_DELETE_HELPER__ || "http://127.0.0.1:57321";
   const buttonClass = "codex-delete-button";
   const exportButtonClass = "codex-export-button";
+  const bulkExportCheckboxClass = "codex-bulk-export-checkbox";
+  const bulkExportBarClass = "codex-bulk-export-bar";
   const projectMoveButtonClass = "codex-project-move-button";
   const projectMoveOverlayClass = "codex-project-move-overlay";
   const actionButtonClass = "codex-session-action-button";
@@ -100,6 +102,56 @@
         border-color: #93c5fd;
         background: #dbeafe;
         color: #1d4ed8;
+      }
+      .${bulkExportCheckboxClass} {
+        position: absolute;
+        left: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+        z-index: 21;
+        width: 16px;
+        height: 16px;
+        margin: 0;
+        accent-color: #10a37f;
+      }
+      [data-codex-bulk-export-mode="true"] {
+        padding-left: 30px !important;
+      }
+      [data-codex-bulk-export-selected="true"] {
+        background: rgba(16,163,127,.12) !important;
+      }
+      .${bulkExportBarClass} {
+        position: fixed;
+        left: 50%;
+        bottom: 18px;
+        z-index: 2147483001;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        transform: translateX(-50%);
+        border: 1px solid rgba(255,255,255,.12);
+        border-radius: 12px;
+        background: rgba(24,24,27,.96);
+        color: #f4f4f5;
+        padding: 10px 12px;
+        font: 13px system-ui, sans-serif;
+        box-shadow: 0 16px 48px rgba(0,0,0,.28);
+      }
+      .${bulkExportBarClass} button {
+        border: 0;
+        border-radius: 8px;
+        background: rgba(255,255,255,.12);
+        color: #f4f4f5;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+      .${bulkExportBarClass} button[data-codex-bulk-export-submit] {
+        background: #10a37f;
+        color: #fff;
+      }
+      .${bulkExportBarClass} button:disabled {
+        cursor: not-allowed;
+        opacity: .55;
       }
       .${projectMoveButtonClass} {
         border-color: #10a37f;
@@ -258,6 +310,28 @@
         cursor: pointer;
         pointer-events: auto;
         -webkit-app-region: no-drag;
+      }
+      .codex-bulk-export-trigger {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        height: 100%;
+        line-height: 1;
+        margin-left: 4px;
+        padding: 0 8px;
+        cursor: pointer;
+        pointer-events: auto;
+        -webkit-app-region: no-drag;
+      }
+      .codex-bulk-export-trigger:hover,
+      .codex-bulk-export-trigger:focus-visible {
+        background: rgba(255,255,255,.1);
+        outline: none;
       }
       .codex-plus-modal-overlay {
         position: fixed;
@@ -481,7 +555,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, forcePluginInstall: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, nativeMenuPlacement: true };
+    return { pluginEntryUnlock: true, forcePluginInstall: true, sessionDelete: true, markdownExport: true, bulkExport: true, projectMove: true, conversationTimeline: true, nativeMenuPlacement: true };
   }
 
   function codexPlusSettings() {
@@ -743,6 +817,10 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="markdownExport"><span></span></button>
             </div>
             <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">批量导出 ZIP</div><div class="codex-plus-row-description">在会话列表选择多个会话，一次导出为 ZIP。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="bulkExport"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">会话项目移动</div><div class="codex-plus-row-description">在会话列表悬停显示移动按钮，可移动到普通对话或其他本地项目。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="projectMove"><span></span></button>
             </div>
@@ -968,7 +1046,7 @@
     const existing = document.getElementById(codexPlusMenuId);
     removeDuplicateCodexPlusMenus(existing);
     let insertionPoint = findNativeMenuInsertionPoint();
-    if (existing && existing.dataset.codexPlusMenuVersion !== "6") {
+    if (existing && existing.dataset.codexPlusMenuVersion !== "7") {
       existing.remove();
       insertionPoint = findNativeMenuInsertionPoint();
     } else if (existing && insertionPoint && existing.parentElement === insertionPoint.parent) {
@@ -979,7 +1057,7 @@
     const menu = document.createElement("div");
     menu.id = codexPlusMenuId;
     menu.dataset.codexPlusMenu = "true";
-    menu.dataset.codexPlusMenuVersion = "6";
+    menu.dataset.codexPlusMenuVersion = "7";
     const trigger = document.createElement("button");
     trigger.type = "button";
     trigger.textContent = `Codex++ ${codexPlusVersion}`;
@@ -991,6 +1069,18 @@
     const nativeButtonClass = insertionPoint?.nativeButtonClass || "codex-plus-trigger";
     configureCodexPlusTrigger(menu, trigger, nativeButtonClass);
     menu.appendChild(trigger);
+    const bulkExportButton = document.createElement("button");
+    bulkExportButton.type = "button";
+    bulkExportButton.textContent = "批量导出";
+    bulkExportButton.className = "codex-bulk-export-trigger";
+    bulkExportButton.dataset.codexBulkExportToggle = "true";
+    bulkExportButton.hidden = !codexPlusSettings().bulkExport;
+    bulkExportButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleBulkExportMode();
+    }, true);
+    menu.appendChild(bulkExportButton);
     if (insertionPoint) {
       menu.className = "";
       const safeBefore = insertionPoint.before?.parentElement === insertionPoint.parent ? insertionPoint.before : null;
@@ -1182,6 +1272,22 @@
       throw new Error("导出结果不完整");
     }
     const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function downloadZip(filename, zipBase64) {
+    if (!filename || typeof zipBase64 !== "string") {
+      throw new Error("批量导出结果不完整");
+    }
+    const bytes = Uint8Array.from(atob(zipBase64), (char) => char.charCodeAt(0));
+    const blob = new Blob([bytes], { type: "application/zip" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -2031,6 +2137,104 @@
     setTimeout(() => toast.remove(), 10000);
   }
 
+  const codexBulkExportSelection = new Map();
+  let codexBulkExportMode = false;
+
+  function selectedBulkExportSessions() {
+    return Array.from(codexBulkExportSelection.values());
+  }
+
+  function setBulkExportMode(enabled) {
+    codexBulkExportMode = !!enabled && !!codexPlusSettings().bulkExport;
+    if (!codexBulkExportMode) codexBulkExportSelection.clear();
+    sessionRows(true).forEach((row) => installBulkExportSelectionControl(row));
+    renderBulkExportBar();
+  }
+
+  function toggleBulkExportMode() {
+    setBulkExportMode(!codexBulkExportMode);
+  }
+
+  function updateBulkExportRowSelection(row, ref, selected) {
+    if (selected) {
+      codexBulkExportSelection.set(ref.session_id, ref);
+    } else {
+      codexBulkExportSelection.delete(ref.session_id);
+    }
+    row.dataset.codexBulkExportSelected = String(!!selected);
+    const checkbox = row.querySelector(`.${bulkExportCheckboxClass}`);
+    if (checkbox) checkbox.checked = !!selected;
+    renderBulkExportBar();
+  }
+
+  function installBulkExportSelectionControl(row) {
+    const existing = row.querySelector(`.${bulkExportCheckboxClass}`);
+    if (!codexBulkExportMode || !codexPlusSettings().bulkExport) {
+      existing?.remove();
+      row.dataset.codexBulkExportMode = "false";
+      row.dataset.codexBulkExportSelected = "false";
+      return;
+    }
+    const ref = sessionRefFromRow(row);
+    if (!ref.session_id) return;
+    row.dataset.codexBulkExportMode = "true";
+    row.dataset.codexBulkExportSelected = String(codexBulkExportSelection.has(ref.session_id));
+    const checkbox = existing || document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = bulkExportCheckboxClass;
+    checkbox.setAttribute("aria-label", `选择导出：${ref.title || ref.session_id}`);
+    checkbox.checked = codexBulkExportSelection.has(ref.session_id);
+    checkbox.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      updateBulkExportRowSelection(row, ref, !codexBulkExportSelection.has(ref.session_id));
+    }, true);
+    if (!existing) row.appendChild(checkbox);
+  }
+
+  function renderBulkExportBar() {
+    document.querySelectorAll(`.${bulkExportBarClass}`).forEach((node) => node.remove());
+    if (!codexBulkExportMode) return;
+    const selectedCount = selectedBulkExportSessions().length;
+    const bar = document.createElement("div");
+    bar.className = bulkExportBarClass;
+    bar.innerHTML = `
+      <span>已选择 ${selectedCount} 个会话</span>
+      <button type="button" data-codex-bulk-export-submit ${selectedCount ? "" : "disabled"}>导出 ZIP</button>
+      <button type="button" data-codex-bulk-export-cancel>取消</button>
+    `;
+    bar.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      event.preventDefault();
+      event.stopPropagation();
+      if (target?.closest("[data-codex-bulk-export-cancel]")) {
+        setBulkExportMode(false);
+        return;
+      }
+      if (target?.closest("[data-codex-bulk-export-submit]")) {
+        exportSelectedSessionsZip();
+      }
+    }, true);
+    document.body.appendChild(bar);
+  }
+
+  async function exportSelectedSessionsZip() {
+    const sessions = selectedBulkExportSessions();
+    if (!sessions.length) {
+      showToast("请选择要导出的会话", null);
+      return;
+    }
+    const result = await postJson("/export-markdown-zip", { sessions });
+    if (result.status === "exported" && result.filename && result.zip_base64) {
+      downloadZip(result.filename, result.zip_base64);
+      showToast(result.message || "批量导出成功", null);
+      setBulkExportMode(false);
+      return;
+    }
+    showToast(result.message || "批量导出失败", null);
+  }
+
   function escapeHtml(value) {
     return String(value)
       .replaceAll("&", "&amp;")
@@ -2802,6 +3006,7 @@
     enablePluginEntry();
     unblockPluginInstallButtons();
     sessionRows().forEach(tryAttachButton);
+    sessionRows().forEach((row) => installBulkExportSelectionControl(row));
     updateDeleteButtonOffsets();
     scheduleProjectMoveProjection();
     scheduleChatsSortCorrection();
@@ -2825,7 +3030,7 @@
   }
 
   function isExtensionUiNode(node) {
-    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${projectMoveOverlayClass}, .${timelineClass}, .codex-conversation-timeline, #codex-plus-menu`);
+    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${projectMoveOverlayClass}, .${timelineClass}, .codex-conversation-timeline, .${bulkExportBarClass}, .${bulkExportCheckboxClass}, #codex-plus-menu`);
   }
 
   const scanRelevantSelector = [

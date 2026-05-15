@@ -46,6 +46,24 @@ def test_renderer_script_positions_delete_button_without_affecting_layout():
 
 
 
+def test_renderer_script_can_bulk_export_selected_sidebar_sessions_as_zip():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "bulkExport: true" in text
+    assert 'data-codex-plus-setting="bulkExport"' in text
+    assert "codex-bulk-export-checkbox" in text
+    assert "codex-bulk-export-bar" in text
+    assert "codexBulkExportSelection" in text
+    assert "toggleBulkExportMode()" in text
+    assert "installBulkExportSelectionControl(row)" in text
+    assert "exportSelectedSessionsZip()" in text
+    assert 'postJson("/export-markdown-zip"' in text
+    assert "downloadZip(result.filename, result.zip_base64)" in text
+    assert "Uint8Array.from(atob(zipBase64)" in text
+    assert "sessionRows().forEach((row) => installBulkExportSelectionControl(row))" in text
+
+
+
 
 def test_renderer_script_keeps_sponsors_separate_from_author_support():
     text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
@@ -605,7 +623,7 @@ def test_renderer_script_includes_user_script_manager_ui_contract():
     assert "removeDuplicateCodexPlusMenus" in text
     assert "data-codex-plus-menu" in text
     assert "textContent || \"\").trim() === `Codex++ ${codexPlusVersion}`" in text
-    assert "codexPlusMenuVersion !== \"6\"" in text
+    assert "codexPlusMenuVersion !== \"7\"" in text
     assert "codexPlusTriggerInstalled = \"5\"" in text
     assert ".codex-plus-trigger:hover" not in text
     assert "function headerTitleRegion" in text

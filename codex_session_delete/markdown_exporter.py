@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 import sqlite3
+import zipfile
+from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 
-from codex_session_delete.models import ExportResult, ExportStatus, SessionRef
+from codex_session_delete.models import BulkExportResult, ExportResult, ExportStatus, SessionRef
 
 
 _WINDOWS_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -60,6 +63,61 @@ class MarkdownExportService:
             message=f"已导出为 Markdown：{filename}",
             filename=filename,
             markdown=markdown,
+        )
+
+    def export_zip(self, sessions: list[SessionRef]) -> BulkExportResult:
+        if not sessions:
+            return BulkExportResult(
+                status=ExportStatus.FAILED,
+                message="未选择可导出的会话",
+                failures=[],
+            )
+
+        failures: list[dict[str, str]] = []
+        exported: list[ExportResult] = []
+        for session in sessions:
+            result = self.export(session)
+            if result.status == ExportStatus.EXPORTED and result.filename and result.markdown is not None:
+                exported.append(result)
+            else:
+                failures.append({
+                    "session_id": session.session_id,
+                    "title": session.title,
+                    "message": result.message,
+                })
+
+        if not exported:
+            return BulkExportResult(
+                status=ExportStatus.FAILED,
+                message=f"导出失败：{len(failures)} 个会话未导出",
+                exported_count=0,
+                failed_count=len(failures),
+                failures=failures,
+            )
+
+        buffer = BytesIO()
+        used_names: set[str] = set()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for result in exported:
+                archive.writestr(self._unique_zip_name(result.filename or "Untitled session.md", used_names), result.markdown or "")
+            if failures:
+                archive.writestr("export-failures.md", self._render_failure_summary(failures))
+
+        total = len(sessions)
+        exported_count = len(exported)
+        failed_count = len(failures)
+        filename = f"codex-sessions-{exported_count}-of-{total}.zip"
+        message = f"已导出 {exported_count}/{total} 个会话为 ZIP"
+        if failed_count:
+            message += f"，{failed_count} 个失败"
+        return BulkExportResult(
+            status=ExportStatus.EXPORTED,
+            message=message,
+            filename=filename,
+            zip_base64=base64.b64encode(buffer.getvalue()).decode("ascii"),
+            exported_count=exported_count,
+            failed_count=failed_count,
+            failures=failures,
         )
 
     def _supports_codex_threads(self, db: sqlite3.Connection) -> bool:
@@ -144,6 +202,30 @@ class MarkdownExportService:
             lines.append(body.rstrip())
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
+
+    def _render_failure_summary(self, failures: list[dict[str, str]]) -> str:
+        lines = ["# Export failures", ""]
+        for failure in failures:
+            title = failure.get("title") or "Untitled session"
+            session_id = failure.get("session_id") or ""
+            message = failure.get("message") or "导出失败"
+            lines.append(f"- {title} ({session_id}): {message}")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _unique_zip_name(self, filename: str, used_names: set[str]) -> str:
+        if filename not in used_names:
+            used_names.add(filename)
+            return filename
+        stem, dot, suffix = filename.rpartition(".")
+        base = stem if dot else filename
+        extension = f".{suffix}" if dot else ""
+        index = 2
+        while True:
+            candidate = f"{base}-{index}{extension}"
+            if candidate not in used_names:
+                used_names.add(candidate)
+                return candidate
+            index += 1
 
     def _normalize_session_id(self, session_id: str) -> str:
         return session_id.removeprefix("local:")

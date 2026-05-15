@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from enum import Enum
 
@@ -60,4 +61,29 @@ class ExportResult:
             "message": self.message,
             "filename": self.filename,
             "markdown": self.markdown,
+        }
+
+
+@dataclass(frozen=True)
+class BulkExportResult:
+    status: ExportStatus
+    message: str
+    filename: str | None = None
+    zip_base64: str | None = None
+    exported_count: int = 0
+    failed_count: int = 0
+    failures: list[dict[str, str]] | None = None
+
+    def zip_bytes(self) -> bytes:
+        return base64.b64decode(self.zip_base64 or "")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status.value,
+            "message": self.message,
+            "filename": self.filename,
+            "zip_base64": self.zip_base64,
+            "exported_count": self.exported_count,
+            "failed_count": self.failed_count,
+            "failures": self.failures or [],
         }

@@ -73,7 +73,7 @@ If Codex++ has helped you, you can buy me a coffee or send a small tip to suppor
 - Plugin entry unlock for API Key mode.
 - Forced plugin install when the frontend blocks App unavailable states.
 - Session delete with confirmation and undo.
-- Markdown export from local rollout files.
+- Markdown export from local rollout files, including multi-select ZIP export.
 - Project move for normal conversations and local projects.
 - Conversation Timeline with question markers, hover summaries, and quick jump.
 - Provider Sync so historical conversations remain visible after switching `model_provider`.
