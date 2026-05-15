@@ -56,6 +56,9 @@ def test_launch_codex_injects_detected_local_proxy(monkeypatch):
     monkeypatch.delenv("HTTP_PROXY", raising=False)
     monkeypatch.delenv("HTTPS_PROXY", raising=False)
     monkeypatch.delenv("ALL_PROXY", raising=False)
+    monkeypatch.delenv("http_proxy", raising=False)
+    monkeypatch.delenv("https_proxy", raising=False)
+    monkeypatch.delenv("all_proxy", raising=False)
     monkeypatch.setattr(launcher, "local_proxy_url", lambda: "http://127.0.0.1:7897")
     monkeypatch.setattr(launcher.subprocess, "Popen", lambda args, **kw: popen_calls.append((args, kw)))
 

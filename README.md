@@ -17,7 +17,19 @@
 
 Codex++ 是面向 Codex App 的外部增强启动器：不修改原始安装文件，通过 Chromium DevTools Protocol 注入增强脚本。
 
+## 目录
+
+- [Windows 使用](#windows-使用)
+- [功能亮点](#功能亮点)
+- [工作方式](#工作方式)
+- [Provider 同步](#provider-同步)
+- [常用命令](#常用命令)
+- [常见问题](#常见问题)
+- [开发](#开发)
+
 ## 快速使用
+
+## Windows 使用
 
 Windows 用户双击项目根目录的 `setup.bat`，选择：
 
@@ -48,6 +60,8 @@ python -m codex_session_delete setup
 欢迎扫码加入 Codex++ 交流群，反馈问题、交流使用体验或提出新功能建议：
 
 <img src="docs/images/discussion-group-qr.jpg" alt="Codex++ 交流群二维码" width="260">
+
+## 赞赏支持
 
 如果 Codex++ 帮到了你，可以请我喝杯咖啡，或者随手赞赏支持一下继续维护。
 

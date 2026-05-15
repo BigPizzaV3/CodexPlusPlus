@@ -113,7 +113,7 @@ This approach does not modify Codex `app.asar` and does not write DLL files into
 
 ## Provider Sync
 
-When `Provider Sync` is enabled, Codex++ synchronizes local session metadata before launch so historical conversations remain visible in Desktop and `/resume` after switching providers.
+When `Provider Sync` is enabled, Codex++ synchronizes local session metadata before launch so you can switch model_provider without losing historical conversations in Desktop and `/resume`.
 
 It aligns rollout files, SQLite thread records, and project path caches. It only fixes visibility metadata and does not rewrite message content. Busy files or SQLite locks are skipped so startup can continue.
 
