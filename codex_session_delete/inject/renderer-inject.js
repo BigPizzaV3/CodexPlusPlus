@@ -1042,6 +1042,9 @@
   function spoofChatGPTAuthMethod(element) {
     const auth = authContextValueFrom(element);
     if (!auth || auth.authMethod === "chatgpt") return false;
+    // Injection workaround: the plugin gate reads authMethod synchronously from
+    // the current React fiber context before state propagation completes.
+    auth.authMethod = "chatgpt";
     auth.setAuthMethod("chatgpt");
     return true;
   }
@@ -1051,6 +1054,17 @@
     if (byIcon) return byIcon;
     return Array.from(document.querySelectorAll(selectors.pluginNavButton))
       .find((button) => /^(插件|Plugins)(\s+-\s+.*)?$/i.test((button.textContent || "").trim())) || null;
+  }
+
+  function isPluginEntryButtonElement(button) {
+    return !!button?.matches?.(selectors.pluginNavButton) &&
+      (!!button.querySelector?.(selectors.pluginSvgPath) || /^(插件|Plugins)(\s+-\s+.*)?$/i.test((button.textContent || "").trim()));
+  }
+
+  function pluginEntryButtonFromNode(node) {
+    if (node.nodeType !== 1) return null;
+    const button = node.matches?.(selectors.pluginNavButton) ? node : node.closest?.(selectors.pluginNavButton);
+    return isPluginEntryButtonElement(button) ? button : null;
   }
 
   function labelUnlockedPluginEntry(button) {
@@ -1066,23 +1080,83 @@
     if (!codexPlusSettings().pluginEntryUnlock) return;
     const pluginButton = pluginEntryButton();
     if (!pluginButton) return;
-    spoofChatGPTAuthMethod(pluginButton);
-    pluginButton.disabled = false;
-    pluginButton.removeAttribute("disabled");
+    unblockButtonElement(pluginButton);
     pluginButton.style.display = "";
     pluginButton.querySelectorAll("*").forEach((node) => {
+      const looksDisabled = node.style.display === "none" ||
+        node.hasAttribute("aria-disabled") ||
+        node.classList?.contains("disabled") ||
+        node.classList?.contains("opacity-50") ||
+        node.classList?.contains("cursor-not-allowed") ||
+        node.classList?.contains("pointer-events-none");
+      if (!looksDisabled) return;
       node.style.display = "";
+      node.removeAttribute("aria-disabled");
+      node.classList?.remove("disabled", "opacity-50", "cursor-not-allowed", "pointer-events-none");
+      node.style.removeProperty("pointer-events");
+      node.style.removeProperty("opacity");
     });
     labelUnlockedPluginEntry(pluginButton);
-    const reactPropsKey = Object.keys(pluginButton).find((key) => key.startsWith("__reactProps"));
-    if (reactPropsKey) {
-      pluginButton[reactPropsKey].disabled = false;
-    }
-    if (pluginButton.dataset.codexPluginEnabled === "true") return;
+    const pluginEntryHandlerVersion = "activation-v2";
+    if (pluginButton.dataset.codexPluginEnabledVersion === pluginEntryHandlerVersion) return;
     pluginButton.dataset.codexPluginEnabled = "true";
+    pluginButton.dataset.codexPluginEnabledVersion = pluginEntryHandlerVersion;
+    // Capture phase runs before Codex's own activation handler reads authMethod.
+    ["pointerdown", "mousedown", "touchstart"].forEach((eventName) => {
+      pluginButton.addEventListener(eventName, () => {
+        spoofChatGPTAuthMethod(pluginButton);
+      }, true);
+    });
     pluginButton.addEventListener("click", () => {
       spoofChatGPTAuthMethod(pluginButton);
     }, true);
+    pluginButton.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") spoofChatGPTAuthMethod(pluginButton);
+    }, true);
+  }
+
+  function nodeContainsPluginEntryCandidate(node) {
+    if (node.nodeType !== 1) return false;
+    return !!node.matches?.(selectors.pluginNavButton) ||
+      !!node.querySelector?.(selectors.pluginNavButton) ||
+      !!node.matches?.(selectors.pluginSvgPath) ||
+      !!node.querySelector?.(selectors.pluginSvgPath);
+  }
+
+  function schedulePluginEntryUnlockRetries() {
+    if (!codexPlusSettings().pluginEntryUnlock) return;
+    (window.__codexPlusPluginEntryUnlockTimers || []).forEach(clearTimeout);
+    window.__codexPlusPluginEntryUnlockTimers = [100, 300, 700, 1500, 3000].map((delay) => {
+      return setTimeout(() => {
+        if (document.visibilityState !== "hidden") runScanStep(enablePluginEntry);
+      }, delay);
+    });
+  }
+
+  function schedulePluginEntryUnlockFrame() {
+    if (!codexPlusSettings().pluginEntryUnlock || window.__codexPlusPluginEntryUnlockRaf) return;
+    window.__codexPlusPluginEntryUnlockRaf = requestAnimationFrame(() => {
+      window.__codexPlusPluginEntryUnlockRaf = 0;
+      runScanStep(enablePluginEntry);
+    });
+  }
+
+  function nodeLooksPluginEntryLocked(node) {
+    return node.disabled === true ||
+      node.hasAttribute?.("disabled") ||
+      node.getAttribute?.("aria-disabled") === "true" ||
+      node.classList?.contains("disabled") ||
+      node.classList?.contains("opacity-50") ||
+      node.classList?.contains("cursor-not-allowed") ||
+      node.classList?.contains("pointer-events-none") ||
+      node.style?.pointerEvents === "none" ||
+      node.style?.opacity === "0.5";
+  }
+
+  function shouldRefreshPluginEntryUnlock(mutation) {
+    if (mutation.type !== "attributes" || !["disabled", "aria-disabled", "class", "style"].includes(mutation.attributeName)) return false;
+    const button = pluginEntryButtonFromNode(mutation.target);
+    return !!button && (nodeLooksPluginEntryLocked(button) || nodeLooksPluginEntryLocked(mutation.target));
   }
 
   function pluginInstallCandidates() {
@@ -3218,6 +3292,7 @@
       if (isChatContentMutation(mutation)) return false;
       const target = mutation.target;
       if (isExtensionUiNode(target)) return false;
+      if (Array.from(mutation.addedNodes).some(nodeContainsPluginEntryCandidate)) return true;
       if (target?.nodeType === 1 && nodeSelfOrAncestorMatchesScanRelevance(target)) return true;
       const changedNodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
       return changedNodes.some((node) => node.nodeType === 1 && isScanRelevantNode(node));
@@ -3232,6 +3307,9 @@
   }
 
   function scheduleScan(mutations) {
+    if (mutations?.some(shouldRefreshPluginEntryUnlock)) {
+      schedulePluginEntryUnlockFrame();
+    }
     if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
     window.__codexSessionDeleteScanPending = true;
@@ -3239,6 +3317,7 @@
   }
 
   scan();
+  schedulePluginEntryUnlockRetries();
   window.__codexProjectMoveApplyProjection = applyProjectMoveProjection;
   window.__codexProjectMoveReadProjection = readProjectMoveProjection;
   window.__codexProjectMoveTargets = projectMoveTargets;
@@ -3255,5 +3334,10 @@
   window.addEventListener("resize", window.__codexPlusResizeHandler);
   window.__codexSessionDeleteObserver?.disconnect();
   window.__codexSessionDeleteObserver = new MutationObserver(scheduleScan);
-  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, { childList: true, subtree: true });
+  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, {
+    attributeFilter: ["disabled", "aria-disabled", "class", "style"],
+    attributes: true,
+    childList: true,
+    subtree: true,
+  });
 })();

@@ -270,10 +270,62 @@ def test_renderer_script_enables_plugin_entry_for_api_key_users():
     assert "svg path[d^=\"M7.94562 14.0277\"]" in text
     assert "selectors.pluginNavButton" in plugin_entry_code
     assert "selectors.pluginSvgPath" in plugin_entry_code
+    scan_relevant_code = text[text.index("const scanRelevantSelector") : text.index("function nodeSelfOrAncestorMatchesScanRelevance")]
+    assert "selectors.pluginNavButton" not in scan_relevant_code
+    assert "function runForegroundResumeScans" not in text
+    assert "__codexPlusForegroundResumeScanTimers" not in text
+    assert 'window.addEventListener("visibilitychange", window.__codexPlusVisibilityResumeHandler)' not in text
+    assert 'window.addEventListener("focus", window.__codexPlusFocusResumeHandler)' not in text
+    assert "function nodeContainsPluginEntryCandidate" in plugin_entry_code
+    assert "node.querySelector?.(selectors.pluginNavButton)" in plugin_entry_code
+    assert "function schedulePluginEntryUnlockRetries" in plugin_entry_code
+    assert "__codexPlusPluginEntryUnlockTimers" in plugin_entry_code
+    assert "[100, 300, 700, 1500, 3000].map" in plugin_entry_code
+    assert "runScanStep(enablePluginEntry)" in plugin_entry_code
+    assert "function schedulePluginEntryUnlockFrame" in plugin_entry_code
+    assert "__codexPlusPluginEntryUnlockRaf" in plugin_entry_code
+    assert "function nodeLooksPluginEntryLocked" in plugin_entry_code
+    assert "function shouldRefreshPluginEntryUnlock" in plugin_entry_code
+    assert '["disabled", "aria-disabled", "class", "style"].includes(mutation.attributeName)' in plugin_entry_code
+    assert "nodeLooksPluginEntryLocked(button) || nodeLooksPluginEntryLocked(mutation.target)" in plugin_entry_code
+    assert "Array.from(mutation.addedNodes).some(nodeContainsPluginEntryCandidate)" in text
+    assert "mutations?.some(shouldRefreshPluginEntryUnlock)" in text
+    assert "schedulePluginEntryUnlockFrame();" in text
+    assert "schedulePluginEntryUnlockRetries();" in text
+    assert 'attributeFilter: ["disabled", "aria-disabled", "class", "style"]' in text
+    assert "attributes: true" in text
     assert "document.querySelectorAll(\"button\")" not in plugin_entry_code
-    assert "disabled = false" in plugin_entry_code
-    assert "removeAttribute(\"disabled\")" in plugin_entry_code
+    assert "unblockButtonElement(pluginButton)" in plugin_entry_code
+    assert "const looksDisabled = node.style.display === \"none\"" in plugin_entry_code
+    assert "if (!looksDisabled) return;" in plugin_entry_code
+    assert "node.style.display = \"\"" in plugin_entry_code
+    assert "node.removeAttribute(\"aria-disabled\")" in plugin_entry_code
+    assert "node.classList?.remove(\"disabled\", \"opacity-50\", \"cursor-not-allowed\", \"pointer-events-none\")" in plugin_entry_code
+    assert "node.style.removeProperty(\"pointer-events\")" in plugin_entry_code
+    assert "node.style.removeProperty(\"opacity\")" in plugin_entry_code
     assert "setAuthMethod(\"chatgpt\")" in text
+    assert "Injection workaround: the plugin gate reads authMethod synchronously" in text
+    assert "Capture phase runs before Codex's own activation handler reads authMethod" in text
+    assert "auth.authMethod = \"chatgpt\"" in text
+    assert 'const pluginEntryHandlerVersion = "activation-v2"' in plugin_entry_code
+    assert "pluginButton.dataset.codexPluginEnabledVersion === pluginEntryHandlerVersion" in plugin_entry_code
+    assert "pluginButton.dataset.codexPluginEnabledVersion = pluginEntryHandlerVersion" in plugin_entry_code
+    assert 'pluginButton.dataset.codexPluginEnabled === "true"' not in plugin_entry_code
+    assert "[\"pointerdown\", \"mousedown\", \"touchstart\"].forEach((eventName) => {" in plugin_entry_code
+    assert 'pluginButton.addEventListener("keydown", (event) => {' in plugin_entry_code
+    assert 'event.key === "Enter" || event.key === " "' in plugin_entry_code
+    assert 'event.key === "Spacebar"' in plugin_entry_code
+    assert "pointerenter" not in plugin_entry_code
+    assert "mouseover" not in plugin_entry_code
+    assert "focusin" not in plugin_entry_code
+    assert "if (!pluginButton) return;\n    spoofChatGPTAuthMethod(pluginButton);" not in plugin_entry_code
+    assert "data-codex-restore-model-selector" not in text
+    assert "data-codex-apply-plugin-entry-unlock" not in text
+    assert "恢复模型选择" not in text
+    assert "重新应用插件" not in text
+    assert "restoreModelSelectorAuthMethod" not in text
+    assert "applyPluginEntryUnlock" not in text
+    assert "__codexPlusModelSelectorDiagnostic" not in text
     assert "插件 - 已解锁" in plugin_entry_code
     assert "Plugins - Unlocked" in plugin_entry_code
     assert "labelUnlockedPluginEntry" in plugin_entry_code
