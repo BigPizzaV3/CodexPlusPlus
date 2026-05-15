@@ -349,6 +349,9 @@ def launch_and_inject(app_dir: Path | None, db_path: Path | None, backup_dir: Pa
         sync_result = run_provider_sync()
         if sync_result.status == ProviderSyncStatus.SKIPPED:
             print(f"Provider sync skipped: {sync_result.message}")
+    if sys.platform == "darwin":
+        from codex_session_delete.electron_fuses import ensure_cli_inspect_enabled
+        ensure_cli_inspect_enabled(resolved_app_dir)
     server = start_helper(service, export_service, port=helper_port)
     codex_proc = None
     try:
