@@ -96,12 +96,20 @@ class CodexPlusRuntime:
     user_scripts: UserScriptManager
     debug_port: int | None = None
     websocket_urls: set[str] = field(default_factory=set)
+    injection_manager: Any = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def add_websocket_url(self, websocket_url: str) -> None:
         with self.lock:
             self.websocket_url = websocket_url
             self.websocket_urls.add(websocket_url)
+
+    def replace_injection_manager(self, injection_manager: Any) -> None:
+        with self.lock:
+            old_manager = self.injection_manager
+            self.injection_manager = injection_manager
+        if old_manager is not None and old_manager is not injection_manager:
+            old_manager.close()
 
     def reload_user_scripts(self) -> dict[str, object]:
         script = self.user_scripts.build_enabled_bundle()
@@ -771,6 +779,9 @@ def start_or_attach_helper(
 def shutdown_helper(server: HelperServer) -> None:
     if isinstance(server, AttachedHelperServer):
         return
+    bridge_socket = getattr(server, "bridge_socket", None)
+    if bridge_socket is not None and hasattr(bridge_socket, "close"):
+        bridge_socket.close()
     server.shutdown()
     server.server_close()
 
@@ -802,6 +813,7 @@ def inject_with_retry(
             _log_runtime_event(f"injected renderer bridge debug_port={debug_port} helper_port={helper_port}")
             if injection.websocket_url:
                 runtime.add_websocket_url(injection.websocket_url)
+            runtime.replace_injection_manager(injection)
             return injection
         except Exception as exc:
             last_error = exc

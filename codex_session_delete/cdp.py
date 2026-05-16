@@ -50,13 +50,25 @@ class MultiPageInjection:
             first = next(iter(self.injections.values()), None)
         return first.result if first else None
 
+    def close(self) -> None:
+        self.stop_event.set()
+        with self.lock:
+            sockets = [injection.bridge_socket for injection in self.injections.values() if injection.bridge_socket]
+        for socket in sockets:
+            socket.close()
+        if self.watcher_thread:
+            self.watcher_thread.join(timeout=1)
+
 
 def list_targets(port: int) -> list[dict[str, object]]:
     session = requests.Session()
     session.trust_env = False
     response = session.get(f"http://127.0.0.1:{port}/json", timeout=3)
     response.raise_for_status()
-    return response.json()
+    targets = response.json()
+    if hasattr(session, "close"):
+        session.close()
+    return targets
 
 
 def codex_page_targets(targets: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -283,7 +295,10 @@ def _bridge_loop(ws: websocket.WebSocket, handler: BridgeHandler) -> None:
         except Exception as exc:
             request_id = str(locals().get("payload", {}).get("id", ""))
             if request_id:
-                _reject_bridge(ws, request_id, str(exc))
+                try:
+                    _reject_bridge(ws, request_id, str(exc))
+                except Exception:
+                    return
 
 
 def _resolve_bridge(ws: websocket.WebSocket, request_id: str, result: dict[str, object]) -> None:
