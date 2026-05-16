@@ -35,6 +35,8 @@
   const codexConversationTimelineVersion = "2";
   const codexPlusVersion = "1.0.7";
   const codexPlusSettingsKey = "codexPlusSettings";
+  window.__codexPlusBackendRuntimeId = (window.__codexPlusBackendRuntimeId || 0) + 1;
+  const codexPlusBackendRuntimeId = window.__codexPlusBackendRuntimeId;
   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
   clearTimeout(window.__codexProjectMoveProjectionTimer);
@@ -540,8 +542,14 @@
 
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
   let codexPlusBackendStatus = { status: "checking", message: "正在检查后端…" };
+  let codexPlusBackendRequestId = 0;
+
+  function isCurrentBackendRuntime() {
+    return window.__codexPlusBackendRuntimeId === codexPlusBackendRuntimeId;
+  }
 
   function renderBackendStatus() {
+    if (!isCurrentBackendRuntime()) return;
     const status = codexPlusBackendStatus.status || "failed";
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
@@ -564,16 +572,28 @@
   }
 
   async function checkBackendStatus() {
-    codexPlusBackendStatus = await withBackendTimeout(postJson("/backend/status", {}));
+    const requestId = ++codexPlusBackendRequestId;
+    const nextStatus = await withBackendTimeout(postJson("/backend/status", {}));
+    if (!isCurrentBackendRuntime() || requestId !== codexPlusBackendRequestId) return;
+    codexPlusBackendStatus = nextStatus;
     renderBackendStatus();
   }
 
   async function repairBackend() {
+    const requestId = ++codexPlusBackendRequestId;
+    window.__codexPlusBackendRepairRequestedAt = Date.now();
     codexPlusBackendStatus = { status: "checking", message: "正在修复后端…" };
     renderBackendStatus();
     try {
-      codexPlusBackendStatus = await postJson("/backend/repair", {});
+      let nextStatus = await withBackendTimeout(postJson("/backend/repair", {}));
+      if (nextStatus?.status !== "ok") {
+        nextStatus = await bindingPostJson("/backend/repair", {});
+      }
+      if (!isCurrentBackendRuntime() || requestId !== codexPlusBackendRequestId) return;
+      codexPlusBackendStatus = nextStatus;
+      if (codexPlusBackendStatus?.status === "ok") setTimeout(checkBackendStatus, 300);
     } catch (error) {
+      if (!isCurrentBackendRuntime() || requestId !== codexPlusBackendRequestId) return;
       codexPlusBackendStatus = { status: "failed", message: "后端修复失败" };
     }
     renderBackendStatus();
@@ -623,6 +643,60 @@
   const codexPlusAdsUrl = "/ads";
   let codexPlusAds = [];
   let codexPlusAdsLoaded = false;
+
+  function ensureBridgeCallbacks() {
+    if (!(window.__codexSessionDeleteCallbacks instanceof Map)) {
+      window.__codexSessionDeleteCallbacks = new Map();
+    }
+    if (!Number.isFinite(window.__codexSessionDeleteSeq)) {
+      window.__codexSessionDeleteSeq = 0;
+    }
+    if (typeof window.__codexSessionDeleteResolve !== "function") {
+      window.__codexSessionDeleteResolve = (id, result) => {
+        const callback = window.__codexSessionDeleteCallbacks.get(id);
+        if (!callback) return;
+        window.__codexSessionDeleteCallbacks.delete(id);
+        callback.resolve(result);
+      };
+    }
+    if (typeof window.__codexSessionDeleteReject !== "function") {
+      window.__codexSessionDeleteReject = (id, message) => {
+        const callback = window.__codexSessionDeleteCallbacks.get(id);
+        if (!callback) return;
+        window.__codexSessionDeleteCallbacks.delete(id);
+        callback.resolve({ status: "failed", message });
+      };
+    }
+  }
+
+  function bindingPostJson(path, payload, timeoutMs = 2000) {
+    return new Promise((resolve) => {
+      const binding = window.codexSessionDeleteV2;
+      if (typeof binding !== "function") {
+        resolve({ status: "failed", message: "后端桥接不可用" });
+        return;
+      }
+      ensureBridgeCallbacks();
+      const id = String(++window.__codexSessionDeleteSeq);
+      const timer = setTimeout(() => {
+        window.__codexSessionDeleteCallbacks.delete(id);
+        resolve({ status: "failed", message: "后端修复超时" });
+      }, timeoutMs);
+      window.__codexSessionDeleteCallbacks.set(id, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+      });
+      try {
+        binding(JSON.stringify({ id, path, payload: payload || {} }));
+      } catch (error) {
+        clearTimeout(timer);
+        window.__codexSessionDeleteCallbacks.delete(id);
+        resolve({ status: "failed", message: String(error?.message || error || "后端修复失败") });
+      }
+    });
+  }
 
   function isCodexPlusAdExpired(ad) {
     if (!ad.expires_at) return false;

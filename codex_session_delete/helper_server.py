@@ -40,6 +40,11 @@ class ExportService(Protocol):
     def export(self, session: SessionRef) -> ExportResult: ...
 
 
+class BackendService(Protocol):
+    def backend_status(self) -> dict[str, object]: ...
+    def repair_backend(self) -> dict[str, object]: ...
+
+
 class HelperServer(ThreadingHTTPServer):
     def __init__(
         self,
@@ -47,6 +52,7 @@ class HelperServer(ThreadingHTTPServer):
         port: int,
         service: DeleteService,
         export_service: ExportService | None = None,
+        backend_service: BackendService | None = None,
         *,
         allow_http_mutation: bool = False,
         http_mutation_token: str | None = None,
@@ -55,6 +61,7 @@ class HelperServer(ThreadingHTTPServer):
     ):
         self.service = service
         self.export_service = export_service
+        self.backend_service = backend_service
         self.allow_http_mutation = allow_http_mutation
         self.http_mutation_token = http_mutation_token
         self.ad_list_urls = [ad_list_url, *(ad_list_backup_urls or DEFAULT_AD_LIST_URLS[1:])]
@@ -86,6 +93,12 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             payload = self._read_json()
+            if self.path == "/backend/status":
+                self._send_backend("backend_status")
+                return
+            if self.path == "/backend/repair":
+                self._send_backend("repair_backend")
+                return
             if self.path in {"/delete", "/undo", "/archived-thread", "/export-markdown"} and not self._is_mutation_authorized():
                 self._send_json({"error": "forbidden"}, status=403)
                 return
@@ -151,6 +164,13 @@ class _Handler(BaseHTTPRequestHandler):
             return True
         token = self.server.http_mutation_token
         return bool(token and self.headers.get("X-Codex-Session-Delete-Token") == token)
+
+    def _send_backend(self, method_name: str) -> None:
+        backend_service = self.server.backend_service
+        if backend_service is None:
+            self._send_json({"status": "failed", "message": "Backend repair service unavailable"}, status=503)
+            return
+        self._send_json(getattr(backend_service, method_name)())
 
     def _send_json(self, payload: dict[str, object], status: int = 200) -> None:
         data = json.dumps(payload).encode("utf-8")

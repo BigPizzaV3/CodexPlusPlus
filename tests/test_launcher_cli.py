@@ -262,14 +262,29 @@ def test_helper_health_ok_checks_helper_endpoint(monkeypatch):
 def test_check_and_reinject_bridge_reinjects_when_bridge_missing(monkeypatch, tmp_path):
     events = []
     runtime = launcher.CodexPlusRuntime("ws://page", type("Scripts", (), {"build_enabled_bundle": lambda self: ""})(), 9229)
-    monkeypatch.setattr(launcher, "evaluate_script", lambda websocket_url, script: {"result": {"result": {"value": False}}})
+    monkeypatch.setattr(launcher, "evaluate_script", lambda websocket_url, script, **kwargs: {"result": {"result": {"value": False}}})
     monkeypatch.setattr(launcher, "inject_with_retry", lambda *args, **kwargs: events.append(("inject", args, kwargs)))
     monkeypatch.setattr(launcher, "_log_runtime_event", lambda message: events.append(("log", message)))
 
     assert launcher.check_and_reinject_bridge(9229, tmp_path / "renderer.js", 57321, object(), object(), runtime) is True
 
     assert any(event[0] == "inject" for event in events)
-    assert any(event[0] == "log" and "renderer bridge missing" in event[1] for event in events)
+    assert any(event[0] == "log" and "renderer bridge roundtrip failed" in event[1] for event in events)
+
+
+def test_runtime_repair_backend_runs_repair_callback(tmp_path):
+    repaired = []
+    runtime = launcher.CodexPlusRuntime(
+        "ws://page",
+        type("Scripts", (), {"build_enabled_bundle": lambda self: ""})(),
+        9229,
+        repair_callback=lambda: repaired.append(True) or True,
+    )
+
+    result = runtime.repair_backend()
+
+    assert repaired == [True]
+    assert result == {"status": "ok", "message": "后端已修复"}
 
 
 def test_inject_with_retry_tracks_all_injected_page_targets(monkeypatch, tmp_path):

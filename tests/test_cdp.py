@@ -131,6 +131,8 @@ def test_build_bridge_script_installs_binding_callbacks():
     assert "window.codexSessionDelete" in script
     assert "window.__codexSessionDeleteResolve" in script
     assert "window.__codexSessionDeleteReject" in script
+    assert "window.__codexSessionDeleteCallbacks instanceof Map" in script
+    assert "Number.isFinite(window.__codexSessionDeleteSeq)" in script
 
 
 def test_bridge_binding_name_is_versioned_for_reinjection():

@@ -561,9 +561,15 @@ def test_renderer_script_includes_user_script_manager_ui_contract():
     assert "renderBackendStatus" in text
     assert "scheduleBackendHeartbeat" in text
     assert "setInterval(checkBackendStatus, 5000)" in text
+    assert "window.__codexPlusBackendRuntimeId" in text
+    assert "codexPlusBackendRequestId" in text
+    assert "isCurrentBackendRuntime()" in text
     assert "scheduleBackendHeartbeat();\n    loadUserScripts();" not in text
     assert "installCodexPlusMenu();\n    scheduleBackendHeartbeat();" in text
     assert "withBackendTimeout" in text
+    assert "bindingPostJson(\"/backend/repair\", {})" in text
+    assert "window.__codexPlusBackendRepairRequestedAt = Date.now()" in text
+    assert "window.codexSessionDeleteV2" in text
     assert "setTimeout(() => resolve({ status: \"failed\", message: \"后端已断开\" }), 2000)" in text
     assert "data-codex-backend-indicator" in text
     assert "codex-plus-backend-indicator" in text

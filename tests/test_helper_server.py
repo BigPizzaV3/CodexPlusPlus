@@ -46,6 +46,18 @@ class FakeExportService:
         return ExportResult(ExportStatus.EXPORTED, session.session_id, "Exported", filename="thread.md", markdown="# Thread\n")
 
 
+class FakeBackendService:
+    def __init__(self):
+        self.repaired = False
+
+    def backend_status(self):
+        return {"status": "ok", "message": "connected"}
+
+    def repair_backend(self):
+        self.repaired = True
+        return {"status": "ok", "message": "repaired"}
+
+
 def post_json(url, payload, headers=None):
     data = json.dumps(payload).encode("utf-8")
     request_headers = {"Content-Type": "application/json", **(headers or {})}
@@ -73,6 +85,24 @@ def test_helper_server_serves_remote_ad_list_from_helper_origin():
     assert {ad["type"] for ad in body["ads"]} == {"sponsor", "normal"}
     assert any(ad["url"] == "https://rawchat.cn" for ad in body["ads"])
     assert any(ad["url"] == "https://www.0029.org/?promo=AFF11F" for ad in body["ads"])
+
+
+def test_helper_server_exposes_backend_repair_endpoint():
+    service = FakeDeleteService()
+    backend_service = FakeBackendService()
+    server = HelperServer("127.0.0.1", 0, service, backend_service=backend_service)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status = post_json(f"http://127.0.0.1:{server.port}/backend/status", {})
+        repaired = post_json(f"http://127.0.0.1:{server.port}/backend/repair", {})
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+
+    assert status == {"status": "ok", "message": "connected"}
+    assert repaired == {"status": "ok", "message": "repaired"}
+    assert backend_service.repaired is True
 
 
 

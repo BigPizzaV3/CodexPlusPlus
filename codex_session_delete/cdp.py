@@ -78,13 +78,13 @@ def pick_page_target(targets: list[dict[str, object]]) -> dict[str, object]:
     raise RuntimeError("No injectable Codex page target found")
 
 
-def evaluate_script(websocket_url: str, script: str) -> dict[str, object]:
-    ws = websocket.create_connection(websocket_url, timeout=5)
+def evaluate_script(websocket_url: str, script: str, *, await_promise: bool = False, timeout: float = 5) -> dict[str, object]:
+    ws = websocket.create_connection(websocket_url, timeout=timeout)
     try:
         payload = {
             "id": 1,
             "method": "Runtime.evaluate",
-            "params": {"expression": script, "awaitPromise": False, "allowUnsafeEvalBlockedByCSP": True},
+            "params": {"expression": script, "awaitPromise": await_promise, "allowUnsafeEvalBlockedByCSP": True},
         }
         ws.send(json.dumps(payload))
         while True:
@@ -133,8 +133,8 @@ def _add_script_to_new_documents_on_socket(ws: websocket.WebSocket, script: str,
 def build_bridge_script(binding_name: str) -> str:
     return f"""
 (() => {{
-  window.__codexSessionDeleteCallbacks = new Map();
-  window.__codexSessionDeleteSeq = 0;
+  window.__codexSessionDeleteCallbacks = window.__codexSessionDeleteCallbacks instanceof Map ? window.__codexSessionDeleteCallbacks : new Map();
+  window.__codexSessionDeleteSeq = Number.isFinite(window.__codexSessionDeleteSeq) ? window.__codexSessionDeleteSeq : 0;
   window.__codexSessionDeleteResolve = (id, result) => {{
     const callback = window.__codexSessionDeleteCallbacks.get(id);
     if (!callback) return;

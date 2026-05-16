@@ -12,7 +12,7 @@ import tomllib
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -97,6 +97,8 @@ class CodexPlusRuntime:
     debug_port: int | None = None
     websocket_urls: set[str] = field(default_factory=set)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    repair_callback: Callable[[], bool] | None = None
+    repair_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def add_websocket_url(self, websocket_url: str) -> None:
         with self.lock:
@@ -131,7 +133,13 @@ class CodexPlusRuntime:
         return {"status": "ok", "message": "后端已连接"}
 
     def repair_backend(self) -> dict[str, object]:
-        return self.backend_status()
+        if self.repair_callback is None:
+            return self.backend_status()
+        with self.repair_lock:
+            repaired = self.repair_callback()
+        if repaired:
+            return {"status": "ok", "message": "后端已修复"}
+        return {"status": "failed", "message": "后端修复失败"}
 
     def ads(self) -> dict[str, object]:
         return fetch_ad_list()
@@ -843,10 +851,38 @@ def check_and_reinject_bridge(
     if not websocket_url:
         return False
     try:
-        result = evaluate_script(websocket_url, "typeof window.__codexSessionDeleteBridge === 'function'")
+        result = evaluate_script(
+            websocket_url,
+            """
+new Promise((resolve) => {
+  const bridge = window.__codexSessionDeleteBridge;
+  if (typeof bridge !== "function") {
+    resolve(false);
+    return;
+  }
+  let settled = false;
+  const finish = (value) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    resolve(value);
+  };
+  const timer = setTimeout(() => finish(false), 1000);
+  try {
+    bridge("/backend/status", {})
+      .then((result) => finish(!!result && result.status === "ok"))
+      .catch(() => finish(false));
+  } catch (_) {
+    finish(false);
+  }
+})
+""",
+            await_promise=True,
+            timeout=3,
+        )
         if result.get("result", {}).get("result", {}).get("value"):
             return False
-        _log_runtime_event(f"renderer bridge missing; reinjecting debug_port={debug_port} helper_port={helper_port}")
+        _log_runtime_event(f"renderer bridge roundtrip failed; reinjecting debug_port={debug_port} helper_port={helper_port}")
     except Exception as exc:
         _log_runtime_event(f"bridge health check failed; reinjecting debug_port={debug_port} helper_port={helper_port}: {exc}")
     try:
@@ -875,6 +911,17 @@ def launch_and_inject(app_dir: Path | None, db_path: Path | None, backup_dir: Pa
         if sync_result.status == ProviderSyncStatus.SKIPPED:
             print(f"Provider sync skipped: {sync_result.message}")
     server = start_or_attach_helper(service, export_service, port=helper_port)
+    if isinstance(server, InjectedHelperServer):
+        def repair_bridge() -> bool:
+            try:
+                inject_with_retry(debug_port, script_path, server.port, service, export_service, runtime, attempts=3, delay=0.5)
+                return True
+            except Exception as exc:
+                _log_runtime_event(f"manual bridge repair failed debug_port={debug_port} helper_port={server.port}: {exc}")
+                return False
+
+        runtime.repair_callback = repair_bridge
+        server.backend_service = runtime
     codex_proc = None
     try:
         codex_proc = launch_codex_app(resolved_app_dir, debug_port)
