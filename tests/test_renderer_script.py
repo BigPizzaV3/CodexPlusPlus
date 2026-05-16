@@ -661,6 +661,18 @@ def test_renderer_script_has_backend_provider_sync_toggle():
     assert "setBackendSetting" in text
 
 
+def test_renderer_script_has_mobile_provider_guard_panel():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "ChatGPT Mobile + 第三方 Provider" in text
+    assert "/mobile-provider/status" in text
+    assert "/mobile-provider/apply" in text
+    assert "data-mobile-provider-field=\"provider_id\"" in text
+    assert "data-mobile-provider-field=\"base_url\"" in text
+    assert "data-mobile-provider-field=\"bearer_token\"" in text
+    assert "data-mobile-provider-apply=\"true\"" in text
+
+
 def test_renderer_script_can_move_sidebar_threads_between_projects():
     text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
 

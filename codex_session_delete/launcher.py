@@ -25,6 +25,7 @@ from codex_session_delete.cdp import evaluate_script, evaluate_user_scripts, inj
 from codex_session_delete.helper_server import HelperServer
 from codex_session_delete.helper_server import fetch_ad_list
 from codex_session_delete.markdown_exporter import MarkdownExportService
+from codex_session_delete.mobile_provider_guard import apply_mobile_provider_guard, mobile_provider_status
 from codex_session_delete.models import DeleteResult, DeleteStatus, SessionRef
 from codex_session_delete.provider_sync import ProviderSyncStatus, run_provider_sync
 from codex_session_delete.settings_store import BackendSettings, SettingsStore
@@ -141,6 +142,12 @@ class CodexPlusRuntime:
 
     def codex_model_catalog(self) -> dict[str, object]:
         return read_codex_model_catalog()
+
+    def mobile_provider_status(self) -> dict[str, object]:
+        return mobile_provider_status(codex_home_path())
+
+    def apply_mobile_provider(self, payload: dict[str, object]) -> dict[str, object]:
+        return apply_mobile_provider_guard(payload, codex_home_path())
 
 
 def codex_home_path() -> Path:
@@ -949,6 +956,10 @@ def handle_bridge_request(
         return runtime.codex_model_catalog()
     if path == "/codex-config-model" and runtime:
         return runtime.codex_model_catalog()
+    if path == "/mobile-provider/status" and runtime:
+        return runtime.mobile_provider_status()
+    if path == "/mobile-provider/apply" and runtime:
+        return runtime.apply_mobile_provider(payload)
     if path == "/delete":
         session = SessionRef(session_id=str(payload.get("session_id", "")), title=str(payload.get("title", "")))
         return service.delete(session).to_dict()

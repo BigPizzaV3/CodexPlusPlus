@@ -61,6 +61,16 @@ class FakeRuntime:
             "sources": [{"type": "config", "status": "ok", "models": 2}],
         }
 
+    def mobile_provider_status(self):
+        return {
+            "status": "ok",
+            "auth": {"status": "ok", "has_chatgpt_tokens": True, "has_openai_api_key": False},
+            "provider": {"status": "ok", "model_provider": "dashscope", "provider_name": "DashScope"},
+        }
+
+    def apply_mobile_provider(self, payload):
+        return {"status": "ok", "provider": {"model_provider": payload["provider_id"]}}
+
 
 def test_handle_bridge_request_lists_user_scripts(tmp_path):
     builtin = tmp_path / "builtin"
@@ -118,6 +128,18 @@ def test_handle_bridge_request_keeps_legacy_codex_config_model_route(tmp_path):
 
     assert result["status"] == "ok"
     assert result["models"] == ["qwen3-coder", "deepseek-coder"]
+
+
+def test_handle_bridge_request_handles_mobile_provider_guard(tmp_path):
+    manager = UserScriptManager(tmp_path / "builtin", tmp_path / "user", tmp_path / "config.json")
+    runtime = FakeRuntime(manager)
+
+    status = handle_bridge_request(FakeDeleteService(), FakeExportService(), "/mobile-provider/status", {}, runtime)
+    applied = handle_bridge_request(FakeDeleteService(), FakeExportService(), "/mobile-provider/apply", {"provider_id": "apiname"}, runtime)
+
+    assert status["status"] == "ok"
+    assert status["auth"]["has_chatgpt_tokens"] is True
+    assert applied == {"status": "ok", "provider": {"model_provider": "apiname"}}
 
 
 def test_read_codex_config_model_uses_active_profile(tmp_path):
@@ -451,4 +473,3 @@ def test_handle_bridge_request_exports_markdown(tmp_path):
 
     assert exported["status"] == "exported"
     assert exported["filename"] == "thread.md"
-

@@ -377,6 +377,16 @@
       .codex-plus-backend-repair { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
       .codex-plus-backend-repair[hidden] { display: none; }
       .codex-plus-model-compat-warning { margin-top: 6px; color: #fbbf24; font-size: 12px; line-height: 1.45; }
+      .codex-plus-provider-form { display: grid; gap: 8px; min-width: 240px; }
+      .codex-plus-provider-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+      .codex-plus-provider-field { display: grid; gap: 4px; color: #d1d5db; font-size: 11px; }
+      .codex-plus-provider-field[data-wide="true"] { grid-column: 1 / -1; }
+      .codex-plus-provider-field input { min-width: 0; border: 1px solid rgba(255,255,255,.14); border-radius: 7px; background: #18181b; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
+      .codex-plus-provider-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+      .codex-plus-provider-status { color: #a1a1aa; font-size: 12px; line-height: 1.4; text-align: right; }
+      .codex-plus-provider-status[data-status="ok"] { color: #34d399; }
+      .codex-plus-provider-status[data-status="failed"],
+      .codex-plus-provider-status[data-status="needs_attention"] { color: #fbbf24; }
       .codex-plus-user-script-warning { margin-top: 4px; color: #fbbf24; font-size: 12px; }
       .codex-plus-user-script-dirs { margin-top: 6px; color: #a1a1aa; font-size: 11px; line-height: 1.4; word-break: break-all; }
       .codex-plus-user-script-list { margin-top: 8px; display: grid; gap: 6px; }
@@ -509,6 +519,7 @@
   }
 
   let codexPlusBackendSettings = { providerSyncEnabled: false };
+  let codexMobileProviderStatus = { status: "checking", auth: {}, provider: {} };
 
   async function loadBackendSettings() {
     try {
@@ -536,6 +547,77 @@
       const key = button.getAttribute("data-codex-backend-setting");
       button.dataset.enabled = String(!!codexPlusBackendSettings[key]);
     });
+  }
+
+  function mobileProviderStatusText() {
+    const auth = codexMobileProviderStatus.auth || {};
+    const provider = codexMobileProviderStatus.provider || {};
+    if (codexMobileProviderStatus.status === "ok") {
+      return `ChatGPT 身份已保留，当前 Provider：${provider.provider_name || provider.model_provider || "未命名"}`;
+    }
+    if (auth.status && auth.status !== "ok") return auth.message || "ChatGPT 身份需要修复";
+    if (provider.status && provider.status !== "ok") return provider.message || "Provider 配置不完整";
+    return codexMobileProviderStatus.message || "正在读取 Mobile Provider 状态";
+  }
+
+  function setMobileProviderField(name, value) {
+    const input = document.querySelector(`[data-mobile-provider-field="${name}"]`);
+    if (!input || input.dataset.initialized === "true" || input.value) return;
+    input.value = value || "";
+    input.dataset.initialized = "true";
+  }
+
+  function renderMobileProviderStatus() {
+    const provider = codexMobileProviderStatus.provider || {};
+    setMobileProviderField("provider_id", provider.model_provider);
+    setMobileProviderField("display_name", provider.provider_name);
+    setMobileProviderField("base_url", provider.base_url);
+    setMobileProviderField("model", provider.model);
+    const label = document.querySelector("[data-mobile-provider-status]");
+    if (!label) return;
+    label.dataset.status = codexMobileProviderStatus.status || "failed";
+    label.textContent = mobileProviderStatusText();
+  }
+
+  async function loadMobileProviderStatus() {
+    try {
+      const status = await postJson("/mobile-provider/status", {});
+      codexMobileProviderStatus = status && typeof status === "object" ? status : { status: "failed", message: "Mobile Provider 状态不可用", auth: {}, provider: {} };
+    } catch (error) {
+      codexMobileProviderStatus = { status: "failed", message: String(error?.message || error), auth: {}, provider: {} };
+    }
+    renderMobileProviderStatus();
+  }
+
+  function mobileProviderPayload() {
+    const value = (name) => document.querySelector(`[data-mobile-provider-field="${name}"]`)?.value?.trim?.() || "";
+    return {
+      provider_id: value("provider_id"),
+      display_name: value("display_name"),
+      base_url: value("base_url"),
+      bearer_token: value("bearer_token"),
+      model: value("model"),
+      requires_openai_auth: true,
+    };
+  }
+
+  async function applyMobileProvider() {
+    const label = document.querySelector("[data-mobile-provider-status]");
+    if (label) {
+      label.dataset.status = "checking";
+      label.textContent = "正在写入 provider，并守住 ChatGPT 身份…";
+    }
+    const result = await postJson("/mobile-provider/apply", mobileProviderPayload());
+    codexMobileProviderStatus = result && typeof result === "object" ? result : { status: "failed", message: "Mobile Provider 写入失败", auth: {}, provider: {} };
+    renderMobileProviderStatus();
+    if (codexMobileProviderStatus.status === "ok") {
+      const tokenInput = document.querySelector('[data-mobile-provider-field="bearer_token"]');
+      if (tokenInput) tokenInput.value = "";
+      await loadCodexModelCatalog(true);
+      showToast("Mobile Provider 已启用；重启 Codex++ 后新会话会使用该 Provider", null);
+    } else {
+      showToast(codexMobileProviderStatus.message || mobileProviderStatusText(), null);
+    }
   }
 
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
@@ -757,6 +839,25 @@
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
+              <div>
+                <div class="codex-plus-row-title">ChatGPT Mobile + 第三方 Provider</div>
+                <div class="codex-plus-row-description">保留 ChatGPT 登录用于 Mobile 发现，把对话模型路由写到 config.toml 的第三方 provider。</div>
+              </div>
+              <div class="codex-plus-provider-form">
+                <div class="codex-plus-provider-grid">
+                  <label class="codex-plus-provider-field">Provider ID<input data-mobile-provider-field="provider_id" autocomplete="off" placeholder="apiname"></label>
+                  <label class="codex-plus-provider-field">显示名<input data-mobile-provider-field="display_name" autocomplete="off" placeholder="apiname"></label>
+                  <label class="codex-plus-provider-field" data-wide="true">Base URL<input data-mobile-provider-field="base_url" autocomplete="off" placeholder="https://example.com/v1"></label>
+                  <label class="codex-plus-provider-field" data-wide="true">Bearer Token<input data-mobile-provider-field="bearer_token" autocomplete="off" type="password" placeholder="只写入，不回显"></label>
+                  <label class="codex-plus-provider-field" data-wide="true">默认模型<input data-mobile-provider-field="model" autocomplete="off" placeholder="gpt-5.5"></label>
+                </div>
+                <div class="codex-plus-provider-actions">
+                  <div class="codex-plus-provider-status" data-mobile-provider-status="true" data-status="checking">正在读取状态…</div>
+                  <button type="button" class="codex-plus-action-button" data-mobile-provider-apply="true">启用</button>
+                </div>
+              </div>
+            </div>
+            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">原生菜单栏位置</div><div class="codex-plus-row-description">把 Codex++ 菜单插入顶部原生菜单栏；默认关闭以避免页面重渲染冲突。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="nativeMenuPlacement"><span></span></button>
             </div>
@@ -838,6 +939,10 @@
         repairBackend();
         return;
       }
+      if (target?.closest("[data-mobile-provider-apply]")) {
+        applyMobileProvider();
+        return;
+      }
       const issueButton = target?.closest("[data-codex-plus-issue]");
       if (issueButton) {
         const issueUrl = "https://github.com/BigPizzaV3/CodexPlusPlus/issues";
@@ -878,6 +983,7 @@
     refreshCodexPlusBackendToggles();
     renderBackendStatus();
     loadBackendSettings();
+    loadMobileProviderStatus();
     loadUserScripts();
   }
 
