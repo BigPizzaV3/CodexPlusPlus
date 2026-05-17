@@ -37,6 +37,7 @@ pub struct PathState {
 #[derive(Debug, Clone, Serialize)]
 pub struct OverviewPayload {
     pub codex_app: PathState,
+    pub codex_version: Option<String>,
     pub silent_shortcut: PathState,
     pub management_shortcut: PathState,
     pub latest_launch: Option<LaunchStatus>,
@@ -51,6 +52,19 @@ pub struct SettingsPayload {
     pub settings: BackendSettings,
     pub settings_path: String,
     pub user_scripts: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayPayload {
+    pub authenticated: bool,
+    pub auth_source: String,
+    pub account_label: Option<String>,
+    pub config_path: String,
+    pub configured: bool,
+    pub requires_openai_auth: bool,
+    pub has_bearer_token: bool,
+    pub backup_path: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -89,6 +103,12 @@ pub struct WatcherPayload {
     pub disabled_flag: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AdsPayload {
+    pub version: u64,
+    pub ads: Vec<Value>,
+}
+
 #[tauri::command]
 pub fn backend_version() -> CommandResult<VersionPayload> {
     ok(
@@ -100,13 +120,34 @@ pub fn backend_version() -> CommandResult<VersionPayload> {
 }
 
 #[tauri::command]
-pub fn load_overview() -> CommandResult<OverviewPayload> {
-    let codex_app_path = codex_plus_core::app_paths::resolve_codex_app_dir(None);
-    let entrypoints = install::inspect_entrypoints();
-    let latest_launch = StatusStore::default().load_latest().unwrap_or(None);
+pub async fn load_overview() -> CommandResult<OverviewPayload> {
+    let payload = tauri::async_runtime::spawn_blocking(load_overview_payload).await;
+    let Ok((codex_app_path, entrypoints, latest_launch)) = payload else {
+        return failed(
+            "概览后台任务失败。",
+            OverviewPayload {
+                codex_app: path_state(None),
+                codex_version: None,
+                silent_shortcut: path_state(None),
+                management_shortcut: path_state(None),
+                latest_launch: None,
+                current_version: codex_plus_core::version::VERSION.to_string(),
+                update_status: "not_checked".to_string(),
+                settings_path: codex_plus_core::paths::default_settings_path()
+                    .to_string_lossy()
+                    .to_string(),
+                logs_path: codex_plus_core::paths::default_latest_status_path()
+                    .to_string_lossy()
+                    .to_string(),
+            },
+        );
+    };
     ok(
         "概览已加载。",
         OverviewPayload {
+            codex_version: codex_app_path
+                .as_deref()
+                .and_then(codex_plus_core::app_paths::codex_app_version),
             codex_app: path_state(codex_app_path),
             silent_shortcut: shortcut_state(entrypoints.silent_shortcut),
             management_shortcut: shortcut_state(entrypoints.management_shortcut),
@@ -125,6 +166,17 @@ pub fn load_overview() -> CommandResult<OverviewPayload> {
 
 #[tauri::command]
 pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
+    spawn_codex_plus_launch(request, "启动任务已在后台开始，可稍后查看概览状态。")
+}
+
+#[tauri::command]
+pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
+    codex_plus_core::watcher::stop_launcher_processes();
+    codex_plus_core::watcher::stop_codex_processes();
+    spawn_codex_plus_launch(request, "Codex 已请求重启，启动任务正在后台运行。")
+}
+
+fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> CommandResult<Value> {
     let app_dir = if request.app_path.trim().is_empty() {
         None
     } else {
@@ -170,7 +222,7 @@ pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
         }) {
         Ok(_) => CommandResult {
             status: "accepted".to_string(),
-            message: "启动任务已在后台开始，可稍后查看概览状态。".to_string(),
+            message: accepted_message.to_string(),
             payload: json!({
                 "debugPort": debug_port,
                 "helperPort": helper_port
@@ -194,7 +246,13 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
 #[tauri::command]
 pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
     match SettingsStore::default().save(&settings) {
-        Ok(()) => settings_payload("设置已保存。", "设置保存后重新读取失败"),
+        Ok(()) => {
+            let wrapper_message = refresh_cli_wrapper_after_settings_save(&settings);
+            settings_payload(
+                &format!("设置已保存。{wrapper_message}"),
+                "设置保存后重新读取失败",
+            )
+        }
         Err(error) => failed(
             &format!("保存设置失败：{error}"),
             SettingsPayload {
@@ -209,18 +267,88 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
 }
 
 #[tauri::command]
-pub fn install_entrypoints() -> InstallActionResult {
-    install::install_entrypoints()
+pub async fn sync_providers_now() -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
+        .await
+        .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"));
+    match result {
+        Ok(sync) => ok(
+            &format!(
+                "供应商已同步一次：{} 个会话文件，{} 行索引。",
+                sync.changed_session_files, sync.sqlite_rows_updated
+            ),
+            json!({
+                "syncStatus": sync.status,
+                "targetProvider": sync.target_provider,
+                "changedSessionFiles": sync.changed_session_files,
+                "sqliteRowsUpdated": sync.sqlite_rows_updated,
+                "backupDir": sync.backup_dir,
+                "syncMessage": sync.message,
+            }),
+        ),
+        Err(error) => failed(&format!("供应商同步失败：{error}"), json!({})),
+    }
 }
 
 #[tauri::command]
-pub fn uninstall_entrypoints(options: InstallOptions) -> InstallActionResult {
-    install::uninstall_entrypoints(options)
+pub async fn load_ads() -> CommandResult<AdsPayload> {
+    match codex_plus_core::ads::fetch_ad_list().await {
+        Ok(payload) => ok("推荐内容已加载。", ads_payload(payload)),
+        Err(error) => failed(
+            &format!("推荐内容加载失败：{error}"),
+            AdsPayload {
+                version: 1,
+                ads: Vec::new(),
+            },
+        ),
+    }
 }
 
 #[tauri::command]
-pub fn repair_shortcuts() -> InstallActionResult {
-    install::repair_shortcuts()
+pub fn open_external_url(url: String) -> CommandResult<Value> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return failed("只允许打开 http 或 https 链接。", json!({}));
+    }
+    match open_url(trimmed) {
+        Ok(()) => ok("已在系统浏览器打开链接。", json!({ "url": trimmed })),
+        Err(error) => failed(&format!("打开链接失败：{error}"), json!({ "url": trimmed })),
+    }
+}
+
+#[tauri::command]
+pub async fn install_entrypoints() -> InstallActionResult {
+    tauri::async_runtime::spawn_blocking(install::install_entrypoints)
+        .await
+        .unwrap_or_else(|error| install_background_failure("安装入口", error))
+}
+
+#[tauri::command]
+pub async fn uninstall_entrypoints(options: InstallOptions) -> InstallActionResult {
+    tauri::async_runtime::spawn_blocking(move || install::uninstall_entrypoints(options))
+        .await
+        .unwrap_or_else(|error| install_background_failure("卸载入口", error))
+}
+
+#[tauri::command]
+pub async fn repair_shortcuts() -> InstallActionResult {
+    tauri::async_runtime::spawn_blocking(install::repair_shortcuts)
+        .await
+        .unwrap_or_else(|error| install_background_failure("修复快捷方式", error))
+}
+
+#[tauri::command]
+pub fn repair_backend() -> CommandResult<SettingsPayload> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let message = match codex_plus_core::cli_wrapper::ensure_cli_wrapper(&settings) {
+        Ok(Some(install)) => format!(
+            "后端已修复，命令包装器已指向 {}。",
+            install.real_codex.to_string_lossy()
+        ),
+        Ok(None) => "后端已修复，命令包装器当前未启用。".to_string(),
+        Err(error) => format!("后端修复部分失败：{error}"),
+    };
+    settings_payload(&message, "修复后重新读取设置失败")
 }
 
 #[tauri::command]
@@ -281,12 +409,13 @@ pub async fn perform_update(
     let download_dir = codex_plus_core::paths::default_app_state_dir().join("updates");
     match codex_plus_core::update::perform_update(&release, &download_dir).await {
         Ok(result) => ok(
-            "更新包已下载，请从管理工具安装入口完成替换。",
+            "安装包已下载并启动，请按安装向导完成更新。",
             json!({
                 "currentVersion": codex_plus_core::version::VERSION,
                 "latestVersion": result.release.version,
                 "releaseSummary": result.release.body,
-                "installedPath": result.installed_path.to_string_lossy(),
+                "installedPath": result.installer_path.to_string_lossy(),
+                "launched": result.launched,
                 "progress": 100
             }),
         ),
@@ -391,6 +520,127 @@ pub fn reset_settings() -> CommandResult<SettingsPayload> {
                 user_scripts: user_script_inventory(),
             },
         ),
+    }
+}
+
+#[tauri::command]
+pub fn relay_status() -> CommandResult<RelayPayload> {
+    let status = codex_plus_core::relay_config::default_relay_status();
+    let message = if status.authenticated {
+        "已检测到 ChatGPT 登录状态。"
+    } else {
+        "未检测到 ChatGPT 登录状态，请先在 Codex/ChatGPT 中正常登录。"
+    };
+    ok(message, relay_payload(status, None))
+}
+
+#[tauri::command]
+pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let auth = codex_plus_core::relay_config::chatgpt_auth_status_from_home(&home);
+    if !auth.authenticated {
+        let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+        return failed(
+            "未检测到 ChatGPT 登录状态，已停止写入中转配置。",
+            relay_payload(status, None),
+        );
+    }
+
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let relay = settings.active_relay_profile();
+    match codex_plus_core::relay_config::apply_relay_config_to_home(
+        &home,
+        &relay.base_url,
+        &relay.api_key,
+    ) {
+        Ok(result) => {
+            let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+            ok(
+                "中转配置已写入，密钥未在界面明文显示。",
+                relay_payload(status, result.backup_path),
+            )
+        }
+        Err(error) => {
+            let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+            failed(
+                &format!("写入中转配置失败：{error}"),
+                relay_payload(status, None),
+            )
+        }
+    }
+}
+
+#[tauri::command]
+pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    match codex_plus_core::relay_config::clear_relay_config_to_home(&home) {
+        Ok(result) => {
+            let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+            ok(
+                "已清除 CodexPlusPlus 中转 API 模式，并切换到官方 ChatGPT 登录模式。",
+                relay_payload(status, result.backup_path),
+            )
+        }
+        Err(error) => {
+            let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+            failed(
+                &format!("清除中转配置失败：{error}"),
+                relay_payload(status, None),
+            )
+        }
+    }
+}
+
+fn refresh_cli_wrapper_after_settings_save(settings: &BackendSettings) -> String {
+    match codex_plus_core::cli_wrapper::ensure_cli_wrapper(settings) {
+        Ok(Some(install)) => format!(
+            " 命令包装器已更新：{}。",
+            install.real_codex.to_string_lossy()
+        ),
+        Ok(None) => String::new(),
+        Err(error) => format!(" 但命令包装器更新失败：{error}。"),
+    }
+}
+
+fn relay_payload(
+    status: codex_plus_core::relay_config::RelayStatus,
+    backup_path: Option<String>,
+) -> RelayPayload {
+    RelayPayload {
+        authenticated: status.authenticated,
+        auth_source: status.auth_source,
+        account_label: status.account_label,
+        config_path: status.config_path,
+        configured: status.configured,
+        requires_openai_auth: status.requires_openai_auth,
+        has_bearer_token: status.has_bearer_token,
+        backup_path,
+    }
+}
+
+fn ads_payload(payload: Value) -> AdsPayload {
+    AdsPayload {
+        version: payload.get("version").and_then(Value::as_u64).unwrap_or(1),
+        ads: payload
+            .get("ads")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+    }
+}
+
+fn open_url(url: &str) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    {
+        codex_plus_core::windows_open_url(url)
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| anyhow::anyhow!("启动系统浏览器失败：{error}"))
     }
 }
 
@@ -536,7 +786,27 @@ fn builtin_user_scripts_dir() -> PathBuf {
 }
 
 fn diagnostics_report() -> String {
-    let overview = load_overview();
+    let (codex_app_path, entrypoints, latest_launch) = load_overview_payload();
+    let overview = ok(
+        "概览已加载。",
+        OverviewPayload {
+            codex_version: codex_app_path
+                .as_deref()
+                .and_then(codex_plus_core::app_paths::codex_app_version),
+            codex_app: path_state(codex_app_path),
+            silent_shortcut: shortcut_state(entrypoints.silent_shortcut),
+            management_shortcut: shortcut_state(entrypoints.management_shortcut),
+            latest_launch,
+            current_version: codex_plus_core::version::VERSION.to_string(),
+            update_status: "not_checked".to_string(),
+            settings_path: codex_plus_core::paths::default_settings_path()
+                .to_string_lossy()
+                .to_string(),
+            logs_path: codex_plus_core::paths::default_latest_status_path()
+                .to_string_lossy()
+                .to_string(),
+        },
+    );
     let settings = SettingsStore::default().load().unwrap_or_default();
     let generated_at_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -553,6 +823,28 @@ fn diagnostics_report() -> String {
         }
     }))
     .unwrap_or_else(|error| format!("诊断报告序列化失败：{error}"))
+}
+
+fn load_overview_payload() -> (
+    Option<PathBuf>,
+    install::EntryPointState,
+    Option<LaunchStatus>,
+) {
+    (
+        codex_plus_core::app_paths::resolve_codex_app_dir(None),
+        install::inspect_entrypoints(),
+        StatusStore::default().load_latest().unwrap_or(None),
+    )
+}
+
+fn install_background_failure(action: &str, error: impl std::fmt::Display) -> InstallActionResult {
+    let state = install::inspect_entrypoints();
+    InstallActionResult {
+        status: "failed".to_string(),
+        message: format!("{action}后台任务失败：{error}"),
+        silent_shortcut: state.silent_shortcut,
+        management_shortcut: state.management_shortcut,
+    }
 }
 
 fn watcher_payload() -> WatcherPayload {
@@ -657,10 +949,18 @@ mod tests {
 
     #[test]
     fn overview_contains_expected_operational_fields() {
-        let result = load_overview();
+        let result = tauri::async_runtime::block_on(load_overview());
 
         assert_eq!(result.status, "ok");
         assert!(!result.payload.current_version.is_empty());
+        assert!(
+            result.payload.codex_version.is_none()
+                || result
+                    .payload
+                    .codex_version
+                    .as_deref()
+                    .is_some_and(|version| !version.is_empty())
+        );
         assert!(matches!(
             result.payload.codex_app.status.as_str(),
             "found" | "missing"
@@ -704,6 +1004,46 @@ mod tests {
         if result.payload.text.is_empty() {
             assert_eq!(result.status, "failed");
         }
+    }
+
+    #[test]
+    fn relay_payload_does_not_expose_token_text() {
+        let payload = relay_payload(
+            codex_plus_core::relay_config::RelayStatus {
+                authenticated: true,
+                auth_source: "registry.json".to_string(),
+                account_label: Some("user@example.test".to_string()),
+                config_path: "config.toml".to_string(),
+                configured: true,
+                requires_openai_auth: true,
+                has_bearer_token: true,
+            },
+            None,
+        );
+        let text = serde_json::to_string(&payload).unwrap();
+
+        assert!(!text.contains("sk-"));
+        assert!(text.contains("hasBearerToken"));
+    }
+
+    #[test]
+    fn ads_payload_keeps_version_and_ad_items() {
+        let payload = ads_payload(json!({
+            "version": 1,
+            "ads": [{"id": "ad-1", "type": "normal", "title": "Ad"}]
+        }));
+
+        assert_eq!(payload.version, 1);
+        assert_eq!(payload.ads.len(), 1);
+        assert_eq!(payload.ads[0]["id"], json!("ad-1"));
+    }
+
+    #[test]
+    fn open_external_url_rejects_non_http_urls() {
+        let result = open_external_url("file:///C:/Windows/win.ini".to_string());
+
+        assert_eq!(result.status, "failed");
+        assert!(result.message.contains("只允许打开 http 或 https 链接"));
     }
 
     #[test]

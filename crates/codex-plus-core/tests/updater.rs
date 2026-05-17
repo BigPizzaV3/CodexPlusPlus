@@ -19,7 +19,7 @@ fn version_comparison_uses_numeric_segments() {
 }
 
 #[test]
-fn github_payload_selects_platform_binary_before_archives() {
+fn github_payload_selects_platform_installer() {
     let release = release_from_github_payload(&json!({
         "tag_name": "v1.0.9",
         "html_url": "https://github.com/BigPizzaV3/CodexPlusPlus/releases/tag/v1.0.9",
@@ -27,16 +27,26 @@ fn github_payload_selects_platform_binary_before_archives() {
         "assets": [
             {"name": "source.zip", "browser_download_url": "https://example.test/source.zip"},
             {"name": "codex-plus-plus-manager.exe", "browser_download_url": "https://example.test/manager.exe"},
-            {"name": "codex-plus-plus.exe", "browser_download_url": "https://example.test/launcher.exe"}
+            {"name": "CodexPlusPlus_1.0.9_x64-setup.exe", "browser_download_url": "https://example.test/setup.exe"},
+            {"name": "CodexPlusPlus_1.0.9_x64.dmg", "browser_download_url": "https://example.test/app.dmg"}
         ]
     }))
     .unwrap();
 
     assert_eq!(release.version, "v1.0.9");
-    assert_eq!(
-        release.asset_name.as_deref(),
-        Some("codex-plus-plus-manager.exe")
-    );
+    if cfg!(windows) {
+        assert_eq!(
+            release.asset_name.as_deref(),
+            Some("CodexPlusPlus_1.0.9_x64-setup.exe")
+        );
+    } else if cfg!(target_os = "macos") {
+        assert_eq!(
+            release.asset_name.as_deref(),
+            Some("CodexPlusPlus_1.0.9_x64.dmg")
+        );
+    } else {
+        assert_eq!(release.asset_name.as_deref(), None);
+    }
 }
 
 #[test]
@@ -50,14 +60,24 @@ fn asset_selection_prefers_current_platform_artifacts() {
             "codex-plus-plus-manager.exe".to_string(),
             "https://example.test/manager.exe".to_string(),
         ),
+        (
+            "CodexPlusPlus_1.0.9_x64-setup.exe".to_string(),
+            "https://example.test/setup.exe".to_string(),
+        ),
+        (
+            "CodexPlusPlus_1.0.9_x64.dmg".to_string(),
+            "https://example.test/app.dmg".to_string(),
+        ),
     ];
 
-    let selected = select_update_asset(&assets).unwrap();
-
     if cfg!(windows) {
-        assert_eq!(selected.name, "codex-plus-plus-manager.exe");
+        let selected = select_update_asset(&assets).unwrap();
+        assert_eq!(selected.name, "CodexPlusPlus_1.0.9_x64-setup.exe");
+    } else if cfg!(target_os = "macos") {
+        let selected = select_update_asset(&assets).unwrap();
+        assert_eq!(selected.name, "CodexPlusPlus_1.0.9_x64.dmg");
     } else {
-        assert_eq!(selected.name, "CodexPlusPlus.zip");
+        assert!(select_update_asset(&assets).is_none());
     }
 }
 

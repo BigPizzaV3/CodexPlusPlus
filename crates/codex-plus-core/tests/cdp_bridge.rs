@@ -41,6 +41,25 @@ fn injection_script_prefixes_helper_url_and_sponsor_images() {
     assert!(script.contains("window.__CODEX_SESSION_DELETE_HELPER__"));
     assert!(script.contains("http://127.0.0.1:57321"));
     assert!(script.contains("window.__CODEX_PLUS_SPONSOR_IMAGES__"));
+    assert!(script.contains("window.__CODEX_PLUS_VERSION__"));
+    assert!(script.contains(codex_plus_core::version::VERSION));
+}
+
+#[test]
+fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("中转注入模式下无需开启"));
+}
+
+#[test]
+fn injection_script_skips_plugin_patch_work_in_relay_mode() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("function pluginPatchDisabledInRelayMode()"));
+    assert!(script.contains("!codexPlusBackendSettingsLoaded"));
+    assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
+    assert!(script.contains("clearPluginPatchArtifacts()"));
 }
 
 #[test]

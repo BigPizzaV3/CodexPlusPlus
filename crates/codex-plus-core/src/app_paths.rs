@@ -1,7 +1,5 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-#[cfg(windows)]
-use std::process::Command;
 
 pub fn find_latest_codex_app_dir(root: &Path) -> Option<PathBuf> {
     let mut matches = std::fs::read_dir(root)
@@ -17,33 +15,41 @@ pub fn find_latest_codex_app_dir(root: &Path) -> Option<PathBuf> {
     Some(if app.is_dir() { app } else { latest })
 }
 
+pub fn find_latest_codex_app_dir_from_roots(roots: &[PathBuf]) -> Option<PathBuf> {
+    roots
+        .iter()
+        .filter_map(|root| find_latest_codex_app_dir(root))
+        .max_by(|left, right| {
+            version_tuple(left.parent().unwrap_or(left))
+                .cmp(&version_tuple(right.parent().unwrap_or(right)))
+        })
+}
+
 pub fn find_latest_codex_app_dir_default() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        let output = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                r#"Get-AppxPackage -Name "OpenAI.Codex" | Select-Object -ExpandProperty InstallLocation"#,
-            ])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let text = String::from_utf8_lossy(&output.stdout);
-        let root = PathBuf::from(text.trim());
-        if root.as_os_str().is_empty() {
-            return None;
-        }
-        let app = root.join("app");
-        return Some(if app.is_dir() { app } else { root });
+        find_latest_codex_app_dir_from_roots(&windows_app_package_roots())
     }
 
     #[cfg(not(windows))]
     {
         None
     }
+}
+
+#[cfg(windows)]
+fn windows_app_package_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(program_files) = std::env::var_os("ProgramFiles") {
+        roots.push(PathBuf::from(program_files).join("WindowsApps"));
+    }
+    if let Some(program_files) = std::env::var_os("ProgramW6432") {
+        roots.push(PathBuf::from(program_files).join("WindowsApps"));
+    }
+    roots.push(PathBuf::from(r"C:\Program Files\WindowsApps"));
+    roots.sort();
+    roots.dedup();
+    roots
 }
 
 pub fn user_data_candidates() -> Vec<PathBuf> {
@@ -106,6 +112,19 @@ pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
     }
 }
 
+pub fn codex_app_version(app_dir: &Path) -> Option<String> {
+    let package_dir = if app_dir
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("app"))
+    {
+        app_dir.parent()?
+    } else {
+        app_dir
+    };
+    codex_package_version(package_dir)
+}
+
 pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
     let package_dir = if app_dir
         .file_name()
@@ -126,6 +145,17 @@ pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
         return None;
     }
     Some(format!("{identity_name}_{publisher_id}!App"))
+}
+
+fn codex_package_version(package_dir: &Path) -> Option<String> {
+    let name = package_dir.file_name()?.to_str()?;
+    let rest = name.strip_prefix("OpenAI.Codex_")?;
+    let version = rest.split_once('_')?.0;
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
 }
 
 fn append_user_data_variants(candidates: &mut Vec<PathBuf>, base: &Path) {

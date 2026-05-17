@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -56,6 +57,7 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value>;
     async fn reload_user_scripts(&self) -> anyhow::Result<Value>;
     async fn open_devtools(&self) -> anyhow::Result<Value>;
+    async fn open_manager(&self) -> anyhow::Result<Value>;
     async fn backend_status(&self) -> anyhow::Result<Value>;
     async fn repair_backend(&self) -> anyhow::Result<Value>;
     async fn ads(&self) -> anyhow::Result<Value>;
@@ -109,6 +111,7 @@ pub async fn handle_bridge_request(
         }
         "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
         "/devtools/open" => ctx.runtime.open_devtools().await,
+        "/manager/open" => ctx.runtime.open_manager().await,
         "/backend/status" => ctx.runtime.backend_status().await,
         "/backend/repair" => ctx.runtime.repair_backend().await,
         "/ads" => ctx.runtime.ads().await,
@@ -295,9 +298,21 @@ impl BridgeRuntimeService for CoreRuntimeService {
         }))
     }
 
+    async fn open_manager(&self) -> anyhow::Result<Value> {
+        let manager_path = manager_exe_path();
+        if !manager_path.exists() {
+            anyhow::bail!("未找到管理工具：{}", manager_path.display());
+        }
+        spawn_manager(&manager_path)?;
+        Ok(json!({
+            "status": "ok",
+            "path": manager_path.to_string_lossy()
+        }))
+    }
+
     async fn backend_status(&self) -> anyhow::Result<Value> {
         let _ = self.status_store.load_latest();
-        Ok(json!({"status": "ok", "message": "后端已连接"}))
+        Ok(json!({"status": "ok", "message": "后端已连接", "version": crate::version::VERSION}))
     }
 
     async fn repair_backend(&self) -> anyhow::Result<Value> {
@@ -305,7 +320,7 @@ impl BridgeRuntimeService for CoreRuntimeService {
     }
 
     async fn ads(&self) -> anyhow::Result<Value> {
-        Ok(json!({"version": 1, "ads": []}))
+        crate::ads::fetch_ad_list().await
     }
 }
 
@@ -377,6 +392,23 @@ impl BridgeDataService for UnavailableDataService {
             "sort_keys": []
         }))
     }
+}
+
+fn manager_exe_path() -> PathBuf {
+    crate::install::option_or_current_exe(&None, crate::install::MANAGER_BINARY)
+}
+
+fn spawn_manager(manager_path: &Path) -> anyhow::Result<()> {
+    let mut command = std::process::Command::new(manager_path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::windows_create_no_window());
+    }
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
 }
 
 fn settings_value(result: anyhow::Result<BackendSettings>) -> anyhow::Result<Value> {

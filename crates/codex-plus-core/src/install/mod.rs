@@ -103,12 +103,8 @@ pub fn repair_entrypoints(options: &InstallOptions) -> InstallActionResult {
     action_result(result, "入口已修复。")
 }
 
-pub fn build_windows_shortcut_script(options: &InstallOptions) -> String {
-    windows::build_install_shortcut_script(options)
-}
-
-pub fn build_uninstall_shortcut_script(options: &InstallOptions) -> String {
-    windows::build_uninstall_shortcut_script(options)
+pub fn build_windows_entrypoint_plan(options: &InstallOptions) -> windows::WindowsEntrypointPlan {
+    windows::build_windows_entrypoint_plan(options)
 }
 
 pub fn build_macos_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBundle {
@@ -126,9 +122,9 @@ pub fn remove_owned_data() -> std::io::Result<()> {
 pub fn default_install_root() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        if let Some(user_profile) = std::env::var_os("USERPROFILE") {
-            return Some(PathBuf::from(user_profile).join("Desktop"));
-        }
+        return crate::windows_integration::desktop_dir().or_else(|| {
+            directories::UserDirs::new().and_then(|dirs| dirs.desktop_dir().map(PathBuf::from))
+        });
     }
 
     #[cfg(target_os = "macos")]
@@ -136,7 +132,20 @@ pub fn default_install_root() -> Option<PathBuf> {
         return Some(PathBuf::from("/Applications"));
     }
 
-    directories::UserDirs::new().and_then(|dirs| dirs.desktop_dir().map(PathBuf::from))
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        directories::UserDirs::new().and_then(|dirs| dirs.desktop_dir().map(PathBuf::from))
+    }
+}
+
+pub fn default_install_root_strategy() -> &'static str {
+    if cfg!(windows) {
+        "windows-known-folder"
+    } else if cfg!(target_os = "macos") {
+        "macos-applications"
+    } else {
+        "user-dirs-desktop"
+    }
 }
 
 fn platform_install(options: &InstallOptions) -> anyhow::Result<()> {

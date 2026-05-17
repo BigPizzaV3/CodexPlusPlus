@@ -20,9 +20,10 @@ pub fn injection_script(helper_port: u16) -> String {
     let helper_url = format!("http://127.0.0.1:{helper_port}");
     let sponsor_images = sponsor_image_data_uris();
     format!(
-        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\n{}",
+        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\n{}",
         serde_json::to_string(&helper_url).expect("helper URL should serialize"),
         serde_json::to_string(&sponsor_images).expect("sponsor images should serialize"),
+        serde_json::to_string(crate::version::VERSION).expect("version should serialize"),
         renderer_script(),
     )
 }

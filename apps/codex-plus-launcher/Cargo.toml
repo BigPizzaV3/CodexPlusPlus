@@ -17,3 +17,6 @@ codex-plus-data = { path = "../../crates/codex-plus-data" }
 directories.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[build-dependencies]
+winresource.workspace = true

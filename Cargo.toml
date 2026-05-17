@@ -28,3 +28,4 @@ tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "ti
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+winresource = "0.1"

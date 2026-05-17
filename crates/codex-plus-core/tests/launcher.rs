@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use codex_plus_core::app_paths::{
-    build_codex_executable, find_latest_codex_app_dir, find_macos_codex_app,
-    packaged_app_user_model_id, user_data_candidates_from,
+    build_codex_executable, codex_app_version, find_latest_codex_app_dir,
+    find_latest_codex_app_dir_from_roots, find_macos_codex_app, packaged_app_user_model_id,
+    user_data_candidates_from,
 };
 use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
@@ -12,6 +13,8 @@ use codex_plus_core::launcher::{
     build_macos_open_command, build_packaged_activation, codex_process_environment_from,
     launch_and_inject_with_hooks, with_temporary_proxy_environment,
 };
+#[cfg(windows)]
+use codex_plus_core::launcher::{WindowsProcessControlStrategy, windows_process_control_strategy};
 use codex_plus_core::ports::select_platform_loopback_port_with;
 use codex_plus_core::proxy::{detect_local_proxy_with, has_proxy_environment};
 use codex_plus_core::settings::BackendSettings;
@@ -39,6 +42,29 @@ fn app_paths_find_latest_windows_package_returns_package_when_app_dir_missing() 
     std::fs::create_dir_all(&package).unwrap();
 
     assert_eq!(find_latest_codex_app_dir(temp.path()).unwrap(), package);
+}
+
+#[test]
+fn app_paths_find_latest_windows_package_checks_roots_before_fallback() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("WindowsApps");
+    std::fs::create_dir_all(root.join("OpenAI.Codex_1.0.0.0_x64__abc/app")).unwrap();
+    std::fs::create_dir_all(root.join("OpenAI.Codex_26.513.3673.0_x64__abc/app")).unwrap();
+
+    let latest = find_latest_codex_app_dir_from_roots(&[root]).unwrap();
+
+    assert!(latest.ends_with("OpenAI.Codex_26.513.3673.0_x64__abc/app"));
+}
+
+#[test]
+fn app_paths_extracts_codex_version_from_windows_package_app_dir() {
+    let app_dir =
+        PathBuf::from(r"C:\Program Files\WindowsApps\OpenAI.Codex_26.513.3673.0_x64__abc\app");
+
+    assert_eq!(
+        codex_app_version(&app_dir).as_deref(),
+        Some("26.513.3673.0")
+    );
 }
 
 #[test]
@@ -133,6 +159,15 @@ fn launcher_packaged_activation_can_preserve_process_id() {
     };
 
     assert_eq!(launch.process_id(), Some(4242));
+}
+
+#[cfg(windows)]
+#[test]
+fn launcher_windows_packaged_process_management_uses_native_api() {
+    assert_eq!(
+        windows_process_control_strategy(),
+        WindowsProcessControlStrategy::NativeWindowsApi
+    );
 }
 
 #[test]
@@ -279,6 +314,85 @@ async fn launch_lifecycle_runs_sync_before_launch_writes_success_and_shutdowns_o
             .codex_app
             .as_deref(),
         Some(app_dir.to_string_lossy().as_ref())
+    );
+}
+
+#[tokio::test]
+async fn launch_lifecycle_keeps_js_injection_in_relay_mode() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
+        launch_mode: codex_plus_core::settings::LaunchMode::Relay,
+        ..BackendSettings::default()
+    });
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![
+            "select-debug:9229",
+            "select-helper:57321",
+            "load-settings",
+            "start-helper:57321",
+            "launch:9229",
+            "inject:9229:57321",
+            "status:running",
+            "wait-codex",
+            "shutdown-helper:57321",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
+        enhancements_enabled: false,
+        ..BackendSettings::default()
+    });
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![
+            "select-debug:9229",
+            "select-helper:57321",
+            "load-settings",
+            "launch:9229",
+            "status:running",
+            "wait-codex",
+        ]
     );
 }
 

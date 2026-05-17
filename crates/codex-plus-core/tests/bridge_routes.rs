@@ -29,6 +29,7 @@ async fn bridge_routes_cover_all_current_paths() {
         ),
         ("/user-scripts/reload", json!({})),
         ("/devtools/open", json!({})),
+        ("/manager/open", json!({})),
         ("/backend/status", json!({})),
         ("/backend/repair", json!({})),
         ("/ads", json!({})),
@@ -134,12 +135,16 @@ async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
         json!({"status": "ok", "opened": true})
     );
     assert_eq!(
+        handle_bridge_request(ctx.clone(), "/manager/open", json!({})).await,
+        json!({"status": "ok", "opened": "manager"})
+    );
+    assert_eq!(
         handle_bridge_request(ctx.clone(), "/backend/status", json!({})).await,
-        json!({"status": "ok", "message": "后端已连接"})
+        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION})
     );
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/backend/repair", json!({})).await,
-        json!({"status": "ok", "message": "后端已修复"})
+        json!({"status": "ok", "message": "后端已修复", "version": codex_plus_core::version::VERSION})
     );
     assert_eq!(
         handle_bridge_request(ctx, "/ads", json!({})).await,
@@ -319,8 +324,14 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
     let repaired = handle_bridge_request(ctx.clone(), "/backend/repair", json!({})).await;
     let reloaded = handle_bridge_request(ctx, "/user-scripts/reload", json!({})).await;
 
-    assert_eq!(status, json!({"status": "ok", "message": "后端已连接"}));
-    assert_eq!(repaired, json!({"status": "ok", "message": "后端已连接"}));
+    assert_eq!(
+        status,
+        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION})
+    );
+    assert_eq!(
+        repaired,
+        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION})
+    );
     assert_eq!(reloaded["scripts"][0]["key"], "builtin:demo.js");
     let evaluated = evaluated.lock().unwrap();
     assert_eq!(evaluated.len(), 1);
@@ -350,6 +361,18 @@ async fn core_runtime_open_devtools_uses_inspector_url_opener() {
         opened.lock().unwrap().as_slice(),
         ["http://127.0.0.1:9229/devtools/inspector.html?ws=127.0.0.1:9229/devtools/page/page-1"]
     );
+}
+
+#[tokio::test]
+async fn core_runtime_manager_route_attempts_to_open_manager_binary() {
+    let ctx = BridgeContext::core(Arc::new(CoreRuntimeService::new(
+        9229,
+        StatusStore::default(),
+    )));
+
+    let result = handle_bridge_request(ctx, "/manager/open", json!({})).await;
+
+    assert_ne!(result["message"], "管理工具启动未接入当前运行时");
 }
 
 #[test]
@@ -438,6 +461,18 @@ impl BridgeSettingsService for FakeSettings {
         if let Some(value) = payload.get("providerSyncEnabled").and_then(Value::as_bool) {
             raw.insert("providerSyncEnabled".to_string(), json!(value));
         }
+        if let Some(value) = payload.get("enhancementsEnabled").and_then(Value::as_bool) {
+            raw.insert("enhancementsEnabled".to_string(), json!(value));
+        }
+        if let Some(value) = payload.get("launchMode").and_then(Value::as_str) {
+            raw.insert("launchMode".to_string(), json!(value));
+        }
+        if let Some(value) = payload.get("relayBaseUrl").and_then(Value::as_str) {
+            raw.insert("relayBaseUrl".to_string(), json!(value));
+        }
+        if let Some(value) = payload.get("relayApiKey").and_then(Value::as_str) {
+            raw.insert("relayApiKey".to_string(), json!(value));
+        }
         if let Some(value) = payload.get("cliWrapperApiKeyEnv").and_then(Value::as_str) {
             raw.insert(
                 "cliWrapperApiKeyEnv".to_string(),
@@ -493,12 +528,20 @@ impl BridgeRuntimeService for FakeRuntime {
         Ok(json!({"status": "ok", "opened": true}))
     }
 
+    async fn open_manager(&self) -> anyhow::Result<Value> {
+        Ok(json!({"status": "ok", "opened": "manager"}))
+    }
+
     async fn backend_status(&self) -> anyhow::Result<Value> {
-        Ok(json!({"status": "ok", "message": "后端已连接"}))
+        Ok(
+            json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION}),
+        )
     }
 
     async fn repair_backend(&self) -> anyhow::Result<Value> {
-        Ok(json!({"status": "ok", "message": "后端已修复"}))
+        Ok(
+            json!({"status": "ok", "message": "后端已修复", "version": codex_plus_core::version::VERSION}),
+        )
     }
 
     async fn ads(&self) -> anyhow::Result<Value> {

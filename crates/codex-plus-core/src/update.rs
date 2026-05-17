@@ -35,7 +35,8 @@ pub struct UpdateCheck {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UpdateInstall {
     pub release: Release,
-    pub installed_path: PathBuf,
+    pub installer_path: PathBuf,
+    pub launched: bool,
 }
 
 pub fn parse_version_tag(value: &str) -> anyhow::Result<Vec<u64>> {
@@ -116,15 +117,6 @@ pub fn select_update_asset(assets: &[(String, String)]) -> Option<ReleaseAsset> 
             });
         }
     }
-    for (name, url) in &named {
-        let lower = name.to_ascii_lowercase();
-        if lower.ends_with(".zip") || lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
-            return Some(ReleaseAsset {
-                name: (*name).clone(),
-                browser_download_url: (*url).clone(),
-            });
-        }
-    }
     None
 }
 
@@ -177,10 +169,12 @@ pub async fn perform_update(
         .error_for_status()?
         .bytes()
         .await?;
-    let installed_path = download_asset_to(release, &bytes, download_dir)?;
+    let installer_path = download_asset_to(release, &bytes, download_dir)?;
+    launch_installer(&installer_path)?;
     Ok(UpdateInstall {
         release: release.clone(),
-        installed_path,
+        installer_path,
+        launched: true,
     })
 }
 
@@ -219,14 +213,52 @@ pub fn safe_asset_name(name: &str) -> anyhow::Result<String> {
 }
 
 fn platform_asset_rank(name: &str) -> u8 {
-    if cfg!(windows)
-        && (name.ends_with(".exe") || name.ends_with(".msi"))
-        && name.contains("codex-plus-plus")
+    if cfg!(windows) && is_windows_installer_asset(name) {
+        return 0;
+    }
+    if cfg!(target_os = "macos") && is_macos_installer_asset(name) {
+        return 0;
+    }
+    2
+}
+
+fn is_windows_installer_asset(name: &str) -> bool {
+    name.contains("codex")
+        && name.contains("plus")
+        && (name.ends_with(".msi")
+            || name.ends_with("-setup.exe")
+            || name.ends_with("_setup.exe")
+            || name.ends_with("setup.exe")
+            || name.ends_with("installer.exe"))
+}
+
+fn is_macos_installer_asset(name: &str) -> bool {
+    name.contains("codex") && name.contains("plus") && name.ends_with(".dmg")
+}
+
+pub fn launch_installer(path: &Path) -> anyhow::Result<()> {
+    #[cfg(windows)]
     {
-        return 0;
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new(path)
+            .creation_flags(crate::windows_integration::CREATE_NO_WINDOW)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| anyhow::anyhow!("启动安装包失败：{error}"))
     }
-    if cfg!(target_os = "macos") && (name.ends_with(".dmg") || name.ends_with(".app.zip")) {
-        return 0;
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| anyhow::anyhow!("打开 DMG 失败：{error}"))
     }
-    1
+
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        let _ = path;
+        anyhow::bail!("当前平台不支持启动安装包")
+    }
 }

@@ -5,10 +5,52 @@ use anyhow::Context;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LaunchMode {
+    #[default]
+    Patch,
+    Relay,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayProfile {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "default_relay_base_url")]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
+}
+
+impl Default for RelayProfile {
+    fn default() -> Self {
+        Self {
+            id: "default".to_string(),
+            name: "默认中转".to_string(),
+            base_url: default_relay_base_url(),
+            api_key: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BackendSettings {
     #[serde(rename = "providerSyncEnabled", default)]
     pub provider_sync_enabled: bool,
+    #[serde(rename = "enhancementsEnabled", default = "default_true")]
+    pub enhancements_enabled: bool,
+    #[serde(rename = "launchMode", default)]
+    pub launch_mode: LaunchMode,
+    #[serde(rename = "relayBaseUrl", default = "default_relay_base_url")]
+    pub relay_base_url: String,
+    #[serde(rename = "relayApiKey", default)]
+    pub relay_api_key: String,
+    #[serde(rename = "relayProfiles", default = "default_relay_profiles")]
+    pub relay_profiles: Vec<RelayProfile>,
+    #[serde(rename = "activeRelayId", default = "default_active_relay_id")]
+    pub active_relay_id: String,
     #[serde(rename = "cliWrapperEnabled", default)]
     pub cli_wrapper_enabled: bool,
     #[serde(rename = "cliWrapperBaseUrl", default)]
@@ -27,6 +69,12 @@ impl Default for BackendSettings {
     fn default() -> Self {
         Self {
             provider_sync_enabled: false,
+            enhancements_enabled: true,
+            launch_mode: LaunchMode::Patch,
+            relay_base_url: default_relay_base_url(),
+            relay_api_key: String::new(),
+            relay_profiles: default_relay_profiles(),
+            active_relay_id: default_active_relay_id(),
             cli_wrapper_enabled: false,
             cli_wrapper_base_url: String::new(),
             cli_wrapper_api_key: String::new(),
@@ -35,8 +83,68 @@ impl Default for BackendSettings {
     }
 }
 
+impl BackendSettings {
+    pub fn active_relay_profile(&self) -> RelayProfile {
+        if self.active_relay_id == default_active_relay_id()
+            && self.relay_profiles.len() == 1
+            && self.relay_profiles[0] == RelayProfile::default()
+            && (!self.relay_api_key.is_empty() || self.relay_base_url != default_relay_base_url())
+        {
+            return RelayProfile {
+                id: default_active_relay_id(),
+                name: "默认中转".to_string(),
+                base_url: if self.relay_base_url.is_empty() {
+                    default_relay_base_url()
+                } else {
+                    self.relay_base_url.clone()
+                },
+                api_key: self.relay_api_key.clone(),
+            };
+        }
+
+        if let Some(profile) = self
+            .relay_profiles
+            .iter()
+            .find(|profile| profile.id == self.active_relay_id)
+        {
+            return profile.clone();
+        }
+
+        RelayProfile {
+            id: if self.active_relay_id.is_empty() {
+                default_active_relay_id()
+            } else {
+                self.active_relay_id.clone()
+            },
+            name: "默认中转".to_string(),
+            base_url: if self.relay_base_url.is_empty() {
+                default_relay_base_url()
+            } else {
+                self.relay_base_url.clone()
+            },
+            api_key: self.relay_api_key.clone(),
+        }
+    }
+}
+
 pub fn default_api_key_env() -> String {
     "CUSTOM_OPENAI_API_KEY".to_string()
+}
+
+pub fn default_true() -> bool {
+    true
+}
+
+pub fn default_relay_base_url() -> String {
+    String::new()
+}
+
+pub fn default_active_relay_id() -> String {
+    "default".to_string()
+}
+
+pub fn default_relay_profiles() -> Vec<RelayProfile> {
+    vec![RelayProfile::default()]
 }
 
 pub fn empty_as_default_api_key_env<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -120,6 +228,29 @@ impl SettingsStore {
 fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<String, Value>) {
     if let Some(value) = source.get("providerSyncEnabled").and_then(Value::as_bool) {
         target.insert("providerSyncEnabled".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = source.get("enhancementsEnabled").and_then(Value::as_bool) {
+        target.insert("enhancementsEnabled".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = source.get("launchMode").and_then(Value::as_str) {
+        if matches!(value, "patch" | "relay") {
+            target.insert("launchMode".to_string(), Value::String(value.to_string()));
+        }
+    }
+    if let Some(value) = source.get("relayBaseUrl").and_then(Value::as_str) {
+        target.insert("relayBaseUrl".to_string(), Value::String(value.to_string()));
+    }
+    if let Some(value) = source.get("relayApiKey").and_then(Value::as_str) {
+        target.insert("relayApiKey".to_string(), Value::String(value.to_string()));
+    }
+    if let Some(value) = source.get("relayProfiles").and_then(Value::as_array) {
+        target.insert("relayProfiles".to_string(), Value::Array(value.clone()));
+    }
+    if let Some(value) = source.get("activeRelayId").and_then(Value::as_str) {
+        target.insert(
+            "activeRelayId".to_string(),
+            Value::String(value.to_string()),
+        );
     }
     if let Some(value) = source.get("cliWrapperEnabled").and_then(Value::as_bool) {
         target.insert("cliWrapperEnabled".to_string(), Value::Bool(value));
@@ -206,6 +337,10 @@ mod tests {
     fn settings_default_matches_python_behavior() {
         let settings = BackendSettings::default();
         assert!(!settings.provider_sync_enabled);
+        assert!(settings.enhancements_enabled);
+        assert_eq!(settings.launch_mode, LaunchMode::Patch);
+        assert_eq!(settings.relay_base_url, default_relay_base_url());
+        assert!(settings.relay_api_key.is_empty());
         assert!(!settings.cli_wrapper_enabled);
         assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
     }
@@ -221,6 +356,7 @@ mod tests {
         assert_eq!(settings.cli_wrapper_base_url, "https://example.test");
         assert_eq!(settings.cli_wrapper_api_key, "sk-test");
         assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
+        assert_eq!(settings.relay_base_url, default_relay_base_url());
     }
 
     #[test]
@@ -251,6 +387,7 @@ mod tests {
             cli_wrapper_base_url: "https://example.test".to_string(),
             cli_wrapper_api_key: "sk-test".to_string(),
             cli_wrapper_api_key_env: "CUSTOM_ENV".to_string(),
+            ..BackendSettings::default()
         };
 
         store.save(&settings).unwrap();
@@ -268,23 +405,93 @@ mod tests {
             cli_wrapper_base_url: "https://old.test".to_string(),
             cli_wrapper_api_key: "old-key".to_string(),
             cli_wrapper_api_key_env: "OLD_ENV".to_string(),
+            ..BackendSettings::default()
         };
         store.save(&initial).unwrap();
 
         let updated = store
             .update(json!({
-                "providerSyncEnabled": true,
-                "cliWrapperApiKeyEnv": "",
-                "unknownKey": "ignored"
+            "providerSyncEnabled": true,
+            "enhancementsEnabled": false,
+            "relayBaseUrl": "https://relay.example.test/v1",
+            "relayApiKey": "sk-relay",
+            "cliWrapperApiKeyEnv": "",
+            "unknownKey": "ignored"
             }))
             .unwrap();
 
         assert!(updated.provider_sync_enabled);
+        assert!(!updated.enhancements_enabled);
+        assert_eq!(updated.relay_base_url, "https://relay.example.test/v1");
+        assert_eq!(updated.relay_api_key, "sk-relay");
         assert!(updated.cli_wrapper_enabled);
         assert_eq!(updated.cli_wrapper_base_url, "https://old.test");
         assert_eq!(updated.cli_wrapper_api_key, "old-key");
         assert_eq!(updated.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert_eq!(store.load().unwrap(), updated);
+    }
+
+    #[test]
+    fn settings_store_update_persists_launch_mode() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store.update(json!({"launchMode": "relay"})).unwrap();
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
+
+        assert_eq!(updated.launch_mode, LaunchMode::Relay);
+        assert_eq!(saved["launchMode"], json!("relay"));
+    }
+
+    #[test]
+    fn settings_store_update_persists_relay_profiles_and_active_profile() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "relayProfiles": [
+                    {
+                        "id": "relay-a",
+                        "name": "中转 A",
+                        "baseUrl": "https://relay-a.example/v1",
+                        "apiKey": "sk-a"
+                    },
+                    {
+                        "id": "relay-b",
+                        "name": "中转 B",
+                        "baseUrl": "https://relay-b.example/v1",
+                        "apiKey": "sk-b"
+                    }
+                ],
+                "activeRelayId": "relay-b"
+            }))
+            .unwrap();
+
+        let active = updated.active_relay_profile();
+        assert_eq!(updated.relay_profiles.len(), 2);
+        assert_eq!(active.id, "relay-b");
+        assert_eq!(active.name, "中转 B");
+        assert_eq!(active.base_url, "https://relay-b.example/v1");
+        assert_eq!(active.api_key, "sk-b");
+    }
+
+    #[test]
+    fn active_relay_profile_uses_legacy_single_relay_when_profiles_are_default() {
+        let settings = BackendSettings {
+            relay_base_url: "https://legacy.example/v1".to_string(),
+            relay_api_key: "sk-legacy".to_string(),
+            ..BackendSettings::default()
+        };
+
+        let active = settings.active_relay_profile();
+
+        assert_eq!(active.id, "default");
+        assert_eq!(active.name, "默认中转");
+        assert_eq!(active.base_url, "https://legacy.example/v1");
+        assert_eq!(active.api_key, "sk-legacy");
     }
 
     #[test]

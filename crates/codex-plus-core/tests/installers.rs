@@ -1,10 +1,10 @@
 use codex_plus_core::install::{
-    InstallOptions, app_bundle_names, build_macos_app_bundle, build_uninstall_shortcut_script,
-    build_windows_shortcut_script, shortcut_names,
+    InstallOptions, app_bundle_names, build_macos_app_bundle, build_windows_entrypoint_plan,
+    default_install_root_strategy, shortcut_names,
 };
 
 #[test]
-fn windows_shortcut_script_contains_silent_and_manager_entrypoints() {
+fn windows_entrypoint_plan_contains_silent_and_manager_entrypoints() {
     let options = InstallOptions {
         install_root: Some("C:/Users/A/Desktop".into()),
         launcher_path: Some("C:/Tools/codex-plus-plus.exe".into()),
@@ -12,20 +12,23 @@ fn windows_shortcut_script_contains_silent_and_manager_entrypoints() {
         remove_owned_data: false,
     };
 
-    let script = build_windows_shortcut_script(&options);
+    let plan = build_windows_entrypoint_plan(&options);
 
-    assert!(script.contains("Codex++.lnk"));
-    assert!(script.contains("Codex++ 管理工具.lnk"));
-    assert!(script.contains("codex-plus-plus.exe"));
-    assert!(script.contains("codex-plus-plus-manager.exe"));
-    assert!(
-        script.contains("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\CodexPlusPlus")
+    assert!(plan.silent_shortcut.ends_with("Codex++.lnk"));
+    assert!(plan.manager_shortcut.ends_with("Codex++ 管理工具.lnk"));
+    assert_eq!(plan.launcher_path, "C:/Tools/codex-plus-plus.exe");
+    assert_eq!(plan.manager_path, "C:/Tools/codex-plus-plus-manager.exe");
+    assert_eq!(plan.silent_icon_path, "C:/Tools/codex-plus-plus.exe");
+    assert_eq!(
+        plan.manager_icon_path,
+        "C:/Tools/codex-plus-plus-manager.exe"
     );
-    assert!(!script.contains("codex_session_delete"));
+    assert_eq!(plan.uninstall_key, "CodexPlusPlus");
+    assert_eq!(plan.legacy_uninstall_key, "Codex++");
 }
 
 #[test]
-fn windows_uninstall_script_removes_both_entrypoints() {
+fn windows_entrypoint_plan_can_request_owned_data_removal_without_shell_script() {
     let options = InstallOptions {
         install_root: Some("C:/Users/A/Desktop".into()),
         launcher_path: None,
@@ -33,11 +36,11 @@ fn windows_uninstall_script_removes_both_entrypoints() {
         remove_owned_data: true,
     };
 
-    let script = build_uninstall_shortcut_script(&options);
+    let plan = build_windows_entrypoint_plan(&options);
 
-    assert!(script.contains("Codex++.lnk"));
-    assert!(script.contains("Codex++ 管理工具.lnk"));
-    assert!(script.contains(".codex-session-delete"));
+    assert!(plan.silent_shortcut.ends_with("Codex++.lnk"));
+    assert!(plan.manager_shortcut.ends_with("Codex++ 管理工具.lnk"));
+    assert!(plan.remove_owned_data);
 }
 
 #[test]
@@ -68,4 +71,17 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
 fn installer_exports_expected_two_entrypoint_names() {
     assert_eq!(shortcut_names(), ("Codex++.lnk", "Codex++ 管理工具.lnk"));
     assert_eq!(app_bundle_names(), ("Codex++.app", "Codex++ 管理工具.app"));
+}
+
+#[test]
+fn windows_default_install_root_uses_known_folder_before_userprofile_desktop() {
+    let strategy = default_install_root_strategy();
+
+    if cfg!(windows) {
+        assert_eq!(strategy, "windows-known-folder");
+    } else if cfg!(target_os = "macos") {
+        assert_eq!(strategy, "macos-applications");
+    } else {
+        assert_eq!(strategy, "user-dirs-desktop");
+    }
 }

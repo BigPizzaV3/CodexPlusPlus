@@ -1,32 +1,99 @@
-  name: Release assets
+name: Release assets
 
-  on:
-    release:
-      types: [published]
+on:
+  release:
+    types: [published]
 
-  permissions:
-    contents: write
+permissions:
+  contents: write
 
-  jobs:
-    upload-source-asset:
-      runs-on: ubuntu-latest
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
-      steps:
-        - name: Checkout release tag
-          uses: actions/checkout@v4
-          with:
-            ref: ${{ github.event.release.tag_name }}
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
-        - name: Create source package
-          run: |
-            git archive \
-              --format=zip \
-              --output=CodexPlusPlus.zip \
-              --prefix=CodexPlusPlus/ \
-              HEAD
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
 
-        - name: Upload CodexPlusPlus.zip to release
-          uses: softprops/action-gh-release@v2
-          with:
-            tag_name: ${{ github.event.release.tag_name }}
-            files: CodexPlusPlus.zip
+      - name: Install NSIS
+        run: choco install nsis -y
+
+      - name: Install frontend dependencies
+        working-directory: apps/codex-plus-manager
+        run: npm install --package-lock=false
+
+      - name: Build frontend
+        working-directory: apps/codex-plus-manager
+        run: npm run vite:build
+
+      - name: Build binaries
+        run: cargo build --release
+
+      - name: Stage Windows app files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/windows/app | Out-Null
+          Copy-Item target/release/codex-plus-plus.exe dist/windows/app/
+          Copy-Item target/release/codex-plus-plus-manager.exe dist/windows/app/
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.release.tag_name }}".TrimStart("v", "V")
+          Push-Location scripts/installer/windows
+          makensis "/DVERSION=$version" CodexPlusPlus.nsi
+          Pop-Location
+
+      - name: Upload Windows installer
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: dist/windows/*.exe
+
+  macos-dmg:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        working-directory: apps/codex-plus-manager
+        run: npm install --package-lock=false
+
+      - name: Build frontend
+        working-directory: apps/codex-plus-manager
+        run: npm run vite:build
+
+      - name: Build binaries
+        run: cargo build --release
+
+      - name: Build macOS DMG
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION#V}"
+          bash scripts/installer/macos/package-dmg.sh "$VERSION"
+
+      - name: Upload macOS DMG
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: dist/macos/*.dmg

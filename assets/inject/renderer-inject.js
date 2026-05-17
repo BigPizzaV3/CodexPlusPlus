@@ -33,7 +33,7 @@
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationTimelineVersion = "2";
-  const codexPlusVersion = "1.0.7";
+  let codexPlusVersion = window.__CODEX_PLUS_VERSION__ || "unknown";
   const codexPlusSettingsKey = "codexPlusSettings";
   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
@@ -363,6 +363,9 @@
       }
       .codex-plus-toggle[data-enabled="true"] { background: #10a37f; }
       .codex-plus-toggle[data-enabled="true"] span { transform: translateX(18px); }
+      .codex-plus-toggle[data-relay-unneeded="true"] { width: 72px; cursor: default; background: rgba(16,163,127,.16); color: #6ee7b7; }
+      .codex-plus-toggle[data-relay-unneeded="true"] span { display: none; }
+      .codex-plus-toggle[data-relay-unneeded="true"]::after { content: "无需开启"; font-size: 12px; font-weight: 650; line-height: 1; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-tabs { display: flex; gap: 8px; padding: 0 20px 6px; flex: 0 0 auto; }
       .codex-plus-tab-button { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: transparent; color: #d1d5db; font: 12px system-ui, sans-serif; padding: 5px 10px; }
@@ -485,15 +488,43 @@
   }
 
   function codexPlusSettings() {
+    const relayPatchDisabled = codexPlusBackendSettings.launchMode === "relay";
+    if (codexPlusBackendSettings.enhancementsEnabled === false) {
+      return {
+        pluginEntryUnlock: false,
+        forcePluginInstall: false,
+        sessionDelete: false,
+        markdownExport: false,
+        projectMove: false,
+        conversationTimeline: false,
+        nativeMenuPlacement: false,
+      };
+    }
     try {
-      return { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}") };
+      const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}") };
+      if (relayPatchDisabled) {
+        settings.pluginEntryUnlock = false;
+        settings.forcePluginInstall = false;
+      }
+      return settings;
     } catch {
-      return defaultCodexPlusSettings();
+      const settings = defaultCodexPlusSettings();
+      if (relayPatchDisabled) {
+        settings.pluginEntryUnlock = false;
+        settings.forcePluginInstall = false;
+      }
+      return settings;
     }
   }
 
   function setCodexPlusSetting(key, value) {
-    const next = { ...codexPlusSettings(), [key]: value };
+    let stored = {};
+    try {
+      stored = JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}");
+    } catch {
+      stored = {};
+    }
+    const next = { ...stored, [key]: value };
     localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
     renderCodexPlusMenu();
     scan();
@@ -506,12 +537,14 @@
     });
   }
 
-  let codexPlusBackendSettings = { providerSyncEnabled: false };
+  let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, launchMode: "patch" };
+  let codexPlusBackendSettingsLoaded = false;
 
   async function loadBackendSettings() {
     try {
       const settings = await postJson("/settings/get", {});
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
+      codexPlusBackendSettingsLoaded = true;
       refreshCodexPlusBackendToggles();
     } catch (_) {
       refreshCodexPlusBackendToggles();
@@ -534,6 +567,8 @@
       const key = button.getAttribute("data-codex-backend-setting");
       button.dataset.enabled = String(!!codexPlusBackendSettings[key]);
     });
+    renderCodexPlusMenu();
+    scan();
   }
 
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
@@ -541,6 +576,15 @@
 
   function renderBackendStatus() {
     const status = codexPlusBackendStatus.status || "failed";
+    if (codexPlusBackendStatus.version) {
+      codexPlusVersion = codexPlusBackendStatus.version;
+      document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
+        node.textContent = `Codex++ ${codexPlusVersion}`;
+      });
+      document.querySelectorAll(`#${codexPlusMenuId} .codex-plus-trigger`).forEach((node) => {
+        node.textContent = `Codex++ ${codexPlusVersion}`;
+      });
+    }
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
       label.dataset.status = status;
@@ -575,6 +619,15 @@
       codexPlusBackendStatus = { status: "failed", message: "后端修复失败" };
     }
     renderBackendStatus();
+  }
+
+  async function openManagerFromCodex() {
+    const result = await postJson("/manager/open", {});
+    if (result.status === "ok") {
+      showToast("管理工具已打开", null);
+    } else {
+      showToast(result.message || "打开管理工具失败", null);
+    }
   }
 
   function scheduleBackendHeartbeat() {
@@ -708,7 +761,7 @@
     overlay.innerHTML = `
       <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="Codex++">
         <div class="codex-plus-modal-header">
-          <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span>Codex++ ${codexPlusVersion}</span></div>
+          <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span data-codex-plus-version="true">Codex++ ${codexPlusVersion}</span></div>
           <button type="button" class="codex-plus-modal-close" aria-label="关闭">×</button>
         </div>
         <div class="codex-plus-tabs" role="tablist" aria-label="Codex++">
@@ -727,12 +780,16 @@
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">插件选项解锁</div><div class="codex-plus-row-description">让 API Key 模式显示并启用插件入口。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginEntryUnlock"><span></span></button>
+              <div><div class="codex-plus-row-title">增强功能总开关</div><div class="codex-plus-row-description">关闭后停用删除、导出、移动、Timeline、插件相关和菜单位置增强。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-backend-setting="enhancementsEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">特殊插件强制安装</div><div class="codex-plus-row-description">解除 App unavailable / 应用不可用导致的前端安装禁用。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="forcePluginInstall"><span></span></button>
+              <div><div class="codex-plus-row-title">插件选项解锁</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "中转注入模式下无需开启；ChatGPT 登录态会保留官方插件入口。" : "让 API Key 模式显示并启用插件入口。"}</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginEntryUnlock" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">特殊插件强制安装</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "中转注入模式下无需开启；不会改插件安装入口。" : "解除 App unavailable / 应用不可用导致的前端安装禁用。"}</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="forcePluginInstall" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示删除按钮，并支持撤销。</div></div>
@@ -753,6 +810,10 @@
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">Provider 同步</div><div class="codex-plus-row-description">切换供应商（model_provider）时不丢任何历史会话，避免历史对话因为供应商切换而消失。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">启动模式</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "中转注入：当前保留会话删除、导出、项目移动、Timeline 和用户脚本，仅禁用插件入口解锁与强制安装。" : "传统 patch：当前会加载插件入口、强制安装、项目路径移动等全部页面增强。"}</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">原生菜单栏位置</div><div class="codex-plus-row-description">把 Codex++ 菜单插入顶部原生菜单栏；默认关闭以避免页面重渲染冲突。</div></div>
@@ -828,6 +889,10 @@
         postJson("/devtools/open", {});
         return;
       }
+      if (target?.closest("[data-codex-open-manager]")) {
+        openManagerFromCodex();
+        return;
+      }
       if (target?.closest("[data-codex-backend-repair]")) {
         repairBackend();
         return;
@@ -854,6 +919,7 @@
       }
       const toggle = target?.closest("[data-codex-plus-setting]");
       if (toggle) {
+        if (toggle.disabled) return;
         const key = toggle.getAttribute("data-codex-plus-setting");
         setCodexPlusSetting(key, !codexPlusSettings()[key]);
         return;
@@ -1026,6 +1092,10 @@
     return true;
   }
 
+  function pluginPatchDisabledInRelayMode() {
+    return !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.launchMode === "relay";
+  }
+
   function pluginEntryButton() {
     const byIcon = document.querySelector(`${selectors.pluginNavButton} ${selectors.pluginSvgPath}`)?.closest("button");
     if (byIcon) return byIcon;
@@ -1042,7 +1112,16 @@
     labelTextNode.nodeValue = /^Plugins/i.test(current) ? "Plugins - Unlocked" : "插件 - 已解锁";
   }
 
+  function clearPluginEntryUnlockLabel(button) {
+    const labelTextNode = Array.from(button.querySelectorAll("span, div")).reverse()
+      .flatMap((node) => Array.from(node.childNodes))
+      .find((node) => node.nodeType === 3 && /^(插件 - 已解锁|Plugins - Unlocked)$/i.test((node.nodeValue || "").trim()));
+    if (!labelTextNode) return;
+    labelTextNode.nodeValue = /^Plugins/i.test((labelTextNode.nodeValue || "").trim()) ? "Plugins" : "插件";
+  }
+
   function enablePluginEntry() {
+    if (pluginPatchDisabledInRelayMode()) return;
     if (!codexPlusSettings().pluginEntryUnlock) return;
     const pluginButton = pluginEntryButton();
     if (!pluginButton) return;
@@ -1094,7 +1173,24 @@
     }
   }
 
+  function clearForcedInstallButtonLabel(button) {
+    const textNode = Array.from(button.childNodes).find((node) => node.nodeType === 3 && (node.nodeValue || "").trim() === "强制安装");
+    if (textNode) {
+      textNode.nodeValue = "安装";
+    }
+  }
+
+  function clearPluginPatchArtifacts() {
+    const pluginButton = pluginEntryButton();
+    if (pluginButton) {
+      delete pluginButton.dataset.codexPluginEnabled;
+      clearPluginEntryUnlockLabel(pluginButton);
+    }
+    pluginInstallCandidates().forEach(clearForcedInstallButtonLabel);
+  }
+
   function unblockPluginInstallButtons() {
+    if (pluginPatchDisabledInRelayMode()) return;
     if (!codexPlusSettings().forcePluginInstall) return;
     pluginInstallCandidates().forEach((button) => {
       const text = installButtonLabel(button);
@@ -2799,8 +2895,12 @@
   }
 
   function scanDeferred() {
-    enablePluginEntry();
-    unblockPluginInstallButtons();
+    if (pluginPatchDisabledInRelayMode()) {
+      clearPluginPatchArtifacts();
+    } else {
+      enablePluginEntry();
+      unblockPluginInstallButtons();
+    }
     sessionRows().forEach(tryAttachButton);
     updateDeleteButtonOffsets();
     scheduleProjectMoveProjection();
@@ -2828,28 +2928,31 @@
     return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${projectMoveOverlayClass}, .${timelineClass}, .codex-conversation-timeline, #codex-plus-menu`);
   }
 
-  const scanRelevantSelector = [
-    selectors.sidebarThread,
-    '[data-app-action-sidebar-section-heading="Chats"]',
-    '[data-app-action-sidebar-section-heading="Projects"]',
-    '[data-codex-project-move-row="true"]',
-    '[data-codex-archive-page-row="true"]',
-    "[data-codex-archive-delete-all]",
-    '[data-message-author-role]',
-    '[data-testid="conversation-turn"]',
-    '[class*="user-message"]',
-    '[class*="UserMessage"]',
-    selectors.appHeader,
-    selectors.archiveNav,
-    selectors.disabledInstallButton,
-  ].join(", ");
+  function scanRelevantSelector() {
+    return [
+      selectors.sidebarThread,
+      '[data-app-action-sidebar-section-heading="Chats"]',
+      '[data-app-action-sidebar-section-heading="Projects"]',
+      '[data-codex-project-move-row="true"]',
+      '[data-codex-archive-page-row="true"]',
+      "[data-codex-archive-delete-all]",
+      '[data-message-author-role]',
+      '[data-testid="conversation-turn"]',
+      '[class*="user-message"]',
+      '[class*="UserMessage"]',
+      selectors.appHeader,
+      selectors.archiveNav,
+      ...(pluginPatchDisabledInRelayMode() ? [] : [selectors.disabledInstallButton]),
+    ].join(", ");
+  }
 
   function nodeSelfOrAncestorMatchesScanRelevance(node) {
     if (node.nodeType !== 1) return false;
     if (isExtensionUiNode(node)) return false;
     const questionSelector = timelineQuestionSelector();
-    return !!node.matches?.(scanRelevantSelector) ||
-      !!node.closest?.(scanRelevantSelector) ||
+    const relevantSelector = scanRelevantSelector();
+    return !!node.matches?.(relevantSelector) ||
+      !!node.closest?.(relevantSelector) ||
       !!node.matches?.(questionSelector) ||
       !!node.closest?.(questionSelector) ||
       nodeOrAncestorLooksLikeCodexUserBubble(node);
@@ -2858,7 +2961,7 @@
   function isScanRelevantNode(node) {
     if (node.nodeType !== 1) return false;
     if (isExtensionUiNode(node)) return false;
-    return nodeSelfOrAncestorMatchesScanRelevance(node) || !!node.querySelector?.(scanRelevantSelector) || nodeLooksLikeTimelineQuestion(node);
+    return nodeSelfOrAncestorMatchesScanRelevance(node) || !!node.querySelector?.(scanRelevantSelector()) || nodeLooksLikeTimelineQuestion(node);
   }
 
   function isChatContentMutation(mutation) {

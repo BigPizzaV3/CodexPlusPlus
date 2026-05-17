@@ -38,6 +38,16 @@ pub enum MacosCleanupPolicy {
     SkipQuitBecauseAlreadyRunning,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsProcessControlStrategy {
+    NativeWindowsApi,
+}
+
+#[cfg(windows)]
+pub fn windows_process_control_strategy() -> WindowsProcessControlStrategy {
+    WindowsProcessControlStrategy::NativeWindowsApi
+}
+
 impl CodexLaunch {
     pub fn process_id(&self) -> Option<u32> {
         match self {
@@ -73,6 +83,7 @@ pub struct LaunchHandle {
     pub app_dir: PathBuf,
     pub launch: CodexLaunch,
     pub status_store: StatusStore,
+    helper_started: bool,
     hooks: Arc<dyn LaunchHooks>,
 }
 
@@ -92,7 +103,9 @@ impl std::fmt::Debug for LaunchHandle {
 impl LaunchHandle {
     pub async fn wait_for_codex_exit(&self) -> anyhow::Result<()> {
         let result = self.hooks.wait_for_codex_exit(&self.launch).await;
-        self.hooks.shutdown_helper(self.helper_port).await;
+        if self.helper_started {
+            self.hooks.shutdown_helper(self.helper_port).await;
+        }
         result
     }
 }
@@ -163,15 +176,19 @@ where
             hooks.run_provider_sync().await?;
         }
 
-        hooks.start_helper(helper_port).await?;
-        helper_started = true;
+        if settings.enhancements_enabled {
+            hooks.start_helper(helper_port).await?;
+            helper_started = true;
+        }
+
         let launch = hooks.launch_codex(&app_dir, debug_port).await?;
         launched = Some(launch.clone());
 
-        if let Some(ctx) = hooks.bridge_context(debug_port).await? {
-            hooks.inject_bridge(debug_port, helper_port, ctx).await?;
-        } else {
-            hooks.inject(debug_port, helper_port).await?;
+        if settings.enhancements_enabled {
+            match hooks.bridge_context(debug_port).await? {
+                Some(ctx) => hooks.inject_bridge(debug_port, helper_port, ctx).await?,
+                None => hooks.inject(debug_port, helper_port).await?,
+            }
         }
 
         let status = launch_status(
@@ -190,6 +207,7 @@ where
             app_dir: app_dir.clone(),
             launch,
             status_store: status_store.clone(),
+            helper_started,
             hooks: Arc::clone(&hooks),
         })
     }
@@ -352,11 +370,15 @@ impl LaunchHooks for DefaultLaunchHooks {
         let executable = command
             .first()
             .ok_or_else(|| anyhow::anyhow!("Codex command is empty"))?;
-        let child = Command::new(executable)
+        let mut child_command = Command::new(executable);
+        child_command
             .args(&command[1..])
             .envs(codex_process_environment())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
+        let child = child_command
             .spawn()
             .with_context(|| format!("failed to launch Codex executable {executable}"))?;
         *self.child.lock().await = Some(child);
@@ -651,39 +673,61 @@ fn restore_proxy_environment(previous: [(&'static str, Option<std::ffi::OsString
 
 #[cfg(windows)]
 async fn wait_for_windows_process_id(process_id: u32) -> anyhow::Result<()> {
-    let script = format!(
-        "Wait-Process -Id {} -ErrorAction SilentlyContinue",
-        process_id
-    );
-    let _ = Command::new("powershell.exe")
-        .arg("-NoProfile")
-        .arg("-NonInteractive")
-        .arg("-Command")
-        .arg(script)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+    tokio::task::spawn_blocking(move || wait_for_windows_process_id_blocking(process_id))
         .await
-        .with_context(|| format!("failed to wait for Windows process id {process_id}"))?;
-    Ok(())
+        .context("Windows process wait task failed")?
 }
 
 #[cfg(windows)]
 async fn terminate_windows_process_id(process_id: u32) -> anyhow::Result<()> {
-    let script = format!(
-        "Stop-Process -Id {} -Force -ErrorAction SilentlyContinue",
-        process_id
-    );
-    let _ = Command::new("powershell.exe")
-        .arg("-NoProfile")
-        .arg("-NonInteractive")
-        .arg("-Command")
-        .arg(script)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+    tokio::task::spawn_blocking(move || terminate_windows_process_id_blocking(process_id))
         .await
-        .with_context(|| format!("failed to terminate Windows process id {process_id}"))?;
+        .context("Windows process termination task failed")?
+}
+
+#[cfg(windows)]
+fn wait_for_windows_process_id_blocking(process_id: u32) -> anyhow::Result<()> {
+    use windows::Win32::Foundation::{CloseHandle, WAIT_FAILED};
+    use windows::Win32::System::Threading::{
+        INFINITE, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        WaitForSingleObject,
+    };
+
+    unsafe {
+        let handle = OpenProcess(
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            false,
+            process_id,
+        )
+        .with_context(|| format!("failed to open Windows process id {process_id}"))?;
+        let wait_result = WaitForSingleObject(handle, INFINITE);
+        let _ = CloseHandle(handle);
+        if wait_result == WAIT_FAILED {
+            anyhow::bail!("failed to wait for Windows process id {process_id}");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn terminate_windows_process_id_blocking(process_id: u32) -> anyhow::Result<()> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
+    };
+
+    unsafe {
+        let handle = OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+            false,
+            process_id,
+        )
+        .with_context(|| format!("failed to open Windows process id {process_id}"))?;
+        let terminate_result = TerminateProcess(handle, 1);
+        let _ = CloseHandle(handle);
+        terminate_result
+            .with_context(|| format!("failed to terminate Windows process id {process_id}"))?;
+    }
     Ok(())
 }
 

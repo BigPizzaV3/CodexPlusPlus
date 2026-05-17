@@ -1,4 +1,4 @@
-#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use anyhow::Result;
 use codex_plus_core::launcher::{
@@ -8,6 +8,8 @@ use codex_plus_core::models::{DeleteResult, ExportResult, SessionRef};
 use codex_plus_core::routes::{BridgeContext, BridgeDataService, BridgeRuntimeService};
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -268,8 +270,31 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         }))
     }
 
+    async fn open_manager(&self) -> anyhow::Result<Value> {
+        let manager_path = manager_exe_path();
+        #[cfg(windows)]
+        {
+            std::process::Command::new(&manager_path)
+                .creation_flags(codex_plus_core::windows_create_no_window())
+                .spawn()
+                .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
+        }
+        #[cfg(not(windows))]
+        {
+            std::process::Command::new(&manager_path)
+                .spawn()
+                .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
+        }
+        Ok(json!({
+            "status": "ok",
+            "path": manager_path.to_string_lossy()
+        }))
+    }
+
     async fn backend_status(&self) -> anyhow::Result<Value> {
-        Ok(json!({"status": "ok", "message": "后端已连接"}))
+        Ok(
+            json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION}),
+        )
     }
 
     async fn repair_backend(&self) -> anyhow::Result<Value> {
@@ -277,7 +302,7 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     }
 
     async fn ads(&self) -> anyhow::Result<Value> {
-        Ok(json!({"version": 1, "ads": []}))
+        codex_plus_core::ads::fetch_ad_list().await
     }
 }
 
@@ -348,10 +373,7 @@ fn default_codex_db_path() -> PathBuf {
 fn open_url(url: &str) -> anyhow::Result<()> {
     #[cfg(windows)]
     {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn()
-            .map(|_| ())
+        codex_plus_core::windows_open_url(url)
             .map_err(|error| anyhow::anyhow!("failed to open DevTools URL: {error}"))
     }
 
@@ -378,6 +400,17 @@ fn open_url(url: &str) -> anyhow::Result<()> {
         let _ = url;
         anyhow::bail!("opening DevTools URL is not supported on this platform")
     }
+}
+
+fn manager_exe_path() -> PathBuf {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    let dir = exe.parent().unwrap_or_else(|| Path::new("."));
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    dir.join(format!(
+        "{}{}",
+        codex_plus_core::install::MANAGER_BINARY,
+        suffix
+    ))
 }
 
 fn default_user_script_manager() -> UserScriptManager {
