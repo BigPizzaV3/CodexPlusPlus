@@ -54,7 +54,7 @@ jobs:
             $makensis = "makensis"
           }
           Push-Location scripts/installer/windows
-          & $makensis "/DVERSION=$version" CodexPlusPlus.nsi
+          & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" CodexPlusPlus.nsi
           Pop-Location
 
       - name: Upload Windows installer
