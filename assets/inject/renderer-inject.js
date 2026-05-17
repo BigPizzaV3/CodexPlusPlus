@@ -1268,6 +1268,18 @@
 
   async function postJson(path, payload) {
     if (!window.__codexSessionDeleteBridge) {
+      if (path === "/backend/status") {
+        try {
+          const response = await fetch(`${helperBase}${path}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload || {}),
+          });
+          return await response.json();
+        } catch (_) {
+          return { status: "failed", message: "后端已断开" };
+        }
+      }
       return { status: "failed", message: "桥接不可用，请重启启动器" };
     }
     return await window.__codexSessionDeleteBridge(path, payload);

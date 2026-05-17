@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use async_trait::async_trait;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
@@ -297,7 +298,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                     accepted = listener.accept() => {
                         if let Ok((stream, _)) = accepted {
                             tokio::spawn(async move {
-                                let _ = stream.readable().await;
+                                let _ = handle_helper_connection(stream).await;
                             });
                         }
                     }
@@ -452,6 +453,51 @@ impl LaunchHooks for DefaultLaunchHooks {
             } => {}
         }
     }
+}
+
+async fn handle_helper_connection(mut stream: tokio::net::TcpStream) -> anyhow::Result<()> {
+    let mut buffer = vec![0_u8; 4096];
+    let read = stream.read(&mut buffer).await?;
+    let request = String::from_utf8_lossy(&buffer[..read]);
+    let request_line = request.lines().next().unwrap_or_default();
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let path = parts.next().unwrap_or_default();
+
+    let body = if path == "/backend/status" && matches!(method, "GET" | "POST" | "OPTIONS") {
+        serde_json::to_vec(&serde_json::json!({
+            "status": "ok",
+            "message": "后端已连接",
+            "version": crate::version::VERSION,
+            "transport": "http-helper"
+        }))?
+    } else {
+        serde_json::to_vec(&serde_json::json!({
+            "status": "failed",
+            "message": "未知后端路径"
+        }))?
+    };
+    let status = if path == "/backend/status" {
+        "200 OK"
+    } else {
+        "404 Not Found"
+    };
+    let response = if method == "OPTIONS" {
+        format!(
+            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+    } else {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+    };
+    stream.write_all(response.as_bytes()).await?;
+    if method != "OPTIONS" {
+        stream.write_all(&body).await?;
+    }
+    stream.shutdown().await?;
+    Ok(())
 }
 
 pub fn build_codex_arguments(debug_port: u16) -> Vec<String> {

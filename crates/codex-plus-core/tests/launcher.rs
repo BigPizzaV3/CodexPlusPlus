@@ -260,6 +260,27 @@ fn proxy_detects_first_local_proxy_port_and_respects_existing_environment() {
 }
 
 #[tokio::test]
+async fn default_helper_serves_backend_status_over_http() {
+    let hooks = DefaultLaunchHooks::default();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    hooks.start_helper(port).await.unwrap();
+    let response = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{port}/backend/status"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let payload: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(payload["status"], "ok");
+    assert_eq!(payload["transport"], "http-helper");
+    hooks.shutdown_helper(port).await;
+}
+
+#[tokio::test]
 async fn launch_lifecycle_runs_sync_before_launch_writes_success_and_shutdowns_on_exit() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
