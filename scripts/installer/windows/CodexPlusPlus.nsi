@@ -10,7 +10,7 @@ Name "Codex++"
 OutFile "${ROOT}\dist\windows\CodexPlusPlus-${VERSION}-windows-x64-setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\Codex++"
 InstallDirRegKey HKCU "Software\Codex++" "InstallDir"
-RequestExecutionLevel user
+RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 
 !define MUI_ICON "${ROOT}\apps\codex-plus-manager\src-tauri\icons\icon.ico"
