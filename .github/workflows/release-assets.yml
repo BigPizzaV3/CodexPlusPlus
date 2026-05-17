@@ -49,8 +49,12 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ github.event.release.tag_name }}".TrimStart("v", "V")
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) {
+            $makensis = "makensis"
+          }
           Push-Location scripts/installer/windows
-          makensis "/DVERSION=$version" CodexPlusPlus.nsi
+          & $makensis "/DVERSION=$version" CodexPlusPlus.nsi
           Pop-Location
 
       - name: Upload Windows installer
