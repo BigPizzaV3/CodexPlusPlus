@@ -1,9 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use codex_plus_core::launcher::{DefaultLaunchHooks, LaunchHooks};
+use codex_plus_core::install::SILENT_BINARY;
 use codex_plus_core::settings::{BackendSettings, SettingsStore};
 use codex_plus_core::status::{LaunchStatus, StatusStore};
 use codex_plus_core::user_scripts::UserScriptManager;
@@ -177,50 +176,10 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 }
 
 fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> CommandResult<Value> {
-    let app_dir = if request.app_path.trim().is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(request.app_path.trim()))
-    };
-    let options = codex_plus_core::launcher::LaunchOptions {
-        app_dir,
-        debug_port: request.debug_port,
-        helper_port: request.helper_port,
-        status_store: StatusStore::default(),
-    };
-
     let debug_port = request.debug_port;
     let helper_port = request.helper_port;
-    match std::thread::Builder::new()
-        .name("codex-plus-manager-launch".to_string())
-        .spawn(move || {
-            let hooks = ManagerLaunchHooks::default();
-            let result = tauri::async_runtime::block_on(
-                codex_plus_core::launcher::launch_and_inject_with_hooks(options, &hooks),
-            );
-            match result {
-                Ok(handle) => {
-                    let _ = tauri::async_runtime::block_on(handle.wait_for_codex_exit());
-                }
-                Err(error) => {
-                    let status_store = StatusStore::default();
-                    let latest = status_store.load_latest().ok().flatten();
-                    if should_write_manager_launch_failure(latest.as_ref(), debug_port, helper_port)
-                    {
-                        let status = LaunchStatus {
-                            status: "failed".to_string(),
-                            message: format!("启动失败：{error}"),
-                            started_at_ms: now_ms(),
-                            debug_port: Some(debug_port),
-                            helper_port: Some(helper_port),
-                            codex_app: None,
-                        };
-                        let _ = status_store.save_latest(&status);
-                    }
-                }
-            }
-        }) {
-        Ok(_) => CommandResult {
+    match spawn_silent_launcher(&request) {
+        Ok(()) => CommandResult {
             status: "accepted".to_string(),
             message: accepted_message.to_string(),
             payload: json!({
@@ -229,13 +188,35 @@ fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> Co
             }),
         },
         Err(error) => failed(
-            &format!("启动后台任务失败：{error}"),
+            &format!("启动静默入口失败：{error}"),
             json!({
                 "debugPort": debug_port,
                 "helperPort": helper_port
             }),
         ),
     }
+}
+
+fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
+    let launcher = codex_plus_core::install::option_or_current_exe(&None, SILENT_BINARY);
+    let mut command = std::process::Command::new(&launcher);
+    if !request.app_path.trim().is_empty() {
+        command.arg("--app-path").arg(request.app_path.trim());
+    }
+    command
+        .arg("--debug-port")
+        .arg(request.debug_port.to_string())
+        .arg("--helper-port")
+        .arg(request.helper_port.to_string());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| anyhow::anyhow!("无法启动 {}：{error}", launcher.to_string_lossy()))
 }
 
 #[tauri::command]
@@ -669,80 +650,6 @@ fn settings_payload(message: &str, failure_context: &str) -> CommandResult<Setti
     }
 }
 
-#[derive(Clone)]
-struct ManagerLaunchHooks {
-    core: Arc<DefaultLaunchHooks>,
-}
-
-impl Default for ManagerLaunchHooks {
-    fn default() -> Self {
-        Self {
-            core: Arc::new(DefaultLaunchHooks::default()),
-        }
-    }
-}
-
-#[async_trait::async_trait(?Send)]
-impl LaunchHooks for ManagerLaunchHooks {
-    fn resolve_app_dir(&self, app_dir: Option<&Path>) -> anyhow::Result<PathBuf> {
-        self.core.resolve_app_dir(app_dir)
-    }
-
-    fn select_debug_port(&self, requested: u16) -> u16 {
-        self.core.select_debug_port(requested)
-    }
-
-    fn select_helper_port(&self, requested: u16) -> u16 {
-        self.core.select_helper_port(requested)
-    }
-
-    async fn load_settings(&self) -> anyhow::Result<BackendSettings> {
-        self.core.load_settings().await
-    }
-
-    async fn run_provider_sync(&self) -> anyhow::Result<()> {
-        let _ = tauri::async_runtime::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
-            .await
-            .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"))?;
-        Ok(())
-    }
-
-    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
-        self.core.start_helper(helper_port).await
-    }
-
-    async fn launch_codex(
-        &self,
-        app_dir: &Path,
-        debug_port: u16,
-    ) -> anyhow::Result<codex_plus_core::launcher::CodexLaunch> {
-        self.core.launch_codex(app_dir, debug_port).await
-    }
-
-    async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
-        self.core.inject(debug_port, helper_port).await
-    }
-
-    async fn write_status(&self, status: &str) {
-        self.core.write_status(status).await;
-    }
-
-    async fn wait_for_codex_exit(
-        &self,
-        launch: &codex_plus_core::launcher::CodexLaunch,
-    ) -> anyhow::Result<()> {
-        self.core.wait_for_codex_exit(launch).await
-    }
-
-    async fn shutdown_helper(&self, helper_port: u16) {
-        self.core.shutdown_helper(helper_port).await;
-    }
-
-    async fn terminate_codex(&self, launch: &codex_plus_core::launcher::CodexLaunch) {
-        self.core.terminate_codex(launch).await;
-    }
-}
-
 fn user_script_inventory() -> Value {
     default_user_script_manager()
         .inventory()
@@ -853,27 +760,6 @@ fn watcher_payload() -> WatcherPayload {
         enabled: !flag.exists(),
         disabled_flag: flag.to_string_lossy().to_string(),
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
-fn should_write_manager_launch_failure(
-    latest: Option<&LaunchStatus>,
-    debug_port: u16,
-    helper_port: u16,
-) -> bool {
-    !matches!(
-        latest,
-        Some(status)
-            if status.status == "failed"
-                && status.debug_port == Some(debug_port)
-                && status.helper_port == Some(helper_port)
-    )
 }
 
 fn read_tail(path: &Path, max_lines: usize) -> std::io::Result<String> {
@@ -988,16 +874,6 @@ mod tests {
     }
 
     #[test]
-    fn manager_launch_hooks_run_provider_sync_without_default_bail() {
-        tauri::async_runtime::block_on(async {
-            ManagerLaunchHooks::default()
-                .run_provider_sync()
-                .await
-                .expect("manager hook should connect provider sync");
-        });
-    }
-
-    #[test]
     fn missing_logs_return_failed_status() {
         let result = read_latest_logs(LogRequest { lines: 25 });
 
@@ -1044,29 +920,5 @@ mod tests {
 
         assert_eq!(result.status, "failed");
         assert!(result.message.contains("只允许打开 http 或 https 链接"));
-    }
-
-    #[test]
-    fn manager_launch_failure_does_not_replace_core_failure_for_same_ports() {
-        let latest = LaunchStatus {
-            status: "failed".to_string(),
-            message: "core failure".to_string(),
-            started_at_ms: 10,
-            debug_port: Some(9229),
-            helper_port: Some(57321),
-            codex_app: Some("C:/Program Files/Codex".to_string()),
-        };
-
-        assert!(!should_write_manager_launch_failure(
-            Some(&latest),
-            9229,
-            57321
-        ));
-        assert!(should_write_manager_launch_failure(
-            Some(&latest),
-            9230,
-            57321
-        ));
-        assert!(should_write_manager_launch_failure(None, 9229, 57321));
     }
 }

@@ -35,10 +35,48 @@ impl Default for LauncherHooks {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let options = parse_launch_options(std::env::args().skip(1));
     let hooks = LauncherHooks::default();
-    let handle = launch_and_inject_with_hooks(LaunchOptions::default(), &hooks).await?;
+    let handle = launch_and_inject_with_hooks(options, &hooks).await?;
     handle.wait_for_codex_exit().await?;
     Ok(())
+}
+
+fn parse_launch_options<I, S>(args: I) -> LaunchOptions
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut options = LaunchOptions::default();
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_ref() {
+            "--app-path" => {
+                if let Some(value) = iter.next() {
+                    let value = value.as_ref().trim();
+                    if !value.is_empty() {
+                        options.app_dir = Some(PathBuf::from(value));
+                    }
+                }
+            }
+            "--debug-port" => {
+                if let Some(value) = iter.next() {
+                    if let Ok(port) = value.as_ref().parse::<u16>() {
+                        options.debug_port = port;
+                    }
+                }
+            }
+            "--helper-port" => {
+                if let Some(value) = iter.next() {
+                    if let Ok(port) = value.as_ref().parse::<u16>() {
+                        options.helper_port = port;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    options
 }
 
 #[async_trait::async_trait(?Send)]
@@ -436,6 +474,35 @@ fn default_user_scripts_config_dir() -> PathBuf {
         .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
         .unwrap_or_else(|| PathBuf::from(".config"))
         .join("Codex++")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_launch_options_accepts_manager_forwarded_ports_and_app_path() {
+        let options = parse_launch_options([
+            "--app-path",
+            "C:/Codex/App",
+            "--debug-port",
+            "9333",
+            "--helper-port",
+            "57322",
+        ]);
+
+        assert_eq!(options.app_dir, Some(PathBuf::from("C:/Codex/App")));
+        assert_eq!(options.debug_port, 9333);
+        assert_eq!(options.helper_port, 57322);
+    }
+
+    #[test]
+    fn parse_launch_options_ignores_invalid_ports() {
+        let options = parse_launch_options(["--debug-port", "nope", "--helper-port", "70000"]);
+
+        assert_eq!(options.debug_port, LaunchOptions::default().debug_port);
+        assert_eq!(options.helper_port, LaunchOptions::default().helper_port);
+    }
 }
 
 fn builtin_user_scripts_dir() -> PathBuf {

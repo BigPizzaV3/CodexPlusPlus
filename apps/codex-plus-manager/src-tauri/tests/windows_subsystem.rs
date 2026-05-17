@@ -63,3 +63,14 @@ fn windows_binaries_request_administrator_privileges() {
     assert!(windows_manifest.contains("Microsoft.Windows.Common-Controls"));
     assert!(windows_installer.contains("RequestExecutionLevel admin"));
 }
+
+#[test]
+fn manager_launch_button_spawns_silent_launcher_binary() {
+    let commands_rs =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands.rs"))
+            .expect("read manager commands.rs");
+
+    assert!(commands_rs.contains("SILENT_BINARY"));
+    assert!(commands_rs.contains("std::process::Command::new"));
+    assert!(!commands_rs.contains("launch_and_inject_with_hooks(options"));
+}
