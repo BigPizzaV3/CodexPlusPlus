@@ -2,9 +2,23 @@ pub mod commands;
 pub mod install;
 
 pub fn run() {
+    let show_update = commands::startup_should_show_update();
     tauri::Builder::default()
+        .setup(move |app| {
+            let url = if show_update {
+                "index.html?showUpdate=1"
+            } else {
+                "index.html"
+            };
+            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
+                .title("Codex++ 管理工具")
+                .inner_size(960.0, 720.0)
+                .build()?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::backend_version,
+            commands::startup_options,
             commands::load_overview,
             commands::launch_codex_plus,
             commands::restart_codex_plus,

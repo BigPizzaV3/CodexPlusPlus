@@ -162,6 +162,10 @@ type AdsResult = CommandResult<{
   ads: AdItem[];
 }>;
 
+type StartupResult = CommandResult<{
+  showUpdate: boolean;
+}>;
+
 type Route = "overview" | "relay" | "enhance" | "userScripts" | "providerSync" | "recommendations" | "maintenance" | "about" | "settings" | "logs" | "diagnostics";
 type Theme = "dark" | "light";
 
@@ -202,7 +206,7 @@ const defaultSettings: BackendSettings = {
 
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
-  const [route, setRoute] = useState<Route>("overview");
+  const [route, setRoute] = useState<Route>(() => loadInitialRoute());
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
   const [overview, setOverview] = useState<OverviewResult | null>(null);
@@ -378,11 +382,13 @@ export function App() {
     }
   };
 
-  const checkUpdate = async () => {
+  const checkUpdate = async (silent = false) => {
     const result = await run(() => call<UpdateResult>("check_update"));
     if (result) {
       setUpdate(result);
-      showNotice("GitHub Release 检查", result.message, result.status);
+      if (!silent || result.updateAvailable) {
+        showNotice("GitHub Release 检查", result.message, result.status);
+      }
     }
   };
 
@@ -482,6 +488,13 @@ export function App() {
 
   useEffect(() => {
     void (async () => {
+      const startup = await run(() => call<StartupResult>("startup_options"));
+      if (startup?.showUpdate) {
+        setRoute("about");
+        void checkUpdate(false);
+      } else {
+        void checkUpdate(true);
+      }
       await refreshOverview(true);
       await refreshSettings(true);
       await refreshRelay(true);
@@ -1684,4 +1697,13 @@ function stringifyError(error: unknown) {
 function loadInitialTheme(): Theme {
   if (typeof window === "undefined") return "dark";
   return window.localStorage.getItem("codex-plus-theme") === "light" ? "light" : "dark";
+}
+
+function loadInitialRoute(): Route {
+  if (typeof window === "undefined") return "overview";
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("showUpdate") === "1" || window.location.hash === "#about") {
+    return "about";
+  }
+  return "overview";
 }

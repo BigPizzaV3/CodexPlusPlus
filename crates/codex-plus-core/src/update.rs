@@ -121,13 +121,10 @@ pub fn select_update_asset(assets: &[(String, String)]) -> Option<ReleaseAsset> 
 }
 
 pub async fn fetch_latest_release(api_url: &str) -> anyhow::Result<Release> {
-    let client = reqwest::Client::new();
+    let client =
+        crate::http_client::proxied_client(&format!("Codex++/{}", crate::version::VERSION))?;
     let payload = client
         .get(api_url)
-        .header(
-            reqwest::header::USER_AGENT,
-            format!("Codex++/{}", crate::version::VERSION),
-        )
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await?
@@ -158,17 +155,14 @@ pub async fn perform_update(
         .asset_url
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("没有可下载的 Release asset"))?;
-    let bytes = reqwest::Client::new()
-        .get(url)
-        .header(
-            reqwest::header::USER_AGENT,
-            format!("Codex++/{}", crate::version::VERSION),
-        )
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
+    let bytes =
+        crate::http_client::proxied_client(&format!("Codex++/{}", crate::version::VERSION))?
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
     let installer_path = download_asset_to(release, &bytes, download_dir)?;
     launch_installer(&installer_path)?;
     Ok(UpdateInstall {

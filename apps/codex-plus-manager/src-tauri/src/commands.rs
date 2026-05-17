@@ -108,6 +108,12 @@ pub struct AdsPayload {
     pub ads: Vec<Value>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupPayload {
+    pub show_update: bool,
+}
+
 #[tauri::command]
 pub fn backend_version() -> CommandResult<VersionPayload> {
     ok(
@@ -116,6 +122,31 @@ pub fn backend_version() -> CommandResult<VersionPayload> {
             version: codex_plus_core::version::VERSION.to_string(),
         },
     )
+}
+
+#[tauri::command]
+pub fn startup_options() -> CommandResult<StartupPayload> {
+    ok(
+        "启动参数已读取。",
+        StartupPayload {
+            show_update: startup_should_show_update(),
+        },
+    )
+}
+
+pub fn startup_should_show_update() -> bool {
+    should_show_update(
+        std::env::args(),
+        std::env::var("CODEX_PLUS_SHOW_UPDATE").ok().as_deref(),
+    )
+}
+
+fn should_show_update<I, S>(args: I, env_value: Option<&str>) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter().any(|arg| arg.as_ref() == "--show-update") || env_value == Some("1")
 }
 
 #[tauri::command]
@@ -135,7 +166,7 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
                 settings_path: codex_plus_core::paths::default_settings_path()
                     .to_string_lossy()
                     .to_string(),
-                logs_path: codex_plus_core::paths::default_latest_status_path()
+                logs_path: codex_plus_core::paths::default_diagnostic_log_path()
                     .to_string_lossy()
                     .to_string(),
             },
@@ -156,7 +187,7 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
             settings_path: codex_plus_core::paths::default_settings_path()
                 .to_string_lossy()
                 .to_string(),
-            logs_path: codex_plus_core::paths::default_latest_status_path()
+            logs_path: codex_plus_core::paths::default_diagnostic_log_path()
                 .to_string_lossy()
                 .to_string(),
         },
@@ -178,6 +209,14 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> CommandResult<Value> {
     let debug_port = request.debug_port;
     let helper_port = request.helper_port;
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.launch_requested",
+        json!({
+            "debug_port": debug_port,
+            "helper_port": helper_port,
+            "app_path": request.app_path.trim()
+        }),
+    );
     match spawn_silent_launcher(&request) {
         Ok(()) => CommandResult {
             status: "accepted".to_string(),
@@ -455,7 +494,7 @@ pub fn disable_watcher() -> CommandResult<WatcherPayload> {
 
 #[tauri::command]
 pub fn read_latest_logs(request: LogRequest) -> CommandResult<LogsPayload> {
-    let path = codex_plus_core::paths::default_latest_status_path();
+    let path = codex_plus_core::paths::default_diagnostic_log_path();
     match read_tail(&path, request.lines) {
         Ok(text) => ok(
             "日志已读取。",
@@ -709,7 +748,7 @@ fn diagnostics_report() -> String {
             settings_path: codex_plus_core::paths::default_settings_path()
                 .to_string_lossy()
                 .to_string(),
-            logs_path: codex_plus_core::paths::default_latest_status_path()
+            logs_path: codex_plus_core::paths::default_diagnostic_log_path()
                 .to_string_lossy()
                 .to_string(),
         },
@@ -724,6 +763,10 @@ fn diagnostics_report() -> String {
         "version": codex_plus_core::version::VERSION,
         "overview": overview.payload,
         "settings": settings,
+        "logs": {
+            "diagnosticLogPath": codex_plus_core::paths::default_diagnostic_log_path(),
+            "latestStatusPath": codex_plus_core::paths::default_latest_status_path()
+        },
         "platform": {
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH
@@ -831,6 +874,37 @@ mod tests {
 
         assert_eq!(result.status, "ok");
         assert!(!result.payload.version.is_empty());
+    }
+
+    #[test]
+    fn startup_options_returns_structured_payload() {
+        let result = startup_options();
+
+        assert_eq!(result.status, "ok");
+    }
+
+    #[test]
+    fn startup_options_honors_show_update_environment() {
+        unsafe {
+            std::env::set_var("CODEX_PLUS_SHOW_UPDATE", "1");
+        }
+
+        let result = startup_options();
+
+        unsafe {
+            std::env::remove_var("CODEX_PLUS_SHOW_UPDATE");
+        }
+
+        assert_eq!(result.status, "ok");
+        assert!(result.payload.show_update);
+    }
+
+    #[test]
+    fn startup_options_honors_show_update_argument() {
+        assert!(should_show_update(
+            ["codex-plus-plus-manager.exe", "--show-update"],
+            None
+        ));
     }
 
     #[test]

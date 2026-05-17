@@ -254,6 +254,27 @@ where
         })?
     }
 
+    async fn send_command_without_wait(
+        &mut self,
+        message_id: u64,
+        method: &str,
+        params: Value,
+    ) -> anyhow::Result<()> {
+        self.socket
+            .send(Message::Text(
+                json!({
+                    "id": message_id,
+                    "method": method,
+                    "params": params,
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .with_context(|| format!("failed to send CDP command {method} id {message_id}"))?;
+        Ok(())
+    }
+
     async fn wait_for_id(&mut self, message_id: u64, method: String) -> anyhow::Result<Value> {
         loop {
             if let Some(response) = self.responses.remove(&message_id) {
@@ -365,13 +386,44 @@ where
         result: &Value,
     ) -> anyhow::Result<()> {
         let expression = resolve_bridge_expression(request_id, result)?;
-        self.send_command(
-            next_message_id(),
-            "Runtime.evaluate",
-            runtime_evaluate_params(&expression),
-        )
-        .await
-        .map(|_| ())
+        let message_id = next_message_id();
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "bridge.resolve_start",
+            json!({
+                "request_id": request_id,
+                "message_id": message_id,
+                "result_status": result.get("status").and_then(Value::as_str).unwrap_or("")
+            }),
+        );
+        let sent = self
+            .send_command_without_wait(
+                message_id,
+                "Runtime.evaluate",
+                runtime_evaluate_params(&expression),
+            )
+            .await;
+        match &sent {
+            Ok(_) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "bridge.resolve_ok",
+                    json!({
+                        "request_id": request_id,
+                        "message_id": message_id
+                    }),
+                );
+            }
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "bridge.resolve_failed",
+                    json!({
+                        "request_id": request_id,
+                        "message_id": message_id,
+                        "message": error.to_string()
+                    }),
+                );
+            }
+        }
+        sent.map(|_| ())
     }
 
     async fn reject_bridge_request(
@@ -380,13 +432,44 @@ where
         message: &str,
     ) -> anyhow::Result<()> {
         let expression = reject_bridge_expression(request_id, message)?;
-        self.send_command(
-            next_message_id(),
-            "Runtime.evaluate",
-            runtime_evaluate_params(&expression),
-        )
-        .await
-        .map(|_| ())
+        let message_id = next_message_id();
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "bridge.reject_start",
+            json!({
+                "request_id": request_id,
+                "message_id": message_id,
+                "message": message
+            }),
+        );
+        let sent = self
+            .send_command_without_wait(
+                message_id,
+                "Runtime.evaluate",
+                runtime_evaluate_params(&expression),
+            )
+            .await;
+        match &sent {
+            Ok(_) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "bridge.reject_ok",
+                    json!({
+                        "request_id": request_id,
+                        "message_id": message_id
+                    }),
+                );
+            }
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "bridge.reject_failed",
+                    json!({
+                        "request_id": request_id,
+                        "message_id": message_id,
+                        "error": error.to_string()
+                    }),
+                );
+            }
+        }
+        sent.map(|_| ())
     }
 }
 

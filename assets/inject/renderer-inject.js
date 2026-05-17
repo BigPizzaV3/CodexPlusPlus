@@ -34,6 +34,7 @@
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationTimelineVersion = "2";
   let codexPlusVersion = window.__CODEX_PLUS_VERSION__ || "unknown";
+  const codexPlusBuild = window.__CODEX_PLUS_BUILD__ || "unknown";
   const codexPlusSettingsKey = "codexPlusSettings";
   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
@@ -573,6 +574,7 @@
 
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
   let codexPlusBackendStatus = { status: "checking", message: "正在检查后端…" };
+  let codexPlusBackendCheckSeq = 0;
 
   function renderBackendStatus() {
     const status = codexPlusBackendStatus.status || "failed";
@@ -601,12 +603,22 @@
   function withBackendTimeout(request) {
     return Promise.race([
       request,
-      new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "后端已断开" }), 2000)),
+      new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "后端检查超时", timeout: true }), 2000)),
     ]);
   }
 
   async function checkBackendStatus() {
-    codexPlusBackendStatus = await withBackendTimeout(postJson("/backend/status", {}));
+    const seq = ++codexPlusBackendCheckSeq;
+    const nextStatus = await withBackendTimeout(postJson("/backend/status", {}));
+    if (seq !== codexPlusBackendCheckSeq) return;
+    codexPlusBackendStatus = nextStatus;
+    if (nextStatus?.status !== "ok") {
+      sendCodexPlusDiagnostic("backend_check_failed", {
+        status: nextStatus?.status || "unknown",
+        message: nextStatus?.message || "",
+        timeout: !!nextStatus?.timeout,
+      });
+    }
     renderBackendStatus();
   }
 
@@ -728,10 +740,35 @@
     `;
   }
 
+  async function directFetchCodexPlusAds() {
+    const urls = [
+      "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
+      "https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json",
+    ];
+    let lastError = null;
+    for (const url of urls) {
+      try {
+        const response = await fetch(url, {
+          headers: { "Accept": "application/json" },
+          cache: "no-store",
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.json();
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error("ad list unavailable");
+  }
+
   async function fetchCodexPlusAds() {
     try {
-      codexPlusAds = normalizeCodexPlusAds(await postJson("/ads", {}));
-    } catch (_) {
+      codexPlusAds = normalizeCodexPlusAds(await directFetchCodexPlusAds());
+    } catch (error) {
+      sendCodexPlusDiagnostic("ads_fetch_failed", {
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
       codexPlusAds = [];
     } finally {
       codexPlusAdsLoaded = true;
@@ -824,7 +861,7 @@
               <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a></div></div>
+              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a></div></div>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
@@ -1266,6 +1303,43 @@
     return { session_id: sessionId, title };
   }
 
+  function codexPlusDiagnosticPayload(event, detail) {
+    return {
+      event,
+      detail: detail || {},
+      helperBase,
+      hasBridge: !!window.__codexSessionDeleteBridge,
+      location: window.location?.href || "",
+      userAgent: navigator.userAgent || "",
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  function sendCodexPlusDiagnostic(event, detail) {
+    const payload = codexPlusDiagnosticPayload(event, detail);
+    if (window.__codexSessionDeleteBridge) {
+      window.__codexSessionDeleteBridge("/diagnostics/log", payload).catch(() => {});
+    }
+    const body = JSON.stringify(payload);
+    try {
+      if (navigator.sendBeacon) {
+        const blob = new Blob([body], { type: "application/json" });
+        if (navigator.sendBeacon(`${helperBase}/diagnostics/log`, blob)) return;
+      }
+    } catch (_) {}
+    fetch(`${helperBase}/diagnostics/log`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      keepalive: true,
+    }).catch(() => {});
+  }
+
+  sendCodexPlusDiagnostic("script_loaded", {
+    version: codexPlusVersion,
+    build: codexPlusBuild,
+  });
+
   async function postJson(path, payload) {
     if (!window.__codexSessionDeleteBridge) {
       if (path === "/backend/status") {
@@ -1275,14 +1349,73 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload || {}),
           });
-          return await response.json();
-        } catch (_) {
+          const text = await response.text();
+          try {
+            const parsed = text ? JSON.parse(text) : {};
+            if (!response.ok || parsed.status !== "ok") {
+              sendCodexPlusDiagnostic("backend_status_http_not_ok", {
+                path,
+                httpStatus: response.status,
+                responseStatus: parsed.status || "",
+                message: parsed.message || "",
+                bodyPreview: text.slice(0, 240),
+              });
+            }
+            return parsed;
+          } catch (error) {
+            sendCodexPlusDiagnostic("backend_status_json_parse_failed", {
+              path,
+              httpStatus: response.status,
+              errorName: error?.name || "",
+              errorMessage: error?.message || String(error),
+              bodyPreview: text.slice(0, 240),
+            });
+            return { status: "failed", message: "后端响应解析失败" };
+          }
+        } catch (error) {
+          sendCodexPlusDiagnostic("backend_status_http_failed", {
+            path,
+            errorName: error?.name || "",
+            errorMessage: error?.message || String(error),
+          });
           return { status: "failed", message: "后端已断开" };
         }
       }
+      sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
       return { status: "failed", message: "桥接不可用，请重启启动器" };
     }
-    return await window.__codexSessionDeleteBridge(path, payload);
+    try {
+      return await window.__codexSessionDeleteBridge(path, payload);
+    } catch (error) {
+      sendCodexPlusDiagnostic("bridge_call_failed", {
+        path,
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+      if (path === "/backend/status") {
+        try {
+          const response = await fetch(`${helperBase}${path}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload || {}),
+          });
+          const parsed = await response.json();
+          sendCodexPlusDiagnostic("backend_status_bridge_failed_http_fallback_ok", {
+            path,
+            httpStatus: response.status,
+            responseStatus: parsed.status || "",
+          });
+          return parsed;
+        } catch (fallbackError) {
+          sendCodexPlusDiagnostic("backend_status_bridge_and_http_failed", {
+            path,
+            errorName: fallbackError?.name || "",
+            errorMessage: fallbackError?.message || String(fallbackError),
+          });
+        }
+      }
+      throw error;
+    }
   }
 
   function downloadMarkdown(filename, markdown) {

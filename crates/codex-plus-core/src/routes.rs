@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -86,6 +87,17 @@ pub async fn handle_bridge_request(
     path: &str,
     payload: Value,
 ) -> serde_json::Value {
+    let started = Instant::now();
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "bridge.request",
+        json!({
+            "path": path,
+            "payload_keys": payload
+                .as_object()
+                .map(|object| object.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+        }),
+    );
     let result = match path {
         "/settings/get" => settings_value(ctx.settings.get_settings().await),
         "/settings/set" => settings_value(ctx.settings.set_settings(payload.clone()).await),
@@ -114,6 +126,7 @@ pub async fn handle_bridge_request(
         "/manager/open" => ctx.runtime.open_manager().await,
         "/backend/status" => ctx.runtime.backend_status().await,
         "/backend/repair" => ctx.runtime.repair_backend().await,
+        "/diagnostics/log" => diagnostic_log_value(payload.clone()),
         "/ads" => ctx.runtime.ads().await,
         "/delete" => result_value(ctx.data.delete(session_from_payload(&payload)).await),
         "/undo" => {
@@ -158,6 +171,12 @@ pub async fn handle_bridge_request(
                 .await
         }
         _ => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.unknown_path",
+                json!({
+                    "path": path
+                }),
+            );
             return json!({
                 "status": "failed",
                 "session_id": "",
@@ -166,7 +185,16 @@ pub async fn handle_bridge_request(
         }
     };
 
-    result.unwrap_or_else(|error| failed_from_error(&payload, error))
+    let response = result.unwrap_or_else(|error| failed_from_error(&payload, error));
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "bridge.response",
+        json!({
+            "path": path,
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+            "status": response.get("status").and_then(Value::as_str).unwrap_or("")
+        }),
+    );
+    response
 }
 
 #[derive(Default)]
@@ -312,6 +340,13 @@ impl BridgeRuntimeService for CoreRuntimeService {
 
     async fn backend_status(&self) -> anyhow::Result<Value> {
         let _ = self.status_store.load_latest();
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "bridge.backend_status_ok",
+            json!({
+                "debug_port": self.debug_port,
+                "version": crate::version::VERSION
+            }),
+        );
         Ok(json!({"status": "ok", "message": "后端已连接", "version": crate::version::VERSION}))
     }
 
@@ -420,6 +455,37 @@ where
     T: serde::Serialize,
 {
     Ok(serde_json::to_value(result?)?)
+}
+
+fn diagnostic_log_value(payload: Value) -> anyhow::Result<Value> {
+    let event = payload
+        .get("event")
+        .and_then(Value::as_str)
+        .map(sanitize_diagnostic_event)
+        .unwrap_or_else(|| "event".to_string());
+    crate::diagnostic_log::append_diagnostic_log(&format!("renderer.{event}"), payload)?;
+    Ok(json!({
+        "status": "ok",
+        "message": "日志已记录"
+    }))
+}
+
+fn sanitize_diagnostic_event(event: &str) -> String {
+    let sanitized = event
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "event".to_string()
+    } else {
+        sanitized
+    }
 }
 
 fn archived_thread_value(result: anyhow::Result<Option<SessionRef>>) -> anyhow::Result<Value> {

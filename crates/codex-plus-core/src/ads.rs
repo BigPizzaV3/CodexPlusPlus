@@ -35,10 +35,7 @@ pub async fn fetch_ad_list_from_urls<S>(urls: &[S]) -> anyhow::Result<Value>
 where
     S: AsRef<str>,
 {
-    let client = reqwest::Client::builder()
-        .user_agent("CodexPlusPlus")
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
+    let client = crate::http_client::proxied_client("CodexPlusPlus")?;
     let mut last_error = None;
     for url in urls {
         let url = url.as_ref();

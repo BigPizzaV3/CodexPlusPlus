@@ -4,6 +4,8 @@ pub mod assets;
 pub mod bridge;
 pub mod cdp;
 pub mod cli_wrapper;
+pub mod diagnostic_log;
+pub mod http_client;
 pub mod install;
 pub mod launcher;
 pub mod models;

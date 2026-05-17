@@ -281,6 +281,39 @@ async fn default_helper_serves_backend_status_over_http() {
 }
 
 #[tokio::test]
+async fn default_helper_accepts_diagnostic_log_events_over_http() {
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("codex-plus.log");
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
+    let hooks = DefaultLaunchHooks::default();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    hooks.start_helper(port).await.unwrap();
+    let response = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{port}/diagnostics/log"))
+        .json(&serde_json::json!({
+            "event": "backend_check_failed",
+            "message": "fetch failed",
+            "helperBase": format!("http://127.0.0.1:{port}")
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(response.status().is_success());
+    let payload: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(payload["status"], "ok");
+    hooks.shutdown_helper(port).await;
+
+    let contents = std::fs::read_to_string(&log_path).unwrap();
+    assert!(contents.contains("renderer.backend_check_failed"));
+    assert!(contents.contains("fetch failed"));
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+}
+
+#[tokio::test]
 async fn launch_lifecycle_runs_sync_before_launch_writes_success_and_shutdowns_on_exit() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");

@@ -12,6 +12,8 @@
   "app": {
     "windows": [
       {
+        "create": false,
+        "label": "main",
         "title": "Codex++ 管理工具",
         "width": 960,
         "height": 720

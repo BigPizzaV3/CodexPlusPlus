@@ -375,6 +375,26 @@ async fn core_runtime_manager_route_attempts_to_open_manager_binary() {
     assert_ne!(result["message"], "管理工具启动未接入当前运行时");
 }
 
+#[tokio::test]
+async fn bridge_backend_status_writes_diagnostic_log() {
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("codex-plus.log");
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
+    let ctx = BridgeContext::core(Arc::new(CoreRuntimeService::new(
+        9229,
+        StatusStore::default(),
+    )));
+
+    let result = handle_bridge_request(ctx, "/backend/status", json!({})).await;
+
+    assert_eq!(result["status"], "ok");
+    let contents = std::fs::read_to_string(&log_path).unwrap();
+    assert!(contents.contains("bridge.request"));
+    assert!(contents.contains("bridge.backend_status_ok"));
+    assert!(contents.contains("/backend/status"));
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+}
+
 #[test]
 fn user_script_manager_tolerates_bad_config_fields_and_updates_atomically() {
     let temp = tempfile::tempdir().unwrap();

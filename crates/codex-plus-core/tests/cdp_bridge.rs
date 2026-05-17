@@ -46,6 +46,27 @@ fn injection_script_prefixes_helper_url_and_sponsor_images() {
 }
 
 #[test]
+fn injection_script_marks_diagnostic_build_and_reports_script_loaded() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("window.__CODEX_PLUS_BUILD__"));
+    assert!(script.contains(codex_plus_core::assets::DIAGNOSTIC_BUILD_ID));
+    assert!(script.contains("script_loaded"));
+    assert!(script.contains("data-codex-plus-build"));
+}
+
+#[test]
+fn injection_script_fetches_ads_without_bridge() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("directFetchCodexPlusAds"));
+    assert!(script.contains("BigPizzaV3/Ad-List"));
+    assert!(
+        !script.contains("codexPlusAds = normalizeCodexPlusAds(await postJson(\"/ads\", {}));")
+    );
+}
+
+#[test]
 fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
     let script = assets::injection_script(57321);
 
@@ -192,6 +213,9 @@ fn pick_page_target_rejects_non_pages_and_pages_without_websocket() {
 
 #[tokio::test]
 async fn install_bridge_routes_binding_while_waiting_for_command_response() {
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("codex-plus.log");
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
     let (url, request_rx) = spawn_cdp_server(|mut socket| async move {
         for expected_id in 1..=4 {
             let command = recv_json(&mut socket).await;
@@ -257,6 +281,10 @@ async fn install_bridge_routes_binding_while_waiting_for_command_response() {
         .await
         .expect("server task should finish without panicking");
     assert!(handled.load(Ordering::SeqCst));
+    let contents = std::fs::read_to_string(&log_path).unwrap();
+    assert!(contents.contains("bridge.resolve_start"));
+    assert!(contents.contains("bridge.resolve_ok"));
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
 }
 
 #[tokio::test]
@@ -550,17 +578,10 @@ async fn install_bridge_queues_consecutive_bindings_without_recursive_dispatch()
         let first = recv_json(&mut socket).await;
         assert_eq!(first["method"], "Runtime.evaluate");
         assert_expression_contains_request(&first, "first");
-        assert_no_message_within(&mut socket, Duration::from_millis(150)).await;
-
-        send_json(&mut socket, json!({ "id": first["id"], "result": {} })).await;
-
         let second = recv_json(&mut socket).await;
         assert_eq!(second["method"], "Runtime.evaluate");
         assert_expression_contains_request(&second, "second");
         assert_ne!(second["id"], first["id"]);
-        assert_no_message_within(&mut socket, Duration::from_millis(150)).await;
-
-        send_json(&mut socket, json!({ "id": second["id"], "result": {} })).await;
 
         let third = recv_json(&mut socket).await;
         assert_eq!(third["method"], "Runtime.evaluate");
@@ -568,7 +589,6 @@ async fn install_bridge_queues_consecutive_bindings_without_recursive_dispatch()
         assert_ne!(third["id"], first["id"]);
         assert_ne!(third["id"], second["id"]);
 
-        send_json(&mut socket, json!({ "id": third["id"], "result": {} })).await;
         close_socket(&mut socket).await;
     })
     .await;
@@ -585,6 +605,76 @@ async fn install_bridge_queues_consecutive_bindings_without_recursive_dispatch()
     .await
     .expect("bridge should not hang while draining queued binding calls")
     .expect("bridge should process queued binding calls");
+    request_rx
+        .await
+        .expect("server task should finish without panicking");
+}
+
+#[tokio::test]
+async fn install_bridge_does_not_wait_for_resolve_runtime_evaluate_ack() {
+    let (url, request_rx) = spawn_cdp_server(|mut socket| async move {
+        for expected_id in 1..=5 {
+            let command = recv_json(&mut socket).await;
+            assert_eq!(command["id"], expected_id);
+            send_json(&mut socket, json!({ "id": expected_id, "result": {} })).await;
+        }
+
+        send_json(
+            &mut socket,
+            json!({
+                "method": "Runtime.bindingCalled",
+                "params": {
+                    "payload": serde_json::to_string(&json!({
+                        "id": "first",
+                        "path": "/backend/status",
+                        "payload": {},
+                    })).unwrap(),
+                },
+            }),
+        )
+        .await;
+        let first_resolve = recv_json(&mut socket).await;
+        assert_eq!(first_resolve["method"], "Runtime.evaluate");
+        assert_expression_contains_request(&first_resolve, "first");
+
+        send_json(
+            &mut socket,
+            json!({
+                "method": "Runtime.bindingCalled",
+                "params": {
+                    "payload": serde_json::to_string(&json!({
+                        "id": "second",
+                        "path": "/backend/status",
+                        "payload": {},
+                    })).unwrap(),
+                },
+            }),
+        )
+        .await;
+        let second_resolve =
+            tokio::time::timeout(Duration::from_millis(500), recv_json(&mut socket))
+                .await
+                .expect(
+                    "second resolve should be sent without waiting for first Runtime.evaluate ack",
+                );
+        assert_eq!(second_resolve["method"], "Runtime.evaluate");
+        assert_expression_contains_request(&second_resolve, "second");
+        close_socket(&mut socket).await;
+    })
+    .await;
+
+    let handler = Arc::new(|_path: String, _payload: serde_json::Value| {
+        Box::pin(async { Ok(json!({ "status": "ok" })) })
+            as Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>
+    });
+
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        bridge::install_bridge(&url, BRIDGE_BINDING_NAME, handler, &[]),
+    )
+    .await
+    .expect("bridge install should not wait for resolve ack")
+    .expect("bridge install should survive missing resolve ack");
     request_rx
         .await
         .expect("server task should finish without panicking");
@@ -636,14 +726,6 @@ async fn send_json(socket: &mut TestSocket, value: serde_json::Value) {
         .send(Message::Text(value.to_string().into()))
         .await
         .expect("message should send");
-}
-
-async fn assert_no_message_within(socket: &mut TestSocket, duration: Duration) {
-    let next_message = tokio::time::timeout(duration, socket.next()).await;
-    assert!(
-        next_message.is_err(),
-        "bridge dispatched another binding before the previous Runtime.evaluate response"
-    );
 }
 
 fn assert_expression_contains_request(command: &serde_json::Value, request_id: &str) {

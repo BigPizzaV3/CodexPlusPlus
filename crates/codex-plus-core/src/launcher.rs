@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -290,15 +291,22 @@ impl LaunchHooks for DefaultLaunchHooks {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", helper_port))
             .await
             .with_context(|| format!("failed to bind helper runtime on 127.0.0.1:{helper_port}"))?;
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "helper.listening",
+            serde_json::json!({
+                "helper_port": helper_port,
+                "address": format!("http://127.0.0.1:{helper_port}")
+            }),
+        );
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => break,
                     accepted = listener.accept() => {
-                        if let Ok((stream, _)) = accepted {
+                        if let Ok((stream, addr)) = accepted {
                             tokio::spawn(async move {
-                                let _ = handle_helper_connection(stream).await;
+                                let _ = handle_helper_connection(stream, Some(addr)).await;
                             });
                         }
                     }
@@ -455,7 +463,10 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 }
 
-async fn handle_helper_connection(mut stream: tokio::net::TcpStream) -> anyhow::Result<()> {
+async fn handle_helper_connection(
+    mut stream: tokio::net::TcpStream,
+    remote_addr: Option<SocketAddr>,
+) -> anyhow::Result<()> {
     let mut buffer = vec![0_u8; 4096];
     let read = stream.read(&mut buffer).await?;
     let request = String::from_utf8_lossy(&buffer[..read]);
@@ -463,25 +474,77 @@ async fn handle_helper_connection(mut stream: tokio::net::TcpStream) -> anyhow::
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or_default();
     let path = parts.next().unwrap_or_default();
+    let request_body = http_request_body(&request);
+    let remote_addr_text = remote_addr.map(|addr| addr.to_string());
 
-    let body = if path == "/backend/status" && matches!(method, "GET" | "POST" | "OPTIONS") {
-        serde_json::to_vec(&serde_json::json!({
-            "status": "ok",
-            "message": "后端已连接",
-            "version": crate::version::VERSION,
-            "transport": "http-helper"
-        }))?
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "helper.request",
+        serde_json::json!({
+            "method": method,
+            "path": path,
+            "request_line": request_line,
+            "remote_addr": remote_addr_text,
+            "body_bytes": request_body.len()
+        }),
+    );
+
+    let (status, body, log_event) = if path == "/backend/status"
+        && matches!(method, "GET" | "POST" | "OPTIONS")
+    {
+        (
+            "200 OK",
+            serde_json::to_vec(&serde_json::json!({
+                "status": "ok",
+                "message": "后端已连接",
+                "version": crate::version::VERSION,
+                "transport": "http-helper"
+            }))?,
+            "helper.backend_status_ok",
+        )
+    } else if path == "/diagnostics/log" && matches!(method, "POST" | "OPTIONS") {
+        if method == "POST" {
+            let detail =
+                serde_json::from_str::<serde_json::Value>(request_body).unwrap_or_else(|error| {
+                    serde_json::json!({
+                        "parse_error": error.to_string(),
+                        "raw": request_body
+                    })
+                });
+            let event = detail
+                .get("event")
+                .and_then(serde_json::Value::as_str)
+                .map(sanitize_diagnostic_event)
+                .unwrap_or_else(|| "event".to_string());
+            let _ =
+                crate::diagnostic_log::append_diagnostic_log(&format!("renderer.{event}"), detail);
+        }
+        (
+            "200 OK",
+            serde_json::to_vec(&serde_json::json!({
+                "status": "ok",
+                "message": "日志已记录"
+            }))?,
+            "helper.diagnostics_log_ok",
+        )
     } else {
-        serde_json::to_vec(&serde_json::json!({
-            "status": "failed",
-            "message": "未知后端路径"
-        }))?
+        (
+            "404 Not Found",
+            serde_json::to_vec(&serde_json::json!({
+                "status": "failed",
+                "message": "未知后端路径"
+            }))?,
+            "helper.unknown_path",
+        )
     };
-    let status = if path == "/backend/status" {
-        "200 OK"
-    } else {
-        "404 Not Found"
-    };
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        log_event,
+        serde_json::json!({
+            "method": method,
+            "path": path,
+            "status": status,
+            "remote_addr": remote_addr_text
+        }),
+    );
     let response = if method == "OPTIONS" {
         format!(
             "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -498,6 +561,31 @@ async fn handle_helper_connection(mut stream: tokio::net::TcpStream) -> anyhow::
     }
     stream.shutdown().await?;
     Ok(())
+}
+
+fn http_request_body(request: &str) -> &str {
+    request
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or_default()
+}
+
+fn sanitize_diagnostic_event(event: &str) -> String {
+    let sanitized = event
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "event".to_string()
+    } else {
+        sanitized
+    }
 }
 
 pub fn build_codex_arguments(debug_port: u16) -> Vec<String> {
