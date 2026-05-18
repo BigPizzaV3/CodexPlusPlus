@@ -6,6 +6,8 @@ use serde_json::Value;
 
 const RELAY_PROVIDER: &str = "CodexPlusPlus";
 const LEGACY_RELAY_PROVIDER: &str = "CodexPP";
+const IMAGE_GENERATION_TOOL: &str = "image_generation";
+pub const LOCAL_RELAY_PROXY_PORT: u16 = 57323;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +45,56 @@ pub struct RelayApplyResult {
     pub config_path: String,
     pub backup_path: Option<String>,
     pub configured: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayApplyOptions {
+    pub base_url: String,
+    pub bearer_token: String,
+    pub image_generation_enabled: bool,
+    pub image_generation_use_separate_api: bool,
+    pub image_generation_base_url: String,
+    pub image_generation_bearer_token: String,
+}
+
+impl RelayApplyOptions {
+    pub fn new(base_url: &str, bearer_token: &str) -> Self {
+        Self {
+            base_url: base_url.to_string(),
+            bearer_token: bearer_token.to_string(),
+            image_generation_enabled: false,
+            image_generation_use_separate_api: false,
+            image_generation_base_url: String::new(),
+            image_generation_bearer_token: String::new(),
+        }
+    }
+
+    fn effective_base_url(&self) -> String {
+        if self.uses_local_relay_proxy() {
+            format!("http://127.0.0.1:{LOCAL_RELAY_PROXY_PORT}/v1")
+        } else {
+            normalize_responses_base_url(&self.base_url)
+        }
+    }
+
+    fn uses_local_relay_proxy(&self) -> bool {
+        self.disables_image_generation() || self.uses_separate_image_generation_api()
+    }
+
+    fn uses_separate_image_generation_api(&self) -> bool {
+        self.image_generation_enabled
+            && self.image_generation_use_separate_api
+            && !self.image_generation_base_url.trim().is_empty()
+            && !self.image_generation_bearer_token.trim().is_empty()
+    }
+
+    fn requests_separate_image_generation_api(&self) -> bool {
+        self.image_generation_enabled && self.image_generation_use_separate_api
+    }
+
+    fn disables_image_generation(&self) -> bool {
+        !self.image_generation_enabled
+    }
 }
 
 pub fn default_codex_home_dir() -> PathBuf {
@@ -91,9 +143,7 @@ pub fn chatgpt_auth_status_from_home(home: &Path) -> ChatGptAuthStatus {
 pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
     let config_path = home.join("config.toml");
     let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let root_provider = root_key_string(&contents, "model_provider")
-        .map(|value| value == RELAY_PROVIDER)
-        .unwrap_or(false);
+    let root_provider = relay_provider_active_in_contents(&contents);
     let provider = table_values(&contents, &format!("model_providers.{RELAY_PROVIDER}"));
     let requires_openai_auth = provider
         .as_ref()
@@ -119,18 +169,45 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
     }
 }
 
+pub fn relay_provider_active_from_home(home: &Path) -> bool {
+    let config_path = home.join("config.toml");
+    let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
+    relay_provider_active_in_contents(&contents)
+}
+
+fn relay_provider_active_in_contents(contents: &str) -> bool {
+    root_key_string(contents, "model_provider")
+        .map(|value| value == RELAY_PROVIDER)
+        .unwrap_or(false)
+}
+
 pub fn apply_relay_config_to_home(
     home: &Path,
     base_url: &str,
     bearer_token: &str,
 ) -> anyhow::Result<RelayApplyResult> {
-    let base_url = base_url.trim();
+    apply_relay_config_to_home_with_options(home, &RelayApplyOptions::new(base_url, bearer_token))
+}
+
+pub fn apply_relay_config_to_home_with_options(
+    home: &Path,
+    options: &RelayApplyOptions,
+) -> anyhow::Result<RelayApplyResult> {
+    let base_url = options.effective_base_url();
     if base_url.is_empty() {
         anyhow::bail!("中转 Base URL 不能为空");
     }
-    let bearer_token = bearer_token.trim();
+    let bearer_token = options.bearer_token.trim();
     if bearer_token.is_empty() {
         anyhow::bail!("中转 Key 不能为空");
+    }
+    if options.requests_separate_image_generation_api() {
+        if options.image_generation_base_url.trim().is_empty() {
+            anyhow::bail!("图片 Base URL 不能为空");
+        }
+        if options.image_generation_bearer_token.trim().is_empty() {
+            anyhow::bail!("图片 Key 不能为空");
+        }
     }
     std::fs::create_dir_all(home)?;
     let config_path = home.join("config.toml");
@@ -142,7 +219,7 @@ pub fn apply_relay_config_to_home(
     } else {
         None
     };
-    let updated = upsert_model_provider_config(&existing, base_url, bearer_token);
+    let updated = upsert_model_provider_config(&existing, &base_url, bearer_token, options);
     std::fs::write(&config_path, updated)?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
@@ -301,7 +378,12 @@ fn upsert_root_keys(contents: &str, entries: &[(&str, String)]) -> String {
     updated
 }
 
-fn upsert_model_provider_config(contents: &str, base_url: &str, bearer_token: &str) -> String {
+fn upsert_model_provider_config(
+    contents: &str,
+    base_url: &str,
+    bearer_token: &str,
+    options: &RelayApplyOptions,
+) -> String {
     let mut updated = upsert_root_keys(
         contents,
         &[(
@@ -317,24 +399,63 @@ fn upsert_model_provider_config(contents: &str, base_url: &str, bearer_token: &s
 
     let mut lines = updated.lines().map(ToString::to_string).collect::<Vec<_>>();
     let insert_at = first_non_provider_table_index(&lines).unwrap_or(lines.len());
-    let provider_lines = vec![
+    let mut provider_lines = vec![
         format!("[model_providers.{RELAY_PROVIDER}]"),
         format!("name = \"{}\"", toml_escape(RELAY_PROVIDER)),
         "wire_api = \"responses\"".to_string(),
         "requires_openai_auth = true".to_string(),
         format!("base_url = \"{}\"", toml_escape(base_url)),
+    ];
+    if options.disables_image_generation() {
+        provider_lines.push(format!("disabled_tools = [\"{IMAGE_GENERATION_TOOL}\"]"));
+    }
+    if options.uses_local_relay_proxy() {
+        provider_lines.push(format!(
+            "codex_plus_text_base_url = \"{}\"",
+            toml_escape(&normalize_responses_base_url(&options.base_url))
+        ));
+    }
+    if options.uses_separate_image_generation_api() {
+        provider_lines.push(format!(
+            "codex_plus_image_base_url = \"{}\"",
+            toml_escape(&normalize_responses_base_url(
+                &options.image_generation_base_url
+            ))
+        ));
+    }
+    provider_lines.extend([
         format!(
             "experimental_bearer_token = \"{}\"",
             toml_escape(bearer_token)
         ),
         String::new(),
-    ];
+    ]);
     lines.splice(insert_at..insert_at, provider_lines);
     let mut output = lines.join("\n");
     if !output.ends_with('\n') {
         output.push('\n');
     }
     output
+}
+
+fn normalize_responses_base_url(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.is_empty() || base_url_has_path_after_host(trimmed) {
+        return trimmed.to_string();
+    }
+
+    format!("{trimmed}/v1")
+}
+
+fn base_url_has_path_after_host(base_url: &str) -> bool {
+    let after_scheme = base_url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(base_url);
+    after_scheme
+        .split_once('/')
+        .map(|(_, path)| !path.trim_matches('/').is_empty())
+        .unwrap_or(false)
 }
 
 fn remove_table(contents: &str, table: &str) -> String {
