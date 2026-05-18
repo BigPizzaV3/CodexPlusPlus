@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use codex_plus_core::install::SILENT_BINARY;
+use codex_plus_core::relay_config::RelayApplyOptions;
 use codex_plus_core::settings::{BackendSettings, SettingsStore};
 use codex_plus_core::status::{LaunchStatus, StatusStore};
 use codex_plus_core::user_scripts::UserScriptManager;
@@ -566,11 +567,15 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
 
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
-    match codex_plus_core::relay_config::apply_relay_config_to_home(
-        &home,
-        &relay.base_url,
-        &relay.api_key,
-    ) {
+    let options = RelayApplyOptions {
+        base_url: relay.base_url,
+        bearer_token: relay.api_key,
+        image_generation_enabled: relay.image_generation_enabled,
+        image_generation_use_separate_api: relay.image_generation_use_separate_api,
+        image_generation_base_url: relay.image_generation_base_url,
+        image_generation_bearer_token: relay.image_generation_api_key,
+    };
+    match codex_plus_core::relay_config::apply_relay_config_to_home_with_options(&home, &options) {
         Ok(result) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             ok(
