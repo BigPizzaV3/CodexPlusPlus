@@ -170,10 +170,7 @@ pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResul
         ),
         "OPENAI_API_KEY",
     );
-    let updated = upsert_root_keys(
-        &without_relay,
-        &[("model_provider", "\"chatgpt\"".to_string())],
-    );
+    let updated = clear_relay_model_provider(&without_relay);
     std::fs::write(&config_path, updated)?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
@@ -181,6 +178,19 @@ pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResul
         backup_path: backup_path.map(|path| path.to_string_lossy().to_string()),
         configured: status.configured,
     })
+}
+
+fn clear_relay_model_provider(contents: &str) -> String {
+    if cfg!(target_os = "macos") {
+        return match root_key_string(contents, "model_provider").as_deref() {
+            Some(RELAY_PROVIDER) | Some(LEGACY_RELAY_PROVIDER) | Some("chatgpt") => {
+                remove_root_key(contents, "model_provider")
+            }
+            _ => contents.to_string(),
+        };
+    }
+
+    upsert_root_keys(contents, &[("model_provider", "\"chatgpt\"".to_string())])
 }
 
 fn auth_json_chatgpt_account_label(path: &Path) -> Option<Option<String>> {

@@ -198,7 +198,58 @@ base_url = "https://old.example.test/v1"
 }
 
 #[test]
-fn clear_relay_config_switches_back_to_chatgpt_and_preserves_other_config() {
+#[cfg(target_os = "macos")]
+fn clear_relay_config_removes_relay_provider_on_macos_and_preserves_other_config() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-5"
+model_provider = "CodexPlusPlus"
+[model_providers.CodexPlusPlus]
+name = "CodexPlusPlus"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example.test/v1"
+experimental_bearer_token = "sk-test-redacted"
+
+[model_providers.CodexPP]
+name = "CodexPP"
+base_url = "https://old.example.test/v1"
+
+[model_providers.custom1]
+name = "custom1"
+wire_api = "responses"
+base_url = "https://keep.example.test/v1"
+
+[profiles.default]
+model = "gpt-5-mini"
+"#,
+    )
+    .unwrap();
+
+    let result = clear_relay_config_to_home(temp.path()).unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(!result.configured);
+    assert!(result.backup_path.is_some());
+    assert!(updated.contains(r#"model = "gpt-5""#));
+    assert!(
+        !updated
+            .lines()
+            .any(|line| line.trim_start().starts_with("model_provider ="))
+    );
+    assert!(!updated.contains("OPENAI_API_KEY"));
+    assert!(!updated.contains("[model_providers.CodexPlusPlus]"));
+    assert!(!updated.contains("[model_providers.CodexPP]"));
+    assert!(!updated.contains("experimental_bearer_token"));
+    assert!(updated.contains("[model_providers.custom1]"));
+    assert!(updated.contains(r#"base_url = "https://keep.example.test/v1""#));
+    assert!(updated.contains("[profiles.default]"));
+}
+
+#[test]
+#[cfg(not(target_os = "macos"))]
+fn clear_relay_config_switches_back_to_chatgpt_on_non_macos_and_preserves_other_config() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
         temp.path().join("config.toml"),
@@ -240,6 +291,28 @@ model = "gpt-5-mini"
     assert!(updated.contains("[model_providers.custom1]"));
     assert!(updated.contains(r#"base_url = "https://keep.example.test/v1""#));
     assert!(updated.contains("[profiles.default]"));
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn clear_relay_config_preserves_non_relay_model_provider() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-5"
+model_provider = "openai"
+[model_providers.CodexPlusPlus]
+name = "CodexPlusPlus"
+base_url = "https://relay.example.test/v1"
+"#,
+    )
+    .unwrap();
+
+    clear_relay_config_to_home(temp.path()).unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(updated.contains(r#"model_provider = "openai""#));
+    assert!(!updated.contains("[model_providers.CodexPlusPlus]"));
 }
 
 fn base64_url_no_pad(value: &str) -> String {
