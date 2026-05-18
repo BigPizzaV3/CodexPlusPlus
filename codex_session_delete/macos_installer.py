@@ -12,6 +12,7 @@ from codex_session_delete import __version__
 from codex_session_delete.app_paths import find_macos_codex_app
 
 ICON_ASSET = Path(__file__).resolve().parent / "assets" / "codex-plus-plus.png"
+DEFAULT_GUI_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 if TYPE_CHECKING:
     from codex_session_delete.installers import InstallOptions
@@ -58,7 +59,10 @@ def install_macos_app(options: "InstallOptions") -> None:
     (contents / "Info.plist").write_bytes(plistlib.dumps(plist))
 
     executable = macos / EXECUTABLE_NAME
-    executable.write_text(f"#!/bin/sh\nexec {_launcher_command(options)}\n", encoding="utf-8")
+    executable.write_text(
+        f"#!/bin/sh\nexport PATH=\"${{PATH:-{DEFAULT_GUI_PATH}}}:{DEFAULT_GUI_PATH}\"\nexec {_launcher_command(options)}\n",
+        encoding="utf-8",
+    )
     executable.chmod(executable.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     _copy_codex_icon(resources)
