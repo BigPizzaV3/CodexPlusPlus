@@ -31,6 +31,8 @@ def test_install_macos_app_creates_app_bundle(tmp_path):
     assert (app / "Contents" / "Resources" / "codex-plus-plus.png").exists()
 
     script = executable.read_text(encoding="utf-8")
+    assert "/opt/homebrew/bin" in script
+    assert "/usr/local/bin" in script
     assert "python -m codex_session_delete launch" in script
     assert "exec" in script
 
