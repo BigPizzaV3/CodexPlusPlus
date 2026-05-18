@@ -24,7 +24,7 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "10";
+  const codexDeleteStyleVersion = "11";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "7";
@@ -77,14 +77,22 @@
       .${actionButtonClass} {
         width: 26px;
         height: 26px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         border: 0;
         border-radius: 7px;
         background: transparent;
         color: #d1d5db;
-        font: 14px/26px system-ui, sans-serif;
+        font: 14px/1 system-ui, sans-serif;
         padding: 0;
         cursor: default;
         text-align: center;
+      }
+      .${actionButtonClass} svg {
+        display: block;
+        width: 16px;
+        height: 16px;
       }
       .${actionButtonClass}:hover,
       .${actionButtonClass}:focus-visible {
@@ -2703,6 +2711,25 @@
     button.textContent = icon;
   }
 
+  function trashIconSvg() {
+    return `
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 6h18"></path>
+        <path d="M8 6V4h8v2"></path>
+        <path d="M19 6l-1 14H6L5 6"></path>
+        <path d="M10 11v5"></path>
+        <path d="M14 11v5"></path>
+      </svg>
+    `;
+  }
+
+  function configureSvgActionButton(button, label, svg) {
+    button.setAttribute("aria-label", label);
+    button.dataset.codexActionLabel = label;
+    button.removeAttribute("title");
+    button.innerHTML = svg;
+  }
+
   function attachButton(row) {
     const settings = codexPlusSettings();
     if (!settings.sessionDelete && !settings.markdownExport && !settings.projectMove) {
@@ -2766,7 +2793,7 @@
       deleteButton.type = "button";
       deleteButton.className = `${actionButtonClass} ${buttonClass}`;
       deleteButton.dataset.codexDeleteVersion = codexDeleteVersion;
-      configureActionButton(deleteButton, "删除", "⌫");
+      configureSvgActionButton(deleteButton, "删除", trashIconSvg());
       const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, ref, event);
       installActionButtonEvents(row, deleteButton, openDeleteConfirm);
       group.appendChild(deleteButton);

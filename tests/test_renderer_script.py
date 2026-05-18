@@ -60,7 +60,7 @@ def test_renderer_script_uses_native_like_sidebar_action_icons_with_tooltips():
     attach_code = text[attach_start:attach_end]
 
     assert "actionTooltipClass = \"codex-session-action-tooltip\"" in text
-    assert "codexDeleteStyleVersion = \"10\"" in text
+    assert "codexDeleteStyleVersion = \"11\"" in text
     assert "codexActionGroupVersion = \"3\"" in text
     assert "padding-left: 38px" not in style_code
     assert "--codex-action-row-bg" not in style_code
@@ -71,6 +71,12 @@ def test_renderer_script_uses_native_like_sidebar_action_icons_with_tooltips():
     assert "background: transparent" in style_code
     assert "width: 26px" in style_code
     assert "height: 26px" in style_code
+    assert "display: inline-flex" in style_code
+    assert "align-items: center" in style_code
+    assert "justify-content: center" in style_code
+    assert ".${actionButtonClass} svg" in style_code
+    assert "width: 16px" in style_code
+    assert "height: 16px" in style_code
     assert "color: #d1d5db" in style_code
     assert "background: #363839" in style_code
     assert ".${actionButtonClass}.${buttonClass}:hover" not in style_code
@@ -80,11 +86,18 @@ def test_renderer_script_uses_native_like_sidebar_action_icons_with_tooltips():
 
     assert "configureActionButton(moveButton, \"移动\", \"↗\")" in attach_code
     assert "configureActionButton(exportButton, \"导出\", \"⇩\")" in attach_code
-    assert "configureActionButton(deleteButton, \"删除\", \"⌫\")" in attach_code
+    assert "configureSvgActionButton(deleteButton, \"删除\", trashIconSvg())" in attach_code
+    assert "function trashIconSvg()" in text
+    assert "<svg viewBox=\"0 0 24 24\"" in text
+    assert "stroke=\"currentColor\"" in text
+    assert "aria-hidden=\"true\"" in text
+    assert "focusable=\"false\"" in text
+    assert "button.innerHTML = svg" in text
     assert "button.setAttribute(\"aria-label\", label)" in text
     assert "button.dataset.codexActionLabel = label" in text
     assert "button.removeAttribute(\"title\")" in text
     assert "button.textContent = icon" in text
+    assert "⌫" not in attach_code
     assert "syncActionGroupBackground(row, group)" not in attach_code
     assert "function syncActionGroupBackground(row, group)" not in text
     assert "transparentColorForBackground(background)" not in text
@@ -472,7 +485,7 @@ def test_renderer_script_removes_orphaned_projected_rows_when_thread_is_missing(
 
     text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
     assert "updateDeleteButtonOffsets" in text
-    assert "codexDeleteStyleVersion = \"10\"" in text
+    assert "codexDeleteStyleVersion = \"11\"" in text
     assert "right: 66px" in text
     assert "确认" in text
     assert "归档对话" in text
