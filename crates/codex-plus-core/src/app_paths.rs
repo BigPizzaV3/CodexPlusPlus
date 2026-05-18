@@ -113,6 +113,9 @@ pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
 }
 
 pub fn codex_app_version(app_dir: &Path) -> Option<String> {
+    if app_dir.extension() == Some(OsStr::new("app")) {
+        return macos_app_version(app_dir);
+    }
     let package_dir = if app_dir
         .file_name()
         .and_then(OsStr::to_str)
@@ -148,13 +151,35 @@ pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
 }
 
 fn codex_package_version(package_dir: &Path) -> Option<String> {
-    let name = package_dir.file_name()?.to_str()?;
+    let path = package_dir.to_string_lossy().replace('\\', "/");
+    let name = path
+        .split('/')
+        .rev()
+        .find(|part| part.starts_with("OpenAI.Codex_"))?;
     let rest = name.strip_prefix("OpenAI.Codex_")?;
     let version = rest.split_once('_')?.0;
     if version.is_empty() {
         None
     } else {
         Some(version.to_string())
+    }
+}
+
+fn macos_app_version(app_dir: &Path) -> Option<String> {
+    let plist = std::fs::read_to_string(app_dir.join("Contents").join("Info.plist")).ok()?;
+    plist_string_value(&plist, "CFBundleShortVersionString")
+        .or_else(|| plist_string_value(&plist, "CFBundleVersion"))
+}
+
+fn plist_string_value(plist: &str, key: &str) -> Option<String> {
+    let (_, after_key) = plist.split_once(&format!("<key>{key}</key>"))?;
+    let (_, after_string_open) = after_key.split_once("<string>")?;
+    let (value, _) = after_string_open.split_once("</string>")?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
