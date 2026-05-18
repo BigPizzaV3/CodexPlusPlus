@@ -73,9 +73,12 @@ pub fn user_data_candidates_from(local: Option<&Path>, roaming: Option<&Path>) -
 pub fn find_macos_codex_app(search_roots: &[PathBuf]) -> Option<PathBuf> {
     for root in search_roots {
         for candidate in macos_app_candidates(root) {
-            if candidate.is_dir() {
+            if is_macos_codex_app(&candidate) {
                 return Some(candidate);
             }
+        }
+        for candidate in scan_macos_codex_apps(root) {
+            return Some(candidate);
         }
     }
     None
@@ -102,6 +105,9 @@ pub fn resolve_codex_app_dir(app_dir: Option<&Path>) -> Option<PathBuf> {
 
 pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
     if app_dir.extension() == Some(OsStr::new("app")) {
+        if let Some(executable) = macos_bundle_executable(app_dir) {
+            return executable;
+        }
         return app_dir.join("Contents").join("MacOS").join("Codex");
     }
     let upper = app_dir.join("Codex.exe");
@@ -129,16 +135,7 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
 }
 
 pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
-    let package_dir = if app_dir
-        .file_name()
-        .and_then(OsStr::to_str)
-        .is_some_and(|name| name.eq_ignore_ascii_case("app"))
-    {
-        app_dir.parent()?
-    } else {
-        app_dir
-    };
-    let package_name = package_dir.file_name()?.to_str()?;
+    let package_name = windows_package_name_from_path(app_dir)?;
     if !package_name.starts_with("OpenAI.Codex_") || !package_name.contains("__") {
         return None;
     }
@@ -148,6 +145,15 @@ pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
         return None;
     }
     Some(format!("{identity_name}_{publisher_id}!App"))
+}
+
+fn windows_package_name_from_path(path: &Path) -> Option<String> {
+    let text = path.to_string_lossy();
+    let mut parts = text.split(['/', '\\']).filter(|part| !part.is_empty());
+    match parts.next_back()? {
+        "app" | "App" | "APP" => parts.next_back().map(ToString::to_string),
+        package => Some(package.to_string()),
+    }
 }
 
 fn codex_package_version(package_dir: &Path) -> Option<String> {
@@ -166,9 +172,22 @@ fn codex_package_version(package_dir: &Path) -> Option<String> {
 }
 
 fn macos_app_version(app_dir: &Path) -> Option<String> {
+    macos_plist_string_value(app_dir, "CFBundleShortVersionString")
+        .or_else(|| macos_plist_string_value(app_dir, "CFBundleVersion"))
+}
+
+fn macos_bundle_executable(app_dir: &Path) -> Option<PathBuf> {
+    let executable = macos_plist_string_value(app_dir, "CFBundleExecutable")?;
+    Some(app_dir.join("Contents").join("MacOS").join(executable))
+}
+
+fn macos_bundle_identifier(app_dir: &Path) -> Option<String> {
+    macos_plist_string_value(app_dir, "CFBundleIdentifier")
+}
+
+fn macos_plist_string_value(app_dir: &Path, key: &str) -> Option<String> {
     let plist = std::fs::read_to_string(app_dir.join("Contents").join("Info.plist")).ok()?;
-    plist_string_value(&plist, "CFBundleShortVersionString")
-        .or_else(|| plist_string_value(&plist, "CFBundleVersion"))
+    plist_string_value(&plist, key)
 }
 
 fn plist_string_value(plist: &str, key: &str) -> Option<String> {
@@ -197,6 +216,46 @@ fn macos_app_candidates(root: &Path) -> Vec<PathBuf> {
         .into_iter()
         .map(|name| root.join(name))
         .collect()
+}
+
+fn scan_macos_codex_apps(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut apps = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| is_macos_codex_app(path))
+        .collect::<Vec<_>>();
+    apps.sort_by_key(|path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    });
+    apps
+}
+
+fn is_macos_codex_app(path: &Path) -> bool {
+    if !path.is_dir() || path.extension() != Some(OsStr::new("app")) {
+        return false;
+    }
+    if macos_bundle_identifier(path)
+        .as_deref()
+        .is_some_and(|identifier| {
+            matches!(
+                identifier,
+                "com.openai.codex" | "com.openai.chatgpt.codex" | "com.openai.chatgpt"
+            )
+        })
+    {
+        return true;
+    }
+    let name = path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default()
+        .to_lowercase();
+    name.contains("codex") && !name.contains("codex++")
 }
 
 fn version_tuple(path: &Path) -> Option<Vec<u32>> {
