@@ -35,7 +35,12 @@ pub fn build_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBund
     MacosAppBundle {
         app_path: install_root.join(format!("{display_name}.app")),
         info_plist: info_plist(display_name, executable_name, identifier_suffix),
-        launch_script: format!("#!/bin/sh\nexec \"{}\"\n", target.to_string_lossy()),
+        launch_script: format!(
+            "#!/bin/sh\nexport PATH=\"${{PATH:-{}}}:{}\"\nexec \"{}\"\n",
+            default_gui_path(),
+            default_gui_path(),
+            target.to_string_lossy()
+        ),
     }
 }
 
@@ -87,12 +92,35 @@ fn write_bundle(bundle: &MacosAppBundle) -> anyhow::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn copy_icon(resources: &Path) -> anyhow::Result<()> {
-    let source = std::env::current_exe()
+    let Some(bundle_dir) = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|path| path.join("codex-plus-plus.png"));
-    if let Some(source) = source.filter(|path| path.exists()) {
-        fs::copy(source, resources.join("codex-plus-plus.png"))?;
+    else {
+        return Ok(());
+    };
+    for icns in [
+        bundle_dir.join("codex-plus-plus.icns"),
+        bundle_dir
+            .parent()
+            .map(|contents| contents.join("Resources").join("codex-plus-plus.icns"))
+            .unwrap_or_default(),
+    ] {
+        if icns.exists() {
+            fs::copy(icns, resources.join("codex-plus-plus.icns"))?;
+            return Ok(());
+        }
+    }
+    for png in [
+        bundle_dir.join("codex-plus-plus.png"),
+        bundle_dir
+            .parent()
+            .map(|contents| contents.join("Resources").join("codex-plus-plus.png"))
+            .unwrap_or_default(),
+    ] {
+        if png.exists() {
+            fs::copy(png, resources.join("codex-plus-plus.png"))?;
+            return Ok(());
+        }
     }
     Ok(())
 }
@@ -130,7 +158,7 @@ fn info_plist(display_name: &str, executable_name: &str, identifier_suffix: &str
   <key>CFBundleExecutable</key>
   <string>{executable_name}</string>
   <key>CFBundleIconFile</key>
-  <string>codex-plus-plus.png</string>
+  <string>codex-plus-plus</string>
   <key>LSUIElement</key>
   <true/>
   <key>LSMinimumSystemVersion</key>
@@ -138,4 +166,8 @@ fn info_plist(display_name: &str, executable_name: &str, identifier_suffix: &str
 </dict>
 </plist>"#
     )
+}
+
+fn default_gui_path() -> &'static str {
+    "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 }
