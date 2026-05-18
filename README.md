@@ -12,36 +12,154 @@
   <img alt="Release" src="https://img.shields.io/github/v/release/BigPizzaV3/CodexPlusPlus">
   <img alt="Stars" src="https://img.shields.io/github/stars/BigPizzaV3/CodexPlusPlus">
   <img alt="License" src="https://img.shields.io/github/license/BigPizzaV3/CodexPlusPlus">
-  <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
+  <img alt="Rust" src="https://img.shields.io/badge/rust-1.85%2B-orange">
+  <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8DB">
 </p>
 
-Codex++ 是面向 Codex App 的外部增强启动器：不修改原始安装文件，通过 Chromium DevTools Protocol 注入增强脚本。
+Codex++ 是面向 Codex App 的外部增强启动器和管理工具。它不修改 Codex App 原始安装文件，而是通过外部 launcher 启动 Codex，并使用 Chromium DevTools Protocol 注入增强脚本。
 
 ## 快速使用
 
-Windows 用户双击项目根目录的 `setup.bat`，选择：
+从 [GitHub Releases](https://github.com/BigPizzaV3/CodexPlusPlus/releases) 下载最新版安装包：
+
+- Windows：`CodexPlusPlus-*-windows-x64-setup.exe`
+- macOS Intel：`CodexPlusPlus-*-macos-x64.dmg`
+- macOS Apple Silicon：`CodexPlusPlus-*-macos-arm64.dmg`
+
+安装后会有两个入口：
+
+- `Codex++`：静默启动入口，不显示管理界面，只负责启动 Codex 并注入增强功能。
+- `Codex++ 管理工具`：Tauri 控制面板，用于启动、检查、修复、更新、配置中转注入、管理增强功能和用户脚本。
+
+Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安装 `/Applications/Codex++.app` 和 `/Applications/Codex++ 管理工具.app`。
+
+## 主要功能
+
+- Rust 后端和静默 launcher，启动时不依赖 Python 环境。
+- Tauri + React 管理工具，支持深色/浅色切换。
+- 外部 CDP 注入，不改 `app.asar`，不向 Codex 安装目录写入 DLL。
+- 中转注入模式：支持多个中转配置，写入 `CodexPlusPlus` provider，并可切回官方 ChatGPT 登录态。
+- 传统增强模式：插件入口解锁、特殊插件强制安装、会话删除、Markdown 导出、项目移动、Timeline 等。
+- 用户脚本独立管理，可在启动时注入自定义脚本。
+- Provider 同步：启动前同步本地会话 metadata，切换供应商后旧会话仍可见。
+- GitHub Release 自动更新，管理工具和静默启动器都会检测可用更新。
+- Windows 单实例、无黑框启动、管理员权限清单、系统桌面路径识别。
+- macOS x64/arm64 分架构 DMG，静默入口隐藏 Dock 图标。
+
+## 中转注入
+
+中转注入适合已经在 Codex/ChatGPT 中完成官方账号登录，同时希望把模型请求转到自定义兼容 API 的场景。
+
+在管理工具的“中转注入”页面：
+
+1. 确认已经检测到 ChatGPT 登录状态。
+2. 添加一个或多个中转配置，填写 Base URL 和 Key。
+3. 选择当前配置并应用中转注入。
+4. 启动 `Codex++`。
+
+Codex++ 会在 `~/.codex/config.toml` 中写入类似配置：
+
+```toml
+model_provider = "CodexPlusPlus"
+
+[model_providers.CodexPlusPlus]
+name = "CodexPlusPlus"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://example.com/v1"
+experimental_bearer_token = "sk-..."
+```
+
+如果需要回到官方登录态，在“中转注入”页面点击清除 API 模式即可移除 `OPENAI_API_KEY` 相关配置并切回官方 ChatGPT 登录模式。
+
+## 增强功能
+
+增强功能在管理工具中统一开关。默认开启增强注入；关闭后不会注入 Codex++ 菜单和脚本。
+
+如果启用中转注入模式，插件入口解锁和强制安装不再需要，界面会提示“中转注入模式下无需开启”。会话删除、导出、移动、Timeline、推荐内容和用户脚本等增强仍可继续使用。
+
+## 推荐内容
+
+推荐内容来自远程广告列表：
 
 ```text
-[1] Install Codex++
+https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json
+https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json
 ```
 
-安装后双击桌面 `Codex++.lnk` 启动。
+请求时会自动追加 `?v=时间戳` 绕开 CDN 旧缓存。推荐内容加载慢不会影响后端连接状态。
 
-命令行安装/启动：
+## 自动更新与安装包
+
+Codex++ 通过 GitHub Release 发布安装包。Windows 会生成 NSIS 安装程序，macOS 会生成 Intel x64 和 Apple Silicon arm64 两个 DMG。
+
+管理工具的“关于”页可以检查并启动更新。静默启动器发现新版本时会拉起管理工具并进入更新提示。
+
+## 数据位置
+
+- Codex 配置：`~/.codex/config.toml`
+- Codex 登录状态：`~/.codex/auth.json`
+- Codex 本地数据库：`~/.codex/state_5.sqlite`
+- Codex++ 状态与日志：`~/.codex-session-delete/`
+- Provider 同步备份：`~/.codex/backups_state/provider-sync`
+
+## 常见问题
+
+### Codex++ 菜单没出现
+
+确认是从 `Codex++` 入口启动，而不是原版 Codex。也可以打开管理工具的“诊断”和“日志”页面查看注入状态。
+
+### 插件内显示后端连不上
+
+先在浏览器或 PowerShell 里测试：
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:57321/backend/status -Body "{}" -ContentType "application/json"
+```
+
+如果接口正常，但插件仍显示超时，通常是 Codex 页面里的 CDP bridge 或脚本缓存问题。重启 Codex++，或在管理工具里查看日志中的 `renderer.script_loaded`、`bridge.request`、`bridge.response`。
+
+### macOS 提示无法打开或已损坏
+
+当前安装包未签名/未公证时，macOS Gatekeeper 可能拦截。可以在“系统设置 - 隐私与安全性”中允许打开。正式分发建议配置 Apple Developer ID 签名和 notarization。
+
+### macOS Intel 能用吗
+
+可以。Release 会分别提供 `macos-x64.dmg` 和 `macos-arm64.dmg`。Intel Mac 下载 x64 包，Apple Silicon 下载 arm64 包。
+
+## 开发
 
 ```bash
-python -m pip install -e .
-python -m codex_session_delete setup
-python -m codex_session_delete launch
+# 前端检查
+cd apps/codex-plus-manager
+npm install
+npm run check
+npm run vite:build
+
+# Rust 检查
+cd ../..
+cargo fmt --check
+cargo test
+cargo build --release
 ```
 
-macOS：
+主要结构：
 
-```bash
-python -m codex_session_delete setup
+```text
+apps/
+  codex-plus-launcher/          静默启动入口
+  codex-plus-manager/           Tauri 管理工具
+assets/inject/
+  renderer-inject.js            注入到 Codex 渲染端的增强脚本
+crates/
+  codex-plus-core/              启动、注入、配置、更新、安装、桥接等核心逻辑
+  codex-plus-data/              会话数据、导出、Provider 同步
+scripts/installer/
+  windows/CodexPlusPlus.nsi     Windows NSIS 安装包
+  macos/package-dmg.sh          macOS DMG 打包
 ```
 
-安装后会生成 `/Applications/Codex++.app`。
+不建议继续使用旧 Python 入口；仓库中保留的 `codex_session_delete/` 主要用于迁移参考和兼容历史代码。
 
 ## 交流与支持
 
@@ -56,180 +174,9 @@ python -m codex_session_delete setup
   <img src="docs/images/sponsor-wechat.jpg" alt="微信赞赏码" width="220">
 </p>
 
-## 赞助商
-
-<table>
-  <tr>
-    <th>🏆 赞助商 🏆</th>
-  </tr>
-  <tr>
-    <td>👉 <a href="https://rawchat.cn">RawChat｜Codex 中转站</a> 老牌中转站，支持包月套餐。低倍率调用，高缓存命中，Pro/Plus 号池，全天专人维护。</td>
-  </tr>
-</table>
-
-## 功能亮点
-
-- 顶部 `Codex++` 菜单：集中管理增强功能。
-- 插件入口解锁：API Key 模式下显示并启用插件入口。
-- 特殊插件强制安装：解除 App unavailable / 应用不可用导致的前端安装禁用。
-- 会话删除：悬停显示删除按钮，删除前确认并支持撤销。
-- Markdown 导出：按本地 rollout 导出带时间戳的会话 Markdown。
-- 会话项目移动：把会话移动到普通对话或其他本地项目。
-- 对话 Timeline：右侧显示用户提问时间线，悬停摘要，点击跳转。
-- Provider 同步：切换 model_provider 或供应商时不丢历史会话。
-- Windows 快捷方式、卸载项、可选 watcher 自动接管、GitHub Release 更新。
-- macOS `/Applications/Codex++.app` 生成。
-
-## 痛点与解决
-
-API Key 登录模式下，Codex 原生插件入口会提示需要登录 ChatGPT，导致插件功能无法正常使用：
-
-![API Key 模式下插件入口不可用](docs/images/pain-plugin-disabled.png)
-
-Codex 原生会话列表只有归档入口，没有真正的删除按钮：
-
-![原生会话列表缺少删除能力](docs/images/pain-no-delete-button.png)
-
-Codex++ 启动后会解锁插件入口，并在会话列表悬停时显示删除按钮：
-
-![Codex++ 解锁插件入口并添加删除按钮](docs/images/solution-plugin-and-delete.png)
-
-顶部菜单栏会出现 `Codex++`，可以查看后端状态并打开设置面板：
-
-![Codex++ 后端状态指示灯](docs/images/backend-status-indicator.png)
-![Codex++ 设置面板](docs/images/settings-panel.png)
-
-## 工作方式
-
-1. 外部启动 Codex App，并附加 CDP 参数：
-   - `--remote-debugging-port=9229`
-   - `--remote-allow-origins=http://127.0.0.1:9229`
-2. 启动本地 helper 服务，用于健康检查、设置、导出、移动、删除等操作。
-3. 通过 CDP 注入 `renderer-inject.js`。
-4. 渲染端通过 CDP bridge 调用本地服务；默认不开放 HTTP 删除/撤销入口，避免本机其他页面误触发。
-5. 启动时继承现有代理环境变量；若未设置，会自动探测常见本地代理端口帮助加载 GitHub 资源。
-
-这种方式不会修改 Codex 的 `app.asar`，也不需要往 Codex 安装目录写 DLL。
-
-## Provider 同步
-
-启用 `Provider 同步` 后，Codex++ 会在启动前同步本地会话 metadata，让切换供应商后历史会话仍能在 Desktop 和 `/resume` 中显示。
-
-同步范围包括 rollout 文件、SQLite 线程记录和项目路径缓存；只修复会话可见性 metadata，不改写消息内容。遇到文件锁或 SQLite 忙碌时会跳过并继续启动。
-
-## 常用命令
-
-```bash
-# 安装依赖
-python -m pip install -e .
-
-# 启动
-python -m codex_session_delete launch
-
-# 安装快捷方式 / app bundle
-python -m codex_session_delete setup
-
-# 卸载
-python -m codex_session_delete remove
-
-# 同时删除日志和备份
-python -m codex_session_delete remove --remove-data
-
-# 检查更新 / 更新
-python -m codex_session_delete check-update
-python -m codex_session_delete update
-
-# Windows watcher 自动接管
-python -m codex_session_delete watch-install
-python -m codex_session_delete watch-remove
-python -m codex_session_delete watch-disable
-python -m codex_session_delete watch-enable
-```
-
-直接指定 Codex 安装目录：
-
-```bash
-python -m codex_session_delete launch \
-  --app-dir "C:/Program Files/WindowsApps/OpenAI.Codex_xxx/app" \
-  --debug-port 9229 \
-  --helper-port 57321
-```
-
-## 数据位置
-
-- Codex 本地数据库：`~/.codex/state_5.sqlite`
-- 删除备份：`~/.codex-session-delete/backups`
-- Provider 同步备份：`~/.codex/backups_state/provider-sync`
-- 启动失败日志：`~/.codex-session-delete/launcher.log`
-- watcher 日志：`%USERPROFILE%\.codex-session-delete\watcher.log`
-
-## 常见问题
-
-### 双击 Codex++ 没反应
-
-查看日志：`%USERPROFILE%\.codex-session-delete\launcher.log`
-
-常见原因：Codex App 未安装或路径变化、9229 端口被占用、Python 环境不可用。
-
-### Codex++ 菜单没出现
-
-确认是从 `Codex++` 快捷方式启动，而不是原版 Codex。也可以检查 Codex 是否带有 `--remote-debugging-port=9229`。
-
-### 技能推荐加载失败
-
-如果提示 `git fetch failed` 或无法连接 GitHub，通常是网络无法直连 GitHub。Codex++ 会继承代理环境变量，也会自动探测常见本地代理端口。也可以手动指定：
-
-```powershell
-$env:HTTP_PROXY="http://127.0.0.1:7897"
-$env:HTTPS_PROXY="http://127.0.0.1:7897"
-python -m codex_session_delete launch
-```
-
-### 切换供应商后旧会话不见了
-
-打开 `Codex++` 设置面板，启用 `Provider 同步` 后重启 Codex++。
-
-## 开发
-
-```bash
-python -m pip install -e .[test]
-python -m pytest -q
-```
-
-主要结构：
-
-```text
-codex_session_delete/
-  cli.py                 CLI 入口
-  launcher.py            启动 Codex 并注入脚本
-  cdp.py                 CDP 通信与 bridge
-  helper_server.py       本地 helper 服务
-  storage_adapter.py     本地 SQLite 删除/撤销
-  provider_sync.py       Provider 同步
-  settings_store.py      Codex++ 后端设置
-  windows_installer.py   Windows 快捷方式与卸载项
-  macos_installer.py     macOS app bundle 安装
-  watcher.py             Windows watcher（可选）
-  inject/renderer-inject.js
-
-tests/                   自动化测试
-```
-
 ## 友情链接
 
 - [LINUX DO](https://linux.do)
-
-## 贡献者与 Star
-
-<a href="https://github.com/BigPizzaV3/CodexPlusPlus/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=BigPizzaV3/CodexPlusPlus" alt="Codex++ contributors">
-</a>
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=BigPizzaV3/CodexPlusPlus&type=Date&theme=dark">
-  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=BigPizzaV3/CodexPlusPlus&type=Date">
-  <img alt="Codex++ Star History" src="https://api.star-history.com/svg?repos=BigPizzaV3/CodexPlusPlus&type=Date">
-</picture>
 
 ## 说明
 
