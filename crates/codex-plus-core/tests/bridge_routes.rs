@@ -100,6 +100,49 @@ async fn settings_routes_use_settings_service() {
 }
 
 #[tokio::test]
+async fn settings_routes_preserve_relay_profile_image_generation_fields() {
+    let ctx = test_context();
+
+    let updated = handle_bridge_request(
+        ctx.clone(),
+        "/settings/set",
+        json!({
+            "relayProfiles": [
+                {
+                    "id": "relay-a",
+                    "name": "中转 A",
+                    "baseUrl": "https://relay.example/v1",
+                    "apiKey": "sk-relay",
+                    "imageGenerationEnabled": true,
+                    "imageGenerationUseSeparateApi": true,
+                    "imageGenerationBaseUrl": "https://image.example/v1",
+                    "imageGenerationApiKey": "sk-image"
+                }
+            ],
+            "activeRelayId": "relay-a"
+        }),
+    )
+    .await;
+    let loaded = handle_bridge_request(ctx, "/settings/get", json!({})).await;
+
+    assert_eq!(updated["activeRelayId"], "relay-a");
+    assert_eq!(updated["relayProfiles"][0]["imageGenerationEnabled"], true);
+    assert_eq!(
+        updated["relayProfiles"][0]["imageGenerationUseSeparateApi"],
+        true
+    );
+    assert_eq!(
+        updated["relayProfiles"][0]["imageGenerationBaseUrl"],
+        "https://image.example/v1"
+    );
+    assert_eq!(
+        updated["relayProfiles"][0]["imageGenerationApiKey"],
+        "sk-image"
+    );
+    assert_eq!(loaded, updated);
+}
+
+#[tokio::test]
 async fn runtime_routes_keep_user_script_inventory_shape() {
     let ctx = test_context();
 
@@ -493,6 +536,12 @@ impl BridgeSettingsService for FakeSettings {
         if let Some(value) = payload.get("relayApiKey").and_then(Value::as_str) {
             raw.insert("relayApiKey".to_string(), json!(value));
         }
+        if let Some(value) = payload.get("relayProfiles").and_then(Value::as_array) {
+            raw.insert("relayProfiles".to_string(), json!(value));
+        }
+        if let Some(value) = payload.get("activeRelayId").and_then(Value::as_str) {
+            raw.insert("activeRelayId".to_string(), json!(value));
+        }
         if let Some(value) = payload.get("cliWrapperApiKeyEnv").and_then(Value::as_str) {
             raw.insert(
                 "cliWrapperApiKeyEnv".to_string(),
@@ -693,7 +742,11 @@ impl LaunchHooks for ContextHooks {
         Ok(())
     }
 
-    async fn start_helper(&self, _helper_port: u16) -> anyhow::Result<()> {
+    async fn start_helper(
+        &self,
+        _helper_port: u16,
+        _settings: &BackendSettings,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 
