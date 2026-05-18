@@ -457,6 +457,12 @@ body {
   align-items: center;
 }
 
+.relay-profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .relay-select {
   display: grid;
   gap: 3px;
@@ -466,6 +472,42 @@ body {
   cursor: pointer;
   padding: 0;
   text-align: left;
+}
+
+.image-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1;
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+
+.image-chip.enabled {
+  border-color: hsl(172 66% 42%);
+  color: hsl(var(--foreground));
+  background: hsl(172 54% 18% / 0.2);
+}
+
+.image-relay-settings {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid hsl(var(--border));
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.compact-switch {
+  padding: 0;
+}
+
+.image-fields {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  margin-top: 0;
 }
 
 .mode-grid {
