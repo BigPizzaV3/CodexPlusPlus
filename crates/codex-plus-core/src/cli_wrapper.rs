@@ -143,6 +143,10 @@ pub fn wrapper_dir() -> PathBuf {
 }
 
 pub fn wrapper_dir_from_roaming(roaming: &Path) -> PathBuf {
+    let roaming_text = roaming.to_string_lossy();
+    if roaming_text.contains('\\') {
+        return PathBuf::from(format!("{roaming_text}\\Codex++"));
+    }
     roaming.join("Codex++")
 }
 
