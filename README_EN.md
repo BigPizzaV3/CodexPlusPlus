@@ -41,10 +41,20 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 - Relay injection mode with multiple relay profiles, `CodexPlusPlus` provider configuration, and a one-click switch back to official ChatGPT login mode.
 - Traditional enhancement mode with plugin entry unlock, forced plugin install, session delete, Markdown export, project move, Timeline, and more.
 - Independent user script management with startup injection.
-- Provider Sync to keep historical sessions visible after switching providers.
+- Provider Sync to switch model_provider without losing historical conversations.
 - GitHub Release updates. Both the manager and silent launcher can detect available updates.
 - Windows single instance, no console window, administrator manifest, and system Desktop path detection.
-- Separate macOS x64 and arm64 DMGs. The silent launcher hides its Dock icon.
+- Separate macOS x64 and arm64 DMGs, automatic Codex bundle detection, and a hidden Dock icon for the silent launcher.
+
+## Project Stats
+
+<p align="center">
+  <img src="https://contrib.rocks/image?repo=BigPizzaV3/CodexPlusPlus" alt="Codex++ contributors">
+</p>
+
+<p align="center">
+  <img src="https://api.star-history.com/svg?repos=BigPizzaV3/CodexPlusPlus&type=Date" alt="Codex++ star history">
+</p>
 
 ## Relay Injection
 
@@ -54,8 +64,9 @@ In the manager's Relay Injection page:
 
 1. Make sure ChatGPT login status is detected.
 2. Add one or more relay profiles with Base URL and Key.
-3. Select the active profile and apply relay injection.
-4. Launch `Codex++`.
+3. Enable image generation for the current relay only when that relay group has image permission. To use a separate image-generation provider, enter the image Base URL and Key.
+4. Select the active profile and apply relay injection.
+5. Launch `Codex++`.
 
 Codex++ writes configuration similar to this into `~/.codex/config.toml`:
 
@@ -66,9 +77,15 @@ model_provider = "CodexPlusPlus"
 name = "CodexPlusPlus"
 wire_api = "responses"
 requires_openai_auth = true
-base_url = "https://example.com/v1"
+base_url = "http://127.0.0.1:57323/v1"
+disabled_tools = ["image_generation"]
+codex_plus_text_base_url = "https://example.com/v1"
 experimental_bearer_token = "sk-..."
 ```
+
+When image generation is disabled, Codex++ writes the provider through a local `127.0.0.1:57323` proxy. The proxy removes the `image_generation` tool before forwarding regular requests to the current relay, preventing relays without image-generation permission from rejecting Codex session requests with `Image generation is not enabled for this group`.
+
+When the manager is configured to use a separate image-generation API, the same local proxy forwards regular requests to the current relay and forwards Responses requests containing the `image_generation` tool to the image-generation API.
 
 To return to the official login mode, use the clear API mode button in the Relay Injection page. This removes `OPENAI_API_KEY` related configuration and switches Codex back to official ChatGPT authentication.
 
@@ -127,6 +144,10 @@ Unsigned and unnotarized builds may be blocked by Gatekeeper. Allow the app in S
 
 Yes. Releases provide both `macos-x64.dmg` and `macos-arm64.dmg`. Intel Macs should use the x64 package, while Apple Silicon Macs should use the arm64 package.
 
+### Codex++ cannot find Codex App on macOS
+
+Codex++ checks `/Applications` first, then `~/Applications`, and identifies Codex through the OpenAI Codex bundle identifier in `Info.plist`. If Codex is installed somewhere else, set the Codex App path in the manager or launch with `--app-path "/path/to/Codex.app"`.
+
 ## Development
 
 ```bash
@@ -141,6 +162,9 @@ cd ../..
 cargo fmt --check
 cargo test
 cargo build --release
+
+# macOS package
+scripts/installer/macos/package-dmg.sh 1.1.1 arm64
 ```
 
 Project structure:
