@@ -6,6 +6,7 @@ use codex_plus_core::launcher::{
 };
 use codex_plus_core::models::{DeleteResult, ExportResult, SessionRef};
 use codex_plus_core::routes::{BridgeContext, BridgeDataService, BridgeRuntimeService};
+use codex_plus_core::settings::BackendSettings;
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
 #[cfg(windows)]
@@ -162,8 +163,12 @@ impl LaunchHooks for LauncherHooks {
         Ok(())
     }
 
-    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
-        self.core.start_helper(helper_port).await
+    async fn start_helper(
+        &self,
+        helper_port: u16,
+        settings: &BackendSettings,
+    ) -> anyhow::Result<()> {
+        self.core.start_helper(helper_port, settings).await
     }
 
     async fn launch_codex(
