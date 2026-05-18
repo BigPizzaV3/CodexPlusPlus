@@ -66,6 +66,12 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
     );
     assert!(silent.launch_script.contains("codex-plus-plus"));
     assert!(manager.launch_script.contains("codex-plus-plus-manager"));
+    assert!(silent.launch_script.contains("/opt/homebrew/bin"));
+    assert!(
+        silent
+            .info_plist
+            .contains("<string>codex-plus-plus</string>")
+    );
 }
 
 #[test]
