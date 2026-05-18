@@ -34,6 +34,142 @@ fn create_state_db(path: &Path) {
 }
 
 #[test]
+fn provider_sync_preserves_exact_custom_provider_named_openai() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        "model_provider = \"Openai\"\n[model_providers.Openai]\n",
+    )
+    .unwrap();
+    let rollout = home.join("sessions/rollout-case-custom.jsonl");
+    write_rollout(&rollout, "apigather", "thread-1", "C:/workspace");
+    create_state_db(&home.join("state_5.sqlite"));
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.target_provider, "Openai");
+    let first: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first["payload"]["model_provider"], "Openai");
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    let provider: String = db
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'thread-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "Openai");
+}
+
+#[test]
+fn provider_sync_rewrites_later_session_meta_provider_entries() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        "model_provider = \"CodexPlusPlus\"\n[model_providers.CodexPlusPlus]\n",
+    )
+    .unwrap();
+    let rollout = home.join("sessions/rollout-multi-meta.jsonl");
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    fs::write(
+        &rollout,
+        json!({
+            "type": "session_meta",
+            "payload": {"id": "thread-1", "model_provider": "openai", "cwd": "C:/workspace"}
+        })
+        .to_string()
+            + "\n"
+            + &json!({"type": "event_msg", "payload": {"type": "user_message"}}).to_string()
+            + "\n"
+            + &json!({
+                "type": "event_msg",
+                "payload": {"model_provider": "event-provider"}
+            })
+            .to_string()
+            + "\n"
+            + &json!({
+                "type": "session_meta",
+                "payload": {"id": "thread-1", "model_provider": "Openai", "cwd": "C:/workspace"}
+            })
+            .to_string()
+            + "\n"
+            + &json!({
+                "type": "session_meta",
+                "payload": {"id": "thread-1", "cwd": "C:/workspace"}
+            })
+            .to_string()
+            + "\n",
+    )
+    .unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.changed_session_files, 1);
+    let providers = fs::read_to_string(&rollout)
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|record| {
+            record
+                .get("payload")?
+                .get("model_provider")?
+                .as_str()
+                .map(ToString::to_string)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        providers,
+        vec![
+            "CodexPlusPlus",
+            "event-provider",
+            "CodexPlusPlus",
+            "CodexPlusPlus"
+        ]
+    );
+}
+
+#[test]
+fn provider_sync_preserves_custom_provider_key_case() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        "model_provider = \"CodexPlusPlus\"\n",
+    )
+    .unwrap();
+    let rollout = home.join("sessions/rollout-custom.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.target_provider, "CodexPlusPlus");
+    let first: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first["payload"]["model_provider"], "CodexPlusPlus");
+}
+
+#[test]
 fn provider_sync_updates_rollout_sqlite_visibility_and_creates_backup() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");

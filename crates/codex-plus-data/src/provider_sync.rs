@@ -31,9 +31,8 @@ pub struct ProviderSyncResult {
 #[derive(Debug, Clone)]
 struct SessionChange {
     path: PathBuf,
-    original_first_line: String,
-    next_first_line: String,
-    separator: String,
+    original_text: String,
+    next_text: String,
     thread_id: Option<String>,
     cwd: Option<String>,
     has_user_event: bool,
@@ -215,41 +214,49 @@ fn collect_session_changes(
     let mut changes = Vec::new();
     for path in rollout_files(home)? {
         let text = fs::read_to_string(&path)?;
-        let (first_line, separator) = split_first_line(&text);
-        if first_line.trim().is_empty() {
-            continue;
+        let mut thread_id = None;
+        let mut cwd = None;
+        let mut rewrite_needed = false;
+        let mut next_text = String::with_capacity(text.len());
+        for segment in text.split_inclusive('\n') {
+            let line = segment.strip_suffix('\n').unwrap_or(segment);
+            let newline = if segment.ends_with('\n') { "\n" } else { "" };
+            let Ok(mut record) = serde_json::from_str::<Value>(line) else {
+                next_text.push_str(segment);
+                continue;
+            };
+            let is_session_meta = record.get("type").and_then(Value::as_str) == Some("session_meta");
+            let Some(payload) = record.get_mut("payload").and_then(Value::as_object_mut) else {
+                next_text.push_str(segment);
+                continue;
+            };
+            if thread_id.is_none() {
+                thread_id = payload
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string);
+            }
+            if cwd.is_none() {
+                cwd = payload
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .and_then(to_desktop_workspace_path);
+            }
+            let provider = payload.get("model_provider").and_then(Value::as_str);
+            if is_session_meta && provider != Some(target_provider) {
+                payload.insert("model_provider".to_string(), json!(target_provider));
+                rewrite_needed = true;
+                next_text.push_str(&serde_json::to_string(&record)?);
+                next_text.push_str(newline);
+            } else {
+                next_text.push_str(segment);
+            }
         }
-        let Ok(mut record) = serde_json::from_str::<Value>(&first_line) else {
-            continue;
-        };
-        let Some(payload) = record.get_mut("payload").and_then(Value::as_object_mut) else {
-            continue;
-        };
-        let thread_id = payload
-            .get("id")
-            .and_then(Value::as_str)
-            .map(ToString::to_string);
-        let cwd = payload
-            .get("cwd")
-            .and_then(Value::as_str)
-            .and_then(to_desktop_workspace_path);
-        let has_user_event =
-            separator.contains("\"user_message\"") || separator.contains("\"user_input\"");
-        let rewrite_needed =
-            payload.get("model_provider").and_then(Value::as_str) != Some(target_provider);
-        if rewrite_needed {
-            payload.insert("model_provider".to_string(), json!(target_provider));
-        }
-        let next_first_line = if rewrite_needed {
-            serde_json::to_string(&record)?
-        } else {
-            first_line.clone()
-        };
+        let has_user_event = text.contains("\"user_message\"") || text.contains("\"user_input\"");
         changes.push(SessionChange {
             path,
-            original_first_line: first_line,
-            next_first_line,
-            separator,
+            original_text: text,
+            next_text,
             thread_id,
             cwd,
             has_user_event,
@@ -285,14 +292,6 @@ fn collect_rollout_files(root: &Path, files: &mut Vec<PathBuf>) -> anyhow::Resul
         }
     }
     Ok(())
-}
-
-fn split_first_line(text: &str) -> (String, String) {
-    if let Some(index) = text.find('\n') {
-        (text[..index].to_string(), text[index..].to_string())
-    } else {
-        (text.to_string(), String::new())
-    }
 }
 
 fn to_desktop_workspace_path(value: &str) -> Option<String> {
@@ -346,8 +345,7 @@ fn create_backup(
         .map(|change| {
             json!({
                 "path": change.path.to_string_lossy(),
-                "originalFirstLine": change.original_first_line,
-                "separator": change.separator,
+                "originalText": change.original_text,
             })
         })
         .collect::<Vec<_>>();
@@ -366,20 +364,14 @@ fn create_backup(
 
 fn apply_session_changes(changes: &[SessionChange]) -> anyhow::Result<()> {
     for change in changes {
-        fs::write(
-            &change.path,
-            format!("{}{}", change.next_first_line, change.separator),
-        )?;
+        fs::write(&change.path, &change.next_text)?;
     }
     Ok(())
 }
 
 fn restore_session_changes(changes: &[SessionChange]) -> anyhow::Result<()> {
     for change in changes {
-        fs::write(
-            &change.path,
-            format!("{}{}", change.original_first_line, change.separator),
-        )?;
+        fs::write(&change.path, &change.original_text)?;
     }
     Ok(())
 }
