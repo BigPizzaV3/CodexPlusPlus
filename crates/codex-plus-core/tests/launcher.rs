@@ -128,12 +128,72 @@ fn app_paths_find_macos_codex_app_prefers_first_search_root_and_known_names() {
 }
 
 #[test]
+fn app_paths_find_macos_codex_app_uses_bundle_identifier_when_name_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Applications");
+    let renamed_app = root.join("AI Workbench.app");
+    let contents = renamed_app.join("Contents");
+    std::fs::create_dir_all(&contents).unwrap();
+    std::fs::write(
+        contents.join("Info.plist"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.openai.codex</string>
+</dict>
+</plist>
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(find_macos_codex_app(&[root]).unwrap(), renamed_app);
+}
+
+#[test]
+fn app_paths_find_macos_codex_app_ignores_codex_plus_plus_bundle() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Applications");
+    let codex_plus = root.join("Codex++.app");
+    let codex = root.join("Codex.app");
+    std::fs::create_dir_all(&codex_plus).unwrap();
+    std::fs::create_dir_all(&codex).unwrap();
+
+    assert_eq!(find_macos_codex_app(&[root]).unwrap(), codex);
+}
+
+#[test]
 fn app_paths_build_macos_bundle_executable() {
     let app = PathBuf::from("/Applications/OpenAI Codex.app");
 
     assert_eq!(
         build_codex_executable(&app),
         PathBuf::from("/Applications/OpenAI Codex.app/Contents/MacOS/Codex")
+    );
+}
+
+#[test]
+fn app_paths_build_macos_bundle_executable_reads_plist() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("OpenAI Codex.app");
+    let contents = app.join("Contents");
+    std::fs::create_dir_all(&contents).unwrap();
+    std::fs::write(
+        contents.join("Info.plist"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>OpenAI Codex</string>
+</dict>
+</plist>
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        build_codex_executable(&app),
+        app.join("Contents").join("MacOS").join("OpenAI Codex")
     );
 }
 
@@ -290,7 +350,10 @@ async fn default_helper_serves_backend_status_over_http() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
 
-    hooks.start_helper(port).await.unwrap();
+    hooks
+        .start_helper(port, &BackendSettings::default())
+        .await
+        .unwrap();
     let response = reqwest::Client::new()
         .post(format!("http://127.0.0.1:{port}/backend/status"))
         .json(&serde_json::json!({}))
@@ -314,7 +377,10 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
 
-    hooks.start_helper(port).await.unwrap();
+    hooks
+        .start_helper(port, &BackendSettings::default())
+        .await
+        .unwrap();
     let response = reqwest::Client::new()
         .post(format!("http://127.0.0.1:{port}/diagnostics/log"))
         .json(&serde_json::json!({
@@ -787,7 +853,11 @@ impl LaunchHooks for FakeHooks {
         Ok(())
     }
 
-    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
+    async fn start_helper(
+        &self,
+        helper_port: u16,
+        _settings: &BackendSettings,
+    ) -> anyhow::Result<()> {
         self.event(format!("start-helper:{helper_port}"));
         Ok(())
     }
