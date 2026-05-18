@@ -182,7 +182,7 @@ pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResul
 
 fn restore_default_model_provider(contents: &str) -> String {
     if cfg!(target_os = "macos") {
-        return remove_root_key(contents, "model_provider");
+        return upsert_root_keys(contents, &[("model_provider", "\"openai\"".to_string())]);
     }
 
     upsert_root_keys(contents, &[("model_provider", "\"chatgpt\"".to_string())])

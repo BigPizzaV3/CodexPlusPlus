@@ -245,7 +245,7 @@ model = "gpt-5-mini"
 
 #[test]
 #[cfg(target_os = "macos")]
-fn clear_relay_config_does_not_inject_chatgpt_provider_on_macos() {
+fn clear_relay_config_switches_back_to_openai_on_macos() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
         temp.path().join("config.toml"),
@@ -262,11 +262,7 @@ base_url = "https://relay.example.test/v1"
     let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
 
     assert!(updated.contains(r#"model = "gpt-5""#));
-    assert!(
-        !updated
-            .lines()
-            .any(|line| line.trim_start().starts_with("model_provider ="))
-    );
+    assert!(updated.contains(r#"model_provider = "openai""#));
     assert!(!updated.contains("[model_providers.CodexPlusPlus]"));
 }
 
