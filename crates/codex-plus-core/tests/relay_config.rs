@@ -1,6 +1,6 @@
 use codex_plus_core::relay_config::{
-    apply_relay_config_to_home, chatgpt_auth_status_from_home, clear_relay_config_to_home,
-    relay_config_status_from_home,
+    LOCAL_RELAY_PROXY_PORT, RelayApplyOptions, apply_relay_config_to_home,
+    chatgpt_auth_status_from_home, clear_relay_config_to_home, relay_config_status_from_home,
 };
 
 #[test]
@@ -139,9 +139,105 @@ model = "gpt-5-mini"
     assert!(updated.contains(r#"name = "CodexPlusPlus""#));
     assert!(updated.contains(r#"wire_api = "responses""#));
     assert!(updated.contains("requires_openai_auth = true"));
-    assert!(updated.contains(r#"base_url = "https://relay.example.test/v1""#));
+    assert!(updated.contains(&format!(
+        r#"base_url = "http://127.0.0.1:{LOCAL_RELAY_PROXY_PORT}/v1""#
+    )));
+    assert!(updated.contains(r#"codex_plus_text_base_url = "https://relay.example.test/v1""#));
+    assert!(updated.contains(r#"disabled_tools = ["image_generation"]"#));
     assert!(updated.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
     assert!(updated.contains("[profiles.default]"));
+}
+
+#[test]
+fn apply_relay_config_normalizes_root_base_url_to_v1() {
+    let temp = tempfile::tempdir().unwrap();
+
+    apply_relay_config_to_home(
+        temp.path(),
+        "https://api.86gamestore.com",
+        "sk-test-redacted",
+    )
+    .unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(updated.contains(&format!(
+        r#"base_url = "http://127.0.0.1:{LOCAL_RELAY_PROXY_PORT}/v1""#
+    )));
+    assert!(updated.contains(r#"codex_plus_text_base_url = "https://api.86gamestore.com/v1""#));
+    assert!(updated.contains(r#"disabled_tools = ["image_generation"]"#));
+}
+
+#[test]
+fn apply_relay_config_preserves_custom_base_url_path() {
+    let temp = tempfile::tempdir().unwrap();
+
+    apply_relay_config_to_home(
+        temp.path(),
+        "https://relay.example.test/openai",
+        "sk-test-redacted",
+    )
+    .unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(updated.contains(&format!(
+        r#"base_url = "http://127.0.0.1:{LOCAL_RELAY_PROXY_PORT}/v1""#
+    )));
+    assert!(updated.contains(r#"codex_plus_text_base_url = "https://relay.example.test/openai""#));
+}
+
+#[test]
+fn apply_relay_config_allows_image_generation_on_primary_relay() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut options = RelayApplyOptions::new("https://relay.example.test/v1", "sk-test-redacted");
+    options.image_generation_enabled = true;
+
+    codex_plus_core::relay_config::apply_relay_config_to_home_with_options(temp.path(), &options)
+        .unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(updated.contains(r#"base_url = "https://relay.example.test/v1""#));
+    assert!(!updated.contains(r#"disabled_tools = ["image_generation"]"#));
+}
+
+#[test]
+fn apply_relay_config_routes_separate_image_generation_api_through_local_proxy() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut options = RelayApplyOptions::new("https://relay.example.test/v1", "sk-test-redacted");
+    options.image_generation_enabled = true;
+    options.image_generation_use_separate_api = true;
+    options.image_generation_base_url = "https://image.example.test".to_string();
+    options.image_generation_bearer_token = "sk-image-redacted".to_string();
+
+    codex_plus_core::relay_config::apply_relay_config_to_home_with_options(temp.path(), &options)
+        .unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(updated.contains(&format!(
+        r#"base_url = "http://127.0.0.1:{LOCAL_RELAY_PROXY_PORT}/v1""#
+    )));
+    assert!(updated.contains(r#"codex_plus_text_base_url = "https://relay.example.test/v1""#));
+    assert!(updated.contains(r#"codex_plus_image_base_url = "https://image.example.test/v1""#));
+    assert!(!updated.contains(r#"disabled_tools = ["image_generation"]"#));
+    assert!(updated.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
+    assert!(!updated.contains("sk-image-redacted"));
+}
+
+#[test]
+fn apply_relay_config_rejects_incomplete_separate_image_generation_api() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut options = RelayApplyOptions::new("https://relay.example.test/v1", "sk-test-redacted");
+    options.image_generation_enabled = true;
+    options.image_generation_use_separate_api = true;
+    options.image_generation_bearer_token = "sk-image-redacted".to_string();
+
+    let err = codex_plus_core::relay_config::apply_relay_config_to_home_with_options(
+        temp.path(),
+        &options,
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("图片 Base URL 不能为空"));
+    assert!(!temp.path().join("config.toml").exists());
 }
 
 #[test]
