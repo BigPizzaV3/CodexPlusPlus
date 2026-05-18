@@ -41,6 +41,38 @@ def test_find_macos_codex_app_detects_openai_codex_bundle(tmp_path):
     assert result == openai_app
 
 
+def test_find_macos_codex_app_uses_bundle_identifier_when_name_changes(tmp_path):
+    renamed_app = tmp_path / "Applications" / "AI Workbench.app"
+    contents = renamed_app / "Contents"
+    contents.mkdir(parents=True)
+    (contents / "Info.plist").write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.openai.codex</string>
+</dict>
+</plist>
+""",
+        encoding="utf-8",
+    )
+
+    result = find_macos_codex_app([tmp_path / "Applications"])
+
+    assert result == renamed_app
+
+
+def test_find_macos_codex_app_ignores_codex_plus_plus_bundle(tmp_path):
+    codex_plus = tmp_path / "Applications" / "Codex++.app"
+    codex = tmp_path / "Applications" / "Codex.app"
+    codex_plus.mkdir(parents=True)
+    codex.mkdir(parents=True)
+
+    result = find_macos_codex_app([tmp_path / "Applications"])
+
+    assert result == codex
+
+
 def test_find_macos_codex_app_returns_none_when_missing(tmp_path):
     result = find_macos_codex_app([tmp_path / "Applications" / "Codex.app"])
 
