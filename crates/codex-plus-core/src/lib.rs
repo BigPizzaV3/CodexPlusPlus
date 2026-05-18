@@ -13,6 +13,7 @@ pub mod paths;
 pub mod ports;
 pub mod proxy;
 pub mod relay_config;
+pub mod relay_proxy;
 pub mod routes;
 pub mod settings;
 pub mod status;
