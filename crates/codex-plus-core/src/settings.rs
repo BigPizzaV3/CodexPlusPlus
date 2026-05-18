@@ -22,6 +22,14 @@ pub struct RelayProfile {
     pub base_url: String,
     #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
+    pub image_generation_enabled: bool,
+    #[serde(default)]
+    pub image_generation_use_separate_api: bool,
+    #[serde(default)]
+    pub image_generation_base_url: String,
+    #[serde(default)]
+    pub image_generation_api_key: String,
 }
 
 impl Default for RelayProfile {
@@ -31,7 +39,26 @@ impl Default for RelayProfile {
             name: "默认中转".to_string(),
             base_url: default_relay_base_url(),
             api_key: String::new(),
+            image_generation_enabled: false,
+            image_generation_use_separate_api: false,
+            image_generation_base_url: String::new(),
+            image_generation_api_key: String::new(),
         }
+    }
+}
+
+impl RelayProfile {
+    pub fn uses_separate_image_generation_api(&self) -> bool {
+        self.image_generation_enabled
+            && self.image_generation_use_separate_api
+            && !self.image_generation_base_url.trim().is_empty()
+            && !self.image_generation_api_key.trim().is_empty()
+    }
+
+    pub fn needs_local_relay_proxy(&self) -> bool {
+        !self.base_url.trim().is_empty()
+            && !self.api_key.trim().is_empty()
+            && (!self.image_generation_enabled || self.uses_separate_image_generation_api())
     }
 }
 
@@ -99,6 +126,7 @@ impl BackendSettings {
                     self.relay_base_url.clone()
                 },
                 api_key: self.relay_api_key.clone(),
+                ..RelayProfile::default()
             };
         }
 
@@ -123,7 +151,12 @@ impl BackendSettings {
                 self.relay_base_url.clone()
             },
             api_key: self.relay_api_key.clone(),
+            ..RelayProfile::default()
         }
+    }
+
+    pub fn requires_helper_runtime(&self) -> bool {
+        self.enhancements_enabled || self.active_relay_profile().needs_local_relay_proxy()
     }
 }
 
@@ -463,7 +496,11 @@ mod tests {
                         "id": "relay-b",
                         "name": "中转 B",
                         "baseUrl": "https://relay-b.example/v1",
-                        "apiKey": "sk-b"
+                        "apiKey": "sk-b",
+                        "imageGenerationEnabled": true,
+                        "imageGenerationUseSeparateApi": true,
+                        "imageGenerationBaseUrl": "https://image.example/v1",
+                        "imageGenerationApiKey": "sk-image"
                     }
                 ],
                 "activeRelayId": "relay-b"
@@ -476,6 +513,33 @@ mod tests {
         assert_eq!(active.name, "中转 B");
         assert_eq!(active.base_url, "https://relay-b.example/v1");
         assert_eq!(active.api_key, "sk-b");
+        assert!(active.image_generation_enabled);
+        assert!(active.image_generation_use_separate_api);
+        assert_eq!(active.image_generation_base_url, "https://image.example/v1");
+        assert_eq!(active.image_generation_api_key, "sk-image");
+        assert!(active.uses_separate_image_generation_api());
+    }
+
+    #[test]
+    fn requires_helper_runtime_when_relay_needs_local_proxy_for_image_control() {
+        let settings = BackendSettings {
+            launch_mode: LaunchMode::Relay,
+            enhancements_enabled: false,
+            relay_profiles: vec![RelayProfile {
+                id: "relay-a".to_string(),
+                name: "中转 A".to_string(),
+                base_url: "https://relay.example/v1".to_string(),
+                api_key: "sk-relay".to_string(),
+                image_generation_enabled: false,
+                image_generation_use_separate_api: false,
+                image_generation_base_url: String::new(),
+                image_generation_api_key: String::new(),
+            }],
+            active_relay_id: "relay-a".to_string(),
+            ..BackendSettings::default()
+        };
+
+        assert!(settings.requires_helper_runtime());
     }
 
     #[test]
