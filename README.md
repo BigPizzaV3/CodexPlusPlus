@@ -18,6 +18,16 @@
 
 Codex++ 是面向 Codex App 的外部增强启动器和管理工具。它不修改 Codex App 原始安装文件，而是通过外部 launcher 启动 Codex，并使用 Chromium DevTools Protocol 注入增强脚本。
 
+## 目录
+
+- [快速使用](#快速使用)
+- [Windows 使用](#windows-使用)
+- [中转注入](#中转注入)
+- [增强功能](#增强功能)
+- [自动更新与安装包](#自动更新与安装包)
+- [常见问题](#常见问题)
+- [开发](#开发)
+
 ## 快速使用
 
 从 [GitHub Releases](https://github.com/BigPizzaV3/CodexPlusPlus/releases) 下载最新版安装包：
@@ -32,6 +42,10 @@ Codex++ 是面向 Codex App 的外部增强启动器和管理工具。它不修�
 - `Codex++ 管理工具`：Tauri 控制面板，用于启动、检查、修复、更新、配置中转注入、管理增强功能和用户脚本。
 
 Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安装 `/Applications/Codex++.app` 和 `/Applications/Codex++ 管理工具.app`。
+
+## Windows 使用
+
+Windows 用户下载 `windows-x64-setup.exe` 后直接运行安装包。安装完成后，从桌面或开始菜单启动 `Codex++` 即可。
 
 ## 赞助商
 
@@ -59,6 +73,8 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
 
 <img src="docs/images/discussion-group-qr.jpg" alt="Codex++ 交流群二维码" width="260">
 
+## 赞赏支持
+
 如果 Codex++ 帮到了你，可以请我喝杯咖啡，或者随手赞赏支持一下继续维护。
 
 <p align="center">
@@ -66,7 +82,7 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
   <img src="docs/images/sponsor-wechat.jpg" alt="微信赞赏码" width="220">
 </p>
 
-## 主要功能
+## 功能亮点
 
 - Rust 后端和静默 launcher，启动时不依赖 Python 环境。
 - Tauri + React 管理工具，支持深色/浅色切换。
@@ -74,10 +90,20 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
 - 中转注入模式：支持多个中转配置，写入 `CodexPlusPlus` provider，并可切回官方 ChatGPT 登录态。
 - 传统增强模式：插件入口解锁、特殊插件强制安装、会话删除、Markdown 导出、项目移动、Timeline 等。
 - 用户脚本独立管理，可在启动时注入自定义脚本。
-- Provider 同步：启动前同步本地会话 metadata，切换供应商后旧会话仍可见。
+- Provider 同步：启动前同步本地会话 metadata，切换 model_provider 后不丢历史会话。
 - GitHub Release 自动更新，管理工具和静默启动器都会检测可用更新。
 - Windows 单实例、无黑框启动、管理员权限清单、系统桌面路径识别。
-- macOS x64/arm64 分架构 DMG，静默入口隐藏 Dock 图标。
+- macOS x64/arm64 分架构 DMG，自动识别 Codex bundle，静默入口隐藏 Dock 图标。
+
+## 项目数据
+
+<p align="center">
+  <img src="https://contrib.rocks/image?repo=BigPizzaV3/CodexPlusPlus" alt="Codex++ contributors">
+</p>
+
+<p align="center">
+  <img src="https://api.star-history.com/svg?repos=BigPizzaV3/CodexPlusPlus&type=Date" alt="Codex++ star history">
+</p>
 
 ## 痛点与解决
 
@@ -106,8 +132,9 @@ Codex++ 启动后会解锁插件入口，并在会话列表悬停时显示删除
 
 1. 确认已经检测到 ChatGPT 登录状态。
 2. 添加一个或多个中转配置，填写 Base URL 和 Key。
-3. 选择当前配置并应用中转注入。
-4. 启动 `Codex++`。
+3. 按需打开“允许当前中转使用图片生成”。如果主中转组没有图片权限，保持关闭；如果希望图片生成走单独通道，填写独立图片 Base URL 和 Key。
+4. 选择当前配置并应用中转注入。
+5. 启动 `Codex++`。
 
 Codex++ 会在 `~/.codex/config.toml` 中写入类似配置：
 
@@ -118,9 +145,15 @@ model_provider = "CodexPlusPlus"
 name = "CodexPlusPlus"
 wire_api = "responses"
 requires_openai_auth = true
-base_url = "https://example.com/v1"
+base_url = "http://127.0.0.1:57323/v1"
+disabled_tools = ["image_generation"]
+codex_plus_text_base_url = "https://example.com/v1"
 experimental_bearer_token = "sk-..."
 ```
+
+图片生成关闭时，Codex++ 会把 provider 写到本地 `127.0.0.1:57323` 代理。代理会在转发到当前中转前裁剪 `image_generation` 工具，避免部分中转组未开启图片生成权限时，Codex 会话请求被上游以 `Image generation is not enabled for this group` 拒绝。
+
+如果在管理工具中开启“图片生成使用独立 API 和 Key”，同一个本地代理会把普通请求转发到当前中转，把包含 `image_generation` 工具的 Responses 请求转发到图片生成 API。
 
 如果需要回到官方登录态，在“中转注入”页面点击清除 API 模式即可移除 `OPENAI_API_KEY` 相关配置并切回官方 ChatGPT 登录模式。
 
@@ -179,6 +212,10 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:57321/backend/status -Body 
 
 可以。Release 会分别提供 `macos-x64.dmg` 和 `macos-arm64.dmg`。Intel Mac 下载 x64 包，Apple Silicon 下载 arm64 包。
 
+### macOS 找不到 Codex App
+
+Codex++ 会优先检查 `/Applications`，再检查 `~/Applications`，并通过 `Info.plist` 中的 OpenAI Codex bundle 标识识别应用。若你把 Codex 放在其他目录，可以在管理工具中填写 Codex App 路径，或通过启动参数指定 `--app-path "/path/to/Codex.app"`。
+
 ## 开发
 
 ```bash
@@ -193,6 +230,9 @@ cd ../..
 cargo fmt --check
 cargo test
 cargo build --release
+
+# macOS 打包
+scripts/installer/macos/package-dmg.sh 1.1.1 arm64
 ```
 
 主要结构：
