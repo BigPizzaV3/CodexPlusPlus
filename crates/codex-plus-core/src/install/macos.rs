@@ -10,6 +10,8 @@ use super::{
     install_root_or_default, option_or_current_exe,
 };
 
+const ICON_NAME: &str = "codex-plus-plus.icns";
+
 pub fn build_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBundle {
     let install_root = install_root_or_default(options);
     let display_name = if manager { MANAGER_NAME } else { SILENT_NAME };
@@ -32,10 +34,18 @@ pub fn build_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBund
         binary,
     );
     let identifier_suffix = if manager { ".manager" } else { "" };
+    let app_path = install_root.join(format!("{display_name}.app"));
+    let executable_path = app_path
+        .join("Contents")
+        .join("MacOS")
+        .join(executable_name);
     MacosAppBundle {
-        app_path: install_root.join(format!("{display_name}.app")),
+        app_path,
         info_plist: info_plist(display_name, executable_name, identifier_suffix),
-        launch_script: format!("#!/bin/sh\nexec \"{}\"\n", target.to_string_lossy()),
+        executable_path: executable_path.clone(),
+        executable_name: executable_name.to_string(),
+        target_path: target.clone(),
+        should_write_wrapper: target != executable_path,
     }
 }
 
@@ -76,11 +86,24 @@ fn write_bundle(bundle: &MacosAppBundle) -> anyhow::Result<()> {
     fs::create_dir_all(&macos)?;
     fs::create_dir_all(&resources)?;
     fs::write(contents.join("Info.plist"), &bundle.info_plist)?;
-    let executable = macos.join(executable_name_from_plist(&bundle.info_plist));
-    fs::write(&executable, &bundle.launch_script)?;
-    let mut permissions = fs::metadata(&executable)?.permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(executable, permissions)?;
+    let executable = macos.join(&bundle.executable_name);
+    if bundle.should_write_wrapper {
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nexec \"{}\"\n",
+                bundle.target_path.to_string_lossy()
+            ),
+        )?;
+        let mut permissions = fs::metadata(&executable)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(executable, permissions)?;
+    } else if !executable.exists() {
+        anyhow::bail!(
+            "macOS app executable is missing and cannot be repaired without a source binary: {}",
+            executable.display()
+        );
+    }
     copy_icon(&resources)?;
     Ok(())
 }
@@ -89,23 +112,24 @@ fn write_bundle(bundle: &MacosAppBundle) -> anyhow::Result<()> {
 fn copy_icon(resources: &Path) -> anyhow::Result<()> {
     let source = std::env::current_exe()
         .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|path| path.join("codex-plus-plus.png"));
+        .and_then(|path| app_resources_dir(&path).or_else(|| path.parent().map(Path::to_path_buf)))
+        .map(|path| path.join(ICON_NAME));
     if let Some(source) = source.filter(|path| path.exists()) {
-        fs::copy(source, resources.join("codex-plus-plus.png"))?;
+        fs::copy(source, resources.join(ICON_NAME))?;
     }
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn executable_name_from_plist(plist: &str) -> String {
-    plist
-        .split("<key>CFBundleExecutable</key>")
-        .nth(1)
-        .and_then(|tail| tail.split("<string>").nth(1))
-        .and_then(|tail| tail.split("</string>").next())
-        .unwrap_or("CodexPlusPlus")
-        .to_string()
+fn app_resources_dir(exe: &Path) -> Option<std::path::PathBuf> {
+    let mut path = exe;
+    while let Some(parent) = path.parent() {
+        if path.extension().and_then(|extension| extension.to_str()) == Some("app") {
+            return Some(path.join("Contents").join("Resources"));
+        }
+        path = parent;
+    }
+    None
 }
 
 fn info_plist(display_name: &str, executable_name: &str, identifier_suffix: &str) -> String {
@@ -130,7 +154,7 @@ fn info_plist(display_name: &str, executable_name: &str, identifier_suffix: &str
   <key>CFBundleExecutable</key>
   <string>{executable_name}</string>
   <key>CFBundleIconFile</key>
-  <string>codex-plus-plus.png</string>
+  <string>{ICON_NAME}</string>
   <key>LSUIElement</key>
   <true/>
   <key>LSMinimumSystemVersion</key>

@@ -1,5 +1,5 @@
 use codex_plus_core::install::{
-    InstallOptions, SILENT_BINARY, app_bundle_names, build_macos_app_bundle,
+    InstallOptions, MANAGER_BINARY, SILENT_BINARY, app_bundle_names, build_macos_app_bundle,
     build_windows_entrypoint_plan, companion_binary_path_from_exe, default_install_root_strategy,
     shortcut_names,
 };
@@ -60,12 +60,63 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
     assert!(manager.app_path.ends_with("Codex++ 管理工具.app"));
     assert!(silent.info_plist.contains("<string>Codex++</string>"));
     assert!(
+        silent
+            .info_plist
+            .contains("<string>codex-plus-plus.icns</string>")
+    );
+    assert!(
         manager
             .info_plist
             .contains("<string>Codex++ 管理工具</string>")
     );
-    assert!(silent.launch_script.contains("codex-plus-plus"));
-    assert!(manager.launch_script.contains("codex-plus-plus-manager"));
+    assert_eq!(
+        silent.executable_path,
+        std::path::PathBuf::from("/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus")
+    );
+    assert_eq!(
+        manager.executable_path,
+        std::path::PathBuf::from(
+            "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager"
+        )
+    );
+    assert_eq!(
+        silent.target_path,
+        std::path::PathBuf::from("/opt/Codex++/codex-plus-plus")
+    );
+    assert_eq!(
+        manager.target_path,
+        std::path::PathBuf::from("/opt/Codex++/codex-plus-plus-manager")
+    );
+    assert!(silent.should_write_wrapper);
+    assert!(manager.should_write_wrapper);
+}
+
+#[test]
+fn macos_bundle_repair_does_not_wrap_itself_when_running_from_installed_apps() {
+    let options = InstallOptions {
+        install_root: Some("/Applications".into()),
+        launcher_path: Some("/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus".into()),
+        manager_path: Some(
+            "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager".into(),
+        ),
+        remove_owned_data: false,
+    };
+
+    let silent = build_macos_app_bundle(&options, false);
+    let manager = build_macos_app_bundle(&options, true);
+
+    assert!(!silent.should_write_wrapper);
+    assert!(!manager.should_write_wrapper);
+    assert_eq!(
+        silent.target_path,
+        std::path::PathBuf::from("/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus")
+    );
+    assert_eq!(
+        manager.target_path,
+        std::path::PathBuf::from(
+            "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager"
+        )
+    );
 }
 
 #[test]
@@ -90,6 +141,28 @@ fn companion_binary_path_resolves_macos_silent_app_next_to_manager_app() {
         companion,
         std::path::PathBuf::from(
             "/Applications/Codex++ 管理工具.app/Contents/MacOS/codex-plus-plus"
+        )
+    );
+}
+
+#[test]
+fn companion_binary_path_resolves_macos_manager_app_without_lowercase_wrapper() {
+    let manager_exe = std::path::Path::new(
+        "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager",
+    );
+
+    let companion = companion_binary_path_from_exe(manager_exe, MANAGER_BINARY);
+
+    assert_eq!(
+        companion,
+        std::path::PathBuf::from(
+            "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager"
+        )
+    );
+    assert_ne!(
+        companion,
+        std::path::PathBuf::from(
+            "/Applications/Codex++ 管理工具.app/Contents/MacOS/codex-plus-plus-manager"
         )
     );
 }

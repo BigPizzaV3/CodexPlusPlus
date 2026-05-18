@@ -47,7 +47,10 @@ pub struct InstallActionResult {
 pub struct MacosAppBundle {
     pub app_path: PathBuf,
     pub info_plist: String,
-    pub launch_script: String,
+    pub executable_path: PathBuf,
+    pub executable_name: String,
+    pub target_path: PathBuf,
+    pub should_write_wrapper: bool,
 }
 
 impl ShortcutState {
@@ -232,6 +235,11 @@ pub fn companion_binary_path(binary: &str) -> PathBuf {
 pub fn companion_binary_path_from_exe(exe: &Path, binary: &str) -> PathBuf {
     let dir = exe.parent().unwrap_or_else(|| Path::new("."));
     let suffix = if cfg!(windows) { ".exe" } else { "" };
+    if binary == MANAGER_BINARY {
+        if let Some(manager_app_binary) = macos_manager_app_binary_from_exe(exe) {
+            return manager_app_binary;
+        }
+    }
     if binary == SILENT_BINARY {
         if let Some(sibling_app_binary) = macos_silent_app_binary_from_exe(exe) {
             return sibling_app_binary;
@@ -244,13 +252,21 @@ pub fn companion_binary_path_from_exe(exe: &Path, binary: &str) -> PathBuf {
     dir.join(format!("{binary}{suffix}"))
 }
 
+fn macos_manager_app_binary_from_exe(exe: &Path) -> Option<PathBuf> {
+    macos_app_binary_from_exe(exe, MANAGER_NAME, "CodexPlusPlusManager")
+}
+
 fn macos_silent_app_binary_from_exe(exe: &Path) -> Option<PathBuf> {
+    macos_app_binary_from_exe(exe, SILENT_NAME, "CodexPlusPlus")
+}
+
+fn macos_app_binary_from_exe(exe: &Path, app_name: &str, executable_name: &str) -> Option<PathBuf> {
     macos_applications_dir_from_exe(exe).map(|applications_dir| {
         applications_dir
-            .join(format!("{SILENT_NAME}.app"))
+            .join(format!("{app_name}.app"))
             .join("Contents")
             .join("MacOS")
-            .join("CodexPlusPlus")
+            .join(executable_name)
     })
 }
 
