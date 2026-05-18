@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import plistlib
 import re
 import sys
 import subprocess
@@ -71,12 +72,52 @@ def _macos_app_candidates(root: Path) -> list[Path]:
     return [root / name for name in names]
 
 
+_MACOS_BUNDLE_IDENTIFIERS = {
+    "com.openai.codex",
+    "com.openai.chatgpt.codex",
+    "com.openai.chatgpt",
+}
+
+
+def _macos_bundle_identifier(path: Path) -> str | None:
+    plist_path = path / "Contents" / "Info.plist"
+    try:
+        with plist_path.open("rb") as handle:
+            plist = plistlib.load(handle)
+    except (OSError, plistlib.InvalidFileException):
+        return None
+    identifier = plist.get("CFBundleIdentifier")
+    return identifier if isinstance(identifier, str) else None
+
+
+def _is_macos_codex_app(path: Path) -> bool:
+    if not path.is_dir() or path.suffix != ".app":
+        return False
+    identifier = _macos_bundle_identifier(path)
+    if identifier in _MACOS_BUNDLE_IDENTIFIERS:
+        return True
+    name = path.stem.lower()
+    return "codex" in name and "codex++" not in name
+
+
+def _scan_macos_codex_apps(root: Path) -> list[Path]:
+    try:
+        return sorted(
+            (path for path in root.iterdir() if _is_macos_codex_app(path)),
+            key=lambda path: path.name.lower(),
+        )
+    except OSError:
+        return []
+
+
 def find_macos_codex_app(candidates: list[Path] | None = None) -> Path | None:
     search = candidates or [Path("/Applications"), Path.home() / "Applications"]
     for root in search:
         for path in _macos_app_candidates(root):
-            if path.is_dir():
+            if _is_macos_codex_app(path):
                 return path
+        for path in _scan_macos_codex_apps(root):
+            return path
     return None
 
 
