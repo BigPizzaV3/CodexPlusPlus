@@ -1,6 +1,7 @@
 use codex_plus_core::install::{
-    InstallOptions, app_bundle_names, build_macos_app_bundle, build_windows_entrypoint_plan,
-    default_install_root_strategy, shortcut_names,
+    InstallOptions, SILENT_BINARY, app_bundle_names, build_macos_app_bundle,
+    build_windows_entrypoint_plan, companion_binary_path_from_exe, default_install_root_strategy,
+    shortcut_names,
 };
 
 #[test]
@@ -71,6 +72,26 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
 fn installer_exports_expected_two_entrypoint_names() {
     assert_eq!(shortcut_names(), ("Codex++.lnk", "Codex++ 管理工具.lnk"));
     assert_eq!(app_bundle_names(), ("Codex++.app", "Codex++ 管理工具.app"));
+}
+
+#[test]
+fn companion_binary_path_resolves_macos_silent_app_next_to_manager_app() {
+    let manager_exe = std::path::Path::new(
+        "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager",
+    );
+
+    let companion = companion_binary_path_from_exe(manager_exe, SILENT_BINARY);
+
+    assert_eq!(
+        companion,
+        std::path::PathBuf::from("/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus")
+    );
+    assert_ne!(
+        companion,
+        std::path::PathBuf::from(
+            "/Applications/Codex++ 管理工具.app/Contents/MacOS/codex-plus-plus"
+        )
+    );
 }
 
 #[test]

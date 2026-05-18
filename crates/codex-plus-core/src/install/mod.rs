@@ -221,9 +221,48 @@ pub fn option_or_current_exe(value: &Option<PathBuf>, binary: &str) -> PathBuf {
         return value.clone();
     }
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    companion_binary_path_from_exe(&exe, binary)
+}
+
+pub fn companion_binary_path(binary: &str) -> PathBuf {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    companion_binary_path_from_exe(&exe, binary)
+}
+
+pub fn companion_binary_path_from_exe(exe: &Path, binary: &str) -> PathBuf {
     let dir = exe.parent().unwrap_or_else(|| Path::new("."));
     let suffix = if cfg!(windows) { ".exe" } else { "" };
+    if binary == SILENT_BINARY {
+        if let Some(sibling_app_binary) = macos_silent_app_binary_from_exe(exe) {
+            return sibling_app_binary;
+        }
+        let same_bundle = dir.join(binary);
+        if same_bundle.exists() {
+            return same_bundle;
+        }
+    }
     dir.join(format!("{binary}{suffix}"))
+}
+
+fn macos_silent_app_binary_from_exe(exe: &Path) -> Option<PathBuf> {
+    macos_applications_dir_from_exe(exe).map(|applications_dir| {
+        applications_dir
+            .join(format!("{SILENT_NAME}.app"))
+            .join("Contents")
+            .join("MacOS")
+            .join("CodexPlusPlus")
+    })
+}
+
+fn macos_applications_dir_from_exe(exe: &Path) -> Option<PathBuf> {
+    let mut path = exe;
+    while let Some(parent) = path.parent() {
+        if path.extension().and_then(|extension| extension.to_str()) == Some("app") {
+            return Some(parent.to_path_buf());
+        }
+        path = parent;
+    }
+    None
 }
 
 pub(crate) fn install_root_or_default(options: &InstallOptions) -> PathBuf {

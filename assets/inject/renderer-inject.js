@@ -740,15 +740,20 @@
     `;
   }
 
+  function cacheBustCodexPlusAdUrl(url, version) {
+    return `${url}${url.includes("?") ? "&" : "?"}v=${version}`;
+  }
+
   async function directFetchCodexPlusAds() {
     const urls = [
       "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
       "https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json",
     ];
     let lastError = null;
+    const cacheBust = Date.now();
     for (const url of urls) {
       try {
-        const response = await fetch(url, {
+        const response = await fetch(cacheBustCodexPlusAdUrl(url, cacheBust), {
           headers: { "Accept": "application/json" },
           cache: "no-store",
         });

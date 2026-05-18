@@ -1,5 +1,8 @@
 use std::net::{TcpListener, ToSocketAddrs};
 
+pub const LAUNCHER_GUARD_PORT: u16 = 57320;
+pub const MANAGER_GUARD_PORT: u16 = 57319;
+
 pub fn select_platform_loopback_port(requested: u16) -> u16 {
     select_platform_loopback_port_with(
         requested,
@@ -46,4 +49,8 @@ pub fn can_connect_loopback_port(port: u16) -> bool {
                 .ok()
         })
         .is_some()
+}
+
+pub fn acquire_loopback_port_guard(port: u16) -> std::io::Result<TcpListener> {
+    TcpListener::bind(("127.0.0.1", port))
 }

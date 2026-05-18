@@ -2,6 +2,9 @@ pub mod commands;
 pub mod install;
 
 pub fn run() {
+    let Some(_guard) = acquire_single_instance_guard() else {
+        return;
+    };
     let show_update = commands::startup_should_show_update();
     tauri::Builder::default()
         .setup(move |app| {
@@ -47,4 +50,34 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Codex++ manager");
+}
+
+fn acquire_single_instance_guard() -> Option<std::net::TcpListener> {
+    match codex_plus_core::ports::acquire_loopback_port_guard(
+        codex_plus_core::ports::MANAGER_GUARD_PORT,
+    ) {
+        Ok(listener) => Some(listener),
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.already_running",
+                serde_json::json!({
+                    "guard_port": codex_plus_core::ports::MANAGER_GUARD_PORT
+                }),
+            );
+            None
+        }
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.guard_failed",
+                serde_json::json!({
+                    "guard_port": codex_plus_core::ports::MANAGER_GUARD_PORT,
+                    "error": error.to_string()
+                }),
+            );
+            Some(
+                std::net::TcpListener::bind(("127.0.0.1", 0))
+                    .expect("fallback manager guard should bind"),
+            )
+        }
+    }
 }

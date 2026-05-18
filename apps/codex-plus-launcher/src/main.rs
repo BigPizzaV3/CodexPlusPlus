@@ -1,6 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use codex_plus_core::launcher::{
     DefaultLaunchHooks, LaunchHooks, LaunchOptions, launch_and_inject_with_hooks,
 };
@@ -35,6 +35,9 @@ impl Default for LauncherHooks {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let Some(_guard) = acquire_single_instance_guard()? else {
+        return Ok(());
+    };
     let options = parse_launch_options(std::env::args().skip(1));
     tokio::spawn(async {
         let _ = notify_manager_when_update_available().await;
@@ -43,6 +46,31 @@ async fn main() -> Result<()> {
     let handle = launch_and_inject_with_hooks(options, &hooks).await?;
     handle.wait_for_codex_exit().await?;
     Ok(())
+}
+
+fn acquire_single_instance_guard() -> anyhow::Result<Option<std::net::TcpListener>> {
+    match codex_plus_core::ports::acquire_loopback_port_guard(
+        codex_plus_core::ports::LAUNCHER_GUARD_PORT,
+    ) {
+        Ok(listener) => Ok(Some(listener)),
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "launcher.already_running",
+                json!({
+                    "guard_port": codex_plus_core::ports::LAUNCHER_GUARD_PORT
+                }),
+            );
+            Ok(None)
+        }
+        Err(error) => Err(error)
+            .with_context(|| {
+                format!(
+                    "failed to acquire launcher guard port {}",
+                    codex_plus_core::ports::LAUNCHER_GUARD_PORT
+                )
+            })
+            .map(Some),
+    }
 }
 
 async fn notify_manager_when_update_available() -> anyhow::Result<bool> {
@@ -529,6 +557,15 @@ mod tests {
 
         assert_eq!(options.debug_port, LaunchOptions::default().debug_port);
         assert_eq!(options.helper_port, LaunchOptions::default().helper_port);
+    }
+
+    #[test]
+    fn launcher_uses_single_instance_guard_before_launching() {
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("acquire_single_instance_guard()?"));
+        assert!(source.contains("LAUNCHER_GUARD_PORT"));
+        assert!(source.contains("launcher.already_running"));
     }
 
     #[test]

@@ -243,7 +243,7 @@ export function App() {
     const result = await run(() => call<OverviewResult>("load_overview"));
     if (result) {
       setOverview(result);
-      if (!silent) showNotice("概览已检查", result.message, result.status);
+      if (!silent) showResultNotice("概览已检查", result, { silentSuccess: true });
     }
   };
 
@@ -252,7 +252,7 @@ export function App() {
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
-      if (!silent) showNotice("设置已加载", result.message, result.status);
+      if (!silent) showResultNotice("设置已加载", result, { silentSuccess: true });
     }
   };
 
@@ -260,7 +260,7 @@ export function App() {
     const result = await run(() => call<RelayResult>("relay_status"));
     if (result) {
       setRelay(result);
-      if (!silent) showNotice("登录状态", result.message, result.status);
+      if (!silent) showResultNotice("登录状态", result, { silentSuccess: true });
     }
   };
 
@@ -268,7 +268,7 @@ export function App() {
     const result = await run(() => call<LogsResult>("read_latest_logs", { request: { lines: 240 } }));
     if (result) {
       setLogs(result);
-      if (!silent) showNotice("日志已刷新", result.message, result.status);
+      if (!silent) showResultNotice("日志已刷新", result, { silentSuccess: true });
     }
   };
 
@@ -276,7 +276,7 @@ export function App() {
     const result = await run(() => call<DiagnosticsResult>("copy_diagnostics"));
     if (result) {
       setDiagnostics(result);
-      if (!silent) showNotice("诊断已生成", result.message, result.status);
+      if (!silent) showResultNotice("诊断已生成", result, { silentSuccess: true });
     }
   };
 
@@ -284,7 +284,7 @@ export function App() {
     const result = await run(() => call<WatcherResult>("load_watcher_state"));
     if (result) {
       setWatcher(result);
-      if (!silent) showNotice("Watcher 状态", result.message, result.status);
+      if (!silent) showResultNotice("Watcher 状态", result, { silentSuccess: true });
     }
   };
 
@@ -432,7 +432,7 @@ export function App() {
     const result = await run(() => call<AdsResult>("load_ads"));
     if (result) {
       setAds(result);
-      if (!silent) showNotice("推荐内容", result.message, result.status);
+      if (!silent) showResultNotice("推荐内容", result, { silentSuccess: true });
     }
   };
 
@@ -469,7 +469,6 @@ export function App() {
   const copyText = async (text: string, message: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      showNotice("复制成功", message, "ok");
     } catch (error) {
       showNotice("复制失败", stringifyError(error), "failed");
     }
@@ -478,12 +477,21 @@ export function App() {
   const openExternalUrl = async (url: string) => {
     const result = await run(() => call<CommandResult<Record<string, unknown>>>("open_external_url", { url }));
     if (result) {
-      showNotice("打开链接", result.message, result.status);
+      showResultNotice("打开链接", result, { silentSuccess: true });
     }
   };
 
   const showNotice = (title: string, message: string, status?: Status) => {
     setNotice({ title, message, status });
+  };
+
+  const showResultNotice = (
+    title: string,
+    result: Pick<CommandResult<unknown>, "message" | "status">,
+    options: { silentSuccess?: boolean } = {},
+  ) => {
+    if (options.silentSuccess && isSuccessStatus(result.status)) return;
+    showNotice(title, result.message, result.status);
   };
 
   useEffect(() => {
@@ -1577,6 +1585,10 @@ function statusClass(status: string) {
   if (["found", "installed", "ok", "running"].includes(status)) return "good";
   if (["failed", "missing"].includes(status)) return "bad";
   return "warn";
+}
+
+function isSuccessStatus(status?: Status) {
+  return status === "ok" || status === "accepted";
 }
 
 function healthItems(overview: OverviewResult | null, relay: RelayResult | null) {

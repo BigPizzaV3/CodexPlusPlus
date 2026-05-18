@@ -2,7 +2,9 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 
-use codex_plus_core::ads::{DEFAULT_AD_LIST_URLS, fetch_ad_list_from_urls, normalize_ad_payload};
+use codex_plus_core::ads::{
+    DEFAULT_AD_LIST_URLS, cache_busted_ad_url, fetch_ad_list_from_urls, normalize_ad_payload,
+};
 use serde_json::json;
 
 #[test]
@@ -13,6 +15,22 @@ fn default_ad_urls_match_legacy_helper_sources() {
             "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
             "https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json",
         ]
+    );
+}
+
+#[test]
+fn cache_busted_ad_url_appends_version_query_to_plain_url() {
+    assert_eq!(
+        cache_busted_ad_url("https://example.test/ads.json", 1779035222758),
+        "https://example.test/ads.json?v=1779035222758"
+    );
+}
+
+#[test]
+fn cache_busted_ad_url_preserves_existing_query() {
+    assert_eq!(
+        cache_busted_ad_url("https://example.test/ads.json?source=cdn", 1779035222758),
+        "https://example.test/ads.json?source=cdn&v=1779035222758"
     );
 }
 
@@ -62,11 +80,12 @@ async fn fetch_ad_list_tries_backup_url_when_primary_fails() {
             let mut buffer = [0; 1024];
             let read = stream.read(&mut buffer).unwrap();
             let request = String::from_utf8_lossy(&buffer[..read]);
-            if request.starts_with("GET /primary.json ") {
+            if request.starts_with("GET /primary.json?") {
                 stream
                     .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
                     .unwrap();
             } else {
+                assert!(request.starts_with("GET /backup.json?"), "{request}");
                 let body = json!({
                     "version": 1,
                     "ads": [{

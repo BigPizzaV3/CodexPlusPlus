@@ -2,10 +2,12 @@
 set -euo pipefail
 
 VERSION="${1:-0.0.0}"
+ARCH="${2:-$(uname -m)}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 DIST="$ROOT/dist/macos"
 STAGE="$DIST/stage"
-DMG="$DIST/CodexPlusPlus-${VERSION}-macos-universal.dmg"
+BINARY_DIR="${BINARY_DIR:-$ROOT/target/release}"
+DMG="$DIST/CodexPlusPlus-${VERSION}-macos-${ARCH}.dmg"
 ICON_SOURCE="$ROOT/apps/codex-plus-manager/src-tauri/icons/icon.png"
 ICON_NAME="codex-plus-plus.icns"
 ICON_ICNS="$DIST/$ICON_NAME"
@@ -37,6 +39,7 @@ create_app() {
   local executable_name="$2"
   local binary_path="$3"
   local bundle_id="$4"
+  local lsui_element="${5:-false}"
   local app_dir="$STAGE/$app_name.app"
 
   mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
@@ -66,14 +69,16 @@ create_app() {
   <string>$ICON_NAME</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
+  <key>LSUIElement</key>
+  <$lsui_element/>
 </dict>
 </plist>
 PLIST
 }
 
 prepare_icon
-create_app "Codex++" "CodexPlusPlus" "$ROOT/target/release/codex-plus-plus" "com.bigpizzav3.codexplusplus"
-create_app "Codex++ 管理工具" "CodexPlusPlusManager" "$ROOT/target/release/codex-plus-plus-manager" "com.bigpizzav3.codexplusplus.manager"
+create_app "Codex++" "CodexPlusPlus" "$BINARY_DIR/codex-plus-plus" "com.bigpizzav3.codexplusplus" "true"
+create_app "Codex++ 管理工具" "CodexPlusPlusManager" "$BINARY_DIR/codex-plus-plus-manager" "com.bigpizzav3.codexplusplus.manager" "false"
 
 hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 echo "$DMG"
