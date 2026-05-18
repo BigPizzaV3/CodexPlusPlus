@@ -68,6 +68,30 @@ fn app_paths_extracts_codex_version_from_windows_package_app_dir() {
 }
 
 #[test]
+fn app_paths_extracts_codex_version_from_macos_bundle_plist() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("OpenAI Codex.app");
+    let contents = app.join("Contents");
+    std::fs::create_dir_all(&contents).unwrap();
+    std::fs::write(
+        contents.join("Info.plist"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleVersion</key>
+  <string>26.500.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>26.513.3673</string>
+</dict>
+</plist>
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(codex_app_version(&app).as_deref(), Some("26.513.3673"));
+}
+
+#[test]
 fn app_paths_user_data_candidates_include_local_and_roaming_variants() {
     let local = PathBuf::from(r"C:\Users\me\AppData\Local");
     let roaming = PathBuf::from(r"C:\Users\me\AppData\Roaming");
