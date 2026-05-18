@@ -10,6 +10,7 @@ venv/
 build/
 dist/
 target/
+node_modules/
 apps/codex-plus-manager/src-tauri/gen/
 
 .codex_asar_extract/
