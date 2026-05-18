@@ -1,7 +1,7 @@
 use codex_plus_core::install::{
     InstallOptions, SILENT_BINARY, app_bundle_names, build_macos_app_bundle,
     build_windows_entrypoint_plan, companion_binary_path_from_exe, default_install_root_strategy,
-    shortcut_names,
+    install_entrypoints, shortcut_names,
 };
 
 #[test]
@@ -66,6 +66,30 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
     );
     assert!(silent.launch_script.contains("codex-plus-plus"));
     assert!(manager.launch_script.contains("codex-plus-plus-manager"));
+    assert!(silent.info_plist.contains("<string>codex-plus-plus.icns</string>"));
+    assert!(manager.info_plist.contains("<string>codex-plus-plus.icns</string>"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_install_writes_icns_icon_resources() {
+    let temp = tempfile::tempdir().unwrap();
+    let options = InstallOptions {
+        install_root: Some(temp.path().to_path_buf()),
+        launcher_path: Some("/opt/Codex++/codex-plus-plus".into()),
+        manager_path: Some("/opt/Codex++/codex-plus-plus-manager".into()),
+        remove_owned_data: false,
+    };
+
+    let result = install_entrypoints(&options);
+
+    assert_eq!(result.status, "ok");
+    for app_name in ["Codex++.app", "Codex++ 管理工具.app"] {
+        let app = temp.path().join(app_name);
+        let plist = std::fs::read_to_string(app.join("Contents/Info.plist")).unwrap();
+        assert!(plist.contains("<string>codex-plus-plus.icns</string>"));
+        assert!(app.join("Contents/Resources/codex-plus-plus.icns").is_file());
+    }
 }
 
 #[test]

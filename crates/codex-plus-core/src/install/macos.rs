@@ -10,6 +10,10 @@ use super::{
     install_root_or_default, option_or_current_exe,
 };
 
+#[cfg(target_os = "macos")]
+const CODEX_PLUS_ICON: &[u8] =
+    include_bytes!("../../../../apps/codex-plus-manager/src-tauri/icons/icon.icns");
+
 pub fn build_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBundle {
     let install_root = install_root_or_default(options);
     let display_name = if manager { MANAGER_NAME } else { SILENT_NAME };
@@ -87,13 +91,7 @@ fn write_bundle(bundle: &MacosAppBundle) -> anyhow::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn copy_icon(resources: &Path) -> anyhow::Result<()> {
-    let source = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|path| path.join("codex-plus-plus.png"));
-    if let Some(source) = source.filter(|path| path.exists()) {
-        fs::copy(source, resources.join("codex-plus-plus.png"))?;
-    }
+    fs::write(resources.join("codex-plus-plus.icns"), CODEX_PLUS_ICON)?;
     Ok(())
 }
 
@@ -130,7 +128,7 @@ fn info_plist(display_name: &str, executable_name: &str, identifier_suffix: &str
   <key>CFBundleExecutable</key>
   <string>{executable_name}</string>
   <key>CFBundleIconFile</key>
-  <string>codex-plus-plus.png</string>
+  <string>codex-plus-plus.icns</string>
   <key>LSUIElement</key>
   <true/>
   <key>LSMinimumSystemVersion</key>
