@@ -118,8 +118,15 @@ pub trait LaunchHooks: Send + Sync {
     fn select_debug_port(&self, requested: u16) -> u16;
     fn select_helper_port(&self, requested: u16) -> u16;
     async fn load_settings(&self) -> anyhow::Result<BackendSettings>;
+    async fn ensure_relay_proxy_config(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn run_provider_sync(&self) -> anyhow::Result<()>;
-    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()>;
+    async fn start_helper(
+        &self,
+        helper_port: u16,
+        settings: &BackendSettings,
+    ) -> anyhow::Result<()>;
     async fn launch_codex(&self, app_dir: &Path, debug_port: u16) -> anyhow::Result<CodexLaunch>;
     async fn bridge_context(
         &self,
@@ -145,12 +152,17 @@ pub trait LaunchHooks: Send + Sync {
 #[derive(Default)]
 pub struct DefaultLaunchHooks {
     child: Mutex<Option<Child>>,
-    helper: Mutex<Option<HelperRuntime>>,
+    runtime: Mutex<Option<LauncherRuntime>>,
 }
 
 struct HelperRuntime {
     shutdown: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<()>,
+}
+
+struct LauncherRuntime {
+    helper: Option<HelperRuntime>,
+    relay_proxy: Option<crate::relay_proxy::LocalRelayProxy>,
 }
 
 pub async fn launch_and_inject(options: LaunchOptions) -> anyhow::Result<LaunchHandle> {
@@ -170,7 +182,7 @@ where
     let helper_port = hooks.select_helper_port(options.helper_port);
     let settings = hooks.load_settings().await?;
     let status_store = options.status_store.clone();
-    let mut helper_started = false;
+    let mut runtime_started = false;
     let mut launched = None;
 
     let result: anyhow::Result<LaunchHandle> = async {
@@ -178,9 +190,11 @@ where
             hooks.run_provider_sync().await?;
         }
 
-        if settings.enhancements_enabled {
-            hooks.start_helper(helper_port).await?;
-            helper_started = true;
+        hooks.ensure_relay_proxy_config(&settings).await?;
+
+        if settings.requires_helper_runtime() {
+            hooks.start_helper(helper_port, &settings).await?;
+            runtime_started = true;
         }
 
         let launch = hooks.launch_codex(&app_dir, debug_port).await?;
@@ -209,7 +223,7 @@ where
             app_dir: app_dir.clone(),
             launch,
             status_store: status_store.clone(),
-            helper_started,
+            helper_started: runtime_started,
             hooks: Arc::clone(&hooks),
         })
     }
@@ -218,7 +232,7 @@ where
     match result {
         Ok(handle) => Ok(handle),
         Err(error) => {
-            if helper_started {
+            if runtime_started {
                 hooks.shutdown_helper(helper_port).await;
             }
             if let Some(launch) = &launched {
@@ -283,39 +297,34 @@ impl LaunchHooks for DefaultLaunchHooks {
         SettingsStore::default().load()
     }
 
+    async fn ensure_relay_proxy_config(&self, settings: &BackendSettings) -> anyhow::Result<()> {
+        ensure_default_relay_proxy_config(settings)
+    }
+
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
         anyhow::bail!("provider sync requires launcher hooks with codex-plus-data integration")
     }
 
-    async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", helper_port))
-            .await
-            .with_context(|| format!("failed to bind helper runtime on 127.0.0.1:{helper_port}"))?;
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "helper.listening",
-            serde_json::json!({
-                "helper_port": helper_port,
-                "address": format!("http://127.0.0.1:{helper_port}")
-            }),
-        );
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut shutdown_rx => break,
-                    accepted = listener.accept() => {
-                        if let Ok((stream, addr)) = accepted {
-                            tokio::spawn(async move {
-                                let _ = handle_helper_connection(stream, Some(addr)).await;
-                            });
-                        }
-                    }
-                }
-            }
-        });
-        *self.helper.lock().await = Some(HelperRuntime {
-            shutdown: shutdown_tx,
-            task,
+    async fn start_helper(
+        &self,
+        helper_port: u16,
+        settings: &BackendSettings,
+    ) -> anyhow::Result<()> {
+        let helper = if settings.enhancements_enabled {
+            Some(start_helper_runtime(helper_port).await?)
+        } else {
+            None
+        };
+        let relay_proxy = if let Some(config) =
+            crate::relay_proxy::RelayProxyConfig::from_profile(&settings.active_relay_profile())
+        {
+            Some(crate::relay_proxy::start_local_relay_proxy(config).await?)
+        } else {
+            None
+        };
+        *self.runtime.lock().await = Some(LauncherRuntime {
+            helper,
+            relay_proxy,
         });
         Ok(())
     }
@@ -422,9 +431,14 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn shutdown_helper(&self, _helper_port: u16) {
-        if let Some(runtime) = self.helper.lock().await.take() {
-            let _ = runtime.shutdown.send(());
-            let _ = runtime.task.await;
+        if let Some(runtime) = self.runtime.lock().await.take() {
+            if let Some(helper) = runtime.helper {
+                let _ = helper.shutdown.send(());
+                let _ = helper.task.await;
+            }
+            if let Some(relay_proxy) = runtime.relay_proxy {
+                relay_proxy.shutdown().await;
+            }
         }
     }
 
@@ -467,29 +481,22 @@ async fn handle_helper_connection(
     mut stream: tokio::net::TcpStream,
     remote_addr: Option<SocketAddr>,
 ) -> anyhow::Result<()> {
-    let mut buffer = vec![0_u8; 4096];
-    let read = stream.read(&mut buffer).await?;
-    let request = String::from_utf8_lossy(&buffer[..read]);
-    let request_line = request.lines().next().unwrap_or_default();
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or_default();
-    let path = parts.next().unwrap_or_default();
-    let request_body = http_request_body(&request);
+    let request = read_helper_http_request(&mut stream).await?;
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
 
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "helper.request",
         serde_json::json!({
-            "method": method,
-            "path": path,
-            "request_line": request_line,
+            "method": request.method,
+            "path": request.path,
+            "request_line": request.request_line,
             "remote_addr": remote_addr_text,
-            "body_bytes": request_body.len()
+            "body_bytes": request.body.len()
         }),
     );
 
-    let (status, body, log_event) = if path == "/backend/status"
-        && matches!(method, "GET" | "POST" | "OPTIONS")
+    let (status, body, log_event) = if request.path == "/backend/status"
+        && matches!(request.method.as_str(), "GET" | "POST" | "OPTIONS")
     {
         (
             "200 OK",
@@ -501,15 +508,18 @@ async fn handle_helper_connection(
             }))?,
             "helper.backend_status_ok",
         )
-    } else if path == "/diagnostics/log" && matches!(method, "POST" | "OPTIONS") {
-        if method == "POST" {
-            let detail =
-                serde_json::from_str::<serde_json::Value>(request_body).unwrap_or_else(|error| {
+    } else if request.path == "/diagnostics/log"
+        && matches!(request.method.as_str(), "POST" | "OPTIONS")
+    {
+        if request.method == "POST" {
+            let detail = serde_json::from_slice::<serde_json::Value>(&request.body).unwrap_or_else(
+                |error| {
                     serde_json::json!({
                         "parse_error": error.to_string(),
-                        "raw": request_body
+                        "raw": String::from_utf8_lossy(&request.body)
                     })
-                });
+                },
+            );
             let event = detail
                 .get("event")
                 .and_then(serde_json::Value::as_str)
@@ -539,13 +549,13 @@ async fn handle_helper_connection(
     let _ = crate::diagnostic_log::append_diagnostic_log(
         log_event,
         serde_json::json!({
-            "method": method,
-            "path": path,
+            "method": request.method,
+            "path": request.path,
             "status": status,
             "remote_addr": remote_addr_text
         }),
     );
-    let response = if method == "OPTIONS" {
+    let response = if request.method == "OPTIONS" {
         format!(
             "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         )
@@ -556,18 +566,110 @@ async fn handle_helper_connection(
         )
     };
     stream.write_all(response.as_bytes()).await?;
-    if method != "OPTIONS" {
+    if request.method != "OPTIONS" {
         stream.write_all(&body).await?;
     }
     stream.shutdown().await?;
     Ok(())
 }
 
-fn http_request_body(request: &str) -> &str {
-    request
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or_default()
+#[derive(Debug, Clone)]
+struct HelperHttpRequest {
+    method: String,
+    path: String,
+    request_line: String,
+    body: Vec<u8>,
+}
+
+async fn read_helper_http_request(
+    stream: &mut tokio::net::TcpStream,
+) -> anyhow::Result<HelperHttpRequest> {
+    let mut buffer = Vec::new();
+    let mut temp = [0_u8; 4096];
+    let header_end;
+    loop {
+        let read = stream.read(&mut temp).await?;
+        if read == 0 {
+            anyhow::bail!("empty helper request");
+        }
+        buffer.extend_from_slice(&temp[..read]);
+        if let Some(end) = helper_header_end(&buffer) {
+            header_end = end;
+            break;
+        }
+        if buffer.len() > 1024 * 1024 {
+            anyhow::bail!("helper request headers are too large");
+        }
+    }
+
+    let head = String::from_utf8_lossy(&buffer[..header_end]);
+    let mut lines = head.lines();
+    let request_line = lines.next().unwrap_or_default().to_string();
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or_default().to_string();
+    let path = parts.next().unwrap_or_default().to_string();
+    let content_length = lines
+        .filter_map(|line| line.split_once(':'))
+        .find_map(|(name, value)| {
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                value.trim().parse::<usize>().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+    let mut body = buffer[header_end + 4..].to_vec();
+    while body.len() < content_length {
+        let read = stream.read(&mut temp).await?;
+        if read == 0 {
+            break;
+        }
+        body.extend_from_slice(&temp[..read]);
+    }
+    body.truncate(content_length);
+
+    Ok(HelperHttpRequest {
+        method,
+        path,
+        request_line,
+        body,
+    })
+}
+
+fn helper_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+async fn start_helper_runtime(helper_port: u16) -> anyhow::Result<HelperRuntime> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", helper_port))
+        .await
+        .with_context(|| format!("failed to bind helper runtime on 127.0.0.1:{helper_port}"))?;
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "helper.listening",
+        serde_json::json!({
+            "helper_port": helper_port,
+            "address": format!("http://127.0.0.1:{helper_port}")
+        }),
+    );
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_rx => break,
+                accepted = listener.accept() => {
+                    if let Ok((stream, addr)) = accepted {
+                        tokio::spawn(async move {
+                            let _ = handle_helper_connection(stream, Some(addr)).await;
+                        });
+                    }
+                }
+            }
+        }
+    });
+    Ok(HelperRuntime {
+        shutdown: shutdown_tx,
+        task,
+    })
 }
 
 fn sanitize_diagnostic_event(event: &str) -> String {
@@ -634,6 +736,27 @@ pub fn codex_process_environment_from(
         env.entry("ALL_PROXY".to_string()).or_insert(proxy);
     }
     env
+}
+
+pub fn ensure_default_relay_proxy_config(settings: &BackendSettings) -> anyhow::Result<()> {
+    let codex_home = crate::relay_config::default_codex_home_dir();
+    if !crate::relay_config::relay_provider_active_from_home(&codex_home) {
+        return Ok(());
+    }
+    let relay = settings.active_relay_profile();
+    if !relay.needs_local_relay_proxy() {
+        return Ok(());
+    }
+    let options = crate::relay_config::RelayApplyOptions {
+        base_url: relay.base_url,
+        bearer_token: relay.api_key,
+        image_generation_enabled: relay.image_generation_enabled,
+        image_generation_use_separate_api: relay.image_generation_use_separate_api,
+        image_generation_base_url: relay.image_generation_base_url,
+        image_generation_bearer_token: relay.image_generation_api_key,
+    };
+    crate::relay_config::apply_relay_config_to_home_with_options(&codex_home, &options)?;
+    Ok(())
 }
 
 async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
