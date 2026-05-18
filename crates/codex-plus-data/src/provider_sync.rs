@@ -1,0 +1,625 @@
+use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const DEFAULT_PROVIDER: &str = "openai";
+const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
+const BACKUP_KEEP_COUNT: usize = 5;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderSyncStatus {
+    Disabled,
+    Skipped,
+    Synced,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderSyncResult {
+    pub status: ProviderSyncStatus,
+    pub message: String,
+    pub target_provider: String,
+    pub backup_dir: Option<PathBuf>,
+    pub changed_session_files: usize,
+    pub sqlite_rows_updated: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SessionChange {
+    path: PathBuf,
+    original_first_line: String,
+    next_first_line: String,
+    separator: String,
+    thread_id: Option<String>,
+    cwd: Option<String>,
+    has_user_event: bool,
+    rewrite_needed: bool,
+}
+
+pub fn run_provider_sync(codex_home: Option<&Path>) -> ProviderSyncResult {
+    let home = codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dirs_home().join(".codex"));
+    if !home.exists() {
+        return result(
+            ProviderSyncStatus::Skipped,
+            format!("Codex home not found: {}", home.to_string_lossy()),
+            DEFAULT_PROVIDER,
+            None,
+            0,
+            0,
+        );
+    }
+    let target_provider = read_current_provider(&home.join("config.toml"));
+    let lock_dir = home.join("tmp/provider-sync.lock");
+    if acquire_lock(&lock_dir).is_err() {
+        return result(
+            ProviderSyncStatus::Skipped,
+            format!("Provider sync lock exists: {}", lock_dir.to_string_lossy()),
+            &target_provider,
+            None,
+            0,
+            0,
+        );
+    }
+    let sync_result = (|| -> anyhow::Result<ProviderSyncResult> {
+        let changes = collect_session_changes(&home, &target_provider)?;
+        let rewrite_changes = changes
+            .iter()
+            .filter(|change| change.rewrite_needed)
+            .cloned()
+            .collect::<Vec<_>>();
+        let thread_ids_with_user_events = changes
+            .iter()
+            .filter(|change| change.has_user_event)
+            .filter_map(|change| change.thread_id.clone())
+            .collect::<HashSet<_>>();
+        let cwd_by_thread_id = changes
+            .iter()
+            .filter_map(|change| Some((change.thread_id.clone()?, change.cwd.clone()?)))
+            .collect::<HashMap<_, _>>();
+        let sqlite_update_count = count_sqlite_updates(
+            &home.join("state_5.sqlite"),
+            &target_provider,
+            &thread_ids_with_user_events,
+            &cwd_by_thread_id,
+        )?;
+        let global_state_update_count =
+            count_global_state_updates(&home.join(".codex-global-state.json"))?;
+        if rewrite_changes.is_empty() && sqlite_update_count == 0 && global_state_update_count == 0
+        {
+            return Ok(result(
+                ProviderSyncStatus::Synced,
+                "Provider sync already up to date",
+                &target_provider,
+                None,
+                0,
+                0,
+            ));
+        }
+        let backup_dir = create_backup(&home, &target_provider, &rewrite_changes)?;
+        apply_session_changes(&rewrite_changes)?;
+        let apply_result = (|| -> anyhow::Result<usize> {
+            let sqlite_rows_updated = apply_sqlite_update(
+                &home.join("state_5.sqlite"),
+                &target_provider,
+                &thread_ids_with_user_events,
+                &cwd_by_thread_id,
+            )?;
+            apply_global_state_update(&home.join(".codex-global-state.json"))?;
+            prune_backups(&home)?;
+            Ok(sqlite_rows_updated)
+        })();
+        let sqlite_rows_updated = match apply_result {
+            Ok(count) => count,
+            Err(err) => {
+                let _ = restore_session_changes(&rewrite_changes);
+                return Err(err);
+            }
+        };
+        Ok(result(
+            ProviderSyncStatus::Synced,
+            "Provider sync complete",
+            &target_provider,
+            Some(backup_dir),
+            rewrite_changes.len(),
+            sqlite_rows_updated,
+        ))
+    })();
+    let _ = release_lock(&lock_dir);
+    sync_result.unwrap_or_else(|err| {
+        result(
+            ProviderSyncStatus::Skipped,
+            format!("Provider sync skipped: {err}"),
+            &target_provider,
+            None,
+            0,
+            0,
+        )
+    })
+}
+
+fn result(
+    status: ProviderSyncStatus,
+    message: impl Into<String>,
+    target_provider: &str,
+    backup_dir: Option<PathBuf>,
+    changed_session_files: usize,
+    sqlite_rows_updated: usize,
+) -> ProviderSyncResult {
+    ProviderSyncResult {
+        status,
+        message: message.into(),
+        target_provider: target_provider.to_string(),
+        backup_dir,
+        changed_session_files,
+        sqlite_rows_updated,
+    }
+}
+
+fn dirs_home() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn read_current_provider(path: &Path) -> String {
+    let Ok(text) = fs::read_to_string(path) else {
+        return DEFAULT_PROVIDER.to_string();
+    };
+    for line in text.lines() {
+        let stripped = line.trim();
+        if stripped.starts_with("model_provider") && stripped.contains('=') {
+            let raw = stripped
+                .split_once('=')
+                .map(|(_, value)| value.trim())
+                .unwrap_or("");
+            if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
+                let value = &raw[1..raw.len() - 1];
+                return if value.is_empty() {
+                    DEFAULT_PROVIDER.to_string()
+                } else {
+                    value.to_string()
+                };
+            }
+        }
+    }
+    DEFAULT_PROVIDER.to_string()
+}
+
+fn acquire_lock(path: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))?;
+    fs::create_dir(path)?;
+    fs::write(
+        path.join("owner.json"),
+        json!({"pid": std::process::id(), "startedAt": now_secs()}).to_string(),
+    )
+}
+
+fn release_lock(path: &Path) -> std::io::Result<()> {
+    if path.exists() {
+        fs::remove_dir_all(path)?;
+    }
+    Ok(())
+}
+
+fn collect_session_changes(
+    home: &Path,
+    target_provider: &str,
+) -> anyhow::Result<Vec<SessionChange>> {
+    let mut changes = Vec::new();
+    for path in rollout_files(home)? {
+        let text = fs::read_to_string(&path)?;
+        let (first_line, separator) = split_first_line(&text);
+        if first_line.trim().is_empty() {
+            continue;
+        }
+        let Ok(mut record) = serde_json::from_str::<Value>(&first_line) else {
+            continue;
+        };
+        let Some(payload) = record.get_mut("payload").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        let thread_id = payload
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        let cwd = payload
+            .get("cwd")
+            .and_then(Value::as_str)
+            .and_then(to_desktop_workspace_path);
+        let has_user_event =
+            separator.contains("\"user_message\"") || separator.contains("\"user_input\"");
+        let rewrite_needed =
+            payload.get("model_provider").and_then(Value::as_str) != Some(target_provider);
+        if rewrite_needed {
+            payload.insert("model_provider".to_string(), json!(target_provider));
+        }
+        let next_first_line = if rewrite_needed {
+            serde_json::to_string(&record)?
+        } else {
+            first_line.clone()
+        };
+        changes.push(SessionChange {
+            path,
+            original_first_line: first_line,
+            next_first_line,
+            separator,
+            thread_id,
+            cwd,
+            has_user_event,
+            rewrite_needed,
+        });
+    }
+    Ok(changes)
+}
+
+fn rollout_files(home: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for dirname in SESSION_DIRS {
+        let root = home.join(dirname);
+        if root.exists() {
+            collect_rollout_files(&root, &mut files)?;
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn collect_rollout_files(root: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    for entry in fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_rollout_files(&path, files)?;
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+        {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn split_first_line(text: &str) -> (String, String) {
+    if let Some(index) = text.find('\n') {
+        (text[..index].to_string(), text[index..].to_string())
+    } else {
+        (text.to_string(), String::new())
+    }
+}
+
+fn to_desktop_workspace_path(value: &str) -> Option<String> {
+    let stripped = value.trim();
+    if stripped.is_empty() {
+        return None;
+    }
+    let lower = stripped.to_ascii_lowercase();
+    if lower.starts_with(r"\\?\unc\") {
+        return Some(format!(r"\\{}", stripped[8..].replace('/', r"\")));
+    }
+    if stripped.starts_with(r"\\?\") {
+        return Some(stripped[4..].replace('\\', "/"));
+    }
+    Some(stripped.to_string())
+}
+
+fn create_backup(
+    home: &Path,
+    target_provider: &str,
+    changes: &[SessionChange],
+) -> anyhow::Result<PathBuf> {
+    let backup_root = home.join("backups_state/provider-sync");
+    let mut backup_dir = backup_root.join(timestamp_name());
+    let mut suffix = 0;
+    while backup_dir.exists() {
+        suffix += 1;
+        backup_dir = backup_root.join(format!("{}-{suffix}", timestamp_name()));
+    }
+    fs::create_dir_all(&backup_dir)?;
+    for name in [
+        "config.toml",
+        ".codex-global-state.json",
+        ".codex-global-state.json.bak",
+    ] {
+        let source = home.join(name);
+        if source.exists() {
+            fs::copy(&source, backup_dir.join(name))?;
+        }
+    }
+    let db_dir = backup_dir.join("db");
+    for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
+        let source = home.join(name);
+        if source.exists() {
+            fs::create_dir_all(&db_dir)?;
+            fs::copy(&source, db_dir.join(name))?;
+        }
+    }
+    let manifest = changes
+        .iter()
+        .map(|change| {
+            json!({
+                "path": change.path.to_string_lossy(),
+                "originalFirstLine": change.original_first_line,
+                "separator": change.separator,
+            })
+        })
+        .collect::<Vec<_>>();
+    fs::write(
+        backup_dir.join("session-meta-backup.json"),
+        serde_json::to_string_pretty(&manifest)?,
+    )?;
+    fs::write(
+        backup_dir.join("metadata.json"),
+        serde_json::to_string_pretty(
+            &json!({"managedBy": "Codex++ provider sync", "targetProvider": target_provider}),
+        )?,
+    )?;
+    Ok(backup_dir)
+}
+
+fn apply_session_changes(changes: &[SessionChange]) -> anyhow::Result<()> {
+    for change in changes {
+        fs::write(
+            &change.path,
+            format!("{}{}", change.next_first_line, change.separator),
+        )?;
+    }
+    Ok(())
+}
+
+fn restore_session_changes(changes: &[SessionChange]) -> anyhow::Result<()> {
+    for change in changes {
+        fs::write(
+            &change.path,
+            format!("{}{}", change.original_first_line, change.separator),
+        )?;
+    }
+    Ok(())
+}
+
+fn table_columns(db: &Connection, table: &str) -> anyhow::Result<HashSet<String>> {
+    let mut stmt = db.prepare(&format!(
+        "PRAGMA table_info(\"{}\")",
+        table.replace('"', "\"\"")
+    ))?;
+    Ok(stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?)
+}
+
+fn count_sqlite_updates(
+    path: &Path,
+    target_provider: &str,
+    user_event_thread_ids: &HashSet<String>,
+    cwd_by_thread_id: &HashMap<String, String>,
+) -> anyhow::Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let db = Connection::open(path)?;
+    let columns = table_columns(&db, "threads")?;
+    if !columns.contains("model_provider") {
+        return Ok(0);
+    }
+    let mut total: usize = db.query_row(
+        "SELECT COUNT(*) FROM threads WHERE COALESCE(model_provider, '') <> ?1",
+        [target_provider],
+        |row| row.get::<_, i64>(0),
+    )? as usize;
+    if columns.contains("has_user_event") {
+        for thread_id in user_event_thread_ids {
+            total += db.query_row(
+                "SELECT COUNT(*) FROM threads WHERE id = ?1 AND COALESCE(has_user_event, 0) <> 1",
+                [thread_id],
+                |row| row.get::<_, i64>(0),
+            )? as usize;
+        }
+    }
+    if columns.contains("cwd") {
+        for (thread_id, cwd) in cwd_by_thread_id {
+            total += db.query_row(
+                "SELECT COUNT(*) FROM threads WHERE id = ?1 AND COALESCE(cwd, '') <> ?2",
+                (thread_id, cwd),
+                |row| row.get::<_, i64>(0),
+            )? as usize;
+        }
+    }
+    Ok(total)
+}
+
+fn apply_sqlite_update(
+    path: &Path,
+    target_provider: &str,
+    user_event_thread_ids: &HashSet<String>,
+    cwd_by_thread_id: &HashMap<String, String>,
+) -> anyhow::Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let mut db = Connection::open(path)?;
+    let columns = table_columns(&db, "threads")?;
+    if !columns.contains("model_provider") {
+        return Ok(0);
+    }
+    let tx = db.transaction()?;
+    let provider_rows = tx.execute(
+        "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
+        [target_provider],
+    )?;
+    if columns.contains("has_user_event") {
+        for thread_id in user_event_thread_ids {
+            tx.execute(
+                "UPDATE threads SET has_user_event = 1 WHERE id = ?1 AND COALESCE(has_user_event, 0) <> 1",
+                [thread_id],
+            )?;
+        }
+    }
+    if columns.contains("cwd") {
+        for (thread_id, cwd) in cwd_by_thread_id {
+            tx.execute(
+                "UPDATE threads SET cwd = ?1 WHERE id = ?2 AND COALESCE(cwd, '') <> ?1",
+                (cwd, thread_id),
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(provider_rows)
+}
+
+fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
+    if !path.exists() {
+        return Ok(Map::new());
+    }
+    Ok(serde_json::from_str::<Value>(&fs::read_to_string(path)?)?
+        .as_object()
+        .cloned()
+        .unwrap_or_default())
+}
+
+fn normalized_global_state(state: &Map<String, Value>) -> Map<String, Value> {
+    let mut next = Map::new();
+    if let Some(value) = state.get("electron-saved-workspace-roots") {
+        next.insert(
+            "electron-saved-workspace-roots".to_string(),
+            json!(dedupe_paths(path_array(value))),
+        );
+    }
+    if let Some(value) = state.get("project-order") {
+        next.insert(
+            "project-order".to_string(),
+            json!(dedupe_paths(path_array(value))),
+        );
+    }
+    if let Some(value) = state.get("active-workspace-roots") {
+        let normalized = dedupe_paths(path_array(value));
+        let next_value = if value.is_array() {
+            json!(normalized)
+        } else if let Some(first) = normalized.first() {
+            json!(first)
+        } else {
+            value.clone()
+        };
+        next.insert("active-workspace-roots".to_string(), next_value);
+    }
+    if let Some(value) = state
+        .get("electron-workspace-root-labels")
+        .and_then(Value::as_object)
+    {
+        let mut labels = Map::new();
+        for (key, item) in value {
+            labels.insert(
+                to_desktop_workspace_path(key).unwrap_or_else(|| key.clone()),
+                item.clone(),
+            );
+        }
+        next.insert(
+            "electron-workspace-root-labels".to_string(),
+            Value::Object(labels),
+        );
+    }
+    next
+}
+
+fn count_global_state_updates(path: &Path) -> anyhow::Result<usize> {
+    let state = load_global_state(path)?;
+    let next = normalized_global_state(&state);
+    Ok(next
+        .iter()
+        .filter(|(key, value)| state.get(*key) != Some(*value))
+        .count())
+}
+
+fn apply_global_state_update(path: &Path) -> anyhow::Result<usize> {
+    let mut state = load_global_state(path)?;
+    let next = normalized_global_state(&state);
+    let count = next
+        .iter()
+        .filter(|(key, value)| state.get(*key) != Some(*value))
+        .count();
+    if count > 0 {
+        for (key, value) in next {
+            state.insert(key, value);
+        }
+        fs::write(path, serde_json::to_string_pretty(&Value::Object(state))?)?;
+    }
+    Ok(count)
+}
+
+fn path_array(value: &Value) -> Vec<String> {
+    if let Some(items) = value.as_array() {
+        items
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|item| !item.trim().is_empty())
+            .map(ToString::to_string)
+            .collect()
+    } else if let Some(value) = value.as_str().filter(|item| !item.trim().is_empty()) {
+        vec![value.to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+fn dedupe_paths(paths: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for path in paths {
+        let Some(desktop) = to_desktop_workspace_path(&path) else {
+            continue;
+        };
+        let comparable = desktop
+            .replace('/', r"\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase();
+        if seen.insert(comparable) {
+            result.push(desktop);
+        }
+    }
+    result
+}
+
+fn prune_backups(home: &Path) -> anyhow::Result<()> {
+    let root = home.join("backups_state/provider-sync");
+    if !root.exists() {
+        return Ok(());
+    }
+    let mut managed = Vec::new();
+    for entry in fs::read_dir(&root)? {
+        let path = entry?.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(path.join("metadata.json")) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if value.get("managedBy").and_then(Value::as_str) == Some("Codex++ provider sync") {
+            managed.push(path);
+        }
+    }
+    managed.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    for path in managed.into_iter().skip(BACKUP_KEEP_COUNT) {
+        let _ = fs::remove_dir_all(path);
+    }
+    Ok(())
+}
+
+fn timestamp_name() -> String {
+    chrono::Local::now().format("%Y%m%d%H%M%S").to_string()
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}

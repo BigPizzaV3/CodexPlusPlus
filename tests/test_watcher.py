@@ -131,3 +131,20 @@ def test_find_codex_processes_excludes_cli_commands(monkeypatch):
 
 def test_takeover_failure_backoff_is_not_too_short():
     assert watcher.TAKEOVER_FAILURE_BACKOFF_SECONDS >= 30.0
+
+
+def test_stop_launcher_processes_protects_current_process_ancestry(monkeypatch):
+    commands = []
+    monkeypatch.setattr(watcher.os, "getpid", lambda: 2468)
+    monkeypatch.setattr(watcher, "_run_powershell", lambda script, timeout=6.0, env=None: commands.append((script, timeout, env)) or "")
+
+    watcher.stop_launcher_processes()
+
+    assert len(commands) == 1
+    script, timeout, env = commands[0]
+    assert timeout == 6.0
+    assert env["CODEX_PLUS_PLUS_PID"] == "2468"
+    assert "CODEX_PLUS_PLUS_PID" in script
+    assert "$protect.Contains([int]$_.ProcessId)" in script
+    assert "ParentProcessId" in script
+    assert "codex_session_delete\\s+launch" in script

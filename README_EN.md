@@ -12,36 +12,154 @@
   <img alt="Release" src="https://img.shields.io/github/v/release/BigPizzaV3/CodexPlusPlus">
   <img alt="Stars" src="https://img.shields.io/github/stars/BigPizzaV3/CodexPlusPlus">
   <img alt="License" src="https://img.shields.io/github/license/BigPizzaV3/CodexPlusPlus">
-  <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
+  <img alt="Rust" src="https://img.shields.io/badge/rust-1.85%2B-orange">
+  <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8DB">
 </p>
 
-Codex++ is an external enhancement launcher for the Codex App. It does not modify the original installation; it launches Codex externally and injects enhancements through the Chromium DevTools Protocol.
+Codex++ is an external enhancement launcher and manager for the Codex App. It does not modify the original Codex installation. Instead, it starts Codex externally and injects enhancements through the Chromium DevTools Protocol.
 
 ## Quick Start
 
-On Windows, double-click `setup.bat` in the project root and choose:
+Download the latest installer from [GitHub Releases](https://github.com/BigPizzaV3/CodexPlusPlus/releases):
+
+- Windows: `CodexPlusPlus-*-windows-x64-setup.exe`
+- macOS Intel: `CodexPlusPlus-*-macos-x64.dmg`
+- macOS Apple Silicon: `CodexPlusPlus-*-macos-arm64.dmg`
+
+After installation, two entry points are available:
+
+- `Codex++`: a silent launcher. It does not show the manager UI and only starts Codex with Codex++ injection.
+- `Codex++ Manager`: a Tauri control panel for launch, diagnostics, repair, updates, relay injection, enhancements, and user scripts.
+
+The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG installs `/Applications/Codex++.app` and `/Applications/Codex++ 管理工具.app`.
+
+## Highlights
+
+- Rust backend and silent launcher with no Python runtime requirement.
+- Tauri + React manager with dark/light theme support.
+- External CDP injection. No `app.asar` patching and no DLL writes into the Codex installation.
+- Relay injection mode with multiple relay profiles, `CodexPlusPlus` provider configuration, and a one-click switch back to official ChatGPT login mode.
+- Traditional enhancement mode with plugin entry unlock, forced plugin install, session delete, Markdown export, project move, Timeline, and more.
+- Independent user script management with startup injection.
+- Provider Sync to keep historical sessions visible after switching providers.
+- GitHub Release updates. Both the manager and silent launcher can detect available updates.
+- Windows single instance, no console window, administrator manifest, and system Desktop path detection.
+- Separate macOS x64 and arm64 DMGs. The silent launcher hides its Dock icon.
+
+## Relay Injection
+
+Relay injection is for users who are already logged in with an official ChatGPT account in Codex/ChatGPT and want model requests to go through a custom compatible API.
+
+In the manager's Relay Injection page:
+
+1. Make sure ChatGPT login status is detected.
+2. Add one or more relay profiles with Base URL and Key.
+3. Select the active profile and apply relay injection.
+4. Launch `Codex++`.
+
+Codex++ writes configuration similar to this into `~/.codex/config.toml`:
+
+```toml
+model_provider = "CodexPlusPlus"
+
+[model_providers.CodexPlusPlus]
+name = "CodexPlusPlus"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://example.com/v1"
+experimental_bearer_token = "sk-..."
+```
+
+To return to the official login mode, use the clear API mode button in the Relay Injection page. This removes `OPENAI_API_KEY` related configuration and switches Codex back to official ChatGPT authentication.
+
+## Enhancements
+
+Enhancements are controlled in the manager. Enhancement injection is enabled by default. When disabled, Codex++ will not inject its menu or scripts.
+
+When relay injection mode is active, plugin entry unlock and forced plugin install are unnecessary, and the UI will say so. Other enhancements, including session delete, export, move, Timeline, recommendations, and user scripts, can still be used.
+
+## Recommendations
+
+Recommended content is loaded from:
 
 ```text
-[1] Install Codex++
+https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json
+https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json
 ```
 
-Then launch from the desktop `Codex++.lnk` shortcut.
+Requests automatically append a `?v=timestamp` cache buster to avoid stale CDN content. Slow recommendation loading does not mark the backend connection as failed.
 
-Command line:
+## Updates and Packages
+
+Codex++ publishes installers through GitHub Releases. Windows builds an NSIS installer, while macOS builds separate Intel x64 and Apple Silicon arm64 DMGs.
+
+The manager's About page can check and start updates. When the silent launcher finds a new version, it opens the manager directly on the update prompt.
+
+## Data Locations
+
+- Codex config: `~/.codex/config.toml`
+- Codex auth state: `~/.codex/auth.json`
+- Codex local database: `~/.codex/state_5.sqlite`
+- Codex++ state and logs: `~/.codex-session-delete/`
+- Provider Sync backups: `~/.codex/backups_state/provider-sync`
+
+## FAQ
+
+### The Codex++ menu does not appear
+
+Make sure Codex was launched from the `Codex++` entry instead of the original Codex entry. You can also inspect the Diagnostics and Logs pages in the manager.
+
+### The plugin says the backend is disconnected
+
+First test the helper endpoint:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:57321/backend/status -Body "{}" -ContentType "application/json"
+```
+
+If the endpoint works but the plugin still times out, it is usually a Codex page CDP bridge or script cache issue. Restart Codex++, or check manager logs for `renderer.script_loaded`, `bridge.request`, and `bridge.response`.
+
+### macOS says the app cannot be opened or is damaged
+
+Unsigned and unnotarized builds may be blocked by Gatekeeper. Allow the app in System Settings -> Privacy & Security. For formal distribution, configure Apple Developer ID signing and notarization.
+
+### Does it support Intel Macs?
+
+Yes. Releases provide both `macos-x64.dmg` and `macos-arm64.dmg`. Intel Macs should use the x64 package, while Apple Silicon Macs should use the arm64 package.
+
+## Development
 
 ```bash
-python -m pip install -e .
-python -m codex_session_delete setup
-python -m codex_session_delete launch
+# Frontend checks
+cd apps/codex-plus-manager
+npm install
+npm run check
+npm run vite:build
+
+# Rust checks
+cd ../..
+cargo fmt --check
+cargo test
+cargo build --release
 ```
 
-On macOS:
+Project structure:
 
-```bash
-python -m codex_session_delete setup
+```text
+apps/
+  codex-plus-launcher/          Silent launcher
+  codex-plus-manager/           Tauri manager
+assets/inject/
+  renderer-inject.js            Enhancement script injected into Codex
+crates/
+  codex-plus-core/              Launch, injection, config, update, install, bridge
+  codex-plus-data/              Session data, export, Provider Sync
+scripts/installer/
+  windows/CodexPlusPlus.nsi     Windows NSIS installer
+  macos/package-dmg.sh          macOS DMG packager
 ```
 
-This creates `/Applications/Codex++.app`.
+The old Python entry points are no longer recommended. The remaining `codex_session_delete/` package is kept mainly for migration reference and historical compatibility.
 
 ## Community and Support
 
@@ -56,180 +174,9 @@ If Codex++ has helped you, you can buy me a coffee or send a small tip to suppor
   <img src="docs/images/sponsor-wechat.jpg" alt="WeChat sponsor QR code" width="220">
 </p>
 
-## Sponsor
-
-<table>
-  <tr>
-    <th>🏆 Sponsor 🏆</th>
-  </tr>
-  <tr>
-    <td>👉 <a href="https://rawchat.cn">RawChat | Codex Relay</a> A long-running Codex relay provider with monthly plans, low-rate calls, high cache-hit performance, Pro/Plus account pools, and dedicated all-day maintenance.</td>
-  </tr>
-</table>
-
-## Highlights
-
-- Adds a `Codex++` menu to manage enhancement features.
-- Plugin entry unlock for API Key mode.
-- Forced plugin install when the frontend blocks App unavailable states.
-- Session delete with confirmation and undo.
-- Markdown export from local rollout files.
-- Project move for normal conversations and local projects.
-- Conversation Timeline with question markers, hover summaries, and quick jump.
-- Provider Sync so historical conversations remain visible after switching `model_provider`.
-- Windows shortcuts, uninstall entries, optional watcher takeover, and GitHub Release updates.
-- macOS `/Applications/Codex++.app` bundle generation.
-
-## Pain Points and Fixes
-
-In API Key mode, the native Codex plugin entry may require ChatGPT login and remain unavailable:
-
-![Plugin entry unavailable in API Key mode](docs/images/pain-plugin-disabled.png)
-
-The native Codex session list only has archive actions and no real delete button:
-
-![Native session list lacks delete action](docs/images/pain-no-delete-button.png)
-
-After launching through Codex++, the plugin entry is unlocked and a delete button appears when hovering a session:
-
-![Codex++ unlocks plugin entry and adds delete button](docs/images/solution-plugin-and-delete.png)
-
-The top bar shows `Codex++`, backend status, and the settings panel:
-
-![Codex++ backend status indicator](docs/images/backend-status-indicator.png)
-![Codex++ settings panel](docs/images/settings-panel.png)
-
-## How It Works
-
-1. Starts the Codex App with CDP flags:
-   - `--remote-debugging-port=9229`
-   - `--remote-allow-origins=http://127.0.0.1:9229`
-2. Starts a local helper service for health checks, settings, export, move, and delete operations.
-3. Injects `renderer-inject.js` through CDP.
-4. The renderer calls local services through the CDP bridge. Delete/undo HTTP routes are not exposed by default, preventing accidental deletion from unrelated local pages.
-5. Codex inherits existing proxy environment variables; if none are set, Codex++ auto-detects common local proxy ports for GitHub resources.
-
-This approach does not modify Codex `app.asar` and does not write DLL files into the Codex installation directory.
-
-## Provider Sync
-
-When `Provider Sync` is enabled, Codex++ synchronizes local session metadata before launch so historical conversations remain visible in Desktop and `/resume` after switching providers.
-
-It aligns rollout files, SQLite thread records, and project path caches. It only fixes visibility metadata and does not rewrite message content. Busy files or SQLite locks are skipped so startup can continue.
-
-## Common Commands
-
-```bash
-# Install dependencies
-python -m pip install -e .
-
-# Launch
-python -m codex_session_delete launch
-
-# Install shortcuts / app bundle
-python -m codex_session_delete setup
-
-# Remove
-python -m codex_session_delete remove
-
-# Remove logs and backup data too
-python -m codex_session_delete remove --remove-data
-
-# Check update / update
-python -m codex_session_delete check-update
-python -m codex_session_delete update
-
-# Optional Windows watcher takeover
-python -m codex_session_delete watch-install
-python -m codex_session_delete watch-remove
-python -m codex_session_delete watch-disable
-python -m codex_session_delete watch-enable
-```
-
-Launch with a custom Codex path:
-
-```bash
-python -m codex_session_delete launch \
-  --app-dir "C:/Program Files/WindowsApps/OpenAI.Codex_xxx/app" \
-  --debug-port 9229 \
-  --helper-port 57321
-```
-
-## Data Locations
-
-- Codex local database: `~/.codex/state_5.sqlite`
-- Delete backups: `~/.codex-session-delete/backups`
-- Provider Sync backups: `~/.codex/backups_state/provider-sync`
-- Hidden launch failure logs: `~/.codex-session-delete/launcher.log`
-- Watcher logs: `%USERPROFILE%\.codex-session-delete\watcher.log`
-
-## FAQ
-
-### Double-clicking Codex++ does nothing
-
-Check `%USERPROFILE%\.codex-session-delete\launcher.log`.
-
-Common causes: Codex App is not installed, the app path changed, port 9229 is already in use, or Python is unavailable.
-
-### The Codex++ menu does not appear
-
-Make sure you launched from the `Codex++` shortcut instead of the original Codex entry. You can also check whether Codex has `--remote-debugging-port=9229`.
-
-### Skill recommendations fail to load
-
-If the skills page reports `git fetch failed` or cannot connect to GitHub, your machine likely cannot reach GitHub directly. Codex++ inherits proxy environment variables and auto-detects common local proxy ports. You can also specify one manually:
-
-```powershell
-$env:HTTP_PROXY="http://127.0.0.1:7897"
-$env:HTTPS_PROXY="http://127.0.0.1:7897"
-python -m codex_session_delete launch
-```
-
-### Old conversations disappear after switching providers
-
-Open the `Codex++` settings panel, enable `Provider Sync`, then restart Codex++.
-
-## Development
-
-```bash
-python -m pip install -e .[test]
-python -m pytest -q
-```
-
-Project structure:
-
-```text
-codex_session_delete/
-  cli.py                 CLI entry point
-  launcher.py            Launches Codex and injects scripts
-  cdp.py                 CDP communication and bridge
-  helper_server.py       Local helper service
-  storage_adapter.py     Local SQLite delete/undo
-  provider_sync.py       Provider Sync
-  settings_store.py      Codex++ backend settings
-  windows_installer.py   Windows shortcuts and uninstall entries
-  macos_installer.py     macOS app bundle setup
-  watcher.py             Optional Windows watcher takeover
-  inject/renderer-inject.js
-
-tests/                   Automated tests
-```
-
 ## Friendly Links
 
 - [LINUX DO](https://linux.do)
-
-## Contributors and Stars
-
-<a href="https://github.com/BigPizzaV3/CodexPlusPlus/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=BigPizzaV3/CodexPlusPlus" alt="Codex++ contributors">
-</a>
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=BigPizzaV3/CodexPlusPlus&type=Date&theme=dark">
-  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=BigPizzaV3/CodexPlusPlus&type=Date">
-  <img alt="Codex++ Star History" src="https://api.star-history.com/svg?repos=BigPizzaV3/CodexPlusPlus&type=Date">
-</picture>
 
 ## Notes
 

@@ -1,0 +1,742 @@
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use codex_plus_core::launcher::{
+    CodexLaunch, LaunchHooks, LaunchOptions, ProcessWaitStrategy, launch_and_inject_with_hooks,
+};
+use codex_plus_core::models::{DeleteResult, DeleteStatus, ExportResult, ExportStatus, SessionRef};
+use codex_plus_core::routes::{
+    BridgeContext, BridgeDataService, BridgeRuntimeService, BridgeSettingsService,
+    CoreRuntimeService, handle_bridge_request,
+};
+use codex_plus_core::settings::BackendSettings;
+use codex_plus_core::status::StatusStore;
+use codex_plus_core::user_scripts::UserScriptManager;
+use serde_json::{Value, json};
+
+#[tokio::test]
+async fn bridge_routes_cover_all_current_paths() {
+    let ctx = test_context();
+
+    let cases = [
+        ("/settings/get", json!({})),
+        ("/settings/set", json!({"providerSyncEnabled": true})),
+        ("/user-scripts/list", json!({})),
+        ("/user-scripts/set-enabled", json!({"enabled": false})),
+        (
+            "/user-scripts/set-script-enabled",
+            json!({"key": "user:a.js", "enabled": false}),
+        ),
+        ("/user-scripts/reload", json!({})),
+        ("/devtools/open", json!({})),
+        ("/manager/open", json!({})),
+        ("/backend/status", json!({})),
+        ("/backend/repair", json!({})),
+        ("/ads", json!({})),
+        ("/delete", json!({"session_id": "s1", "title": "First"})),
+        ("/undo", json!({"undo_token": "undo-1"})),
+        (
+            "/export-markdown",
+            json!({"session_id": "s1", "title": "First"}),
+        ),
+        ("/archived-thread", json!({"title": "Archived"})),
+        (
+            "/move-thread-workspace",
+            json!({"session_id": "s1", "title": "First", "target_cwd": "/new"}),
+        ),
+        (
+            "/thread-sort-key",
+            json!({"session_id": "s1", "title": "First"}),
+        ),
+        (
+            "/thread-sort-keys",
+            json!({"sessions": [{"session_id": "s1", "title": "First"}]}),
+        ),
+    ];
+
+    for (path, payload) in cases {
+        let result = handle_bridge_request(ctx.clone(), path, payload).await;
+        assert_ne!(
+            result["message"], "Unknown bridge path",
+            "{path} should be routed"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unknown_bridge_path_matches_python_shape_with_empty_session_id() {
+    let result = handle_bridge_request(
+        test_context(),
+        "/missing",
+        json!({"session_id": "should-not-leak"}),
+    )
+    .await;
+
+    assert_eq!(
+        result,
+        json!({
+            "status": "failed",
+            "session_id": "",
+            "message": "Unknown bridge path"
+        })
+    );
+}
+
+#[tokio::test]
+async fn settings_routes_use_settings_service() {
+    let ctx = test_context();
+
+    let updated = handle_bridge_request(
+        ctx.clone(),
+        "/settings/set",
+        json!({"providerSyncEnabled": true, "cliWrapperApiKeyEnv": ""}),
+    )
+    .await;
+    let loaded = handle_bridge_request(ctx, "/settings/get", json!({})).await;
+
+    assert_eq!(updated["providerSyncEnabled"], true);
+    assert_eq!(updated["cliWrapperApiKeyEnv"], "CUSTOM_OPENAI_API_KEY");
+    assert_eq!(loaded, updated);
+}
+
+#[tokio::test]
+async fn runtime_routes_keep_user_script_inventory_shape() {
+    let ctx = test_context();
+
+    let listed = handle_bridge_request(ctx.clone(), "/user-scripts/list", json!({})).await;
+    let global = handle_bridge_request(
+        ctx.clone(),
+        "/user-scripts/set-enabled",
+        json!({"enabled": false}),
+    )
+    .await;
+    let script = handle_bridge_request(
+        ctx.clone(),
+        "/user-scripts/set-script-enabled",
+        json!({"key": "user:a.js", "enabled": false}),
+    )
+    .await;
+    let reloaded = handle_bridge_request(ctx, "/user-scripts/reload", json!({})).await;
+
+    assert_eq!(listed["enabled"], true);
+    assert_eq!(listed["scripts"][0]["key"], "builtin:demo.js");
+    assert_eq!(global["enabled"], false);
+    assert_eq!(script["scripts"][1]["enabled"], false);
+    assert_eq!(reloaded["reloaded"], true);
+    assert_eq!(reloaded["scripts"][0]["key"], "builtin:demo.js");
+}
+
+#[tokio::test]
+async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
+    let ctx = test_context();
+
+    assert_eq!(
+        handle_bridge_request(ctx.clone(), "/devtools/open", json!({})).await,
+        json!({"status": "ok", "opened": true})
+    );
+    assert_eq!(
+        handle_bridge_request(ctx.clone(), "/manager/open", json!({})).await,
+        json!({"status": "ok", "opened": "manager"})
+    );
+    assert_eq!(
+        handle_bridge_request(ctx.clone(), "/backend/status", json!({})).await,
+        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION})
+    );
+    assert_eq!(
+        handle_bridge_request(ctx.clone(), "/backend/repair", json!({})).await,
+        json!({"status": "ok", "message": "后端已修复", "version": codex_plus_core::version::VERSION})
+    );
+    assert_eq!(
+        handle_bridge_request(ctx, "/ads", json!({})).await,
+        json!({"version": 1, "ads": [{"id": "runtime-ad"}]})
+    );
+}
+
+#[tokio::test]
+async fn data_routes_forward_payloads_to_data_service() {
+    let ctx = test_context();
+
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/delete",
+            json!({"session_id": "s1", "title": "First"}),
+        )
+        .await["undo_token"],
+        "undo-s1"
+    );
+    assert_eq!(
+        handle_bridge_request(ctx.clone(), "/undo", json!({"undo_token": "undo-s1"})).await,
+        json!({
+            "status": "undone",
+            "session_id": "s1",
+            "message": "undone",
+            "undo_token": "undo-s1",
+            "backup_path": null
+        })
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/export-markdown",
+            json!({"session_id": "s1", "title": "First"}),
+        )
+        .await["filename"],
+        "First.md"
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/archived-thread",
+            json!({"title": "Archived"})
+        )
+        .await,
+        json!({"session_id": "archived-1", "title": "Archived"})
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/move-thread-workspace",
+            json!({"session_id": "s1", "title": "First", "target_cwd": "/new"}),
+        )
+        .await,
+        json!({"status": "moved", "session_id": "s1", "target_cwd": "/new"})
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/thread-sort-key",
+            json!({"session_id": "s1", "title": "First"}),
+        )
+        .await,
+        json!({"status": "ok", "session_id": "s1", "updated_at": 123})
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx,
+            "/thread-sort-keys",
+            json!({"sessions": [{"session_id": "s1", "title": "First"}, null, {"session_id": "s2"}]}),
+        )
+        .await,
+        json!({"status": "ok", "sort_keys": [{"session_id": "s1"}, {"session_id": "s2"}]})
+    );
+}
+
+#[tokio::test]
+async fn bridge_context_core_with_data_uses_injected_data_service() {
+    let ctx = BridgeContext::core_with_data(
+        Arc::new(CoreRuntimeService::new(9229, StatusStore::default())),
+        Arc::new(FakeData::default()),
+    );
+
+    let result = handle_bridge_request(
+        ctx,
+        "/delete",
+        json!({"session_id": "s1", "title": "First"}),
+    )
+    .await;
+
+    assert_eq!(result["status"], "local_deleted");
+    assert_eq!(result["undo_token"], "undo-s1");
+    assert_ne!(
+        result["message"],
+        "Delete service is not wired in core launcher hooks"
+    );
+}
+
+#[tokio::test]
+async fn user_script_manager_scans_and_persists_python_inventory_shape() {
+    let temp = tempfile::tempdir().unwrap();
+    let builtin_dir = temp.path().join("builtin");
+    let user_dir = temp.path().join("user");
+    std::fs::create_dir_all(&builtin_dir).unwrap();
+    std::fs::write(builtin_dir.join("demo.js"), "window.demo = true;").unwrap();
+    std::fs::create_dir_all(&user_dir).unwrap();
+    std::fs::write(user_dir.join("a.js"), "window.a = true;").unwrap();
+    std::fs::write(user_dir.join("ignore.txt"), "not js").unwrap();
+    let manager = UserScriptManager::new(
+        builtin_dir.clone(),
+        user_dir.clone(),
+        temp.path().join("user_scripts.json"),
+    );
+
+    let listed = manager.inventory().unwrap();
+    manager.set_global_enabled(false).unwrap();
+    let disabled = manager.inventory().unwrap();
+    manager.set_script_enabled("user:a.js", false).unwrap();
+    let script_disabled = manager.inventory().unwrap();
+
+    assert_eq!(listed["enabled"], true);
+    assert_eq!(
+        listed["builtin_dir"].as_str().unwrap(),
+        builtin_dir.to_string_lossy()
+    );
+    assert_eq!(
+        listed["user_dir"].as_str().unwrap(),
+        user_dir.to_string_lossy()
+    );
+    assert_eq!(listed["scripts"][0]["key"], "builtin:demo.js");
+    assert_eq!(listed["scripts"][0]["source"], "builtin");
+    assert_eq!(listed["scripts"][0]["enabled"], true);
+    assert_eq!(listed["scripts"][0]["status"], "not_loaded");
+    assert_eq!(listed["scripts"][0]["error"], "");
+    assert_eq!(listed["scripts"][1]["key"], "user:a.js");
+    assert_eq!(disabled["enabled"], false);
+    assert_eq!(disabled["scripts"][0]["status"], "disabled");
+    assert_eq!(script_disabled["scripts"][1]["enabled"], false);
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            &std::fs::read_to_string(temp.path().join("user_scripts.json")).unwrap()
+        )
+        .unwrap(),
+        json!({"enabled": false, "scripts": {"user:a.js": false}})
+    );
+}
+
+#[tokio::test]
+async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
+    let temp = tempfile::tempdir().unwrap();
+    let builtin_dir = temp.path().join("builtin");
+    std::fs::create_dir_all(&builtin_dir).unwrap();
+    std::fs::write(builtin_dir.join("demo.js"), "window.demo = true;").unwrap();
+    let manager = UserScriptManager::new(
+        builtin_dir,
+        temp.path().join("user"),
+        temp.path().join("user_scripts.json"),
+    );
+    let evaluated = Arc::new(Mutex::new(Vec::<String>::new()));
+    let runtime = CoreRuntimeService::new(9229, StatusStore::default())
+        .with_user_scripts(manager)
+        .with_user_script_evaluator({
+            let evaluated = evaluated.clone();
+            Arc::new(move |websocket_url, script| {
+                evaluated
+                    .lock()
+                    .unwrap()
+                    .push(format!("{websocket_url}:{script}"));
+                Ok(json!({"status": "ok"}))
+            })
+        })
+        .with_websocket_url("ws://page");
+    let ctx = BridgeContext::core_with_data(Arc::new(runtime), Arc::new(FakeData::default()));
+
+    let status = handle_bridge_request(ctx.clone(), "/backend/status", json!({})).await;
+    let repaired = handle_bridge_request(ctx.clone(), "/backend/repair", json!({})).await;
+    let reloaded = handle_bridge_request(ctx, "/user-scripts/reload", json!({})).await;
+
+    assert_eq!(
+        status,
+        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION})
+    );
+    assert_eq!(
+        repaired,
+        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION})
+    );
+    assert_eq!(reloaded["scripts"][0]["key"], "builtin:demo.js");
+    let evaluated = evaluated.lock().unwrap();
+    assert_eq!(evaluated.len(), 1);
+    assert!(evaluated[0].starts_with("ws://page:"));
+    assert!(evaluated[0].contains("window.demo = true;"));
+}
+
+#[tokio::test]
+async fn core_runtime_open_devtools_uses_inspector_url_opener() {
+    let opened = Arc::new(Mutex::new(Vec::<String>::new()));
+    let runtime = CoreRuntimeService::new(9229, StatusStore::default())
+        .with_devtools_opener({
+            let opened = opened.clone();
+            Arc::new(move |url| {
+                opened.lock().unwrap().push(url.to_string());
+                Ok(())
+            })
+        })
+        .with_devtools_target_id("page-1");
+    let ctx = BridgeContext::core_with_data(Arc::new(runtime), Arc::new(FakeData::default()));
+
+    let result = handle_bridge_request(ctx, "/devtools/open", json!({})).await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["target_id"], "page-1");
+    assert_eq!(
+        opened.lock().unwrap().as_slice(),
+        ["http://127.0.0.1:9229/devtools/inspector.html?ws=127.0.0.1:9229/devtools/page/page-1"]
+    );
+}
+
+#[tokio::test]
+async fn core_runtime_manager_route_attempts_to_open_manager_binary() {
+    let ctx = BridgeContext::core(Arc::new(CoreRuntimeService::new(
+        9229,
+        StatusStore::default(),
+    )));
+
+    let result = handle_bridge_request(ctx, "/manager/open", json!({})).await;
+
+    assert_ne!(result["message"], "管理工具启动未接入当前运行时");
+}
+
+#[tokio::test]
+async fn bridge_backend_status_writes_diagnostic_log() {
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("codex-plus.log");
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
+    let ctx = BridgeContext::core(Arc::new(CoreRuntimeService::new(
+        9229,
+        StatusStore::default(),
+    )));
+
+    let result = handle_bridge_request(ctx, "/backend/status", json!({})).await;
+
+    assert_eq!(result["status"], "ok");
+    let contents = std::fs::read_to_string(&log_path).unwrap();
+    assert!(contents.contains("bridge.request"));
+    assert!(contents.contains("bridge.backend_status_ok"));
+    assert!(contents.contains("/backend/status"));
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+}
+
+#[test]
+fn user_script_manager_tolerates_bad_config_fields_and_updates_atomically() {
+    let temp = tempfile::tempdir().unwrap();
+    let config_path = temp.path().join("user_scripts.json");
+    std::fs::write(
+        &config_path,
+        r#"{"enabled":"not bool","scripts":{"user:a.js":false,"user:b.js":"bad"},"custom":true}"#,
+    )
+    .unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        temp.path().join("user"),
+        config_path.clone(),
+    );
+
+    assert_eq!(manager.load_config().enabled, true);
+    assert_eq!(manager.load_config().scripts.get("user:a.js"), Some(&false));
+    assert!(!manager.load_config().scripts.contains_key("user:b.js"));
+
+    manager.set_script_enabled("user:c.js", false).unwrap();
+    let saved = serde_json::from_str::<Value>(&std::fs::read_to_string(config_path).unwrap())
+        .expect("config should remain valid JSON");
+
+    assert_eq!(saved["enabled"], true);
+    assert_eq!(saved["scripts"]["user:a.js"], false);
+    assert_eq!(saved["scripts"]["user:c.js"], false);
+}
+
+#[tokio::test]
+async fn launch_lifecycle_uses_hook_supplied_bridge_context_for_injection() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = ContextHooks {
+        events: events.clone(),
+    };
+
+    launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store: StatusStore::new(temp.path().join("latest-status.json")),
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![
+            "bridge-context:9229",
+            "inject-bridge:9229:57321",
+            "status:running",
+        ]
+    );
+}
+
+fn test_context() -> BridgeContext {
+    BridgeContext::new(
+        Arc::new(FakeSettings::default()),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    )
+}
+
+#[derive(Default)]
+struct FakeSettings {
+    settings: Mutex<BackendSettings>,
+}
+
+#[async_trait]
+impl BridgeSettingsService for FakeSettings {
+    async fn get_settings(&self) -> anyhow::Result<BackendSettings> {
+        Ok(self.settings.lock().unwrap().clone())
+    }
+
+    async fn set_settings(&self, payload: Value) -> anyhow::Result<BackendSettings> {
+        let current = self.settings.lock().unwrap().clone();
+        let mut raw = serde_json::to_value(current).unwrap();
+        let raw = raw.as_object_mut().unwrap();
+        if let Some(value) = payload.get("providerSyncEnabled").and_then(Value::as_bool) {
+            raw.insert("providerSyncEnabled".to_string(), json!(value));
+        }
+        if let Some(value) = payload.get("enhancementsEnabled").and_then(Value::as_bool) {
+            raw.insert("enhancementsEnabled".to_string(), json!(value));
+        }
+        if let Some(value) = payload.get("launchMode").and_then(Value::as_str) {
+            raw.insert("launchMode".to_string(), json!(value));
+        }
+        if let Some(value) = payload.get("relayBaseUrl").and_then(Value::as_str) {
+            raw.insert("relayBaseUrl".to_string(), json!(value));
+        }
+        if let Some(value) = payload.get("relayApiKey").and_then(Value::as_str) {
+            raw.insert("relayApiKey".to_string(), json!(value));
+        }
+        if let Some(value) = payload.get("cliWrapperApiKeyEnv").and_then(Value::as_str) {
+            raw.insert(
+                "cliWrapperApiKeyEnv".to_string(),
+                json!(if value.is_empty() {
+                    "CUSTOM_OPENAI_API_KEY"
+                } else {
+                    value
+                }),
+            );
+        }
+        let updated: BackendSettings = serde_json::from_value(Value::Object(raw.clone())).unwrap();
+        *self.settings.lock().unwrap() = updated.clone();
+        Ok(updated)
+    }
+}
+
+struct FakeRuntime {
+    enabled: Mutex<bool>,
+    script_enabled: Mutex<bool>,
+}
+
+impl Default for FakeRuntime {
+    fn default() -> Self {
+        Self {
+            enabled: Mutex::new(true),
+            script_enabled: Mutex::new(true),
+        }
+    }
+}
+
+#[async_trait]
+impl BridgeRuntimeService for FakeRuntime {
+    async fn user_script_inventory(&self) -> anyhow::Result<Value> {
+        Ok(self.inventory(false))
+    }
+
+    async fn set_user_scripts_enabled(&self, enabled: bool) -> anyhow::Result<Value> {
+        *self.enabled.lock().unwrap() = enabled;
+        Ok(self.inventory(false))
+    }
+
+    async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value> {
+        assert_eq!(key, "user:a.js");
+        *self.script_enabled.lock().unwrap() = enabled;
+        Ok(self.inventory(false))
+    }
+
+    async fn reload_user_scripts(&self) -> anyhow::Result<Value> {
+        Ok(self.inventory(true))
+    }
+
+    async fn open_devtools(&self) -> anyhow::Result<Value> {
+        Ok(json!({"status": "ok", "opened": true}))
+    }
+
+    async fn open_manager(&self) -> anyhow::Result<Value> {
+        Ok(json!({"status": "ok", "opened": "manager"}))
+    }
+
+    async fn backend_status(&self) -> anyhow::Result<Value> {
+        Ok(
+            json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION}),
+        )
+    }
+
+    async fn repair_backend(&self) -> anyhow::Result<Value> {
+        Ok(
+            json!({"status": "ok", "message": "后端已修复", "version": codex_plus_core::version::VERSION}),
+        )
+    }
+
+    async fn ads(&self) -> anyhow::Result<Value> {
+        Ok(json!({"version": 1, "ads": [{"id": "runtime-ad"}]}))
+    }
+}
+
+impl FakeRuntime {
+    fn inventory(&self, reloaded: bool) -> Value {
+        json!({
+            "enabled": *self.enabled.lock().unwrap(),
+            "reloaded": reloaded,
+            "scripts": [
+                {"key": "builtin:demo.js", "name": "demo.js", "enabled": true},
+                {"key": "user:a.js", "name": "a.js", "enabled": *self.script_enabled.lock().unwrap()}
+            ]
+        })
+    }
+}
+
+struct FakeData;
+
+impl Default for FakeData {
+    fn default() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl BridgeDataService for FakeData {
+    async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
+        Ok(DeleteResult {
+            status: DeleteStatus::LocalDeleted,
+            session_id: session.session_id.clone(),
+            message: format!("deleted {}", session.title),
+            undo_token: Some(format!("undo-{}", session.session_id)),
+            backup_path: None,
+        })
+    }
+
+    async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult> {
+        Ok(DeleteResult {
+            status: DeleteStatus::Undone,
+            session_id: "s1".to_string(),
+            message: "undone".to_string(),
+            undo_token: Some(undo_token),
+            backup_path: None,
+        })
+    }
+
+    async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult> {
+        Ok(ExportResult {
+            status: ExportStatus::Exported,
+            session_id: session.session_id,
+            message: "exported".to_string(),
+            filename: Some("First.md".to_string()),
+            markdown: Some("# First\n".to_string()),
+        })
+    }
+
+    async fn find_archived_thread_by_title(
+        &self,
+        title: String,
+    ) -> anyhow::Result<Option<SessionRef>> {
+        Ok(Some(SessionRef {
+            session_id: "archived-1".to_string(),
+            title,
+        }))
+    }
+
+    async fn move_thread_workspace(
+        &self,
+        session: SessionRef,
+        target_cwd: String,
+    ) -> anyhow::Result<Value> {
+        Ok(json!({"status": "moved", "session_id": session.session_id, "target_cwd": target_cwd}))
+    }
+
+    async fn thread_sort_key(&self, session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({"status": "ok", "session_id": session.session_id, "updated_at": 123}))
+    }
+
+    async fn thread_sort_keys(&self, sessions: Vec<SessionRef>) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "ok",
+            "sort_keys": sessions
+                .into_iter()
+                .map(|session| json!({"session_id": session.session_id}))
+                .collect::<Vec<_>>()
+        }))
+    }
+}
+
+#[derive(Clone)]
+struct ContextHooks {
+    events: Arc<Mutex<Vec<String>>>,
+}
+
+impl ContextHooks {
+    fn event(&self, event: impl Into<String>) {
+        self.events.lock().unwrap().push(event.into());
+    }
+}
+
+#[async_trait(?Send)]
+impl LaunchHooks for ContextHooks {
+    fn resolve_app_dir(
+        &self,
+        app_dir: Option<&std::path::Path>,
+    ) -> anyhow::Result<std::path::PathBuf> {
+        app_dir
+            .map(std::path::Path::to_path_buf)
+            .ok_or_else(|| anyhow::anyhow!("missing app dir"))
+    }
+
+    fn select_debug_port(&self, requested: u16) -> u16 {
+        requested
+    }
+
+    fn select_helper_port(&self, requested: u16) -> u16 {
+        requested
+    }
+
+    async fn load_settings(&self) -> anyhow::Result<BackendSettings> {
+        Ok(BackendSettings::default())
+    }
+
+    async fn run_provider_sync(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn start_helper(&self, _helper_port: u16) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn launch_codex(
+        &self,
+        _app_dir: &std::path::Path,
+        _debug_port: u16,
+    ) -> anyhow::Result<CodexLaunch> {
+        Ok(CodexLaunch::Process {
+            command: vec!["codex".to_string()],
+            wait_strategy: ProcessWaitStrategy::TrackedChild,
+            macos_cleanup_policy: None,
+        })
+    }
+
+    async fn bridge_context(&self, debug_port: u16) -> anyhow::Result<Option<BridgeContext>> {
+        self.event(format!("bridge-context:{debug_port}"));
+        Ok(Some(test_context()))
+    }
+
+    async fn inject(&self, _debug_port: u16, _helper_port: u16) -> anyhow::Result<()> {
+        anyhow::bail!("legacy inject should not run when bridge context is supplied")
+    }
+
+    async fn inject_bridge(
+        &self,
+        debug_port: u16,
+        helper_port: u16,
+        _ctx: BridgeContext,
+    ) -> anyhow::Result<()> {
+        self.event(format!("inject-bridge:{debug_port}:{helper_port}"));
+        Ok(())
+    }
+
+    async fn write_status(&self, status: &str) {
+        self.event(format!("status:{status}"));
+    }
+
+    async fn wait_for_codex_exit(&self, _launch: &CodexLaunch) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn shutdown_helper(&self, _helper_port: u16) {}
+
+    async fn terminate_codex(&self, _launch: &CodexLaunch) {}
+}

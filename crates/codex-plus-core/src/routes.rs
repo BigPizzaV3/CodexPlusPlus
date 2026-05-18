@@ -1,0 +1,560 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Instant;
+
+use async_trait::async_trait;
+use serde_json::{Value, json};
+
+use crate::models::{DeleteResult, DeleteStatus, ExportResult, ExportStatus, SessionRef};
+use crate::settings::{BackendSettings, SettingsStore};
+use crate::status::StatusStore;
+use crate::user_scripts::UserScriptManager;
+
+pub type UserScriptEvaluator = Arc<dyn Fn(&str, &str) -> anyhow::Result<Value> + Send + Sync>;
+pub type DevtoolsOpener = Arc<dyn Fn(&str) -> anyhow::Result<()> + Send + Sync>;
+
+#[derive(Clone)]
+pub struct BridgeContext {
+    settings: Arc<dyn BridgeSettingsService>,
+    runtime: Arc<dyn BridgeRuntimeService>,
+    data: Arc<dyn BridgeDataService>,
+}
+
+impl BridgeContext {
+    pub fn new(
+        settings: Arc<dyn BridgeSettingsService>,
+        runtime: Arc<dyn BridgeRuntimeService>,
+        data: Arc<dyn BridgeDataService>,
+    ) -> Self {
+        Self {
+            settings,
+            runtime,
+            data,
+        }
+    }
+
+    pub fn core(runtime: Arc<dyn BridgeRuntimeService>) -> Self {
+        Self::core_with_data(runtime, Arc::new(UnavailableDataService))
+    }
+
+    pub fn core_with_data(
+        runtime: Arc<dyn BridgeRuntimeService>,
+        data: Arc<dyn BridgeDataService>,
+    ) -> Self {
+        Self::new(Arc::new(CoreSettingsService::default()), runtime, data)
+    }
+}
+
+#[async_trait]
+pub trait BridgeSettingsService: Send + Sync {
+    async fn get_settings(&self) -> anyhow::Result<BackendSettings>;
+    async fn set_settings(&self, payload: Value) -> anyhow::Result<BackendSettings>;
+}
+
+#[async_trait]
+pub trait BridgeRuntimeService: Send + Sync {
+    async fn user_script_inventory(&self) -> anyhow::Result<Value>;
+    async fn set_user_scripts_enabled(&self, enabled: bool) -> anyhow::Result<Value>;
+    async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value>;
+    async fn reload_user_scripts(&self) -> anyhow::Result<Value>;
+    async fn open_devtools(&self) -> anyhow::Result<Value>;
+    async fn open_manager(&self) -> anyhow::Result<Value>;
+    async fn backend_status(&self) -> anyhow::Result<Value>;
+    async fn repair_backend(&self) -> anyhow::Result<Value>;
+    async fn ads(&self) -> anyhow::Result<Value>;
+}
+
+#[async_trait]
+pub trait BridgeDataService: Send + Sync {
+    async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult>;
+    async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
+    async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
+    async fn find_archived_thread_by_title(
+        &self,
+        title: String,
+    ) -> anyhow::Result<Option<SessionRef>>;
+    async fn move_thread_workspace(
+        &self,
+        session: SessionRef,
+        target_cwd: String,
+    ) -> anyhow::Result<Value>;
+    async fn thread_sort_key(&self, session: SessionRef) -> anyhow::Result<Value>;
+    async fn thread_sort_keys(&self, sessions: Vec<SessionRef>) -> anyhow::Result<Value>;
+}
+
+pub async fn handle_bridge_request(
+    ctx: BridgeContext,
+    path: &str,
+    payload: Value,
+) -> serde_json::Value {
+    let started = Instant::now();
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "bridge.request",
+        json!({
+            "path": path,
+            "payload_keys": payload
+                .as_object()
+                .map(|object| object.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+        }),
+    );
+    let result = match path {
+        "/settings/get" => settings_value(ctx.settings.get_settings().await),
+        "/settings/set" => settings_value(ctx.settings.set_settings(payload.clone()).await),
+        "/user-scripts/list" => ctx.runtime.user_script_inventory().await,
+        "/user-scripts/set-enabled" => {
+            let enabled = payload
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            ctx.runtime.set_user_scripts_enabled(enabled).await
+        }
+        "/user-scripts/set-script-enabled" => {
+            let key = payload
+                .get("key")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let enabled = payload
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            ctx.runtime.set_user_script_enabled(key, enabled).await
+        }
+        "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
+        "/devtools/open" => ctx.runtime.open_devtools().await,
+        "/manager/open" => ctx.runtime.open_manager().await,
+        "/backend/status" => ctx.runtime.backend_status().await,
+        "/backend/repair" => ctx.runtime.repair_backend().await,
+        "/diagnostics/log" => diagnostic_log_value(payload.clone()),
+        "/ads" => ctx.runtime.ads().await,
+        "/delete" => result_value(ctx.data.delete(session_from_payload(&payload)).await),
+        "/undo" => {
+            let undo_token = payload
+                .get("undo_token")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            result_value(ctx.data.undo(undo_token).await)
+        }
+        "/export-markdown" => result_value(
+            ctx.data
+                .export_markdown(session_from_payload(&payload))
+                .await,
+        ),
+        "/archived-thread" => {
+            let title = payload
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            archived_thread_value(ctx.data.find_archived_thread_by_title(title).await)
+        }
+        "/move-thread-workspace" => {
+            let target_cwd = payload
+                .get("target_cwd")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            ctx.data
+                .move_thread_workspace(session_from_payload(&payload), target_cwd)
+                .await
+        }
+        "/thread-sort-key" => {
+            ctx.data
+                .thread_sort_key(session_from_payload(&payload))
+                .await
+        }
+        "/thread-sort-keys" => {
+            ctx.data
+                .thread_sort_keys(sessions_from_payload(&payload))
+                .await
+        }
+        _ => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.unknown_path",
+                json!({
+                    "path": path
+                }),
+            );
+            return json!({
+                "status": "failed",
+                "session_id": "",
+                "message": "Unknown bridge path"
+            });
+        }
+    };
+
+    let response = result.unwrap_or_else(|error| failed_from_error(&payload, error));
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "bridge.response",
+        json!({
+            "path": path,
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+            "status": response.get("status").and_then(Value::as_str).unwrap_or("")
+        }),
+    );
+    response
+}
+
+#[derive(Default)]
+pub struct CoreSettingsService {
+    store: SettingsStore,
+}
+
+#[async_trait]
+impl BridgeSettingsService for CoreSettingsService {
+    async fn get_settings(&self) -> anyhow::Result<BackendSettings> {
+        self.store.load()
+    }
+
+    async fn set_settings(&self, payload: Value) -> anyhow::Result<BackendSettings> {
+        self.store.update(payload)
+    }
+}
+
+#[derive(Clone)]
+pub struct CoreRuntimeService {
+    debug_port: u16,
+    status_store: StatusStore,
+    user_scripts: Option<UserScriptManager>,
+    websocket_url: Option<String>,
+    user_script_evaluator: Option<UserScriptEvaluator>,
+    devtools_opener: Option<DevtoolsOpener>,
+    devtools_target_id: Option<String>,
+}
+
+impl CoreRuntimeService {
+    pub fn new(debug_port: u16, status_store: StatusStore) -> Self {
+        Self {
+            debug_port,
+            status_store,
+            user_scripts: None,
+            websocket_url: None,
+            user_script_evaluator: None,
+            devtools_opener: None,
+            devtools_target_id: None,
+        }
+    }
+
+    pub fn with_user_scripts(mut self, user_scripts: UserScriptManager) -> Self {
+        self.user_scripts = Some(user_scripts);
+        self
+    }
+
+    pub fn with_websocket_url(mut self, websocket_url: impl Into<String>) -> Self {
+        self.websocket_url = Some(websocket_url.into());
+        self
+    }
+
+    pub fn with_user_script_evaluator(mut self, evaluator: UserScriptEvaluator) -> Self {
+        self.user_script_evaluator = Some(evaluator);
+        self
+    }
+
+    pub fn with_devtools_opener(mut self, opener: DevtoolsOpener) -> Self {
+        self.devtools_opener = Some(opener);
+        self
+    }
+
+    pub fn with_devtools_target_id(mut self, target_id: impl Into<String>) -> Self {
+        self.devtools_target_id = Some(target_id.into());
+        self
+    }
+}
+
+#[async_trait]
+impl BridgeRuntimeService for CoreRuntimeService {
+    async fn user_script_inventory(&self) -> anyhow::Result<Value> {
+        match &self.user_scripts {
+            Some(user_scripts) => user_scripts.inventory(),
+            None => Ok(empty_user_script_inventory()),
+        }
+    }
+
+    async fn set_user_scripts_enabled(&self, enabled: bool) -> anyhow::Result<Value> {
+        match &self.user_scripts {
+            Some(user_scripts) => {
+                user_scripts.set_global_enabled(enabled)?;
+                user_scripts.inventory()
+            }
+            None => {
+                let mut inventory = empty_user_script_inventory();
+                inventory["enabled"] = json!(enabled);
+                Ok(inventory)
+            }
+        }
+    }
+
+    async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value> {
+        match &self.user_scripts {
+            Some(user_scripts) => {
+                user_scripts.set_script_enabled(&key, enabled)?;
+                user_scripts.inventory()
+            }
+            None => Ok(empty_user_script_inventory()),
+        }
+    }
+
+    async fn reload_user_scripts(&self) -> anyhow::Result<Value> {
+        if let (Some(user_scripts), Some(websocket_url), Some(evaluator)) = (
+            &self.user_scripts,
+            self.websocket_url.as_deref(),
+            &self.user_script_evaluator,
+        ) {
+            let bundle = user_scripts.build_enabled_bundle()?;
+            if !bundle.trim().is_empty() {
+                evaluator(websocket_url, &bundle)?;
+            }
+        }
+        self.user_script_inventory().await
+    }
+
+    async fn open_devtools(&self) -> anyhow::Result<Value> {
+        let target_id = self
+            .devtools_target_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("No DevTools target configured"))?;
+        let url = devtools_url(self.debug_port, target_id);
+        if let Some(opener) = &self.devtools_opener {
+            opener(&url)?;
+        }
+        Ok(json!({
+            "status": "ok",
+            "target_id": target_id,
+            "url": url
+        }))
+    }
+
+    async fn open_manager(&self) -> anyhow::Result<Value> {
+        let manager_path = manager_exe_path();
+        if !manager_path.exists() {
+            anyhow::bail!("未找到管理工具：{}", manager_path.display());
+        }
+        spawn_manager(&manager_path)?;
+        Ok(json!({
+            "status": "ok",
+            "path": manager_path.to_string_lossy()
+        }))
+    }
+
+    async fn backend_status(&self) -> anyhow::Result<Value> {
+        let _ = self.status_store.load_latest();
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "bridge.backend_status_ok",
+            json!({
+                "debug_port": self.debug_port,
+                "version": crate::version::VERSION
+            }),
+        );
+        Ok(json!({"status": "ok", "message": "后端已连接", "version": crate::version::VERSION}))
+    }
+
+    async fn repair_backend(&self) -> anyhow::Result<Value> {
+        self.backend_status().await
+    }
+
+    async fn ads(&self) -> anyhow::Result<Value> {
+        crate::ads::fetch_ad_list().await
+    }
+}
+
+struct UnavailableDataService;
+
+#[async_trait]
+impl BridgeDataService for UnavailableDataService {
+    async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
+        Ok(DeleteResult {
+            status: DeleteStatus::Failed,
+            session_id: session.session_id,
+            message: "Delete service is not wired in core launcher hooks".to_string(),
+            undo_token: None,
+            backup_path: None,
+        })
+    }
+
+    async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult> {
+        Ok(DeleteResult {
+            status: DeleteStatus::Failed,
+            session_id: String::new(),
+            message: "Undo service is not wired in core launcher hooks".to_string(),
+            undo_token: Some(undo_token),
+            backup_path: None,
+        })
+    }
+
+    async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult> {
+        Ok(ExportResult {
+            status: ExportStatus::Failed,
+            session_id: session.session_id,
+            message: "Markdown export service is not wired in core launcher hooks".to_string(),
+            filename: None,
+            markdown: None,
+        })
+    }
+
+    async fn find_archived_thread_by_title(
+        &self,
+        _title: String,
+    ) -> anyhow::Result<Option<SessionRef>> {
+        Ok(None)
+    }
+
+    async fn move_thread_workspace(
+        &self,
+        session: SessionRef,
+        _target_cwd: String,
+    ) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "failed",
+            "session_id": session.session_id,
+            "message": "Move workspace service is not wired in core launcher hooks"
+        }))
+    }
+
+    async fn thread_sort_key(&self, session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "failed",
+            "session_id": session.session_id,
+            "message": "Thread sort service is not wired in core launcher hooks"
+        }))
+    }
+
+    async fn thread_sort_keys(&self, _sessions: Vec<SessionRef>) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "failed",
+            "message": "Thread sort service is not wired in core launcher hooks",
+            "sort_keys": []
+        }))
+    }
+}
+
+fn manager_exe_path() -> PathBuf {
+    crate::install::option_or_current_exe(&None, crate::install::MANAGER_BINARY)
+}
+
+fn spawn_manager(manager_path: &Path) -> anyhow::Result<()> {
+    let mut command = std::process::Command::new(manager_path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::windows_create_no_window());
+    }
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
+}
+
+fn settings_value(result: anyhow::Result<BackendSettings>) -> anyhow::Result<Value> {
+    Ok(serde_json::to_value(result?)?)
+}
+
+fn result_value<T>(result: anyhow::Result<T>) -> anyhow::Result<Value>
+where
+    T: serde::Serialize,
+{
+    Ok(serde_json::to_value(result?)?)
+}
+
+fn diagnostic_log_value(payload: Value) -> anyhow::Result<Value> {
+    let event = payload
+        .get("event")
+        .and_then(Value::as_str)
+        .map(sanitize_diagnostic_event)
+        .unwrap_or_else(|| "event".to_string());
+    crate::diagnostic_log::append_diagnostic_log(&format!("renderer.{event}"), payload)?;
+    Ok(json!({
+        "status": "ok",
+        "message": "日志已记录"
+    }))
+}
+
+fn sanitize_diagnostic_event(event: &str) -> String {
+    let sanitized = event
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "event".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn archived_thread_value(result: anyhow::Result<Option<SessionRef>>) -> anyhow::Result<Value> {
+    Ok(match result? {
+        Some(session) => json!({"session_id": session.session_id, "title": session.title}),
+        None => json!({"session_id": "", "title": ""}),
+    })
+}
+
+fn failed_from_error(payload: &Value, error: anyhow::Error) -> Value {
+    json!({
+        "status": "failed",
+        "session_id": payload
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "message": error.to_string()
+    })
+}
+
+fn session_from_payload(payload: &Value) -> SessionRef {
+    SessionRef {
+        session_id: payload
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        title: payload
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    }
+}
+
+fn sessions_from_payload(payload: &Value) -> Vec<SessionRef> {
+    payload
+        .get("sessions")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_object())
+                .map(|item| SessionRef {
+                    session_id: item
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    title: item
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn devtools_url(debug_port: u16, target_id: &str) -> String {
+    format!(
+        "http://127.0.0.1:{debug_port}/devtools/inspector.html?ws=127.0.0.1:{debug_port}/devtools/page/{target_id}"
+    )
+}
+
+fn empty_user_script_inventory() -> Value {
+    json!({
+        "enabled": true,
+        "scripts": []
+    })
+}

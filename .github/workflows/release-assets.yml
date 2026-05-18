@@ -64,7 +64,18 @@ jobs:
           files: dist/windows/*.exe
 
   macos-dmg:
-    runs-on: macos-latest
+    name: macOS DMG (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - arch: arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4
@@ -78,6 +89,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Install frontend dependencies
         working-directory: apps/codex-plus-manager
@@ -88,13 +101,13 @@ jobs:
         run: npm run vite:build
 
       - name: Build binaries
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Build macOS DMG
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION#V}"
-          bash scripts/installer/macos/package-dmg.sh "$VERSION"
+          BINARY_DIR="$PWD/target/${{ matrix.target }}/release" bash scripts/installer/macos/package-dmg.sh "$VERSION" "${{ matrix.arch }}"
 
       - name: Upload macOS DMG
         uses: softprops/action-gh-release@v2

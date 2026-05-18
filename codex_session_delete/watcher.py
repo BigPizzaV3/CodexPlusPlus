@@ -47,7 +47,7 @@ def cdp_listening(port: int) -> bool:
         return False
 
 
-def _run_powershell(script: str, timeout: float = 8.0) -> str:
+def _run_powershell(script: str, timeout: float = 8.0, env: dict[str, str] | None = None) -> str:
     try:
         result = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
@@ -56,6 +56,7 @@ def _run_powershell(script: str, timeout: float = 8.0) -> str:
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            env=env,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return result.stdout or ""
@@ -142,11 +143,19 @@ def spawn_launcher(debug_port: int) -> subprocess.Popen | None:
 
 def stop_launcher_processes() -> None:
     script = (
+        "$self = [int]$env:CODEX_PLUS_PLUS_PID; "
+        "$protect = New-Object System.Collections.Generic.HashSet[int]; "
+        "$cur = $self; "
+        "while ($cur -ne 0 -and $protect.Add($cur)) { "
+        "$p = Get-CimInstance Win32_Process -Filter \"ProcessId=$cur\" -ErrorAction SilentlyContinue; "
+        "if ($null -eq $p) { break }; $cur = [int]$p.ParentProcessId "
+        "} "
         "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe' OR Name='python.exe'\" | "
-        "Where-Object { $_.CommandLine -match 'codex_session_delete\\s+launch' } | "
+        "Where-Object { -not $protect.Contains([int]$_.ProcessId) -and $_.CommandLine -match 'codex_session_delete\\s+launch' } | "
         "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
     )
-    _run_powershell(script, timeout=6.0)
+    env = {**os.environ, "CODEX_PLUS_PLUS_PID": str(os.getpid())}
+    _run_powershell(script, timeout=6.0, env=env)
 
 
 def takeover(debug_port: int) -> bool:
