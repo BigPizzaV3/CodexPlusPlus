@@ -2,15 +2,22 @@
 set -euo pipefail
 
 VERSION="${1:-0.0.0}"
-ARCH="${2:-$(uname -m)}"
+INPUT_ARCH="${2:-$(uname -m)}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 DIST="$ROOT/dist/macos"
 STAGE="$DIST/stage"
 BINARY_DIR="${BINARY_DIR:-$ROOT/target/release}"
-DMG="$DIST/CodexPlusPlus-${VERSION}-macos-${ARCH}.dmg"
 ICON_SOURCE="$ROOT/apps/codex-plus-manager/src-tauri/icons/icon.png"
 ICON_NAME="codex-plus-plus.icns"
 ICON_ICNS="$DIST/$ICON_NAME"
+
+case "$INPUT_ARCH" in
+  arm64|aarch64) ARCH="arm64" ;;
+  x86_64|amd64|x64) ARCH="x64" ;;
+  *) ARCH="$INPUT_ARCH" ;;
+esac
+
+DMG="$DIST/CodexPlusPlus-${VERSION}-macos-${ARCH}.dmg"
 
 rm -rf "$DIST"
 mkdir -p "$STAGE"
@@ -79,6 +86,7 @@ PLIST
 prepare_icon
 create_app "Codex++" "CodexPlusPlus" "$BINARY_DIR/codex-plus-plus" "com.bigpizzav3.codexplusplus" "true"
 create_app "Codex++ 管理工具" "CodexPlusPlusManager" "$BINARY_DIR/codex-plus-plus-manager" "com.bigpizzav3.codexplusplus.manager" "false"
+ln -s /Applications "$STAGE/Applications"
 
 hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 echo "$DMG"
