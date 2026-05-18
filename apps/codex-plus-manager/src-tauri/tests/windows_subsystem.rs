@@ -119,7 +119,7 @@ fn github_release_workflow_builds_separate_macos_x64_and_arm64_dmgs() {
         .join(".github/workflows/release-assets.yml");
     let workflow = std::fs::read_to_string(&workflow).expect("read release assets workflow");
 
-    assert!(workflow.contains("macos-13"));
+    assert!(workflow.contains("macos-15-intel"));
     assert!(workflow.contains("x86_64-apple-darwin"));
     assert!(workflow.contains("macos-14"));
     assert!(workflow.contains("aarch64-apple-darwin"));
