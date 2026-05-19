@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use async_trait::async_trait;
+use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
@@ -140,6 +141,13 @@ pub trait LaunchHooks: Send + Sync {
     ) -> anyhow::Result<()> {
         self.inject(debug_port, helper_port).await
     }
+    async fn start_bridge_watchdog(
+        &self,
+        _debug_port: u16,
+        _helper_port: u16,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn write_status(&self, status: &str);
     async fn wait_for_codex_exit(&self, launch: &CodexLaunch) -> anyhow::Result<()>;
     async fn shutdown_helper(&self, helper_port: u16);
@@ -150,9 +158,15 @@ pub trait LaunchHooks: Send + Sync {
 pub struct DefaultLaunchHooks {
     child: Mutex<Option<Child>>,
     helper: Mutex<Option<HelperRuntime>>,
+    bridge_watchdog: Mutex<Option<BridgeWatchdogRuntime>>,
 }
 
 struct HelperRuntime {
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+struct BridgeWatchdogRuntime {
     shutdown: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -195,6 +209,7 @@ where
                 Some(ctx) => hooks.inject_bridge(debug_port, helper_port, ctx).await?,
                 None => hooks.inject(debug_port, helper_port).await?,
             }
+            hooks.start_bridge_watchdog(debug_port, helper_port).await?;
         }
 
         let status = launch_status(
@@ -413,6 +428,31 @@ impl LaunchHooks for DefaultLaunchHooks {
         retry_injection(debug_port, helper_port).await
     }
 
+    async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+        let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => break,
+                    _ = interval.tick() => {
+                        let _ = check_and_reinject_bridge(debug_port, helper_port).await;
+                    }
+                }
+            }
+        });
+        if let Some(runtime) = self
+            .bridge_watchdog
+            .lock()
+            .await
+            .replace(BridgeWatchdogRuntime { shutdown, task })
+        {
+            let _ = runtime.shutdown.send(());
+            let _ = runtime.task.await;
+        }
+        Ok(())
+    }
+
     async fn write_status(&self, _status: &str) {}
 
     async fn wait_for_codex_exit(&self, launch: &CodexLaunch) -> anyhow::Result<()> {
@@ -433,6 +473,10 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn shutdown_helper(&self, _helper_port: u16) {
+        if let Some(runtime) = self.bridge_watchdog.lock().await.take() {
+            let _ = runtime.shutdown.send(());
+            let _ = runtime.task.await;
+        }
         if let Some(runtime) = self.helper.lock().await.take() {
             let _ = runtime.shutdown.send(());
             let _ = runtime.task.await;
@@ -499,7 +543,7 @@ async fn handle_helper_connection(
         }),
     );
 
-    let (status, body, log_event) = if path == "/backend/status"
+    let (status, body, log_event) = if matches!(path, "/backend/status" | "/backend/repair")
         && matches!(method, "GET" | "POST" | "OPTIONS")
     {
         (
@@ -510,7 +554,11 @@ async fn handle_helper_connection(
                 "version": crate::version::VERSION,
                 "transport": "http-helper"
             }))?,
-            "helper.backend_status_ok",
+            if path == "/backend/status" {
+                "helper.backend_status_ok"
+            } else {
+                "helper.backend_repair_ok"
+            },
         )
     } else if path == "/diagnostics/log" && matches!(method, "POST" | "OPTIONS") {
         if method == "POST" {
@@ -659,6 +707,82 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
         }
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Codex injection failed")))
+}
+
+pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> bool {
+    let healthy = match bridge_health_ok(debug_port).await {
+        Ok(healthy) => healthy,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.health_check_failed",
+                serde_json::json!({
+                    "debug_port": debug_port,
+                    "helper_port": helper_port,
+                    "message": error.to_string()
+                }),
+            );
+            false
+        }
+    };
+    if healthy {
+        return false;
+    }
+
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "bridge.reinject_start",
+        serde_json::json!({
+            "debug_port": debug_port,
+            "helper_port": helper_port
+        }),
+    );
+    match retry_injection(debug_port, helper_port).await {
+        Ok(()) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.reinject_ok",
+                serde_json::json!({
+                    "debug_port": debug_port,
+                    "helper_port": helper_port
+                }),
+            );
+            true
+        }
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.reinject_failed",
+                serde_json::json!({
+                    "debug_port": debug_port,
+                    "helper_port": helper_port,
+                    "message": error.to_string()
+                }),
+            );
+            false
+        }
+    }
+}
+
+async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
+    let targets = crate::cdp::list_targets(debug_port).await?;
+    let target = crate::cdp::pick_page_target(&targets)?;
+    let websocket_url = target
+        .web_socket_debugger_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
+    let result = crate::bridge::evaluate_script_with_await_promise(
+        websocket_url,
+        crate::bridge::bridge_health_check_script(),
+        true,
+    )
+    .await?;
+    Ok(runtime_evaluate_result_is_true(&result))
+}
+
+fn runtime_evaluate_result_is_true(result: &Value) -> bool {
+    result
+        .get("result")
+        .and_then(|result| result.get("result"))
+        .and_then(|result| result.get("value"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {

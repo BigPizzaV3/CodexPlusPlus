@@ -481,6 +481,7 @@ async fn launch_lifecycle_uses_hook_supplied_bridge_context_for_injection() {
         vec![
             "bridge-context:9229",
             "inject-bridge:9229:57321",
+            "watchdog:9229:57321",
             "status:running",
         ]
     );
@@ -779,6 +780,11 @@ impl LaunchHooks for ContextHooks {
         _ctx: BridgeContext,
     ) -> anyhow::Result<()> {
         self.event(format!("inject-bridge:{debug_port}:{helper_port}"));
+        Ok(())
+    }
+
+    async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+        self.event(format!("watchdog:{debug_port}:{helper_port}"));
         Ok(())
     }
 

@@ -170,10 +170,7 @@ pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResul
         ),
         "OPENAI_API_KEY",
     );
-    let updated = upsert_root_keys(
-        &without_relay,
-        &[("model_provider", "\"chatgpt\"".to_string())],
-    );
+    let updated = remove_root_key(&without_relay, "model_provider");
     std::fs::write(&config_path, updated)?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {

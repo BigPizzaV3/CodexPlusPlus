@@ -331,6 +331,18 @@ async fn default_helper_serves_backend_status_over_http() {
     let payload: serde_json::Value = response.json().await.unwrap();
     assert_eq!(payload["status"], "ok");
     assert_eq!(payload["transport"], "http-helper");
+
+    let repair_response = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{port}/backend/repair"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(repair_response.status().is_success());
+    let repair_payload: serde_json::Value = repair_response.json().await.unwrap();
+    assert_eq!(repair_payload["status"], "ok");
+    assert_eq!(repair_payload["transport"], "http-helper");
+
     hooks.shutdown_helper(port).await;
 }
 

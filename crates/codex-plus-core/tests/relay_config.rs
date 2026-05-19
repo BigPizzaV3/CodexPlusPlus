@@ -198,7 +198,7 @@ base_url = "https://old.example.test/v1"
 }
 
 #[test]
-fn clear_relay_config_switches_back_to_chatgpt_and_preserves_other_config() {
+fn clear_relay_config_removes_model_provider_and_preserves_other_config() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
         temp.path().join("config.toml"),
@@ -232,7 +232,7 @@ model = "gpt-5-mini"
     assert!(!result.configured);
     assert!(result.backup_path.is_some());
     assert!(updated.contains(r#"model = "gpt-5""#));
-    assert!(updated.contains(r#"model_provider = "chatgpt""#));
+    assert!(!updated.contains("model_provider ="));
     assert!(!updated.contains("OPENAI_API_KEY"));
     assert!(!updated.contains("[model_providers.CodexPlusPlus]"));
     assert!(!updated.contains("[model_providers.CodexPP]"));

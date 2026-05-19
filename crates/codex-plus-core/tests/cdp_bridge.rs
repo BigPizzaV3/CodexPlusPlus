@@ -69,6 +69,17 @@ fn injection_script_fetches_ads_without_bridge() {
 }
 
 #[test]
+fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("bridgeWithBackendTimeout"));
+    assert!(script.contains("backend_bridge_timeout"));
+    assert!(script.contains("/backend/repair"));
+    assert!(script.contains("backend_status_bridge_failed_http_fallback_ok"));
+    assert!(script.contains("backend_status_bridge_and_http_failed"));
+}
+
+#[test]
 fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
     let script = assets::injection_script(57321);
 
@@ -110,6 +121,25 @@ fn runtime_evaluate_params_matches_python_flags() {
     assert_eq!(params["expression"], "1 + 1");
     assert_eq!(params["awaitPromise"], false);
     assert_eq!(params["allowUnsafeEvalBlockedByCSP"], true);
+}
+
+#[test]
+fn runtime_evaluate_params_can_await_promise_for_bridge_health_checks() {
+    let params = bridge::runtime_evaluate_params_with_await_promise("Promise.resolve(true)", true);
+
+    assert_eq!(params["expression"], "Promise.resolve(true)");
+    assert_eq!(params["awaitPromise"], true);
+    assert_eq!(params["allowUnsafeEvalBlockedByCSP"], true);
+}
+
+#[test]
+fn bridge_health_check_script_uses_real_backend_round_trip() {
+    let script = bridge::bridge_health_check_script();
+
+    assert!(script.contains("__codexSessionDeleteBridge"));
+    assert!(script.contains("/backend/status"));
+    assert!(script.contains("Promise.race"));
+    assert!(script.contains("setTimeout"));
 }
 
 #[test]

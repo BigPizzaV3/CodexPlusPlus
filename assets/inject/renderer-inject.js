@@ -1400,49 +1400,60 @@
 
   async function postJson(path, payload) {
     if (!window.__codexSessionDeleteBridge) {
-      if (path === "/backend/status") {
+      if (path === "/backend/status" || path === "/backend/repair") {
         try {
           const response = await fetch(`${helperBase}${path}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload || {}),
           });
-          const text = await response.text();
-          try {
-            const parsed = text ? JSON.parse(text) : {};
-            if (!response.ok || parsed.status !== "ok") {
-              sendCodexPlusDiagnostic("backend_status_http_not_ok", {
-                path,
-                httpStatus: response.status,
-                responseStatus: parsed.status || "",
-                message: parsed.message || "",
-                bodyPreview: text.slice(0, 240),
-              });
-            }
-            return parsed;
-          } catch (error) {
-            sendCodexPlusDiagnostic("backend_status_json_parse_failed", {
-              path,
-              httpStatus: response.status,
-              errorName: error?.name || "",
-              errorMessage: error?.message || String(error),
-              bodyPreview: text.slice(0, 240),
-            });
-            return { status: "failed", message: "后端响应解析失败" };
-          }
+          return await response.json();
         } catch (error) {
-          sendCodexPlusDiagnostic("backend_status_http_failed", {
-            path,
-            errorName: error?.name || "",
-            errorMessage: error?.message || String(error),
-          });
           return { status: "failed", message: "后端已断开" };
         }
       }
       sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
       return { status: "failed", message: "桥接不可用，请重启启动器" };
     }
+    function bridgeWithBackendTimeout(path, payload) {
+      return Promise.race([
+        window.__codexSessionDeleteBridge(path, payload),
+        new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "后端检查超时", timeout: true }), 2000)),
+      ]);
+    }
+    async function fetchBackendStatusFromHelper(path, payload) {
+      try {
+        const response = await fetch(`${helperBase}${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+        });
+        return await response.json();
+      } catch (error) {
+        return { status: "failed", message: "后端已断开" };
+      }
+    }
     try {
+      if (path === "/backend/status" || path === "/backend/repair") {
+        const result = await bridgeWithBackendTimeout(path, payload);
+        if (result?.status === "ok") return result;
+        if (result?.timeout) sendCodexPlusDiagnostic("backend_bridge_timeout", { path });
+        const fallback = await fetchBackendStatusFromHelper(path, payload);
+        if (fallback?.status === "ok") {
+          sendCodexPlusDiagnostic("backend_status_bridge_failed_http_fallback_ok", {
+            path,
+            httpStatus: 200,
+            responseStatus: fallback.status || "",
+          });
+          return fallback;
+        }
+        sendCodexPlusDiagnostic("backend_status_bridge_and_http_failed", {
+          path,
+          errorName: "",
+          errorMessage: "",
+        });
+        return fallback;
+      }
       return await window.__codexSessionDeleteBridge(path, payload);
     } catch (error) {
       sendCodexPlusDiagnostic("bridge_call_failed", {
@@ -1450,27 +1461,22 @@
         errorName: error?.name || "",
         errorMessage: error?.message || String(error),
       });
-      if (path === "/backend/status") {
-        try {
-          const response = await fetch(`${helperBase}${path}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload || {}),
-          });
-          const parsed = await response.json();
+      if (path === "/backend/status" || path === "/backend/repair") {
+        const fallback = await fetchBackendStatusFromHelper(path, payload);
+        if (fallback?.status === "ok") {
           sendCodexPlusDiagnostic("backend_status_bridge_failed_http_fallback_ok", {
             path,
-            httpStatus: response.status,
-            responseStatus: parsed.status || "",
+            httpStatus: 200,
+            responseStatus: fallback.status || "",
           });
-          return parsed;
-        } catch (fallbackError) {
-          sendCodexPlusDiagnostic("backend_status_bridge_and_http_failed", {
-            path,
-            errorName: fallbackError?.name || "",
-            errorMessage: fallbackError?.message || String(fallbackError),
-          });
+          return fallback;
         }
+        sendCodexPlusDiagnostic("backend_status_bridge_and_http_failed", {
+          path,
+          errorName: error?.name || "",
+          errorMessage: error?.message || String(error),
+        });
+        return fallback;
       }
       throw error;
     }
