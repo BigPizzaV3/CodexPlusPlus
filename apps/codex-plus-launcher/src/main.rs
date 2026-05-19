@@ -397,6 +397,20 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     async fn ads(&self) -> anyhow::Result<Value> {
         codex_plus_core::ads::fetch_ad_list().await
     }
+
+    async fn zed_remote_status(&self) -> anyhow::Result<Value> {
+        Ok(codex_plus_core::zed_remote::zed_remote_status())
+    }
+
+    async fn resolve_zed_remote_host(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(codex_plus_core::zed_remote::resolve_ssh_target_response(
+            &payload,
+        ))
+    }
+
+    async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(codex_plus_core::zed_remote::open_zed_remote(&payload))
+    }
 }
 
 async fn inject_with_context(
