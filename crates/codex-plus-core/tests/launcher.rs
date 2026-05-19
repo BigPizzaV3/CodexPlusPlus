@@ -16,7 +16,7 @@ use codex_plus_core::launcher::{
 #[cfg(windows)]
 use codex_plus_core::launcher::{WindowsProcessControlStrategy, windows_process_control_strategy};
 use codex_plus_core::ports::select_platform_loopback_port_with;
-use codex_plus_core::proxy::{detect_local_proxy_with, has_proxy_environment};
+use codex_plus_core::proxy::has_proxy_environment;
 use codex_plus_core::settings::BackendSettings;
 use codex_plus_core::status::StatusStore;
 
@@ -244,13 +244,16 @@ fn launcher_packaged_activation_temporarily_applies_proxy_environment() {
     let mut env = HashMap::new();
     env.insert(
         "HTTP_PROXY".to_string(),
-        "http://127.0.0.1:7897".to_string(),
+        "http://proxy.example.test:8080".to_string(),
     );
     env.insert(
         "HTTPS_PROXY".to_string(),
-        "http://127.0.0.1:7897".to_string(),
+        "http://proxy.example.test:8080".to_string(),
     );
-    env.insert("ALL_PROXY".to_string(), "http://127.0.0.1:7897".to_string());
+    env.insert(
+        "ALL_PROXY".to_string(),
+        "http://proxy.example.test:8080".to_string(),
+    );
 
     let seen = with_temporary_proxy_environment(&env, || {
         (
@@ -263,9 +266,9 @@ fn launcher_packaged_activation_temporarily_applies_proxy_environment() {
     assert_eq!(
         seen,
         (
-            Some("http://127.0.0.1:7897".to_string()),
-            Some("http://127.0.0.1:7897".to_string()),
-            Some("http://127.0.0.1:7897".to_string()),
+            Some("http://proxy.example.test:8080".to_string()),
+            Some("http://proxy.example.test:8080".to_string()),
+            Some("http://proxy.example.test:8080".to_string()),
         )
     );
     assert!(std::env::var("HTTP_PROXY").is_err());
@@ -293,23 +296,39 @@ fn ports_non_windows_keeps_requested_even_when_busy() {
 }
 
 #[test]
-fn proxy_detects_first_local_proxy_port_and_respects_existing_environment() {
-    assert_eq!(
-        detect_local_proxy_with(|port| port == 7890),
-        Some("http://127.0.0.1:7890".to_string())
-    );
-
+fn proxy_uses_existing_environment_before_system_proxy() {
     let env = HashMap::from([(
         "HTTPS_PROXY".to_string(),
-        "http://127.0.0.1:9999".to_string(),
+        "http://env-proxy.example.test:8080".to_string(),
     )]);
     assert!(has_proxy_environment(&env));
     let process_env = codex_process_environment_from(&env, || {
-        panic!("proxy auto-detection should not run when env already has proxy")
+        panic!("system proxy detection should not run when env already has proxy")
     });
     assert_eq!(
         process_env.get("HTTPS_PROXY").map(String::as_str),
-        Some("http://127.0.0.1:9999")
+        Some("http://env-proxy.example.test:8080")
+    );
+}
+
+#[test]
+fn proxy_injects_system_proxy_when_environment_is_empty() {
+    let env = HashMap::new();
+    let process_env = codex_process_environment_from(&env, || {
+        Some("http://system-proxy.example.test:8080".to_string())
+    });
+
+    assert_eq!(
+        process_env.get("HTTP_PROXY").map(String::as_str),
+        Some("http://system-proxy.example.test:8080")
+    );
+    assert_eq!(
+        process_env.get("HTTPS_PROXY").map(String::as_str),
+        Some("http://system-proxy.example.test:8080")
+    );
+    assert_eq!(
+        process_env.get("ALL_PROXY").map(String::as_str),
+        Some("http://system-proxy.example.test:8080")
     );
 }
 
@@ -321,7 +340,8 @@ async fn default_helper_serves_backend_status_over_http() {
     drop(listener);
 
     hooks.start_helper(port).await.unwrap();
-    let response = reqwest::Client::new()
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let response = client
         .post(format!("http://127.0.0.1:{port}/backend/status"))
         .json(&serde_json::json!({}))
         .send()
@@ -332,7 +352,7 @@ async fn default_helper_serves_backend_status_over_http() {
     assert_eq!(payload["status"], "ok");
     assert_eq!(payload["transport"], "http-helper");
 
-    let repair_response = reqwest::Client::new()
+    let repair_response = client
         .post(format!("http://127.0.0.1:{port}/backend/repair"))
         .json(&serde_json::json!({}))
         .send()
@@ -357,7 +377,10 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
     drop(listener);
 
     hooks.start_helper(port).await.unwrap();
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
         .post(format!("http://127.0.0.1:{port}/diagnostics/log"))
         .json(&serde_json::json!({
             "event": "backend_check_failed",

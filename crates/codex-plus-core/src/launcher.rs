@@ -674,18 +674,18 @@ pub fn build_packaged_activation(app_dir: &Path, debug_port: u16) -> Option<Code
 
 pub fn codex_process_environment() -> HashMap<String, String> {
     let env = std::env::vars().collect::<HashMap<_, _>>();
-    codex_process_environment_from(&env, crate::proxy::detect_local_proxy)
+    codex_process_environment_from(&env, crate::proxy::detect_system_proxy)
 }
 
 pub fn codex_process_environment_from(
     env: &HashMap<String, String>,
-    detect_proxy: impl FnOnce() -> Option<String>,
+    detect_system_proxy: impl FnOnce() -> Option<String>,
 ) -> HashMap<String, String> {
     let mut env = env.clone();
     if crate::proxy::has_proxy_environment(&env) {
         return env;
     }
-    if let Some(proxy) = detect_proxy() {
+    if let Some(proxy) = detect_system_proxy() {
         env.entry("HTTP_PROXY".to_string())
             .or_insert_with(|| proxy.clone());
         env.entry("HTTPS_PROXY".to_string())

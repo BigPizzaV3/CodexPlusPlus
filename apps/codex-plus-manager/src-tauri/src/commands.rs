@@ -599,6 +599,33 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
 }
 
 #[tauri::command]
+pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let relay = settings.active_relay_profile();
+    match codex_plus_core::relay_config::apply_pure_api_config_to_home(
+        &home,
+        &relay.base_url,
+        &relay.api_key,
+    ) {
+        Ok(result) => {
+            let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+            ok(
+                "纯 API 模式已写入：auth.json 已切换为 OPENAI_API_KEY，config.toml 已写入 CodexPlusPlus provider。",
+                relay_payload(status, result.backup_path),
+            )
+        }
+        Err(error) => {
+            let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+            failed(
+                &format!("写入纯 API 模式失败：{error}"),
+                relay_payload(status, None),
+            )
+        }
+    }
+}
+
+#[tauri::command]
 pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     match codex_plus_core::relay_config::clear_relay_config_to_home(&home) {

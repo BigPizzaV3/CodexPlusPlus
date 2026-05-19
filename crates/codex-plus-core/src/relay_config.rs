@@ -152,8 +152,54 @@ pub fn apply_relay_config_to_home(
     })
 }
 
+pub fn apply_pure_api_config_to_home(
+    home: &Path,
+    base_url: &str,
+    bearer_token: &str,
+) -> anyhow::Result<RelayApplyResult> {
+    let base_url = base_url.trim();
+    if base_url.is_empty() {
+        anyhow::bail!("中转 Base URL 不能为空");
+    }
+    let bearer_token = bearer_token.trim();
+    if bearer_token.is_empty() {
+        anyhow::bail!("中转 Key 不能为空");
+    }
+    std::fs::create_dir_all(home)?;
+
+    let auth_path = home.join("auth.json");
+    if auth_path.exists() {
+        let existing_auth = std::fs::read_to_string(&auth_path).unwrap_or_default();
+        let auth_backup = home.join(format!("auth.json.codex-plus-backup-{}.bak", now_ms()));
+        std::fs::write(auth_backup, existing_auth)?;
+    }
+    let auth_payload = serde_json::json!({
+        "OPENAI_API_KEY": bearer_token
+    });
+    std::fs::write(&auth_path, serde_json::to_vec_pretty(&auth_payload)?)?;
+
+    let config_path = home.join("config.toml");
+    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let backup_path = if config_path.exists() {
+        let path = home.join(format!("config.toml.codex-plus-backup-{}.bak", now_ms()));
+        std::fs::write(&path, &existing)?;
+        Some(path)
+    } else {
+        None
+    };
+    let updated = upsert_model_provider_config(&existing, base_url, bearer_token);
+    std::fs::write(&config_path, updated)?;
+    let status = relay_config_status_from_home(home);
+    Ok(RelayApplyResult {
+        config_path: status.config_path,
+        backup_path: backup_path.map(|path| path.to_string_lossy().to_string()),
+        configured: status.configured,
+    })
+}
+
 pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResult> {
     std::fs::create_dir_all(home)?;
+    clear_pure_api_auth_json(home)?;
     let config_path = home.join("config.toml");
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
     let backup_path = if config_path.exists() {
@@ -178,6 +224,29 @@ pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResul
         backup_path: backup_path.map(|path| path.to_string_lossy().to_string()),
         configured: status.configured,
     })
+}
+
+fn clear_pure_api_auth_json(home: &Path) -> anyhow::Result<()> {
+    let auth_path = home.join("auth.json");
+    if !auth_path.exists() {
+        return Ok(());
+    }
+
+    let existing = std::fs::read_to_string(&auth_path)?;
+    let Ok(mut value) = serde_json::from_str::<Value>(&existing) else {
+        return Ok(());
+    };
+    let Some(object) = value.as_object_mut() else {
+        return Ok(());
+    };
+    if object.remove("OPENAI_API_KEY").is_none() {
+        return Ok(());
+    }
+
+    let auth_backup = home.join(format!("auth.json.codex-plus-backup-{}.bak", now_ms()));
+    std::fs::write(auth_backup, existing)?;
+    std::fs::write(&auth_path, serde_json::to_vec_pretty(&value)?)?;
+    Ok(())
 }
 
 fn auth_json_chatgpt_account_label(path: &Path) -> Option<Option<String>> {
