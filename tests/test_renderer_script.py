@@ -419,7 +419,7 @@ def test_renderer_script_removes_orphaned_projected_rows_when_thread_is_missing(
 
     text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
     assert "updateDeleteButtonOffsets" in text
-    assert "codexDeleteStyleVersion = \"8\"" in text
+    assert "codexDeleteStyleVersion = \"9\"" in text
     assert "right: 66px" in text
     assert "确认" in text
     assert "归档对话" in text
@@ -592,7 +592,9 @@ def test_renderer_script_includes_user_script_manager_ui_contract():
     assert "sessionDelete" in text
     assert "markdownExport" in text
     assert "projectMove" in text
+    assert "threadScrollRestore" in text
     assert "会话项目移动" in text
+    assert "切换对话保留位置" in text
     assert "移动按钮" in text
     assert "codex-plus-modal-overlay" in text
     assert "codex-plus-modal-content" in text
@@ -614,9 +616,12 @@ def test_renderer_script_includes_user_script_manager_ui_contract():
     assert "nativeButtonClass" in text
     assert "removeDuplicateCodexPlusMenus" in text
     assert "data-codex-plus-menu" in text
-    assert "textContent || \"\").trim() === `Codex++ ${codexPlusVersion}`" in text
-    assert "codexPlusMenuVersion !== \"6\"" in text
-    assert "codexPlusTriggerInstalled = \"5\"" in text
+    assert "/^Codex\\+\\+ \\d+\\.\\d+\\.\\d+/.test((button.textContent || \"\").trim())" in text
+    assert "codexPlusMenuVersion = `7:${codexPlusVersion}`" in text
+    assert "codexPlusTriggerVersion = `6:${codexPlusVersion}`" in text
+    assert "existing.dataset.codexPlusMenuVersion !== codexPlusMenuVersion" in text
+    assert "trigger.dataset.codexPlusTriggerInstalled = codexPlusTriggerVersion" in text
+    assert "function setCodexPlusTriggerLabel" in text
     assert ".codex-plus-trigger:hover" not in text
     assert "function pageHasCodexAppChrome" in text
     assert "if (!pageHasCodexAppChrome())" in text
@@ -744,3 +749,342 @@ def test_renderer_script_can_move_sidebar_threads_between_projects():
     assert "openProjectMoveMenuForRow" in text
     assert "existingMoveButton" in text
     assert "普通对话" in text
+
+
+def test_renderer_script_contains_zed_remote_setting_and_menu_copy():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "zedRemoteOpen" in text
+    assert "Zed Remote open" in text
+    assert "Open supported remote SSH file references in Zed without patching Codex.app." in text
+    assert 'data-codex-plus-setting="zedRemoteOpen"' in text
+
+
+def test_renderer_script_contains_zed_remote_probe_and_open_action():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "codex-zed-remote-button" in text
+    assert "codex-zed-open-in-menu-item" in text
+    assert "Open in Zed Remote" in text
+    assert "Zed Remote" in text
+    assert 'postJson("/zed-remote/status", {})' in text
+    assert 'postJson("/zed-remote/resolve-host", { hostId })' in text
+    assert 'postJson("/zed-remote/open", nextRequest)' in text
+    assert "function zedRemoteContext" in text
+    assert "function zedRemoteFileCandidates" in text
+    assert "function zedRemoteBestOpenRequest" in text
+    assert "function refreshZedRemoteOpenInMenus" in text
+    assert "function refreshZedRemoteOpenControls" in text
+    assert "Cannot determine remote SSH host for this file" in text
+    assert "settings" in text[text.index("function zedRemoteContext"):text.index("function zedRemoteFileCandidates")]
+
+
+def test_renderer_script_removes_stale_zed_remote_controls_when_fail_closed():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    remove_start = text.index("function removeZedRemoteButtons")
+    remove_end = text.index("\n\n  async function refreshZedRemoteOpenControls", remove_start)
+    remove_code = text[remove_start:remove_end]
+    start = text.index("async function refreshZedRemoteOpenControls")
+    end = text.index("\n\n  function scanDeferred", start)
+    refresh_code = text[start:end]
+
+    assert "function removeZedRemoteButtons" in text
+    assert "[data-codex-zed-remote-version]" in remove_code
+    assert "delete node.dataset.codexZedRemoteVersion" in remove_code
+    assert "removeZedRemoteButtons();\n      removeZedRemoteOpenInMenuItems();\n      return;" in refresh_code
+    assert "const context = zedRemoteContext() || {};" in refresh_code
+    assert "if (!status?.platformSupported || (!status.zedAppFound && !status.zedCliFound)) {\n        removeZedRemoteButtons();\n        removeZedRemoteOpenInMenuItems();\n        return;\n      }" in refresh_code
+    assert "catch (_) {\n      removeZedRemoteButtons();\n      removeZedRemoteOpenInMenuItems();\n      return;\n    }" in refresh_code
+    assert "removeZedRemoteButtons();\n    const candidates = zedRemoteFileCandidates(context);\n    candidates.forEach(attachZedRemoteButton);\n    refreshZedRemoteOpenInMenus(context);" in refresh_code
+
+
+def test_renderer_script_adds_zed_remote_to_open_in_menu():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    start = text.index("function createZedRemoteOpenInMenuItem")
+    end = text.index("\n\n  async function refreshZedRemoteOpenControls", start)
+    menu_code = text[start:end]
+    create_end = text.index("\n\n  function activateZedRemoteOpenInMenuItem", start)
+    create_code = text[start:create_end]
+
+    assert ">Zed<" in menu_code
+    assert "Zed Remote" not in menu_code
+    assert 'src="apps/zed.png"' in menu_code
+    assert "codex-zed-open-in-menu-icon icon-sm" in menu_code
+    assert "data-codex-zed-open-in-menu" in menu_code
+    assert "bindZedRemoteOpenInMenuItem(item, \"injected\")" in menu_code
+    assert "item.dataset.codexZedOpenInMenuVersion = zedRemoteOpenInMenuVersion" not in create_code
+    assert "codexZedOpenInMenuBound" in menu_code
+    assert "codexZedOpenInMenuActivatedAt" in menu_code
+    assert "function activateZedRemoteOpenInMenuItem" in menu_code
+    assert "const existingZedItem" in menu_code
+    assert "bindZedRemoteOpenInMenuItem(existingZedItem, \"native\")" in menu_code
+    assert "VS Code|Cursor|Antigravity" in menu_code
+    assert "referenceItem.parentElement?.appendChild(createZedRemoteOpenInMenuItem(referenceItem));" in menu_code
+    assert "document.dispatchEvent(new KeyboardEvent(\"keydown\", { key: \"Escape\"" in menu_code
+
+
+def test_renderer_script_observes_native_open_in_menu_mounts():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    start = text.index("function shouldScheduleScan")
+    end = text.index("\n\n  function runScheduledScan", start)
+    schedule_code = text[start:end]
+
+    assert "[role=\"menu\"], [data-radix-popper-content-wrapper]" in schedule_code
+
+
+def test_renderer_script_handles_zed_remote_open_rejection_with_toast():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    start = text.index("async function openZedRemote")
+    end = text.index("\n\n  function attachZedRemoteButton", start)
+    open_code = text[start:end]
+
+    assert "try {" in open_code
+    assert "postJson(\"/zed-remote/open\", nextRequest)" in open_code
+    assert "catch (error)" in open_code
+    assert "showZedRemoteToast(error?.message || \"Cannot open this file in Zed Remote\")" in open_code
+
+
+def test_renderer_script_zed_remote_uses_codex_remote_source_contract():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    zed_code = text[text.index("function zedRemoteContext"):text.index("\n\n  async function openZedRemote")]
+
+    assert "hostConfig" in zed_code
+    assert "supportsSsh" in zed_code
+    assert "remoteWorkspaceRoot" in zed_code
+    assert "remotePath" in zed_code
+    assert "hostId.startsWith(\"remote-ssh-\")" in zed_code
+    assert "open-in-targets" in zed_code
+    assert "__reactFiber" in zed_code
+    assert "__reactProps" in zed_code
+    assert "JSON.parse" in zed_code
+
+
+def test_renderer_script_zed_remote_has_fallback_for_hidden_remote_context():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    zed_code = text[text.index("function zedRemoteHostIdFromText"):text.index("\n\n  function zedRemoteContextFromSerializedState")]
+    candidates_code = text[text.index("function zedRemoteFileCandidates"):text.index("\n\n  function zedRemoteBestOpenRequest")]
+
+    assert "function zedRemoteFallbackContextForElement" in zed_code
+    assert "\"remote-ssh-codex-managed:remote\"" in zed_code
+    assert "\"/bin/repo/\"" in zed_code
+    assert "zedRemoteFallbackContextForElement(node)" in candidates_code
+
+
+def test_renderer_script_zed_remote_does_not_use_unscoped_broad_anchor_selector():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    start = text.index("function zedRemoteFileCandidates")
+    end = text.index("\n\n  async function openZedRemote", start)
+    candidates_code = text[start:end]
+
+    assert '"code, a,' not in candidates_code
+    assert '"code, a' not in candidates_code
+    assert "getAttribute(\"href\")" not in candidates_code
+    assert "context.workspaceRoot && !path.startsWith" in text
+    assert "if (!candidateContext?.hostId && !candidateContext?.ssh?.host) return;" in candidates_code
+
+
+def test_renderer_script_zed_remote_candidate_sources_are_structured():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    start = text.index("function zedRemoteFileCandidates")
+    end = text.index("\n\n  async function openZedRemote", start)
+    candidates_code = text[start:end]
+
+    assert "[data-remote-path]" in candidates_code
+    assert "[data-file-path]" in candidates_code
+    assert "[data-path]" in candidates_code
+    assert "data-open-in-targets" in candidates_code
+    assert "zedRemotePathFromElementMetadata" in candidates_code
+    assert "zedRemoteAnchorHasOpenFileMetadata" in candidates_code
+    assert "span.inline-markdown, code, [class*='inlineMarkdown']" in candidates_code
+    scan_relevance_code = text[text.index("const scanRelevantSelector"):text.index("function nodeSelfOrAncestorMatchesScanRelevance")]
+    assert '"span.inline-markdown"' in scan_relevance_code
+    assert "\"[class*='inlineMarkdown']\"" in scan_relevance_code
+
+
+def test_runtime_renderer_asset_contains_zed_remote_open_controls():
+    text = Path("assets/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "zedRemoteOpen" in text
+    assert 'src="apps/zed.png"' in text
+    assert 'postJson("/zed-remote/open", nextRequest)' in text
+    assert 'data-codex-plus-setting="zedRemoteOpen"' in text
+    assert "[role=\"menu\"], [data-radix-popper-content-wrapper]" in text
+
+def test_renderer_script_has_thread_scroll_restore_toggle():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "threadScrollRestore: true" in text
+    assert "切换对话保留位置" in text
+    assert "恢复到上一次浏览位置" in text
+    assert 'data-codex-plus-setting="threadScrollRestore"' in text
+    assert "codexThreadScrollKey" in text
+    assert "codexThreadScrollVersion" in text
+
+
+def test_renderer_script_persists_and_restores_thread_scroll_positions():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "function readThreadScrollEntries" in text
+    assert "function writeThreadScrollEntries" in text
+    assert "function saveThreadScrollPositionNow" in text
+    assert "function restoreThreadScrollPosition" in text
+    assert "function scheduleThreadScrollRestore" in text
+    assert "function syncThreadScrollState" in text
+    assert "function currentThreadScroller" in text
+    assert "function currentSessionRef" in text
+    assert "function locationThreadId" in text
+    assert "codexThreadScrollRestoreWindowMs = 3200" in text
+    assert 'localStorage.getItem(codexThreadScrollKey)' in text
+    assert 'localStorage.setItem(codexThreadScrollKey' in text
+    assert "scrollTo({ top: targetTop, behavior: \"auto\" })" in text
+    assert "codexThreadScrollRestoreDelaysMs" in text
+    assert "codexThreadScrollMaxEntries = 120" in text
+
+
+def test_renderer_script_tracks_thread_switches_for_scroll_restore():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "function installThreadScrollNavigationCapture" in text
+    assert "function installThreadScrollRouteHooks" in text
+    assert "document.addEventListener(\"pointerdown\", navigationHandler, true)" in text
+    assert "document.addEventListener(\"click\", clickHandler, true)" in text
+    assert "document.addEventListener(\"keydown\", keyboardHandler, true)" in text
+    assert "history[method] = function codexThreadScrollPatchedHistory" in text
+    assert "window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id)" in text
+    assert "function scheduleThreadScrollSyncAttempts" in text
+    assert "function captureThreadScrollNavigation" in text
+    assert "const sessionChanged = !!targetKey && targetKey !== runtime.activeSessionId" in text
+    assert "runtime.pendingNavigation = { fromSessionId: runtime.activeSessionId, targetSessionId: targetKey, at: Date.now() }" in text
+    assert "duplicatePendingTarget" in text
+    assert "if (!duplicatePendingTarget) saveThreadScrollPositionNow();" in text
+    assert "scheduleThreadScrollSyncAttempts(true)" in text
+    assert "window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId())" in text
+    assert 'window.removeEventListener("popstate", window.__codexThreadScrollPopStateHandler, true)' in text
+    assert 'window.removeEventListener("hashchange", window.__codexThreadScrollHashChangeHandler, true)' in text
+    assert 'window.addEventListener("popstate", window.__codexThreadScrollPopStateHandler, true)' in text
+    assert 'window.addEventListener("hashchange", window.__codexThreadScrollHashChangeHandler, true)' in text
+    assert "document.addEventListener(\"visibilitychange\"" in text
+    assert "codexThreadScrollRouteHooksVersion = \"dispatcher:2\"" in text
+    assert "const prototypeMethod = typeof History !== \"undefined\" ? History.prototype?.[method] : null" in text
+    assert "storedMethod?.name === \"codexThreadScrollPatchedHistory\"" in text
+    assert "currentMethod?.name === \"codexThreadScrollPatchedHistory\"" in text
+    assert 'mutation.type === "attributes" && mutation.attributeName === "aria-current"' in text
+    assert 'attributes: true, attributeFilter: ["aria-current"]' in text
+    assert "setTimeout(() => {" in text[text.index("function scheduleThreadScrollSync"):text.index("\n\n  function installThreadScrollRouteHooks")]
+    assert "updateThreadScrollHandlers();" in text[text.index("function scanLightweight"):text.index("\n\n  function scanDeferred")]
+    assert "scheduleThreadScrollSync(true);" in text[text.index("function scanLightweight"):text.index("\n\n  function scanDeferred")]
+    assert "scheduleThreadScrollSync(true);" in text[text.index("function scanDeferred"):text.index("\n\n  function runScanStep")]
+    sync_code = text[text.index("function syncThreadScrollState"):text.index("\n\n  function scheduleThreadScrollSyncAttempts")]
+    assert "if (!nextSessionId) return;" in sync_code
+    assert "saveThreadScrollPositionNow(runtime.activeSessionId, runtime.activeScroller)" not in sync_code
+
+
+def test_renderer_script_prevents_native_autoscroll_from_overwriting_restored_position():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "function clearThreadScrollRestoreLock" in text
+    assert "function activeThreadScrollRestoreLock" in text
+    assert "function startThreadScrollRestoreLock" in text
+    assert "function prepareThreadScrollRestoreLock" in text
+    assert "function currentThreadScrollRestoreLock" in text
+    assert "function shouldBlockThreadScrollAutobottom" in text
+    assert "function finiteScrollNumber" in text
+    assert "top: finiteScrollNumber(value.top)" in text
+    assert "top: finiteScrollNumber(scroller.scrollTop)" in text
+    assert "function threadScrollIsReversed" in text
+    assert 'flexDirection === "column-reverse"' in text
+    assert "function threadScrollRange" in text
+    assert "? { min: -extent, max: 0, bottom: 0 }" in text
+    assert "codexThreadScrollListenerVersion = \"4\"" in text
+    assert "let listenerReplaced = false" in text
+    assert "listenerReplaced = true" in text
+    assert "if (!listenerReplaced && runtime.activeScroller === scroller" in text
+    assert "runtime.scrollListenerVersion !== codexThreadScrollListenerVersion" in text
+    assert "runtime.scrollListenerVersion = codexThreadScrollListenerVersion" in text
+    assert "threadScrollTargetTop(scroller, targetTop)" in text
+    assert "return Math.max(range.min, Math.min(range.max, finiteScrollNumber(targetTop)))" in text
+    assert "return Math.abs(range.bottom - finiteScrollNumber(top))" in text
+    assert "function installThreadScrollProgrammaticScrollGuard" in text
+    assert "codexThreadScrollProgrammaticGuardVersion = \"dispatcher:2\"" in text
+    assert "window.__codexThreadScrollOriginals = window.__codexThreadScrollOriginals || {}" in text
+    assert "window.__codexThreadScrollHandlers?.shouldBlockAutobottom" in text
+    assert "function threadScrollNativePrototypeSnapshot" in text
+    assert "document.createElement(\"iframe\")" in text
+    assert "function threadScrollFunctionLooksGuarded" in text
+    assert "function threadScrollOriginalFunction" in text
+    assert "threadScrollFunctionLooksGuarded(current)" in text
+    assert "nativeSnapshot.elementScrollTo" in text
+    assert "Element.prototype.scrollTo = function codexThreadScrollGuardedScrollTo" in text
+    assert "Element.prototype.scroll = function codexThreadScrollGuardedScroll" in text
+    assert "Element.prototype.scrollBy = function codexThreadScrollGuardedScrollBy" in text
+    assert "Element.prototype.scrollIntoView = function codexThreadScrollGuardedScrollIntoView" in text
+    assert "window.scrollTo = function codexThreadScrollGuardedWindowScrollTo" in text
+    assert "window.scroll = function codexThreadScrollGuardedWindowScroll" in text
+    assert "window.scrollBy = function codexThreadScrollGuardedWindowScrollBy" in text
+    assert 'Object.defineProperty(scrollTop.prototype, "scrollTop"' in text
+    assert "runtime.applyingRestore = true" in text
+    guard_code = text[text.index("function shouldBlockThreadScrollAutobottom"):text.index("\n\n  function scrollToRequestedTop")]
+    assert "const lock = currentThreadScrollRestoreLock();" in guard_code
+    assert "if (!lock || !codexPlusSettings().threadScrollRestore) return false;" in guard_code
+    assert "if (runtime.applyingRestore || !guardScroller) return false;" in guard_code
+    assert "if (activeThreadScrollRestoreLock(key)) return;" in text
+    assert "installThreadScrollProgrammaticScrollGuard();" in text[text.index("function scanLightweight"):text.index("\n\n  function scanDeferred")]
+    assert "shouldEnforceThreadScrollRestore" not in text
+    assert "scheduleThreadScrollRestoreEnforcement" not in text
+    assert "restoreEnforceRafId" not in text
+
+
+def test_renderer_script_cancels_thread_scroll_restore_on_user_scroll_intent():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "codexThreadScrollUserIntentWindowMs = 1200" in text
+    assert "codexThreadScrollUserIntentVersion = \"dispatcher:2\"" in text
+    assert "function cancelThreadScrollRestoreForUserIntent" in text
+    assert "function userScrollIntentActive" in text
+    assert "function markThreadScrollUserIntent" in text
+    assert "function markThreadScrollKeyboardIntent" in text
+    assert "function markThreadScrollPointerIntent" in text
+    assert "function installThreadScrollUserIntentCapture" in text
+    assert "function clearThreadScrollSyncTimers" in text
+    assert "runtime.userCancelledRestoreSessionId = cancelledSessionId" in text
+    assert "runtime.userScrollIntentUntil = Date.now() + codexThreadScrollUserIntentWindowMs" in text
+    assert "window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1" in text
+    assert "window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1" in text
+    assert "clearThreadScrollRestoreTimers();" in text
+    assert "clearThreadScrollSyncTimers();" in text
+    assert "clearThreadScrollRestoreLock();" in text
+    assert "function threadScrollRestoreCancelledForSession" in text
+    assert "if (userScrollIntentActive() || threadScrollRestoreCancelledForSession(currentKey)) return;" in text
+    assert 'document.addEventListener("wheel", window.__codexThreadScrollWheelIntentHandler' in text
+    assert 'document.addEventListener("touchmove", window.__codexThreadScrollTouchIntentHandler' in text
+    assert 'document.addEventListener("keydown", window.__codexThreadScrollKeyIntentHandler, true)' in text
+    assert "installThreadScrollUserIntentCapture();" in text[text.index("function scanLightweight"):text.index("\n\n  function scanDeferred")]
+
+
+def test_renderer_script_hardens_thread_scroll_storage_keys():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "function validThreadScrollSessionKey" in text
+    assert 'key === "__proto__"' in text
+    assert 'key === "prototype"' in text
+    assert 'key === "constructor"' in text
+    assert "/^[A-Za-z0-9_.-]{8,128}$/.test(key)" in text
+    assert "const entries = Object.create(null)" in text
+    assert "const pruned = Object.create(null)" in text
+    assert "window.__codexThreadScrollEntries = Object.create(null)" in text
+
+
+def test_renderer_script_installs_thread_scroll_dispatcher_handlers():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "function updateThreadScrollHandlers" in text
+    assert "window.__codexThreadScrollHandlers = {" in text
+    assert "shouldBlockAutobottom: shouldBlockThreadScrollAutobottom" in text
+    assert "shouldBlockIntoView: shouldBlockThreadScrollIntoView" in text
+    assert "markUserIntent: markThreadScrollUserIntent" in text
+    assert "markKeyboardIntent: markThreadScrollKeyboardIntent" in text
+    assert "markPointerIntent: markThreadScrollPointerIntent" in text
+    assert "captureNavigation: captureThreadScrollNavigation" in text
+    assert "saveNow: saveThreadScrollPositionNow" in text
+    assert "prepareRestoreLock: prepareThreadScrollRestoreLock" in text
+    assert "scheduleSyncAttempts: scheduleThreadScrollSyncAttempts" in text

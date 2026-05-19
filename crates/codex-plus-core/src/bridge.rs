@@ -52,18 +52,39 @@ pub fn build_bridge_script(binding_name: &str) -> String {
     )
 }
 
+pub fn bridge_health_check_script() -> &'static str {
+    r#"
+(() => {
+  const bridge = window.__codexSessionDeleteBridge;
+  if (typeof bridge !== "function") return false;
+  try {
+    return Promise.race([
+      Promise.resolve(bridge("/backend/status", {})).then((result) => !!result && result.status === "ok"),
+      new Promise((resolve) => setTimeout(() => resolve(false), 2000)),
+    ]);
+  } catch (error) {
+    return false;
+  }
+})()
+"#
+}
+
 pub async fn evaluate_script(websocket_url: &str, script: &str) -> anyhow::Result<Value> {
+    evaluate_script_with_await_promise(websocket_url, script, false).await
+}
+
+pub async fn evaluate_script_with_await_promise(
+    websocket_url: &str,
+    script: &str,
+    await_promise: bool,
+) -> anyhow::Result<Value> {
     let socket = connect_cdp_websocket(websocket_url).await?;
     let mut session = CdpSession::new(socket);
     session
         .send_command(
             1,
             "Runtime.evaluate",
-            json!({
-                "expression": script,
-                "awaitPromise": false,
-                "allowUnsafeEvalBlockedByCSP": true,
-            }),
+            runtime_evaluate_params_with_await_promise(script, await_promise),
         )
         .await
 }
@@ -152,9 +173,13 @@ pub async fn install_bridge(
 }
 
 pub fn runtime_evaluate_params(script: &str) -> Value {
+    runtime_evaluate_params_with_await_promise(script, false)
+}
+
+pub fn runtime_evaluate_params_with_await_promise(script: &str, await_promise: bool) -> Value {
     json!({
         "expression": script,
-        "awaitPromise": false,
+        "awaitPromise": await_promise,
         "allowUnsafeEvalBlockedByCSP": true,
     })
 }

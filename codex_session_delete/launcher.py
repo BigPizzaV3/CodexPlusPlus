@@ -17,7 +17,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
-from codex_session_delete import cdp
+from codex_session_delete import cdp, zed_remote
 from codex_session_delete.app_paths import resolve_codex_app_dir
 from codex_session_delete.api_adapter import ApiAdapter, UnavailableApiAdapter
 from codex_session_delete.backup_store import BackupStore
@@ -943,6 +943,12 @@ def handle_bridge_request(
         return runtime.backend_status()
     if path == "/backend/repair" and runtime:
         return runtime.repair_backend()
+    if path == "/zed-remote/status" and runtime:
+        return zed_remote.zed_remote_status()
+    if path == "/zed-remote/resolve-host" and runtime:
+        return zed_remote.resolve_ssh_target_response(payload)
+    if path == "/zed-remote/open" and runtime:
+        return zed_remote.open_zed_remote(payload)
     if path == "/ads" and runtime:
         return runtime.ads()
     if path == "/codex-model-catalog" and runtime:

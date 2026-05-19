@@ -11,6 +11,12 @@
   const timelineMarkerClass = "codex-conversation-timeline-marker";
   const timelineTooltipClass = "codex-conversation-timeline-tooltip";
   const timelineTargetClass = "codex-conversation-timeline-target";
+  const zedRemoteButtonClass = "codex-zed-remote-button";
+  const zedRemoteOpenInMenuItemClass = "codex-zed-open-in-menu-item";
+  const zedRemoteToastClass = "codex-zed-remote-toast";
+  const zedRemoteOpenVersion = "1";
+  const zedRemoteOpenInMenuVersion = "1";
+  const zedRemoteOpenInMenuActivationWindowMs = 600;
   const timelineQuestionLimit = 40;
   const timelineMinTopPercent = 2;
   const timelineMaxTopPercent = 98;
@@ -23,7 +29,7 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "8";
+  const codexDeleteStyleVersion = "9";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "7";
@@ -33,14 +39,35 @@
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationTimelineVersion = "2";
+  const codexThreadScrollVersion = "1";
   const codexPlusVersion = "1.0.7";
+  const codexPlusMenuVersion = `7:${codexPlusVersion}`;
+  const codexPlusTriggerVersion = `6:${codexPlusVersion}`;
   const codexPlusSettingsKey = "codexPlusSettings";
+  const codexThreadScrollKey = "codexThreadScroll";
+  const codexThreadScrollMaxEntries = 120;
+  const codexThreadScrollSaveThrottleMs = 120;
+  const codexThreadScrollRestoreWindowMs = 3200;
+  const codexThreadScrollRestoreDelaysMs = [0, 80, 220, 500, 1000, 1800, 2800];
+  const codexThreadScrollUserIntentWindowMs = 1200;
+  const codexThreadScrollProgrammaticGuardVersion = "dispatcher:2";
+  const codexThreadScrollRouteHooksVersion = "dispatcher:2";
+  const codexThreadScrollListenerVersion = "4";
+  const codexThreadScrollUserIntentVersion = "dispatcher:2";
   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
   clearTimeout(window.__codexProjectMoveProjectionTimer);
   clearTimeout(window.__codexProjectMoveChatsSortTimer);
   window.__codexProjectMoveProjectionTimer = null;
   window.__codexProjectMoveChatsSortTimer = null;
+  clearTimeout(window.__codexThreadScrollSaveTimer);
+  window.__codexThreadScrollSaveTimer = null;
+  (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
+  window.__codexThreadScrollRestoreTimers = [];
+  (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
+  window.__codexThreadScrollSyncTimers = [];
+  window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+  window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
   window.__codexConversationTimelineNodeCounter = window.__codexConversationTimelineNodeCounter || 0;
   const selectors = {
     sidebarThread: "[data-app-action-sidebar-thread-id]",
@@ -105,6 +132,48 @@
         border-color: #10a37f;
         background: #d1fae5;
         color: #065f46;
+      }
+      .${zedRemoteButtonClass} {
+        border: 1px solid #10a37f;
+        border-radius: 7px;
+        background: #d1fae5;
+        color: #065f46;
+        font: 12px system-ui, sans-serif;
+        line-height: 16px;
+        margin-left: 6px;
+        padding: 2px 7px;
+        cursor: pointer;
+      }
+      .${zedRemoteButtonClass}:hover,
+      .${zedRemoteButtonClass}:focus-visible {
+        background: #a7f3d0;
+        outline: none;
+      }
+      .${zedRemoteOpenInMenuItemClass} {
+        cursor: pointer;
+      }
+      .codex-zed-open-in-menu-icon {
+        width: 18px;
+        height: 18px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        object-fit: contain;
+      }
+      .${zedRemoteToastClass} {
+        position: fixed;
+        right: 18px;
+        bottom: 58px;
+        z-index: 2147483000;
+        max-width: min(420px, calc(100vw - 36px));
+        border-radius: 8px;
+        background: #111827;
+        color: #ffffff;
+        font: 13px system-ui, sans-serif;
+        line-height: 18px;
+        padding: 10px 12px;
+        box-shadow: 0 8px 30px rgba(0,0,0,.25);
+        pointer-events: none;
       }
       [data-codex-delete-row="true"]:hover .${actionGroupClass} { opacity: 1; }
       [data-codex-delete-row="true"].codex-archive-confirm-visible .${actionGroupClass} { right: 66px; }
@@ -482,7 +551,18 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, forcePluginInstall: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, nativeMenuPlacement: true, modelWhitelistUnlock: true };
+    return {
+      pluginEntryUnlock: true,
+      forcePluginInstall: true,
+      sessionDelete: true,
+      markdownExport: true,
+      projectMove: true,
+      conversationTimeline: true,
+      zedRemoteOpen: true,
+      threadScrollRestore: true,
+      nativeMenuPlacement: true,
+      modelWhitelistUnlock: true,
+    };
   }
 
   function codexPlusSettings() {
@@ -496,6 +576,14 @@
   function setCodexPlusSetting(key, value) {
     const next = { ...codexPlusSettings(), [key]: value };
     localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
+    if (key === "threadScrollRestore" && !value) {
+      clearThreadScrollRestoreTimers();
+      clearThreadScrollSyncTimers();
+      window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+      window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
+      clearThreadScrollRestoreLock();
+      bindThreadScrollListener(null);
+    }
     renderCodexPlusMenu();
     scan();
   }
@@ -753,6 +841,14 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationTimeline"><span></span></button>
             </div>
             <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">Zed Remote open</div><div class="codex-plus-row-description">Open supported remote SSH file references in Zed without patching Codex.app.</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="zedRemoteOpen"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">切换对话保留位置</div><div class="codex-plus-row-description">开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">Provider 同步</div><div class="codex-plus-row-description">切换供应商（model_provider）时不丢任何历史会话，避免历史对话因为供应商切换而消失。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
             </div>
@@ -905,17 +1001,29 @@
       if (node !== keep) node.remove();
     });
     Array.from(document.querySelectorAll("button")).forEach((button) => {
-      if ((button.textContent || "").trim() === `Codex++ ${codexPlusVersion}` && !button.closest(`#${codexPlusMenuId}`)) {
+      if (/^Codex\+\+ \d+\.\d+\.\d+/.test((button.textContent || "").trim()) && !button.closest(`#${codexPlusMenuId}`)) {
         button.remove();
       }
     });
   }
 
+  function setCodexPlusTriggerLabel(trigger) {
+    if (!trigger) return;
+    const label = `Codex++ ${codexPlusVersion}`;
+    const textNode = Array.from(trigger.childNodes).find((node) => node.nodeType === Node.TEXT_NODE);
+    if (textNode) {
+      textNode.nodeValue = label;
+    } else {
+      trigger.appendChild(document.createTextNode(label));
+    }
+  }
+
   function configureCodexPlusTrigger(menu, trigger, nativeButtonClass) {
     if (!trigger) return;
     if (nativeButtonClass) trigger.className = nativeButtonClass;
-    if (trigger.dataset.codexPlusTriggerInstalled === "5") return;
-    trigger.dataset.codexPlusTriggerInstalled = "5";
+    setCodexPlusTriggerLabel(trigger);
+    if (trigger.dataset.codexPlusTriggerInstalled === codexPlusTriggerVersion) return;
+    trigger.dataset.codexPlusTriggerInstalled = codexPlusTriggerVersion;
     trigger.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -988,7 +1096,7 @@
       return;
     }
     let insertionPoint = findNativeMenuInsertionPoint();
-    if (existing && existing.dataset.codexPlusMenuVersion !== "6") {
+    if (existing && existing.dataset.codexPlusMenuVersion !== codexPlusMenuVersion) {
       existing.remove();
       insertionPoint = findNativeMenuInsertionPoint();
     } else if (existing && insertionPoint && existing.parentElement === insertionPoint.parent) {
@@ -999,7 +1107,7 @@
     const menu = document.createElement("div");
     menu.id = codexPlusMenuId;
     menu.dataset.codexPlusMenu = "true";
-    menu.dataset.codexPlusMenuVersion = "6";
+    menu.dataset.codexPlusMenuVersion = codexPlusMenuVersion;
     const trigger = document.createElement("button");
     trigger.type = "button";
     trigger.textContent = `Codex++ ${codexPlusVersion}`;
@@ -1188,6 +1296,747 @@
     const rawTitle = (titleNode?.textContent || (titleNode ? "" : (row.textContent || "Untitled session")));
     const title = (titleNode ? rawTitle : rawTitle.replace(/\s*(导出|删除|移动|移出项目)(\s*(导出|删除|移动|移出项目))*$/g, "")).trim().slice(0, 160);
     return { session_id: sessionId, title };
+  }
+
+  function locationThreadId() {
+    const source = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    const match = source.match(/(?:session|conversation|thread)(?:\/|=|:|-)([A-Za-z0-9_.-]+)/i)
+      || source.match(/\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[/?#]|$)/)
+      || source.match(/\/([A-Za-z0-9_-]{24,})(?:[/?#]|$)/);
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
+  function validThreadScrollSessionKey(sessionId) {
+    const key = projectMoveSessionKey(sessionId);
+    if (!key || key === "__proto__" || key === "prototype" || key === "constructor") return "";
+    return /^[A-Za-z0-9_.-]{8,128}$/.test(key) ? key : "";
+  }
+
+  function currentSessionRef() {
+    const rows = sessionRows();
+    for (const row of rows) {
+      const ref = sessionRefFromRow(row);
+      if (ref.session_id && isCurrentSessionRow(row, ref)) return ref;
+    }
+    return { session_id: locationThreadId(), title: "" };
+  }
+
+  function finiteNonNegativeNumber(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+  }
+
+  function finiteScrollNumber(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : 0;
+  }
+
+  function readThreadScrollEntries() {
+    if (window.__codexThreadScrollEntries && typeof window.__codexThreadScrollEntries === "object") {
+      return { ...window.__codexThreadScrollEntries };
+    }
+    try {
+      const parsed = JSON.parse(localStorage.getItem(codexThreadScrollKey) || "{}");
+      const rawEntries = parsed?.version === codexThreadScrollVersion && parsed?.entries && typeof parsed.entries === "object"
+        ? parsed.entries
+        : parsed && typeof parsed === "object"
+          ? parsed
+          : {};
+      const entries = Object.create(null);
+      Object.entries(rawEntries).forEach(([key, value]) => {
+        const safeKey = validThreadScrollSessionKey(key);
+        if (!safeKey || !value || typeof value !== "object") return;
+        entries[safeKey] = {
+          top: finiteScrollNumber(value.top),
+          scrollHeight: finiteNonNegativeNumber(value.scrollHeight),
+          clientHeight: finiteNonNegativeNumber(value.clientHeight),
+          at: finiteNonNegativeNumber(value.at),
+        };
+      });
+      window.__codexThreadScrollEntries = entries;
+      return { ...entries };
+    } catch {
+      window.__codexThreadScrollEntries = Object.create(null);
+      return {};
+    }
+  }
+
+  function writeThreadScrollEntries(entries) {
+    const pruned = Object.create(null);
+    Object.entries(entries || {})
+      .sort((left, right) => finiteNonNegativeNumber(right[1]?.at) - finiteNonNegativeNumber(left[1]?.at))
+      .slice(0, codexThreadScrollMaxEntries)
+      .forEach(([key, value]) => {
+        const safeKey = validThreadScrollSessionKey(key);
+        if (safeKey) pruned[safeKey] = value;
+      });
+    window.__codexThreadScrollEntries = pruned;
+    localStorage.setItem(codexThreadScrollKey, JSON.stringify({ version: codexThreadScrollVersion, entries: pruned }));
+  }
+
+  function currentThreadScroller() {
+    const explicit = document.querySelector(".thread-scroll-container");
+    if (explicit?.isConnected) return explicit;
+    const root = conversationTimelineRoot();
+    if (!root?.isConnected) return document.scrollingElement || document.documentElement;
+    const style = getComputedStyle(root);
+    if (/(auto|scroll)/.test(style.overflowY) && root.scrollHeight > root.clientHeight) return root;
+    return nearestTimelineScroller(root);
+  }
+
+  function threadScrollRuntime() {
+    if (!window.__codexThreadScrollRuntime || typeof window.__codexThreadScrollRuntime !== "object") {
+      window.__codexThreadScrollRuntime = {
+        activeSessionId: "",
+        activeScroller: null,
+        scrollListener: null,
+        scrollListenerUsesWindow: false,
+        lastSavedTop: -1,
+        lastSavedHeight: -1,
+        lastSavedClientHeight: -1,
+        restoreLock: null,
+        applyingRestore: false,
+        pendingNavigation: null,
+        userScrollIntentUntil: 0,
+        userCancelledRestoreSessionId: "",
+      };
+    }
+    return window.__codexThreadScrollRuntime;
+  }
+
+  function clearThreadScrollRestoreTimers() {
+    (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexThreadScrollRestoreTimers = [];
+  }
+
+  function clearThreadScrollSyncTimers() {
+    (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexThreadScrollSyncTimers = [];
+  }
+
+  function clearThreadScrollRestoreLock() {
+    const runtime = threadScrollRuntime();
+    runtime.restoreLock = null;
+  }
+
+  function cancelThreadScrollRestoreForUserIntent() {
+    const runtime = threadScrollRuntime();
+    const cancelledSessionId = validThreadScrollSessionKey(runtime.restoreLock?.sessionId)
+      || validThreadScrollSessionKey(currentSessionRef().session_id)
+      || validThreadScrollSessionKey(runtime.activeSessionId);
+    runtime.userScrollIntentUntil = Date.now() + codexThreadScrollUserIntentWindowMs;
+    runtime.userCancelledRestoreSessionId = cancelledSessionId;
+    window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+    window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
+    clearThreadScrollRestoreTimers();
+    clearThreadScrollSyncTimers();
+    clearThreadScrollRestoreLock();
+  }
+
+  function userScrollIntentActive() {
+    return finiteNonNegativeNumber(threadScrollRuntime().userScrollIntentUntil) > Date.now();
+  }
+
+  function threadScrollRestoreCancelledForSession(sessionId = threadScrollRuntime().activeSessionId) {
+    const key = validThreadScrollSessionKey(sessionId);
+    return !!key && threadScrollRuntime().userCancelledRestoreSessionId === key;
+  }
+
+  function activeThreadScrollRestoreLock(sessionId = threadScrollRuntime().activeSessionId) {
+    const runtime = threadScrollRuntime();
+    const key = validThreadScrollSessionKey(sessionId);
+    const lock = runtime.restoreLock;
+    if (!lock || !key || lock.sessionId !== key) return null;
+    if (lock.expiresAt <= Date.now()) {
+      clearThreadScrollRestoreLock();
+      return null;
+    }
+    return lock;
+  }
+
+  function currentThreadScrollRestoreLock() {
+    const sessionId = threadScrollRuntime().restoreLock?.sessionId;
+    return sessionId ? activeThreadScrollRestoreLock(sessionId) : null;
+  }
+
+  function threadScrollIsReversed(scroller) {
+    return getComputedStyle(scroller).flexDirection === "column-reverse";
+  }
+
+  function threadScrollRange(scroller) {
+    const extent = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    return threadScrollIsReversed(scroller)
+      ? { min: -extent, max: 0, bottom: 0 }
+      : { min: 0, max: extent, bottom: extent };
+  }
+
+  function startThreadScrollRestoreLock(sessionId, entry) {
+    const key = validThreadScrollSessionKey(sessionId);
+    if (!key || !entry) {
+      clearThreadScrollRestoreLock();
+      return null;
+    }
+    const runtime = threadScrollRuntime();
+    runtime.restoreLock = {
+      sessionId: key,
+      targetTop: finiteScrollNumber(entry.top),
+      expiresAt: Date.now() + codexThreadScrollRestoreWindowMs,
+    };
+    return runtime.restoreLock;
+  }
+
+  function prepareThreadScrollRestoreLock(sessionId) {
+    const key = validThreadScrollSessionKey(sessionId);
+    const entry = key ? readThreadScrollEntries()[key] : null;
+    if (entry) startThreadScrollRestoreLock(key, entry);
+  }
+
+  function threadScrollTargetTop(scroller, targetTop) {
+    const range = threadScrollRange(scroller);
+    return Math.max(range.min, Math.min(range.max, finiteScrollNumber(targetTop)));
+  }
+
+  function threadScrollNearBottom(scroller, top) {
+    const range = threadScrollRange(scroller);
+    return Math.abs(range.bottom - finiteScrollNumber(top)) <= Math.max(24, scroller.clientHeight * 0.15);
+  }
+
+  function threadScrollGuardScroller(scroller) {
+    if (!scroller) return null;
+    const runtime = threadScrollRuntime();
+    const rootScroller = document.scrollingElement || document.documentElement || document.body;
+    const normalizedScroller = scroller === document.body || scroller === document.documentElement ? rootScroller : scroller;
+    if (normalizedScroller === runtime.activeScroller) return normalizedScroller;
+    const currentScroller = currentThreadScroller();
+    if (normalizedScroller === currentScroller) return normalizedScroller;
+    return null;
+  }
+
+  function shouldBlockThreadScrollAutobottom(scroller, top) {
+    const runtime = threadScrollRuntime();
+    const lock = currentThreadScrollRestoreLock();
+    if (!lock || !codexPlusSettings().threadScrollRestore) return false;
+    const guardScroller = threadScrollGuardScroller(scroller);
+    if (runtime.applyingRestore || !guardScroller) return false;
+    const targetTop = threadScrollTargetTop(guardScroller, lock.targetTop);
+    return Math.abs(finiteScrollNumber(top) - targetTop) > 8 && threadScrollNearBottom(guardScroller, top);
+  }
+
+  function scrollToRequestedTop(args, scroller) {
+    if (!args.length) return null;
+    const first = args[0];
+    if (typeof first === "object" && first !== null) {
+      return first.top == null ? null : finiteScrollNumber(first.top);
+    }
+    if (args.length >= 2) return finiteScrollNumber(args[1]);
+    return scroller?.scrollTop ?? null;
+  }
+
+  function scrollByRequestedTop(args, scroller) {
+    if (!args.length || !scroller) return null;
+    const first = args[0];
+    let delta = null;
+    if (typeof first === "object" && first !== null) {
+      delta = first.top == null ? null : Number(first.top);
+    } else if (args.length >= 2) {
+      delta = Number(args[1]);
+    }
+    return Number.isFinite(delta) ? finiteScrollNumber(scroller.scrollTop + delta) : null;
+  }
+
+  function shouldBlockThreadScrollIntoView(element) {
+    const runtime = threadScrollRuntime();
+    const lock = currentThreadScrollRestoreLock();
+    if (runtime.applyingRestore || !lock || !element) return false;
+    const activeScroller = threadScrollGuardScroller(runtime.activeScroller) || threadScrollGuardScroller(currentThreadScroller());
+    if (!activeScroller || element === activeScroller || !activeScroller.contains?.(element)) return false;
+    if (threadScrollIsReversed(activeScroller) && shouldBlockThreadScrollAutobottom(activeScroller, 0)) return true;
+    const elementRect = element.getBoundingClientRect?.();
+    if (!elementRect) return false;
+    const elementBottomTop = activeScroller.scrollTop + elementRect.bottom - timelineScrollerViewportTop(activeScroller) - activeScroller.clientHeight;
+    return shouldBlockThreadScrollAutobottom(activeScroller, elementBottomTop);
+  }
+
+  function findScrollTopDescriptor() {
+    const htmlElementPrototype = typeof HTMLElement === "undefined" ? null : HTMLElement.prototype;
+    for (const prototype of [Element.prototype, htmlElementPrototype].filter(Boolean)) {
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, "scrollTop");
+      if (descriptor?.get && descriptor?.set) return { prototype, descriptor };
+    }
+    return null;
+  }
+
+  function threadScrollNativePrototypeSnapshot() {
+    if (window.__codexThreadScrollNativePrototypeSnapshot) return window.__codexThreadScrollNativePrototypeSnapshot;
+    const snapshot = {};
+    let frame = null;
+    try {
+      frame = document.createElement("iframe");
+      frame.style.display = "none";
+      frame.tabIndex = -1;
+      frame.setAttribute("aria-hidden", "true");
+      (document.documentElement || document.body)?.appendChild(frame);
+      const frameWindow = frame.contentWindow;
+      if (frameWindow?.Element?.prototype) {
+        snapshot.elementScrollTo = frameWindow.Element.prototype.scrollTo;
+        snapshot.elementScroll = frameWindow.Element.prototype.scroll;
+        snapshot.elementScrollBy = frameWindow.Element.prototype.scrollBy;
+        snapshot.scrollIntoView = frameWindow.Element.prototype.scrollIntoView;
+      }
+      if (frameWindow?.Window?.prototype) {
+        snapshot.windowScrollTo = frameWindow.Window.prototype.scrollTo;
+        snapshot.windowScroll = frameWindow.Window.prototype.scroll;
+        snapshot.windowScrollBy = frameWindow.Window.prototype.scrollBy;
+      }
+      const frameHtmlElementPrototype = frameWindow?.HTMLElement?.prototype;
+      const candidates = [
+        { framePrototype: frameWindow?.Element?.prototype, prototype: Element.prototype },
+        { framePrototype: frameHtmlElementPrototype, prototype: typeof HTMLElement === "undefined" ? null : HTMLElement.prototype },
+      ];
+      for (const candidate of candidates) {
+        const descriptor = candidate.framePrototype ? Object.getOwnPropertyDescriptor(candidate.framePrototype, "scrollTop") : null;
+        if (descriptor?.get && descriptor?.set && candidate.prototype) {
+          snapshot.scrollTop = { prototype: candidate.prototype, descriptor };
+          break;
+        }
+      }
+    } catch {
+      snapshot.unavailable = true;
+    } finally {
+      frame?.remove?.();
+    }
+    window.__codexThreadScrollNativePrototypeSnapshot = snapshot;
+    return snapshot;
+  }
+
+  function threadScrollFunctionLooksGuarded(fn) {
+    return typeof fn === "function" && (fn.name || "").startsWith("codexThreadScrollGuarded");
+  }
+
+  function threadScrollDescriptorLooksGuarded(descriptor) {
+    try {
+      return String(descriptor?.set || "").includes("__codexThreadScrollHandlers")
+        || String(descriptor?.set || "").includes("shouldBlockThreadScrollAutobottom");
+    } catch {
+      return false;
+    }
+  }
+
+  function threadScrollOriginalFunction(originals, key, current, nativeFunction) {
+    if (typeof originals[key] === "function" && !threadScrollFunctionLooksGuarded(originals[key])) return originals[key];
+    if (threadScrollFunctionLooksGuarded(current) && typeof nativeFunction === "function") return nativeFunction;
+    return typeof originals[key] === "function" ? originals[key] : current;
+  }
+
+  function threadScrollOriginalScrollTopDescriptor(originals) {
+    const current = findScrollTopDescriptor();
+    const nativeScrollTop = threadScrollNativePrototypeSnapshot().scrollTop;
+    if (originals.scrollTop && !threadScrollDescriptorLooksGuarded(originals.scrollTop.descriptor)) return originals.scrollTop;
+    if (current && threadScrollDescriptorLooksGuarded(current.descriptor) && nativeScrollTop) return nativeScrollTop;
+    return originals.scrollTop || current;
+  }
+
+  function installThreadScrollProgrammaticScrollGuard() {
+    if (window.__codexThreadScrollProgrammaticGuardInstalled === codexThreadScrollProgrammaticGuardVersion) return;
+    window.__codexThreadScrollProgrammaticGuardInstalled = codexThreadScrollProgrammaticGuardVersion;
+    window.__codexThreadScrollOriginals = window.__codexThreadScrollOriginals || {};
+    const originals = window.__codexThreadScrollOriginals;
+    const nativeSnapshot = threadScrollNativePrototypeSnapshot();
+    const originalElementScrollTo = threadScrollOriginalFunction(originals, "elementScrollTo", Element.prototype.scrollTo, nativeSnapshot.elementScrollTo);
+    originals.elementScrollTo = originalElementScrollTo;
+    if (typeof originalElementScrollTo === "function") {
+      Element.prototype.scrollTo = function codexThreadScrollGuardedScrollTo(...args) {
+        const top = scrollToRequestedTop(args, this);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(this, top)) return;
+        return originalElementScrollTo.apply(this, args);
+      };
+    }
+    const originalElementScroll = threadScrollOriginalFunction(originals, "elementScroll", Element.prototype.scroll, nativeSnapshot.elementScroll);
+    originals.elementScroll = originalElementScroll;
+    if (typeof originalElementScroll === "function") {
+      Element.prototype.scroll = function codexThreadScrollGuardedScroll(...args) {
+        const top = scrollToRequestedTop(args, this);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(this, top)) return;
+        return originalElementScroll.apply(this, args);
+      };
+    }
+    const originalElementScrollBy = threadScrollOriginalFunction(originals, "elementScrollBy", Element.prototype.scrollBy, nativeSnapshot.elementScrollBy);
+    originals.elementScrollBy = originalElementScrollBy;
+    if (typeof originalElementScrollBy === "function") {
+      Element.prototype.scrollBy = function codexThreadScrollGuardedScrollBy(...args) {
+        const top = scrollByRequestedTop(args, this);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(this, top)) return;
+        return originalElementScrollBy.apply(this, args);
+      };
+    }
+    const originalScrollIntoView = threadScrollOriginalFunction(originals, "scrollIntoView", Element.prototype.scrollIntoView, nativeSnapshot.scrollIntoView);
+    originals.scrollIntoView = originalScrollIntoView;
+    if (typeof originalScrollIntoView === "function") {
+      Element.prototype.scrollIntoView = function codexThreadScrollGuardedScrollIntoView(...args) {
+        if (window.__codexThreadScrollHandlers?.shouldBlockIntoView?.(this)) return;
+        return originalScrollIntoView.apply(this, args);
+      };
+    }
+    const originalWindowScrollTo = threadScrollOriginalFunction(originals, "windowScrollTo", window.scrollTo, nativeSnapshot.windowScrollTo);
+    originals.windowScrollTo = originalWindowScrollTo;
+    if (typeof originalWindowScrollTo === "function") {
+      window.scrollTo = function codexThreadScrollGuardedWindowScrollTo(...args) {
+        const scroller = document.scrollingElement || document.documentElement || document.body;
+        const top = scrollToRequestedTop(args, scroller);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(scroller, top)) return;
+        return originalWindowScrollTo.apply(this, args);
+      };
+    }
+    const originalWindowScroll = threadScrollOriginalFunction(originals, "windowScroll", window.scroll, nativeSnapshot.windowScroll);
+    originals.windowScroll = originalWindowScroll;
+    if (typeof originalWindowScroll === "function") {
+      window.scroll = function codexThreadScrollGuardedWindowScroll(...args) {
+        const scroller = document.scrollingElement || document.documentElement || document.body;
+        const top = scrollToRequestedTop(args, scroller);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(scroller, top)) return;
+        return originalWindowScroll.apply(this, args);
+      };
+    }
+    const originalWindowScrollBy = threadScrollOriginalFunction(originals, "windowScrollBy", window.scrollBy, nativeSnapshot.windowScrollBy);
+    originals.windowScrollBy = originalWindowScrollBy;
+    if (typeof originalWindowScrollBy === "function") {
+      window.scrollBy = function codexThreadScrollGuardedWindowScrollBy(...args) {
+        const scroller = document.scrollingElement || document.documentElement || document.body;
+        const top = scrollByRequestedTop(args, scroller);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(scroller, top)) return;
+        return originalWindowScrollBy.apply(this, args);
+      };
+    }
+    const scrollTop = threadScrollOriginalScrollTopDescriptor(originals);
+    originals.scrollTop = scrollTop;
+    if (scrollTop?.descriptor?.configurable !== false) {
+      try {
+        Object.defineProperty(scrollTop.prototype, "scrollTop", {
+          configurable: true,
+          enumerable: scrollTop.descriptor.enumerable,
+          get() {
+            return scrollTop.descriptor.get.call(this);
+          },
+          set(value) {
+            if (window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(this, value)) return;
+            return scrollTop.descriptor.set.call(this, value);
+          },
+        });
+      } catch {
+        window.__codexThreadScrollTopGuardUnavailable = true;
+      }
+    }
+  }
+
+  function bindThreadScrollListener(scroller) {
+    const runtime = threadScrollRuntime();
+    const currentUsesWindow = !runtime.activeScroller || runtime.activeScroller === document.scrollingElement || runtime.activeScroller === document.documentElement || runtime.activeScroller === document.body;
+    const nextUsesWindow = !scroller || scroller === document.scrollingElement || scroller === document.documentElement || scroller === document.body;
+    let listenerReplaced = false;
+    if (runtime.scrollListener && runtime.scrollListenerVersion !== codexThreadScrollListenerVersion) {
+      const currentTarget = currentUsesWindow ? window : runtime.activeScroller;
+      currentTarget?.removeEventListener?.("scroll", runtime.scrollListener, true);
+      runtime.scrollListener = null;
+      runtime.scrollListenerVersion = "";
+      listenerReplaced = true;
+    }
+    runtime.scrollListener = runtime.scrollListener || (() => scheduleThreadScrollSave());
+    runtime.scrollListenerVersion = codexThreadScrollListenerVersion;
+    if (!listenerReplaced && runtime.activeScroller === scroller && runtime.scrollListenerUsesWindow === nextUsesWindow) return;
+    if (runtime.activeScroller) {
+      const target = currentUsesWindow ? window : runtime.activeScroller;
+      target.removeEventListener("scroll", runtime.scrollListener, true);
+    }
+    runtime.activeScroller = scroller;
+    runtime.scrollListenerUsesWindow = nextUsesWindow;
+    if (!scroller || !codexPlusSettings().threadScrollRestore) return;
+    const target = nextUsesWindow ? window : scroller;
+    target.addEventListener("scroll", runtime.scrollListener, true);
+  }
+
+  function saveThreadScrollPositionNow(sessionId = threadScrollRuntime().activeSessionId, scroller = threadScrollRuntime().activeScroller) {
+    if (!codexPlusSettings().threadScrollRestore) return;
+    const runtime = threadScrollRuntime();
+    const key = validThreadScrollSessionKey(sessionId);
+    if (!key || !scroller) return;
+    if (activeThreadScrollRestoreLock(key)) return;
+    const snapshot = {
+      top: finiteScrollNumber(scroller.scrollTop),
+      scrollHeight: finiteNonNegativeNumber(scroller.scrollHeight),
+      clientHeight: finiteNonNegativeNumber(scroller.clientHeight),
+      at: Date.now(),
+    };
+    if (
+      Math.abs(runtime.lastSavedTop - snapshot.top) < 2 &&
+      runtime.lastSavedHeight === snapshot.scrollHeight &&
+      runtime.lastSavedClientHeight === snapshot.clientHeight
+    ) {
+      return;
+    }
+    const entries = readThreadScrollEntries();
+    entries[key] = snapshot;
+    writeThreadScrollEntries(entries);
+    runtime.lastSavedTop = snapshot.top;
+    runtime.lastSavedHeight = snapshot.scrollHeight;
+    runtime.lastSavedClientHeight = snapshot.clientHeight;
+  }
+
+  function scheduleThreadScrollSave() {
+    if (!codexPlusSettings().threadScrollRestore || window.__codexThreadScrollSaveTimer) return;
+    window.__codexThreadScrollSaveTimer = setTimeout(() => {
+      window.__codexThreadScrollSaveTimer = null;
+      saveThreadScrollPositionNow();
+    }, codexThreadScrollSaveThrottleMs);
+  }
+
+  function restoreThreadScrollPosition(sessionId) {
+    const runtime = threadScrollRuntime();
+    const key = validThreadScrollSessionKey(sessionId);
+    if (!codexPlusSettings().threadScrollRestore || !key || runtime.activeSessionId !== key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
+    const lock = activeThreadScrollRestoreLock(key);
+    const entry = lock || readThreadScrollEntries()[key];
+    if (!entry) return;
+    const scroller = currentThreadScroller();
+    if (!scroller) return;
+    bindThreadScrollListener(scroller);
+    const targetTop = threadScrollTargetTop(scroller, lock ? lock.targetTop : entry.top);
+    if (Math.abs(scroller.scrollTop - targetTop) <= 1) return;
+    runtime.applyingRestore = true;
+    try {
+      if (typeof scroller.scrollTo === "function") {
+        scroller.scrollTo({ top: targetTop, behavior: "auto" });
+      } else {
+        scroller.scrollTop = targetTop;
+      }
+    } finally {
+      runtime.applyingRestore = false;
+    }
+    runtime.lastSavedTop = targetTop;
+    runtime.lastSavedHeight = finiteNonNegativeNumber(scroller.scrollHeight);
+    runtime.lastSavedClientHeight = finiteNonNegativeNumber(scroller.clientHeight);
+  }
+
+  function scheduleThreadScrollRestore(sessionId) {
+    clearThreadScrollRestoreTimers();
+    const key = validThreadScrollSessionKey(sessionId);
+    if (!codexPlusSettings().threadScrollRestore || !key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
+    const entry = readThreadScrollEntries()[key];
+    if (!entry) {
+      clearThreadScrollRestoreLock();
+      return;
+    }
+    startThreadScrollRestoreLock(key, entry);
+    const restoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+    window.__codexThreadScrollRestoreRevision = restoreRevision;
+    window.__codexThreadScrollRestoreTimers = codexThreadScrollRestoreDelaysMs.map((delay) => {
+      return setTimeout(() => {
+        if (window.__codexThreadScrollRestoreRevision !== restoreRevision) return;
+        restoreThreadScrollPosition(key);
+      }, delay);
+    });
+  }
+
+  function syncThreadScrollState(forceRestore = false) {
+    const runtime = threadScrollRuntime();
+    const currentRef = currentSessionRef();
+    const nextSessionId = validThreadScrollSessionKey(currentRef.session_id);
+    if (!nextSessionId) return;
+    if (!codexPlusSettings().threadScrollRestore) {
+      bindThreadScrollListener(null);
+      clearThreadScrollRestoreTimers();
+      clearThreadScrollRestoreLock();
+      runtime.activeSessionId = nextSessionId;
+      return;
+    }
+    if (runtime.activeSessionId !== nextSessionId) prepareThreadScrollRestoreLock(nextSessionId);
+    const nextScroller = currentThreadScroller();
+    bindThreadScrollListener(nextScroller);
+    if (runtime.activeSessionId !== nextSessionId) {
+      runtime.lastSavedTop = -1;
+      runtime.lastSavedHeight = -1;
+      runtime.lastSavedClientHeight = -1;
+      clearThreadScrollRestoreLock();
+      runtime.activeSessionId = nextSessionId;
+      runtime.pendingNavigation = null;
+      runtime.userScrollIntentUntil = 0;
+      if (runtime.userCancelledRestoreSessionId !== nextSessionId) runtime.userCancelledRestoreSessionId = "";
+      scheduleThreadScrollRestore(nextSessionId);
+      return;
+    }
+    runtime.activeSessionId = nextSessionId;
+    if (forceRestore && !userScrollIntentActive() && !threadScrollRestoreCancelledForSession(nextSessionId)) scheduleThreadScrollRestore(nextSessionId);
+  }
+
+  function scheduleThreadScrollSyncAttempts(forceRestore = true) {
+    const currentKey = validThreadScrollSessionKey(currentSessionRef().session_id) || validThreadScrollSessionKey(threadScrollRuntime().activeSessionId);
+    if (userScrollIntentActive() || threadScrollRestoreCancelledForSession(currentKey)) return;
+    clearThreadScrollSyncTimers();
+    const syncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
+    window.__codexThreadScrollSyncRevision = syncRevision;
+    window.__codexThreadScrollSyncTimers = codexThreadScrollRestoreDelaysMs.map((delay) => {
+      return setTimeout(() => {
+        if (window.__codexThreadScrollSyncRevision !== syncRevision) return;
+        scheduleThreadScrollSync(forceRestore);
+      }, delay);
+    });
+  }
+
+  function captureThreadScrollNavigation(targetSessionId) {
+    if (!codexPlusSettings().threadScrollRestore) return;
+    const runtime = threadScrollRuntime();
+    const targetKey = validThreadScrollSessionKey(targetSessionId);
+    const sessionChanged = !!targetKey && targetKey !== runtime.activeSessionId;
+    if (sessionChanged) {
+      runtime.userScrollIntentUntil = 0;
+      runtime.userCancelledRestoreSessionId = "";
+    }
+    const pending = runtime.pendingNavigation;
+    const duplicatePendingTarget = !!targetKey && pending?.targetSessionId === targetKey && Date.now() - finiteNonNegativeNumber(pending.at) < 5000;
+    if (!duplicatePendingTarget) saveThreadScrollPositionNow();
+    if (targetKey) {
+      runtime.pendingNavigation = { fromSessionId: runtime.activeSessionId, targetSessionId: targetKey, at: Date.now() };
+      prepareThreadScrollRestoreLock(targetKey);
+    }
+    scheduleThreadScrollSyncAttempts(true);
+  }
+
+  function editableThreadScrollTarget(element) {
+    return !!element?.closest?.("input, textarea, select, [contenteditable='true'], [contenteditable='']");
+  }
+
+  function eventTargetsActiveThreadScroller(event) {
+    const runtime = threadScrollRuntime();
+    const scroller = threadScrollGuardScroller(runtime.activeScroller) || threadScrollGuardScroller(currentThreadScroller());
+    if (!scroller) return false;
+    const target = event?.target;
+    if (!target || target === document || target === window) return true;
+    return target === scroller || scroller.contains?.(target) || scroller.contains?.(document.activeElement);
+  }
+
+  function markThreadScrollUserIntent(event) {
+    if (!codexPlusSettings().threadScrollRestore || !eventTargetsActiveThreadScroller(event)) return;
+    cancelThreadScrollRestoreForUserIntent();
+  }
+
+  function markThreadScrollKeyboardIntent(event) {
+    if (editableThreadScrollTarget(event.target)) return;
+    if (!["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ", "Spacebar"].includes(event.key)) return;
+    markThreadScrollUserIntent(event);
+  }
+
+  function markThreadScrollPointerIntent(event) {
+    const scroller = threadScrollGuardScroller(threadScrollRuntime().activeScroller) || threadScrollGuardScroller(currentThreadScroller());
+    if (event.target === scroller) markThreadScrollUserIntent(event);
+  }
+
+  function updateThreadScrollHandlers() {
+    window.__codexThreadScrollHandlers = {
+      shouldBlockAutobottom: shouldBlockThreadScrollAutobottom,
+      shouldBlockIntoView: shouldBlockThreadScrollIntoView,
+      markUserIntent: markThreadScrollUserIntent,
+      markKeyboardIntent: markThreadScrollKeyboardIntent,
+      markPointerIntent: markThreadScrollPointerIntent,
+      captureNavigation: captureThreadScrollNavigation,
+      saveNow: saveThreadScrollPositionNow,
+      prepareRestoreLock: prepareThreadScrollRestoreLock,
+      scheduleSyncAttempts: scheduleThreadScrollSyncAttempts,
+    };
+  }
+
+  function installThreadScrollUserIntentCapture() {
+    if (window.__codexThreadScrollUserIntentInstalled === codexThreadScrollUserIntentVersion) return;
+    document.removeEventListener("wheel", window.__codexThreadScrollWheelIntentHandler, true);
+    document.removeEventListener("touchmove", window.__codexThreadScrollTouchIntentHandler, true);
+    document.removeEventListener("keydown", window.__codexThreadScrollKeyIntentHandler, true);
+    document.removeEventListener("pointerdown", window.__codexThreadScrollPointerIntentHandler, true);
+    window.__codexThreadScrollWheelIntentHandler = (event) => window.__codexThreadScrollHandlers?.markUserIntent?.(event);
+    window.__codexThreadScrollTouchIntentHandler = (event) => window.__codexThreadScrollHandlers?.markUserIntent?.(event);
+    window.__codexThreadScrollKeyIntentHandler = (event) => window.__codexThreadScrollHandlers?.markKeyboardIntent?.(event);
+    window.__codexThreadScrollPointerIntentHandler = (event) => window.__codexThreadScrollHandlers?.markPointerIntent?.(event);
+    document.addEventListener("wheel", window.__codexThreadScrollWheelIntentHandler, { capture: true, passive: true });
+    document.addEventListener("touchmove", window.__codexThreadScrollTouchIntentHandler, { capture: true, passive: true });
+    document.addEventListener("keydown", window.__codexThreadScrollKeyIntentHandler, true);
+    document.addEventListener("pointerdown", window.__codexThreadScrollPointerIntentHandler, true);
+    window.__codexThreadScrollUserIntentInstalled = codexThreadScrollUserIntentVersion;
+  }
+
+  function installThreadScrollNavigationCapture() {
+    document.removeEventListener("pointerdown", window.__codexThreadScrollNavigationHandler, true);
+    document.removeEventListener("click", window.__codexThreadScrollClickNavigationHandler, true);
+    document.removeEventListener("keydown", window.__codexThreadScrollKeyboardHandler, true);
+    const navigationHandler = (event) => {
+      if (!codexPlusSettings().threadScrollRestore) return;
+      const row = event.target?.closest?.(selectors.sidebarThread);
+      if (!row) return;
+      window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
+    };
+    const clickHandler = (event) => {
+      if (!codexPlusSettings().threadScrollRestore) return;
+      const row = event.target?.closest?.(selectors.sidebarThread);
+      if (!row) return;
+      window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
+    };
+    const keyboardHandler = (event) => {
+      if (!codexPlusSettings().threadScrollRestore) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const row = event.target?.closest?.(selectors.sidebarThread);
+      if (!row) return;
+      window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
+    };
+    window.__codexThreadScrollNavigationHandler = navigationHandler;
+    window.__codexThreadScrollClickNavigationHandler = clickHandler;
+    window.__codexThreadScrollKeyboardHandler = keyboardHandler;
+    document.addEventListener("pointerdown", navigationHandler, true);
+    document.addEventListener("click", clickHandler, true);
+    document.addEventListener("keydown", keyboardHandler, true);
+  }
+
+  function scheduleThreadScrollSync(forceRestore = false) {
+    if (window.__codexThreadScrollSyncPending) return;
+    window.__codexThreadScrollSyncPending = true;
+    setTimeout(() => {
+      window.__codexThreadScrollSyncPending = false;
+      syncThreadScrollState(forceRestore);
+    }, 0);
+  }
+
+  function installThreadScrollRouteHooks() {
+    if (window.__codexThreadScrollRouteHooksInstalled === codexThreadScrollRouteHooksVersion) return;
+    window.__codexThreadScrollRouteHooksInstalled = codexThreadScrollRouteHooksVersion;
+    window.__codexThreadScrollOriginals = window.__codexThreadScrollOriginals || {};
+    const originals = window.__codexThreadScrollOriginals;
+    ["pushState", "replaceState"].forEach((method) => {
+      const prototypeMethod = typeof History !== "undefined" ? History.prototype?.[method] : null;
+      const currentMethod = history[method];
+      const storedMethod = originals[`history_${method}`];
+      const original = (storedMethod?.name === "codexThreadScrollPatchedHistory" && typeof prototypeMethod === "function" ? prototypeMethod : storedMethod)
+        || (currentMethod?.name === "codexThreadScrollPatchedHistory" && typeof prototypeMethod === "function" ? prototypeMethod : currentMethod);
+      originals[`history_${method}`] = original;
+      if (typeof original !== "function") return;
+      history[method] = function codexThreadScrollPatchedHistory(...args) {
+        window.__codexThreadScrollHandlers?.saveNow?.();
+        const result = original.apply(this, args);
+        window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId());
+        return result;
+      };
+    });
+    window.removeEventListener("popstate", window.__codexThreadScrollPopStateHandler, true);
+    window.removeEventListener("hashchange", window.__codexThreadScrollHashChangeHandler, true);
+    document.removeEventListener("visibilitychange", window.__codexThreadScrollVisibilityHandler, true);
+    window.__codexThreadScrollPopStateHandler = () => {
+      window.__codexThreadScrollHandlers?.saveNow?.();
+      window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId());
+    };
+    window.__codexThreadScrollHashChangeHandler = () => {
+      window.__codexThreadScrollHandlers?.saveNow?.();
+      window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId());
+    };
+    window.__codexThreadScrollVisibilityHandler = () => {
+      if (document.visibilityState === "hidden") window.__codexThreadScrollHandlers?.saveNow?.();
+    };
+    window.addEventListener("popstate", window.__codexThreadScrollPopStateHandler, true);
+    window.addEventListener("hashchange", window.__codexThreadScrollHashChangeHandler, true);
+    document.addEventListener("visibilitychange", window.__codexThreadScrollVisibilityHandler, true);
   }
 
   async function postJson(path, payload) {
@@ -3138,6 +3987,443 @@
     scheduleBackendHeartbeat();
     patchCodexModelWhitelist();
     installDeleteButtonEventDelegation();
+    updateThreadScrollHandlers();
+    installThreadScrollProgrammaticScrollGuard();
+    installThreadScrollNavigationCapture();
+    installThreadScrollUserIntentCapture();
+    installThreadScrollRouteHooks();
+    scheduleThreadScrollSync(true);
+  }
+
+  let zedRemoteStatusPromise = null;
+  const zedRemoteMissingHostMessage = "Cannot determine remote SSH host for this file";
+
+  function showZedRemoteToast(message) {
+    document.querySelectorAll(`.${zedRemoteToastClass}`).forEach((node) => node.remove());
+    const toast = document.createElement("div");
+    toast.className = zedRemoteToastClass;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3200);
+  }
+
+  async function loadZedRemoteStatus() {
+    zedRemoteStatusPromise = zedRemoteStatusPromise || postJson("/zed-remote/status", {});
+    return zedRemoteStatusPromise;
+  }
+
+  async function resolveZedRemoteHost(hostId) {
+    const result = await postJson("/zed-remote/resolve-host", { hostId });
+    return result?.status === "ok" && result.ssh ? result.ssh : null;
+  }
+
+  function zedRemoteString(value) {
+    return typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+  }
+
+  function zedRemoteTruthy(value) {
+    if (value === true) return true;
+    if (typeof value === "string") return /^(true|1|yes|enabled|ssh)$/i.test(value.trim());
+    return false;
+  }
+
+  function zedRemoteHasTrustedSshSignal(source, hostConfig) {
+    return zedRemoteTruthy(source?.supportsSsh) || zedRemoteTruthy(hostConfig?.supportsSsh);
+  }
+
+  function zedRemoteContextFromObject(source) {
+    if (!source || typeof source !== "object") return null;
+    const hostConfig = source.hostConfig || source.sshHostConfig || source.remoteHostConfig || source.ssh || {};
+    const host = zedRemoteString(source.remoteHost || source.sshHost || source.host || source.hostname || source.hostName || hostConfig.host || hostConfig.hostname || hostConfig.hostName || hostConfig.sshHost);
+    const hostId = zedRemoteString(source.hostId);
+    const cwd = zedRemoteString(source.cwd || source.workspaceRoot || source.rootPath || source.remoteWorkspaceRoot || hostConfig.remoteWorkspaceRoot || hostConfig.workspaceRoot || hostConfig.rootPath);
+    if ((!host || !zedRemoteHasTrustedSshSignal(source, hostConfig)) && !(hostId.startsWith("remote-ssh-") && cwd.startsWith("/"))) return null;
+    const user = zedRemoteString(source.remoteUser || source.sshUser || source.user || source.username || hostConfig.user || hostConfig.username || hostConfig.sshUser);
+    const port = zedRemoteString(source.remotePort || source.sshPort || source.port || hostConfig.port || hostConfig.sshPort);
+    const workspaceRoot = cwd;
+    return { hostId, ssh: { user, host, port }, workspaceRoot };
+  }
+
+  function zedRemoteWalkObject(root, visitor, options = {}) {
+    const maxDepth = options.maxDepth || 6;
+    const maxNodes = options.maxNodes || 180;
+    const visited = new WeakSet();
+    const stack = [{ value: root, depth: 0 }];
+    let scanned = 0;
+    while (stack.length && scanned < maxNodes) {
+      const { value, depth } = stack.pop();
+      if (!value || typeof value !== "object" || visited.has(value) || depth > maxDepth) continue;
+      visited.add(value);
+      scanned += 1;
+      const result = visitor(value);
+      if (result) return result;
+      if (value instanceof Element || value === window || value === document || value === document.body || value === document.documentElement) continue;
+      for (const key of Object.keys(value).slice(0, 80)) {
+        if (key === "ownerDocument" || key === "parentElement" || key === "parentNode" || key === "children" || key === "childNodes") continue;
+        let child;
+        try {
+          child = value[key];
+        } catch {
+          continue;
+        }
+        if (child && typeof child === "object") stack.push({ value: child, depth: depth + 1 });
+      }
+    }
+    return null;
+  }
+
+  function zedRemoteReactKeys(element) {
+    return Object.keys(element).filter((key) => key.startsWith("__reactFiber") || key.startsWith("__reactInternalInstance") || key.startsWith("__reactProps"));
+  }
+
+  function zedRemoteContextFromElement(element) {
+    for (const key of zedRemoteReactKeys(element)) {
+      const context = zedRemoteWalkObject(element[key], zedRemoteContextFromObject);
+      if (context) return context;
+    }
+    return null;
+  }
+
+  function zedRemoteContextForElement(element) {
+    for (let node = element; node && node !== document.body; node = node.parentElement) {
+      const context = zedRemoteContextFromElement(node);
+      if (context) return context;
+    }
+    return zedRemoteContext();
+  }
+
+  function zedRemoteHostIdFromText(text) {
+    const source = String(text || "");
+    const match = source.match(/\bremote-ssh-[A-Za-z0-9:_-]+\b/);
+    return match ? match[0] : "";
+  }
+
+  function zedRemoteWorkspaceRootForPath(path) {
+    const source = String(path || "").trim();
+    const projects = Array.from(document.querySelectorAll(selectors.sidebarThread))
+      .map((row) => ({
+        label: (row.textContent || "").replace(/\s+/g, " ").trim(),
+        selected: row.getAttribute("aria-current") === "page" || row.getAttribute("data-selected") === "true" || row.getAttribute("data-active") === "true" || row.className.includes("selected"),
+      }))
+      .filter((row) => row.label);
+    const selected = projects.find((row) => row.selected)?.label || "";
+    for (const label of [selected, ...projects.map((row) => row.label)]) {
+      const name = label.match(/^([A-Za-z0-9._-]+)/)?.[1];
+      if (name && source.includes(`/repo/${name}/`)) return source.slice(0, source.indexOf(`/repo/${name}/`) + `/repo/${name}`.length);
+    }
+    const repoIndex = source.indexOf("/bin/repo/");
+    if (repoIndex >= 0) {
+      const afterRepo = source.slice(repoIndex + "/bin/repo/".length);
+      const project = afterRepo.split("/")[0];
+      if (project) return source.slice(0, repoIndex + "/bin/repo/".length + project.length);
+    }
+    return source;
+  }
+
+  function zedRemoteFallbackContextForElement(element) {
+    const pathText = (element.textContent || "").trim();
+    if (!pathText.startsWith("/")) return null;
+    const root = element.closest("main") || document.body;
+    const hostId = zedRemoteHostIdFromText(root?.textContent || "") || "remote-ssh-codex-managed:remote";
+    return { hostId, ssh: { user: "", host: "", port: "" }, workspaceRoot: zedRemoteWorkspaceRootForPath(pathText) };
+  }
+
+  function zedRemoteContextFromSerializedState(text) {
+    const source = String(text || "");
+    if (!source.includes("hostConfig") || !source.includes("supportsSsh") || !source.includes("remoteWorkspaceRoot")) return null;
+    const trimmed = source.trim();
+    if (/^[{[]/.test(trimmed)) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        const context = zedRemoteWalkObject(parsed, zedRemoteContextFromObject, { maxDepth: 10, maxNodes: 300 });
+        if (context) return context;
+      } catch {
+      }
+    }
+    if (!/['"]supportsSsh['"]\s*:\s*true/.test(source)) return null;
+    const fieldValue = (name) => {
+      const match = source.match(new RegExp(`["']${name}["']\\s*:\\s*["']([^"']+)["']`));
+      return match ? match[1] : "";
+    };
+    const host = fieldValue("host") || fieldValue("hostname") || fieldValue("hostName") || fieldValue("sshHost") || fieldValue("remoteHost");
+    if (!host) return null;
+    return {
+      ssh: {
+        user: fieldValue("user") || fieldValue("username") || fieldValue("sshUser") || fieldValue("remoteUser"),
+        host,
+        port: fieldValue("port") || fieldValue("sshPort") || fieldValue("remotePort"),
+      },
+      workspaceRoot: fieldValue("remoteWorkspaceRoot") || fieldValue("workspaceRoot") || fieldValue("rootPath"),
+    };
+  }
+
+  function zedRemoteContext() {
+    const settings = codexPlusSettings();
+    if (!settings.zedRemoteOpen) return null;
+    const explicitNodes = document.querySelectorAll("[data-host-config], [data-ssh-host], [data-remote-host], [data-remote-workspace-root], [data-supports-ssh]");
+    for (const node of explicitNodes) {
+      if (!(node instanceof HTMLElement)) continue;
+      const data = node.dataset;
+      const context = zedRemoteContextFromObject({
+        hostConfig: data.hostConfig ? { host: data.hostConfig, supportsSsh: true } : {},
+        supportsSsh: data.supportsSsh || data.supportsSshRemote,
+        sshHost: data.sshHost,
+        remoteHost: data.remoteHost,
+        host: data.host,
+        sshUser: data.sshUser,
+        remoteUser: data.remoteUser,
+        user: data.user,
+        sshPort: data.sshPort,
+        remotePort: data.remotePort,
+        port: data.port,
+        remoteWorkspaceRoot: data.remoteWorkspaceRoot,
+        workspaceRoot: data.workspaceRoot,
+      });
+      if (context) return context;
+    }
+    const reactNodes = [document.body, ...document.querySelectorAll("[data-remote-path], [data-file-path], [data-path], [data-open-in-targets], [data-open-file], span.inline-markdown, code, [class*='inlineMarkdown'], a, button, [role='button'], [role='menuitem'], [role='treeitem']")].filter(Boolean);
+    for (const node of reactNodes.slice(0, 260)) {
+      if (!(node instanceof HTMLElement) || isExtensionUiNode(node)) continue;
+      const context = zedRemoteContextFromElement(node);
+      if (context) return context;
+    }
+    const scripts = Array.from(document.querySelectorAll("script[type='application/json'], script[data-state], script#__NEXT_DATA__, script:not([src])"));
+    for (const script of scripts.slice(0, 40)) {
+      const context = zedRemoteContextFromSerializedState(script.textContent || "");
+      if (context) return context;
+    }
+    return null;
+  }
+
+  function zedRemoteAbsolutePath(value, workspaceRoot) {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    if (text.startsWith("/")) return text;
+    if (workspaceRoot && !text.includes("://") && !text.startsWith("~")) {
+      return `${workspaceRoot.replace(/\/+$/, "")}/${text.replace(/^\.\//, "")}`;
+    }
+    return "";
+  }
+
+  function zedRemoteMetadataRemotePath(source) {
+    if (!source || typeof source !== "object") return "";
+    return zedRemoteString(source.remotePath || source.remote_path || source.path || source.filePath || source.file_path || source.openFile?.remotePath || source.openFile?.path);
+  }
+
+  function zedRemotePathFromElementMetadata(element) {
+    const dataPath = element.dataset.remotePath || element.dataset.filePath || element.dataset.path || "";
+    if (dataPath) return dataPath;
+    for (const key of zedRemoteReactKeys(element)) {
+      const path = zedRemoteWalkObject(element[key], zedRemoteMetadataRemotePath, { maxDepth: 6, maxNodes: 120 });
+      if (path) return path;
+    }
+    return "";
+  }
+
+  function zedRemoteInlinePathFromElement(element, context) {
+    if (!context?.hostId && !context?.ssh?.host) return "";
+    const text = (element.textContent || "").trim();
+    if (!text || text.length > 600 || !text.startsWith("/")) return "";
+    const path = zedRemoteAbsolutePath(text, context.workspaceRoot || "");
+    if (!path) return "";
+    if (context.workspaceRoot && !path.startsWith(`${context.workspaceRoot.replace(/\/+$/, "")}/`) && path !== context.workspaceRoot) return "";
+    return path;
+  }
+
+  function zedRemoteAnchorHasOpenFileMetadata(anchor) {
+    if (!(anchor instanceof HTMLAnchorElement)) return false;
+    if (anchor.dataset.remotePath || anchor.dataset.filePath || anchor.dataset.path || anchor.dataset.openInTargets || anchor.dataset.openFile || anchor.dataset.codexOpenFile) return true;
+    const label = `${anchor.getAttribute("aria-label") || ""} ${anchor.getAttribute("data-testid") || ""} ${anchor.getAttribute("rel") || ""}`;
+    return /open[-_\s]?file|open-in-targets|remote/i.test(label) && !!zedRemotePathFromElementMetadata(anchor);
+  }
+
+  function zedRemoteFileCandidates(context) {
+    const candidates = [];
+    const seen = new Set();
+    const addCandidate = (node, candidateContext, rawPath) => {
+      if (!candidateContext?.ssh?.host && !candidateContext?.hostId) return;
+      const path = zedRemoteAbsolutePath(rawPath, candidateContext.workspaceRoot || "");
+      if (!path || seen.has(path)) return;
+      seen.add(path);
+      candidates.push({ node, request: { ssh: candidateContext.ssh, hostId: candidateContext.hostId || "", path } });
+    };
+    const selectors = "[data-remote-path], [data-file-path], [data-path], [data-open-in-targets], [data-open-file], [data-codex-open-file], a[data-remote-path], a[data-file-path], a[data-path]";
+    document.querySelectorAll(selectors).forEach((node) => {
+      if (!(node instanceof HTMLElement) || isExtensionUiNode(node)) return;
+      if (node instanceof HTMLAnchorElement && !zedRemoteAnchorHasOpenFileMetadata(node)) return;
+      addCandidate(node, zedRemoteContextForElement(node) || context, zedRemotePathFromElementMetadata(node));
+    });
+    document.querySelectorAll("span.inline-markdown, code, [class*='inlineMarkdown']").forEach((node) => {
+      if (!(node instanceof HTMLElement) || isExtensionUiNode(node)) return;
+      const candidateContext = zedRemoteContextForElement(node) || context || zedRemoteFallbackContextForElement(node);
+      if (!candidateContext?.hostId && !candidateContext?.ssh?.host) return;
+      const path = zedRemoteInlinePathFromElement(node, candidateContext);
+      if (path) addCandidate(node, candidateContext, path);
+    });
+    return candidates;
+  }
+
+  function zedRemoteBestOpenRequest(context = zedRemoteContext() || {}) {
+    const candidates = zedRemoteFileCandidates(context);
+    if (candidates.length) return candidates[0].request;
+    const workspaceRoot = zedRemoteAbsolutePath(context.workspaceRoot || "", "");
+    if (!workspaceRoot || (!context?.ssh?.host && !context?.hostId)) return null;
+    return { ssh: context.ssh, hostId: context.hostId || "", path: workspaceRoot };
+  }
+
+  async function openZedRemote(request) {
+    let nextRequest = request;
+    if (!nextRequest?.ssh?.host && nextRequest?.hostId) {
+      const ssh = await resolveZedRemoteHost(nextRequest.hostId);
+      nextRequest = ssh ? { ...nextRequest, ssh } : nextRequest;
+    }
+    if (!nextRequest?.ssh?.host) {
+      showZedRemoteToast(zedRemoteMissingHostMessage);
+      return;
+    }
+    try {
+      const result = await postJson("/zed-remote/open", nextRequest);
+      if (result?.status === "ok") {
+        showZedRemoteToast("Opened in Zed Remote");
+        return;
+      }
+      showZedRemoteToast(result?.message || "Cannot open this file in Zed Remote");
+    } catch (error) {
+      showZedRemoteToast(error?.message || "Cannot open this file in Zed Remote");
+    }
+  }
+
+  function openBestZedRemoteTarget() {
+    const request = zedRemoteBestOpenRequest();
+    if (!request) {
+      showZedRemoteToast("Cannot find a remote workspace or file for Zed Remote");
+      return;
+    }
+    openZedRemote(request);
+  }
+
+  function attachZedRemoteButton(candidate) {
+    const anchor = candidate.node;
+    if (anchor.dataset.codexZedRemoteVersion === zedRemoteOpenVersion) return;
+    anchor.dataset.codexZedRemoteVersion = zedRemoteOpenVersion;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = zedRemoteButtonClass;
+    button.textContent = "Open in Zed Remote";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openZedRemote(candidate.request);
+    }, true);
+    anchor.insertAdjacentElement("afterend", button);
+  }
+
+  function removeZedRemoteButtons() {
+    document.querySelectorAll(`[data-codex-zed-remote-version]`).forEach((node) => {
+      delete node.dataset.codexZedRemoteVersion;
+    });
+    document.querySelectorAll(`.${zedRemoteButtonClass}`).forEach((node) => node.remove());
+  }
+
+  function createZedRemoteOpenInMenuItem(referenceItem) {
+    const item = document.createElement("div");
+    item.className = referenceItem?.className || "no-drag text-token-foreground outline-hidden rounded-lg px-[var(--padding-row-x)] py-[var(--padding-row-y)] text-sm group hover:bg-token-list-hover-background focus:bg-token-list-hover-background cursor-interaction flex flex-col";
+    item.classList.add(zedRemoteOpenInMenuItemClass);
+    item.setAttribute("role", referenceItem?.getAttribute("role") || "menuitem");
+    item.setAttribute("tabindex", referenceItem?.getAttribute("tabindex") || "-1");
+    item.setAttribute("data-orientation", referenceItem?.getAttribute("data-orientation") || "vertical");
+    item.innerHTML = `
+      <div class="flex w-full items-center gap-1.5">
+        <span class="inline-flex size-[18px] items-center justify-center leading-none shrink-0 opacity-75 group-focus:opacity-100 group-hover:opacity-100">
+          <img alt="" class="codex-zed-open-in-menu-icon icon-sm" src="apps/zed.png">
+        </span>
+        <span class="flex-1 min-w-0 truncate">Zed</span>
+      </div>
+    `;
+    bindZedRemoteOpenInMenuItem(item, "injected");
+    return item;
+  }
+
+  function zedRemoteOpenInMenuActivationIsDuplicate(target) {
+    if (!(target instanceof HTMLElement)) return false;
+    const now = Date.now();
+    const activatedAt = Number(target.dataset.codexZedOpenInMenuActivatedAt || 0);
+    if (activatedAt && now - activatedAt < zedRemoteOpenInMenuActivationWindowMs) return true;
+    target.dataset.codexZedOpenInMenuActivatedAt = String(now);
+    return false;
+  }
+
+  function activateZedRemoteOpenInMenuItem(event) {
+    if (!codexPlusSettings().zedRemoteOpen) return;
+    if (event?.type === "keydown" && !["Enter", " "].includes(event.key)) return;
+    const request = zedRemoteBestOpenRequest();
+    if (!request) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation?.();
+    if (zedRemoteOpenInMenuActivationIsDuplicate(event?.currentTarget)) return;
+    openZedRemote(request);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+  }
+
+  function bindZedRemoteOpenInMenuItem(item, source) {
+    item.setAttribute("data-codex-zed-open-in-menu", source);
+    if (item.dataset.codexZedOpenInMenuBound === zedRemoteOpenInMenuVersion) return;
+    item.dataset.codexZedOpenInMenuBound = zedRemoteOpenInMenuVersion;
+    item.dataset.codexZedOpenInMenuVersion = zedRemoteOpenInMenuVersion;
+    item.addEventListener("pointerup", activateZedRemoteOpenInMenuItem, true);
+    item.addEventListener("click", activateZedRemoteOpenInMenuItem, true);
+    item.addEventListener("keydown", activateZedRemoteOpenInMenuItem, true);
+  }
+
+  function removeZedRemoteOpenInMenuItems() {
+    document.querySelectorAll(`.${zedRemoteOpenInMenuItemClass}, [data-codex-zed-open-in-menu="injected"]`).forEach((node) => node.remove());
+  }
+
+  function refreshZedRemoteOpenInMenus(context) {
+    removeZedRemoteOpenInMenuItems();
+    if (!codexPlusSettings().zedRemoteOpen) return;
+    const request = zedRemoteBestOpenRequest(context || zedRemoteContext() || {});
+    if (!request) return;
+    document.querySelectorAll('[role="menu"]').forEach((menu) => {
+      if (!(menu instanceof HTMLElement) || isExtensionUiNode(menu)) return;
+      const items = Array.from(menu.querySelectorAll('[role="menuitem"]')).filter((item) => !isExtensionUiNode(item));
+      const menuText = items.map((item) => (item.textContent || "").trim()).join(" ");
+      if (!/\b(VS Code|Cursor|Antigravity)\b/.test(menuText)) return;
+      const existingZedItem = items.find((item) => (item.textContent || "").trim() === "Zed");
+      if (existingZedItem) {
+        bindZedRemoteOpenInMenuItem(existingZedItem, "native");
+        return;
+      }
+      const referenceItem = items.find((item) => /^(VS Code|Cursor|Antigravity)$/.test((item.textContent || "").trim()));
+      if (!referenceItem) return;
+      referenceItem.parentElement?.appendChild(createZedRemoteOpenInMenuItem(referenceItem));
+    });
+  }
+
+  async function refreshZedRemoteOpenControls() {
+    if (!codexPlusSettings().zedRemoteOpen) {
+      removeZedRemoteButtons();
+      removeZedRemoteOpenInMenuItems();
+      return;
+    }
+    const context = zedRemoteContext() || {};
+    try {
+      const status = await loadZedRemoteStatus();
+      if (!status?.platformSupported || (!status.zedAppFound && !status.zedCliFound)) {
+        removeZedRemoteButtons();
+        removeZedRemoteOpenInMenuItems();
+        return;
+      }
+    } catch (_) {
+      removeZedRemoteButtons();
+      removeZedRemoteOpenInMenuItems();
+      return;
+    }
+    removeZedRemoteButtons();
+    const candidates = zedRemoteFileCandidates(context);
+    candidates.forEach(attachZedRemoteButton);
+    refreshZedRemoteOpenInMenus(context);
   }
 
   function scanDeferred() {
@@ -3151,6 +4437,8 @@
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     installArchivedDeleteAllButton();
     refreshConversationTimeline();
+    refreshZedRemoteOpenControls();
+    scheduleThreadScrollSync(true);
   }
 
   function runScanStep(step) {
@@ -3168,7 +4456,17 @@
   }
 
   function isExtensionUiNode(node) {
-    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${projectMoveOverlayClass}, .${timelineClass}, .codex-conversation-timeline, #codex-plus-menu`);
+    return !!node?.closest?.([
+      ".codex-delete-toast",
+      ".codex-delete-confirm-overlay",
+      ".codex-plus-modal-overlay",
+      `.${projectMoveOverlayClass}`,
+      `.${timelineClass}`,
+      ".codex-conversation-timeline",
+      ".codex-zed-remote-button",
+      ".codex-zed-remote-toast",
+      "#codex-plus-menu",
+    ].join(", "));
   }
 
   const scanRelevantSelector = [
@@ -3182,6 +4480,9 @@
     '[data-testid="conversation-turn"]',
     '[class*="user-message"]',
     '[class*="UserMessage"]',
+    "span.inline-markdown",
+    "[class*='inlineMarkdown']",
+    "code",
     selectors.appHeader,
     "header",
     selectors.archiveNav,
@@ -3218,8 +4519,13 @@
       if (isChatContentMutation(mutation)) return false;
       const target = mutation.target;
       if (isExtensionUiNode(target)) return false;
+      if (target?.nodeType === 1 && target.matches?.('[role="menu"], [data-radix-popper-content-wrapper]')) return true;
       if (target?.nodeType === 1 && nodeSelfOrAncestorMatchesScanRelevance(target)) return true;
       const changedNodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
+      if (changedNodes.some((node) => node.nodeType === 1 && (
+        node.matches?.('[role="menu"], [data-radix-popper-content-wrapper]') ||
+        node.querySelector?.('[role="menu"], [data-radix-popper-content-wrapper]')
+      ))) return true;
       return changedNodes.some((node) => node.nodeType === 1 && isScanRelevantNode(node));
     });
   }
@@ -3232,6 +4538,9 @@
   }
 
   function scheduleScan(mutations) {
+    if (mutations?.some((mutation) => mutation.type === "attributes" && mutation.attributeName === "aria-current" && mutation.target?.matches?.(selectors.sidebarThread))) {
+      scheduleThreadScrollSyncAttempts(true);
+    }
     if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
     window.__codexSessionDeleteScanPending = true;
@@ -3255,5 +4564,5 @@
   window.addEventListener("resize", window.__codexPlusResizeHandler);
   window.__codexSessionDeleteObserver?.disconnect();
   window.__codexSessionDeleteObserver = new MutationObserver(scheduleScan);
-  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, { childList: true, subtree: true });
+  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-current"] });
 })();

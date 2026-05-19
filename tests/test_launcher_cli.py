@@ -384,6 +384,7 @@ def test_launch_and_inject_skips_provider_sync_when_disabled(monkeypatch, tmp_pa
 def test_launch_and_inject_closes_helper_when_injection_fails(monkeypatch, tmp_path):
     server = FakeServer()
     monkeypatch.setattr(launcher, "resolve_codex_app_dir", lambda app_dir=None: tmp_path)
+    monkeypatch.setattr(launcher, "helper_health_ok", lambda port, host="127.0.0.1": False)
     monkeypatch.setattr(launcher, "start_helper", lambda *args, **kwargs: server)
     monkeypatch.setattr(launcher, "launch_codex_app", lambda *args: 1234)
     monkeypatch.setattr(launcher, "inject_with_retry", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("inject failed")))

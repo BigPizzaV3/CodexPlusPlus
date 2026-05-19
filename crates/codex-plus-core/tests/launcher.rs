@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use codex_plus_core::app_paths::{
     build_codex_executable, codex_app_version, find_latest_codex_app_dir,
-    find_latest_codex_app_dir_from_roots, find_macos_codex_app, packaged_app_user_model_id,
-    user_data_candidates_from,
+    find_latest_codex_app_dir_from_roots, find_macos_codex_app, normalize_codex_app_path,
+    packaged_app_user_model_id, resolve_codex_app_dir_with_saved, user_data_candidates_from,
 };
 use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
@@ -198,6 +198,36 @@ fn app_paths_build_macos_bundle_executable_reads_plist() {
 }
 
 #[test]
+fn app_paths_normalizes_executable_and_package_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let portable = temp.path().join("CodexPortable");
+    let app = portable.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("Codex.exe"), "").unwrap();
+
+    assert_eq!(
+        normalize_codex_app_path(&app.join("Codex.exe")).as_deref(),
+        Some(app.as_path())
+    );
+    assert_eq!(
+        normalize_codex_app_path(&portable).as_deref(),
+        Some(app.as_path())
+    );
+}
+
+#[test]
+fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app).unwrap();
+
+    assert_eq!(
+        resolve_codex_app_dir_with_saved(None, Some(&app.to_string_lossy())).as_deref(),
+        Some(app.as_path())
+    );
+}
+
+#[test]
 fn launcher_builds_debug_arguments_and_commands() {
     let app_dir = PathBuf::from(r"C:\Codex\app");
 
@@ -364,6 +394,18 @@ async fn default_helper_serves_backend_status_over_http() {
     let payload: serde_json::Value = response.json().await.unwrap();
     assert_eq!(payload["status"], "ok");
     assert_eq!(payload["transport"], "http-helper");
+
+    let repair_response = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{port}/backend/repair"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(repair_response.status().is_success());
+    let repair_payload: serde_json::Value = repair_response.json().await.unwrap();
+    assert_eq!(repair_payload["status"], "ok");
+    assert_eq!(repair_payload["transport"], "http-helper");
+
     hooks.shutdown_helper(port).await;
 }
 
@@ -824,7 +866,11 @@ fn temp_env_remove(key: &str) {
 
 #[async_trait::async_trait(?Send)]
 impl LaunchHooks for FakeHooks {
-    fn resolve_app_dir(&self, app_dir: Option<&Path>) -> anyhow::Result<PathBuf> {
+    fn resolve_app_dir(
+        &self,
+        app_dir: Option<&Path>,
+        _settings: &BackendSettings,
+    ) -> anyhow::Result<PathBuf> {
         app_dir
             .map(Path::to_path_buf)
             .ok_or_else(|| anyhow::anyhow!("missing app dir"))

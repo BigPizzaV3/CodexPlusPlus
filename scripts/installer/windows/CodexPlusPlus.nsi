@@ -1,4 +1,4 @@
-Unicode true
+﻿Unicode true
 !include "MUI2.nsh"
 
 !ifndef VERSION
@@ -36,6 +36,9 @@ Section "Install"
   File "${ROOT}\dist\windows\app\codex-plus-plus.exe"
   File "${ROOT}\dist\windows\app\codex-plus-plus-manager.exe"
 
+  Delete "$DESKTOP\Codex++ 绠＄悊宸ュ叿.lnk"
+  Delete "$SMPROGRAMS\Codex++\Codex++ 绠＄悊宸ュ叿.lnk"
+
   CreateShortcut "$DESKTOP\Codex++.lnk" "$INSTDIR\codex-plus-plus.exe" "" "$INSTDIR\codex-plus-plus.exe"
   CreateShortcut "$DESKTOP\Codex++ 管理工具.lnk" "$INSTDIR\codex-plus-plus-manager.exe" "" "$INSTDIR\codex-plus-plus-manager.exe"
   CreateDirectory "$SMPROGRAMS\Codex++"
@@ -61,8 +64,10 @@ Section "Uninstall"
 
   Delete "$DESKTOP\Codex++.lnk"
   Delete "$DESKTOP\Codex++ 管理工具.lnk"
+  Delete "$DESKTOP\Codex++ 绠＄悊宸ュ叿.lnk"
   Delete "$SMPROGRAMS\Codex++\Codex++.lnk"
   Delete "$SMPROGRAMS\Codex++\Codex++ 管理工具.lnk"
+  Delete "$SMPROGRAMS\Codex++\Codex++ 绠＄悊宸ュ叿.lnk"
   Delete "$SMPROGRAMS\Codex++\卸载 Codex++.lnk"
   RMDir "$SMPROGRAMS\Codex++"
 

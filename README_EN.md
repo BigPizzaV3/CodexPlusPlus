@@ -33,6 +33,67 @@ After installation, two entry points are available:
 
 The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG installs `/Applications/Codex++.app` and `/Applications/Codex++ 管理工具.app`.
 
+## Sponsors
+
+<p align="center">
+  <a href="mailto:1727532@qq.com">Want to be shown below?</a>
+</p>
+<table>
+  <tr>
+    <th width="180">🏆 Sponsor 🏆</th>
+    <th>Introduction</th>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://jojocode.com/">
+        <img src="docs/images/sponsor-jojocode.svg" alt="JOJO Code" width="150">
+      </a>
+    </td>
+    <td><a href="https://jojocode.com/"><strong>JOJO Code | Official Codex++ Relay</strong></a><br>Thanks to JOJO Code for sponsoring this project! JOJO Code is the official Codex++ relay service. It is built for daily development and team collaboration, providing stable Codex API access for quick onboarding, long-term use, and project workflows.</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://aigocode.com/invite/CodexPlusPlus">
+        <img src="docs/images/sponsor-aigocode.png" alt="AIGoCode" width="150">
+      </a>
+    </td>
+    <td><a href="https://aigocode.com/invite/CodexPlusPlus"><strong>AIGoCode</strong></a><br>Thanks to AIGoCode for sponsoring this project! AIGoCode is an all-in-one platform integrating the latest Claude Code, Codex, and Gemini models, providing stable, efficient, and cost-effective AI programming services. It offers flexible subscription plans, direct access in China, no extra network setup, and fast responses. AIGoCode provides a special benefit for CodexPlusPlus users: users who <a href="https://aigocode.com/invite/CodexPlusPlus">register through this link</a> can receive an extra 10% bonus credit on their first recharge.</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://www.packyapi.com/">
+        <img src="docs/images/sponsor-packycode.png" alt="PackyCode" width="150">
+      </a>
+    </td>
+    <td><a href="https://www.packyapi.com/"><strong>PackyCode</strong></a><br>Thanks to PackyCode for sponsoring this project! PackyCode is a stable and efficient API relay service provider, offering relay services for Claude Code, Codex, Gemini, and more. PackyCode provides a special discount for users of this software: register through this link and enter the "CodexPlusPlus" coupon code when recharging to get 10% off your first recharge.</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://www.0029.org/?promo=AFF11F">
+        <img src="docs/images/sponsor-0029.svg" alt="0029 Cloud Bridge" width="150">
+      </a>
+    </td>
+    <td><a href="https://www.0029.org/?promo=AFF11F"><strong>0029 Cloud Bridge | Codex API Relay Station (gpt5.5 gpt-image-2)</strong></a><br>Supports individual and enterprise access. Monthly plans and pay-as-you-go billing are available, with Pro/Plus account pools, stable site-wide APIs, and 24/7 technical support.</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://rawchat.cn">
+        <img src="docs/images/sponsor-rawchat.svg" alt="RawChat" width="150">
+      </a>
+    </td>
+    <td><a href="https://rawchat.cn"><strong>RawChat | Codex Relay Station</strong></a><br>A long-running relay station with monthly plans, low-rate usage, high cache hit rates, Pro/Plus account pools, and dedicated all-day maintenance.</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://coder.visioncoder.cn">
+        <img src="https://coder.visioncoder.cn/logo.png" alt="VisionCoder" width="110">
+      </a>
+    </td>
+    <td><a href="https://coder.visioncoder.cn"><strong>VisionCoder Developer Platform</strong></a><br>Thanks to VisionCoder for supporting this project. VisionCoder Developer Platform is a reliable and efficient API relay service provider, offering access to mainstream AI models such as Claude Code, Codex, and Gemini. It helps developers and teams integrate AI capabilities more easily and improve productivity. VisionCoder is also offering our users a limited-time <a href="https://coder.visioncoder.cn">Token Plan</a> promotion: buy 1 month and get 1 month free.</td>
+  </tr>
+</table>
+
+
 ## Highlights
 
 - Rust backend and silent launcher with no Python runtime requirement.
@@ -42,6 +103,7 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 - Traditional enhancement mode with plugin entry unlock, forced plugin install, session delete, Markdown export, project move, Timeline, and more.
 - Independent user script management with startup injection.
 - Provider Sync to switch model_provider without losing historical conversations.
+- Zed open entry detects remote SSH context and opens the matching remote file in Zed Remote Development from Codex.
 - GitHub Release updates. Both the manager and silent launcher can detect available updates.
 - Windows single instance, no console window, administrator manifest, and system Desktop path detection.
 - Separate macOS x64 and arm64 DMGs, automatic Codex bundle detection, and a hidden Dock icon for the silent launcher.

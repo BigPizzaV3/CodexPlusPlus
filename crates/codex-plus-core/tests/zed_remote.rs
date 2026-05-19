@@ -1,0 +1,130 @@
+use codex_plus_core::zed_remote::{self, SshTarget, ZedRemoteError};
+use serde_json::json;
+
+#[test]
+fn build_zed_remote_url_with_user_host_port_and_encoded_path() {
+    let url = zed_remote::build_zed_remote_url(
+        &SshTarget {
+            user: "alice".to_string(),
+            host: "example.com".to_string(),
+            port: Some(2222),
+        },
+        "/home/alice/My Project/你好.py",
+    )
+    .unwrap();
+
+    assert_eq!(
+        url,
+        "ssh://alice@example.com:2222/home/alice/My%20Project/%E4%BD%A0%E5%A5%BD.py"
+    );
+}
+
+#[test]
+fn build_zed_remote_url_allows_host_without_user() {
+    let url = zed_remote::build_zed_remote_url(
+        &SshTarget {
+            user: String::new(),
+            host: "box.internal".to_string(),
+            port: None,
+        },
+        "/srv/app/main.py",
+    )
+    .unwrap();
+
+    assert_eq!(url, "ssh://box.internal/srv/app/main.py");
+}
+
+#[test]
+fn build_zed_remote_url_rejects_invalid_inputs() {
+    let error = zed_remote::build_zed_remote_url(
+        &SshTarget {
+            user: "alice".to_string(),
+            host: "bad host".to_string(),
+            port: None,
+        },
+        "/a.py",
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ZedRemoteError::Validation("Invalid SSH host")
+    ));
+}
+
+#[test]
+fn build_zed_remote_url_allows_bracketed_ipv6_host() {
+    let url = zed_remote::build_zed_remote_url(
+        &SshTarget {
+            user: "alice".to_string(),
+            host: "[::1]".to_string(),
+            port: Some(2222),
+        },
+        "/home/alice/a.py",
+    )
+    .unwrap();
+
+    assert_eq!(url, "ssh://alice@[::1]:2222/home/alice/a.py");
+}
+
+#[test]
+fn target_from_payload_splits_codex_managed_authority() {
+    let target =
+        zed_remote::target_from_payload(&json!({"ssh": {"host": "longnv@192.168.100.31"}}))
+            .unwrap();
+
+    assert_eq!(
+        target,
+        SshTarget {
+            user: "longnv".to_string(),
+            host: "192.168.100.31".to_string(),
+            port: None,
+        }
+    );
+}
+
+#[test]
+fn resolve_ssh_target_from_global_state_for_codex_managed_connection() {
+    let state = json!({
+        "codex-managed-remote-connections": [{
+            "hostId": "remote-ssh-codex-managed:remote",
+            "displayName": "remote",
+            "source": "codex-managed",
+            "hostname": "longnv@192.168.100.31",
+            "sshPort": null,
+        }]
+    });
+
+    let target =
+        zed_remote::resolve_ssh_target_from_global_state(&state, "remote-ssh-codex-managed:remote")
+            .unwrap();
+
+    assert_eq!(
+        target,
+        SshTarget {
+            user: "longnv".to_string(),
+            host: "192.168.100.31".to_string(),
+            port: None,
+        }
+    );
+}
+
+#[test]
+fn resolve_ssh_target_response_reports_missing_host_id() {
+    let result = zed_remote::resolve_ssh_target_response(&json!({"hostId": ""}));
+
+    assert_eq!(
+        result,
+        json!({"status": "failed", "message": "Remote host id is required"})
+    );
+}
+
+#[test]
+fn open_zed_remote_returns_failed_response_for_validation_error() {
+    let result = zed_remote::open_zed_remote(&json!({"ssh": {"host": ""}, "path": "/a.py"}));
+
+    assert_eq!(
+        result,
+        json!({"status": "failed", "message": "Cannot determine remote SSH host for this file"})
+    );
+}

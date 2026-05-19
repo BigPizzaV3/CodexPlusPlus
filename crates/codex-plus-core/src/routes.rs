@@ -62,6 +62,9 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn backend_status(&self) -> anyhow::Result<Value>;
     async fn repair_backend(&self) -> anyhow::Result<Value>;
     async fn ads(&self) -> anyhow::Result<Value>;
+    async fn zed_remote_status(&self) -> anyhow::Result<Value>;
+    async fn resolve_zed_remote_host(&self, payload: Value) -> anyhow::Result<Value>;
+    async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value>;
 }
 
 #[async_trait]
@@ -128,6 +131,9 @@ pub async fn handle_bridge_request(
         "/backend/repair" => ctx.runtime.repair_backend().await,
         "/diagnostics/log" => diagnostic_log_value(payload.clone()),
         "/ads" => ctx.runtime.ads().await,
+        "/zed-remote/status" => ctx.runtime.zed_remote_status().await,
+        "/zed-remote/resolve-host" => ctx.runtime.resolve_zed_remote_host(payload.clone()).await,
+        "/zed-remote/open" => ctx.runtime.open_zed_remote(payload.clone()).await,
         "/delete" => result_value(ctx.data.delete(session_from_payload(&payload)).await),
         "/undo" => {
             let undo_token = payload
@@ -356,6 +362,18 @@ impl BridgeRuntimeService for CoreRuntimeService {
 
     async fn ads(&self) -> anyhow::Result<Value> {
         crate::ads::fetch_ad_list().await
+    }
+
+    async fn zed_remote_status(&self) -> anyhow::Result<Value> {
+        Ok(crate::zed_remote::zed_remote_status())
+    }
+
+    async fn resolve_zed_remote_host(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(crate::zed_remote::resolve_ssh_target_response(&payload))
+    }
+
+    async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(crate::zed_remote::open_zed_remote(&payload))
     }
 }
 
