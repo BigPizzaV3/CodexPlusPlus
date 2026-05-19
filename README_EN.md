@@ -33,6 +33,55 @@ After installation, two entry points are available:
 
 The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG installs `/Applications/Codex++.app` and `/Applications/Codex++ 管理工具.app`.
 
+## Sponsors
+
+<table>
+  <tr>
+    <th width="180">🏆 Sponsor 🏆</th>
+    <th>Introduction</th>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://jojocode.com/">
+        <img src="docs/images/sponsor-jojocode.svg" alt="JOJO Code" width="150">
+      </a>
+    </td>
+    <td><a href="https://jojocode.com/"><strong>JOJO Code | Official Codex++ Relay</strong></a><br>Thanks to JOJO Code for sponsoring this project! JOJO Code is the official Codex++ relay service. It is built for daily development and team collaboration, providing stable Codex API access for quick onboarding, long-term use, and project workflows.</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://aigocode.com/invite/CodexPlusPlus">
+        <img src="https://raw.githubusercontent.com/farion1231/cc-switch/main/assets/partners/logos/aigocode.png" alt="AIGoCode" width="150">
+      </a>
+    </td>
+    <td><a href="https://aigocode.com/invite/CodexPlusPlus"><strong>AIGoCode</strong></a><br>Thanks to AIGoCode for sponsoring this project! AIGoCode is an all-in-one platform integrating the latest Claude Code, Codex, and Gemini models, providing stable, efficient, and cost-effective AI programming services. It offers flexible subscription plans, direct access in China, no extra network setup, and fast responses. AIGoCode provides a special benefit for CC Switch users: users who register through this link can receive an extra 10% bonus credit on their first recharge.</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://www.packyapi.com/">
+        <img src="https://raw.githubusercontent.com/farion1231/cc-switch/main/assets/partners/logos/packycode.png" alt="PackyCode" width="150">
+      </a>
+    </td>
+    <td><a href="https://www.packyapi.com/"><strong>PackyCode</strong></a><br>Thanks to PackyCode for sponsoring this project! PackyCode is a stable and efficient API relay service provider, offering relay services for Claude Code, Codex, Gemini, and more. PackyCode provides a special discount for users of this software: register through this link and enter the "cc-switch" coupon code when recharging to get 10% off your first recharge.</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://www.0029.org/?promo=AFF11F">
+        <img src="docs/images/sponsor-0029.svg" alt="0029 Cloud Bridge" width="150">
+      </a>
+    </td>
+    <td><a href="https://www.0029.org/?promo=AFF11F"><strong>0029 Cloud Bridge | Codex API Relay Station (gpt5.5 gpt-image-2)</strong></a><br>Supports individual and enterprise access. Monthly plans and pay-as-you-go billing are available, with Pro/Plus account pools, stable site-wide APIs, and 24/7 technical support.</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://rawchat.cn">
+        <img src="docs/images/sponsor-rawchat.svg" alt="RawChat" width="150">
+      </a>
+    </td>
+    <td><a href="https://rawchat.cn"><strong>RawChat | Codex Relay Station</strong></a><br>A long-running relay station with monthly plans, low-rate usage, high cache hit rates, Pro/Plus account pools, and dedicated all-day maintenance.</td>
+  </tr>
+</table>
+
 ## Highlights
 
 - Rust backend and silent launcher with no Python runtime requirement.
