@@ -33,6 +33,15 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/backend/status", json!({})),
         ("/backend/repair", json!({})),
         ("/ads", json!({})),
+        ("/zed-remote/status", json!({})),
+        (
+            "/zed-remote/resolve-host",
+            json!({"hostId": "remote-ssh-codex-managed:remote"}),
+        ),
+        (
+            "/zed-remote/open",
+            json!({"ssh": {"host": "example.com"}, "path": "/home/app.py"}),
+        ),
         ("/delete", json!({"session_id": "s1", "title": "First"})),
         ("/undo", json!({"undo_token": "undo-1"})),
         (
@@ -147,8 +156,30 @@ async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
         json!({"status": "ok", "message": "后端已修复", "version": codex_plus_core::version::VERSION})
     );
     assert_eq!(
-        handle_bridge_request(ctx, "/ads", json!({})).await,
+        handle_bridge_request(ctx.clone(), "/ads", json!({})).await,
         json!({"version": 1, "ads": [{"id": "runtime-ad"}]})
+    );
+    assert_eq!(
+        handle_bridge_request(ctx.clone(), "/zed-remote/status", json!({})).await,
+        json!({"status": "ok", "platformSupported": true, "zedAppFound": true, "zedCliFound": false})
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/zed-remote/resolve-host",
+            json!({"hostId": "remote-ssh-codex-managed:remote"}),
+        )
+        .await,
+        json!({"status": "ok", "ssh": {"user": "longnv", "host": "192.168.100.31", "port": null}})
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx,
+            "/zed-remote/open",
+            json!({"ssh": {"host": "example.com"}, "path": "/home/app.py"}),
+        )
+        .await,
+        json!({"status": "ok", "url": "ssh://example.com/home/app.py"})
     );
 }
 
@@ -566,6 +597,28 @@ impl BridgeRuntimeService for FakeRuntime {
 
     async fn ads(&self) -> anyhow::Result<Value> {
         Ok(json!({"version": 1, "ads": [{"id": "runtime-ad"}]}))
+    }
+
+    async fn zed_remote_status(&self) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "ok",
+            "platformSupported": true,
+            "zedAppFound": true,
+            "zedCliFound": false
+        }))
+    }
+
+    async fn resolve_zed_remote_host(&self, payload: Value) -> anyhow::Result<Value> {
+        assert_eq!(payload["hostId"], json!("remote-ssh-codex-managed:remote"));
+        Ok(json!({
+            "status": "ok",
+            "ssh": {"user": "longnv", "host": "192.168.100.31", "port": null}
+        }))
+    }
+
+    async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value> {
+        assert_eq!(payload["path"], json!("/home/app.py"));
+        Ok(json!({"status": "ok", "url": "ssh://example.com/home/app.py"}))
     }
 }
 

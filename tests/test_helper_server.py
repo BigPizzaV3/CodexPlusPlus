@@ -320,6 +320,26 @@ def test_helper_server_serves_rawchat_sponsor_asset():
     assert content_type == "image/jpeg"
 
 
+def test_helper_server_serves_zed_logo_asset():
+    service = FakeDeleteService()
+    server = HelperServer("127.0.0.1", 0, service)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with resources.files("codex_session_delete").joinpath("assets/zed.png").open("rb") as asset:
+            expected = asset.read()
+        request = urllib.request.Request(f"http://127.0.0.1:{server.port}/assets/zed.png", method="GET")
+        with urllib.request.urlopen(request, timeout=3) as response:
+            body = response.read()
+            content_type = response.headers.get("Content-Type")
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+
+    assert body == expected
+    assert content_type == "image/png"
+
+
 def test_helper_server_allows_private_network_preflight():
     service = FakeDeleteService()
     server = HelperServer("127.0.0.1", 0, service)

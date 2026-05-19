@@ -169,12 +169,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _send_asset(self, name: str) -> None:
         asset_name = unquote(name)
-        if asset_name not in {"sponsor-alipay.jpg", "sponsor-wechat.jpg", "rawchat-sponsor.jpg"}:
+        if asset_name not in {"sponsor-alipay.jpg", "sponsor-wechat.jpg", "rawchat-sponsor.jpg", "zed.png"}:
             self._send_json({"error": "not found"}, status=404)
             return
         data = resources.files("codex_session_delete").joinpath("assets", asset_name).read_bytes()
         self.send_response(200)
-        self.send_header("Content-Type", "image/jpeg")
+        content_type = "image/png" if asset_name.endswith(".png") else "image/jpeg"
+        self.send_header("Content-Type", content_type)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()

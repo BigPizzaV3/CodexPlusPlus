@@ -11,6 +11,12 @@
   const timelineMarkerClass = "codex-conversation-timeline-marker";
   const timelineTooltipClass = "codex-conversation-timeline-tooltip";
   const timelineTargetClass = "codex-conversation-timeline-target";
+  const zedRemoteButtonClass = "codex-zed-remote-button";
+  const zedRemoteOpenInMenuItemClass = "codex-zed-open-in-menu-item";
+  const zedRemoteToastClass = "codex-zed-remote-toast";
+  const zedRemoteOpenVersion = "1";
+  const zedRemoteOpenInMenuVersion = "1";
+  const zedRemoteOpenInMenuActivationWindowMs = 600;
   const timelineQuestionLimit = 40;
   const timelineMinTopPercent = 2;
   const timelineMaxTopPercent = 98;
@@ -23,7 +29,7 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "8";
+  const codexDeleteStyleVersion = "9";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "7";
@@ -126,6 +132,48 @@
         border-color: #10a37f;
         background: #d1fae5;
         color: #065f46;
+      }
+      .${zedRemoteButtonClass} {
+        border: 1px solid #10a37f;
+        border-radius: 7px;
+        background: #d1fae5;
+        color: #065f46;
+        font: 12px system-ui, sans-serif;
+        line-height: 16px;
+        margin-left: 6px;
+        padding: 2px 7px;
+        cursor: pointer;
+      }
+      .${zedRemoteButtonClass}:hover,
+      .${zedRemoteButtonClass}:focus-visible {
+        background: #a7f3d0;
+        outline: none;
+      }
+      .${zedRemoteOpenInMenuItemClass} {
+        cursor: pointer;
+      }
+      .codex-zed-open-in-menu-icon {
+        width: 18px;
+        height: 18px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        object-fit: contain;
+      }
+      .${zedRemoteToastClass} {
+        position: fixed;
+        right: 18px;
+        bottom: 58px;
+        z-index: 2147483000;
+        max-width: min(420px, calc(100vw - 36px));
+        border-radius: 8px;
+        background: #111827;
+        color: #ffffff;
+        font: 13px system-ui, sans-serif;
+        line-height: 18px;
+        padding: 10px 12px;
+        box-shadow: 0 8px 30px rgba(0,0,0,.25);
+        pointer-events: none;
       }
       [data-codex-delete-row="true"]:hover .${actionGroupClass} { opacity: 1; }
       [data-codex-delete-row="true"].codex-archive-confirm-visible .${actionGroupClass} { right: 66px; }
@@ -510,6 +558,7 @@
       markdownExport: true,
       projectMove: true,
       conversationTimeline: true,
+      zedRemoteOpen: true,
       threadScrollRestore: true,
       nativeMenuPlacement: true,
       modelWhitelistUnlock: true,
@@ -790,6 +839,10 @@
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">对话 Timeline</div><div class="codex-plus-row-description">在对话右侧显示用户提问时间线，悬停查看摘要，点击跳转。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationTimeline"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">Zed Remote open</div><div class="codex-plus-row-description">Open supported remote SSH file references in Zed without patching Codex.app.</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="zedRemoteOpen"><span></span></button>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">切换对话保留位置</div><div class="codex-plus-row-description">开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。</div></div>
@@ -3942,6 +3995,437 @@
     scheduleThreadScrollSync(true);
   }
 
+  let zedRemoteStatusPromise = null;
+  const zedRemoteMissingHostMessage = "Cannot determine remote SSH host for this file";
+
+  function showZedRemoteToast(message) {
+    document.querySelectorAll(`.${zedRemoteToastClass}`).forEach((node) => node.remove());
+    const toast = document.createElement("div");
+    toast.className = zedRemoteToastClass;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3200);
+  }
+
+  async function loadZedRemoteStatus() {
+    zedRemoteStatusPromise = zedRemoteStatusPromise || postJson("/zed-remote/status", {});
+    return zedRemoteStatusPromise;
+  }
+
+  async function resolveZedRemoteHost(hostId) {
+    const result = await postJson("/zed-remote/resolve-host", { hostId });
+    return result?.status === "ok" && result.ssh ? result.ssh : null;
+  }
+
+  function zedRemoteString(value) {
+    return typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+  }
+
+  function zedRemoteTruthy(value) {
+    if (value === true) return true;
+    if (typeof value === "string") return /^(true|1|yes|enabled|ssh)$/i.test(value.trim());
+    return false;
+  }
+
+  function zedRemoteHasTrustedSshSignal(source, hostConfig) {
+    return zedRemoteTruthy(source?.supportsSsh) || zedRemoteTruthy(hostConfig?.supportsSsh);
+  }
+
+  function zedRemoteContextFromObject(source) {
+    if (!source || typeof source !== "object") return null;
+    const hostConfig = source.hostConfig || source.sshHostConfig || source.remoteHostConfig || source.ssh || {};
+    const host = zedRemoteString(source.remoteHost || source.sshHost || source.host || source.hostname || source.hostName || hostConfig.host || hostConfig.hostname || hostConfig.hostName || hostConfig.sshHost);
+    const hostId = zedRemoteString(source.hostId);
+    const cwd = zedRemoteString(source.cwd || source.workspaceRoot || source.rootPath || source.remoteWorkspaceRoot || hostConfig.remoteWorkspaceRoot || hostConfig.workspaceRoot || hostConfig.rootPath);
+    if ((!host || !zedRemoteHasTrustedSshSignal(source, hostConfig)) && !(hostId.startsWith("remote-ssh-") && cwd.startsWith("/"))) return null;
+    const user = zedRemoteString(source.remoteUser || source.sshUser || source.user || source.username || hostConfig.user || hostConfig.username || hostConfig.sshUser);
+    const port = zedRemoteString(source.remotePort || source.sshPort || source.port || hostConfig.port || hostConfig.sshPort);
+    const workspaceRoot = cwd;
+    return { hostId, ssh: { user, host, port }, workspaceRoot };
+  }
+
+  function zedRemoteWalkObject(root, visitor, options = {}) {
+    const maxDepth = options.maxDepth || 6;
+    const maxNodes = options.maxNodes || 180;
+    const visited = new WeakSet();
+    const stack = [{ value: root, depth: 0 }];
+    let scanned = 0;
+    while (stack.length && scanned < maxNodes) {
+      const { value, depth } = stack.pop();
+      if (!value || typeof value !== "object" || visited.has(value) || depth > maxDepth) continue;
+      visited.add(value);
+      scanned += 1;
+      const result = visitor(value);
+      if (result) return result;
+      if (value instanceof Element || value === window || value === document || value === document.body || value === document.documentElement) continue;
+      for (const key of Object.keys(value).slice(0, 80)) {
+        if (key === "ownerDocument" || key === "parentElement" || key === "parentNode" || key === "children" || key === "childNodes") continue;
+        let child;
+        try {
+          child = value[key];
+        } catch {
+          continue;
+        }
+        if (child && typeof child === "object") stack.push({ value: child, depth: depth + 1 });
+      }
+    }
+    return null;
+  }
+
+  function zedRemoteReactKeys(element) {
+    return Object.keys(element).filter((key) => key.startsWith("__reactFiber") || key.startsWith("__reactInternalInstance") || key.startsWith("__reactProps"));
+  }
+
+  function zedRemoteContextFromElement(element) {
+    for (const key of zedRemoteReactKeys(element)) {
+      const context = zedRemoteWalkObject(element[key], zedRemoteContextFromObject);
+      if (context) return context;
+    }
+    return null;
+  }
+
+  function zedRemoteContextForElement(element) {
+    for (let node = element; node && node !== document.body; node = node.parentElement) {
+      const context = zedRemoteContextFromElement(node);
+      if (context) return context;
+    }
+    return zedRemoteContext();
+  }
+
+  function zedRemoteHostIdFromText(text) {
+    const source = String(text || "");
+    const match = source.match(/\bremote-ssh-[A-Za-z0-9:_-]+\b/);
+    return match ? match[0] : "";
+  }
+
+  function zedRemoteWorkspaceRootForPath(path) {
+    const source = String(path || "").trim();
+    const projects = Array.from(document.querySelectorAll(selectors.sidebarThread))
+      .map((row) => ({
+        label: (row.textContent || "").replace(/\s+/g, " ").trim(),
+        selected: row.getAttribute("aria-current") === "page" || row.getAttribute("data-selected") === "true" || row.getAttribute("data-active") === "true" || row.className.includes("selected"),
+      }))
+      .filter((row) => row.label);
+    const selected = projects.find((row) => row.selected)?.label || "";
+    for (const label of [selected, ...projects.map((row) => row.label)]) {
+      const name = label.match(/^([A-Za-z0-9._-]+)/)?.[1];
+      if (name && source.includes(`/repo/${name}/`)) return source.slice(0, source.indexOf(`/repo/${name}/`) + `/repo/${name}`.length);
+    }
+    const repoIndex = source.indexOf("/bin/repo/");
+    if (repoIndex >= 0) {
+      const afterRepo = source.slice(repoIndex + "/bin/repo/".length);
+      const project = afterRepo.split("/")[0];
+      if (project) return source.slice(0, repoIndex + "/bin/repo/".length + project.length);
+    }
+    return source;
+  }
+
+  function zedRemoteFallbackContextForElement(element) {
+    const pathText = (element.textContent || "").trim();
+    if (!pathText.startsWith("/")) return null;
+    const root = element.closest("main") || document.body;
+    const hostId = zedRemoteHostIdFromText(root?.textContent || "") || "remote-ssh-codex-managed:remote";
+    return { hostId, ssh: { user: "", host: "", port: "" }, workspaceRoot: zedRemoteWorkspaceRootForPath(pathText) };
+  }
+
+  function zedRemoteContextFromSerializedState(text) {
+    const source = String(text || "");
+    if (!source.includes("hostConfig") || !source.includes("supportsSsh") || !source.includes("remoteWorkspaceRoot")) return null;
+    const trimmed = source.trim();
+    if (/^[{[]/.test(trimmed)) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        const context = zedRemoteWalkObject(parsed, zedRemoteContextFromObject, { maxDepth: 10, maxNodes: 300 });
+        if (context) return context;
+      } catch {
+      }
+    }
+    if (!/['"]supportsSsh['"]\s*:\s*true/.test(source)) return null;
+    const fieldValue = (name) => {
+      const match = source.match(new RegExp(`["']${name}["']\\s*:\\s*["']([^"']+)["']`));
+      return match ? match[1] : "";
+    };
+    const host = fieldValue("host") || fieldValue("hostname") || fieldValue("hostName") || fieldValue("sshHost") || fieldValue("remoteHost");
+    if (!host) return null;
+    return {
+      ssh: {
+        user: fieldValue("user") || fieldValue("username") || fieldValue("sshUser") || fieldValue("remoteUser"),
+        host,
+        port: fieldValue("port") || fieldValue("sshPort") || fieldValue("remotePort"),
+      },
+      workspaceRoot: fieldValue("remoteWorkspaceRoot") || fieldValue("workspaceRoot") || fieldValue("rootPath"),
+    };
+  }
+
+  function zedRemoteContext() {
+    const settings = codexPlusSettings();
+    if (!settings.zedRemoteOpen) return null;
+    const explicitNodes = document.querySelectorAll("[data-host-config], [data-ssh-host], [data-remote-host], [data-remote-workspace-root], [data-supports-ssh]");
+    for (const node of explicitNodes) {
+      if (!(node instanceof HTMLElement)) continue;
+      const data = node.dataset;
+      const context = zedRemoteContextFromObject({
+        hostConfig: data.hostConfig ? { host: data.hostConfig, supportsSsh: true } : {},
+        supportsSsh: data.supportsSsh || data.supportsSshRemote,
+        sshHost: data.sshHost,
+        remoteHost: data.remoteHost,
+        host: data.host,
+        sshUser: data.sshUser,
+        remoteUser: data.remoteUser,
+        user: data.user,
+        sshPort: data.sshPort,
+        remotePort: data.remotePort,
+        port: data.port,
+        remoteWorkspaceRoot: data.remoteWorkspaceRoot,
+        workspaceRoot: data.workspaceRoot,
+      });
+      if (context) return context;
+    }
+    const reactNodes = [document.body, ...document.querySelectorAll("[data-remote-path], [data-file-path], [data-path], [data-open-in-targets], [data-open-file], span.inline-markdown, code, [class*='inlineMarkdown'], a, button, [role='button'], [role='menuitem'], [role='treeitem']")].filter(Boolean);
+    for (const node of reactNodes.slice(0, 260)) {
+      if (!(node instanceof HTMLElement) || isExtensionUiNode(node)) continue;
+      const context = zedRemoteContextFromElement(node);
+      if (context) return context;
+    }
+    const scripts = Array.from(document.querySelectorAll("script[type='application/json'], script[data-state], script#__NEXT_DATA__, script:not([src])"));
+    for (const script of scripts.slice(0, 40)) {
+      const context = zedRemoteContextFromSerializedState(script.textContent || "");
+      if (context) return context;
+    }
+    return null;
+  }
+
+  function zedRemoteAbsolutePath(value, workspaceRoot) {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    if (text.startsWith("/")) return text;
+    if (workspaceRoot && !text.includes("://") && !text.startsWith("~")) {
+      return `${workspaceRoot.replace(/\/+$/, "")}/${text.replace(/^\.\//, "")}`;
+    }
+    return "";
+  }
+
+  function zedRemoteMetadataRemotePath(source) {
+    if (!source || typeof source !== "object") return "";
+    return zedRemoteString(source.remotePath || source.remote_path || source.path || source.filePath || source.file_path || source.openFile?.remotePath || source.openFile?.path);
+  }
+
+  function zedRemotePathFromElementMetadata(element) {
+    const dataPath = element.dataset.remotePath || element.dataset.filePath || element.dataset.path || "";
+    if (dataPath) return dataPath;
+    for (const key of zedRemoteReactKeys(element)) {
+      const path = zedRemoteWalkObject(element[key], zedRemoteMetadataRemotePath, { maxDepth: 6, maxNodes: 120 });
+      if (path) return path;
+    }
+    return "";
+  }
+
+  function zedRemoteInlinePathFromElement(element, context) {
+    if (!context?.hostId && !context?.ssh?.host) return "";
+    const text = (element.textContent || "").trim();
+    if (!text || text.length > 600 || !text.startsWith("/")) return "";
+    const path = zedRemoteAbsolutePath(text, context.workspaceRoot || "");
+    if (!path) return "";
+    if (context.workspaceRoot && !path.startsWith(`${context.workspaceRoot.replace(/\/+$/, "")}/`) && path !== context.workspaceRoot) return "";
+    return path;
+  }
+
+  function zedRemoteAnchorHasOpenFileMetadata(anchor) {
+    if (!(anchor instanceof HTMLAnchorElement)) return false;
+    if (anchor.dataset.remotePath || anchor.dataset.filePath || anchor.dataset.path || anchor.dataset.openInTargets || anchor.dataset.openFile || anchor.dataset.codexOpenFile) return true;
+    const label = `${anchor.getAttribute("aria-label") || ""} ${anchor.getAttribute("data-testid") || ""} ${anchor.getAttribute("rel") || ""}`;
+    return /open[-_\s]?file|open-in-targets|remote/i.test(label) && !!zedRemotePathFromElementMetadata(anchor);
+  }
+
+  function zedRemoteFileCandidates(context) {
+    const candidates = [];
+    const seen = new Set();
+    const addCandidate = (node, candidateContext, rawPath) => {
+      if (!candidateContext?.ssh?.host && !candidateContext?.hostId) return;
+      const path = zedRemoteAbsolutePath(rawPath, candidateContext.workspaceRoot || "");
+      if (!path || seen.has(path)) return;
+      seen.add(path);
+      candidates.push({ node, request: { ssh: candidateContext.ssh, hostId: candidateContext.hostId || "", path } });
+    };
+    const selectors = "[data-remote-path], [data-file-path], [data-path], [data-open-in-targets], [data-open-file], [data-codex-open-file], a[data-remote-path], a[data-file-path], a[data-path]";
+    document.querySelectorAll(selectors).forEach((node) => {
+      if (!(node instanceof HTMLElement) || isExtensionUiNode(node)) return;
+      if (node instanceof HTMLAnchorElement && !zedRemoteAnchorHasOpenFileMetadata(node)) return;
+      addCandidate(node, zedRemoteContextForElement(node) || context, zedRemotePathFromElementMetadata(node));
+    });
+    document.querySelectorAll("span.inline-markdown, code, [class*='inlineMarkdown']").forEach((node) => {
+      if (!(node instanceof HTMLElement) || isExtensionUiNode(node)) return;
+      const candidateContext = zedRemoteContextForElement(node) || context || zedRemoteFallbackContextForElement(node);
+      if (!candidateContext?.hostId && !candidateContext?.ssh?.host) return;
+      const path = zedRemoteInlinePathFromElement(node, candidateContext);
+      if (path) addCandidate(node, candidateContext, path);
+    });
+    return candidates;
+  }
+
+  function zedRemoteBestOpenRequest(context = zedRemoteContext() || {}) {
+    const candidates = zedRemoteFileCandidates(context);
+    if (candidates.length) return candidates[0].request;
+    const workspaceRoot = zedRemoteAbsolutePath(context.workspaceRoot || "", "");
+    if (!workspaceRoot || (!context?.ssh?.host && !context?.hostId)) return null;
+    return { ssh: context.ssh, hostId: context.hostId || "", path: workspaceRoot };
+  }
+
+  async function openZedRemote(request) {
+    let nextRequest = request;
+    if (!nextRequest?.ssh?.host && nextRequest?.hostId) {
+      const ssh = await resolveZedRemoteHost(nextRequest.hostId);
+      nextRequest = ssh ? { ...nextRequest, ssh } : nextRequest;
+    }
+    if (!nextRequest?.ssh?.host) {
+      showZedRemoteToast(zedRemoteMissingHostMessage);
+      return;
+    }
+    try {
+      const result = await postJson("/zed-remote/open", nextRequest);
+      if (result?.status === "ok") {
+        showZedRemoteToast("Opened in Zed Remote");
+        return;
+      }
+      showZedRemoteToast(result?.message || "Cannot open this file in Zed Remote");
+    } catch (error) {
+      showZedRemoteToast(error?.message || "Cannot open this file in Zed Remote");
+    }
+  }
+
+  function openBestZedRemoteTarget() {
+    const request = zedRemoteBestOpenRequest();
+    if (!request) {
+      showZedRemoteToast("Cannot find a remote workspace or file for Zed Remote");
+      return;
+    }
+    openZedRemote(request);
+  }
+
+  function attachZedRemoteButton(candidate) {
+    const anchor = candidate.node;
+    if (anchor.dataset.codexZedRemoteVersion === zedRemoteOpenVersion) return;
+    anchor.dataset.codexZedRemoteVersion = zedRemoteOpenVersion;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = zedRemoteButtonClass;
+    button.textContent = "Open in Zed Remote";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openZedRemote(candidate.request);
+    }, true);
+    anchor.insertAdjacentElement("afterend", button);
+  }
+
+  function removeZedRemoteButtons() {
+    document.querySelectorAll(`[data-codex-zed-remote-version]`).forEach((node) => {
+      delete node.dataset.codexZedRemoteVersion;
+    });
+    document.querySelectorAll(`.${zedRemoteButtonClass}`).forEach((node) => node.remove());
+  }
+
+  function createZedRemoteOpenInMenuItem(referenceItem) {
+    const item = document.createElement("div");
+    item.className = referenceItem?.className || "no-drag text-token-foreground outline-hidden rounded-lg px-[var(--padding-row-x)] py-[var(--padding-row-y)] text-sm group hover:bg-token-list-hover-background focus:bg-token-list-hover-background cursor-interaction flex flex-col";
+    item.classList.add(zedRemoteOpenInMenuItemClass);
+    item.setAttribute("role", referenceItem?.getAttribute("role") || "menuitem");
+    item.setAttribute("tabindex", referenceItem?.getAttribute("tabindex") || "-1");
+    item.setAttribute("data-orientation", referenceItem?.getAttribute("data-orientation") || "vertical");
+    item.innerHTML = `
+      <div class="flex w-full items-center gap-1.5">
+        <span class="inline-flex size-[18px] items-center justify-center leading-none shrink-0 opacity-75 group-focus:opacity-100 group-hover:opacity-100">
+          <img alt="" class="codex-zed-open-in-menu-icon icon-sm" src="apps/zed.png">
+        </span>
+        <span class="flex-1 min-w-0 truncate">Zed</span>
+      </div>
+    `;
+    bindZedRemoteOpenInMenuItem(item, "injected");
+    return item;
+  }
+
+  function zedRemoteOpenInMenuActivationIsDuplicate(target) {
+    if (!(target instanceof HTMLElement)) return false;
+    const now = Date.now();
+    const activatedAt = Number(target.dataset.codexZedOpenInMenuActivatedAt || 0);
+    if (activatedAt && now - activatedAt < zedRemoteOpenInMenuActivationWindowMs) return true;
+    target.dataset.codexZedOpenInMenuActivatedAt = String(now);
+    return false;
+  }
+
+  function activateZedRemoteOpenInMenuItem(event) {
+    if (!codexPlusSettings().zedRemoteOpen) return;
+    if (event?.type === "keydown" && !["Enter", " "].includes(event.key)) return;
+    const request = zedRemoteBestOpenRequest();
+    if (!request) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation?.();
+    if (zedRemoteOpenInMenuActivationIsDuplicate(event?.currentTarget)) return;
+    openZedRemote(request);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+  }
+
+  function bindZedRemoteOpenInMenuItem(item, source) {
+    item.setAttribute("data-codex-zed-open-in-menu", source);
+    if (item.dataset.codexZedOpenInMenuBound === zedRemoteOpenInMenuVersion) return;
+    item.dataset.codexZedOpenInMenuBound = zedRemoteOpenInMenuVersion;
+    item.dataset.codexZedOpenInMenuVersion = zedRemoteOpenInMenuVersion;
+    item.addEventListener("pointerup", activateZedRemoteOpenInMenuItem, true);
+    item.addEventListener("click", activateZedRemoteOpenInMenuItem, true);
+    item.addEventListener("keydown", activateZedRemoteOpenInMenuItem, true);
+  }
+
+  function removeZedRemoteOpenInMenuItems() {
+    document.querySelectorAll(`.${zedRemoteOpenInMenuItemClass}, [data-codex-zed-open-in-menu="injected"]`).forEach((node) => node.remove());
+  }
+
+  function refreshZedRemoteOpenInMenus(context) {
+    removeZedRemoteOpenInMenuItems();
+    if (!codexPlusSettings().zedRemoteOpen) return;
+    const request = zedRemoteBestOpenRequest(context || zedRemoteContext() || {});
+    if (!request) return;
+    document.querySelectorAll('[role="menu"]').forEach((menu) => {
+      if (!(menu instanceof HTMLElement) || isExtensionUiNode(menu)) return;
+      const items = Array.from(menu.querySelectorAll('[role="menuitem"]')).filter((item) => !isExtensionUiNode(item));
+      const menuText = items.map((item) => (item.textContent || "").trim()).join(" ");
+      if (!/\b(VS Code|Cursor|Antigravity)\b/.test(menuText)) return;
+      const existingZedItem = items.find((item) => (item.textContent || "").trim() === "Zed");
+      if (existingZedItem) {
+        bindZedRemoteOpenInMenuItem(existingZedItem, "native");
+        return;
+      }
+      const referenceItem = items.find((item) => /^(VS Code|Cursor|Antigravity)$/.test((item.textContent || "").trim()));
+      if (!referenceItem) return;
+      referenceItem.parentElement?.appendChild(createZedRemoteOpenInMenuItem(referenceItem));
+    });
+  }
+
+  async function refreshZedRemoteOpenControls() {
+    if (!codexPlusSettings().zedRemoteOpen) {
+      removeZedRemoteButtons();
+      removeZedRemoteOpenInMenuItems();
+      return;
+    }
+    const context = zedRemoteContext() || {};
+    try {
+      const status = await loadZedRemoteStatus();
+      if (!status?.platformSupported || (!status.zedAppFound && !status.zedCliFound)) {
+        removeZedRemoteButtons();
+        removeZedRemoteOpenInMenuItems();
+        return;
+      }
+    } catch (_) {
+      removeZedRemoteButtons();
+      removeZedRemoteOpenInMenuItems();
+      return;
+    }
+    removeZedRemoteButtons();
+    const candidates = zedRemoteFileCandidates(context);
+    candidates.forEach(attachZedRemoteButton);
+    refreshZedRemoteOpenInMenus(context);
+  }
+
   function scanDeferred() {
     enablePluginEntry();
     unblockPluginInstallButtons();
@@ -3953,6 +4437,7 @@
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     installArchivedDeleteAllButton();
     refreshConversationTimeline();
+    refreshZedRemoteOpenControls();
     scheduleThreadScrollSync(true);
   }
 
@@ -3971,7 +4456,17 @@
   }
 
   function isExtensionUiNode(node) {
-    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${projectMoveOverlayClass}, .${timelineClass}, .codex-conversation-timeline, #codex-plus-menu`);
+    return !!node?.closest?.([
+      ".codex-delete-toast",
+      ".codex-delete-confirm-overlay",
+      ".codex-plus-modal-overlay",
+      `.${projectMoveOverlayClass}`,
+      `.${timelineClass}`,
+      ".codex-conversation-timeline",
+      ".codex-zed-remote-button",
+      ".codex-zed-remote-toast",
+      "#codex-plus-menu",
+    ].join(", "));
   }
 
   const scanRelevantSelector = [
@@ -3985,6 +4480,9 @@
     '[data-testid="conversation-turn"]',
     '[class*="user-message"]',
     '[class*="UserMessage"]',
+    "span.inline-markdown",
+    "[class*='inlineMarkdown']",
+    "code",
     selectors.appHeader,
     "header",
     selectors.archiveNav,
@@ -4021,8 +4519,13 @@
       if (isChatContentMutation(mutation)) return false;
       const target = mutation.target;
       if (isExtensionUiNode(target)) return false;
+      if (target?.nodeType === 1 && target.matches?.('[role="menu"], [data-radix-popper-content-wrapper]')) return true;
       if (target?.nodeType === 1 && nodeSelfOrAncestorMatchesScanRelevance(target)) return true;
       const changedNodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
+      if (changedNodes.some((node) => node.nodeType === 1 && (
+        node.matches?.('[role="menu"], [data-radix-popper-content-wrapper]') ||
+        node.querySelector?.('[role="menu"], [data-radix-popper-content-wrapper]')
+      ))) return true;
       return changedNodes.some((node) => node.nodeType === 1 && isScanRelevantNode(node));
     });
   }

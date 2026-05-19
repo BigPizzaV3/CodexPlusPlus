@@ -452,3 +452,61 @@ def test_handle_bridge_request_exports_markdown(tmp_path):
     assert exported["status"] == "exported"
     assert exported["filename"] == "thread.md"
 
+
+
+def test_handle_bridge_request_returns_zed_remote_status(monkeypatch, tmp_path):
+    from codex_session_delete import zed_remote
+
+    manager = UserScriptManager(tmp_path / "builtin", tmp_path / "user", tmp_path / "config.json")
+    runtime = FakeRuntime(manager)
+    monkeypatch.setattr(
+        zed_remote,
+        "zed_remote_status",
+        lambda: {"status": "ok", "platformSupported": True, "zedAppFound": True, "zedCliFound": False},
+    )
+
+    result = handle_bridge_request(FakeDeleteService(), FakeExportService(), "/zed-remote/status", {}, runtime)
+
+    assert result == {"status": "ok", "platformSupported": True, "zedAppFound": True, "zedCliFound": False}
+
+
+def test_handle_bridge_request_resolves_zed_remote_host(monkeypatch, tmp_path):
+    from codex_session_delete import zed_remote
+
+    manager = UserScriptManager(tmp_path / "builtin", tmp_path / "user", tmp_path / "config.json")
+    runtime = FakeRuntime(manager)
+    payload = {"hostId": "remote-ssh-codex-managed:remote"}
+
+    monkeypatch.setattr(
+        zed_remote,
+        "resolve_ssh_target_response",
+        lambda received: {"status": "ok", "ssh": {"user": "longnv", "host": "192.168.100.31", "port": None}, "payload": received},
+    )
+
+    result = handle_bridge_request(FakeDeleteService(), FakeExportService(), "/zed-remote/resolve-host", payload, runtime)
+
+    assert result == {
+        "status": "ok",
+        "ssh": {"user": "longnv", "host": "192.168.100.31", "port": None},
+        "payload": payload,
+    }
+
+
+def test_handle_bridge_request_opens_zed_remote(monkeypatch, tmp_path):
+    from codex_session_delete import zed_remote
+
+    manager = UserScriptManager(tmp_path / "builtin", tmp_path / "user", tmp_path / "config.json")
+    runtime = FakeRuntime(manager)
+    opened = []
+
+    def fake_open(payload):
+        opened.append(payload)
+        return {"status": "ok", "url": "ssh://example.com/home/app.py"}
+
+    monkeypatch.setattr(zed_remote, "open_zed_remote", fake_open)
+    payload = {"ssh": {"host": "example.com"}, "path": "/home/app.py"}
+
+    result = handle_bridge_request(FakeDeleteService(), FakeExportService(), "/zed-remote/open", payload, runtime)
+
+    assert result == {"status": "ok", "url": "ssh://example.com/home/app.py"}
+    assert opened == [payload]

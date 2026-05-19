@@ -419,7 +419,7 @@ def test_renderer_script_removes_orphaned_projected_rows_when_thread_is_missing(
 
     text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
     assert "updateDeleteButtonOffsets" in text
-    assert "codexDeleteStyleVersion = \"8\"" in text
+    assert "codexDeleteStyleVersion = \"9\"" in text
     assert "right: 66px" in text
     assert "确认" in text
     assert "归档对话" in text
@@ -750,6 +750,165 @@ def test_renderer_script_can_move_sidebar_threads_between_projects():
     assert "existingMoveButton" in text
     assert "普通对话" in text
 
+
+def test_renderer_script_contains_zed_remote_setting_and_menu_copy():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "zedRemoteOpen" in text
+    assert "Zed Remote open" in text
+    assert "Open supported remote SSH file references in Zed without patching Codex.app." in text
+    assert 'data-codex-plus-setting="zedRemoteOpen"' in text
+
+
+def test_renderer_script_contains_zed_remote_probe_and_open_action():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "codex-zed-remote-button" in text
+    assert "codex-zed-open-in-menu-item" in text
+    assert "Open in Zed Remote" in text
+    assert "Zed Remote" in text
+    assert 'postJson("/zed-remote/status", {})' in text
+    assert 'postJson("/zed-remote/resolve-host", { hostId })' in text
+    assert 'postJson("/zed-remote/open", nextRequest)' in text
+    assert "function zedRemoteContext" in text
+    assert "function zedRemoteFileCandidates" in text
+    assert "function zedRemoteBestOpenRequest" in text
+    assert "function refreshZedRemoteOpenInMenus" in text
+    assert "function refreshZedRemoteOpenControls" in text
+    assert "Cannot determine remote SSH host for this file" in text
+    assert "settings" in text[text.index("function zedRemoteContext"):text.index("function zedRemoteFileCandidates")]
+
+
+def test_renderer_script_removes_stale_zed_remote_controls_when_fail_closed():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    remove_start = text.index("function removeZedRemoteButtons")
+    remove_end = text.index("\n\n  async function refreshZedRemoteOpenControls", remove_start)
+    remove_code = text[remove_start:remove_end]
+    start = text.index("async function refreshZedRemoteOpenControls")
+    end = text.index("\n\n  function scanDeferred", start)
+    refresh_code = text[start:end]
+
+    assert "function removeZedRemoteButtons" in text
+    assert "[data-codex-zed-remote-version]" in remove_code
+    assert "delete node.dataset.codexZedRemoteVersion" in remove_code
+    assert "removeZedRemoteButtons();\n      removeZedRemoteOpenInMenuItems();\n      return;" in refresh_code
+    assert "const context = zedRemoteContext() || {};" in refresh_code
+    assert "if (!status?.platformSupported || (!status.zedAppFound && !status.zedCliFound)) {\n        removeZedRemoteButtons();\n        removeZedRemoteOpenInMenuItems();\n        return;\n      }" in refresh_code
+    assert "catch (_) {\n      removeZedRemoteButtons();\n      removeZedRemoteOpenInMenuItems();\n      return;\n    }" in refresh_code
+    assert "removeZedRemoteButtons();\n    const candidates = zedRemoteFileCandidates(context);\n    candidates.forEach(attachZedRemoteButton);\n    refreshZedRemoteOpenInMenus(context);" in refresh_code
+
+
+def test_renderer_script_adds_zed_remote_to_open_in_menu():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    start = text.index("function createZedRemoteOpenInMenuItem")
+    end = text.index("\n\n  async function refreshZedRemoteOpenControls", start)
+    menu_code = text[start:end]
+    create_end = text.index("\n\n  function activateZedRemoteOpenInMenuItem", start)
+    create_code = text[start:create_end]
+
+    assert ">Zed<" in menu_code
+    assert "Zed Remote" not in menu_code
+    assert 'src="apps/zed.png"' in menu_code
+    assert "codex-zed-open-in-menu-icon icon-sm" in menu_code
+    assert "data-codex-zed-open-in-menu" in menu_code
+    assert "bindZedRemoteOpenInMenuItem(item, \"injected\")" in menu_code
+    assert "item.dataset.codexZedOpenInMenuVersion = zedRemoteOpenInMenuVersion" not in create_code
+    assert "codexZedOpenInMenuBound" in menu_code
+    assert "codexZedOpenInMenuActivatedAt" in menu_code
+    assert "function activateZedRemoteOpenInMenuItem" in menu_code
+    assert "const existingZedItem" in menu_code
+    assert "bindZedRemoteOpenInMenuItem(existingZedItem, \"native\")" in menu_code
+    assert "VS Code|Cursor|Antigravity" in menu_code
+    assert "referenceItem.parentElement?.appendChild(createZedRemoteOpenInMenuItem(referenceItem));" in menu_code
+    assert "document.dispatchEvent(new KeyboardEvent(\"keydown\", { key: \"Escape\"" in menu_code
+
+
+def test_renderer_script_observes_native_open_in_menu_mounts():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    start = text.index("function shouldScheduleScan")
+    end = text.index("\n\n  function runScheduledScan", start)
+    schedule_code = text[start:end]
+
+    assert "[role=\"menu\"], [data-radix-popper-content-wrapper]" in schedule_code
+
+
+def test_renderer_script_handles_zed_remote_open_rejection_with_toast():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    start = text.index("async function openZedRemote")
+    end = text.index("\n\n  function attachZedRemoteButton", start)
+    open_code = text[start:end]
+
+    assert "try {" in open_code
+    assert "postJson(\"/zed-remote/open\", nextRequest)" in open_code
+    assert "catch (error)" in open_code
+    assert "showZedRemoteToast(error?.message || \"Cannot open this file in Zed Remote\")" in open_code
+
+
+def test_renderer_script_zed_remote_uses_codex_remote_source_contract():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    zed_code = text[text.index("function zedRemoteContext"):text.index("\n\n  async function openZedRemote")]
+
+    assert "hostConfig" in zed_code
+    assert "supportsSsh" in zed_code
+    assert "remoteWorkspaceRoot" in zed_code
+    assert "remotePath" in zed_code
+    assert "hostId.startsWith(\"remote-ssh-\")" in zed_code
+    assert "open-in-targets" in zed_code
+    assert "__reactFiber" in zed_code
+    assert "__reactProps" in zed_code
+    assert "JSON.parse" in zed_code
+
+
+def test_renderer_script_zed_remote_has_fallback_for_hidden_remote_context():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    zed_code = text[text.index("function zedRemoteHostIdFromText"):text.index("\n\n  function zedRemoteContextFromSerializedState")]
+    candidates_code = text[text.index("function zedRemoteFileCandidates"):text.index("\n\n  function zedRemoteBestOpenRequest")]
+
+    assert "function zedRemoteFallbackContextForElement" in zed_code
+    assert "\"remote-ssh-codex-managed:remote\"" in zed_code
+    assert "\"/bin/repo/\"" in zed_code
+    assert "zedRemoteFallbackContextForElement(node)" in candidates_code
+
+
+def test_renderer_script_zed_remote_does_not_use_unscoped_broad_anchor_selector():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    start = text.index("function zedRemoteFileCandidates")
+    end = text.index("\n\n  async function openZedRemote", start)
+    candidates_code = text[start:end]
+
+    assert '"code, a,' not in candidates_code
+    assert '"code, a' not in candidates_code
+    assert "getAttribute(\"href\")" not in candidates_code
+    assert "context.workspaceRoot && !path.startsWith" in text
+    assert "if (!candidateContext?.hostId && !candidateContext?.ssh?.host) return;" in candidates_code
+
+
+def test_renderer_script_zed_remote_candidate_sources_are_structured():
+    text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    start = text.index("function zedRemoteFileCandidates")
+    end = text.index("\n\n  async function openZedRemote", start)
+    candidates_code = text[start:end]
+
+    assert "[data-remote-path]" in candidates_code
+    assert "[data-file-path]" in candidates_code
+    assert "[data-path]" in candidates_code
+    assert "data-open-in-targets" in candidates_code
+    assert "zedRemotePathFromElementMetadata" in candidates_code
+    assert "zedRemoteAnchorHasOpenFileMetadata" in candidates_code
+    assert "span.inline-markdown, code, [class*='inlineMarkdown']" in candidates_code
+    scan_relevance_code = text[text.index("const scanRelevantSelector"):text.index("function nodeSelfOrAncestorMatchesScanRelevance")]
+    assert '"span.inline-markdown"' in scan_relevance_code
+    assert "\"[class*='inlineMarkdown']\"" in scan_relevance_code
+
+
+def test_runtime_renderer_asset_contains_zed_remote_open_controls():
+    text = Path("assets/inject/renderer-inject.js").read_text(encoding="utf-8")
+
+    assert "zedRemoteOpen" in text
+    assert 'src="apps/zed.png"' in text
+    assert 'postJson("/zed-remote/open", nextRequest)' in text
+    assert 'data-codex-plus-setting="zedRemoteOpen"' in text
+    assert "[role=\"menu\"], [data-radix-popper-content-wrapper]" in text
 
 def test_renderer_script_has_thread_scroll_restore_toggle():
     text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")

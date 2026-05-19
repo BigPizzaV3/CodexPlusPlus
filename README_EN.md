@@ -95,6 +95,7 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 - Traditional enhancement mode with plugin entry unlock, forced plugin install, session delete, Markdown export, project move, Timeline, and more.
 - Independent user script management with startup injection.
 - Provider Sync to keep historical sessions visible after switching providers.
+- Zed open entry detects remote SSH context and opens the matching remote file in Zed Remote Development from Codex.
 - GitHub Release updates. Both the manager and silent launcher can detect available updates.
 - Windows single instance, no console window, administrator manifest, and system Desktop path detection.
 - Separate macOS x64 and arm64 DMGs. The silent launcher hides its Dock icon.
