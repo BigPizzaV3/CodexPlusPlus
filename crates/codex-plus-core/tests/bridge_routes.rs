@@ -724,6 +724,7 @@ impl LaunchHooks for ContextHooks {
     fn resolve_app_dir(
         &self,
         app_dir: Option<&std::path::Path>,
+        _settings: &BackendSettings,
     ) -> anyhow::Result<std::path::PathBuf> {
         app_dir
             .map(std::path::Path::to_path_buf)

@@ -22,7 +22,7 @@ pub fn ensure_cli_wrapper(settings: &BackendSettings) -> anyhow::Result<Option<W
     if !should_refresh_cli_wrapper(settings, &wrapper_dir) {
         return Ok(None);
     }
-    let real_codex = resolve_real_codex().ok_or_else(|| {
+    let real_codex = resolve_real_codex_for_settings(settings).ok_or_else(|| {
         anyhow::anyhow!("未找到系统 Codex CLI，可先启动一次系统 Codex 或重新安装 Codex")
     })?;
     let codex_home = cli_home_dir();
@@ -93,6 +93,14 @@ pub fn install_cli_wrapper_to(
 
 pub fn resolve_real_codex() -> Option<PathBuf> {
     let app_dir = crate::app_paths::resolve_codex_app_dir(None);
+    resolve_real_codex_from_candidates(app_dir.as_deref(), &default_user_runtime_candidates())
+}
+
+pub fn resolve_real_codex_for_settings(settings: &BackendSettings) -> Option<PathBuf> {
+    let app_dir = crate::app_paths::resolve_codex_app_dir_with_saved(
+        None,
+        Some(settings.codex_app_path.as_str()),
+    );
     resolve_real_codex_from_candidates(app_dir.as_deref(), &default_user_runtime_candidates())
 }
 

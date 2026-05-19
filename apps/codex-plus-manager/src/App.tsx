@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   Activity,
   Bell,
@@ -65,6 +66,7 @@ type OverviewResult = CommandResult<{
 }>;
 
 type BackendSettings = {
+  codexAppPath: string;
   providerSyncEnabled: boolean;
   enhancementsEnabled: boolean;
   launchMode: LaunchMode;
@@ -184,6 +186,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon }> = [
 ];
 
 const defaultSettings: BackendSettings = {
+  codexAppPath: "",
   providerSyncEnabled: false,
   enhancementsEnabled: true,
   launchMode: "patch",
@@ -252,6 +255,10 @@ export function App() {
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
+      setLaunchForm((current) => ({
+        ...current,
+        appPath: current.appPath || result.settings.codexAppPath || "",
+      }));
       if (!silent) showResultNotice("设置已加载", result, { silentSuccess: true });
     }
   };
@@ -515,6 +522,19 @@ export function App() {
     window.localStorage.setItem("codex-plus-theme", theme);
   }, [theme]);
 
+  const saveCodexAppPath = async (appPath: string) => {
+    const next = { ...settingsForm, codexAppPath: appPath };
+    const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
+    if (result) {
+      setSettings(result);
+      const normalized = normalizeSettings(result.settings);
+      setSettingsForm(normalized);
+      setLaunchForm((current) => ({ ...current, appPath: normalized.codexAppPath }));
+      await refreshOverview(true);
+    }
+    return result;
+  };
+
   const actions = useMemo(
     () => ({
       refreshCurrent: () => navigate(route),
@@ -528,6 +548,46 @@ export function App() {
       performUpdate,
       saveSettings,
       resetSettings,
+      chooseCodexAppPath: async (mode: "folder" | "file") => {
+        const selected = await open(
+          mode === "folder"
+            ? { directory: true, multiple: false, title: "选择 Codex 应用目录" }
+            : {
+                directory: false,
+                multiple: false,
+                title: "选择 Codex.exe 或 Codex.app",
+                filters: [{ name: "Codex 应用", extensions: ["exe", "app"] }],
+              },
+        );
+        if (typeof selected === "string" && selected.trim()) {
+          const result = await saveCodexAppPath(selected.trim());
+          if (result) {
+            showNotice("Codex 应用路径", "应用路径已保存，之后启动会自动复用。", result.status);
+          }
+        }
+      },
+      clearCodexAppPath: async () => {
+        const next = { ...settingsForm, codexAppPath: "" };
+        const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
+        if (result) {
+          setSettings(result);
+          setSettingsForm(normalizeSettings(result.settings));
+          setLaunchForm((current) => ({ ...current, appPath: "" }));
+          showNotice("Codex 应用路径", "已清除保存路径，后续启动会回到自动探测。", result.status);
+          await refreshOverview(true);
+        }
+      },
+      saveManualCodexAppPath: async () => {
+        const appPath = launchForm.appPath.trim();
+        if (!appPath) {
+          showNotice("Codex 应用路径", "请先填写或选择应用路径。", "failed");
+          return;
+        }
+        const result = await saveCodexAppPath(appPath);
+        if (result) {
+          showNotice("Codex 应用路径", "应用路径已保存，之后启动会自动复用。", result.status);
+        }
+      },
       syncProvidersNow,
       setLaunchMode: async (launchMode: LaunchMode) => {
         const next = { ...settingsForm, launchMode };
@@ -649,6 +709,7 @@ export function App() {
             <MaintenanceScreen
               overview={overview}
               watcher={watcher}
+              settings={settings}
               launchForm={launchForm}
               onLaunchFormChange={setLaunchForm}
               removeOwnedData={removeOwnedData}
@@ -683,6 +744,9 @@ type Actions = {
   performUpdate: () => Promise<void>;
   saveSettings: () => Promise<void>;
   resetSettings: () => Promise<void>;
+  chooseCodexAppPath: (mode: "folder" | "file") => Promise<void>;
+  clearCodexAppPath: () => Promise<void>;
+  saveManualCodexAppPath: () => Promise<void>;
   syncProvidersNow: () => Promise<void>;
   setLaunchMode: (launchMode: LaunchMode) => Promise<void>;
   refreshRelay: () => Promise<void>;
@@ -1048,6 +1112,7 @@ function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; action
 function MaintenanceScreen({
   overview,
   watcher,
+  settings,
   launchForm,
   onLaunchFormChange,
   removeOwnedData,
@@ -1056,12 +1121,14 @@ function MaintenanceScreen({
 }: {
   overview: OverviewResult | null;
   watcher: WatcherResult | null;
+  settings: SettingsResult | null;
   launchForm: { appPath: string; debugPort: string; helperPort: string };
   onLaunchFormChange: (next: { appPath: string; debugPort: string; helperPort: string }) => void;
   removeOwnedData: boolean;
   onRemoveOwnedDataChange: (value: boolean) => void;
   actions: Actions;
 }) {
+  const savedCodexAppPath = settings?.settings.codexAppPath ?? "";
   return (
     <>
       <Panel>
@@ -1106,13 +1173,34 @@ function MaintenanceScreen({
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="手动启动" detail="留空应用路径时使用自动探测" />
+        <CardHead title="Codex 应用路径" detail="免安装版或解包版只需要选择一次，之后静默启动会自动复用" />
+        <CardContent>
+          <div className="status-table">
+            <StatusRow title="保存路径" status={savedCodexAppPath ? "ok" : "not_checked"} path={savedCodexAppPath || null} />
+            <StatusRow title="当前识别" status={overview?.codex_app.status} path={overview?.codex_app.path} />
+          </div>
+          <Field label="保存的应用路径">
+            <Input
+              value={settings?.settings.codexAppPath ?? ""}
+              placeholder="选择 Codex.exe、Codex.app、app 目录或解包目录"
+              readOnly
+            />
+          </Field>
+          <Toolbar>
+            <Button onClick={() => void actions.chooseCodexAppPath("folder")}>选择应用目录</Button>
+            <Button variant="secondary" onClick={() => void actions.chooseCodexAppPath("file")}>选择 Codex.exe</Button>
+            <Button variant="secondary" onClick={() => void actions.clearCodexAppPath()}>清除保存路径</Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title="手动启动" detail="应用路径留空时使用已保存路径；没有保存路径时使用自动探测" />
         <CardContent>
           <Field label="应用路径覆盖">
             <Input
               value={launchForm.appPath}
               onChange={(event) => onLaunchFormChange({ ...launchForm, appPath: event.currentTarget.value })}
-              placeholder="例如 C:\Program Files\WindowsApps\OpenAI.Codex...\app"
+              placeholder={savedCodexAppPath || "例如 C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app"}
             />
           </Field>
           <div className="form-row">
@@ -1131,6 +1219,9 @@ function MaintenanceScreen({
           </div>
           <Toolbar>
             <Button onClick={() => void actions.launch()}>启动 Codex++</Button>
+            <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
+              保存为默认路径
+            </Button>
           </Toolbar>
         </CardContent>
       </Panel>

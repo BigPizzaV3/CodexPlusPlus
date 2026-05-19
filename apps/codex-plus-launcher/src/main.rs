@@ -139,8 +139,9 @@ impl LaunchHooks for LauncherHooks {
     fn resolve_app_dir(
         &self,
         app_dir: Option<&std::path::Path>,
+        settings: &codex_plus_core::settings::BackendSettings,
     ) -> anyhow::Result<std::path::PathBuf> {
-        self.core.resolve_app_dir(app_dir)
+        self.core.resolve_app_dir(app_dir, settings)
     }
 
     fn select_debug_port(&self, requested: u16) -> u16 {

@@ -265,6 +265,7 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
 
 #[tauri::command]
 pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
+    let settings = normalize_settings_before_save(settings);
     match SettingsStore::default().save(&settings) {
         Ok(()) => {
             let wrapper_message = refresh_cli_wrapper_after_settings_save(&settings);
@@ -284,6 +285,15 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
             },
         ),
     }
+}
+
+fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSettings {
+    if let Some(path) =
+        codex_plus_core::app_paths::normalize_codex_app_path(Path::new(&settings.codex_app_path))
+    {
+        settings.codex_app_path = path.to_string_lossy().to_string();
+    }
+    settings
 }
 
 #[tauri::command]
@@ -778,8 +788,12 @@ fn load_overview_payload() -> (
     install::EntryPointState,
     Option<LaunchStatus>,
 ) {
+    let settings = SettingsStore::default().load().unwrap_or_default();
     (
-        codex_plus_core::app_paths::resolve_codex_app_dir(None),
+        codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
+            None,
+            Some(settings.codex_app_path.as_str()),
+        ),
         install::inspect_entrypoints(),
         StatusStore::default().load_latest().unwrap_or(None),
     )

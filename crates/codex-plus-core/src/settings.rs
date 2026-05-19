@@ -37,6 +37,8 @@ impl Default for RelayProfile {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BackendSettings {
+    #[serde(rename = "codexAppPath", default)]
+    pub codex_app_path: String,
     #[serde(rename = "providerSyncEnabled", default)]
     pub provider_sync_enabled: bool,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
@@ -68,6 +70,7 @@ pub struct BackendSettings {
 impl Default for BackendSettings {
     fn default() -> Self {
         Self {
+            codex_app_path: String::new(),
             provider_sync_enabled: false,
             enhancements_enabled: true,
             launch_mode: LaunchMode::Patch,
@@ -226,6 +229,9 @@ impl SettingsStore {
 }
 
 fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<String, Value>) {
+    if let Some(value) = source.get("codexAppPath").and_then(Value::as_str) {
+        target.insert("codexAppPath".to_string(), Value::String(value.to_string()));
+    }
     if let Some(value) = source.get("providerSyncEnabled").and_then(Value::as_bool) {
         target.insert("providerSyncEnabled".to_string(), Value::Bool(value));
     }
@@ -338,6 +344,7 @@ mod tests {
         let settings = BackendSettings::default();
         assert!(!settings.provider_sync_enabled);
         assert!(settings.enhancements_enabled);
+        assert!(settings.codex_app_path.is_empty());
         assert_eq!(settings.launch_mode, LaunchMode::Patch);
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.relay_api_key.is_empty());
@@ -348,9 +355,10 @@ mod tests {
     #[test]
     fn settings_deserialize_uses_existing_json_keys() {
         let settings: BackendSettings = serde_json::from_str(
-            r#"{"providerSyncEnabled":true,"cliWrapperEnabled":true,"cliWrapperBaseUrl":"https://example.test","cliWrapperApiKey":"sk-test","cliWrapperApiKeyEnv":""}"#,
+            r#"{"codexAppPath":"C:\\Portable\\Codex\\app","providerSyncEnabled":true,"cliWrapperEnabled":true,"cliWrapperBaseUrl":"https://example.test","cliWrapperApiKey":"sk-test","cliWrapperApiKeyEnv":""}"#,
         )
         .unwrap();
+        assert_eq!(settings.codex_app_path, r"C:\Portable\Codex\app");
         assert!(settings.provider_sync_enabled);
         assert!(settings.cli_wrapper_enabled);
         assert_eq!(settings.cli_wrapper_base_url, "https://example.test");
@@ -412,6 +420,7 @@ mod tests {
         let updated = store
             .update(json!({
             "providerSyncEnabled": true,
+            "codexAppPath": "C:\\Portable\\Codex\\Codex.exe",
             "enhancementsEnabled": false,
             "relayBaseUrl": "https://relay.example.test/v1",
             "relayApiKey": "sk-relay",
@@ -421,6 +430,7 @@ mod tests {
             .unwrap();
 
         assert!(updated.provider_sync_enabled);
+        assert_eq!(updated.codex_app_path, r"C:\Portable\Codex\Codex.exe");
         assert!(!updated.enhancements_enabled);
         assert_eq!(updated.relay_base_url, "https://relay.example.test/v1");
         assert_eq!(updated.relay_api_key, "sk-relay");

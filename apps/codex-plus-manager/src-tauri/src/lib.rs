@@ -7,6 +7,7 @@ pub fn run() {
     };
     let show_update = commands::startup_should_show_update();
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let url = if show_update {
                 "index.html?showUpdate=1"

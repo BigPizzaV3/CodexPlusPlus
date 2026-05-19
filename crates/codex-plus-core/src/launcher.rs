@@ -114,7 +114,11 @@ impl LaunchHandle {
 
 #[async_trait(?Send)]
 pub trait LaunchHooks: Send + Sync {
-    fn resolve_app_dir(&self, app_dir: Option<&Path>) -> anyhow::Result<PathBuf>;
+    fn resolve_app_dir(
+        &self,
+        app_dir: Option<&Path>,
+        settings: &BackendSettings,
+    ) -> anyhow::Result<PathBuf>;
     fn select_debug_port(&self, requested: u16) -> u16;
     fn select_helper_port(&self, requested: u16) -> u16;
     async fn load_settings(&self) -> anyhow::Result<BackendSettings>;
@@ -165,10 +169,10 @@ where
     H: IntoLaunchHooks,
 {
     let hooks = hooks.into_launch_hooks();
-    let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref())?;
     let debug_port = hooks.select_debug_port(options.debug_port);
     let helper_port = hooks.select_helper_port(options.helper_port);
     let settings = hooks.load_settings().await?;
+    let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
     let status_store = options.status_store.clone();
     let mut helper_started = false;
     let mut launched = None;
@@ -266,9 +270,16 @@ impl DefaultLaunchHooks {
 
 #[async_trait(?Send)]
 impl LaunchHooks for DefaultLaunchHooks {
-    fn resolve_app_dir(&self, app_dir: Option<&Path>) -> anyhow::Result<PathBuf> {
-        crate::app_paths::resolve_codex_app_dir(app_dir)
-            .ok_or_else(|| anyhow::anyhow!("Codex App directory not found"))
+    fn resolve_app_dir(
+        &self,
+        app_dir: Option<&Path>,
+        settings: &BackendSettings,
+    ) -> anyhow::Result<PathBuf> {
+        crate::app_paths::resolve_codex_app_dir_with_saved(
+            app_dir,
+            Some(settings.codex_app_path.as_str()),
+        )
+        .ok_or_else(|| anyhow::anyhow!("Codex App directory not found"))
     }
 
     fn select_debug_port(&self, requested: u16) -> u16 {

@@ -91,13 +91,71 @@ pub fn find_macos_codex_app_default() -> Option<PathBuf> {
 
 pub fn resolve_codex_app_dir(app_dir: Option<&Path>) -> Option<PathBuf> {
     if let Some(app_dir) = app_dir {
-        return Some(app_dir.to_path_buf());
+        return normalize_codex_app_path(app_dir);
     }
     if cfg!(target_os = "macos") {
         find_macos_codex_app_default()
     } else {
         find_latest_codex_app_dir_default()
     }
+}
+
+pub fn resolve_codex_app_dir_with_saved(
+    app_dir: Option<&Path>,
+    saved_app_path: Option<&str>,
+) -> Option<PathBuf> {
+    if let Some(app_dir) = app_dir {
+        return normalize_codex_app_path(app_dir);
+    }
+    if let Some(saved) = saved_app_path
+        .map(str::trim)
+        .filter(|saved| !saved.is_empty())
+    {
+        if let Some(path) = normalize_codex_app_path(Path::new(saved)) {
+            return Some(path);
+        }
+    }
+    resolve_codex_app_dir(None)
+}
+
+pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+
+    let file_name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
+    if file_name.eq_ignore_ascii_case("Codex.exe") || file_name.eq_ignore_ascii_case("codex.exe") {
+        return path.parent().map(Path::to_path_buf);
+    }
+
+    if path.extension() == Some(OsStr::new("app")) {
+        return Some(path.to_path_buf());
+    }
+
+    if path.is_file() {
+        return path.parent().map(Path::to_path_buf);
+    }
+
+    let upper = path.join("Codex.exe");
+    let lower = path.join("codex.exe");
+    if upper.exists() || lower.exists() {
+        return Some(path.to_path_buf());
+    }
+
+    let nested_app = path.join("app");
+    if nested_app.is_dir() {
+        let upper = nested_app.join("Codex.exe");
+        let lower = nested_app.join("codex.exe");
+        if upper.exists() || lower.exists() {
+            return Some(nested_app);
+        }
+    }
+
+    if path.is_dir() {
+        return Some(path.to_path_buf());
+    }
+
+    None
 }
 
 pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
