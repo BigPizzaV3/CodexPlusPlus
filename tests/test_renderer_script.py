@@ -45,6 +45,57 @@ def test_renderer_script_positions_delete_button_without_affecting_layout():
     assert "display: inline-flex" in text
 
 
+def test_renderer_script_uses_native_like_sidebar_action_icons_with_tooltips():
+    text = Path("assets/inject/renderer-inject.js").read_text(encoding="utf-8")
+    style_start = text.index("style.textContent = `")
+    style_end = text.index("`;\n    document.documentElement.appendChild(style);", style_start)
+    style_code = text[style_start:style_end]
+    events_start = text.index("function installActionButtonEvents")
+    events_end = text.index("\n\n  function attachButton", events_start)
+    events_code = text[events_start:events_end]
+    attach_start = text.index("function attachButton")
+    attach_end = text.index("\n\n  function tryAttachButton", attach_start)
+    attach_code = text[attach_start:attach_end]
+
+    assert "actionTooltipClass = \"codex-session-action-tooltip\"" in text
+    assert "codexDeleteStyleVersion = \"9\"" in text
+    assert "codexDeleteVersion = \"7\"" in text
+    assert "codexActionGroupVersion = \"3\"" in text
+    assert "background: transparent" in style_code
+    assert "width: 26px" in style_code
+    assert "height: 26px" in style_code
+    assert "display: inline-flex" in style_code
+    assert "align-items: center" in style_code
+    assert "justify-content: center" in style_code
+    assert "color: #d1d5db" in style_code
+    assert "background: #363839" in style_code
+    assert "[data-codex-delete-row=\"true\"]:hover [data-thread-title]" in style_code
+    assert "mask-image: linear-gradient(90deg, #000 calc(100% - 86px), transparent calc(100% - 80px))" in style_code
+    assert ".${actionButtonClass} svg" in style_code
+    assert ".${actionButtonClass}.${buttonClass}:hover" not in style_code
+
+    assert "configureActionButton(moveButton, \"移动\", \"↗\")" in attach_code
+    assert "configureActionButton(exportButton, \"导出\", \"⇩\")" in attach_code
+    assert "configureSvgActionButton(deleteButton, \"删除\", trashIconSvg())" in attach_code
+    assert "function trashIconSvg()" in text
+    assert "<svg viewBox=\"0 0 24 24\"" in text
+    assert "stroke=\"currentColor\"" in text
+    assert "aria-hidden=\"true\"" in text
+    assert "focusable=\"false\"" in text
+    assert "button.setAttribute(\"aria-label\", label)" in text
+    assert "button.dataset.codexActionLabel = label" in text
+    assert "button.removeAttribute(\"title\")" in text
+    assert "button.innerHTML = svg" in text
+    assert "⌫" not in attach_code
+    assert 'moveButton.textContent = "移动"' not in attach_code
+    assert 'exportButton.textContent = "导出"' not in attach_code
+    assert 'deleteButton.textContent = "删除"' not in attach_code
+    assert "showActionButtonTooltip(button)" in events_code
+    assert "hideActionButtonTooltip()" in events_code
+    assert "\"pointerenter\"" in events_code
+    assert "\"focus\"" in events_code
+
+
 
 
 def test_renderer_script_keeps_sponsors_separate_from_author_support():

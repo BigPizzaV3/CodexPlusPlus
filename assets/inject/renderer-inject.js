@@ -6,6 +6,7 @@
   const projectMoveOverlayClass = "codex-project-move-overlay";
   const actionButtonClass = "codex-session-action-button";
   const actionGroupClass = "codex-session-actions";
+  const actionTooltipClass = "codex-session-action-tooltip";
   const timelineClass = "codex-conversation-timeline";
   const timelineTrackClass = "codex-conversation-timeline-track";
   const timelineMarkerClass = "codex-conversation-timeline-marker";
@@ -23,13 +24,13 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "8";
+  const codexDeleteStyleVersion = "9";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
-  const codexDeleteVersion = "6";
+  const codexDeleteVersion = "7";
   const codexExportVersion = "1";
   const codexProjectMoveVersion = "1";
-  const codexActionGroupVersion = "2";
+  const codexActionGroupVersion = "3";
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationTimelineVersion = "2";
@@ -71,44 +72,75 @@
         opacity: 0;
         display: inline-flex;
         align-items: center;
-        gap: 6px;
+        gap: 4px;
+        background: transparent;
       }
-      .${actionButtonClass},
+      .${actionButtonClass} {
+        width: 26px;
+        height: 26px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: #d1d5db;
+        font: 14px/1 system-ui, sans-serif;
+        padding: 0;
+        cursor: default;
+        text-align: center;
+      }
+      .${actionButtonClass} svg {
+        display: block;
+        width: 16px;
+        height: 16px;
+      }
+      .${actionButtonClass}:hover,
+      .${actionButtonClass}:focus-visible {
+        background: #363839;
+        color: #f4f4f5;
+        outline: none;
+      }
       .codex-archive-row-button {
         border: 1px solid #ef4444;
-        border-radius: 6px;
+        border-radius: 7px;
         background: #f3f4f6;
         color: #374151;
-        font-size: 12px;
-        line-height: 16px;
-        padding: 1px 6px;
-        cursor: pointer;
-      }
-      .codex-archive-row-button {
-        border-radius: 7px;
         font: 12px system-ui, sans-serif;
         line-height: 16px;
         padding: 3px 8px;
+        cursor: pointer;
       }
-      .${buttonClass},
       .codex-archive-row-button.${buttonClass} {
         border-color: #ef4444;
         background: #fee2e2;
         color: #991b1b;
       }
-      .${exportButtonClass},
       .codex-archive-row-button.${exportButtonClass} {
         border-color: #93c5fd;
         background: #dbeafe;
         color: #1d4ed8;
       }
-      .${projectMoveButtonClass} {
-        border-color: #10a37f;
-        background: #d1fae5;
-        color: #065f46;
-      }
       [data-codex-delete-row="true"]:hover .${actionGroupClass} { opacity: 1; }
+      [data-codex-delete-row="true"]:hover [data-thread-title] {
+        -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 86px), transparent calc(100% - 80px));
+        mask-image: linear-gradient(90deg, #000 calc(100% - 86px), transparent calc(100% - 80px));
+      }
       [data-codex-delete-row="true"].codex-archive-confirm-visible .${actionGroupClass} { right: 66px; }
+      .${actionTooltipClass} {
+        position: fixed;
+        z-index: 2147483201;
+        max-width: min(220px, calc(100vw - 32px));
+        border: 1px solid rgba(255,255,255,.1);
+        border-radius: 12px;
+        background: #242628;
+        color: #f4f4f5;
+        font: 14px/20px system-ui, sans-serif;
+        padding: 9px 12px;
+        box-shadow: 0 14px 40px rgba(0,0,0,.28);
+        pointer-events: none;
+        white-space: nowrap;
+      }
       .${projectMoveOverlayClass} {
         position: fixed;
         inset: 0;
@@ -2532,8 +2564,42 @@
     ["pointerdown", "mousedown", "mouseup", "touchstart"].forEach((eventName) => {
       button.addEventListener(eventName, (event) => stopActionButtonEvent(row, button, event), true);
     });
+    button.addEventListener("pointerenter", () => showActionButtonTooltip(button));
+    button.addEventListener("pointerleave", hideActionButtonTooltip);
+    button.addEventListener("focus", () => showActionButtonTooltip(button));
+    button.addEventListener("blur", hideActionButtonTooltip);
     button.addEventListener("pointerup", onActivate, true);
-    button.addEventListener("click", onActivate, true);
+    button.addEventListener("click", (event) => {
+      hideActionButtonTooltip();
+      onActivate(event);
+    }, true);
+  }
+
+  function hideActionButtonTooltip() {
+    document.querySelectorAll(`.${actionTooltipClass}`).forEach((node) => node.remove());
+  }
+
+  function showActionButtonTooltip(button) {
+    const label = button.dataset.codexActionLabel || button.getAttribute("aria-label") || "";
+    if (!label) return;
+    hideActionButtonTooltip();
+    const tooltip = document.createElement("div");
+    tooltip.className = actionTooltipClass;
+    tooltip.textContent = label;
+    document.body.appendChild(tooltip);
+    const buttonRect = button.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const gap = 8;
+    const left = Math.min(
+      window.innerWidth - tooltipRect.width - 8,
+      Math.max(8, buttonRect.left + buttonRect.width / 2 - tooltipRect.width / 2),
+    );
+    const top = Math.min(
+      window.innerHeight - tooltipRect.height - 8,
+      buttonRect.bottom + gap,
+    );
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${Math.max(8, top)}px`;
   }
 
   function refreshActionButton(originalButton, row, onActivate) {
@@ -2541,6 +2607,32 @@
     const replacement = originalButton.cloneNode(true);
     installActionButtonEvents(row, replacement, onActivate);
     originalButton.replaceWith(replacement);
+  }
+
+  function configureActionButton(button, label, icon) {
+    button.setAttribute("aria-label", label);
+    button.dataset.codexActionLabel = label;
+    button.removeAttribute("title");
+    button.textContent = icon;
+  }
+
+  function trashIconSvg() {
+    return `
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 6h18"></path>
+        <path d="M8 6V4h8v2"></path>
+        <path d="M19 6l-1 14H6L5 6"></path>
+        <path d="M10 11v5"></path>
+        <path d="M14 11v5"></path>
+      </svg>
+    `;
+  }
+
+  function configureSvgActionButton(button, label, svg) {
+    button.setAttribute("aria-label", label);
+    button.dataset.codexActionLabel = label;
+    button.removeAttribute("title");
+    button.innerHTML = svg;
   }
 
   function attachButton(row) {
@@ -2581,7 +2673,7 @@
       moveButton.type = "button";
       moveButton.className = `${actionButtonClass} ${projectMoveButtonClass}`;
       moveButton.dataset.codexProjectMoveVersion = codexProjectMoveVersion;
-      moveButton.textContent = "移动";
+      configureActionButton(moveButton, "移动", "↗");
       const openProjectMove = (event) => openProjectMoveMenuForRow(row, moveButton, ref, event);
       installActionButtonEvents(row, moveButton, openProjectMove);
       group.appendChild(moveButton);
@@ -2592,7 +2684,7 @@
       exportButton.type = "button";
       exportButton.className = `${actionButtonClass} ${exportButtonClass}`;
       exportButton.dataset.codexExportVersion = codexExportVersion;
-      exportButton.textContent = "导出";
+      configureActionButton(exportButton, "导出", "⇩");
       const openExport = (event) => {
         stopActionButtonEvent(row, exportButton, event);
         exportMarkdown(ref);
@@ -2606,7 +2698,7 @@
       deleteButton.type = "button";
       deleteButton.className = `${actionButtonClass} ${buttonClass}`;
       deleteButton.dataset.codexDeleteVersion = codexDeleteVersion;
-      deleteButton.textContent = "删除";
+      configureSvgActionButton(deleteButton, "删除", trashIconSvg());
       const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, ref, event);
       installActionButtonEvents(row, deleteButton, openDeleteConfirm);
       group.appendChild(deleteButton);
