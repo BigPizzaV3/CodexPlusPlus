@@ -35,6 +35,9 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 
 ## Sponsors
 
+<p align="center">
+  <a href="mailto:1727532@qq.com">Want to be shown below?</a>
+</p>
 <table>
   <tr>
     <th width="180">🏆 Sponsor 🏆</th>
@@ -54,7 +57,7 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
         <img src="https://raw.githubusercontent.com/farion1231/cc-switch/main/assets/partners/logos/aigocode.png" alt="AIGoCode" width="150">
       </a>
     </td>
-    <td><a href="https://aigocode.com/invite/CodexPlusPlus"><strong>AIGoCode</strong></a><br>Thanks to AIGoCode for sponsoring this project! AIGoCode is an all-in-one platform integrating the latest Claude Code, Codex, and Gemini models, providing stable, efficient, and cost-effective AI programming services. It offers flexible subscription plans, direct access in China, no extra network setup, and fast responses. AIGoCode provides a special benefit for CC Switch users: users who register through this link can receive an extra 10% bonus credit on their first recharge.</td>
+    <td><a href="https://aigocode.com/invite/CodexPlusPlus"><strong>AIGoCode</strong></a><br>Thanks to AIGoCode for sponsoring this project! AIGoCode is an all-in-one platform integrating the latest Claude Code, Codex, and Gemini models, providing stable, efficient, and cost-effective AI programming services. It offers flexible subscription plans, direct access in China, no extra network setup, and fast responses. AIGoCode provides a special benefit for CC Switch users: users who <a href="https://aigocode.com/invite/CodexPlusPlus">register through this link</a> can receive an extra 10% bonus credit on their first recharge.</td>
   </tr>
   <tr>
     <td align="center">
@@ -81,6 +84,7 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
     <td><a href="https://rawchat.cn"><strong>RawChat | Codex Relay Station</strong></a><br>A long-running relay station with monthly plans, low-rate usage, high cache hit rates, Pro/Plus account pools, and dedicated all-day maintenance.</td>
   </tr>
 </table>
+
 
 ## Highlights
 
