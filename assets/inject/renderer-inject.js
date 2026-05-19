@@ -39,15 +39,34 @@
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationTimelineVersion = "2";
+  const codexThreadScrollVersion = "1";
   let codexPlusVersion = window.__CODEX_PLUS_VERSION__ || "unknown";
   const codexPlusBuild = window.__CODEX_PLUS_BUILD__ || "unknown";
   const codexPlusSettingsKey = "codexPlusSettings";
+  const codexThreadScrollKey = "codexThreadScroll";
+  const codexThreadScrollMaxEntries = 120;
+  const codexThreadScrollSaveThrottleMs = 120;
+  const codexThreadScrollRestoreWindowMs = 3200;
+  const codexThreadScrollRestoreDelaysMs = [0, 80, 220, 500, 1000, 1800, 2800];
+  const codexThreadScrollUserIntentWindowMs = 1200;
+  const codexThreadScrollProgrammaticGuardVersion = "dispatcher:2";
+  const codexThreadScrollRouteHooksVersion = "dispatcher:2";
+  const codexThreadScrollListenerVersion = "4";
+  const codexThreadScrollUserIntentVersion = "dispatcher:2";
   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
   clearTimeout(window.__codexProjectMoveProjectionTimer);
   clearTimeout(window.__codexProjectMoveChatsSortTimer);
   window.__codexProjectMoveProjectionTimer = null;
   window.__codexProjectMoveChatsSortTimer = null;
+  clearTimeout(window.__codexThreadScrollSaveTimer);
+  window.__codexThreadScrollSaveTimer = null;
+  (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
+  window.__codexThreadScrollRestoreTimers = [];
+  (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
+  window.__codexThreadScrollSyncTimers = [];
+  window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+  window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
   window.__codexConversationTimelineNodeCounter = window.__codexConversationTimelineNodeCounter || 0;
   const selectors = {
     sidebarThread: "[data-app-action-sidebar-thread-id]",
@@ -387,6 +406,7 @@
       .codex-plus-row:first-child { border-top: 0; }
       .codex-plus-row-title { font-weight: 550; line-height: 1.35; }
       .codex-plus-row-description { margin-top: 2px; color: #a1a1aa; font-size: 12px; line-height: 1.4; }
+      .codex-plus-model-compat-warning { margin-top: 6px; color: #fbbf24; font-size: 12px; line-height: 1.45; }
       .codex-plus-toggle {
         width: 42px;
         height: 24px;
@@ -533,7 +553,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, forcePluginInstall: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, zedRemoteOpen: true, nativeMenuPlacement: true };
+    return { pluginEntryUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, threadScrollRestore: true, zedRemoteOpen: true, nativeMenuPlacement: true };
   }
 
   function codexPlusSettings() {
@@ -542,10 +562,12 @@
       return {
         pluginEntryUnlock: false,
         forcePluginInstall: false,
+        modelWhitelistUnlock: false,
         sessionDelete: false,
         markdownExport: false,
         projectMove: false,
         conversationTimeline: false,
+        threadScrollRestore: false,
         zedRemoteOpen: false,
         nativeMenuPlacement: false,
       };
@@ -576,7 +598,19 @@
     }
     const next = { ...stored, [key]: value };
     localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
+    if (key === "threadScrollRestore" && !value) {
+      clearTimeout(window.__codexThreadScrollSaveTimer);
+      window.__codexThreadScrollSaveTimer = null;
+      window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+      window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
+      (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
+      window.__codexThreadScrollRestoreTimers = [];
+      (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
+      window.__codexThreadScrollSyncTimers = [];
+      window.__codexThreadScrollRuntime = null;
+    }
     renderCodexPlusMenu();
+    renderCodexModelCompatibilityWarning();
     scan();
   }
 
@@ -585,6 +619,7 @@
       const key = button.getAttribute("data-codex-plus-setting");
       button.dataset.enabled = String(!!codexPlusSettings()[key]);
     });
+    renderCodexModelCompatibilityWarning();
   }
 
   let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, launchMode: "patch" };
@@ -883,6 +918,10 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="forcePluginInstall" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
             </div>
             <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">模型白名单解锁</div><div class="codex-plus-row-description">从环境变量和 Codex config.toml 中的中转站 /v1/models 拉取模型，并补进模型选择列表。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示删除按钮，并支持撤销。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionDelete"><span></span></button>
             </div>
@@ -897,6 +936,10 @@
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">对话 Timeline</div><div class="codex-plus-row-description">在对话右侧显示用户提问时间线，悬停查看摘要，点击跳转。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationTimeline"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">切换对话保留位置</div><div class="codex-plus-row-description">开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">Zed Remote open</div><div class="codex-plus-row-description">Open supported remote SSH file references in Zed without patching Codex.app.</div></div>
@@ -1398,6 +1441,625 @@
     build: codexPlusBuild,
   });
 
+  function locationThreadId() {
+    const source = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    const match = source.match(/(?:session|conversation|thread)(?:\/|=|:|-)([A-Za-z0-9_.-]+)/i)
+      || source.match(/\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[/?#]|$)/)
+      || source.match(/\/([A-Za-z0-9_-]{24,})(?:[/?#]|$)/);
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
+  function finiteNonNegativeNumber(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+  }
+
+  function finiteScrollNumber(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : 0;
+  }
+
+  function validThreadScrollSessionKey(sessionId) {
+    const key = projectMoveSessionKey(sessionId);
+    if (!key || key === "__proto__" || key === "prototype" || key === "constructor") return "";
+    return /^[A-Za-z0-9_.-]{8,128}$/.test(key) ? key : "";
+  }
+
+  function currentSessionRef() {
+    const rows = sessionRows();
+    for (const row of rows) {
+      const ref = sessionRefFromRow(row);
+      if (ref.session_id && isCurrentSessionRow(row, ref)) return ref;
+    }
+    return { session_id: locationThreadId(), title: "" };
+  }
+
+  function readThreadScrollEntries() {
+    if (window.__codexThreadScrollEntries && typeof window.__codexThreadScrollEntries === "object") {
+      return { ...window.__codexThreadScrollEntries };
+    }
+    try {
+      const parsed = JSON.parse(localStorage.getItem(codexThreadScrollKey) || "{}");
+      const rawEntries = parsed?.version === codexThreadScrollVersion && parsed?.entries && typeof parsed.entries === "object"
+        ? parsed.entries
+        : parsed && typeof parsed === "object"
+          ? parsed
+          : {};
+      const entries = Object.create(null);
+      Object.entries(rawEntries).forEach(([key, value]) => {
+        const safeKey = validThreadScrollSessionKey(key);
+        if (!safeKey || !value || typeof value !== "object") return;
+        entries[safeKey] = {
+          top: finiteScrollNumber(value.top),
+          scrollHeight: finiteNonNegativeNumber(value.scrollHeight),
+          clientHeight: finiteNonNegativeNumber(value.clientHeight),
+          at: finiteNonNegativeNumber(value.at),
+        };
+      });
+      window.__codexThreadScrollEntries = entries;
+      return { ...entries };
+    } catch {
+      window.__codexThreadScrollEntries = Object.create(null);
+      return {};
+    }
+  }
+
+  function writeThreadScrollEntries(entries) {
+    const pruned = Object.create(null);
+    Object.entries(entries || {})
+      .sort((left, right) => finiteNonNegativeNumber(right[1]?.at) - finiteNonNegativeNumber(left[1]?.at))
+      .slice(0, codexThreadScrollMaxEntries)
+      .forEach(([key, value]) => {
+        const safeKey = validThreadScrollSessionKey(key);
+        if (safeKey) pruned[safeKey] = value;
+      });
+    window.__codexThreadScrollEntries = pruned;
+    localStorage.setItem(codexThreadScrollKey, JSON.stringify({ version: codexThreadScrollVersion, entries: pruned }));
+  }
+
+  function currentThreadScroller() {
+    const explicit = document.querySelector(".thread-scroll-container");
+    if (explicit?.isConnected) return explicit;
+    const root = conversationTimelineRoot();
+    if (!root?.isConnected) return document.scrollingElement || document.documentElement;
+    const style = getComputedStyle(root);
+    if (/(auto|scroll)/.test(style.overflowY) && root.scrollHeight > root.clientHeight) return root;
+    return nearestTimelineScroller(root);
+  }
+
+  function threadScrollRuntime() {
+    if (!window.__codexThreadScrollRuntime || typeof window.__codexThreadScrollRuntime !== "object") {
+      window.__codexThreadScrollRuntime = {
+        activeSessionId: "",
+        activeScroller: null,
+        scrollListener: null,
+        scrollListenerUsesWindow: false,
+        lastSavedTop: -1,
+        lastSavedHeight: -1,
+        lastSavedClientHeight: -1,
+        restoreLock: null,
+        applyingRestore: false,
+        pendingNavigation: null,
+        userScrollIntentUntil: 0,
+        userCancelledRestoreSessionId: "",
+      };
+    }
+    return window.__codexThreadScrollRuntime;
+  }
+
+  function clearThreadScrollRestoreTimers() {
+    (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexThreadScrollRestoreTimers = [];
+  }
+
+  function clearThreadScrollSyncTimers() {
+    (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexThreadScrollSyncTimers = [];
+  }
+
+  function clearThreadScrollRestoreLock() {
+    threadScrollRuntime().restoreLock = null;
+  }
+
+  function cancelThreadScrollRestoreForUserIntent() {
+    const runtime = threadScrollRuntime();
+    const cancelledSessionId = validThreadScrollSessionKey(runtime.restoreLock?.sessionId)
+      || validThreadScrollSessionKey(currentSessionRef().session_id)
+      || validThreadScrollSessionKey(runtime.activeSessionId);
+    runtime.userScrollIntentUntil = Date.now() + codexThreadScrollUserIntentWindowMs;
+    runtime.userCancelledRestoreSessionId = cancelledSessionId;
+    window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+    window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
+    clearThreadScrollRestoreTimers();
+    clearThreadScrollSyncTimers();
+    clearThreadScrollRestoreLock();
+  }
+
+  function userScrollIntentActive() {
+    return finiteNonNegativeNumber(threadScrollRuntime().userScrollIntentUntil) > Date.now();
+  }
+
+  function threadScrollRestoreCancelledForSession(sessionId = threadScrollRuntime().activeSessionId) {
+    const key = validThreadScrollSessionKey(sessionId);
+    return !!key && threadScrollRuntime().userCancelledRestoreSessionId === key;
+  }
+
+  function activeThreadScrollRestoreLock(sessionId = threadScrollRuntime().activeSessionId) {
+    const runtime = threadScrollRuntime();
+    const key = validThreadScrollSessionKey(sessionId);
+    const lock = runtime.restoreLock;
+    if (!lock || !key || lock.sessionId !== key) return null;
+    if (lock.expiresAt <= Date.now()) {
+      clearThreadScrollRestoreLock();
+      return null;
+    }
+    return lock;
+  }
+
+  function currentThreadScrollRestoreLock() {
+    const sessionId = threadScrollRuntime().restoreLock?.sessionId;
+    return sessionId ? activeThreadScrollRestoreLock(sessionId) : null;
+  }
+
+  function threadScrollIsReversed(scroller) {
+    return getComputedStyle(scroller).flexDirection === "column-reverse";
+  }
+
+  function threadScrollRange(scroller) {
+    const extent = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    return threadScrollIsReversed(scroller)
+      ? { min: -extent, max: 0, bottom: 0 }
+      : { min: 0, max: extent, bottom: extent };
+  }
+
+  function startThreadScrollRestoreLock(sessionId, entry) {
+    const key = validThreadScrollSessionKey(sessionId);
+    if (!key || !entry) {
+      clearThreadScrollRestoreLock();
+      return null;
+    }
+    const runtime = threadScrollRuntime();
+    runtime.restoreLock = {
+      sessionId: key,
+      targetTop: finiteScrollNumber(entry.top),
+      expiresAt: Date.now() + codexThreadScrollRestoreWindowMs,
+    };
+    return runtime.restoreLock;
+  }
+
+  function prepareThreadScrollRestoreLock(sessionId) {
+    const key = validThreadScrollSessionKey(sessionId);
+    const entry = key ? readThreadScrollEntries()[key] : null;
+    if (entry) startThreadScrollRestoreLock(key, entry);
+  }
+
+  function threadScrollTargetTop(scroller, targetTop) {
+    const range = threadScrollRange(scroller);
+    return Math.max(range.min, Math.min(range.max, finiteScrollNumber(targetTop)));
+  }
+
+  function threadScrollNearBottom(scroller, top) {
+    const range = threadScrollRange(scroller);
+    return Math.abs(range.bottom - finiteScrollNumber(top)) <= Math.max(24, scroller.clientHeight * 0.15);
+  }
+
+  function threadScrollGuardScroller(scroller) {
+    if (!scroller) return null;
+    const runtime = threadScrollRuntime();
+    const rootScroller = document.scrollingElement || document.documentElement || document.body;
+    const normalizedScroller = scroller === document.body || scroller === document.documentElement ? rootScroller : scroller;
+    if (normalizedScroller === runtime.activeScroller) return normalizedScroller;
+    const currentScroller = currentThreadScroller();
+    if (normalizedScroller === currentScroller) return normalizedScroller;
+    return null;
+  }
+
+  function shouldBlockThreadScrollAutobottom(scroller, top) {
+    const runtime = threadScrollRuntime();
+    const lock = currentThreadScrollRestoreLock();
+    if (!lock || !codexPlusSettings().threadScrollRestore) return false;
+    const guardScroller = threadScrollGuardScroller(scroller);
+    if (runtime.applyingRestore || !guardScroller) return false;
+    const targetTop = threadScrollTargetTop(guardScroller, lock.targetTop);
+    return Math.abs(finiteScrollNumber(top) - targetTop) > 8 && threadScrollNearBottom(guardScroller, top);
+  }
+
+  function scrollToRequestedTop(args, scroller) {
+    if (!args.length) return null;
+    const first = args[0];
+    if (typeof first === "object" && first !== null) return first.top == null ? null : finiteScrollNumber(first.top);
+    if (args.length >= 2) return finiteScrollNumber(args[1]);
+    return scroller?.scrollTop ?? null;
+  }
+
+  function scrollByRequestedTop(args, scroller) {
+    if (!args.length || !scroller) return null;
+    const first = args[0];
+    let delta = null;
+    if (typeof first === "object" && first !== null) {
+      delta = first.top == null ? null : Number(first.top);
+    } else if (args.length >= 2) {
+      delta = Number(args[1]);
+    }
+    return Number.isFinite(delta) ? finiteScrollNumber(scroller.scrollTop + delta) : null;
+  }
+
+  function shouldBlockThreadScrollIntoView(element) {
+    const runtime = threadScrollRuntime();
+    const lock = currentThreadScrollRestoreLock();
+    if (runtime.applyingRestore || !lock || !element) return false;
+    const activeScroller = threadScrollGuardScroller(runtime.activeScroller) || threadScrollGuardScroller(currentThreadScroller());
+    if (!activeScroller || element === activeScroller || !activeScroller.contains?.(element)) return false;
+    if (threadScrollIsReversed(activeScroller) && shouldBlockThreadScrollAutobottom(activeScroller, 0)) return true;
+    const elementRect = element.getBoundingClientRect?.();
+    if (!elementRect) return false;
+    const elementBottomTop = activeScroller.scrollTop + elementRect.bottom - timelineScrollerViewportTop(activeScroller) - activeScroller.clientHeight;
+    return shouldBlockThreadScrollAutobottom(activeScroller, elementBottomTop);
+  }
+
+  function installThreadScrollProgrammaticScrollGuard() {
+    if (window.__codexThreadScrollProgrammaticGuardInstalled === codexThreadScrollProgrammaticGuardVersion) return;
+    window.__codexThreadScrollProgrammaticGuardInstalled = codexThreadScrollProgrammaticGuardVersion;
+    window.__codexThreadScrollOriginals = window.__codexThreadScrollOriginals || {};
+    const originals = window.__codexThreadScrollOriginals;
+    originals.elementScrollTo = originals.elementScrollTo || Element.prototype.scrollTo;
+    if (typeof originals.elementScrollTo === "function") {
+      Element.prototype.scrollTo = function codexThreadScrollGuardedScrollTo(...args) {
+        const top = scrollToRequestedTop(args, this);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(this, top)) return;
+        return originals.elementScrollTo.apply(this, args);
+      };
+    }
+    originals.elementScroll = originals.elementScroll || Element.prototype.scroll;
+    if (typeof originals.elementScroll === "function") {
+      Element.prototype.scroll = function codexThreadScrollGuardedScroll(...args) {
+        const top = scrollToRequestedTop(args, this);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(this, top)) return;
+        return originals.elementScroll.apply(this, args);
+      };
+    }
+    originals.elementScrollBy = originals.elementScrollBy || Element.prototype.scrollBy;
+    if (typeof originals.elementScrollBy === "function") {
+      Element.prototype.scrollBy = function codexThreadScrollGuardedScrollBy(...args) {
+        const top = scrollByRequestedTop(args, this);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(this, top)) return;
+        return originals.elementScrollBy.apply(this, args);
+      };
+    }
+    originals.scrollIntoView = originals.scrollIntoView || Element.prototype.scrollIntoView;
+    if (typeof originals.scrollIntoView === "function") {
+      Element.prototype.scrollIntoView = function codexThreadScrollGuardedScrollIntoView(...args) {
+        if (window.__codexThreadScrollHandlers?.shouldBlockIntoView?.(this)) return;
+        return originals.scrollIntoView.apply(this, args);
+      };
+    }
+    originals.windowScrollTo = originals.windowScrollTo || window.scrollTo;
+    if (typeof originals.windowScrollTo === "function") {
+      window.scrollTo = function codexThreadScrollGuardedWindowScrollTo(...args) {
+        const scroller = document.scrollingElement || document.documentElement || document.body;
+        const top = scrollToRequestedTop(args, scroller);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(scroller, top)) return;
+        return originals.windowScrollTo.apply(this, args);
+      };
+    }
+    originals.windowScroll = originals.windowScroll || window.scroll;
+    if (typeof originals.windowScroll === "function") {
+      window.scroll = function codexThreadScrollGuardedWindowScroll(...args) {
+        const scroller = document.scrollingElement || document.documentElement || document.body;
+        const top = scrollToRequestedTop(args, scroller);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(scroller, top)) return;
+        return originals.windowScroll.apply(this, args);
+      };
+    }
+    originals.windowScrollBy = originals.windowScrollBy || window.scrollBy;
+    if (typeof originals.windowScrollBy === "function") {
+      window.scrollBy = function codexThreadScrollGuardedWindowScrollBy(...args) {
+        const scroller = document.scrollingElement || document.documentElement || document.body;
+        const top = scrollByRequestedTop(args, scroller);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(scroller, top)) return;
+        return originals.windowScrollBy.apply(this, args);
+      };
+    }
+  }
+
+  function bindThreadScrollListener(scroller) {
+    const runtime = threadScrollRuntime();
+    const currentUsesWindow = !runtime.activeScroller || runtime.activeScroller === document.scrollingElement || runtime.activeScroller === document.documentElement || runtime.activeScroller === document.body;
+    const nextUsesWindow = !scroller || scroller === document.scrollingElement || scroller === document.documentElement || scroller === document.body;
+    let listenerReplaced = false;
+    if (runtime.scrollListener && runtime.scrollListenerVersion !== codexThreadScrollListenerVersion) {
+      const currentTarget = currentUsesWindow ? window : runtime.activeScroller;
+      currentTarget?.removeEventListener?.("scroll", runtime.scrollListener, true);
+      runtime.scrollListener = null;
+      runtime.scrollListenerVersion = "";
+      listenerReplaced = true;
+    }
+    runtime.scrollListener = runtime.scrollListener || (() => scheduleThreadScrollSave());
+    runtime.scrollListenerVersion = codexThreadScrollListenerVersion;
+    if (!listenerReplaced && runtime.activeScroller === scroller && runtime.scrollListenerUsesWindow === nextUsesWindow) return;
+    if (runtime.activeScroller) {
+      const target = currentUsesWindow ? window : runtime.activeScroller;
+      target.removeEventListener("scroll", runtime.scrollListener, true);
+    }
+    runtime.activeScroller = scroller;
+    runtime.scrollListenerUsesWindow = nextUsesWindow;
+    if (!scroller || !codexPlusSettings().threadScrollRestore) return;
+    const target = nextUsesWindow ? window : scroller;
+    target.addEventListener("scroll", runtime.scrollListener, true);
+  }
+
+  function saveThreadScrollPositionNow(sessionId = threadScrollRuntime().activeSessionId, scroller = threadScrollRuntime().activeScroller) {
+    if (!codexPlusSettings().threadScrollRestore) return;
+    const runtime = threadScrollRuntime();
+    const key = validThreadScrollSessionKey(sessionId);
+    if (!key || !scroller) return;
+    if (activeThreadScrollRestoreLock(key)) return;
+    const snapshot = {
+      top: finiteScrollNumber(scroller.scrollTop),
+      scrollHeight: finiteNonNegativeNumber(scroller.scrollHeight),
+      clientHeight: finiteNonNegativeNumber(scroller.clientHeight),
+      at: Date.now(),
+    };
+    if (Math.abs(runtime.lastSavedTop - snapshot.top) < 2 && runtime.lastSavedHeight === snapshot.scrollHeight && runtime.lastSavedClientHeight === snapshot.clientHeight) return;
+    const entries = readThreadScrollEntries();
+    entries[key] = snapshot;
+    writeThreadScrollEntries(entries);
+    runtime.lastSavedTop = snapshot.top;
+    runtime.lastSavedHeight = snapshot.scrollHeight;
+    runtime.lastSavedClientHeight = snapshot.clientHeight;
+  }
+
+  function scheduleThreadScrollSave() {
+    if (!codexPlusSettings().threadScrollRestore || window.__codexThreadScrollSaveTimer) return;
+    window.__codexThreadScrollSaveTimer = setTimeout(() => {
+      window.__codexThreadScrollSaveTimer = null;
+      saveThreadScrollPositionNow();
+    }, codexThreadScrollSaveThrottleMs);
+  }
+
+  function restoreThreadScrollPosition(sessionId) {
+    const runtime = threadScrollRuntime();
+    const key = validThreadScrollSessionKey(sessionId);
+    if (!codexPlusSettings().threadScrollRestore || !key || runtime.activeSessionId !== key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
+    const lock = activeThreadScrollRestoreLock(key);
+    const entry = lock || readThreadScrollEntries()[key];
+    if (!entry) return;
+    const scroller = currentThreadScroller();
+    if (!scroller) return;
+    bindThreadScrollListener(scroller);
+    const targetTop = threadScrollTargetTop(scroller, lock ? lock.targetTop : entry.top);
+    if (Math.abs(scroller.scrollTop - targetTop) <= 1) return;
+    runtime.applyingRestore = true;
+    try {
+      if (typeof scroller.scrollTo === "function") {
+        scroller.scrollTo({ top: targetTop, behavior: "auto" });
+      } else {
+        scroller.scrollTop = targetTop;
+      }
+    } finally {
+      runtime.applyingRestore = false;
+    }
+    runtime.lastSavedTop = targetTop;
+    runtime.lastSavedHeight = finiteNonNegativeNumber(scroller.scrollHeight);
+    runtime.lastSavedClientHeight = finiteNonNegativeNumber(scroller.clientHeight);
+  }
+
+  function scheduleThreadScrollRestore(sessionId) {
+    clearThreadScrollRestoreTimers();
+    const key = validThreadScrollSessionKey(sessionId);
+    if (!codexPlusSettings().threadScrollRestore || !key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
+    const entry = readThreadScrollEntries()[key];
+    if (!entry) {
+      clearThreadScrollRestoreLock();
+      return;
+    }
+    startThreadScrollRestoreLock(key, entry);
+    const restoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+    window.__codexThreadScrollRestoreRevision = restoreRevision;
+    window.__codexThreadScrollRestoreTimers = codexThreadScrollRestoreDelaysMs.map((delay) => setTimeout(() => {
+      if (window.__codexThreadScrollRestoreRevision !== restoreRevision) return;
+      restoreThreadScrollPosition(key);
+    }, delay));
+  }
+
+  function syncThreadScrollState(forceRestore = false) {
+    const runtime = threadScrollRuntime();
+    const currentRef = currentSessionRef();
+    const nextSessionId = validThreadScrollSessionKey(currentRef.session_id);
+    if (!nextSessionId) return;
+    if (!codexPlusSettings().threadScrollRestore) {
+      bindThreadScrollListener(null);
+      clearThreadScrollRestoreTimers();
+      clearThreadScrollRestoreLock();
+      runtime.activeSessionId = nextSessionId;
+      return;
+    }
+    if (runtime.activeSessionId !== nextSessionId) prepareThreadScrollRestoreLock(nextSessionId);
+    const nextScroller = currentThreadScroller();
+    bindThreadScrollListener(nextScroller);
+    if (runtime.activeSessionId !== nextSessionId) {
+      runtime.lastSavedTop = -1;
+      runtime.lastSavedHeight = -1;
+      runtime.lastSavedClientHeight = -1;
+      clearThreadScrollRestoreLock();
+      runtime.activeSessionId = nextSessionId;
+      runtime.pendingNavigation = null;
+      runtime.userScrollIntentUntil = 0;
+      if (runtime.userCancelledRestoreSessionId !== nextSessionId) runtime.userCancelledRestoreSessionId = "";
+      scheduleThreadScrollRestore(nextSessionId);
+      return;
+    }
+    runtime.activeSessionId = nextSessionId;
+    if (forceRestore && !userScrollIntentActive() && !threadScrollRestoreCancelledForSession(nextSessionId)) scheduleThreadScrollRestore(nextSessionId);
+  }
+
+  function scheduleThreadScrollSyncAttempts(forceRestore = true) {
+    const currentKey = validThreadScrollSessionKey(currentSessionRef().session_id) || validThreadScrollSessionKey(threadScrollRuntime().activeSessionId);
+    if (userScrollIntentActive() || threadScrollRestoreCancelledForSession(currentKey)) return;
+    clearThreadScrollSyncTimers();
+    const syncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
+    window.__codexThreadScrollSyncRevision = syncRevision;
+    window.__codexThreadScrollSyncTimers = codexThreadScrollRestoreDelaysMs.map((delay) => setTimeout(() => {
+      if (window.__codexThreadScrollSyncRevision !== syncRevision) return;
+      scheduleThreadScrollSync(forceRestore);
+    }, delay));
+  }
+
+  function captureThreadScrollNavigation(targetSessionId) {
+    if (!codexPlusSettings().threadScrollRestore) return;
+    const runtime = threadScrollRuntime();
+    const targetKey = validThreadScrollSessionKey(targetSessionId);
+    const sessionChanged = !!targetKey && targetKey !== runtime.activeSessionId;
+    if (sessionChanged) {
+      runtime.userScrollIntentUntil = 0;
+      runtime.userCancelledRestoreSessionId = "";
+    }
+    const pending = runtime.pendingNavigation;
+    const duplicatePendingTarget = !!targetKey && pending?.targetSessionId === targetKey && Date.now() - finiteNonNegativeNumber(pending.at) < 5000;
+    if (!duplicatePendingTarget) saveThreadScrollPositionNow();
+    if (targetKey) {
+      runtime.pendingNavigation = { fromSessionId: runtime.activeSessionId, targetSessionId: targetKey, at: Date.now() };
+      prepareThreadScrollRestoreLock(targetKey);
+    }
+    scheduleThreadScrollSyncAttempts(true);
+  }
+
+  function editableThreadScrollTarget(element) {
+    return !!element?.closest?.("input, textarea, select, [contenteditable='true'], [contenteditable='']");
+  }
+
+  function eventTargetsActiveThreadScroller(event) {
+    const runtime = threadScrollRuntime();
+    const scroller = threadScrollGuardScroller(runtime.activeScroller) || threadScrollGuardScroller(currentThreadScroller());
+    if (!scroller) return false;
+    const target = event?.target;
+    if (!target || target === document || target === window) return true;
+    return target === scroller || scroller.contains?.(target) || scroller.contains?.(document.activeElement);
+  }
+
+  function markThreadScrollUserIntent(event) {
+    if (!codexPlusSettings().threadScrollRestore || !eventTargetsActiveThreadScroller(event)) return;
+    cancelThreadScrollRestoreForUserIntent();
+  }
+
+  function markThreadScrollKeyboardIntent(event) {
+    if (editableThreadScrollTarget(event.target)) return;
+    if (!["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ", "Spacebar"].includes(event.key)) return;
+    markThreadScrollUserIntent(event);
+  }
+
+  function markThreadScrollPointerIntent(event) {
+    const scroller = threadScrollGuardScroller(threadScrollRuntime().activeScroller) || threadScrollGuardScroller(currentThreadScroller());
+    if (event.target === scroller) markThreadScrollUserIntent(event);
+  }
+
+  function updateThreadScrollHandlers() {
+    window.__codexThreadScrollHandlers = {
+      shouldBlockAutobottom: shouldBlockThreadScrollAutobottom,
+      shouldBlockIntoView: shouldBlockThreadScrollIntoView,
+      markUserIntent: markThreadScrollUserIntent,
+      markKeyboardIntent: markThreadScrollKeyboardIntent,
+      markPointerIntent: markThreadScrollPointerIntent,
+      captureNavigation: captureThreadScrollNavigation,
+      saveNow: saveThreadScrollPositionNow,
+      prepareRestoreLock: prepareThreadScrollRestoreLock,
+      scheduleSyncAttempts: scheduleThreadScrollSyncAttempts,
+    };
+  }
+
+  function installThreadScrollUserIntentCapture() {
+    if (window.__codexThreadScrollUserIntentInstalled === codexThreadScrollUserIntentVersion) return;
+    document.removeEventListener("wheel", window.__codexThreadScrollWheelIntentHandler, true);
+    document.removeEventListener("touchmove", window.__codexThreadScrollTouchIntentHandler, true);
+    document.removeEventListener("keydown", window.__codexThreadScrollKeyIntentHandler, true);
+    document.removeEventListener("pointerdown", window.__codexThreadScrollPointerIntentHandler, true);
+    window.__codexThreadScrollWheelIntentHandler = (event) => window.__codexThreadScrollHandlers?.markUserIntent?.(event);
+    window.__codexThreadScrollTouchIntentHandler = (event) => window.__codexThreadScrollHandlers?.markUserIntent?.(event);
+    window.__codexThreadScrollKeyIntentHandler = (event) => window.__codexThreadScrollHandlers?.markKeyboardIntent?.(event);
+    window.__codexThreadScrollPointerIntentHandler = (event) => window.__codexThreadScrollHandlers?.markPointerIntent?.(event);
+    document.addEventListener("wheel", window.__codexThreadScrollWheelIntentHandler, { capture: true, passive: true });
+    document.addEventListener("touchmove", window.__codexThreadScrollTouchIntentHandler, { capture: true, passive: true });
+    document.addEventListener("keydown", window.__codexThreadScrollKeyIntentHandler, true);
+    document.addEventListener("pointerdown", window.__codexThreadScrollPointerIntentHandler, true);
+    window.__codexThreadScrollUserIntentInstalled = codexThreadScrollUserIntentVersion;
+  }
+
+  function installThreadScrollNavigationCapture() {
+    document.removeEventListener("pointerdown", window.__codexThreadScrollNavigationHandler, true);
+    document.removeEventListener("click", window.__codexThreadScrollClickNavigationHandler, true);
+    document.removeEventListener("keydown", window.__codexThreadScrollKeyboardHandler, true);
+    const navigationHandler = (event) => {
+      if (!codexPlusSettings().threadScrollRestore) return;
+      const row = event.target?.closest?.(selectors.sidebarThread);
+      if (!row) return;
+      window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
+    };
+    const clickHandler = (event) => {
+      if (!codexPlusSettings().threadScrollRestore) return;
+      const row = event.target?.closest?.(selectors.sidebarThread);
+      if (!row) return;
+      window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
+    };
+    const keyboardHandler = (event) => {
+      if (!codexPlusSettings().threadScrollRestore) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const row = event.target?.closest?.(selectors.sidebarThread);
+      if (!row) return;
+      window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
+    };
+    window.__codexThreadScrollNavigationHandler = navigationHandler;
+    window.__codexThreadScrollClickNavigationHandler = clickHandler;
+    window.__codexThreadScrollKeyboardHandler = keyboardHandler;
+    document.addEventListener("pointerdown", navigationHandler, true);
+    document.addEventListener("click", clickHandler, true);
+    document.addEventListener("keydown", keyboardHandler, true);
+  }
+
+  function scheduleThreadScrollSync(forceRestore = false) {
+    if (window.__codexThreadScrollSyncPending) return;
+    window.__codexThreadScrollSyncPending = true;
+    setTimeout(() => {
+      window.__codexThreadScrollSyncPending = false;
+      syncThreadScrollState(forceRestore);
+    }, 0);
+  }
+
+  function installThreadScrollRouteHooks() {
+    if (window.__codexThreadScrollRouteHooksInstalled === codexThreadScrollRouteHooksVersion) return;
+    window.__codexThreadScrollRouteHooksInstalled = codexThreadScrollRouteHooksVersion;
+    window.__codexThreadScrollOriginals = window.__codexThreadScrollOriginals || {};
+    const originals = window.__codexThreadScrollOriginals;
+    ["pushState", "replaceState"].forEach((method) => {
+      const currentMethod = history[method];
+      const original = originals[`history_${method}`] || currentMethod;
+      originals[`history_${method}`] = original;
+      if (typeof original !== "function") return;
+      history[method] = function codexThreadScrollPatchedHistory(...args) {
+        window.__codexThreadScrollHandlers?.saveNow?.();
+        const result = original.apply(this, args);
+        window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId());
+        return result;
+      };
+    });
+    window.removeEventListener("popstate", window.__codexThreadScrollPopStateHandler, true);
+    window.removeEventListener("hashchange", window.__codexThreadScrollHashChangeHandler, true);
+    document.removeEventListener("visibilitychange", window.__codexThreadScrollVisibilityHandler, true);
+    window.__codexThreadScrollPopStateHandler = () => {
+      window.__codexThreadScrollHandlers?.saveNow?.();
+      window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId());
+    };
+    window.__codexThreadScrollHashChangeHandler = () => {
+      window.__codexThreadScrollHandlers?.saveNow?.();
+      window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId());
+    };
+    window.__codexThreadScrollVisibilityHandler = () => {
+      if (document.visibilityState === "hidden") window.__codexThreadScrollHandlers?.saveNow?.();
+    };
+    window.addEventListener("popstate", window.__codexThreadScrollPopStateHandler, true);
+    window.addEventListener("hashchange", window.__codexThreadScrollHashChangeHandler, true);
+    document.addEventListener("visibilitychange", window.__codexThreadScrollVisibilityHandler, true);
+  }
+
   async function postJson(path, payload) {
     if (!window.__codexSessionDeleteBridge) {
       if (path === "/backend/status" || path === "/backend/repair") {
@@ -1529,6 +2191,388 @@
 
   function uniqueValues(values) {
     return Array.from(new Set(values.filter((value) => typeof value === "string" && value.trim().length > 0)));
+  }
+
+  let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+  let codexModelCatalogLoadedAt = 0;
+  let codexModelCatalogPromise = null;
+  const codexPlusModelListRequestIds = new Set();
+
+  function codexPlusModelUnlockEnabled() {
+    return !!codexPlusSettings().modelWhitelistUnlock;
+  }
+
+  function codexPlusModelNames() {
+    return uniqueValues([
+      codexModelCatalog.default_model,
+      codexModelCatalog.model,
+      ...(Array.isArray(codexModelCatalog.models) ? codexModelCatalog.models : []),
+    ]);
+  }
+
+  function codexResponsesApiStatus() {
+    const status = codexModelCatalog.responses_api;
+    return status && typeof status === "object" ? status : { status: "unknown", message: "" };
+  }
+
+  function codexModelCompatibilityWarningText() {
+    if (!codexPlusModelUnlockEnabled()) return "";
+    const responsesApi = codexResponsesApiStatus();
+    if (responsesApi.status !== "unsupported") return "";
+    const provider = codexModelCatalog.provider_name || codexModelCatalog.model_provider || "当前模型供应商";
+    const detail = responsesApi.message ? `：${responsesApi.message}` : "";
+    return `${provider} 不支持 Codex 使用的 /v1/responses 接口，模型可能能显示，但发起对话会失败。请换支持 Responses API 的中转，或使用兼容转换代理${detail}`;
+  }
+
+  function modelCompatibilityWarningElement() {
+    const toggle = document.querySelector('[data-codex-plus-setting="modelWhitelistUnlock"]');
+    const row = toggle?.closest?.(".codex-plus-row");
+    if (!row) return null;
+    let warning = row.querySelector("[data-codex-model-compat-warning]");
+    if (warning) return warning;
+    warning = document.createElement("div");
+    warning.className = "codex-plus-model-compat-warning";
+    warning.dataset.codexModelCompatWarning = "true";
+    const description = row.querySelector(".codex-plus-row-description");
+    (description?.parentElement || row).appendChild(warning);
+    return warning;
+  }
+
+  function renderCodexModelCompatibilityWarning() {
+    const text = codexModelCompatibilityWarningText();
+    document.querySelectorAll("[data-codex-model-compat-warning]").forEach((warning) => {
+      warning.hidden = !text;
+      warning.textContent = text;
+    });
+    if (!text) return;
+    const warning = modelCompatibilityWarningElement();
+    if (!warning) return;
+    warning.hidden = false;
+    warning.textContent = text;
+  }
+
+  function maybeShowCodexModelCompatibilityWarning() {
+    const text = codexModelCompatibilityWarningText();
+    if (!text) return;
+    const responsesApi = codexResponsesApiStatus();
+    const key = `${codexModelCatalog.model_provider || ""}:${responsesApi.endpoint || ""}:${responsesApi.message || ""}`;
+    if (window.__codexPlusResponsesApiWarningKey === key) return;
+    window.__codexPlusResponsesApiWarningKey = key;
+    showToast(text, null);
+  }
+
+  async function loadCodexModelCatalog(force = false) {
+    if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
+    if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
+    codexModelCatalogPromise = postJson("/codex-model-catalog", {})
+      .then((result) => {
+        codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+        codexModelCatalogLoadedAt = Date.now();
+        renderCodexPlusMenu();
+        maybeShowCodexModelCompatibilityWarning();
+        patchCodexModelWhitelist();
+        return codexModelCatalog;
+      })
+      .catch((error) => {
+        codexModelCatalog = { status: "failed", message: String(error?.message || error), model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+        codexModelCatalogLoadedAt = Date.now();
+        return codexModelCatalog;
+      })
+      .finally(() => {
+        codexModelCatalogPromise = null;
+      });
+    return codexModelCatalogPromise;
+  }
+
+  function modelReasoningEfforts() {
+    return ["minimal", "low", "medium", "high", "xhigh"].map((reasoningEffort) => ({ reasoningEffort, description: `${reasoningEffort} effort` }));
+  }
+
+  function codexPlusModelDescriptor(modelName) {
+    return {
+      model: modelName,
+      id: modelName,
+      slug: modelName,
+      name: modelName,
+      displayName: modelName,
+      description: codexModelCatalog.provider_name || codexModelCatalog.model_provider || "Custom model",
+      hidden: false,
+      isDefault: (codexModelCatalog.default_model || codexModelCatalog.model) === modelName,
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: modelReasoningEfforts(),
+    };
+  }
+
+  function modelArrayLooksPatchable(value, allowEmpty = false) {
+    return Array.isArray(value)
+      && (allowEmpty || value.length > 0)
+      && value.every((item) => item && typeof item === "object" && typeof item.model === "string");
+  }
+
+  function stringArrayLooksPatchable(value) {
+    return Array.isArray(value) && value.every((item) => typeof item === "string");
+  }
+
+  function patchModelNameArray(models) {
+    if (!stringArrayLooksPatchable(models)) return false;
+    const customModels = codexPlusModelNames();
+    if (!customModels.length) return false;
+    let changed = false;
+    customModels.forEach((modelName) => {
+      if (!models.includes(modelName)) {
+        models.push(modelName);
+        changed = true;
+      }
+    });
+    return changed;
+  }
+
+  function patchModelArray(models, allowEmpty = false) {
+    if (!modelArrayLooksPatchable(models, allowEmpty)) return false;
+    const customModels = codexPlusModelNames();
+    if (!customModels.length) return false;
+    let changed = false;
+    const existing = new Map(models.map((item) => [item.model, item]));
+    models.forEach((item) => {
+      if (customModels.includes(item.model) && item.hidden !== false) {
+        item.hidden = false;
+        changed = true;
+      }
+    });
+    customModels.forEach((modelName) => {
+      if (!existing.has(modelName)) {
+        models.push(codexPlusModelDescriptor(modelName));
+        changed = true;
+      }
+    });
+    return changed;
+  }
+
+  function patchModelContainer(value) {
+    if (!value || typeof value !== "object") return false;
+    let changed = false;
+    if (patchModelArray(value.models, "defaultModel" in value || "availableModels" in value)) changed = true;
+    if (patchModelNameArray(value.models)) changed = true;
+    if (patchModelArray(value.data)) changed = true;
+    if (patchModelArray(value.result)) changed = true;
+    if (patchModelArray(value.pages?.[0]?.data)) changed = true;
+    if (patchModelArray(value.result?.data)) changed = true;
+    if (patchModelArray(value.result?.models)) changed = true;
+    if (patchModelArray(value.message?.result?.data)) changed = true;
+    if (patchModelArray(value.message?.result?.models)) changed = true;
+    const names = codexPlusModelNames();
+    if (value.availableModels instanceof Set) {
+      names.forEach((name) => {
+        if (!value.availableModels.has(name)) {
+          value.availableModels.add(name);
+          changed = true;
+        }
+      });
+    }
+    if (value.available_models instanceof Set) {
+      names.forEach((name) => {
+        if (!value.available_models.has(name)) {
+          value.available_models.add(name);
+          changed = true;
+        }
+      });
+    }
+    if (Array.isArray(value.availableModels)) {
+      names.forEach((name) => {
+        if (!value.availableModels.includes(name)) {
+          value.availableModels.push(name);
+          changed = true;
+        }
+      });
+    }
+    if (Array.isArray(value.available_models)) {
+      names.forEach((name) => {
+        if (!value.available_models.includes(name)) {
+          value.available_models.push(name);
+          changed = true;
+        }
+      });
+    }
+    if (Array.isArray(value.hiddenModels)) {
+      const before = value.hiddenModels.length;
+      value.hiddenModels = value.hiddenModels.filter((name) => !names.includes(name));
+      if (value.hiddenModels.length !== before) changed = true;
+    }
+    if (Array.isArray(value.hidden_models)) {
+      const before = value.hidden_models.length;
+      value.hidden_models = value.hidden_models.filter((name) => !names.includes(name));
+      if (value.hidden_models.length !== before) changed = true;
+    }
+    if (value.defaultModel == null && names.length > 0) {
+      value.defaultModel = codexPlusModelDescriptor(names[0]);
+      changed = true;
+    } else if (typeof value.defaultModel === "string" && names.includes(value.defaultModel) && value.model == null) {
+      value.model = value.defaultModel;
+      changed = true;
+    }
+    return changed;
+  }
+
+  async function patchModelJsonResponse(payload) {
+    if (!codexPlusModelUnlockEnabled()) return payload;
+    if (!codexPlusModelNames().length) await loadCodexModelCatalog();
+    if (!payload || typeof payload !== "object") return payload;
+    try {
+      patchModelContainer(payload);
+      patchObjectGraphForModels(payload, new WeakSet(), 0);
+    } catch (error) {
+      window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+      window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+    }
+    return payload;
+  }
+
+  function installModelJsonResponsePatch() {
+    if (window.__codexPlusModelJsonResponsePatchInstalled === "1") return;
+    window.__codexPlusModelJsonResponsePatchInstalled = "1";
+    window.__codexPlusModelJsonResponseOriginals = window.__codexPlusModelJsonResponseOriginals || {};
+    const originals = window.__codexPlusModelJsonResponseOriginals;
+    originals.responseJson = originals.responseJson || Response.prototype.json;
+    if (typeof originals.responseJson !== "function") return;
+    Response.prototype.json = async function codexPlusPatchedResponseJson(...args) {
+      const payload = await originals.responseJson.apply(this, args);
+      return await patchModelJsonResponse(payload);
+    };
+  }
+
+  function patchStatsigModelDynamicConfig(config) {
+    const names = codexPlusModelNames();
+    const value = config?.value;
+    if (!names.length || !value || typeof value !== "object") return config;
+    const availableModels = Array.isArray(value.available_models) ? [...value.available_models] : [];
+    let changed = false;
+    names.forEach((name) => {
+      if (!availableModels.includes(name)) {
+        availableModels.push(name);
+        changed = true;
+      }
+    });
+    const nextValue = {
+      ...value,
+      available_models: availableModels,
+      default_model: names[0] || value.default_model,
+    };
+    if (!changed && nextValue.default_model === value.default_model) return config;
+    try {
+      config.value = nextValue;
+    } catch {
+      return { ...config, value: nextValue };
+    }
+    return config;
+  }
+
+  function statsigClients() {
+    const root = window.__STATSIG__ || globalThis.__STATSIG__;
+    if (!root || typeof root !== "object") return [];
+    const clients = [root.firstInstance, typeof root.instance === "function" ? root.instance() : null];
+    if (root.instances && typeof root.instances === "object") clients.push(...Object.values(root.instances));
+    return clients.filter((client, index, array) => client && typeof client === "object" && array.indexOf(client) === index);
+  }
+
+  function patchStatsigModelWhitelist() {
+    statsigClients().forEach((client) => {
+      if (client.__codexPlusModelWhitelistPatched || typeof client.getDynamicConfig !== "function") return;
+      const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
+      client.getDynamicConfig = (name, options) => {
+        const result = originalGetDynamicConfig(name, options);
+        return patchStatsigModelDynamicConfig(result);
+      };
+      client.__codexPlusModelWhitelistPatched = true;
+      try {
+        patchStatsigModelDynamicConfig(client.getDynamicConfig("107580212", { disableExposureLog: true }));
+      } catch {
+      }
+    });
+  }
+
+  function patchObjectGraphForModels(root, visited, depth = 0) {
+    if (!root || typeof root !== "object" || visited.has(root) || depth > 5) return false;
+    visited.add(root);
+    let changed = patchModelContainer(root);
+    if (root instanceof Element || root === window || root === document || root === document.body || root === document.documentElement) return changed;
+    for (const key of Object.keys(root)) {
+      if (key === "ownerDocument" || key === "parentElement" || key === "parentNode" || key === "children" || key === "childNodes") continue;
+      let value;
+      try {
+        value = root[key];
+      } catch {
+        continue;
+      }
+      if (value && typeof value === "object" && patchObjectGraphForModels(value, visited, depth + 1)) changed = true;
+    }
+    return changed;
+  }
+
+  function reactFiberKeys(element) {
+    return Object.keys(element).filter((key) => key.startsWith("__reactFiber") || key.startsWith("__reactInternalInstance") || key.startsWith("__reactProps"));
+  }
+
+  function patchReactModelState() {
+    const visited = new WeakSet();
+    const nodes = [document.body, ...document.querySelectorAll("button, [role='menu'], [role='dialog'], [data-radix-popper-content-wrapper]")].filter(Boolean);
+    let changed = false;
+    for (const node of nodes.slice(0, 220)) {
+      for (const key of reactFiberKeys(node)) {
+        if (patchObjectGraphForModels(node[key], visited)) changed = true;
+      }
+    }
+    return changed;
+  }
+
+  function patchAppServerModelMessages() {
+    if (window.__codexPlusModelMessagePatchInstalled) return;
+    window.__codexPlusModelMessagePatchInstalled = true;
+    const originalDispatchEvent = window.dispatchEvent;
+    window.dispatchEvent = function patchedCodexPlusDispatchEvent(event) {
+      try {
+        const detail = event?.detail;
+        const request = detail?.request;
+        if (event?.type === "codex-message-from-view" && detail?.type === "mcp-request" && request?.method === "model/list") {
+          request.params = { ...(request.params || {}), includeHidden: true };
+          if (request.id != null) codexPlusModelListRequestIds.add(String(request.id));
+        }
+        if (event?.type === "message") patchMcpModelResponseData(event.data);
+      } catch (error) {
+        window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+        window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+      }
+      return originalDispatchEvent.call(this, event);
+    };
+
+    window.addEventListener("message", (event) => {
+      try {
+        patchMcpModelResponseData(event?.data);
+      } catch (error) {
+        window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+        window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+      }
+    }, true);
+  }
+
+  function patchMcpModelResponseData(data) {
+    if (data?.type !== "mcp-response") return false;
+    const message = data.message || data.response;
+    const requestId = message?.id != null ? String(message.id) : "";
+    if (codexPlusModelListRequestIds.size > 0 && !codexPlusModelListRequestIds.has(requestId)) return false;
+    codexPlusModelListRequestIds.delete(requestId);
+    return patchModelContainer(data) || patchModelContainer(message) || patchModelContainer(message?.result) || patchModelContainer(message?.result?.data);
+  }
+
+  function patchCodexModelWhitelist() {
+    if (!codexPlusModelUnlockEnabled()) return;
+    installModelJsonResponsePatch();
+    patchAppServerModelMessages();
+    if (!codexPlusModelNames().length) {
+      loadCodexModelCatalog();
+      return;
+    }
+    patchStatsigModelWhitelist();
+    patchReactModelState();
   }
 
   function threadIdVariants(sessionId) {
@@ -3101,6 +4145,12 @@
     installCodexPlusMenu();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();
+    updateThreadScrollHandlers();
+    installThreadScrollProgrammaticScrollGuard();
+    installThreadScrollNavigationCapture();
+    installThreadScrollUserIntentCapture();
+    installThreadScrollRouteHooks();
+    scheduleThreadScrollSync(true);
   }
 
   let zedRemoteStatusPromise = null;
@@ -3548,7 +4598,9 @@
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     installArchivedDeleteAllButton();
     refreshConversationTimeline();
+    scheduleThreadScrollSync();
     refreshZedRemoteOpenControls();
+    patchCodexModelWhitelist();
   }
 
   function runScanStep(step) {

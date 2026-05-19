@@ -47,6 +47,7 @@ pub fn run() {
             commands::reset_settings,
             commands::relay_status,
             commands::apply_relay_injection,
+            commands::apply_pure_api_injection,
             commands::clear_relay_injection
         ])
         .run(tauri::generate_context!())

@@ -1,6 +1,7 @@
 use codex_plus_core::relay_config::{
-    LOCAL_RELAY_PROXY_PORT, RelayApplyOptions, apply_relay_config_to_home,
-    chatgpt_auth_status_from_home, clear_relay_config_to_home, relay_config_status_from_home,
+    LOCAL_RELAY_PROXY_PORT, RelayApplyOptions, apply_pure_api_config_to_home,
+    apply_relay_config_to_home, chatgpt_auth_status_from_home, clear_relay_config_to_home,
+    relay_config_status_from_home,
 };
 
 #[test]
@@ -241,6 +242,41 @@ fn apply_relay_config_rejects_incomplete_separate_image_generation_api() {
 }
 
 #[test]
+fn apply_pure_api_config_writes_openai_api_key_auth_json_and_provider() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"old"}}"#,
+    )
+    .unwrap();
+    std::fs::write(temp.path().join("config.toml"), r#"model = "gpt-5""#).unwrap();
+
+    let result = apply_pure_api_config_to_home(
+        temp.path(),
+        "http://192.168.188.245:3001/v1",
+        "sk-test-redacted",
+    )
+    .unwrap();
+
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
+            .unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(result.configured);
+    assert_eq!(
+        auth,
+        serde_json::json!({"OPENAI_API_KEY": "sk-test-redacted"})
+    );
+    assert!(config.contains(r#"model_provider = "CodexPlusPlus""#));
+    assert!(config.contains("[model_providers.CodexPlusPlus]"));
+    assert!(config.contains(r#"name = "CodexPlusPlus""#));
+    assert!(config.contains(r#"wire_api = "responses""#));
+    assert!(config.contains("requires_openai_auth = true"));
+    assert!(config.contains(r#"base_url = "http://192.168.188.245:3001/v1""#));
+    assert!(config.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
+}
+
+#[test]
 fn apply_relay_config_points_model_provider_to_codexpp_before_tables() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -336,6 +372,58 @@ model = "gpt-5-mini"
     assert!(updated.contains("[model_providers.custom1]"));
     assert!(updated.contains(r#"base_url = "https://keep.example.test/v1""#));
     assert!(updated.contains("[profiles.default]"));
+}
+
+#[test]
+fn clear_relay_config_removes_pure_api_auth_json_key_and_preserves_other_auth_fields() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-test-redacted","auth_mode":"chatgpt","tokens":{"access_token":"keep"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-5"
+model_provider = "CodexPlusPlus"
+[model_providers.CodexPlusPlus]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example.test/v1"
+experimental_bearer_token = "sk-test-redacted"
+"#,
+    )
+    .unwrap();
+
+    clear_relay_config_to_home(temp.path()).unwrap();
+
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
+            .unwrap();
+    let auth_object = auth.as_object().unwrap();
+    assert!(!auth_object.contains_key("OPENAI_API_KEY"));
+    assert_eq!(auth["auth_mode"], "chatgpt");
+    assert_eq!(auth["tokens"]["access_token"], "keep");
+}
+
+#[test]
+fn clear_relay_config_removes_openai_api_key_when_auth_json_only_contains_pure_api_key() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#,
+    )
+    .unwrap();
+
+    clear_relay_config_to_home(temp.path()).unwrap();
+
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
+            .unwrap();
+    let auth_object = auth.as_object().unwrap();
+    assert!(!auth_object.contains_key("OPENAI_API_KEY"));
+    assert!(auth_object.is_empty());
 }
 
 fn base64_url_no_pad(value: &str) -> String {

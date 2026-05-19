@@ -474,6 +474,21 @@ export function App() {
     }
   };
 
+  const applyPureApiInjection = async () => {
+    const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
+    if (settingsResult) {
+      setSettings(settingsResult);
+      setSettingsForm(normalizeSettings(settingsResult.settings));
+    } else {
+      return;
+    }
+    const result = await run(() => call<RelayResult>("apply_pure_api_injection"));
+    if (result) {
+      setRelay(result);
+      showNotice("纯 API 模式", result.message, result.status);
+    }
+  };
+
   const clearRelayInjection = async () => {
     const result = await run(() => call<RelayResult>("clear_relay_injection"));
     if (result) {
@@ -612,6 +627,7 @@ export function App() {
       refreshAds,
       openExternalUrl,
       applyRelayInjection,
+      applyPureApiInjection,
       clearRelayInjection,
       refreshLogs,
       refreshDiagnostics,
@@ -762,6 +778,7 @@ type Actions = {
   refreshAds: () => Promise<void>;
   openExternalUrl: (url: string) => Promise<void>;
   applyRelayInjection: () => Promise<void>;
+  applyPureApiInjection: () => Promise<void>;
   clearRelayInjection: () => Promise<void>;
   refreshLogs: () => Promise<void>;
   refreshDiagnostics: () => Promise<void>;
@@ -888,6 +905,8 @@ function RelayScreen({
               "在下方添加一个中转，填写 Base URL 和 Key，然后点选它作为当前中转。",
               "点击“写入当前中转”，会把 Codex 配置切到 CodexPlusPlus provider，并启用 ChatGPT 登录态混合中转。",
               "图片生成默认关闭；关闭时会经过本地代理裁剪 image_generation 工具，避免无图片权限中转返回 403。",
+              "点击“写入混合API（官方+API）”，会把 Codex 配置切到 CodexPlusPlus provider，并启用 ChatGPT 登录态混合中转。",
+              "点击“写入纯API模式”，会把 auth.json 改为 OPENAI_API_KEY，并使用当前中转 URL 和 Key。",
               "如果需要回到官方登录态，点击“切回官方登录模式”后再打开 Codex++ 登录官方账号。",
               "需要切换中转时，点选列表里的另一项并保存，再重新写入即可。",
             ]}
@@ -923,7 +942,10 @@ function RelayScreen({
             <Button variant="secondary" onClick={() => void actions.clearRelayInjection()}>
               切回官方登录模式
             </Button>
-            <Button onClick={() => void actions.applyRelayInjection()}>写入当前中转</Button>
+            <Button variant="secondary" onClick={() => void actions.applyPureApiInjection()}>
+              写入纯API模式
+            </Button>
+            <Button onClick={() => void actions.applyRelayInjection()}>写入混合API（官方+API）</Button>
           </Toolbar>
         </CardContent>
       </Panel>

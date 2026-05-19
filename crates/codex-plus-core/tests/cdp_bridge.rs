@@ -97,6 +97,55 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
 }
 
 #[test]
+fn injection_script_unlocks_custom_model_catalog() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("/codex-model-catalog"));
+    assert!(script.contains("codexModelCatalog"));
+    assert!(script.contains("patchModelArray"));
+    assert!(script.contains("patchStatsigModelDynamicConfig"));
+    assert!(script.contains("patchModelJsonResponse"));
+    assert!(script.contains("Response.prototype.json"));
+    assert!(script.contains("available_models"));
+    assert!(script.contains("modelWhitelistUnlock"));
+}
+
+#[test]
+fn injection_script_warns_about_missing_responses_api_support() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("responses_api"));
+    assert!(script.contains("codexModelCompatibilityWarningText"));
+    assert!(script.contains("/v1/responses"));
+}
+
+#[test]
+fn injection_script_restores_thread_scroll_positions() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("threadScrollRestore"));
+    assert!(script.contains("codexThreadScroll"));
+    assert!(script.contains("installThreadScrollRouteHooks"));
+    assert!(script.contains("scheduleThreadScrollSync"));
+}
+
+#[test]
+fn manager_ui_exposes_pure_api_relay_mode_button() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("core crate should live under crates/codex-plus-core");
+    let source = std::fs::read_to_string(repo.join("apps/codex-plus-manager/src/App.tsx")).unwrap();
+    let commands =
+        std::fs::read_to_string(repo.join("apps/codex-plus-manager/src-tauri/src/lib.rs")).unwrap();
+
+    assert!(source.contains("写入混合API（官方+API）"));
+    assert!(source.contains("写入纯API模式"));
+    assert!(source.contains("apply_pure_api_injection"));
+    assert!(commands.contains("commands::apply_pure_api_injection"));
+}
+
+#[test]
 fn cdp_target_deserializes_websocket_field() {
     let target: CdpTarget = serde_json::from_value(json!({
         "id": "page-1",
