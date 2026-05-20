@@ -41,6 +41,10 @@ async fn bridge_routes_cover_all_current_paths() {
             json!({"hostId": "remote-ssh-codex-managed:remote"}),
         ),
         (
+            "/zed-remote/fallback-request",
+            json!({"hostId": "remote-ssh-codex-managed:remote"}),
+        ),
+        (
             "/zed-remote/open",
             json!({"ssh": {"host": "example.com"}, "path": "/home/app.py"}),
         ),
@@ -173,6 +177,22 @@ async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
         )
         .await,
         json!({"status": "ok", "ssh": {"user": "longnv", "host": "192.168.100.31", "port": null}})
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/zed-remote/fallback-request",
+            json!({"hostId": "remote-ssh-codex-managed:remote"}),
+        )
+        .await,
+        json!({
+            "status": "ok",
+            "request": {
+                "hostId": "remote-ssh-codex-managed:remote",
+                "ssh": {"user": "longnv", "host": "192.168.100.31", "port": null},
+                "path": "/Users/longnv/bin/repo/sealos-skills",
+            }
+        })
     );
     assert_eq!(
         handle_bridge_request(
@@ -628,6 +648,18 @@ impl BridgeRuntimeService for FakeRuntime {
         Ok(json!({
             "status": "ok",
             "ssh": {"user": "longnv", "host": "192.168.100.31", "port": null}
+        }))
+    }
+
+    async fn fallback_zed_remote_request(&self, payload: Value) -> anyhow::Result<Value> {
+        assert_eq!(payload["hostId"], json!("remote-ssh-codex-managed:remote"));
+        Ok(json!({
+            "status": "ok",
+            "request": {
+                "hostId": "remote-ssh-codex-managed:remote",
+                "ssh": {"user": "longnv", "host": "192.168.100.31", "port": null},
+                "path": "/Users/longnv/bin/repo/sealos-skills",
+            }
         }))
     }
 

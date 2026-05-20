@@ -413,6 +413,12 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         ))
     }
 
+    async fn fallback_zed_remote_request(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(codex_plus_core::zed_remote::fallback_open_request_response(
+            &payload,
+        ))
+    }
+
     async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value> {
         Ok(codex_plus_core::zed_remote::open_zed_remote(&payload))
     }

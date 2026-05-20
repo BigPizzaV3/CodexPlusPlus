@@ -65,6 +65,7 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn ads(&self) -> anyhow::Result<Value>;
     async fn zed_remote_status(&self) -> anyhow::Result<Value>;
     async fn resolve_zed_remote_host(&self, payload: Value) -> anyhow::Result<Value>;
+    async fn fallback_zed_remote_request(&self, payload: Value) -> anyhow::Result<Value>;
     async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value>;
 }
 
@@ -135,6 +136,11 @@ pub async fn handle_bridge_request(
         "/ads" => ctx.runtime.ads().await,
         "/zed-remote/status" => ctx.runtime.zed_remote_status().await,
         "/zed-remote/resolve-host" => ctx.runtime.resolve_zed_remote_host(payload.clone()).await,
+        "/zed-remote/fallback-request" => {
+            ctx.runtime
+                .fallback_zed_remote_request(payload.clone())
+                .await
+        }
         "/zed-remote/open" => ctx.runtime.open_zed_remote(payload.clone()).await,
         "/delete" => result_value(ctx.data.delete(session_from_payload(&payload)).await),
         "/undo" => {
@@ -376,6 +382,10 @@ impl BridgeRuntimeService for CoreRuntimeService {
 
     async fn resolve_zed_remote_host(&self, payload: Value) -> anyhow::Result<Value> {
         Ok(crate::zed_remote::resolve_ssh_target_response(&payload))
+    }
+
+    async fn fallback_zed_remote_request(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(crate::zed_remote::fallback_open_request_response(&payload))
     }
 
     async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value> {

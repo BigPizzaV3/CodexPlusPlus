@@ -1,9 +1,30 @@
 import subprocess
+import tempfile
+import textwrap
 from pathlib import Path
 
 
+RENDERER_SCRIPT = Path("codex_session_delete/inject/renderer-inject.js")
+RUNTIME_RENDERER_SCRIPT = Path("assets/inject/renderer-inject.js")
+RENDERER_SCRIPT_PATHS = (RENDERER_SCRIPT, RUNTIME_RENDERER_SCRIPT)
+
+
+def renderer_script_texts():
+    return [(path, path.read_text(encoding="utf-8")) for path in RENDERER_SCRIPT_PATHS]
+
+
+def run_node_script(source: str):
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".js", delete=False) as handle:
+        handle.write(textwrap.dedent(source))
+        path = Path(handle.name)
+    try:
+        return subprocess.run(["node", str(path)], capture_output=True, text=True)
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def test_renderer_script_exists_and_parses_with_node():
-    script = Path("codex_session_delete/inject/renderer-inject.js")
+    script = RENDERER_SCRIPT
     assert script.exists()
     result = subprocess.run(["node", "--check", str(script)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -611,7 +632,9 @@ def test_renderer_script_includes_user_script_manager_ui_contract():
     assert "-webkit-app-region: no-drag" in text
     assert ".codex-plus-trigger" in text
     assert "app-header-tint" in text
-    assert "flex items-center gap-0.5" in text
+    assert '[class*="flex items-center gap-0.5"]' not in text
+    assert '[class*=\\"ms-auto\\"][class*=\\"flex\\"][class*=\\"items-center\\"]' in text
+    assert '[class*=\\"flex\\"][class*=\\"items-center\\"][class*=\\"gap-1.5\\"]' not in text
     assert "codex-plus-menu-floating" in text
     assert "nativeButtonClass" in text
     assert "removeDuplicateCodexPlusMenus" in text
@@ -769,6 +792,7 @@ def test_renderer_script_contains_zed_remote_probe_and_open_action():
     assert "Zed Remote" in text
     assert 'postJson("/zed-remote/status", {})' in text
     assert 'postJson("/zed-remote/resolve-host", { hostId })' in text
+    assert 'postJson("/zed-remote/fallback-request", {})' in text
     assert 'postJson("/zed-remote/open", nextRequest)' in text
     assert "function zedRemoteContext" in text
     assert "function zedRemoteFileCandidates" in text
@@ -792,10 +816,11 @@ def test_renderer_script_removes_stale_zed_remote_controls_when_fail_closed():
     assert "[data-codex-zed-remote-version]" in remove_code
     assert "delete node.dataset.codexZedRemoteVersion" in remove_code
     assert "removeZedRemoteButtons();\n      removeZedRemoteOpenInMenuItems();\n      return;" in refresh_code
-    assert "const context = zedRemoteContext() || {};" in refresh_code
     assert "if (!status?.platformSupported || (!status.zedAppFound && !status.zedCliFound)) {\n        removeZedRemoteButtons();\n        removeZedRemoteOpenInMenuItems();\n        return;\n      }" in refresh_code
     assert "catch (_) {\n      removeZedRemoteButtons();\n      removeZedRemoteOpenInMenuItems();\n      return;\n    }" in refresh_code
-    assert "removeZedRemoteButtons();\n    const candidates = zedRemoteFileCandidates(context);\n    candidates.forEach(attachZedRemoteButton);\n    refreshZedRemoteOpenInMenus(context);" in refresh_code
+    assert "refreshZedRemoteOpenInMenus(scope);" in refresh_code
+    assert "zedRemoteFileCandidates(context);" not in refresh_code
+    assert "candidates.forEach(attachZedRemoteButton);" not in refresh_code
 
 
 def test_renderer_script_adds_zed_remote_to_open_in_menu():
@@ -803,7 +828,7 @@ def test_renderer_script_adds_zed_remote_to_open_in_menu():
     start = text.index("function createZedRemoteOpenInMenuItem")
     end = text.index("\n\n  async function refreshZedRemoteOpenControls", start)
     menu_code = text[start:end]
-    create_end = text.index("\n\n  function activateZedRemoteOpenInMenuItem", start)
+    create_end = text.index("\n\n  async function activateZedRemoteOpenInMenuItem", start)
     create_code = text[start:create_end]
 
     assert ">Zed<" in menu_code
@@ -823,13 +848,279 @@ def test_renderer_script_adds_zed_remote_to_open_in_menu():
     assert "document.dispatchEvent(new KeyboardEvent(\"keydown\", { key: \"Escape\"" in menu_code
 
 
+def test_renderer_script_injects_zed_into_remote_open_in_menu_without_file_candidate():
+    script = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
+    result = run_node_script(
+        f"""
+        void (async () => {{
+          const assert = require("node:assert");
+
+          class Node {{
+            constructor(tagName = "") {{
+              this.tagName = tagName.toUpperCase();
+              this.children = [];
+              this.parentElement = null;
+              this.dataset = {{}};
+              this.attributes = {{}};
+              this.listeners = {{}};
+              this.className = "";
+              this.nodeType = 1;
+              this._textContent = "";
+              this._innerHTML = "";
+            }}
+            set textContent(value) {{
+              this._textContent = String(value || "");
+            }}
+            get textContent() {{
+              const ownText = this._textContent || "";
+              return ownText + this.children.map((child) => child.textContent).join("");
+            }}
+            set innerHTML(value) {{
+              this._innerHTML = String(value || "");
+              this._textContent = this._innerHTML.replace(/<[^>]*>/g, " ").replace(/\\s+/g, " ").trim();
+            }}
+            get innerHTML() {{
+              return this._innerHTML;
+            }}
+            appendChild(child) {{
+              child.parentElement = this;
+              this.children.push(child);
+              return child;
+            }}
+            insertBefore(child, before) {{
+              child.parentElement = this;
+              const index = this.children.indexOf(before);
+              if (index >= 0) this.children.splice(index, 0, child);
+              else this.children.push(child);
+              return child;
+            }}
+            remove() {{
+              if (!this.parentElement) return;
+              const index = this.parentElement.children.indexOf(this);
+              if (index >= 0) this.parentElement.children.splice(index, 1);
+              this.parentElement = null;
+            }}
+            setAttribute(name, value) {{
+              const stringValue = String(value);
+              this.attributes[name] = stringValue;
+              if (name === "role") this.role = stringValue;
+              if (name.startsWith("data-")) {{
+                const key = name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+                this.dataset[key] = stringValue;
+              }}
+            }}
+            getAttribute(name) {{
+              return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null;
+            }}
+            addEventListener(type, listener) {{
+              this.listeners[type] = listener;
+            }}
+            closest(selector) {{
+              for (let node = this; node; node = node.parentElement) {{
+                if (node.matches(selector)) return node;
+              }}
+              return null;
+            }}
+            matches(selector) {{
+              if (selector.includes('[role="menu"]') && this.getAttribute("role") === "menu") return true;
+              if (selector.includes('[role="menuitem"]') && this.getAttribute("role") === "menuitem") return true;
+              if (selector.includes('.codex-zed-open-in-menu-item') && this.className.includes('codex-zed-open-in-menu-item')) return true;
+              if (selector.includes('[data-codex-zed-open-in-menu="injected"]') && this.getAttribute('data-codex-zed-open-in-menu') === 'injected') return true;
+              return false;
+            }}
+            querySelectorAll(selector) {{
+              const results = [];
+              const visit = (node) => {{
+                for (const child of node.children) {{
+                  if (child.matches(selector)) results.push(child);
+                  visit(child);
+                }}
+              }};
+              visit(this);
+              return results;
+            }}
+            querySelector(selector) {{
+              return this.querySelectorAll(selector)[0] || null;
+            }}
+            get classList() {{
+              return {{
+                add: (...names) => {{
+                  const current = new Set(String(this.className || "").split(/\\s+/).filter(Boolean));
+                  names.forEach((name) => current.add(name));
+                  this.className = Array.from(current).join(" ");
+                }},
+                contains: (name) => String(this.className || "").split(/\\s+/).includes(name),
+              }};
+            }}
+          }}
+
+          class HTMLElement extends Node {{}}
+          class HTMLAnchorElement extends HTMLElement {{}}
+          class Document extends HTMLElement {{}}
+
+          const document = new Document("document");
+          document.body = new HTMLElement("body");
+          document.documentElement = new HTMLElement("html");
+          document.appendChild(document.body);
+          document.createElement = (tagName) => new HTMLElement(tagName);
+          document.getElementById = () => null;
+          document.addEventListener = () => {{}};
+          document.dispatchEvent = () => {{}};
+          document.querySelectorAll = (...args) => document.body.querySelectorAll(...args);
+          document.querySelector = (...args) => document.body.querySelector(...args);
+
+          let mutationCallback = null;
+          const openPayloads = [];
+          global.window = {{
+            __CODEX_SESSION_DELETE_HELPER__: "http://127.0.0.1:57321",
+            __codexSessionDeleteBridge: async (path, payload) => {{
+              if (path === "/zed-remote/status") {{
+                return {{ status: "ok", platformSupported: true, zedAppFound: true, zedCliFound: false }};
+              }}
+              if (path === "/zed-remote/fallback-request") {{
+                return {{
+                  status: "ok",
+                  request: {{
+                    hostId: "remote-ssh-codex-managed:remote",
+                    ssh: {{ user: "longnv", host: "192.168.100.31", port: null }},
+                    path: "/Users/longnv/bin/repo/sealos-skills",
+                  }},
+                }};
+              }}
+              if (path === "/zed-remote/open") {{
+                openPayloads.push(payload);
+                return {{ status: "ok" }};
+              }}
+              return {{ status: "ok" }};
+            }},
+            addEventListener: () => {{}},
+            removeEventListener: () => {{}},
+            dispatchEvent: () => {{}},
+            getComputedStyle: () => ({{}}),
+          }};
+          global.document = document;
+          global.HTMLElement = HTMLElement;
+          global.HTMLAnchorElement = HTMLAnchorElement;
+          global.Document = Document;
+          global.Element = HTMLElement;
+          global.Node = {{ TEXT_NODE: 3 }};
+          global.KeyboardEvent = function KeyboardEvent() {{}};
+          global.PointerEvent = function PointerEvent() {{}};
+          global.MutationObserver = function MutationObserver(callback) {{
+            mutationCallback = callback;
+            this.observe = () => {{}};
+            this.disconnect = () => {{}};
+          }};
+          global.localStorage = {{ getItem: () => JSON.stringify({{ zedRemoteOpen: true }}), setItem: () => {{}} }};
+          const timeoutCallbacks = [];
+          global.setTimeout = (fn) => {{ if (typeof fn === "function") timeoutCallbacks.push(fn); return timeoutCallbacks.length; }};
+          global.clearTimeout = () => {{}};
+          global.setInterval = () => 1;
+          global.clearInterval = () => {{}};
+          global.requestAnimationFrame = (fn) => {{ if (typeof fn === "function") fn(); }};
+          global.location = {{ pathname: "/" }};
+          global.fetch = async () => ({{ ok: true, text: async () => "{{}}" }});
+          global.getComputedStyle = () => ({{}});
+
+          const menu = new HTMLElement("div");
+          menu.setAttribute("role", "menu");
+          const vsCode = new HTMLElement("div");
+          vsCode.setAttribute("role", "menuitem");
+          vsCode.textContent = "VS Code";
+          const cursor = new HTMLElement("div");
+          cursor.setAttribute("role", "menuitem");
+          cursor.textContent = "Cursor";
+          const finder = new HTMLElement("div");
+          finder.setAttribute("role", "menuitem");
+          finder.textContent = "Finder";
+          menu.appendChild(vsCode);
+          menu.appendChild(cursor);
+          menu.appendChild(finder);
+          document.body.appendChild(menu);
+
+          eval({script!r});
+          assert(mutationCallback, "script should register a MutationObserver");
+          mutationCallback([{{ type: "childList", target: document.body, addedNodes: [menu], removedNodes: [] }}]);
+          for (const callback of timeoutCallbacks.splice(0)) callback();
+          await Promise.resolve();
+          await Promise.resolve();
+          for (const callback of timeoutCallbacks.splice(0)) callback();
+          await Promise.resolve();
+          await Promise.resolve();
+
+          assert(menu.textContent.includes("Zed"), "remote Open In menu should receive injected Zed item");
+          const zed = menu.querySelector('[data-codex-zed-open-in-menu="injected"], .codex-zed-open-in-menu-item');
+          assert(zed, "injected Zed menu item should be identifiable");
+          assert.equal(zed.getAttribute("role"), "menuitem");
+          await zed.listeners.click({{
+            type: "click",
+            currentTarget: zed,
+            preventDefault: () => {{}},
+            stopPropagation: () => {{}},
+            stopImmediatePropagation: () => {{}},
+          }});
+          await Promise.resolve();
+          await Promise.resolve();
+          assert.deepEqual(openPayloads, [{{
+            hostId: "remote-ssh-codex-managed:remote",
+            ssh: {{ user: "longnv", host: "192.168.100.31", port: null }},
+            path: "/Users/longnv/bin/repo/sealos-skills",
+          }}]);
+        }})().catch((error) => {{
+          console.error(error);
+          process.exit(1);
+        }});
+        """
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_renderer_script_observes_native_open_in_menu_mounts():
     text = Path("codex_session_delete/inject/renderer-inject.js").read_text(encoding="utf-8")
-    start = text.index("function shouldScheduleScan")
-    end = text.index("\n\n  function runScheduledScan", start)
-    schedule_code = text[start:end]
+    start = text.index("function shouldRefreshZedRemoteMenus")
+    end = text.index("\n\n  function scheduleZedRemoteMenuRefresh", start)
+    menu_schedule_code = text[start:end]
+    scan_start = text.index("function shouldScheduleScan")
+    scan_end = text.index("\n\n  function runScheduledScan", scan_start)
+    scan_schedule_code = text[scan_start:scan_end]
 
-    assert "[role=\"menu\"], [data-radix-popper-content-wrapper]" in schedule_code
+    assert "[role=\"menu\"], [data-radix-popper-content-wrapper]" in menu_schedule_code
+    assert "[role=\"menu\"], [data-radix-popper-content-wrapper]" not in scan_schedule_code
+
+
+def test_renderer_scripts_do_not_refresh_zed_remote_from_global_scan_loop():
+    for path, text in renderer_script_texts():
+        start = text.index("function scanDeferred")
+        end = text.index("\n\n  function runScanStep", start)
+        scan_code = text[start:end]
+
+        assert "refreshZedRemoteOpenControls" not in scan_code, path
+        assert "refreshZedRemoteOpenInMenus" not in scan_code, path
+
+
+def test_renderer_scripts_scope_and_cache_zed_remote_context_lookup():
+    for path, text in renderer_script_texts():
+        start = text.index("function zedRemoteContext")
+        end = text.index("\n\n  function zedRemoteAbsolutePath", start)
+        context_code = text[start:end]
+
+        assert "const zedRemoteContextCacheTtlMs" in text, path
+        assert "let zedRemoteContextCache" in text, path
+        assert "function zedRemoteContext(scope = document)" in context_code, path
+        assert "document.body, ...document.querySelectorAll" not in context_code, path
+        assert "a, button, [role='button'], [role='menuitem'], [role='treeitem']" not in context_code, path
+        assert ".slice(0, 260)" not in context_code, path
+
+
+def test_renderer_scripts_initialize_backend_heartbeat_once():
+    for path, text in renderer_script_texts():
+        start = text.index("function scheduleBackendHeartbeat")
+        end = text.index("\n\n", start)
+        heartbeat_code = text[start:end]
+
+        assert "if (window.__codexPlusBackendHeartbeat) return;" in heartbeat_code, path
+        assert "clearInterval(window.__codexPlusBackendHeartbeat)" not in heartbeat_code, path
 
 
 def test_renderer_script_handles_zed_remote_open_rejection_with_toast():
@@ -897,8 +1188,8 @@ def test_renderer_script_zed_remote_candidate_sources_are_structured():
     assert "zedRemoteAnchorHasOpenFileMetadata" in candidates_code
     assert "span.inline-markdown, code, [class*='inlineMarkdown']" in candidates_code
     scan_relevance_code = text[text.index("const scanRelevantSelector"):text.index("function nodeSelfOrAncestorMatchesScanRelevance")]
-    assert '"span.inline-markdown"' in scan_relevance_code
-    assert "\"[class*='inlineMarkdown']\"" in scan_relevance_code
+    assert '"span.inline-markdown"' not in scan_relevance_code
+    assert "\"[class*='inlineMarkdown']\"" not in scan_relevance_code
 
 
 def test_runtime_renderer_asset_contains_zed_remote_open_controls():

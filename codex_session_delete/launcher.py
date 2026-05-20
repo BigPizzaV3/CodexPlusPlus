@@ -947,6 +947,8 @@ def handle_bridge_request(
         return zed_remote.zed_remote_status()
     if path == "/zed-remote/resolve-host" and runtime:
         return zed_remote.resolve_ssh_target_response(payload)
+    if path == "/zed-remote/fallback-request" and runtime:
+        return zed_remote.fallback_open_request_response(payload)
     if path == "/zed-remote/open" and runtime:
         return zed_remote.open_zed_remote(payload)
     if path == "/ads" and runtime:
