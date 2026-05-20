@@ -12,6 +12,10 @@
   const timelineMarkerClass = "codex-conversation-timeline-marker";
   const timelineTooltipClass = "codex-conversation-timeline-tooltip";
   const timelineTargetClass = "codex-conversation-timeline-target";
+  const conversationViewMinWidth = 320;
+  const conversationViewMaxAllowedWidth = 4000;
+  const conversationViewDefaultWidth = 900;
+  const conversationViewLegacyWidthKey = "codexPlus.threadCenter.maxWidth";
   const zedRemoteButtonClass = "codex-zed-remote-button";
   const zedRemoteOpenInMenuItemClass = "codex-zed-open-in-menu-item";
   const zedRemoteToastClass = "codex-zed-remote-toast";
@@ -40,6 +44,7 @@
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationTimelineVersion = "2";
+  const codexConversationViewVersion = "1";
   const codexThreadScrollVersion = "1";
   let codexPlusVersion = window.__CODEX_PLUS_VERSION__ || "unknown";
   const codexPlusBuild = window.__CODEX_PLUS_BUILD__ || "unknown";
@@ -70,6 +75,15 @@
   window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
   window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
   window.__codexConversationTimelineNodeCounter = window.__codexConversationTimelineNodeCounter || 0;
+  ["__codexPlusHtmlCenteredThreadWidth", "__codexPlusViewportCenteredThreadWidth", "__codexPlusBoundedThreadCenter"].forEach((key) => {
+    try {
+      window[key]?.cleanup?.();
+    } catch (_) {}
+  });
+  try {
+    window.__codexPlusConversationViewCleanup?.();
+  } catch (_) {}
+  window.__codexPlusConversationViewCleanup = null;
   const selectors = {
     sidebarThread: "[data-app-action-sidebar-thread-id]",
     threadTitle: "[data-thread-title]",
@@ -477,6 +491,19 @@
       .codex-plus-toggle[data-relay-unneeded="true"] { width: 72px; cursor: default; background: rgba(16,163,127,.16); color: #6ee7b7; }
       .codex-plus-toggle[data-relay-unneeded="true"] span { display: none; }
       .codex-plus-toggle[data-relay-unneeded="true"]::after { content: "无需开启"; font-size: 12px; font-weight: 650; line-height: 1; }
+      .codex-plus-width-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 176px; align-self: center; }
+      .codex-plus-width-input {
+        width: 78px;
+        height: 26px;
+        box-sizing: border-box;
+        border: 1px solid rgba(255,255,255,.18);
+        border-radius: 7px;
+        background: rgba(255,255,255,.08);
+        color: #f3f4f6;
+        font: 12px system-ui, sans-serif;
+        padding: 0 8px;
+      }
+      .codex-plus-width-input:disabled { opacity: .55; cursor: not-allowed; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-tabs { display: flex; gap: 8px; padding: 0 20px 6px; flex: 0 0 auto; }
       .codex-plus-tab-button { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: transparent; color: #d1d5db; font: 12px system-ui, sans-serif; padding: 5px 10px; }
@@ -595,7 +622,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, threadScrollRestore: true, zedRemoteOpen: true, nativeMenuPlacement: true };
+    return { pluginEntryUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, nativeMenuPlacement: true };
   }
 
   function codexPlusSettings() {
@@ -609,6 +636,8 @@
         markdownExport: false,
         projectMove: false,
         conversationTimeline: false,
+        conversationView: false,
+        conversationViewMaxWidth: conversationViewDefaultWidth,
         threadScrollRestore: false,
         zedRemoteOpen: false,
         nativeMenuPlacement: false,
@@ -652,8 +681,36 @@
       window.__codexThreadScrollRuntime = null;
     }
     renderCodexPlusMenu();
-    renderCodexModelCompatibilityWarning();
     scan();
+  }
+
+  function normalizeConversationViewWidth(value) {
+    if (value === null || value === undefined || String(value).trim() === "") return null;
+    const number = Number(value);
+    if (!Number.isFinite(number)) return null;
+    return Math.max(conversationViewMinWidth, Math.min(conversationViewMaxAllowedWidth, Math.round(number)));
+  }
+
+  function conversationViewWidth() {
+    const settingsWidth = normalizeConversationViewWidth(codexPlusSettings().conversationViewMaxWidth);
+    if (settingsWidth) return settingsWidth;
+    const legacyWidth = normalizeConversationViewWidth(localStorage.getItem(conversationViewLegacyWidthKey));
+    return legacyWidth || conversationViewDefaultWidth;
+  }
+
+  function refreshConversationViewControls() {
+    const enabled = !!codexPlusSettings().conversationView;
+    const width = conversationViewWidth();
+    document.querySelectorAll("[data-codex-plus-conversation-view-width]").forEach((input) => {
+      input.value = String(width);
+      input.disabled = !enabled;
+    });
+  }
+
+  function setConversationViewWidth(value) {
+    const width = normalizeConversationViewWidth(value);
+    if (!width) return;
+    setCodexPlusSetting("conversationViewMaxWidth", width);
   }
 
   function renderCodexPlusMenu() {
@@ -661,7 +718,7 @@
       const key = button.getAttribute("data-codex-plus-setting");
       button.dataset.enabled = String(!!codexPlusSettings()[key]);
     });
-    renderCodexModelCompatibilityWarning();
+    refreshConversationViewControls();
   }
 
   let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, launchMode: "patch" };
@@ -997,6 +1054,13 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationTimeline"><span></span></button>
             </div>
             <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">对话居中宽度</div><div class="codex-plus-row-description">开启后把主对话和输入框限制到固定最大宽度，适合大屏阅读。</div></div>
+              <div class="codex-plus-width-control">
+                <input class="codex-plus-width-input" data-codex-plus-conversation-view-width="true" min="${conversationViewMinWidth}" max="${conversationViewMaxAllowedWidth}" step="10" type="number" value="${conversationViewWidth()}">
+                <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationView"><span></span></button>
+              </div>
+            </div>
+            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">切换对话保留位置</div><div class="codex-plus-row-description">开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
             </div>
@@ -1074,6 +1138,20 @@
       event.preventDefault();
       event.stopPropagation();
       overlay.remove();
+    }, true);
+    overlay.addEventListener("input", (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
+      if (widthInput) setConversationViewWidth(widthInput.value);
+    }, true);
+    overlay.addEventListener("change", (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
+      if (widthInput) {
+        const width = normalizeConversationViewWidth(widthInput.value);
+        widthInput.value = String(width || conversationViewWidth());
+        setConversationViewWidth(widthInput.value);
+      }
     }, true);
     overlay.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
@@ -2351,57 +2429,6 @@
     ]);
   }
 
-  function codexResponsesApiStatus() {
-    const status = codexModelCatalog.responses_api;
-    return status && typeof status === "object" ? status : { status: "unknown", message: "" };
-  }
-
-  function codexModelCompatibilityWarningText() {
-    if (!codexPlusModelUnlockEnabled()) return "";
-    const responsesApi = codexResponsesApiStatus();
-    if (responsesApi.status !== "unsupported") return "";
-    const provider = codexModelCatalog.provider_name || codexModelCatalog.model_provider || "当前模型供应商";
-    const detail = responsesApi.message ? `：${responsesApi.message}` : "";
-    return `${provider} 不支持 Codex 使用的 /v1/responses 接口，模型可能能显示，但发起对话会失败。请换支持 Responses API 的中转，或使用兼容转换代理${detail}`;
-  }
-
-  function modelCompatibilityWarningElement() {
-    const toggle = document.querySelector('[data-codex-plus-setting="modelWhitelistUnlock"]');
-    const row = toggle?.closest?.(".codex-plus-row");
-    if (!row) return null;
-    let warning = row.querySelector("[data-codex-model-compat-warning]");
-    if (warning) return warning;
-    warning = document.createElement("div");
-    warning.className = "codex-plus-model-compat-warning";
-    warning.dataset.codexModelCompatWarning = "true";
-    const description = row.querySelector(".codex-plus-row-description");
-    (description?.parentElement || row).appendChild(warning);
-    return warning;
-  }
-
-  function renderCodexModelCompatibilityWarning() {
-    const text = codexModelCompatibilityWarningText();
-    document.querySelectorAll("[data-codex-model-compat-warning]").forEach((warning) => {
-      warning.hidden = !text;
-      warning.textContent = text;
-    });
-    if (!text) return;
-    const warning = modelCompatibilityWarningElement();
-    if (!warning) return;
-    warning.hidden = false;
-    warning.textContent = text;
-  }
-
-  function maybeShowCodexModelCompatibilityWarning() {
-    const text = codexModelCompatibilityWarningText();
-    if (!text) return;
-    const responsesApi = codexResponsesApiStatus();
-    const key = `${codexModelCatalog.model_provider || ""}:${responsesApi.endpoint || ""}:${responsesApi.message || ""}`;
-    if (window.__codexPlusResponsesApiWarningKey === key) return;
-    window.__codexPlusResponsesApiWarningKey = key;
-    showToast(text, null);
-  }
-
   async function loadCodexModelCatalog(force = false) {
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
@@ -2410,7 +2437,6 @@
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
-        maybeShowCodexModelCompatibilityWarning();
         patchCodexModelWhitelist();
         return codexModelCatalog;
       })
@@ -4341,6 +4367,253 @@
     document.body.appendChild(container);
   }
 
+  const conversationViewContentClasses = [
+    "mx-auto",
+    "w-full",
+    "max-w-(--thread-content-max-width)",
+    "px-toolbar",
+    "relative",
+    "flex",
+    "shrink-0",
+    "flex-col",
+    "pb-8",
+  ];
+  const conversationViewComposerClasses = [
+    "relative",
+    "z-10",
+    "flex",
+    "flex-col",
+    "mx-auto",
+    "w-full",
+    "max-w-(--thread-content-max-width)",
+    "px-toolbar",
+  ];
+  const conversationViewState = {
+    contentEl: null,
+    composerEl: null,
+    rafId: 0,
+    settleFramesLeft: 0,
+    mo: null,
+    ro: null,
+    pollId: 0,
+    moObserved: false,
+    observed: new WeakSet(),
+    elements: new Set(),
+  };
+
+  function conversationViewTokenSet(el) {
+    return new Set(String(el?.className || "").split(/\s+/).filter(Boolean));
+  }
+
+  function conversationViewHasAllClasses(el, classes) {
+    const set = conversationViewTokenSet(el);
+    return classes.every((cls) => set.has(cls));
+  }
+
+  function conversationViewFindByClasses(classes) {
+    return Array.from(document.querySelectorAll("div")).find((el) => conversationViewHasAllClasses(el, classes)) || null;
+  }
+
+  function conversationViewFindContentEl() {
+    return conversationViewFindByClasses(conversationViewContentClasses);
+  }
+
+  function conversationViewFindComposerEl() {
+    return conversationViewFindByClasses(conversationViewComposerClasses);
+  }
+
+  function conversationViewRememberOriginals(el) {
+    if (!el) return;
+    conversationViewState.elements.add(el);
+    const original = {
+      width: el.style.width || "",
+      maxWidth: el.style.maxWidth || "",
+      marginLeft: el.style.marginLeft || "",
+      marginRight: el.style.marginRight || "",
+      left: el.style.left || "",
+      transform: el.style.transform || "",
+      boxSizing: el.style.boxSizing || "",
+    };
+    if (!("codexPlusConversationViewOriginalWidth" in el.dataset)) el.dataset.codexPlusConversationViewOriginalWidth = original.width;
+    if (!("codexPlusConversationViewOriginalMaxWidth" in el.dataset)) el.dataset.codexPlusConversationViewOriginalMaxWidth = original.maxWidth;
+    if (!("codexPlusConversationViewOriginalMarginLeft" in el.dataset)) el.dataset.codexPlusConversationViewOriginalMarginLeft = original.marginLeft;
+    if (!("codexPlusConversationViewOriginalMarginRight" in el.dataset)) el.dataset.codexPlusConversationViewOriginalMarginRight = original.marginRight;
+    if (!("codexPlusConversationViewOriginalLeft" in el.dataset)) el.dataset.codexPlusConversationViewOriginalLeft = original.left;
+    if (!("codexPlusConversationViewOriginalTransform" in el.dataset)) el.dataset.codexPlusConversationViewOriginalTransform = original.transform;
+    if (!("codexPlusConversationViewOriginalBoxSizing" in el.dataset)) el.dataset.codexPlusConversationViewOriginalBoxSizing = original.boxSizing;
+  }
+
+  function conversationViewRestoreElement(el) {
+    if (!el) return;
+    if ("codexPlusConversationViewOriginalWidth" in el.dataset) {
+      el.style.width = el.dataset.codexPlusConversationViewOriginalWidth;
+      delete el.dataset.codexPlusConversationViewOriginalWidth;
+    }
+    if ("codexPlusConversationViewOriginalMaxWidth" in el.dataset) {
+      el.style.maxWidth = el.dataset.codexPlusConversationViewOriginalMaxWidth;
+      delete el.dataset.codexPlusConversationViewOriginalMaxWidth;
+    }
+    if ("codexPlusConversationViewOriginalMarginLeft" in el.dataset) {
+      el.style.marginLeft = el.dataset.codexPlusConversationViewOriginalMarginLeft;
+      delete el.dataset.codexPlusConversationViewOriginalMarginLeft;
+    }
+    if ("codexPlusConversationViewOriginalMarginRight" in el.dataset) {
+      el.style.marginRight = el.dataset.codexPlusConversationViewOriginalMarginRight;
+      delete el.dataset.codexPlusConversationViewOriginalMarginRight;
+    }
+    if ("codexPlusConversationViewOriginalLeft" in el.dataset) {
+      el.style.left = el.dataset.codexPlusConversationViewOriginalLeft;
+      delete el.dataset.codexPlusConversationViewOriginalLeft;
+    }
+    if ("codexPlusConversationViewOriginalTransform" in el.dataset) {
+      el.style.transform = el.dataset.codexPlusConversationViewOriginalTransform;
+      delete el.dataset.codexPlusConversationViewOriginalTransform;
+    }
+    if ("codexPlusConversationViewOriginalBoxSizing" in el.dataset) {
+      el.style.boxSizing = el.dataset.codexPlusConversationViewOriginalBoxSizing;
+      delete el.dataset.codexPlusConversationViewOriginalBoxSizing;
+    }
+  }
+
+  function conversationViewResetOwnOffset(el) {
+    if (!el) return;
+    const originalTransform = el.dataset.codexPlusConversationViewOriginalTransform || "";
+    const originalLeft = el.dataset.codexPlusConversationViewOriginalLeft || "";
+    if (el.style.left !== originalLeft) el.style.left = originalLeft;
+    if (el.style.transform !== originalTransform) el.style.transform = originalTransform;
+    const transform = String(el.style.transform || "").trim();
+    if (/^(translateX\([^)]*\)\s*)+$/i.test(transform)) {
+      el.style.transform = "";
+    }
+  }
+
+  function conversationViewApplyNativeWidth(el) {
+    conversationViewRememberOriginals(el);
+    const maxWidth = `${conversationViewWidth()}px`;
+    if (el.style.boxSizing !== "border-box") el.style.boxSizing = "border-box";
+    if (el.style.width !== "100%") el.style.width = "100%";
+    if (el.style.maxWidth !== maxWidth) el.style.maxWidth = maxWidth;
+    if (el.style.marginLeft !== "auto") el.style.marginLeft = "auto";
+    if (el.style.marginRight !== "auto") el.style.marginRight = "auto";
+  }
+
+  function conversationViewSessionRectFor(el) {
+    return el?.parentElement?.getBoundingClientRect() || null;
+  }
+
+  function conversationViewHtmlCenter() {
+    const rect = document.documentElement.getBoundingClientRect();
+    return rect.left + rect.width / 2;
+  }
+
+  function conversationViewHasRoomForHtmlCenter(nativeRect, bounds) {
+    if (!nativeRect || !bounds) return false;
+    const targetLeft = conversationViewHtmlCenter() - nativeRect.width / 2;
+    const targetRight = targetLeft + nativeRect.width;
+    return targetLeft >= bounds.left - 0.5 && targetRight <= bounds.right + 0.5;
+  }
+
+  function conversationViewAlignElement(el) {
+    if (!el?.isConnected) return;
+    conversationViewApplyNativeWidth(el);
+    conversationViewResetOwnOffset(el);
+    const nativeRect = el.getBoundingClientRect();
+    const bounds = conversationViewSessionRectFor(el);
+    if (!conversationViewHasRoomForHtmlCenter(nativeRect, bounds)) return;
+    const targetLeft = conversationViewHtmlCenter() - nativeRect.width / 2;
+    const delta = targetLeft - nativeRect.left;
+    if (Math.abs(delta) > 0.5) {
+      const nextLeft = `${delta.toFixed(2)}px`;
+      if (el.style.left !== nextLeft) el.style.left = nextLeft;
+    }
+  }
+
+  function conversationViewObserveIfNeeded(el) {
+    if (!el || !conversationViewState.ro || conversationViewState.observed.has(el)) return;
+    conversationViewState.observed.add(el);
+    conversationViewState.ro.observe(el);
+  }
+
+  function conversationViewResolveTargets() {
+    if (!conversationViewState.contentEl?.isConnected) conversationViewState.contentEl = conversationViewFindContentEl();
+    if (!conversationViewState.composerEl?.isConnected) conversationViewState.composerEl = conversationViewFindComposerEl();
+    [
+      document.documentElement,
+      document.body,
+      conversationViewState.contentEl,
+      conversationViewState.contentEl?.parentElement,
+      conversationViewState.contentEl?.parentElement?.parentElement,
+      conversationViewState.composerEl,
+      conversationViewState.composerEl?.parentElement,
+      conversationViewState.composerEl?.parentElement?.parentElement,
+    ].forEach(conversationViewObserveIfNeeded);
+  }
+
+  function conversationViewAlignNow() {
+    if (!codexPlusSettings().conversationView) return;
+    conversationViewResolveTargets();
+    conversationViewAlignElement(conversationViewState.contentEl);
+    conversationViewAlignElement(conversationViewState.composerEl);
+  }
+
+  function scheduleConversationViewAlign(frames = 16) {
+    conversationViewState.settleFramesLeft = Math.max(conversationViewState.settleFramesLeft, frames);
+    if (conversationViewState.rafId) return;
+    const tick = () => {
+      conversationViewState.rafId = 0;
+      conversationViewAlignNow();
+      conversationViewState.settleFramesLeft -= 1;
+      if (conversationViewState.settleFramesLeft > 0) {
+        conversationViewState.rafId = requestAnimationFrame(tick);
+      }
+    };
+    conversationViewState.rafId = requestAnimationFrame(tick);
+  }
+
+  function cleanupConversationView() {
+    if (conversationViewState.rafId) cancelAnimationFrame(conversationViewState.rafId);
+    if (conversationViewState.pollId) clearInterval(conversationViewState.pollId);
+    conversationViewState.rafId = 0;
+    conversationViewState.pollId = 0;
+    conversationViewState.mo?.disconnect();
+    conversationViewState.ro?.disconnect();
+    conversationViewState.mo = null;
+    conversationViewState.ro = null;
+    conversationViewState.moObserved = false;
+    conversationViewState.observed = new WeakSet();
+    conversationViewState.elements.forEach(conversationViewRestoreElement);
+    conversationViewState.elements.clear();
+    conversationViewState.contentEl = null;
+    conversationViewState.composerEl = null;
+  }
+
+  window.__codexPlusConversationViewCleanup = cleanupConversationView;
+
+  function ensureConversationViewRuntime() {
+    if (conversationViewState.ro && conversationViewState.mo && conversationViewState.pollId) return;
+    conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
+    conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign());
+    if (document.body && !conversationViewState.moObserved) {
+      conversationViewState.mo.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class", "hidden", "data-state", "aria-hidden"],
+      });
+      conversationViewState.moObserved = true;
+    }
+    conversationViewState.pollId = conversationViewState.pollId || window.setInterval(() => scheduleConversationViewAlign(2), 350);
+  }
+
+  function refreshConversationView() {
+    if (!codexPlusSettings().conversationView) {
+      cleanupConversationView();
+      return;
+    }
+    ensureConversationViewRuntime();
+    scheduleConversationViewAlign();
+  }
+
   function scanLightweight() {
     installStyle();
     installCodexPlusMenu();
@@ -4874,6 +5147,7 @@
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     installArchivedDeleteAllButton();
     refreshConversationTimeline();
+    refreshConversationView();
     scheduleThreadScrollSync();
     patchCodexModelWhitelist();
   }
@@ -4979,6 +5253,7 @@
     codexPlusResizeRafId = requestAnimationFrame(() => {
       updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));
       runScanStep(refreshConversationTimeline);
+      runScanStep(refreshConversationView);
     });
   };
   window.addEventListener("resize", window.__codexPlusResizeHandler);

@@ -140,6 +140,19 @@ fn injection_script_loads_backend_settings_before_initial_scan() {
 }
 
 #[test]
+fn injection_script_exposes_conversation_view_width_control() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("conversationView: false"));
+    assert!(script.contains("conversationView"));
+    assert!(script.contains("conversationViewMaxWidth"));
+    assert!(script.contains("对话居中宽度"));
+    assert!(script.contains("data-codex-plus-conversation-view-width"));
+    assert!(script.contains("conversationViewWidth()"));
+    assert!(script.contains("normalizeConversationViewWidth"));
+}
+
+#[test]
 fn injection_script_unlocks_custom_model_catalog() {
     let script = assets::injection_script(57321);
 
@@ -151,15 +164,6 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("Response.prototype.json"));
     assert!(script.contains("available_models"));
     assert!(script.contains("modelWhitelistUnlock"));
-}
-
-#[test]
-fn injection_script_warns_about_missing_responses_api_support() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("responses_api"));
-    assert!(script.contains("codexModelCompatibilityWarningText"));
-    assert!(script.contains("/v1/responses"));
 }
 
 #[test]

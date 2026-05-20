@@ -109,13 +109,7 @@ pub async fn read_codex_model_catalog_from_home(
     let mut models = Vec::new();
     for source in sources.iter() {
         let (source_models, mut source_status) = fetch_models_from_source(&client, source).await;
-        let probe_model = preferred_probe_model(&model, &source_models);
-        let responses_api = if source_status.get("status").and_then(Value::as_str) == Some("ok") {
-            probe_responses_api_support(&client, source, &probe_model).await
-        } else {
-            responses_api_status("unknown", &responses_endpoint(&source.base_url), "")
-        };
-        source_status["responses_api"] = responses_api;
+        source_status["responses_api"] = responses_api_status("unknown", "", "");
         models.extend(source_models);
         source_statuses.push(source_status);
     }
@@ -445,56 +439,6 @@ fn failed_source(mut source: Value, message: String) -> (Vec<String>, Value) {
     (Vec::new(), source)
 }
 
-fn preferred_probe_model(configured_model: &str, source_models: &[String]) -> String {
-    if !configured_model.is_empty() && source_models.iter().any(|item| item == configured_model) {
-        return configured_model.to_string();
-    }
-    source_models.first().cloned().unwrap_or_default()
-}
-
-async fn probe_responses_api_support(
-    client: &reqwest::Client,
-    source: &ModelSource,
-    model: &str,
-) -> Value {
-    let endpoint = responses_endpoint(&source.base_url);
-    if endpoint.is_empty() || model.is_empty() {
-        return responses_api_status("unknown", &endpoint, "");
-    }
-    let mut request = client
-        .post(&endpoint)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .json(&json!({
-            "model": model,
-            "input": "ping",
-            "max_output_tokens": 1
-        }));
-    if !source.api_key.is_empty() {
-        request = request.bearer_auth(&source.api_key);
-    }
-
-    match request.send().await {
-        Ok(response) => {
-            let status = response.status().as_u16();
-            if status < 400 {
-                return responses_api_status("supported", &endpoint, "");
-            }
-            let message = response
-                .text()
-                .await
-                .map(error_message_from_body)
-                .unwrap_or_default();
-            let detail = http_error_message(status, &message);
-            if looks_like_unsupported_responses_api(status, &message) {
-                responses_api_status("unsupported", &endpoint, &detail)
-            } else {
-                responses_api_status("failed", &endpoint, &detail)
-            }
-        }
-        Err(error) => responses_api_status("failed", &endpoint, &error.to_string()),
-    }
-}
-
 fn responses_api_status(status: &str, endpoint: &str, message: &str) -> Value {
     json!({
         "status": status,
@@ -533,62 +477,6 @@ fn models_endpoint(base_url: &str) -> String {
         return format!("{cleaned}/models");
     }
     format!("{cleaned}/v1/models")
-}
-
-fn responses_endpoint(base_url: &str) -> String {
-    let cleaned = safe_url_for_status(base_url)
-        .trim_end_matches('/')
-        .to_string();
-    if cleaned.is_empty() {
-        return String::new();
-    }
-    if cleaned.ends_with("/responses") {
-        return cleaned;
-    }
-    if cleaned.ends_with("/models") {
-        return format!("{}/responses", cleaned.trim_end_matches("/models"));
-    }
-    if cleaned.ends_with("/v1") {
-        return format!("{cleaned}/responses");
-    }
-    format!("{cleaned}/v1/responses")
-}
-
-fn error_message_from_body(body: String) -> String {
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-        return value
-            .pointer("/error/message")
-            .or_else(|| value.get("message"))
-            .and_then(Value::as_str)
-            .unwrap_or(trimmed)
-            .to_string();
-    }
-    trimmed.to_string()
-}
-
-fn http_error_message(status: u16, message: &str) -> String {
-    if message.trim().is_empty() {
-        format!("HTTP {status}")
-    } else {
-        format!("HTTP {status}: {}", message.trim())
-    }
-}
-
-fn looks_like_unsupported_responses_api(status: u16, message: &str) -> bool {
-    if matches!(status, 404 | 405 | 410 | 501) {
-        return true;
-    }
-    let message = message.to_ascii_lowercase();
-    message.contains("/v1/responses")
-        && (message.contains("not found")
-            || message.contains("unsupported")
-            || message.contains("not support")
-            || message.contains("does not support")
-            || message.contains("unknown endpoint"))
 }
 
 fn parse_model_payload(payload: &Value) -> Vec<String> {
