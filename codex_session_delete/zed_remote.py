@@ -210,6 +210,63 @@ def resolve_ssh_target_for_host_id(host_id: str, state_path: Path | None = None)
     return resolve_ssh_target_from_global_state(data, host_id)
 
 
+def ordered_remote_projects_from_global_state(state: dict[str, object]) -> list[dict[str, object]]:
+    """Return saved remote projects in Codex's most recent project order first."""
+    raw_projects = state.get("remote-projects")
+    projects = [project for project in raw_projects if isinstance(project, dict)] if isinstance(raw_projects, list) else []
+    raw_order = state.get("project-order")
+    project_order = [string_value(item) for item in raw_order] if isinstance(raw_order, list) else []
+    by_id = {string_value(project.get("id")): project for project in projects if string_value(project.get("id"))}
+    ordered = [by_id[project_id] for project_id in project_order if project_id in by_id]
+    ordered_ids = {string_value(project.get("id")) for project in ordered}
+    ordered.extend(project for project in projects if string_value(project.get("id")) not in ordered_ids)
+    return ordered
+
+
+def fallback_open_request_from_global_state(state: dict[str, object], host_id: str = "") -> dict[str, object]:
+    """Build a Zed open request from Codex's selected remote workspace metadata."""
+    selected_host_id = string_value(host_id) or string_value(state.get("selected-remote-host-id"))
+    projects = ordered_remote_projects_from_global_state(state)
+    selected_project = None
+    for project in projects:
+        project_host_id = string_value(project.get("hostId"))
+        if selected_host_id and project_host_id != selected_host_id:
+            continue
+        remote_path = string_value(project.get("remotePath"))
+        if not remote_path.startswith("/"):
+            continue
+        selected_project = project
+        break
+    if selected_project is None:
+        raise ZedRemoteError("Cannot determine remote workspace or file for Zed")
+    resolved_host_id = selected_host_id or string_value(selected_project.get("hostId"))
+    if not resolved_host_id:
+        raise ZedRemoteError("Remote host id is required")
+    target = resolve_ssh_target_from_global_state(state, resolved_host_id)
+    return {
+        "hostId": resolved_host_id,
+        "ssh": {"user": target.user, "host": target.host, "port": target.port},
+        "path": string_value(selected_project.get("remotePath")),
+    }
+
+
+def fallback_open_request_response(payload: dict[str, object]) -> dict[str, object]:
+    """Return a bridge response for opening the current selected remote workspace."""
+    try:
+        state = json.loads(codex_global_state_path().read_text(encoding="utf-8"))
+    except OSError as exc:
+        return {"status": "failed", "message": "Cannot read Codex remote connection state"}
+    except json.JSONDecodeError as exc:
+        return {"status": "failed", "message": "Cannot parse Codex remote connection state"}
+    if not isinstance(state, dict):
+        return {"status": "failed", "message": "Cannot parse Codex remote connection state"}
+    try:
+        request = fallback_open_request_from_global_state(state, string_value(payload.get("hostId")))
+        return {"status": "ok", "request": request}
+    except ZedRemoteError as exc:
+        return {"status": "failed", "message": str(exc)}
+
+
 def resolve_ssh_target_response(payload: dict[str, object]) -> dict[str, object]:
     """Return serialized SSH metadata for a remote host id bridge request."""
     try:

@@ -492,6 +492,40 @@ def test_handle_bridge_request_resolves_zed_remote_host(monkeypatch, tmp_path):
     }
 
 
+def test_handle_bridge_request_returns_zed_remote_fallback_request(monkeypatch, tmp_path):
+    from codex_session_delete import zed_remote
+
+    manager = UserScriptManager(tmp_path / "builtin", tmp_path / "user", tmp_path / "config.json")
+    runtime = FakeRuntime(manager)
+    payload = {"hostId": "remote-ssh-codex-managed:remote"}
+
+    monkeypatch.setattr(
+        zed_remote,
+        "fallback_open_request_response",
+        lambda received: {
+            "status": "ok",
+            "request": {
+                "hostId": "remote-ssh-codex-managed:remote",
+                "ssh": {"user": "longnv", "host": "192.168.100.31", "port": None},
+                "path": "/Users/longnv/bin/repo/sealos-skills",
+            },
+            "payload": received,
+        },
+    )
+
+    result = handle_bridge_request(FakeDeleteService(), FakeExportService(), "/zed-remote/fallback-request", payload, runtime)
+
+    assert result == {
+        "status": "ok",
+        "request": {
+            "hostId": "remote-ssh-codex-managed:remote",
+            "ssh": {"user": "longnv", "host": "192.168.100.31", "port": None},
+            "path": "/Users/longnv/bin/repo/sealos-skills",
+        },
+        "payload": payload,
+    }
+
+
 def test_handle_bridge_request_opens_zed_remote(monkeypatch, tmp_path):
     from codex_session_delete import zed_remote
 
