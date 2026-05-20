@@ -34,7 +34,6 @@ CodexPlusPlus/
 ├── crates/
 │   ├── codex-plus-data/    # Data handling and provider sync
 │   └── codex-plus-core/    # Core Codex++ logic
-├── pyproject.toml          # Python bindings configuration
 └── README.md               # Project documentation
 ```
 

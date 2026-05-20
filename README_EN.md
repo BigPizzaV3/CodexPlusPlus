@@ -96,7 +96,7 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 
 ## Highlights
 
-- Rust backend and silent launcher with no Python runtime requirement.
+- Rust backend and silent launcher with no extra runtime requirement.
 - Tauri + React manager with dark/light theme support.
 - External CDP injection. No `app.asar` patching and no DLL writes into the Codex installation.
 - Relay injection mode with multiple relay profiles, `CodexPlusPlus` provider configuration, and a one-click switch back to official ChatGPT login mode.
@@ -220,8 +220,6 @@ scripts/installer/
   windows/CodexPlusPlus.nsi     Windows NSIS installer
   macos/package-dmg.sh          macOS DMG packager
 ```
-
-The old Python entry points are no longer recommended. The remaining `codex_session_delete/` package is kept mainly for migration reference and historical compatibility.
 
 ## Community and Support
 

@@ -11,6 +11,7 @@ import {
   KeyRound,
   LayoutDashboard,
   Link2,
+  MessageCircle,
   FileCode2,
   Moon,
   Plus,
@@ -1351,6 +1352,10 @@ function AboutScreen({
             <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus/issues")} variant="secondary">
               <ExternalLink className="h-4 w-4" />
               反馈问题
+            </Button>
+            <Button onClick={() => void actions.openExternalUrl("https://discord.gg/y96kX7A76v")} variant="secondary">
+              <MessageCircle className="h-4 w-4" />
+              Discord
             </Button>
           </Toolbar>
         </CardContent>

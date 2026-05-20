@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_default_matches_python_behavior() {
+    fn settings_default_matches_expected_behavior() {
         let settings = BackendSettings::default();
         assert!(!settings.provider_sync_enabled);
         assert!(settings.enhancements_enabled);

@@ -79,7 +79,7 @@ async fn bridge_routes_cover_all_current_paths() {
 }
 
 #[tokio::test]
-async fn unknown_bridge_path_matches_python_shape_with_empty_session_id() {
+async fn unknown_bridge_path_preserves_empty_session_id_shape() {
     let result = handle_bridge_request(
         test_context(),
         "/missing",
@@ -298,7 +298,7 @@ async fn bridge_context_core_with_data_uses_injected_data_service() {
 }
 
 #[tokio::test]
-async fn user_script_manager_scans_and_persists_python_inventory_shape() {
+async fn user_script_manager_scans_and_persists_inventory_shape() {
     let temp = tempfile::tempdir().unwrap();
     let builtin_dir = temp.path().join("builtin");
     let user_dir = temp.path().join("user");

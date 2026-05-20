@@ -54,6 +54,7 @@
   const codexThreadScrollRouteHooksVersion = "dispatcher:2";
   const codexThreadScrollListenerVersion = "4";
   const codexThreadScrollUserIntentVersion = "dispatcher:2";
+  const codexForcePluginInstallRefreshIntervalMs = 1000;
   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
   clearTimeout(window.__codexProjectMoveProjectionTimer);
@@ -75,7 +76,7 @@
     appHeader: ".app-header-tint",
     nativeMenuBar: "[class*=\"ms-auto\"][class*=\"flex\"][class*=\"items-center\"]",
     archiveNav: 'button[aria-label="已归档对话"], button[aria-label="Archived conversations"]',
-    disabledInstallButton: 'button:disabled.w-full.justify-center, [role="button"][aria-disabled="true"].cursor-not-allowed',
+    disabledInstallButton: 'button:disabled, button[aria-disabled="true"], [role="button"][aria-disabled="true"], button[data-disabled], [role="button"][data-disabled], button.cursor-not-allowed, [role="button"].cursor-not-allowed, button.pointer-events-none, [role="button"].pointer-events-none',
     pluginNavButton: 'nav[role="navigation"] button.h-token-nav-row.w-full',
     pluginSvgPath: 'svg path[d^="M7.94562 14.0277"]',
   };
@@ -138,6 +139,12 @@
         border-color: #93c5fd;
         background: #dbeafe;
         color: #1d4ed8;
+      }
+      .codex-force-install-unlocked {
+        border-color: #ef4444 !important;
+        background: #fee2e2 !important;
+        color: #991b1b !important;
+        opacity: 1 !important;
       }
       .${actionButtonClass} svg {
         display: block;
@@ -682,7 +689,7 @@
         scan();
         return;
       }
-      if (attempt < 6) {
+      if (attempt < 60) {
         setTimeout(() => loadBackendSettingsForStartup(attempt + 1), 500);
       }
     });
@@ -1014,7 +1021,11 @@
               <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a></div></div>
+              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a></div></div>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">Discord 社区</div><div class="codex-plus-row-description">加入 Discord 获取更新消息、反馈问题或交流使用体验。</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-plus-discord="true">打开 Discord</button>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
@@ -1081,6 +1092,10 @@
       }
       if (target?.closest("[data-codex-open-manager]")) {
         openManagerFromCodex();
+        return;
+      }
+      if (target?.closest("[data-codex-plus-discord]")) {
+        window.open("https://discord.gg/y96kX7A76v", "_blank");
         return;
       }
       if (target?.closest("[data-codex-backend-repair]")) {
@@ -1335,36 +1350,92 @@
   }
 
   function pluginInstallCandidates() {
-    return Array.from(document.querySelectorAll(selectors.disabledInstallButton));
+    const nodes = Array.from(document.querySelectorAll(selectors.disabledInstallButton));
+    return Array.from(new Set(nodes.map((node) => node.closest?.("button, [role='button']") || node)));
   }
 
   function installButtonLabel(element) {
     return (element.textContent || "").trim();
   }
 
-  function unblockButtonElement(button) {
-    button.disabled = false;
-    button.removeAttribute("disabled");
-    button.removeAttribute("aria-disabled");
-    button.classList.remove("disabled", "opacity-50", "cursor-not-allowed", "pointer-events-none");
-    button.style.pointerEvents = "auto";
-    button.tabIndex = 0;
-    const reactPropsKey = Object.keys(button).find((key) => key.startsWith("__reactProps"));
-    if (reactPropsKey) {
-      button[reactPropsKey].disabled = false;
-      button[reactPropsKey]["aria-disabled"] = false;
+  function isInstallButtonLabel(text) {
+    return /^安装\s*/.test(text) || /^Install\s*/i.test(text) || text === "强制安装";
+  }
+
+  function patchReactDisabledProps(element) {
+    Object.keys(element)
+      .filter((key) => key.startsWith("__reactProps"))
+      .forEach((key) => {
+        const props = element[key];
+        if (!props || typeof props !== "object") return;
+        props.disabled = false;
+        props["aria-disabled"] = false;
+        props["data-disabled"] = undefined;
+      });
+  }
+
+  function clearDisabledState(element) {
+    if (!(element instanceof HTMLElement)) return;
+    if ("disabled" in element) element.disabled = false;
+    element.removeAttribute("disabled");
+    element.removeAttribute("aria-disabled");
+    element.removeAttribute("data-disabled");
+    element.removeAttribute("inert");
+    element.classList.remove("disabled", "opacity-50", "cursor-not-allowed", "pointer-events-none");
+    element.classList.add("codex-force-install-unlocked");
+    element.style.pointerEvents = "auto";
+    element.style.opacity = "";
+    element.style.cursor = "pointer";
+    element.tabIndex = 0;
+    patchReactDisabledProps(element);
+  }
+
+  function installButtonUnlockNodes(button) {
+    const nodes = [button];
+    button.querySelectorAll?.("button, [role='button'], [disabled], [aria-disabled], [data-disabled], .cursor-not-allowed, .pointer-events-none")
+      .forEach((node) => nodes.push(node));
+    let parent = button.parentElement;
+    for (let depth = 0; parent && depth < 3; depth += 1, parent = parent.parentElement) {
+      if (parent.matches?.("button, [role='button'], [disabled], [aria-disabled], [data-disabled], .cursor-not-allowed, .pointer-events-none")) {
+        nodes.push(parent);
+      }
     }
+    return Array.from(new Set(nodes));
+  }
+
+  function installForcedInstallGuard(button) {
+    if (button.dataset.codexForceInstallUnlocked === "true") return;
+    button.dataset.codexForceInstallUnlocked = "true";
+    const keepUnlocked = () => installButtonUnlockNodes(button).forEach(clearDisabledState);
+    ["pointerdown", "mousedown", "mouseup", "click", "focus"].forEach((eventName) => {
+      button.addEventListener(eventName, keepUnlocked, true);
+    });
+  }
+
+  function unblockButtonElement(button) {
+    installButtonUnlockNodes(button).forEach(clearDisabledState);
+    installForcedInstallGuard(button);
   }
 
   function labelForcedInstallButton(button) {
-    const textNode = Array.from(button.childNodes).find((node) => node.nodeType === 3 && (/^安装\s/.test((node.nodeValue || "").trim()) || /^Install\s/.test((node.nodeValue || "").trim()) || (node.nodeValue || "").trim() === "强制安装"));
+    const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+    let textNode = null;
+    while (!textNode && walker.nextNode()) {
+      const node = walker.currentNode;
+      if (isInstallButtonLabel((node.nodeValue || "").trim())) textNode = node;
+    }
     if (textNode) {
       textNode.nodeValue = "强制安装";
     }
   }
 
   function clearForcedInstallButtonLabel(button) {
-    const textNode = Array.from(button.childNodes).find((node) => node.nodeType === 3 && (node.nodeValue || "").trim() === "强制安装");
+    const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+    let textNode = null;
+    while (!textNode && walker.nextNode()) {
+      const node = walker.currentNode;
+      if ((node.nodeValue || "").trim() === "强制安装") textNode = node;
+    }
     if (textNode) {
       textNode.nodeValue = "安装";
     }
@@ -1384,10 +1455,28 @@
     if (!codexPlusSettings().forcePluginInstall) return;
     pluginInstallCandidates().forEach((button) => {
       const text = installButtonLabel(button);
-      if (!/^安装\s/.test(text) && !/^Install\s/.test(text) && text !== "强制安装") return;
+      if (!isInstallButtonLabel(text)) return;
       unblockButtonElement(button);
       labelForcedInstallButton(button);
     });
+  }
+
+  function refreshForcePluginInstallUnlockLoop() {
+    const shouldRun = !pluginPatchDisabledInRelayMode() && codexPlusSettings().forcePluginInstall;
+    if (!shouldRun) {
+      clearInterval(window.__codexForcePluginInstallRefreshTimer);
+      window.__codexForcePluginInstallRefreshTimer = null;
+      return;
+    }
+    if (window.__codexForcePluginInstallRefreshTimer) return;
+    window.__codexForcePluginInstallRefreshTimer = setInterval(() => {
+      if (!codexPlusSettings().forcePluginInstall || pluginPatchDisabledInRelayMode()) {
+        clearInterval(window.__codexForcePluginInstallRefreshTimer);
+        window.__codexForcePluginInstallRefreshTimer = null;
+        return;
+      }
+      unblockPluginInstallButtons();
+    }, codexForcePluginInstallRefreshIntervalMs);
   }
 
   let cachedSessionRows = [];
@@ -4772,9 +4861,11 @@
   function scanDeferred() {
     if (pluginPatchDisabledInRelayMode()) {
       clearPluginPatchArtifacts();
+      refreshForcePluginInstallUnlockLoop();
     } else {
       enablePluginEntry();
       unblockPluginInstallButtons();
+      refreshForcePluginInstallUnlockLoop();
     }
     sessionRows().forEach(tryAttachButton);
     updateDeleteButtonOffsets();

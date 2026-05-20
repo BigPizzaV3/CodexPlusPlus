@@ -43,6 +43,8 @@ fn injection_script_prefixes_helper_url_and_sponsor_images() {
     assert!(script.contains("window.__CODEX_PLUS_SPONSOR_IMAGES__"));
     assert!(script.contains("window.__CODEX_PLUS_VERSION__"));
     assert!(script.contains(codex_plus_core::version::VERSION));
+    assert!(script.contains("https://discord.gg/y96kX7A76v"));
+    assert!(script.contains("data-codex-plus-discord"));
 }
 
 #[test]
@@ -97,6 +99,29 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
 }
 
 #[test]
+fn injection_script_unlocks_nested_disabled_plugin_install_buttons() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("button[aria-disabled=\"true\"]"));
+    assert!(script.contains("[role=\"button\"][data-disabled]"));
+    assert!(script.contains("installButtonUnlockNodes"));
+    assert!(script.contains("patchReactDisabledProps"));
+    assert!(script.contains("props[\"data-disabled\"] = undefined"));
+    assert!(script.contains("button.querySelectorAll?.(\"button, [role='button'], [disabled], [aria-disabled], [data-disabled]"));
+    assert!(script.contains("button.dataset.codexForceInstallUnlocked"));
+}
+
+#[test]
+fn injection_script_keeps_force_install_unlock_visual_state_sticky() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("codex-force-install-unlocked"));
+    assert!(script.contains("codexForcePluginInstallRefreshIntervalMs"));
+    assert!(script.contains("refreshForcePluginInstallUnlockLoop"));
+    assert!(script.contains("setInterval(() => {"));
+}
+
+#[test]
 fn injection_script_loads_backend_settings_before_initial_scan() {
     let script = assets::injection_script(57321);
     let startup_call = script
@@ -111,6 +136,7 @@ fn injection_script_loads_backend_settings_before_initial_scan() {
         .expect("script should continue bootstrapping after the initial scan");
 
     assert!(initial_scan < footer_marker);
+    assert!(script.contains("if (attempt < 60)"));
 }
 
 #[test]
@@ -181,7 +207,7 @@ fn cdp_target_deserializes_websocket_field() {
 }
 
 #[test]
-fn runtime_evaluate_params_matches_python_flags() {
+fn runtime_evaluate_params_sets_expected_flags() {
     let params = bridge::runtime_evaluate_params("1 + 1");
 
     assert_eq!(params["expression"], "1 + 1");

@@ -490,7 +490,7 @@ fn missing_db_and_unsupported_schema_return_failed_results() {
 }
 
 #[test]
-fn archived_lookup_workspace_move_and_sort_keys_match_python_shape() {
+fn archived_lookup_workspace_move_and_sort_keys_match_expected_shape() {
     let tmp = tempdir().unwrap();
     let db_path = tmp.path().join("state_5.sqlite");
     let rollout_path = tmp.path().join("rollout.jsonl");
