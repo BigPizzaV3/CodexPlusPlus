@@ -4,6 +4,7 @@ import {
   Activity,
   Bell,
   CheckCircle2,
+  CircleArrowUp,
   Info,
   ExternalLink,
   Hammer,
@@ -173,10 +174,10 @@ type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon }> = [
   { id: "overview", label: "概览", icon: LayoutDashboard },
-  { id: "relay", label: "中转注入", icon: KeyRound },
-  { id: "enhance", label: "增强功能", icon: Hammer },
+  { id: "relay", label: "运行模式", icon: KeyRound },
+  { id: "enhance", label: "页面增强", icon: Hammer },
   { id: "userScripts", label: "用户脚本", icon: FileCode2 },
-  { id: "providerSync", label: "供应商同步", icon: Link2 },
+  { id: "providerSync", label: "历史会话修复", icon: Link2 },
   { id: "recommendations", label: "推荐内容", icon: ExternalLink },
   { id: "maintenance", label: "安装维护", icon: Wrench },
   { id: "about", label: "关于", icon: Info },
@@ -210,7 +211,6 @@ const defaultSettings: BackendSettings = {
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
-  const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
   const [overview, setOverview] = useState<OverviewResult | null>(null);
   const [settings, setSettings] = useState<SettingsResult | null>(null);
@@ -231,14 +231,11 @@ export function App() {
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 
   const run = async <T,>(task: () => Promise<T>): Promise<T | null> => {
-    setBusy(true);
     try {
       return await task();
     } catch (error) {
       showNotice("调用失败", stringifyError(error), "failed");
       return null;
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -446,47 +443,92 @@ export function App() {
   const syncProvidersNow = async () => {
     const result = await run(() => call<CommandResult<Record<string, never>>>("sync_providers_now"));
     if (result) {
-      showNotice("供应商同步", result.message, result.status);
+      showNotice("历史会话修复", result.message, result.status);
     }
   };
 
-  const applyRelayInjection = async () => {
+  const applyRelayInjection = async (silent = false) => {
     const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
     if (settingsResult) {
       setSettings(settingsResult);
       setSettingsForm(normalizeSettings(settingsResult.settings));
+      if (!isSuccessStatus(settingsResult.status)) {
+        showNotice("设置保存", settingsResult.message, settingsResult.status);
+        return false;
+      }
     } else {
-      return;
+      return false;
     }
     const result = await run(() => call<RelayResult>("apply_relay_injection"));
     if (result) {
       setRelay(result);
-      showNotice("中转配置", result.message, result.status);
+      if (!silent || !isSuccessStatus(result.status)) showNotice("混合 API 模式", result.message, result.status);
     }
+    return !!result && isSuccessStatus(result.status) && result.configured;
   };
 
-  const applyPureApiInjection = async () => {
+  const saveLaunchMode = async (launchMode: LaunchMode, silent = false) => {
+    const next = { ...settingsForm, launchMode };
+    setSettingsForm(next);
+    const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
+    if (result) {
+      setSettings(result);
+      setSettingsForm(normalizeSettings(result.settings));
+      if (!silent) showNotice("页面增强模式", result.message, result.status);
+    }
+    return result;
+  };
+
+  const applyPureApiInjection = async (silent = false) => {
     const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
     if (settingsResult) {
       setSettings(settingsResult);
       setSettingsForm(normalizeSettings(settingsResult.settings));
+      if (!isSuccessStatus(settingsResult.status)) {
+        showNotice("设置保存", settingsResult.message, settingsResult.status);
+        return false;
+      }
     } else {
-      return;
+      return false;
     }
     const result = await run(() => call<RelayResult>("apply_pure_api_injection"));
     if (result) {
       setRelay(result);
-      showNotice("纯 API 模式", result.message, result.status);
+      if (!silent || !isSuccessStatus(result.status)) showNotice("纯 API 模式", result.message, result.status);
     }
+    return !!result && isSuccessStatus(result.status) && result.configured;
   };
 
-  const clearRelayInjection = async () => {
+  const clearRelayInjection = async (silent = false) => {
     const result = await run(() => call<RelayResult>("clear_relay_injection"));
     if (result) {
       setRelay(result);
-      showNotice("官方登录模式", result.message, result.status);
+      if (!silent || !isSuccessStatus(result.status)) showNotice("官方登录模式", result.message, result.status);
     }
+    return !!result && isSuccessStatus(result.status) && !result.configured;
   };
+
+  const switchOfficialMode = async () => {
+    const switched = await clearRelayInjection(true);
+    if (!switched) return;
+    const result = await saveLaunchMode("relay", true);
+    if (result) showNotice("官方登录模式", "已切回官方登录；页面增强已设为兼容增强。", result.status);
+  };
+
+  const switchMixedApiMode = async () => {
+    const switched = await applyRelayInjection(true);
+    if (!switched) return;
+    const result = await saveLaunchMode("relay", true);
+    if (result) showNotice("混合 API 模式", "已切换到混合 API；页面增强已设为兼容增强。", result.status);
+  };
+
+  const switchPureApiMode = async () => {
+    const switched = await applyPureApiInjection(true);
+    if (!switched) return;
+    const result = await saveLaunchMode("patch", true);
+    if (result) showNotice("纯 API 模式", "已切换到纯 API；页面增强已设为完整增强。", result.status);
+  };
+
 
   const copyText = async (text: string, message: string) => {
     try {
@@ -605,14 +647,7 @@ export function App() {
       },
       syncProvidersNow,
       setLaunchMode: async (launchMode: LaunchMode) => {
-        const next = { ...settingsForm, launchMode };
-        setSettingsForm(next);
-        const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
-        if (result) {
-          setSettings(result);
-          setSettingsForm(normalizeSettings(result.settings));
-          showNotice("启动模式", result.message, result.status);
-        }
+        await saveLaunchMode(launchMode);
       },
       refreshRelay,
       refreshAds,
@@ -620,6 +655,9 @@ export function App() {
       applyRelayInjection,
       applyPureApiInjection,
       clearRelayInjection,
+      switchOfficialMode,
+      switchMixedApiMode,
+      switchPureApiMode,
       refreshLogs,
       refreshDiagnostics,
       copyLogs: () => copyText(logs?.text ?? "", "日志已复制。"),
@@ -639,14 +677,30 @@ export function App() {
     }),
     [route, launchForm, settingsForm, removeOwnedData, update, logs, diagnostics, theme],
   );
+  const hasUpdate = update?.updateAvailable === true;
 
   return (
     <div className={`shell ${theme}`}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">C++</div>
-          <div>
-            <div className="brand-title">Codex++</div>
+          <div className="brand-copy">
+            <div className="brand-title-row">
+              <div className="brand-title">Codex++</div>
+              {hasUpdate ? (
+                <button
+                  className="update-dot"
+                  onClick={() => {
+                    setRoute("about");
+                    void checkUpdate(false);
+                  }}
+                  title={`发现新版本 ${update?.latestVersion ?? ""}`}
+                  type="button"
+                >
+                  <CircleArrowUp className="h-4 w-4" aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
             <div className="brand-subtitle">管理控制台</div>
           </div>
         </div>
@@ -694,7 +748,6 @@ export function App() {
             </Button>
           </div>
         </header>
-        {busy ? <div className="busy">正在处理...</div> : null}
         <section className="screen">
           {route === "overview" ? (
             <OverviewScreen
@@ -743,7 +796,13 @@ export function App() {
           ) : null}
         </section>
       </main>
-      {notice ? <NoticeDialog notice={notice} onClose={() => setNotice(null)} /> : null}
+      {notice ? (
+        <NoticeDialog
+          key={`${notice.title}-${notice.message}-${notice.status ?? ""}`}
+          notice={notice}
+          onClose={() => setNotice(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -768,9 +827,12 @@ type Actions = {
   refreshRelay: () => Promise<void>;
   refreshAds: () => Promise<void>;
   openExternalUrl: (url: string) => Promise<void>;
-  applyRelayInjection: () => Promise<void>;
-  applyPureApiInjection: () => Promise<void>;
-  clearRelayInjection: () => Promise<void>;
+  applyRelayInjection: () => Promise<boolean>;
+  applyPureApiInjection: () => Promise<boolean>;
+  clearRelayInjection: () => Promise<boolean>;
+  switchOfficialMode: () => Promise<void>;
+  switchMixedApiMode: () => Promise<void>;
+  switchPureApiMode: () => Promise<void>;
   refreshLogs: () => Promise<void>;
   refreshDiagnostics: () => Promise<void>;
   copyLogs: () => Promise<void>;
@@ -796,6 +858,8 @@ function OverviewScreen({
   actions: Actions;
 }) {
   const launchMode = settings?.settings.launchMode ?? "patch";
+  const apiMode = apiModeLabel(relay);
+  const historyProvider = relay?.configured ? "CodexPlusPlus" : "openai";
   const health = healthItems(overview, relay);
   return (
     <>
@@ -804,10 +868,10 @@ function OverviewScreen({
           <div className="hero-layout">
             <div>
               <div className="eyebrow">Codex++ 状态</div>
-              <h2>{health.every((item) => item.ok) ? "运行环境看起来正常" : "有项目需要处理"}</h2>
+              <h2>{health.every((item) => item.ok) ? `当前为${apiMode}` : "有项目需要处理"}</h2>
               <p>
-                当前使用{launchMode === "relay" ? "中转注入" : "传统 patch"}模式。
-                {launchMode === "relay" ? "脚本增强仍会加载，只禁用插件入口解锁和强制安装。" : "全部前端增强都会启用。"}
+                历史会话会按 {historyProvider} 显示；页面增强为
+                {launchMode === "relay" ? "兼容模式，插件入口相关功能自动关闭。" : "完整模式，会加载全部页面功能。"}
               </p>
             </div>
             <Toolbar>
@@ -888,48 +952,48 @@ function RelayScreen({
   return (
     <>
       <Panel>
-        <CardHead title="中转注入" detail={relay?.configPath ?? "检测登录后写入 Codex 配置"} />
+        <CardHead title="选择运行模式" detail={relay?.configPath ?? "官方登录、混合 API、纯 API 都在这里切换"} />
         <CardContent>
-          <GuideList
-            items={[
-              "先在 Codex/ChatGPT 中使用正常 ChatGPT 账号登录，软件只读取 auth.json 判断登录态。",
-              "在下方添加一个中转，填写 Base URL 和 Key，然后点选它作为当前中转。",
-              "点击“写入混合API（官方+API）”，会把 Codex 配置切到 CodexPlusPlus provider，并启用 ChatGPT 登录态混合中转。",
-              "点击“写入纯API模式”，会把 auth.json 改为 OPENAI_API_KEY，并使用当前中转 URL 和 Key。",
-              "如果需要回到官方登录态，点击“切回官方登录模式”后再打开 Codex++ 登录官方账号。",
-              "需要切换中转时，点选列表里的另一项并保存，再重新写入即可。",
-            ]}
-          />
+          <div className="mode-grid three">
+            <button className={`mode-option ${!relay?.configured ? "active" : ""}`} onClick={() => void actions.switchOfficialMode()} type="button">
+              <strong>官方登录</strong>
+              <span>使用 ChatGPT 官方账号，不写 API Key；历史会话显示为 openai，页面增强使用兼容模式。</span>
+            </button>
+            <button
+              className={`mode-option ${relay?.configured && relay.authenticated ? "active" : ""}`}
+              onClick={() => void actions.switchMixedApiMode()}
+              type="button"
+            >
+              <strong>混合 API</strong>
+              <span>保留官方登录，把模型请求切到当前 API；历史会话显示为 CodexPlusPlus，页面增强使用兼容模式。</span>
+            </button>
+            <button
+              className={`mode-option ${relay?.configured && !relay.authenticated ? "active" : ""}`}
+              onClick={() => void actions.switchPureApiMode()}
+              type="button"
+            >
+              <strong>纯 API</strong>
+              <span>不用官方登录，直接写入 OPENAI_API_KEY；历史会话显示为 CodexPlusPlus，页面增强使用完整模式。</span>
+            </button>
+          </div>
           <div className="relay-grid">
+            <Metric label="当前模式" value={apiModeLabel(relay)} />
             <Metric label="ChatGPT 登录" value={relay?.authenticated ? "已检测" : "未检测"} />
             <Metric label="登录账号" value={relay?.accountLabel ?? "-"} />
-            <Metric label="中转配置" value={relay?.configured ? "已写入" : "未写入"} />
-            <Metric label="当前中转" value={active.name || "-"} />
-            <Metric label="当前模式" value={normalized.launchMode === "relay" ? "中转注入" : "传统 patch"} />
-            <Metric label="OpenAI 认证" value={relay?.requiresOpenaiAuth ? "已启用" : "未启用"} />
-            <Metric label="Bearer Token" value={relay?.hasBearerToken ? "已配置" : "未配置"} />
+            <Metric label="当前 API" value={active.name || "-"} />
+            <Metric label="历史会话" value={relay?.configured ? "CodexPlusPlus" : "openai"} />
+            <Metric label="页面增强" value={normalized.launchMode === "relay" ? "兼容模式" : "完整模式"} />
+            <Metric label="配置状态" value={relay?.configured ? "已写入" : "官方默认"} />
           </div>
           <div className="hint-line">
             <ShieldCheck className="h-4 w-4" />
-            <span>{relay?.authSource || "只读取 auth.json 检测正常 ChatGPT 登录；写入时使用当前选中的中转 URL 和 Key。"}</span>
+            <span>{relay?.authSource || "官方登录需要 Codex/ChatGPT 正常写入 auth.json；API 模式会使用当前选中的 Base URL 和 Key。"}</span>
           </div>
           {relay?.backupPath ? <div className="path-line compact-path">备份：{relay.backupPath}</div> : null}
-          <Toolbar>
-            <Button variant="secondary" onClick={() => void actions.refreshRelay()}>
-              检测登录
-            </Button>
-            <Button variant="secondary" onClick={() => void actions.clearRelayInjection()}>
-              切回官方登录模式
-            </Button>
-            <Button variant="secondary" onClick={() => void actions.applyPureApiInjection()}>
-              写入纯API模式
-            </Button>
-            <Button onClick={() => void actions.applyRelayInjection()}>写入混合API（官方+API）</Button>
-          </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="中转列表" detail={`${normalized.relayProfiles.length} 个中转，可随时切换当前使用项`} />
+        <CardHead title="API 列表" detail={`${normalized.relayProfiles.length} 个 API 配置，可随时切换当前使用项`} />
         <CardContent>
           <RelayProfileList form={normalized} onFormChange={onFormChange} />
           <Toolbar>
@@ -938,10 +1002,20 @@ function RelayScreen({
               onClick={() => onFormChange(addRelayProfile(normalized))}
             >
               <Plus className="h-4 w-4" />
-              添加中转
+              添加 API
             </Button>
             <Button onClick={() => void actions.saveSettings()}>保存列表</Button>
           </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title="模式影响" detail="切换按钮实际会改哪些东西" />
+        <CardContent>
+          <div className="mode-table">
+            <div><strong>官方登录</strong><span>官方账号</span><span>官方 API</span><span>openai</span><span>兼容增强</span></div>
+            <div><strong>混合 API</strong><span>官方账号</span><span>当前 API</span><span>CodexPlusPlus</span><span>兼容增强</span></div>
+            <div><strong>纯 API</strong><span>API Key</span><span>当前 API</span><span>CodexPlusPlus</span><span>完整增强</span></div>
+          </div>
         </CardContent>
       </Panel>
       <Panel>
@@ -966,7 +1040,7 @@ function EnhanceScreen({
   return (
     <>
       <Panel>
-        <CardHead title="增强模式" detail="中转注入会保留脚本增强，仅禁用插件入口解锁和强制安装" />
+        <CardHead title="页面功能增强" detail="会话删除、导出、项目移动、Timeline 和用户脚本等界面能力" />
         <CardContent>
           <label className="switch-row">
             <input
@@ -975,15 +1049,15 @@ function EnhanceScreen({
               type="checkbox"
             />
             <span>
-              <strong>启用 Codex++ 增强功能</strong>
-              <small>关闭后会停用删除、导出、项目移动、Timeline、插件相关和注入菜单位置增强。</small>
+              <strong>启用 Codex++ 页面增强</strong>
+              <small>关闭后会停用删除、导出、项目移动、Timeline、插件相关和菜单位置增强。</small>
             </span>
           </label>
           <ModeSelector launchMode={form.launchMode} actions={actions} />
           {form.launchMode === "relay" ? (
             <div className="hint-line">
               <ShieldCheck className="h-4 w-4" />
-              <span>当前为中转注入模式，插件入口解锁和特殊插件强制安装不会启用；其他脚本增强仍会注入。</span>
+              <span>当前为兼容增强模式，插件入口解锁和特殊插件强制安装不会启用；其他页面功能仍可用。</span>
             </div>
           ) : null}
           <div className="feature-list">
@@ -991,8 +1065,8 @@ function EnhanceScreen({
             <FeatureItem title="Markdown 导出" detail="按本地 rollout 导出带时间戳的 Markdown。" enabled={form.enhancementsEnabled} />
             <FeatureItem title="项目移动" detail="把会话移动到普通对话或其他本地项目。" enabled={form.enhancementsEnabled} />
             <FeatureItem title="Timeline" detail="在对话右侧显示用户提问时间线。" enabled={form.enhancementsEnabled} />
-            <FeatureItem title="插件入口解锁" detail="仅传统 patch 模式启用。" enabled={form.enhancementsEnabled && form.launchMode === "patch"} />
-            <FeatureItem title="特殊插件强制安装" detail="仅传统 patch 模式启用。" enabled={form.enhancementsEnabled && form.launchMode === "patch"} />
+            <FeatureItem title="插件入口解锁" detail="仅完整增强模式启用。" enabled={form.enhancementsEnabled && form.launchMode === "patch"} />
+            <FeatureItem title="特殊插件强制安装" detail="仅完整增强模式启用。" enabled={form.enhancementsEnabled && form.launchMode === "patch"} />
           </div>
           <Toolbar>
             <Button onClick={() => void actions.saveSettings()}>保存增强设置</Button>
@@ -1049,7 +1123,7 @@ function ProviderSyncScreen({
   return (
     <>
       <Panel>
-        <CardHead title="供应商同步" detail="启动前自动同步，也可以手动立即同步一次" />
+        <CardHead title="历史会话修复" detail="切换官方或 API 后，让旧对话重新出现在当前模式下" />
         <CardContent>
           <label className="switch-row">
             <input
@@ -1058,33 +1132,33 @@ function ProviderSyncScreen({
               type="checkbox"
             />
             <span>
-              <strong>启动前自动同步供应商</strong>
-              <small>开启后，仅在通过 Codex++ 启动 Codex 前自动同步一次历史会话的供应商字段。</small>
+              <strong>启动前自动修复历史会话</strong>
+              <small>开启后，通过 Codex++ 启动 Codex 前自动整理一次旧对话的归属标记。</small>
             </span>
           </label>
           <div className="relay-grid compact">
-            <Metric label="自动同步" value={form.providerSyncEnabled ? "启动前执行" : "关闭"} />
+            <Metric label="自动修复" value={form.providerSyncEnabled ? "启动前执行" : "关闭"} />
             <Metric label="设置文件" value={settings?.settings_path ?? "未加载"} />
-            <Metric label="当前模式" value={form.launchMode === "relay" ? "中转注入" : "传统 patch"} />
+            <Metric label="页面增强" value={form.launchMode === "relay" ? "兼容模式" : "完整模式"} />
           </div>
           <Toolbar>
-            <Button onClick={() => void actions.saveSettings()}>保存自动同步设置</Button>
+            <Button onClick={() => void actions.saveSettings()}>保存自动修复设置</Button>
             <Button onClick={() => void actions.syncProvidersNow()} variant="outline">
               <RefreshCw className="h-4 w-4" />
-              立刻同步一次
+              立刻修复历史会话
             </Button>
           </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="说明" detail="这是独立于增强功能的会话数据维护功能" />
+        <CardHead title="说明" detail="这是独立于页面增强的会话数据维护功能" />
         <CardContent>
           <GuideList
             items={[
-              "自动同步只在 Codex++ 启动 Codex 前运行，不会常驻监控或反复改写。",
-              "需要马上整理历史会话时，可以点击“立刻同步一次”。",
-              "它不控制页面注入，也不影响中转 URL 或 Key。",
-              "如果你经常在官方登录、中转和其他 provider 之间切换，建议开启。",
+              "自动修复只在 Codex++ 启动 Codex 前运行，不会常驻监控或反复改写。",
+              "需要马上整理旧对话时，可以点击“立刻修复历史会话”。",
+              "它不控制页面功能，也不影响 API URL 或 Key。",
+              "切回官方时历史会话会整理为 openai；切到 API 时会整理为 CodexPlusPlus。",
             ]}
           />
         </CardContent>
@@ -1480,16 +1554,16 @@ function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions
         onClick={() => void actions.setLaunchMode("relay")}
         type="button"
       >
-        <strong>中转注入</strong>
-        <span>使用 ChatGPT 登录态与配置文件混合中转 API，保留脚本增强，仅禁用插件入口解锁和强制安装。</span>
+        <strong>兼容增强</strong>
+        <span>适合官方登录和混合 API；保留会话删除、导出、项目移动、Timeline 和用户脚本，关闭插件入口相关增强。</span>
       </button>
       <button
         className={`mode-option ${launchMode === "patch" ? "active" : ""}`}
         onClick={() => void actions.setLaunchMode("patch")}
         type="button"
       >
-        <strong>传统 patch</strong>
-        <span>启用全部前端注入能力，包括插件入口解锁、强制安装、会话删除导出、项目移动等增强。</span>
+        <strong>完整增强</strong>
+        <span>适合纯 API；启用插件入口、强制安装、会话删除导出、项目移动等全部页面能力。</span>
       </button>
     </div>
   );
@@ -1527,19 +1601,23 @@ function NoticeDialog({
   notice: { title: string; message: string; status?: Status };
   onClose: () => void;
 }) {
+  useEffect(() => {
+    const timer = window.setTimeout(onClose, 4200);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <div className="modal-card" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="modal-icon">
+    <div className="toast-wrap" role="status" aria-live="polite">
+      <div className={`toast-card ${notice.status === "failed" ? "failed" : ""}`}>
+        <div className="toast-progress" />
+        <div className="toast-icon">
           {notice.status === "failed" ? <Bell className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
         </div>
-        <div className="modal-body">
+        <div className="toast-body">
           <h2>{notice.title}</h2>
           <p>{notice.message}</p>
         </div>
-        <Toolbar>
-          <Button onClick={onClose}>知道了</Button>
-        </Toolbar>
+        <button className="toast-close" onClick={onClose} type="button">×</button>
       </div>
     </div>
   );
@@ -1662,10 +1740,10 @@ function routeTitle(route: Route) {
 function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
     overview: "检查问题、启动与快速修复",
-    relay: "ChatGPT 登录态、中转列表与配置写入",
-    enhance: "脚本增强与传统 patch 开关",
+    relay: "官方登录、混合 API、纯 API 一键切换",
+    enhance: "会话删除、导出、项目移动和脚本能力",
     userScripts: "内置和用户自定义脚本清单",
-    providerSync: "切换供应商时保持历史会话可见",
+    providerSync: "切换模式后让旧对话重新可见",
     recommendations: "赞助商推荐与普通推荐",
     maintenance: "入口安装、修复、Watcher 与手动启动",
     about: "版本信息、项目链接与 GitHub Release 更新",
@@ -1703,6 +1781,11 @@ function isSuccessStatus(status?: Status) {
   return status === "ok" || status === "accepted";
 }
 
+function apiModeLabel(relay: RelayResult | null) {
+  if (!relay?.configured) return "官方登录";
+  return relay.authenticated ? "混合 API" : "纯 API";
+}
+
 function healthItems(overview: OverviewResult | null, relay: RelayResult | null) {
   return [
     {
@@ -1727,7 +1810,7 @@ function healthItems(overview: OverviewResult | null, relay: RelayResult | null)
       title: "ChatGPT 登录",
       status: relay?.authenticated ? "ok" : "missing",
       ok: !!relay?.authenticated,
-      detail: relay?.accountLabel || relay?.authSource || "中转注入需要先存在 auth.json 登录态。",
+      detail: relay?.accountLabel || relay?.authSource || "混合 API 需要官方登录；纯 API 可不用官方登录。",
     },
   ];
 }
