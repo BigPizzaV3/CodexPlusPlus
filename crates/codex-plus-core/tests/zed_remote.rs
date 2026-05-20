@@ -110,7 +110,7 @@ fn resolve_ssh_target_from_global_state_for_codex_managed_connection() {
 }
 
 #[test]
-fn fallback_open_request_from_global_state_uses_selected_remote_project() {
+fn fallback_open_request_uses_selected_remote_project() {
     let state = json!({
         "selected-remote-host-id": "remote-ssh-codex-managed:remote",
         "codex-managed-remote-connections": [{
@@ -127,7 +127,9 @@ fn fallback_open_request_from_global_state_uses_selected_remote_project() {
         "project-order": ["032e652b-7956-4e6e-83bd-b29f456c6c3d"],
     });
 
-    let request = zed_remote::fallback_open_request_from_global_state(&state).unwrap();
+    let request =
+        zed_remote::fallback_open_request_from_global_state_with_context(&state, "", "", "", "")
+            .unwrap();
 
     assert_eq!(
         request,
@@ -140,7 +142,7 @@ fn fallback_open_request_from_global_state_uses_selected_remote_project() {
 }
 
 #[test]
-fn fallback_open_request_from_global_state_prefers_project_order_for_selected_host() {
+fn fallback_open_request_prefers_project_order_for_selected_host() {
     let state = json!({
         "selected-remote-host-id": "remote-ssh-codex-managed:remote",
         "codex-managed-remote-connections": [{
@@ -155,17 +157,217 @@ fn fallback_open_request_from_global_state_prefers_project_order_for_selected_ho
         "project-order": ["other-host", "current", "old"],
     });
 
-    let request = zed_remote::fallback_open_request_from_global_state(&state).unwrap();
+    let request =
+        zed_remote::fallback_open_request_from_global_state_with_context(&state, "", "", "", "")
+            .unwrap();
 
     assert_eq!(request["hostId"], "remote-ssh-codex-managed:remote");
     assert_eq!(request["path"], "/Users/longnv/bin/repo/current");
 }
 
 #[test]
-fn fallback_open_request_from_global_state_reports_missing_remote_project() {
+fn fallback_open_request_prefers_remote_project_id_context() {
+    let state = json!({
+        "selected-remote-host-id": "remote-ssh-codex-managed:remote",
+        "codex-managed-remote-connections": [{
+            "hostId": "remote-ssh-codex-managed:remote",
+            "hostname": "longnv@192.168.100.31",
+        }],
+        "remote-projects": [
+            {
+                "id": "032e652b-7956-4e6e-83bd-b29f456c6c3d",
+                "hostId": "remote-ssh-codex-managed:remote",
+                "remotePath": "/Users/longnv/bin/repo/sealos-skills",
+            },
+            {
+                "id": "a21be7c9-a917-433a-bfc7-f422a34c2185",
+                "hostId": "remote-ssh-codex-managed:remote",
+                "remotePath": "/Users/longnv/bin/repo/Vocabloom",
+            },
+        ],
+        "project-order": ["032e652b-7956-4e6e-83bd-b29f456c6c3d", "a21be7c9-a917-433a-bfc7-f422a34c2185"],
+    });
+
+    let request = zed_remote::fallback_open_request_from_global_state_with_context(
+        &state,
+        "remote-ssh-codex-managed:remote",
+        "",
+        "",
+        "a21be7c9-a917-433a-bfc7-f422a34c2185",
+    )
+    .unwrap();
+
+    assert_eq!(request["hostId"], "remote-ssh-codex-managed:remote");
+    assert_eq!(request["path"], "/Users/longnv/bin/repo/Vocabloom");
+}
+
+#[test]
+fn fallback_open_request_treats_remote_project_id_as_path() {
+    let state = json!({
+        "selected-remote-host-id": "remote-ssh-codex-managed:remote",
+        "codex-managed-remote-connections": [{
+            "hostId": "remote-ssh-codex-managed:remote",
+            "hostname": "longnv@192.168.100.31",
+        }],
+        "remote-projects": [{
+            "id": "032e652b-7956-4e6e-83bd-b29f456c6c3d",
+            "hostId": "remote-ssh-codex-managed:remote",
+            "remotePath": "/Users/longnv/bin/repo/sealos-skills",
+        }],
+        "project-order": ["032e652b-7956-4e6e-83bd-b29f456c6c3d"],
+    });
+
+    let request = zed_remote::fallback_open_request_from_global_state_with_context(
+        &state,
+        "remote-ssh-codex-managed:remote",
+        "",
+        "",
+        "/Users/longnv/bin/repo/Vocabloom",
+    )
+    .unwrap();
+
+    assert_eq!(request["hostId"], "remote-ssh-codex-managed:remote");
+    assert_eq!(request["path"], "/Users/longnv/bin/repo/Vocabloom");
+}
+
+#[test]
+fn fallback_open_request_prefers_thread_workspace_hint() {
+    let state = json!({
+        "selected-remote-host-id": "remote-ssh-codex-managed:remote",
+        "codex-managed-remote-connections": [{
+            "hostId": "remote-ssh-codex-managed:remote",
+            "hostname": "longnv@192.168.100.31",
+        }],
+        "remote-projects": [{
+            "id": "main",
+            "hostId": "remote-ssh-codex-managed:remote",
+            "remotePath": "/Users/longnv/bin/repo/sealos-skills",
+        }],
+        "project-order": ["main"],
+        "thread-workspace-root-hints": {
+            "019e39c1-worktree": "/Users/longnv/bin/repo/sealos-skills/.worktree/zed-fix",
+        },
+    });
+
+    let request = zed_remote::fallback_open_request_from_global_state_with_context(
+        &state,
+        "",
+        "019e39c1-worktree",
+        "",
+        "",
+    )
+    .unwrap();
+
+    assert_eq!(request["hostId"], "remote-ssh-codex-managed:remote");
+    assert_eq!(
+        request["path"],
+        "/Users/longnv/bin/repo/sealos-skills/.worktree/zed-fix"
+    );
+}
+
+#[test]
+fn fallback_open_request_accepts_local_prefixed_thread_workspace_hint() {
+    let state = json!({
+        "selected-remote-host-id": "remote-ssh-codex-managed:remote",
+        "codex-managed-remote-connections": [{
+            "hostId": "remote-ssh-codex-managed:remote",
+            "hostname": "longnv@192.168.100.31",
+        }],
+        "remote-projects": [{
+            "id": "main",
+            "hostId": "remote-ssh-codex-managed:remote",
+            "remotePath": "/Users/longnv/bin/repo/sealos-skills",
+        }],
+        "project-order": ["main"],
+        "thread-workspace-root-hints": {
+            "019e39c1-worktree": "/Users/longnv/bin/repo/sealos-skills/.worktree/zed-fix",
+        },
+    });
+
+    let request = zed_remote::fallback_open_request_from_global_state_with_context(
+        &state,
+        "",
+        "local:019e39c1-worktree",
+        "",
+        "",
+    )
+    .unwrap();
+
+    assert_eq!(request["hostId"], "remote-ssh-codex-managed:remote");
+    assert_eq!(
+        request["path"],
+        "/Users/longnv/bin/repo/sealos-skills/.worktree/zed-fix"
+    );
+}
+
+#[test]
+fn fallback_open_request_response_passes_thread_workspace_hint() {
+    let state = json!({
+        "selected-remote-host-id": "remote-ssh-codex-managed:remote",
+        "codex-managed-remote-connections": [{
+            "hostId": "remote-ssh-codex-managed:remote",
+            "hostname": "longnv@192.168.100.31",
+        }],
+        "remote-projects": [{
+            "id": "main",
+            "hostId": "remote-ssh-codex-managed:remote",
+            "remotePath": "/Users/longnv/bin/repo/sealos-skills",
+        }],
+        "thread-workspace-root-hints": {
+            "019e39c1-worktree": "/Users/longnv/bin/repo/sealos-skills/.worktree/zed-fix",
+        },
+    });
+
+    let request = zed_remote::fallback_open_request_from_global_state_with_context(
+        &state,
+        "",
+        "019e39c1-worktree",
+        "",
+        "",
+    )
+    .unwrap();
+
+    assert_eq!(
+        request["path"],
+        "/Users/longnv/bin/repo/sealos-skills/.worktree/zed-fix"
+    );
+}
+
+#[test]
+fn workspace_root_from_sqlite_reads_thread_cwd() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("state_5.sqlite");
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    db.execute(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT NOT NULL)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads (id, cwd) VALUES (?1, ?2)",
+        (
+            "019e39c1-worktree",
+            "/Users/longnv/bin/repo/sealos-skills/.worktree/zed-fix",
+        ),
+    )
+    .unwrap();
+    drop(db);
+
+    let cwd = zed_remote::workspace_root_from_sqlite("local:019e39c1-worktree", Some(&db_path));
+
+    assert_eq!(
+        cwd,
+        "/Users/longnv/bin/repo/sealos-skills/.worktree/zed-fix"
+    );
+}
+
+#[test]
+fn fallback_open_request_reports_missing_remote_project() {
     let state = json!({"selected-remote-host-id": "remote-ssh-codex-managed:remote"});
 
-    let error = zed_remote::fallback_open_request_from_global_state(&state).unwrap_err();
+    let error =
+        zed_remote::fallback_open_request_from_global_state_with_context(&state, "", "", "", "")
+            .unwrap_err();
 
     assert_eq!(
         error.to_string(),

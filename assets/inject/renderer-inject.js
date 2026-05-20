@@ -4646,8 +4646,80 @@
     return result?.status === "ok" && result.ssh ? result.ssh : null;
   }
 
+  function zedRemoteIsRemoteHostId(hostId) {
+    return zedRemoteString(hostId).startsWith("remote-ssh-");
+  }
+
+  function zedRemoteProjectIdFromRow(row) {
+    const projectList = row?.closest?.("[data-app-action-sidebar-project-list-id]");
+    const projectId = zedRemoteString(projectList?.getAttribute?.("data-app-action-sidebar-project-list-id"));
+    if (projectId) return projectId;
+    const projectRow = row?.closest?.("[data-app-action-sidebar-project-id]");
+    return zedRemoteString(projectRow?.getAttribute?.("data-app-action-sidebar-project-id"));
+  }
+
+  function zedRemoteWorkspaceRootFromObject(source) {
+    if (!source || typeof source !== "object") return "";
+    for (const key of ["remoteWorkspaceRoot", "workspaceRoot", "displayCwd", "cwd", "rootPath", "workingDirectory", "workingDir"]) {
+      const workspaceRoot = zedRemoteString(source[key]);
+      if (workspaceRoot.startsWith("/") && !/\/\.codex$/.test(workspaceRoot)) return workspaceRoot;
+    }
+    const hostConfig = source.hostConfig || source.sshHostConfig || source.remoteHostConfig || source.ssh || {};
+    for (const key of ["remoteWorkspaceRoot", "workspaceRoot", "rootPath", "cwd"]) {
+      const workspaceRoot = zedRemoteString(hostConfig[key]);
+      if (workspaceRoot.startsWith("/") && !/\/\.codex$/.test(workspaceRoot)) return workspaceRoot;
+    }
+    return "";
+  }
+
+  function zedRemoteWorkspaceRootFromElement(element) {
+    for (const key of zedRemoteReactKeys(element)) {
+      const workspaceRoot = zedRemoteWalkObject(element[key], zedRemoteWorkspaceRootFromObject, { maxDepth: 10, maxNodes: 320 });
+      if (workspaceRoot) return workspaceRoot;
+    }
+    return "";
+  }
+
+  function zedRemoteWorkspaceRootFromRow(row) {
+    for (let node = row; node && node !== document.body; node = node.parentElement) {
+      const workspaceRoot = zedRemoteWorkspaceRootFromElement(node);
+      if (workspaceRoot) return workspaceRoot;
+    }
+    return "";
+  }
+
+  function zedRemoteActiveThreadRow() {
+    const rows = sessionRows(true).filter((row) => row instanceof HTMLElement);
+    return rows.find((row) => row.getAttribute("data-app-action-sidebar-thread-active") === "true")
+      || rows.find((row) => row.getAttribute("aria-current") === "page" || row.getAttribute("aria-current") === "true")
+      || null;
+  }
+
+  function zedRemoteCurrentFallbackPayload() {
+    const row = zedRemoteActiveThreadRow();
+    const ref = row ? sessionRefFromRow(row) : currentSessionRef();
+    const threadId = ref.session_id || locationThreadId();
+    const hostId = zedRemoteString(row?.getAttribute?.("data-app-action-sidebar-thread-host-id"));
+    const isRemoteHost = zedRemoteIsRemoteHostId(hostId);
+    const payload = {};
+    if (threadId) payload.threadId = threadId;
+    if (hostId && hostId !== "local") payload.hostId = hostId;
+    if (!isRemoteHost) return payload;
+    const remoteWorkspaceRoot = zedRemoteWorkspaceRootFromRow(row);
+    const remoteProjectId = zedRemoteProjectIdFromRow(row);
+    if (remoteWorkspaceRoot) payload.remoteWorkspaceRoot = remoteWorkspaceRoot;
+    if (remoteProjectId) payload.remoteProjectId = remoteProjectId;
+    return payload;
+  }
+
+  function zedRemoteCurrentThreadId() {
+    return zedRemoteCurrentFallbackPayload().threadId || "";
+  }
+
   async function resolveZedRemoteFallbackRequest() {
-    const result = await postJson("/zed-remote/fallback-request", {});
+    const payload = zedRemoteCurrentFallbackPayload();
+    if (!zedRemoteIsRemoteHostId(payload.hostId)) return null;
+    const result = await postJson("/zed-remote/fallback-request", payload);
     return result?.status === "ok" && result.request ? result.request : null;
   }
 
@@ -4931,9 +5003,7 @@
   function zedRemoteBestOpenRequest(scope = document, context = zedRemoteContext(scope) || zedRemoteContext(document) || {}) {
     const candidates = zedRemoteFileCandidates(context, scope);
     if (candidates.length) return candidates[0].request;
-    const workspaceRoot = zedRemoteAbsolutePath(context.workspaceRoot || "", "");
-    if (!workspaceRoot || (!context?.ssh?.host && !context?.hostId)) return null;
-    return { ssh: context.ssh, hostId: context.hostId || "", path: workspaceRoot };
+    return null;
   }
 
   async function openZedRemote(request) {
@@ -5061,11 +5131,13 @@
   function refreshZedRemoteOpenInMenus(scope = document) {
     removeZedRemoteOpenInMenuItems(scope);
     if (!codexPlusSettings().zedRemoteOpen) return;
+    const fallbackPayload = zedRemoteCurrentFallbackPayload();
     zedRemoteOpenInMenuScopes(scope).forEach((menu) => {
       if (!(menu instanceof HTMLElement) || isExtensionUiNode(menu)) return;
       const items = Array.from(menu.querySelectorAll('[role="menuitem"]')).filter((item) => !isExtensionUiNode(item));
       const menuText = items.map((item) => (item.textContent || "").trim()).join(" ");
       if (!/\b(VS Code|Cursor|Antigravity)\b/.test(menuText)) return;
+      if (!zedRemoteBestOpenRequest(menu) && !zedRemoteIsRemoteHostId(fallbackPayload.hostId)) return;
       const existingZedItem = items.find((item) => (item.textContent || "").trim() === "Zed");
       if (existingZedItem) {
         bindZedRemoteOpenInMenuItem(existingZedItem, "native");
