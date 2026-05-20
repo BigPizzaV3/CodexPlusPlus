@@ -91,7 +91,7 @@
     nativeMenuBar: "[class*=\"ms-auto\"][class*=\"flex\"][class*=\"items-center\"]",
     archiveNav: 'button[aria-label="已归档对话"], button[aria-label="Archived conversations"]',
     disabledInstallButton: 'button:disabled, button[aria-disabled="true"], [role="button"][aria-disabled="true"], button[data-disabled], [role="button"][data-disabled], button.cursor-not-allowed, [role="button"].cursor-not-allowed, button.pointer-events-none, [role="button"].pointer-events-none',
-    pluginNavButton: 'nav[role="navigation"] button.h-token-nav-row.w-full',
+    pluginNavButton: 'button, [role="button"]',
     pluginSvgPath: 'svg path[d^="M7.94562 14.0277"]',
   };
 
@@ -1377,7 +1377,9 @@
   }
 
   function pluginEntryButton() {
-    const byIcon = document.querySelector(`${selectors.pluginNavButton} ${selectors.pluginSvgPath}`)?.closest("button");
+    const byIcon = Array.from(document.querySelectorAll(selectors.pluginSvgPath))
+      .map((path) => path.closest(selectors.pluginNavButton))
+      .find((button) => button && /^(插件|Plugins)(\s+-\s+.*)?$/i.test((button.textContent || "").trim()));
     if (byIcon) return byIcon;
     return Array.from(document.querySelectorAll(selectors.pluginNavButton))
       .find((button) => /^(插件|Plugins)(\s+-\s+.*)?$/i.test((button.textContent || "").trim())) || null;

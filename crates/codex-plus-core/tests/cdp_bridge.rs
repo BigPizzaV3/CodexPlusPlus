@@ -99,6 +99,15 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
 }
 
 #[test]
+fn injection_script_detects_plugin_entry_without_legacy_nav_class() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("pluginNavButton: 'button, [role=\"button\"]'"));
+    assert!(script.contains("path.closest(selectors.pluginNavButton)"));
+    assert!(!script.contains("button.h-token-nav-row.w-full"));
+}
+
+#[test]
 fn injection_script_unlocks_nested_disabled_plugin_install_buttons() {
     let script = assets::injection_script(57321);
 
