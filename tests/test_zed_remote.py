@@ -74,6 +74,66 @@ def test_resolve_ssh_target_from_global_state_for_codex_managed_connection():
     assert target == SshTarget(user="longnv", host="192.168.100.31", port=None)
 
 
+def test_fallback_open_request_from_global_state_uses_selected_remote_project():
+    state = {
+        "selected-remote-host-id": "remote-ssh-codex-managed:remote",
+        "codex-managed-remote-connections": [
+            {
+                "hostId": "remote-ssh-codex-managed:remote",
+                "hostname": "longnv@192.168.100.31",
+                "sshPort": None,
+            }
+        ],
+        "remote-projects": [
+            {
+                "id": "032e652b-7956-4e6e-83bd-b29f456c6c3d",
+                "hostId": "remote-ssh-codex-managed:remote",
+                "remotePath": "/Users/longnv/bin/repo/sealos-skills",
+                "label": "sealos-skills",
+            }
+        ],
+        "project-order": ["032e652b-7956-4e6e-83bd-b29f456c6c3d"],
+    }
+
+    request = zed_remote.fallback_open_request_from_global_state(state)
+
+    assert request == {
+        "hostId": "remote-ssh-codex-managed:remote",
+        "ssh": {"user": "longnv", "host": "192.168.100.31", "port": None},
+        "path": "/Users/longnv/bin/repo/sealos-skills",
+    }
+
+
+def test_fallback_open_request_from_global_state_prefers_project_order_for_selected_host():
+    state = {
+        "selected-remote-host-id": "remote-ssh-codex-managed:remote",
+        "codex-managed-remote-connections": [
+            {"hostId": "remote-ssh-codex-managed:remote", "hostname": "longnv@192.168.100.31"}
+        ],
+        "remote-projects": [
+            {"id": "old", "hostId": "remote-ssh-codex-managed:remote", "remotePath": "/Users/longnv/bin/repo/old"},
+            {"id": "current", "hostId": "remote-ssh-codex-managed:remote", "remotePath": "/Users/longnv/bin/repo/current"},
+            {"id": "other-host", "hostId": "remote-ssh-codex-managed:other", "remotePath": "/srv/other"},
+        ],
+        "project-order": ["other-host", "current", "old"],
+    }
+
+    request = zed_remote.fallback_open_request_from_global_state(state)
+
+    assert request["hostId"] == "remote-ssh-codex-managed:remote"
+    assert request["path"] == "/Users/longnv/bin/repo/current"
+
+
+def test_fallback_open_request_response_reports_missing_remote_project(monkeypatch, tmp_path):
+    state_path = tmp_path / ".codex-global-state.json"
+    state_path.write_text('{"selected-remote-host-id":"remote-ssh-codex-managed:remote"}', encoding="utf-8")
+    monkeypatch.setattr(zed_remote, "codex_global_state_path", lambda: state_path)
+
+    result = zed_remote.fallback_open_request_response({})
+
+    assert result == {"status": "failed", "message": "Cannot determine remote workspace or file for Zed"}
+
+
 def test_resolve_ssh_target_response_reports_missing_host_id():
     result = zed_remote.resolve_ssh_target_response({"hostId": ""})
 

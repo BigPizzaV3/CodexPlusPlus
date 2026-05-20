@@ -83,7 +83,7 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
 fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("中转注入模式下无需开启"));
+    assert!(script.contains("兼容增强模式下无需开启"));
 }
 
 #[test]
@@ -94,6 +94,23 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
     assert!(script.contains("!codexPlusBackendSettingsLoaded"));
     assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
     assert!(script.contains("clearPluginPatchArtifacts()"));
+}
+
+#[test]
+fn injection_script_loads_backend_settings_before_initial_scan() {
+    let script = assets::injection_script(57321);
+    let startup_call = script
+        .rfind("void loadBackendSettingsForStartup();")
+        .expect("script should load backend settings on startup");
+    let footer = &script[startup_call..];
+    let initial_scan = footer
+        .find("scan();")
+        .expect("script should perform an initial scan");
+    let footer_marker = footer
+        .find("window.__codexProjectMoveApplyProjection")
+        .expect("script should continue bootstrapping after the initial scan");
+
+    assert!(initial_scan < footer_marker);
 }
 
 #[test]
@@ -139,8 +156,8 @@ fn manager_ui_exposes_pure_api_relay_mode_button() {
     let commands =
         std::fs::read_to_string(repo.join("apps/codex-plus-manager/src-tauri/src/lib.rs")).unwrap();
 
-    assert!(source.contains("写入混合API（官方+API）"));
-    assert!(source.contains("写入纯API模式"));
+    assert!(source.contains("切换到混合 API"));
+    assert!(source.contains("纯 API"));
     assert!(source.contains("apply_pure_api_injection"));
     assert!(commands.contains("commands::apply_pure_api_injection"));
 }
