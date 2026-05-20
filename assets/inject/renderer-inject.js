@@ -115,34 +115,41 @@
         gap: 6px;
         background: transparent;
       }
-      .${actionButtonClass},
-      .codex-archive-row-button {
+      .${actionButtonClass} {
         width: 26px;
         height: 26px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        border: 1px solid #ef4444;
+        border: 0;
         border-radius: 6px;
-        background: #f3f4f6;
-        color: #374151;
-        font-size: 12px;
-        line-height: 16px;
-        padding: 1px 6px;
-        cursor: pointer;
+        background: transparent;
+        color: #d1d5db;
+        font: 14px/1 system-ui, sans-serif;
+        padding: 0;
+        cursor: default;
         text-align: center;
       }
-      .codex-archive-row-button {
-        border-radius: 7px;
-        font: 12px system-ui, sans-serif;
-        line-height: 16px;
-        padding: 3px 8px;
+      .${actionButtonClass} svg {
+        display: block;
+        width: 16px;
+        height: 16px;
       }
       .${actionButtonClass}:hover,
       .${actionButtonClass}:focus-visible {
-        background: #fee2e2;
-        color: #991b1b;
+        background: #363839;
+        color: #f4f4f5;
         outline: none;
+      }
+      .codex-archive-row-button {
+        border: 1px solid #ef4444;
+        border-radius: 7px;
+        background: #f3f4f6;
+        color: #374151;
+        font: 12px system-ui, sans-serif;
+        line-height: 16px;
+        padding: 3px 8px;
+        cursor: pointer;
       }
       .codex-archive-row-button.${buttonClass} {
         border-color: #ef4444;
@@ -159,16 +166,6 @@
         background: #fee2e2 !important;
         color: #991b1b !important;
         opacity: 1 !important;
-      }
-      .${actionButtonClass} svg {
-        display: block;
-        width: 16px;
-        height: 16px;
-      }
-      .${projectMoveButtonClass} {
-        border-color: #10a37f;
-        background: #d1fae5;
-        color: #065f46;
       }
       .${zedRemoteButtonClass} {
         border: 1px solid #10a37f;

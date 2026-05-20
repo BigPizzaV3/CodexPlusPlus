@@ -153,6 +153,16 @@ fn injection_script_exposes_conversation_view_width_control() {
 }
 
 #[test]
+fn injection_script_keeps_session_action_buttons_in_pr_style() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("actionButtonClass = \"codex-session-action-button\""));
+    assert!(script.contains("background: transparent;"));
+    assert!(script.contains("background: #363839;"));
+    assert!(script.contains("cursor: default;"));
+}
+
+#[test]
 fn injection_script_unlocks_custom_model_catalog() {
     let script = assets::injection_script(57321);
 
