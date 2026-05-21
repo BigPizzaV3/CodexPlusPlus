@@ -187,16 +187,11 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
 }
 
 pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
-    let package_dir = if app_dir
-        .file_name()
-        .and_then(OsStr::to_str)
-        .is_some_and(|name| name.eq_ignore_ascii_case("app"))
-    {
-        app_dir.parent()?
-    } else {
-        app_dir
-    };
-    let package_name = package_dir.file_name()?.to_str()?;
+    let path = app_dir.to_string_lossy().replace('\\', "/");
+    let package_name = path
+        .split('/')
+        .rev()
+        .find(|part| part.starts_with("OpenAI.Codex_") && part.contains("__"))?;
     if !package_name.starts_with("OpenAI.Codex_") || !package_name.contains("__") {
         return None;
     }

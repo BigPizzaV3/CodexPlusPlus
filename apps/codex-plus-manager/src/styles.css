@@ -794,6 +794,12 @@ body {
   font-weight: 600;
 }
 
+.field-hint {
+  margin: -4px 0 12px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
 .form-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -820,6 +826,13 @@ body {
   font-size: 12px;
   line-height: 1.45;
   white-space: pre;
+}
+
+.launch-args-input {
+  min-height: 112px;
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .log-view.tall {

@@ -39,6 +39,8 @@ impl Default for RelayProfile {
 pub struct BackendSettings {
     #[serde(rename = "codexAppPath", default)]
     pub codex_app_path: String,
+    #[serde(rename = "codexExtraArgs", default)]
+    pub codex_extra_args: Vec<String>,
     #[serde(rename = "providerSyncEnabled", default)]
     pub provider_sync_enabled: bool,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
@@ -71,6 +73,7 @@ impl Default for BackendSettings {
     fn default() -> Self {
         Self {
             codex_app_path: String::new(),
+            codex_extra_args: Vec::new(),
             provider_sync_enabled: false,
             enhancements_enabled: true,
             launch_mode: LaunchMode::Patch,
@@ -160,6 +163,14 @@ where
         .unwrap_or_else(default_api_key_env))
 }
 
+pub fn normalize_codex_extra_args(args: &[String]) -> Vec<String> {
+    args.iter()
+        .map(|arg| arg.trim())
+        .filter(|arg| !arg.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct SettingsStore {
     path: PathBuf,
@@ -192,7 +203,9 @@ impl SettingsStore {
     }
 
     pub fn save(&self, settings: &BackendSettings) -> anyhow::Result<()> {
-        let bytes = serde_json::to_vec_pretty(settings)?;
+        let mut settings = settings.clone();
+        settings.codex_extra_args = normalize_codex_extra_args(&settings.codex_extra_args);
+        let bytes = serde_json::to_vec_pretty(&settings)?;
         atomic_write(&self.path, &bytes)
     }
 
@@ -231,6 +244,22 @@ impl SettingsStore {
 fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<String, Value>) {
     if let Some(value) = source.get("codexAppPath").and_then(Value::as_str) {
         target.insert("codexAppPath".to_string(), Value::String(value.to_string()));
+    }
+    if let Some(value) = source.get("codexExtraArgs").and_then(Value::as_array) {
+        let args = value
+            .iter()
+            .filter_map(Value::as_str)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        target.insert(
+            "codexExtraArgs".to_string(),
+            Value::Array(
+                normalize_codex_extra_args(&args)
+                    .into_iter()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
     }
     if let Some(value) = source.get("providerSyncEnabled").and_then(Value::as_bool) {
         target.insert("providerSyncEnabled".to_string(), Value::Bool(value));
@@ -345,6 +374,7 @@ mod tests {
         assert!(!settings.provider_sync_enabled);
         assert!(settings.enhancements_enabled);
         assert!(settings.codex_app_path.is_empty());
+        assert!(settings.codex_extra_args.is_empty());
         assert_eq!(settings.launch_mode, LaunchMode::Patch);
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.relay_api_key.is_empty());
@@ -365,6 +395,23 @@ mod tests {
         assert_eq!(settings.cli_wrapper_api_key, "sk-test");
         assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert_eq!(settings.relay_base_url, default_relay_base_url());
+        assert!(settings.codex_extra_args.is_empty());
+    }
+
+    #[test]
+    fn settings_deserialize_reads_codex_extra_args() {
+        let settings: BackendSettings = serde_json::from_str(
+            r#"{"codexExtraArgs":["--force_high_performance_gpu"," --ignored-trimmed-by-ui "]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            settings.codex_extra_args,
+            vec![
+                "--force_high_performance_gpu".to_string(),
+                " --ignored-trimmed-by-ui ".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -395,6 +442,7 @@ mod tests {
             cli_wrapper_base_url: "https://example.test".to_string(),
             cli_wrapper_api_key: "sk-test".to_string(),
             cli_wrapper_api_key_env: "CUSTOM_ENV".to_string(),
+            codex_extra_args: vec!["--force_high_performance_gpu".to_string()],
             ..BackendSettings::default()
         };
 
@@ -424,6 +472,7 @@ mod tests {
             "enhancementsEnabled": false,
             "relayBaseUrl": "https://relay.example.test/v1",
             "relayApiKey": "sk-relay",
+            "codexExtraArgs": ["--force_high_performance_gpu", "", "  ", " --enable-gpu "],
             "cliWrapperApiKeyEnv": "",
             "unknownKey": "ignored"
             }))
@@ -434,6 +483,13 @@ mod tests {
         assert!(!updated.enhancements_enabled);
         assert_eq!(updated.relay_base_url, "https://relay.example.test/v1");
         assert_eq!(updated.relay_api_key, "sk-relay");
+        assert_eq!(
+            updated.codex_extra_args,
+            vec![
+                "--force_high_performance_gpu".to_string(),
+                "--enable-gpu".to_string(),
+            ]
+        );
         assert!(updated.cli_wrapper_enabled);
         assert_eq!(updated.cli_wrapper_base_url, "https://old.test");
         assert_eq!(updated.cli_wrapper_api_key, "old-key");
@@ -524,6 +580,42 @@ mod tests {
 
         assert!(updated.provider_sync_enabled);
         assert_eq!(saved["providerSyncEnabled"], json!(true));
+        assert_eq!(saved["codexExtraArgs"], Value::Null);
+        assert_eq!(saved["customField"], json!({"nested": true}));
+    }
+
+    #[test]
+    fn settings_store_update_persists_codex_extra_args_and_preserves_unknown_fields() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        std::fs::write(
+            &path,
+            r#"{"providerSyncEnabled":false,"customField":{"nested":true}}"#,
+        )
+        .unwrap();
+
+        let updated = store
+            .update(json!({
+                "codexExtraArgs": ["--force_high_performance_gpu", "--enable-features=UseOzonePlatform"]
+            }))
+            .unwrap();
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert_eq!(
+            updated.codex_extra_args,
+            vec![
+                "--force_high_performance_gpu".to_string(),
+                "--enable-features=UseOzonePlatform".to_string(),
+            ]
+        );
+        assert_eq!(
+            saved["codexExtraArgs"],
+            json!([
+                "--force_high_performance_gpu",
+                "--enable-features=UseOzonePlatform"
+            ])
+        );
         assert_eq!(saved["customField"], json!({"nested": true}));
     }
 

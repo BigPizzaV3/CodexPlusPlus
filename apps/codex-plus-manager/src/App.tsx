@@ -69,6 +69,7 @@ type OverviewResult = CommandResult<{
 
 type BackendSettings = {
   codexAppPath: string;
+  codexExtraArgs: string[];
   providerSyncEnabled: boolean;
   enhancementsEnabled: boolean;
   launchMode: LaunchMode;
@@ -189,6 +190,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon }> = [
 
 const defaultSettings: BackendSettings = {
   codexAppPath: "",
+  codexExtraArgs: [],
   providerSyncEnabled: false,
   enhancementsEnabled: true,
   launchMode: "patch",
@@ -1442,6 +1444,29 @@ function SettingsScreen({
           </Toolbar>
         </CardContent>
       </Panel>
+      <Panel>
+        <CardHead title="Codex 启动参数" detail="启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。" />
+        <CardContent>
+          <Field label="额外参数">
+            <Textarea
+              className="launch-args-input"
+              placeholder="--force_high_performance_gpu"
+              spellCheck={false}
+              value={codexExtraArgsToInput(form.codexExtraArgs)}
+              onChange={(event) =>
+                onFormChange({
+                  ...form,
+                  codexExtraArgs: inputToCodexExtraArgs(event.currentTarget.value),
+                })
+              }
+            />
+          </Field>
+          <p className="field-hint">每行一个参数，例如 --force_high_performance_gpu。不需要填写 open 或 --args。</p>
+          <Toolbar>
+            <Button onClick={() => void actions.saveSettings()}>保存设置</Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
     </>
   );
 }
@@ -1752,7 +1777,7 @@ function routeSubtitle(route: Route) {
     recommendations: "赞助商推荐与普通推荐",
     maintenance: "入口安装、修复、Watcher 与手动启动",
     about: "版本信息、项目链接与 GitHub Release 更新",
-    settings: "主题与命令包装器设置",
+    settings: "主题、命令包装器和启动参数",
     logs: "最近状态文件内容",
     diagnostics: "可复制的运行诊断报告",
   };
@@ -1836,6 +1861,14 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ? settings.activeRelayId
     : profiles[0]?.id || "default";
   return syncLegacyRelayFields({ ...defaultSettings, ...settings, relayProfiles: profiles, activeRelayId });
+}
+
+function codexExtraArgsToInput(args: string[] | undefined) {
+  return (args ?? []).join("\n");
+}
+
+function inputToCodexExtraArgs(value: string) {
+  return value === "" ? [] : value.split(/\r?\n/);
 }
 
 function activeRelayProfile(settings: BackendSettings): RelayProfile {

@@ -172,15 +172,40 @@ fn launcher_builds_debug_arguments_and_commands() {
     let app_dir = PathBuf::from(r"C:\Codex\app");
 
     assert_eq!(
-        build_codex_arguments(9229),
+        build_codex_arguments(9229, &[]),
         vec![
             "--remote-debugging-port=9229".to_string(),
             "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
         ]
     );
-    let command = build_codex_command(&app_dir, 9229);
+    let command = build_codex_command(&app_dir, 9229, &[]);
     assert_eq!(command[1], "--remote-debugging-port=9229");
     assert_eq!(command[2], "--remote-allow-origins=http://127.0.0.1:9229");
+}
+
+#[test]
+fn launcher_appends_extra_codex_arguments_after_debug_arguments() {
+    let app_dir = PathBuf::from(r"C:\Codex\app");
+    let extra_args = vec![
+        "--force_high_performance_gpu".to_string(),
+        "  ".to_string(),
+        "--enable-features=UseOzonePlatform".to_string(),
+    ];
+
+    assert_eq!(
+        build_codex_arguments(9229, &extra_args),
+        vec![
+            "--remote-debugging-port=9229".to_string(),
+            "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
+            "--force_high_performance_gpu".to_string(),
+            "--enable-features=UseOzonePlatform".to_string(),
+        ]
+    );
+    let command = build_codex_command(&app_dir, 9229, &extra_args);
+    assert_eq!(command[1], "--remote-debugging-port=9229");
+    assert_eq!(command[2], "--remote-allow-origins=http://127.0.0.1:9229");
+    assert_eq!(command[3], "--force_high_performance_gpu");
+    assert_eq!(command[4], "--enable-features=UseOzonePlatform");
 }
 
 #[test]
@@ -194,11 +219,30 @@ fn launcher_constructs_windows_packaged_activation_without_real_app() {
         "OpenAI.Codex_2p2nqsd0c76g0!App"
     );
     assert_eq!(
-        build_packaged_activation(&app_dir, 9229).unwrap(),
+        build_packaged_activation(&app_dir, 9229, &[]).unwrap(),
         CodexLaunch::PackagedActivation {
             app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
             arguments: "--remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229"
                 .to_string(),
+            process_id: None,
+        }
+    );
+}
+
+#[test]
+fn launcher_packaged_activation_appends_extra_codex_arguments() {
+    let app_dir = PathBuf::from(
+        r"C:\Program Files\WindowsApps\OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0\app",
+    );
+    let extra_args = vec!["--force_high_performance_gpu".to_string()];
+
+    assert_eq!(
+        build_packaged_activation(&app_dir, 9229, &extra_args).unwrap(),
+        CodexLaunch::PackagedActivation {
+            app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
+            arguments:
+                "--remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229 --force_high_performance_gpu"
+                    .to_string(),
             process_id: None,
         }
     );
@@ -226,13 +270,32 @@ fn launcher_windows_packaged_process_management_uses_native_api() {
 
 #[test]
 fn launcher_macos_open_command_waits_for_app_exit() {
-    let command = build_macos_open_command(Path::new("/Applications/Codex.app"), 9229);
+    let command = build_macos_open_command(Path::new("/Applications/Codex.app"), 9229, &[]);
 
     assert_eq!(command[0], "open");
     assert!(command.contains(&"-W".to_string()));
     assert!(command.contains(&"-a".to_string()));
     assert!(command.contains(&"--args".to_string()));
     assert!(command.contains(&"--remote-debugging-port=9229".to_string()));
+}
+
+#[test]
+fn launcher_macos_open_command_appends_extra_codex_arguments_after_args() {
+    let extra_args = vec!["--force_high_performance_gpu".to_string()];
+    let command = build_macos_open_command(Path::new("/Applications/Codex.app"), 9229, &extra_args);
+    let args_index = command
+        .iter()
+        .position(|part| part == "--args")
+        .expect("macOS command should contain --args");
+
+    assert_eq!(
+        &command[args_index + 1..],
+        &[
+            "--remote-debugging-port=9229".to_string(),
+            "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
+            "--force_high_performance_gpu".to_string(),
+        ]
+    );
 }
 
 #[test]
@@ -457,6 +520,39 @@ async fn launch_lifecycle_runs_sync_before_launch_writes_success_and_shutdowns_o
             .codex_app
             .as_deref(),
         Some(app_dir.to_string_lossy().as_ref())
+    );
+}
+
+#[tokio::test]
+async fn launch_lifecycle_passes_configured_extra_args_to_codex_launch() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
+        codex_extra_args: vec!["--force_high_performance_gpu".to_string()],
+        ..BackendSettings::default()
+    });
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"launch:9229:--force_high_performance_gpu".to_string())
     );
 }
 
@@ -861,9 +957,18 @@ impl LaunchHooks for FakeHooks {
         Ok(())
     }
 
-    async fn launch_codex(&self, app_dir: &Path, debug_port: u16) -> anyhow::Result<CodexLaunch> {
+    async fn launch_codex(
+        &self,
+        app_dir: &Path,
+        debug_port: u16,
+        extra_args: &[String],
+    ) -> anyhow::Result<CodexLaunch> {
         assert!(app_dir.ends_with("Codex.app"));
-        self.event(format!("launch:{debug_port}"));
+        if extra_args.is_empty() {
+            self.event(format!("launch:{debug_port}"));
+        } else {
+            self.event(format!("launch:{debug_port}:{}", extra_args.join(",")));
+        }
         if let Some(message) = &self.launch_error {
             anyhow::bail!(message.clone());
         }
