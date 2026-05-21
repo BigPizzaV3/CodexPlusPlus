@@ -177,6 +177,43 @@ fn injection_script_unlocks_custom_model_catalog() {
 }
 
 #[test]
+fn injection_script_exposes_fast_service_tier_control() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("default-service-tier"));
+    assert!(script.contains("setting-storage-"));
+    assert!(script.contains("codexAppAssetUrl"));
+    assert!(script.contains("codexThreadServiceTierOverrides"));
+    assert!(script.contains("setCodexThreadServiceTierMode"));
+    assert!(script.contains("codexServiceTierRequestOverride"));
+    assert!(script.contains("installCodexServiceTierDispatcherPatch"));
+    assert!(script.contains("服务模式"));
+    assert!(script.contains("data-codex-service-tier-status"));
+    assert!(script.contains("data-codex-service-tier-inherit"));
+    assert!(script.contains("data-codex-service-tier-standard"));
+    assert!(script.contains("data-codex-service-tier-fast"));
+    assert!(script.contains("thread/start"));
+    assert!(script.contains("thread/resume"));
+    assert!(script.contains("turn/start"));
+    assert!(script.contains("send-cli-request-for-host"));
+    assert!(script.contains("start-conversation"));
+    assert!(script.contains("codex-service-tier-badge"));
+    assert!(script.contains("installCodexServiceTierBadge"));
+    assert!(script.contains("toggleCodexServiceTierFromBadge"));
+    assert!(script.contains("wireCodexServiceTierBadge"));
+    assert!(script.contains("codexServiceTierBadgePlacement"));
+    assert!(script.contains("codexServiceTierBadgeFooterGroup"));
+    assert!(script.contains("data-codex-service-tier-badge"));
+    assert!(script.contains("codexServiceTierBadgeWired"));
+    assert!(script.contains("setAttribute(\"role\", \"button\")"));
+    assert!(script.contains("setAttribute(\"tabindex\", \"0\")"));
+    assert!(script.contains("继承全局"));
+    assert!(script.contains("当前 thread"));
+    assert!(script.contains("standard"));
+    assert!(script.contains("fast"));
+}
+
+#[test]
 fn injection_script_restores_thread_scroll_positions() {
     let script = assets::injection_script(57321);
 

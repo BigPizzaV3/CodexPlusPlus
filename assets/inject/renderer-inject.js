@@ -34,7 +34,7 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "9";
+  const codexDeleteStyleVersion = "10";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "7";
@@ -46,10 +46,17 @@
   const codexConversationTimelineVersion = "2";
   const codexConversationViewVersion = "1";
   const codexThreadScrollVersion = "1";
+  const codexThreadServiceTierVersion = "1";
+  const codexServiceTierBadgeClass = "codex-service-tier-badge";
+  const codexServiceTierBadgeVersion = "2";
   let codexPlusVersion = window.__CODEX_PLUS_VERSION__ || "unknown";
   const codexPlusBuild = window.__CODEX_PLUS_BUILD__ || "unknown";
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
+  const codexThreadServiceTierKey = "codexThreadServiceTierOverrides";
+  const codexThreadServiceTierMaxEntries = 120;
+  const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
+  const codexServiceTierRequestOverrideVersion = "1";
   const codexThreadScrollMaxEntries = 120;
   const codexThreadScrollSaveThrottleMs = 120;
   const codexThreadScrollRestoreWindowMs = 3200;
@@ -501,6 +508,35 @@
         padding: 0 8px;
       }
       .codex-plus-width-input:disabled { opacity: .55; cursor: not-allowed; }
+      .codex-plus-service-tier-control { display: grid; gap: 6px; min-width: 184px; justify-items: end; align-self: center; }
+      .codex-plus-service-tier-status { color: #a1a1aa; font-size: 12px; line-height: 1.3; text-align: right; }
+      .codex-plus-service-tier-status[data-status="ok"] { color: #34d399; }
+      .codex-plus-service-tier-status[data-status="failed"] { color: #f87171; }
+      .codex-plus-service-tier-actions { display: flex; justify-content: flex-end; gap: 6px; }
+      .codex-plus-service-tier-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 5px 8px; }
+      .codex-plus-service-tier-button[data-active="true"] { border-color: #10a37f; background: rgba(16,163,127,.22); color: #6ee7b7; }
+      .codex-plus-service-tier-button:disabled { opacity: .55; cursor: not-allowed; }
+      .${codexServiceTierBadgeClass} {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+        height: 24px;
+        min-width: 54px;
+        box-sizing: border-box;
+        border: 1px solid rgba(148,163,184,.28);
+        border-radius: 999px;
+        background: rgba(148,163,184,.12);
+        color: #d4d4d8;
+        font: 600 12px/1 system-ui, sans-serif;
+        padding: 0 8px;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .${codexServiceTierBadgeClass}:hover { border-color: rgba(16,163,127,.44); background: rgba(16,163,127,.13); }
+      .${codexServiceTierBadgeClass}[data-tier="fast"] { border-color: rgba(16,163,127,.55); background: rgba(16,163,127,.18); color: #6ee7b7; }
+      .${codexServiceTierBadgeClass}[data-tier="loading"] { color: #a1a1aa; }
+      .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: rgba(248,113,113,.42); background: rgba(248,113,113,.12); color: #fca5a5; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-tabs { display: flex; gap: 8px; padding: 0 20px 6px; flex: 0 0 auto; }
       .codex-plus-tab-button { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: transparent; color: #d1d5db; font: 12px system-ui, sans-serif; padding: 5px 10px; }
@@ -716,10 +752,405 @@
       button.dataset.enabled = String(!!codexPlusSettings()[key]);
     });
     refreshConversationViewControls();
+    refreshCodexServiceTierControls();
   }
 
   let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, launchMode: "patch" };
   let codexPlusBackendSettingsLoaded = false;
+  let codexServiceTierState = {
+    status: "loading",
+    serviceTier: null,
+    message: "正在读取…",
+    fastTierValue: "priority",
+    activeThreadId: "",
+    threadMode: "inherit",
+    effectiveServiceTier: null,
+    effectiveMode: "standard",
+  };
+  const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
+  const codexServiceTierFallbackFastValue = "priority";
+  const codexServiceTierModulePromises = new Map();
+  const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
+
+  function codexAppAssetUrl(namePart) {
+    const urls = [
+      ...Array.from(document.scripts || []).map((script) => script.src),
+      ...Array.from(document.querySelectorAll("link[href]") || []).map((link) => link.href),
+      ...performance.getEntriesByType("resource").map((entry) => entry.name),
+    ].filter(Boolean);
+    return urls.find((url) => url.includes("/assets/") && url.includes(namePart) && url.split("?")[0].endsWith(".js")) || "";
+  }
+
+  async function loadCodexAppModule(namePart) {
+    if (!codexServiceTierModulePromises.has(namePart)) {
+      codexServiceTierModulePromises.set(namePart, Promise.resolve().then(async () => {
+        const url = codexAppAssetUrl(namePart);
+        if (!url) throw new Error(`未找到 Codex App asset: ${namePart}`);
+        return await import(url);
+      }));
+    }
+    return await codexServiceTierModulePromises.get(namePart);
+  }
+
+  async function codexSettingStorageModule() {
+    const module = await loadCodexAppModule("setting-storage-");
+    if (typeof module.n !== "function" || typeof module.s !== "function") {
+      throw new Error("Codex setting-storage 接口不可用");
+    }
+    return module;
+  }
+
+  async function getCodexServiceTierSetting() {
+    try {
+      const settingStorage = await codexSettingStorageModule();
+      return await settingStorage.n(codexDefaultServiceTierSetting);
+    } catch (error) {
+      if (typeof codexStateCall === "function") {
+        const result = await codexStateCall("get-setting", { params: { key: codexDefaultServiceTierSetting.key } });
+        return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : codexDefaultServiceTierSetting.default;
+      }
+      throw error;
+    }
+  }
+
+  function isFastServiceTierValue(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized === "fast" || normalized === "priority";
+  }
+
+  function codexFastServiceTierValue() {
+    return codexServiceTierState.fastTierValue || codexServiceTierFallbackFastValue;
+  }
+
+  function codexServiceTierValueForMode(mode) {
+    if (mode === "fast") return codexFastServiceTierValue();
+    if (mode === "standard") return null;
+    return codexServiceTierState.serviceTier || null;
+  }
+
+  function codexServiceTierEffectiveMode(value) {
+    return isFastServiceTierValue(value) ? "fast" : "standard";
+  }
+
+  function normalizeCodexThreadServiceTierMode(mode) {
+    const normalized = String(mode || "").trim().toLowerCase();
+    return codexThreadServiceTierModes.has(normalized) ? normalized : "inherit";
+  }
+
+  function serviceTierGlobalStatusMessage(serviceTier) {
+    if (isFastServiceTierValue(serviceTier)) return "Fast 已开启";
+    if (!serviceTier) return "默认服务模式";
+    return `当前：${serviceTier}`;
+  }
+
+  function serviceTierStatusMessage(threadMode = codexServiceTierState.threadMode || "inherit", effectiveMode = codexServiceTierState.effectiveMode || "standard") {
+    if (codexServiceTierState.status === "loading") return "正在读取…";
+    if (codexServiceTierState.status === "failed") return "读取失败";
+    if (threadMode === "inherit") return `继承全局：${effectiveMode}`;
+    return `当前 thread：${threadMode}`;
+  }
+
+  function readThreadServiceTierState() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(codexThreadServiceTierKey) || "{}");
+      const rawEntries = parsed?.version === codexThreadServiceTierVersion && parsed?.entries && typeof parsed.entries === "object"
+        ? parsed.entries
+        : {};
+      const entries = Object.create(null);
+      Object.entries(rawEntries).forEach(([key, value]) => {
+        const safeKey = typeof validThreadScrollSessionKey === "function" ? validThreadScrollSessionKey(key) : String(key || "");
+        const mode = normalizeCodexThreadServiceTierMode(value?.mode);
+        if (safeKey && mode !== "inherit") entries[safeKey] = { mode, at: finiteNonNegativeNumber(value?.at) || Date.now() };
+      });
+      return {
+        entries,
+        draft: normalizeThreadServiceTierDraft(parsed?.draft),
+      };
+    } catch (_) {
+      return { entries: Object.create(null), draft: null };
+    }
+  }
+
+  function writeThreadServiceTierState(state) {
+    const rawEntries = state?.entries && typeof state.entries === "object" ? state.entries : {};
+    const entries = Object.create(null);
+    Object.entries(rawEntries)
+      .map(([key, value]) => {
+        const safeKey = validThreadScrollSessionKey(key);
+        const mode = normalizeCodexThreadServiceTierMode(value?.mode);
+        return safeKey && mode !== "inherit" ? [safeKey, { mode, at: finiteNonNegativeNumber(value?.at) || Date.now() }] : null;
+      })
+      .filter(Boolean)
+      .sort((left, right) => right[1].at - left[1].at)
+      .slice(0, codexThreadServiceTierMaxEntries)
+      .forEach(([key, value]) => {
+        entries[key] = value;
+      });
+    const draft = normalizeThreadServiceTierDraft(state?.draft);
+    try {
+      localStorage.setItem(codexThreadServiceTierKey, JSON.stringify({
+        version: codexThreadServiceTierVersion,
+        entries,
+        ...(draft ? { draft } : {}),
+      }));
+    } catch (_) {}
+  }
+
+  function normalizeThreadServiceTierDraft(value) {
+    if (!value || typeof value !== "object") return null;
+    const mode = normalizeCodexThreadServiceTierMode(value.mode);
+    if (mode === "inherit") return null;
+    const at = finiteNonNegativeNumber(value.at) || Date.now();
+    return { mode, at };
+  }
+
+  function codexThreadServiceTierOverride(threadId) {
+    const key = validThreadScrollSessionKey(threadId);
+    if (!key) return null;
+    const entry = readThreadServiceTierState().entries[key];
+    const mode = normalizeCodexThreadServiceTierMode(entry?.mode);
+    return mode === "inherit" ? null : { mode, at: finiteNonNegativeNumber(entry?.at) || 0 };
+  }
+
+  function codexThreadServiceTierDraft() {
+    const draft = readThreadServiceTierState().draft;
+    if (!draft) return null;
+    if (Date.now() - draft.at > codexThreadServiceTierDraftBindWindowMs) return null;
+    return draft;
+  }
+
+  function setCodexThreadServiceTierOverride(threadId, mode) {
+    const normalizedMode = normalizeCodexThreadServiceTierMode(mode);
+    const state = readThreadServiceTierState();
+    const key = validThreadScrollSessionKey(threadId);
+    if (key) {
+      if (normalizedMode === "inherit") {
+        delete state.entries[key];
+      } else {
+        state.entries[key] = { mode: normalizedMode, at: Date.now() };
+      }
+    } else if (normalizedMode === "inherit") {
+      state.draft = null;
+    } else {
+      state.draft = { mode: normalizedMode, at: Date.now() };
+    }
+    writeThreadServiceTierState(state);
+  }
+
+  function bindDraftServiceTierToThread(threadId) {
+    const key = validThreadScrollSessionKey(threadId);
+    const draft = codexThreadServiceTierDraft();
+    if (!key || !draft) return false;
+    const state = readThreadServiceTierState();
+    if (!state.entries[key]) state.entries[key] = { mode: draft.mode, at: Date.now() };
+    state.draft = null;
+    writeThreadServiceTierState(state);
+    return true;
+  }
+
+  function syncCodexServiceTierEffectiveState() {
+    const activeThreadId = validThreadScrollSessionKey(currentSessionRef().session_id);
+    if (activeThreadId) bindDraftServiceTierToThread(activeThreadId);
+    const override = activeThreadId ? codexThreadServiceTierOverride(activeThreadId) : codexThreadServiceTierDraft();
+    const threadMode = normalizeCodexThreadServiceTierMode(override?.mode);
+    const effectiveServiceTier = codexServiceTierValueForMode(threadMode);
+    codexServiceTierState = {
+      ...codexServiceTierState,
+      activeThreadId,
+      threadMode,
+      effectiveServiceTier,
+      effectiveMode: codexServiceTierEffectiveMode(effectiveServiceTier),
+      message: serviceTierStatusMessage(threadMode, codexServiceTierEffectiveMode(effectiveServiceTier)),
+    };
+  }
+
+  function codexServiceTierBadgeState() {
+    if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
+    if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
+    const effectiveMode = codexServiceTierState.effectiveMode || "standard";
+    const inheritPrefix = codexServiceTierState.threadMode === "inherit" ? "继承全局：" : "当前 thread：";
+    if (effectiveMode === "fast") return { tier: "fast", label: "fast", title: `服务模式：${inheritPrefix}fast` };
+    return { tier: "standard", label: "standard", title: `服务模式：${inheritPrefix}standard` };
+  }
+
+  function refreshCodexServiceTierBadges() {
+    const state = codexServiceTierBadgeState();
+    document.querySelectorAll(`[data-codex-service-tier-badge="true"]`).forEach((node) => {
+      node.dataset.tier = state.tier;
+      node.textContent = state.label;
+      node.title = state.title;
+      node.setAttribute("aria-label", state.title);
+    });
+  }
+
+  function refreshCodexServiceTierControls() {
+    syncCodexServiceTierEffectiveState();
+    document.querySelectorAll("[data-codex-service-tier-status]").forEach((node) => {
+      node.dataset.status = codexServiceTierState.status || "loading";
+      node.textContent = codexServiceTierState.message || "未读取";
+    });
+    document.querySelectorAll("[data-codex-service-tier-inherit]").forEach((button) => {
+      button.disabled = codexServiceTierState.status === "loading";
+      button.dataset.active = String(codexServiceTierState.threadMode === "inherit");
+    });
+    document.querySelectorAll("[data-codex-service-tier-standard]").forEach((button) => {
+      button.disabled = codexServiceTierState.status === "loading";
+      button.dataset.active = String(codexServiceTierState.threadMode === "standard");
+    });
+    document.querySelectorAll("[data-codex-service-tier-fast]").forEach((button) => {
+      button.disabled = codexServiceTierState.status === "loading";
+      button.dataset.active = String(codexServiceTierState.threadMode === "fast");
+    });
+    refreshCodexServiceTierBadges();
+  }
+
+  async function loadCodexServiceTierState() {
+    codexServiceTierState = { ...codexServiceTierState, status: "loading", message: "正在读取…" };
+    refreshCodexServiceTierControls();
+    try {
+      const serviceTier = await getCodexServiceTierSetting();
+      codexServiceTierState = {
+        ...codexServiceTierState,
+        status: "ok",
+        serviceTier,
+        message: serviceTierGlobalStatusMessage(serviceTier),
+      };
+    } catch (error) {
+      codexServiceTierState = {
+        ...codexServiceTierState,
+        status: "failed",
+        message: "读取失败",
+      };
+      sendCodexPlusDiagnostic("service_tier_read_failed", {
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+    } finally {
+      refreshCodexServiceTierControls();
+    }
+  }
+
+  function setCodexThreadServiceTierMode(mode) {
+    const normalizedMode = normalizeCodexThreadServiceTierMode(mode);
+    const threadId = validThreadScrollSessionKey(currentSessionRef().session_id);
+    setCodexThreadServiceTierOverride(threadId, normalizedMode);
+    refreshCodexServiceTierControls();
+    const target = threadId ? "当前 thread" : "新 thread 草稿";
+    showToast(`${target}服务模式：${normalizedMode === "inherit" ? "继承" : normalizedMode}`, null);
+  }
+
+  function toggleCodexServiceTierFromBadge() {
+    syncCodexServiceTierEffectiveState();
+    setCodexThreadServiceTierMode(codexServiceTierState.effectiveMode === "fast" ? "standard" : "fast");
+  }
+
+  function codexServiceTierRequestMethods() {
+    return new Set(["thread/start", "thread/resume", "turn/start"]);
+  }
+
+  function codexServiceTierOverrideForRequest(method, params, threadIdHint = "") {
+    if (!codexServiceTierRequestMethods().has(method) || !params || typeof params !== "object") return null;
+    const threadId = method === "thread/start"
+      ? validThreadScrollSessionKey(params.threadId || threadIdHint)
+      : validThreadScrollSessionKey(params.threadId || params.conversationId || threadIdHint || currentSessionRef().session_id);
+    const override = threadId ? codexThreadServiceTierOverride(threadId) : codexThreadServiceTierDraft();
+    const mode = normalizeCodexThreadServiceTierMode(override?.mode);
+    if (mode === "inherit") return null;
+    return {
+      threadId,
+      mode,
+      serviceTier: mode === "fast" ? codexFastServiceTierValue() : null,
+    };
+  }
+
+  function applyCodexServiceTierRequestOverride(method, params, threadIdHint = "") {
+    const override = codexServiceTierOverrideForRequest(method, params, threadIdHint);
+    if (!override) return params;
+    const nextParams = { ...(params || {}), serviceTier: override.serviceTier };
+    sendCodexPlusDiagnostic("service_tier_request_override_applied", {
+      method,
+      threadId: override.threadId || "",
+      mode: override.mode,
+      serviceTier: override.serviceTier || "standard",
+    });
+    return nextParams;
+  }
+
+  function codexServiceTierRequestOverride(message) {
+    if (!message || typeof message !== "object") return message;
+    if (message.type === "send-cli-request-for-host") {
+      const method = String(message.method || "");
+      const params = applyCodexServiceTierRequestOverride(method, message.params);
+      return params === message.params ? message : { ...message, params };
+    }
+    if (message.type === "mcp-request" && message.request && typeof message.request === "object") {
+      const method = String(message.request.method || "");
+      const params = applyCodexServiceTierRequestOverride(method, message.request.params);
+      if (params === message.request.params) return message;
+      return { ...message, request: { ...message.request, params } };
+    }
+    if (message.type === "worker-request" && message.request && typeof message.request === "object") {
+      const method = String(message.request.method || "");
+      const params = applyCodexServiceTierRequestOverride(method, message.request.params);
+      if (params === message.request.params) return message;
+      return { ...message, request: { ...message.request, params } };
+    }
+    if (message.type === "thread-prewarm-start" && message.request && typeof message.request === "object") {
+      const params = applyCodexServiceTierRequestOverride("thread/start", message.request.params);
+      if (params === message.request.params) return message;
+      return { ...message, request: { ...message.request, params } };
+    }
+    if (message.type === "start-conversation") {
+      const draft = codexThreadServiceTierDraft();
+      const mode = normalizeCodexThreadServiceTierMode(draft?.mode);
+      if (mode === "inherit") return message;
+      return { ...message, serviceTier: mode === "fast" ? codexFastServiceTierValue() : null };
+    }
+    if (message.type === "prewarm-thread-start-for-host" && message.params && typeof message.params === "object") {
+      const params = applyCodexServiceTierRequestOverride("thread/start", message.params);
+      return params === message.params ? message : { ...message, params };
+    }
+    if (message.type === "start-thread-for-host") {
+      const params = applyCodexServiceTierRequestOverride("thread/start", message);
+      return params === message ? message : params;
+    }
+    if (message.type === "start-turn-for-host" && message.params && typeof message.params === "object") {
+      const params = applyCodexServiceTierRequestOverride("turn/start", message.params, message.conversationId);
+      return params === message.params ? message : { ...message, params };
+    }
+    return message;
+  }
+
+  function installCodexServiceTierDispatcherPatch() {
+    if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
+    const patch = async () => {
+      try {
+        const module = await loadCodexAppModule("setting-storage-");
+        const dispatcherClass = typeof module.v === "function" && String(module.v).includes("dispatchMessage") ? module.v : null;
+        const dispatcher = dispatcherClass?.getInstance?.();
+        if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
+        if (dispatcher.__codexServiceTierOriginalDispatchMessage) {
+          window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
+          return;
+        }
+        dispatcher.__codexServiceTierOriginalDispatchMessage = dispatcher.dispatchMessage.bind(dispatcher);
+        dispatcher.dispatchMessage = (type, payload) => {
+          const message = codexServiceTierRequestOverride({ ...(payload || {}), type });
+          const nextType = message?.type || type;
+          const { type: _type, ...nextPayload } = message || {};
+          return dispatcher.__codexServiceTierOriginalDispatchMessage(nextType, nextPayload);
+        };
+        window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
+        sendCodexPlusDiagnostic("service_tier_dispatcher_patch_installed", {});
+      } catch (error) {
+        sendCodexPlusDiagnostic("service_tier_dispatcher_patch_failed", {
+          errorName: error?.name || "",
+          errorMessage: error?.message || String(error),
+        });
+      }
+    };
+    void patch();
+  }
 
   async function loadBackendSettings() {
     try {
@@ -1035,6 +1466,17 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
             </div>
             <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">按当前 thread 选择服务模式；继承时使用 Codex App 的 default-service-tier。</div></div>
+              <div class="codex-plus-service-tier-control">
+                <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">正在读取…</div>
+                <div class="codex-plus-service-tier-actions">
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">继承</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">Standard</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">Fast</button>
+                </div>
+              </div>
+            </div>
+            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示删除按钮，并支持撤销。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionDelete"><span></span></button>
             </div>
@@ -1188,6 +1630,18 @@
         loadUserScripts("/user-scripts/set-enabled", { enabled: userScriptsEnabled.dataset.enabled !== "true" });
         return;
       }
+      if (target?.closest("[data-codex-service-tier-inherit]")) {
+        setCodexThreadServiceTierMode("inherit");
+        return;
+      }
+      if (target?.closest("[data-codex-service-tier-standard]")) {
+        setCodexThreadServiceTierMode("standard");
+        return;
+      }
+      if (target?.closest("[data-codex-service-tier-fast]")) {
+        setCodexThreadServiceTierMode("fast");
+        return;
+      }
       const userScriptToggle = target?.closest("[data-codex-user-script-key]");
       if (userScriptToggle) {
         loadUserScripts("/user-scripts/set-script-enabled", { key: userScriptToggle.getAttribute("data-codex-user-script-key"), enabled: userScriptToggle.dataset.enabled !== "true" });
@@ -1218,6 +1672,7 @@
     refreshCodexPlusBackendToggles();
     renderBackendStatus();
     loadBackendSettings();
+    void loadCodexServiceTierState();
     loadUserScripts();
   }
 
@@ -4419,6 +4874,137 @@
     return conversationViewFindByClasses(conversationViewComposerClasses);
   }
 
+  function codexServiceTierBadgeVisibleElement(element) {
+    if (!(element instanceof HTMLElement) || !element.isConnected) return false;
+    const style = getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function codexServiceTierBadgeText(element) {
+    return String(element?.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
+  function codexServiceTierKnownProviderNames() {
+    return uniqueValues([
+      codexModelCatalog.provider_name,
+      codexModelCatalog.model_provider,
+    ]).map((value) => value.toLowerCase());
+  }
+
+  function codexServiceTierLooksLikeProviderButton(button, providerNames) {
+    const text = codexServiceTierBadgeText(button);
+    if (!text || text.length > 32) return false;
+    const lower = text.toLowerCase();
+    if (providerNames.includes(lower)) return true;
+    if (/\s/.test(text)) return false;
+    if (!/[a-z]/i.test(text)) return false;
+    if (!/^[a-z0-9][a-z0-9._-]{1,31}$/i.test(text)) return false;
+    if (/^(local|remote|cloud|standard|default|fast|worktree|new|send|stop|codex)$/i.test(text)) return false;
+    if (/^(gpt|o[1-9]|claude|gemini|deepseek|qwen|kimi|moonshot|mistral|llama|sonnet|opus|haiku)[a-z0-9._-]*$/i.test(text)) return false;
+    return true;
+  }
+
+  function codexServiceTierBadgeButtonCandidates(composer) {
+    const composerRect = composer.getBoundingClientRect();
+    return Array.from(composer.querySelectorAll("button, [role='button']"))
+      .filter((button) => !button.closest?.(`[data-codex-service-tier-badge="true"]`))
+      .filter(codexServiceTierBadgeVisibleElement)
+      .filter((button) => {
+        const rect = button.getBoundingClientRect();
+        return rect.bottom >= composerRect.top + composerRect.height * 0.35;
+      })
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return (rightRect.bottom - leftRect.bottom) || (leftRect.left - rightRect.left);
+      });
+  }
+
+  function codexServiceTierBadgeAnchor(composer) {
+    const providerNames = codexServiceTierKnownProviderNames();
+    const buttons = codexServiceTierBadgeButtonCandidates(composer);
+    const exact = buttons.find((button) => providerNames.includes(codexServiceTierBadgeText(button).toLowerCase()));
+    if (exact) return exact;
+    const composerRect = composer.getBoundingClientRect();
+    return buttons.find((button) => {
+      const rect = button.getBoundingClientRect();
+      return rect.left >= composerRect.left + composerRect.width * 0.42 && codexServiceTierLooksLikeProviderButton(button, providerNames);
+    }) || null;
+  }
+
+  function codexServiceTierComposerFooter(composer) {
+    return composer?.querySelector?.(".composer-footer") || document.querySelector(".composer-footer");
+  }
+
+  function codexServiceTierBadgeFooterGroup(composer) {
+    const footer = codexServiceTierComposerFooter(composer);
+    if (!footer) return null;
+    const children = Array.from(footer.children).filter(codexServiceTierBadgeVisibleElement);
+    if (!children.length) return footer;
+    const providerNames = codexServiceTierKnownProviderNames();
+    const providerGroup = children.find((child) => {
+      const text = codexServiceTierBadgeText(child).toLowerCase();
+      return providerNames.some((name) => name && text.includes(name));
+    });
+    return providerGroup || children[children.length - 1] || footer;
+  }
+
+  function codexServiceTierBadgePlacement(composer) {
+    const anchor = composer ? codexServiceTierBadgeAnchor(composer) : null;
+    if (anchor?.parentElement) return { parent: anchor.parentElement, before: anchor };
+    const group = composer ? codexServiceTierBadgeFooterGroup(composer) : null;
+    if (group) return { parent: group, before: group.firstChild };
+    return null;
+  }
+
+  function wireCodexServiceTierBadge(badge) {
+    if (!badge || badge.dataset.codexServiceTierBadgeWired === codexServiceTierBadgeVersion) return;
+    badge.dataset.codexServiceTierBadgeWired = codexServiceTierBadgeVersion;
+    badge.setAttribute("role", "button");
+    badge.setAttribute("tabindex", "0");
+    badge.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (codexServiceTierState.status === "loading") return;
+      toggleCodexServiceTierFromBadge();
+    });
+    badge.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (codexServiceTierState.status === "loading") return;
+      toggleCodexServiceTierFromBadge();
+    });
+  }
+
+  function installCodexServiceTierBadge() {
+    const composer = conversationViewFindComposerEl();
+    const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
+    const existingBadges = Array.from(document.querySelectorAll(`[data-codex-service-tier-badge="true"]`));
+    if (!composer || !placement?.parent) {
+      existingBadges.forEach((badge) => badge.remove());
+      return;
+    }
+    let badge = existingBadges.find((node) => node.closest?.(".composer-footer") || node.closest?.("button") == null) || existingBadges[0];
+    existingBadges.forEach((node) => {
+      if (node !== badge) node.remove();
+    });
+    if (!badge || badge.dataset.codexServiceTierBadgeVersion !== codexServiceTierBadgeVersion) {
+      badge?.remove();
+      badge = document.createElement("span");
+      badge.className = codexServiceTierBadgeClass;
+      badge.dataset.codexServiceTierBadge = "true";
+      badge.dataset.codexServiceTierBadgeVersion = codexServiceTierBadgeVersion;
+    }
+    wireCodexServiceTierBadge(badge);
+    if (badge.parentElement !== placement.parent || badge.nextSibling !== placement.before) {
+      placement.parent.insertBefore(badge, placement.before);
+    }
+    refreshCodexServiceTierBadges();
+  }
+
   function conversationViewRememberOriginals(el) {
     if (!el) return;
     conversationViewState.elements.add(el);
@@ -4613,6 +5199,7 @@
 
   function scanLightweight() {
     installStyle();
+    installCodexServiceTierDispatcherPatch();
     installCodexPlusMenu();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();
@@ -4622,6 +5209,7 @@
     installThreadScrollUserIntentCapture();
     installThreadScrollRouteHooks();
     scheduleThreadScrollSync(true);
+    refreshCodexServiceTierControls();
   }
 
   let zedRemoteStatusPromise = null;
@@ -5145,6 +5733,7 @@
     installArchivedDeleteAllButton();
     refreshConversationTimeline();
     refreshConversationView();
+    installCodexServiceTierBadge();
     scheduleThreadScrollSync();
     patchCodexModelWhitelist();
   }
@@ -5164,7 +5753,7 @@
   }
 
   function isExtensionUiNode(node) {
-    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${projectMoveOverlayClass}, .${timelineClass}, .codex-conversation-timeline, .codex-zed-remote-button, .codex-zed-remote-toast, #codex-plus-menu`);
+    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${projectMoveOverlayClass}, .${timelineClass}, .codex-conversation-timeline, .${codexServiceTierBadgeClass}, .codex-zed-remote-button, .codex-zed-remote-toast, #codex-plus-menu`);
   }
 
   function scanRelevantSelector() {
@@ -5179,6 +5768,7 @@
       '[data-testid="conversation-turn"]',
       '[class*="user-message"]',
       '[class*="UserMessage"]',
+      ".composer-footer",
       selectors.appHeader,
       selectors.archiveNav,
       ...(pluginPatchDisabledInRelayMode() ? [] : [selectors.disabledInstallButton]),
@@ -5238,6 +5828,7 @@
   }
 
   void loadBackendSettingsForStartup();
+  void loadCodexServiceTierState();
   scan();
   window.__codexProjectMoveApplyProjection = applyProjectMoveProjection;
   window.__codexProjectMoveReadProjection = readProjectMoveProjection;
