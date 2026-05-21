@@ -12,6 +12,10 @@
   const timelineMarkerClass = "codex-conversation-timeline-marker";
   const timelineTooltipClass = "codex-conversation-timeline-tooltip";
   const timelineTargetClass = "codex-conversation-timeline-target";
+  const conversationViewMinWidth = 320;
+  const conversationViewMaxAllowedWidth = 4000;
+  const conversationViewDefaultWidth = 900;
+  const conversationViewLegacyWidthKey = "codexPlus.threadCenter.maxWidth";
   const zedRemoteButtonClass = "codex-zed-remote-button";
   const zedRemoteOpenInMenuItemClass = "codex-zed-open-in-menu-item";
   const zedRemoteToastClass = "codex-zed-remote-toast";
@@ -40,6 +44,7 @@
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationTimelineVersion = "2";
+  const codexConversationViewVersion = "1";
   const codexThreadScrollVersion = "1";
   let codexPlusVersion = window.__CODEX_PLUS_VERSION__ || "unknown";
   const codexPlusBuild = window.__CODEX_PLUS_BUILD__ || "unknown";
@@ -54,6 +59,7 @@
   const codexThreadScrollRouteHooksVersion = "dispatcher:2";
   const codexThreadScrollListenerVersion = "4";
   const codexThreadScrollUserIntentVersion = "dispatcher:2";
+  const codexForcePluginInstallRefreshIntervalMs = 1000;
   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
   clearTimeout(window.__codexProjectMoveProjectionTimer);
@@ -69,13 +75,22 @@
   window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
   window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
   window.__codexConversationTimelineNodeCounter = window.__codexConversationTimelineNodeCounter || 0;
+  ["__codexPlusHtmlCenteredThreadWidth", "__codexPlusViewportCenteredThreadWidth", "__codexPlusBoundedThreadCenter"].forEach((key) => {
+    try {
+      window[key]?.cleanup?.();
+    } catch (_) {}
+  });
+  try {
+    window.__codexPlusConversationViewCleanup?.();
+  } catch (_) {}
+  window.__codexPlusConversationViewCleanup = null;
   const selectors = {
     sidebarThread: "[data-app-action-sidebar-thread-id]",
     threadTitle: "[data-thread-title]",
     appHeader: ".app-header-tint",
     nativeMenuBar: "[class*=\"ms-auto\"][class*=\"flex\"][class*=\"items-center\"]",
     archiveNav: 'button[aria-label="已归档对话"], button[aria-label="Archived conversations"]',
-    disabledInstallButton: 'button:disabled.w-full.justify-center, [role="button"][aria-disabled="true"].cursor-not-allowed',
+    disabledInstallButton: 'button:disabled, button[aria-disabled="true"], [role="button"][aria-disabled="true"], button[data-disabled], [role="button"][data-disabled], button.cursor-not-allowed, [role="button"].cursor-not-allowed, button.pointer-events-none, [role="button"].pointer-events-none',
     pluginNavButton: 'nav[role="navigation"] button.h-token-nav-row.w-full',
     pluginSvgPath: 'svg path[d^="M7.94562 14.0277"]',
   };
@@ -100,34 +115,41 @@
         gap: 6px;
         background: transparent;
       }
-      .${actionButtonClass},
-      .codex-archive-row-button {
+      .${actionButtonClass} {
         width: 26px;
         height: 26px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        border: 1px solid #ef4444;
+        border: 0;
         border-radius: 6px;
-        background: #f3f4f6;
-        color: #374151;
-        font-size: 12px;
-        line-height: 16px;
-        padding: 1px 6px;
-        cursor: pointer;
+        background: transparent;
+        color: #d1d5db;
+        font: 14px/1 system-ui, sans-serif;
+        padding: 0;
+        cursor: default;
         text-align: center;
       }
-      .codex-archive-row-button {
-        border-radius: 7px;
-        font: 12px system-ui, sans-serif;
-        line-height: 16px;
-        padding: 3px 8px;
+      .${actionButtonClass} svg {
+        display: block;
+        width: 16px;
+        height: 16px;
       }
       .${actionButtonClass}:hover,
       .${actionButtonClass}:focus-visible {
-        background: #fee2e2;
-        color: #991b1b;
+        background: #363839;
+        color: #f4f4f5;
         outline: none;
+      }
+      .codex-archive-row-button {
+        border: 1px solid #ef4444;
+        border-radius: 7px;
+        background: #f3f4f6;
+        color: #374151;
+        font: 12px system-ui, sans-serif;
+        line-height: 16px;
+        padding: 3px 8px;
+        cursor: pointer;
       }
       .codex-archive-row-button.${buttonClass} {
         border-color: #ef4444;
@@ -139,15 +161,11 @@
         background: #dbeafe;
         color: #1d4ed8;
       }
-      .${actionButtonClass} svg {
-        display: block;
-        width: 16px;
-        height: 16px;
-      }
-      .${projectMoveButtonClass} {
-        border-color: #10a37f;
-        background: #d1fae5;
-        color: #065f46;
+      .codex-force-install-unlocked {
+        border-color: #ef4444 !important;
+        background: #fee2e2 !important;
+        color: #991b1b !important;
+        opacity: 1 !important;
       }
       .${zedRemoteButtonClass} {
         border: 1px solid #10a37f;
@@ -470,6 +488,19 @@
       .codex-plus-toggle[data-relay-unneeded="true"] { width: 72px; cursor: default; background: rgba(16,163,127,.16); color: #6ee7b7; }
       .codex-plus-toggle[data-relay-unneeded="true"] span { display: none; }
       .codex-plus-toggle[data-relay-unneeded="true"]::after { content: "无需开启"; font-size: 12px; font-weight: 650; line-height: 1; }
+      .codex-plus-width-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 176px; align-self: center; }
+      .codex-plus-width-input {
+        width: 78px;
+        height: 26px;
+        box-sizing: border-box;
+        border: 1px solid rgba(255,255,255,.18);
+        border-radius: 7px;
+        background: rgba(255,255,255,.08);
+        color: #f3f4f6;
+        font: 12px system-ui, sans-serif;
+        padding: 0 8px;
+      }
+      .codex-plus-width-input:disabled { opacity: .55; cursor: not-allowed; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-tabs { display: flex; gap: 8px; padding: 0 20px 6px; flex: 0 0 auto; }
       .codex-plus-tab-button { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: transparent; color: #d1d5db; font: 12px system-ui, sans-serif; padding: 5px 10px; }
@@ -588,7 +619,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, threadScrollRestore: true, zedRemoteOpen: true, nativeMenuPlacement: true };
+    return { pluginEntryUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, nativeMenuPlacement: true };
   }
 
   function codexPlusSettings() {
@@ -602,6 +633,8 @@
         markdownExport: false,
         projectMove: false,
         conversationTimeline: false,
+        conversationView: false,
+        conversationViewMaxWidth: conversationViewDefaultWidth,
         threadScrollRestore: false,
         zedRemoteOpen: false,
         nativeMenuPlacement: false,
@@ -645,8 +678,36 @@
       window.__codexThreadScrollRuntime = null;
     }
     renderCodexPlusMenu();
-    renderCodexModelCompatibilityWarning();
     scan();
+  }
+
+  function normalizeConversationViewWidth(value) {
+    if (value === null || value === undefined || String(value).trim() === "") return null;
+    const number = Number(value);
+    if (!Number.isFinite(number)) return null;
+    return Math.max(conversationViewMinWidth, Math.min(conversationViewMaxAllowedWidth, Math.round(number)));
+  }
+
+  function conversationViewWidth() {
+    const settingsWidth = normalizeConversationViewWidth(codexPlusSettings().conversationViewMaxWidth);
+    if (settingsWidth) return settingsWidth;
+    const legacyWidth = normalizeConversationViewWidth(localStorage.getItem(conversationViewLegacyWidthKey));
+    return legacyWidth || conversationViewDefaultWidth;
+  }
+
+  function refreshConversationViewControls() {
+    const enabled = !!codexPlusSettings().conversationView;
+    const width = conversationViewWidth();
+    document.querySelectorAll("[data-codex-plus-conversation-view-width]").forEach((input) => {
+      input.value = String(width);
+      input.disabled = !enabled;
+    });
+  }
+
+  function setConversationViewWidth(value) {
+    const width = normalizeConversationViewWidth(value);
+    if (!width) return;
+    setCodexPlusSetting("conversationViewMaxWidth", width);
   }
 
   function renderCodexPlusMenu() {
@@ -654,7 +715,7 @@
       const key = button.getAttribute("data-codex-plus-setting");
       button.dataset.enabled = String(!!codexPlusSettings()[key]);
     });
-    renderCodexModelCompatibilityWarning();
+    refreshConversationViewControls();
   }
 
   let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, launchMode: "patch" };
@@ -682,7 +743,7 @@
         scan();
         return;
       }
-      if (attempt < 6) {
+      if (attempt < 60) {
         setTimeout(() => loadBackendSettingsForStartup(attempt + 1), 500);
       }
     });
@@ -990,6 +1051,13 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationTimeline"><span></span></button>
             </div>
             <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">对话居中宽度</div><div class="codex-plus-row-description">开启后把主对话和输入框限制到固定最大宽度，适合大屏阅读。</div></div>
+              <div class="codex-plus-width-control">
+                <input class="codex-plus-width-input" data-codex-plus-conversation-view-width="true" min="${conversationViewMinWidth}" max="${conversationViewMaxAllowedWidth}" step="10" type="number" value="${conversationViewWidth()}">
+                <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationView"><span></span></button>
+              </div>
+            </div>
+            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">切换对话保留位置</div><div class="codex-plus-row-description">开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
             </div>
@@ -1014,7 +1082,11 @@
               <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a></div></div>
+              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a></div></div>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">Discord 社区</div><div class="codex-plus-row-description">加入 Discord 获取更新消息、反馈问题或交流使用体验。</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-plus-discord="true">打开 Discord</button>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
@@ -1064,6 +1136,20 @@
       event.stopPropagation();
       overlay.remove();
     }, true);
+    overlay.addEventListener("input", (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
+      if (widthInput) setConversationViewWidth(widthInput.value);
+    }, true);
+    overlay.addEventListener("change", (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
+      if (widthInput) {
+        const width = normalizeConversationViewWidth(widthInput.value);
+        widthInput.value = String(width || conversationViewWidth());
+        setConversationViewWidth(widthInput.value);
+      }
+    }, true);
     overlay.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if (event.target === overlay || target?.closest(".codex-plus-modal-close")) {
@@ -1081,6 +1167,10 @@
       }
       if (target?.closest("[data-codex-open-manager]")) {
         openManagerFromCodex();
+        return;
+      }
+      if (target?.closest("[data-codex-plus-discord]")) {
+        window.open("https://discord.gg/y96kX7A76v", "_blank");
         return;
       }
       if (target?.closest("[data-codex-backend-repair]")) {
@@ -1335,36 +1425,92 @@
   }
 
   function pluginInstallCandidates() {
-    return Array.from(document.querySelectorAll(selectors.disabledInstallButton));
+    const nodes = Array.from(document.querySelectorAll(selectors.disabledInstallButton));
+    return Array.from(new Set(nodes.map((node) => node.closest?.("button, [role='button']") || node)));
   }
 
   function installButtonLabel(element) {
     return (element.textContent || "").trim();
   }
 
-  function unblockButtonElement(button) {
-    button.disabled = false;
-    button.removeAttribute("disabled");
-    button.removeAttribute("aria-disabled");
-    button.classList.remove("disabled", "opacity-50", "cursor-not-allowed", "pointer-events-none");
-    button.style.pointerEvents = "auto";
-    button.tabIndex = 0;
-    const reactPropsKey = Object.keys(button).find((key) => key.startsWith("__reactProps"));
-    if (reactPropsKey) {
-      button[reactPropsKey].disabled = false;
-      button[reactPropsKey]["aria-disabled"] = false;
+  function isInstallButtonLabel(text) {
+    return /^安装\s*/.test(text) || /^Install\s*/i.test(text) || text === "强制安装";
+  }
+
+  function patchReactDisabledProps(element) {
+    Object.keys(element)
+      .filter((key) => key.startsWith("__reactProps"))
+      .forEach((key) => {
+        const props = element[key];
+        if (!props || typeof props !== "object") return;
+        props.disabled = false;
+        props["aria-disabled"] = false;
+        props["data-disabled"] = undefined;
+      });
+  }
+
+  function clearDisabledState(element) {
+    if (!(element instanceof HTMLElement)) return;
+    if ("disabled" in element) element.disabled = false;
+    element.removeAttribute("disabled");
+    element.removeAttribute("aria-disabled");
+    element.removeAttribute("data-disabled");
+    element.removeAttribute("inert");
+    element.classList.remove("disabled", "opacity-50", "cursor-not-allowed", "pointer-events-none");
+    element.classList.add("codex-force-install-unlocked");
+    element.style.pointerEvents = "auto";
+    element.style.opacity = "";
+    element.style.cursor = "pointer";
+    element.tabIndex = 0;
+    patchReactDisabledProps(element);
+  }
+
+  function installButtonUnlockNodes(button) {
+    const nodes = [button];
+    button.querySelectorAll?.("button, [role='button'], [disabled], [aria-disabled], [data-disabled], .cursor-not-allowed, .pointer-events-none")
+      .forEach((node) => nodes.push(node));
+    let parent = button.parentElement;
+    for (let depth = 0; parent && depth < 3; depth += 1, parent = parent.parentElement) {
+      if (parent.matches?.("button, [role='button'], [disabled], [aria-disabled], [data-disabled], .cursor-not-allowed, .pointer-events-none")) {
+        nodes.push(parent);
+      }
     }
+    return Array.from(new Set(nodes));
+  }
+
+  function installForcedInstallGuard(button) {
+    if (button.dataset.codexForceInstallUnlocked === "true") return;
+    button.dataset.codexForceInstallUnlocked = "true";
+    const keepUnlocked = () => installButtonUnlockNodes(button).forEach(clearDisabledState);
+    ["pointerdown", "mousedown", "mouseup", "click", "focus"].forEach((eventName) => {
+      button.addEventListener(eventName, keepUnlocked, true);
+    });
+  }
+
+  function unblockButtonElement(button) {
+    installButtonUnlockNodes(button).forEach(clearDisabledState);
+    installForcedInstallGuard(button);
   }
 
   function labelForcedInstallButton(button) {
-    const textNode = Array.from(button.childNodes).find((node) => node.nodeType === 3 && (/^安装\s/.test((node.nodeValue || "").trim()) || /^Install\s/.test((node.nodeValue || "").trim()) || (node.nodeValue || "").trim() === "强制安装"));
+    const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+    let textNode = null;
+    while (!textNode && walker.nextNode()) {
+      const node = walker.currentNode;
+      if (isInstallButtonLabel((node.nodeValue || "").trim())) textNode = node;
+    }
     if (textNode) {
       textNode.nodeValue = "强制安装";
     }
   }
 
   function clearForcedInstallButtonLabel(button) {
-    const textNode = Array.from(button.childNodes).find((node) => node.nodeType === 3 && (node.nodeValue || "").trim() === "强制安装");
+    const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+    let textNode = null;
+    while (!textNode && walker.nextNode()) {
+      const node = walker.currentNode;
+      if ((node.nodeValue || "").trim() === "强制安装") textNode = node;
+    }
     if (textNode) {
       textNode.nodeValue = "安装";
     }
@@ -1384,10 +1530,28 @@
     if (!codexPlusSettings().forcePluginInstall) return;
     pluginInstallCandidates().forEach((button) => {
       const text = installButtonLabel(button);
-      if (!/^安装\s/.test(text) && !/^Install\s/.test(text) && text !== "强制安装") return;
+      if (!isInstallButtonLabel(text)) return;
       unblockButtonElement(button);
       labelForcedInstallButton(button);
     });
+  }
+
+  function refreshForcePluginInstallUnlockLoop() {
+    const shouldRun = !pluginPatchDisabledInRelayMode() && codexPlusSettings().forcePluginInstall;
+    if (!shouldRun) {
+      clearInterval(window.__codexForcePluginInstallRefreshTimer);
+      window.__codexForcePluginInstallRefreshTimer = null;
+      return;
+    }
+    if (window.__codexForcePluginInstallRefreshTimer) return;
+    window.__codexForcePluginInstallRefreshTimer = setInterval(() => {
+      if (!codexPlusSettings().forcePluginInstall || pluginPatchDisabledInRelayMode()) {
+        clearInterval(window.__codexForcePluginInstallRefreshTimer);
+        window.__codexForcePluginInstallRefreshTimer = null;
+        return;
+      }
+      unblockPluginInstallButtons();
+    }, codexForcePluginInstallRefreshIntervalMs);
   }
 
   let cachedSessionRows = [];
@@ -2262,57 +2426,6 @@
     ]);
   }
 
-  function codexResponsesApiStatus() {
-    const status = codexModelCatalog.responses_api;
-    return status && typeof status === "object" ? status : { status: "unknown", message: "" };
-  }
-
-  function codexModelCompatibilityWarningText() {
-    if (!codexPlusModelUnlockEnabled()) return "";
-    const responsesApi = codexResponsesApiStatus();
-    if (responsesApi.status !== "unsupported") return "";
-    const provider = codexModelCatalog.provider_name || codexModelCatalog.model_provider || "当前模型供应商";
-    const detail = responsesApi.message ? `：${responsesApi.message}` : "";
-    return `${provider} 不支持 Codex 使用的 /v1/responses 接口，模型可能能显示，但发起对话会失败。请换支持 Responses API 的中转，或使用兼容转换代理${detail}`;
-  }
-
-  function modelCompatibilityWarningElement() {
-    const toggle = document.querySelector('[data-codex-plus-setting="modelWhitelistUnlock"]');
-    const row = toggle?.closest?.(".codex-plus-row");
-    if (!row) return null;
-    let warning = row.querySelector("[data-codex-model-compat-warning]");
-    if (warning) return warning;
-    warning = document.createElement("div");
-    warning.className = "codex-plus-model-compat-warning";
-    warning.dataset.codexModelCompatWarning = "true";
-    const description = row.querySelector(".codex-plus-row-description");
-    (description?.parentElement || row).appendChild(warning);
-    return warning;
-  }
-
-  function renderCodexModelCompatibilityWarning() {
-    const text = codexModelCompatibilityWarningText();
-    document.querySelectorAll("[data-codex-model-compat-warning]").forEach((warning) => {
-      warning.hidden = !text;
-      warning.textContent = text;
-    });
-    if (!text) return;
-    const warning = modelCompatibilityWarningElement();
-    if (!warning) return;
-    warning.hidden = false;
-    warning.textContent = text;
-  }
-
-  function maybeShowCodexModelCompatibilityWarning() {
-    const text = codexModelCompatibilityWarningText();
-    if (!text) return;
-    const responsesApi = codexResponsesApiStatus();
-    const key = `${codexModelCatalog.model_provider || ""}:${responsesApi.endpoint || ""}:${responsesApi.message || ""}`;
-    if (window.__codexPlusResponsesApiWarningKey === key) return;
-    window.__codexPlusResponsesApiWarningKey = key;
-    showToast(text, null);
-  }
-
   async function loadCodexModelCatalog(force = false) {
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
@@ -2321,7 +2434,6 @@
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
-        maybeShowCodexModelCompatibilityWarning();
         patchCodexModelWhitelist();
         return codexModelCatalog;
       })
@@ -4252,6 +4364,253 @@
     document.body.appendChild(container);
   }
 
+  const conversationViewContentClasses = [
+    "mx-auto",
+    "w-full",
+    "max-w-(--thread-content-max-width)",
+    "px-toolbar",
+    "relative",
+    "flex",
+    "shrink-0",
+    "flex-col",
+    "pb-8",
+  ];
+  const conversationViewComposerClasses = [
+    "relative",
+    "z-10",
+    "flex",
+    "flex-col",
+    "mx-auto",
+    "w-full",
+    "max-w-(--thread-content-max-width)",
+    "px-toolbar",
+  ];
+  const conversationViewState = {
+    contentEl: null,
+    composerEl: null,
+    rafId: 0,
+    settleFramesLeft: 0,
+    mo: null,
+    ro: null,
+    pollId: 0,
+    moObserved: false,
+    observed: new WeakSet(),
+    elements: new Set(),
+  };
+
+  function conversationViewTokenSet(el) {
+    return new Set(String(el?.className || "").split(/\s+/).filter(Boolean));
+  }
+
+  function conversationViewHasAllClasses(el, classes) {
+    const set = conversationViewTokenSet(el);
+    return classes.every((cls) => set.has(cls));
+  }
+
+  function conversationViewFindByClasses(classes) {
+    return Array.from(document.querySelectorAll("div")).find((el) => conversationViewHasAllClasses(el, classes)) || null;
+  }
+
+  function conversationViewFindContentEl() {
+    return conversationViewFindByClasses(conversationViewContentClasses);
+  }
+
+  function conversationViewFindComposerEl() {
+    return conversationViewFindByClasses(conversationViewComposerClasses);
+  }
+
+  function conversationViewRememberOriginals(el) {
+    if (!el) return;
+    conversationViewState.elements.add(el);
+    const original = {
+      width: el.style.width || "",
+      maxWidth: el.style.maxWidth || "",
+      marginLeft: el.style.marginLeft || "",
+      marginRight: el.style.marginRight || "",
+      left: el.style.left || "",
+      transform: el.style.transform || "",
+      boxSizing: el.style.boxSizing || "",
+    };
+    if (!("codexPlusConversationViewOriginalWidth" in el.dataset)) el.dataset.codexPlusConversationViewOriginalWidth = original.width;
+    if (!("codexPlusConversationViewOriginalMaxWidth" in el.dataset)) el.dataset.codexPlusConversationViewOriginalMaxWidth = original.maxWidth;
+    if (!("codexPlusConversationViewOriginalMarginLeft" in el.dataset)) el.dataset.codexPlusConversationViewOriginalMarginLeft = original.marginLeft;
+    if (!("codexPlusConversationViewOriginalMarginRight" in el.dataset)) el.dataset.codexPlusConversationViewOriginalMarginRight = original.marginRight;
+    if (!("codexPlusConversationViewOriginalLeft" in el.dataset)) el.dataset.codexPlusConversationViewOriginalLeft = original.left;
+    if (!("codexPlusConversationViewOriginalTransform" in el.dataset)) el.dataset.codexPlusConversationViewOriginalTransform = original.transform;
+    if (!("codexPlusConversationViewOriginalBoxSizing" in el.dataset)) el.dataset.codexPlusConversationViewOriginalBoxSizing = original.boxSizing;
+  }
+
+  function conversationViewRestoreElement(el) {
+    if (!el) return;
+    if ("codexPlusConversationViewOriginalWidth" in el.dataset) {
+      el.style.width = el.dataset.codexPlusConversationViewOriginalWidth;
+      delete el.dataset.codexPlusConversationViewOriginalWidth;
+    }
+    if ("codexPlusConversationViewOriginalMaxWidth" in el.dataset) {
+      el.style.maxWidth = el.dataset.codexPlusConversationViewOriginalMaxWidth;
+      delete el.dataset.codexPlusConversationViewOriginalMaxWidth;
+    }
+    if ("codexPlusConversationViewOriginalMarginLeft" in el.dataset) {
+      el.style.marginLeft = el.dataset.codexPlusConversationViewOriginalMarginLeft;
+      delete el.dataset.codexPlusConversationViewOriginalMarginLeft;
+    }
+    if ("codexPlusConversationViewOriginalMarginRight" in el.dataset) {
+      el.style.marginRight = el.dataset.codexPlusConversationViewOriginalMarginRight;
+      delete el.dataset.codexPlusConversationViewOriginalMarginRight;
+    }
+    if ("codexPlusConversationViewOriginalLeft" in el.dataset) {
+      el.style.left = el.dataset.codexPlusConversationViewOriginalLeft;
+      delete el.dataset.codexPlusConversationViewOriginalLeft;
+    }
+    if ("codexPlusConversationViewOriginalTransform" in el.dataset) {
+      el.style.transform = el.dataset.codexPlusConversationViewOriginalTransform;
+      delete el.dataset.codexPlusConversationViewOriginalTransform;
+    }
+    if ("codexPlusConversationViewOriginalBoxSizing" in el.dataset) {
+      el.style.boxSizing = el.dataset.codexPlusConversationViewOriginalBoxSizing;
+      delete el.dataset.codexPlusConversationViewOriginalBoxSizing;
+    }
+  }
+
+  function conversationViewResetOwnOffset(el) {
+    if (!el) return;
+    const originalTransform = el.dataset.codexPlusConversationViewOriginalTransform || "";
+    const originalLeft = el.dataset.codexPlusConversationViewOriginalLeft || "";
+    if (el.style.left !== originalLeft) el.style.left = originalLeft;
+    if (el.style.transform !== originalTransform) el.style.transform = originalTransform;
+    const transform = String(el.style.transform || "").trim();
+    if (/^(translateX\([^)]*\)\s*)+$/i.test(transform)) {
+      el.style.transform = "";
+    }
+  }
+
+  function conversationViewApplyNativeWidth(el) {
+    conversationViewRememberOriginals(el);
+    const maxWidth = `${conversationViewWidth()}px`;
+    if (el.style.boxSizing !== "border-box") el.style.boxSizing = "border-box";
+    if (el.style.width !== "100%") el.style.width = "100%";
+    if (el.style.maxWidth !== maxWidth) el.style.maxWidth = maxWidth;
+    if (el.style.marginLeft !== "auto") el.style.marginLeft = "auto";
+    if (el.style.marginRight !== "auto") el.style.marginRight = "auto";
+  }
+
+  function conversationViewSessionRectFor(el) {
+    return el?.parentElement?.getBoundingClientRect() || null;
+  }
+
+  function conversationViewHtmlCenter() {
+    const rect = document.documentElement.getBoundingClientRect();
+    return rect.left + rect.width / 2;
+  }
+
+  function conversationViewHasRoomForHtmlCenter(nativeRect, bounds) {
+    if (!nativeRect || !bounds) return false;
+    const targetLeft = conversationViewHtmlCenter() - nativeRect.width / 2;
+    const targetRight = targetLeft + nativeRect.width;
+    return targetLeft >= bounds.left - 0.5 && targetRight <= bounds.right + 0.5;
+  }
+
+  function conversationViewAlignElement(el) {
+    if (!el?.isConnected) return;
+    conversationViewApplyNativeWidth(el);
+    conversationViewResetOwnOffset(el);
+    const nativeRect = el.getBoundingClientRect();
+    const bounds = conversationViewSessionRectFor(el);
+    if (!conversationViewHasRoomForHtmlCenter(nativeRect, bounds)) return;
+    const targetLeft = conversationViewHtmlCenter() - nativeRect.width / 2;
+    const delta = targetLeft - nativeRect.left;
+    if (Math.abs(delta) > 0.5) {
+      const nextLeft = `${delta.toFixed(2)}px`;
+      if (el.style.left !== nextLeft) el.style.left = nextLeft;
+    }
+  }
+
+  function conversationViewObserveIfNeeded(el) {
+    if (!el || !conversationViewState.ro || conversationViewState.observed.has(el)) return;
+    conversationViewState.observed.add(el);
+    conversationViewState.ro.observe(el);
+  }
+
+  function conversationViewResolveTargets() {
+    if (!conversationViewState.contentEl?.isConnected) conversationViewState.contentEl = conversationViewFindContentEl();
+    if (!conversationViewState.composerEl?.isConnected) conversationViewState.composerEl = conversationViewFindComposerEl();
+    [
+      document.documentElement,
+      document.body,
+      conversationViewState.contentEl,
+      conversationViewState.contentEl?.parentElement,
+      conversationViewState.contentEl?.parentElement?.parentElement,
+      conversationViewState.composerEl,
+      conversationViewState.composerEl?.parentElement,
+      conversationViewState.composerEl?.parentElement?.parentElement,
+    ].forEach(conversationViewObserveIfNeeded);
+  }
+
+  function conversationViewAlignNow() {
+    if (!codexPlusSettings().conversationView) return;
+    conversationViewResolveTargets();
+    conversationViewAlignElement(conversationViewState.contentEl);
+    conversationViewAlignElement(conversationViewState.composerEl);
+  }
+
+  function scheduleConversationViewAlign(frames = 16) {
+    conversationViewState.settleFramesLeft = Math.max(conversationViewState.settleFramesLeft, frames);
+    if (conversationViewState.rafId) return;
+    const tick = () => {
+      conversationViewState.rafId = 0;
+      conversationViewAlignNow();
+      conversationViewState.settleFramesLeft -= 1;
+      if (conversationViewState.settleFramesLeft > 0) {
+        conversationViewState.rafId = requestAnimationFrame(tick);
+      }
+    };
+    conversationViewState.rafId = requestAnimationFrame(tick);
+  }
+
+  function cleanupConversationView() {
+    if (conversationViewState.rafId) cancelAnimationFrame(conversationViewState.rafId);
+    if (conversationViewState.pollId) clearInterval(conversationViewState.pollId);
+    conversationViewState.rafId = 0;
+    conversationViewState.pollId = 0;
+    conversationViewState.mo?.disconnect();
+    conversationViewState.ro?.disconnect();
+    conversationViewState.mo = null;
+    conversationViewState.ro = null;
+    conversationViewState.moObserved = false;
+    conversationViewState.observed = new WeakSet();
+    conversationViewState.elements.forEach(conversationViewRestoreElement);
+    conversationViewState.elements.clear();
+    conversationViewState.contentEl = null;
+    conversationViewState.composerEl = null;
+  }
+
+  window.__codexPlusConversationViewCleanup = cleanupConversationView;
+
+  function ensureConversationViewRuntime() {
+    if (conversationViewState.ro && conversationViewState.mo && conversationViewState.pollId) return;
+    conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
+    conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign());
+    if (document.body && !conversationViewState.moObserved) {
+      conversationViewState.mo.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class", "hidden", "data-state", "aria-hidden"],
+      });
+      conversationViewState.moObserved = true;
+    }
+    conversationViewState.pollId = conversationViewState.pollId || window.setInterval(() => scheduleConversationViewAlign(2), 350);
+  }
+
+  function refreshConversationView() {
+    if (!codexPlusSettings().conversationView) {
+      cleanupConversationView();
+      return;
+    }
+    ensureConversationViewRuntime();
+    scheduleConversationViewAlign();
+  }
+
   function scanLightweight() {
     installStyle();
     installCodexPlusMenu();
@@ -4772,9 +5131,11 @@
   function scanDeferred() {
     if (pluginPatchDisabledInRelayMode()) {
       clearPluginPatchArtifacts();
+      refreshForcePluginInstallUnlockLoop();
     } else {
       enablePluginEntry();
       unblockPluginInstallButtons();
+      refreshForcePluginInstallUnlockLoop();
     }
     sessionRows().forEach(tryAttachButton);
     updateDeleteButtonOffsets();
@@ -4783,6 +5144,7 @@
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     installArchivedDeleteAllButton();
     refreshConversationTimeline();
+    refreshConversationView();
     scheduleThreadScrollSync();
     patchCodexModelWhitelist();
   }
@@ -4888,6 +5250,7 @@
     codexPlusResizeRafId = requestAnimationFrame(() => {
       updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));
       runScanStep(refreshConversationTimeline);
+      runScanStep(refreshConversationView);
     });
   };
   window.addEventListener("resize", window.__codexPlusResizeHandler);

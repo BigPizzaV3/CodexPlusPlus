@@ -106,7 +106,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_result_json_shape_matches_python_to_dict() {
+    fn delete_result_json_shape_matches_rust_model() {
         let result = DeleteResult {
             status: DeleteStatus::Partial,
             session_id: "session-123".to_string(),
@@ -134,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn export_result_json_shape_matches_python_to_dict() {
+    fn export_result_json_shape_matches_rust_model() {
         let result = ExportResult {
             status: ExportStatus::Exported,
             session_id: "session-123".to_string(),

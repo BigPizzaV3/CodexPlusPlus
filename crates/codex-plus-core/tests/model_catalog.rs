@@ -51,17 +51,15 @@ experimental_bearer_token = "relay-key"
     assert_eq!(
         result["responses_api"],
         json!({
-            "status": "supported",
-            "endpoint": format!("{}/v1/responses", server.base_url),
+            "status": "unknown",
+            "endpoint": "",
             "message": ""
         })
     );
-    assert_eq!(result["sources"][0]["responses_api"]["status"], "supported");
+    assert_eq!(result["sources"][0]["responses_api"]["status"], "unknown");
     let requests = server.finish();
     assert_eq!(requests[0].path, "/v1/models");
     assert_eq!(requests[0].authorization, "Bearer relay-key");
-    assert_eq!(requests[1].path, "/v1/responses");
-    assert_eq!(requests[1].authorization, "Bearer relay-key");
 }
 
 #[tokio::test]
@@ -94,21 +92,17 @@ base_url = "{}/v1"
     assert_eq!(result["models"], json!(["moonshot-v1", "mimo-v2.5-pro"]));
     let requests = server.finish();
     assert_eq!(requests[0].path, "/v1/models");
-    assert_eq!(requests[1].path, "/v1/responses");
+    assert_eq!(result["responses_api"]["status"], "unknown");
 }
 
 #[tokio::test]
-async fn model_catalog_marks_responses_api_unsupported_when_probe_returns_404() {
+async fn model_catalog_leaves_responses_api_unknown_without_probe() {
     let temp = tempfile::tempdir().unwrap();
-    let server = spawn_models_server_with_responses(
-        json!({
-            "data": [
-                {"id": "legacy-model"}
-            ]
-        }),
-        404,
-        json!({"error": {"message": "Not Found"}}),
-    );
+    let server = spawn_models_server(json!({
+        "data": [
+            {"id": "legacy-model"}
+        ]
+    }));
     write_config(
         temp.path(),
         &format!(
@@ -131,24 +125,11 @@ base_url = "{}"
     .await;
 
     assert_eq!(result["status"], "ok");
-    assert_eq!(result["responses_api"]["status"], "unsupported");
-    assert_eq!(
-        result["responses_api"]["endpoint"],
-        format!("{}/v1/responses", server.base_url)
-    );
-    assert!(
-        result["responses_api"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("404")
-    );
-    assert_eq!(
-        result["sources"][0]["responses_api"]["status"],
-        "unsupported"
-    );
+    assert_eq!(result["responses_api"]["status"], "unknown");
+    assert_eq!(result["responses_api"]["endpoint"], "");
+    assert_eq!(result["sources"][0]["responses_api"]["status"], "unknown");
     let requests = server.finish();
     assert_eq!(requests[0].path, "/v1/models");
-    assert_eq!(requests[1].path, "/v1/responses");
 }
 
 fn write_config(home: &Path, contents: &str) {
@@ -172,14 +153,6 @@ struct ModelsRequest {
 }
 
 fn spawn_models_server(payload: serde_json::Value) -> ModelsServer {
-    spawn_models_server_with_responses(payload, 200, json!({"id": "resp_1"}))
-}
-
-fn spawn_models_server_with_responses(
-    payload: serde_json::Value,
-    responses_status: u16,
-    responses_payload: serde_json::Value,
-) -> ModelsServer {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let address = listener.local_addr().unwrap();
     let base_url = format!("http://{address}");
@@ -187,11 +160,10 @@ fn spawn_models_server_with_responses(
         .set_nonblocking(true)
         .expect("listener should switch to nonblocking mode");
     let models_body = payload.to_string();
-    let responses_body = responses_payload.to_string();
     let handle = thread::spawn(move || {
         let started = std::time::Instant::now();
         let mut requests = Vec::new();
-        while requests.len() < 2 && started.elapsed() < std::time::Duration::from_secs(2) {
+        while requests.is_empty() && started.elapsed() < std::time::Duration::from_secs(2) {
             let Ok((mut stream, _)) = listener.accept() else {
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 continue;
@@ -210,11 +182,7 @@ fn spawn_models_server_with_responses(
                 .find_map(|line| line.strip_prefix("authorization: "))
                 .unwrap_or_default()
                 .to_string();
-            let (status, body) = if request_path == "/v1/responses" {
-                (responses_status, responses_body.as_str())
-            } else {
-                (200, models_body.as_str())
-            };
+            let (status, body) = (200, models_body.as_str());
             let response = format!(
                 "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),

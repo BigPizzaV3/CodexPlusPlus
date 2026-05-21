@@ -125,7 +125,7 @@ Windows 用户下载 `windows-x64-setup.exe` 后直接运行安装包。安装�
 
 ## 功能亮点
 
-- Rust 后端和静默 launcher，启动时不依赖 Python 环境。
+- Rust 后端和静默 launcher，启动时不依赖额外运行时。
 - Tauri + React 管理工具，支持深色/浅色切换。
 - 外部 CDP 注入，不改 `app.asar`，不向 Codex 安装目录写入 DLL。
 - 中转注入模式：支持多个中转配置，写入 `CodexPlusPlus` provider，并可切回官方 ChatGPT 登录态。
@@ -292,8 +292,6 @@ scripts/installer/
   windows/CodexPlusPlus.nsi     Windows NSIS 安装包
   macos/package-dmg.sh          macOS DMG 打包
 ```
-
-不建议继续使用旧 Python 入口；仓库中保留的 `codex_session_delete/` 主要用于迁移参考和兼容历史代码。
 
 ## 友情链接
 
