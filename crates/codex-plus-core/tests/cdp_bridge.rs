@@ -203,6 +203,8 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("wireCodexServiceTierBadge"));
     assert!(script.contains("codexServiceTierBadgePlacement"));
     assert!(script.contains("codexServiceTierBadgeFooterGroup"));
+    assert!(script.contains("codexServiceTierFindComposerEl"));
+    assert!(script.contains("codexServiceTierVisibleComposerFooters"));
     assert!(script.contains("data-codex-service-tier-badge"));
     assert!(script.contains("codexServiceTierBadgeWired"));
     assert!(script.contains("setAttribute(\"role\", \"button\")"));

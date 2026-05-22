@@ -4922,6 +4922,24 @@
       });
   }
 
+  function codexServiceTierVisibleComposerFooters() {
+    return Array.from(document.querySelectorAll(".composer-footer"))
+      .filter(codexServiceTierBadgeVisibleElement)
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return (rightRect.bottom - leftRect.bottom) || (rightRect.width - leftRect.width);
+      });
+  }
+
+  function codexServiceTierFindComposerEl() {
+    const footer = codexServiceTierVisibleComposerFooters()[0];
+    if (footer) return footer;
+    const threadComposer = conversationViewFindComposerEl();
+    if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)) return threadComposer;
+    return null;
+  }
+
   function codexServiceTierBadgeAnchor(composer) {
     const providerNames = codexServiceTierKnownProviderNames();
     const buttons = codexServiceTierBadgeButtonCandidates(composer);
@@ -4935,7 +4953,8 @@
   }
 
   function codexServiceTierComposerFooter(composer) {
-    return composer?.querySelector?.(".composer-footer") || document.querySelector(".composer-footer");
+    if (composer?.matches?.(".composer-footer")) return composer;
+    return composer?.querySelector?.(".composer-footer") || codexServiceTierVisibleComposerFooters()[0] || null;
   }
 
   function codexServiceTierBadgeFooterGroup(composer) {
@@ -4980,7 +4999,7 @@
   }
 
   function installCodexServiceTierBadge() {
-    const composer = conversationViewFindComposerEl();
+    const composer = codexServiceTierFindComposerEl();
     const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
     const existingBadges = Array.from(document.querySelectorAll(`[data-codex-service-tier-badge="true"]`));
     if (!composer || !placement?.parent) {
