@@ -171,8 +171,11 @@ impl LaunchHooks for LauncherHooks {
         &self,
         app_dir: &Path,
         debug_port: u16,
+        extra_args: &[String],
     ) -> anyhow::Result<codex_plus_core::launcher::CodexLaunch> {
-        self.core.launch_codex(app_dir, debug_port).await
+        self.core
+            .launch_codex(app_dir, debug_port, extra_args)
+            .await
     }
 
     async fn bridge_context(&self, debug_port: u16) -> anyhow::Result<Option<BridgeContext>> {
