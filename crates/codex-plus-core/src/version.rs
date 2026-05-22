@@ -1,4 +1,4 @@
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = "1.1.6.1";
 
 #[cfg(test)]
 mod tests {
