@@ -1,9 +1,11 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use codex_plus_core::install::SILENT_BINARY;
-use codex_plus_core::settings::{BackendSettings, SettingsStore};
+use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
+use codex_plus_core::settings::{BackendSettings, RelayProfile, SettingsStore};
 use codex_plus_core::status::{LaunchStatus, StatusStore};
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde::Serialize;
@@ -55,6 +57,13 @@ pub struct SettingsPayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CcsProvidersPayload {
+    pub db_path: String,
+    pub providers: Vec<codex_plus_core::ccs_import::CcsProviderImport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RelayPayload {
     pub authenticated: bool,
     pub auth_source: String,
@@ -64,6 +73,30 @@ pub struct RelayPayload {
     pub requires_openai_auth: bool,
     pub has_bearer_token: bool,
     pub backup_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayFilesPayload {
+    pub config_path: String,
+    pub auth_path: String,
+    pub config_contents: String,
+    pub auth_contents: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayProfileTestPayload {
+    pub http_status: u16,
+    pub endpoint: String,
+    pub response_preview: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveRelayFileRequest {
+    pub kind: String,
+    pub contents: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -106,6 +139,12 @@ pub struct WatcherPayload {
 pub struct AdsPayload {
     pub version: u64,
     pub ads: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScriptMarketPayload {
+    pub market: Value,
+    pub user_scripts: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -287,6 +326,95 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
     }
 }
 
+#[tauri::command]
+pub fn load_ccs_providers() -> CommandResult<CcsProvidersPayload> {
+    let db_path = codex_plus_core::ccs_import::default_ccs_db_path();
+    match codex_plus_core::ccs_import::list_codex_providers_from_db(&db_path) {
+        Ok(providers) => ok(
+            &format!("已读取 CCS Codex 供应商：{} 个。", providers.len()),
+            CcsProvidersPayload {
+                db_path: db_path.to_string_lossy().to_string(),
+                providers,
+            },
+        ),
+        Err(error) => failed(
+            &format!("读取 CCS 供应商失败：{error}"),
+            CcsProvidersPayload {
+                db_path: db_path.to_string_lossy().to_string(),
+                providers: Vec::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn import_ccs_providers() -> CommandResult<SettingsPayload> {
+    let providers = match codex_plus_core::ccs_import::list_codex_providers_from_default_db() {
+        Ok(providers) => providers,
+        Err(error) => {
+            let payload = settings_payload_value()
+                .map(|payload| payload)
+                .unwrap_or_else(|(_, payload)| payload);
+            return failed(&format!("读取 CCS 供应商失败：{error}"), payload);
+        }
+    };
+
+    let store = SettingsStore::default();
+    let mut settings = store.load().unwrap_or_default();
+    let mut existing_keys: Vec<String> = settings
+        .relay_profiles
+        .iter()
+        .map(relay_profile_import_key)
+        .collect();
+    let mut existing_ids: Vec<String> = settings
+        .relay_profiles
+        .iter()
+        .map(|profile| profile.id.clone())
+        .collect();
+    let mut imported = 0usize;
+
+    for provider in providers {
+        let key = ccs_import_key(&provider.name, &provider.base_url);
+        if existing_keys.iter().any(|existing| existing == &key) {
+            continue;
+        }
+        let profile = codex_plus_core::ccs_import::relay_profile_from_ccs(&provider, &existing_ids);
+        existing_ids.push(profile.id.clone());
+        existing_keys.push(key);
+        settings.relay_profiles.push(profile);
+        imported += 1;
+    }
+
+    if imported == 0 {
+        return settings_payload("没有新的 CCSwitch 供应商需要导入。", "设置读取失败");
+    }
+
+    match store.save(&settings) {
+        Ok(()) => settings_payload(
+            &format!("已导入 CCSwitch 供应商：{imported} 个。"),
+            "导入 CCSwitch 供应商后重新读取设置失败",
+        ),
+        Err(error) => failed(
+            &format!("保存 CCS 供应商失败：{error}"),
+            settings_payload_value()
+                .map(|payload| payload)
+                .unwrap_or_else(|(_, payload)| payload),
+        ),
+    }
+}
+
+fn relay_profile_import_key(profile: &RelayProfile) -> String {
+    ccs_import_key(&profile.name, &profile.base_url)
+}
+
+fn ccs_import_key(name: &str, base_url: &str) -> String {
+    format!(
+        "{}\n{}",
+        name.trim().to_ascii_lowercase(),
+        base_url.trim().trim_end_matches('/').to_ascii_lowercase()
+    )
+}
+
 fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSettings {
     if let Some(path) =
         codex_plus_core::app_paths::normalize_codex_app_path(Path::new(&settings.codex_app_path))
@@ -330,6 +458,62 @@ pub async fn load_ads() -> CommandResult<AdsPayload> {
                 version: 1,
                 ads: Vec::new(),
             },
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
+    match script_market::fetch_market_manifest(script_market::DEFAULT_MARKET_INDEX_URL).await {
+        Ok(manifest) => ok(
+            "脚本市场已刷新。",
+            script_market_payload_from_manifest(&manifest, "ok", "脚本市场已刷新。"),
+        ),
+        Err(error) => failed(
+            &format!("脚本市场加载失败：{error}"),
+            failed_script_market_payload(&format!("脚本市场加载失败：{error}")),
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayload> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return failed(
+            "脚本 id 不能为空。",
+            failed_script_market_payload("脚本 id 不能为空。"),
+        );
+    }
+    let manifest =
+        match script_market::fetch_market_manifest(script_market::DEFAULT_MARKET_INDEX_URL).await {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                return failed(
+                    &format!("脚本市场加载失败：{error}"),
+                    failed_script_market_payload(&format!("脚本市场加载失败：{error}")),
+                );
+            }
+        };
+    let Some(script) = manifest.scripts.iter().find(|script| script.id == trimmed) else {
+        return failed(
+            "市场清单中未找到该脚本。",
+            script_market_payload_from_manifest(&manifest, "failed", "市场清单中未找到该脚本。"),
+        );
+    };
+    let manager = default_user_script_manager();
+    match script_market::install_market_script(&manager, script).await {
+        Ok(()) => ok(
+            "脚本已安装。",
+            script_market_payload_from_manifest(&manifest, "ok", "脚本已安装。"),
+        ),
+        Err(error) => failed(
+            &format!("安装脚本失败：{error}"),
+            script_market_payload_from_manifest(
+                &manifest,
+                "failed",
+                &format!("安装脚本失败：{error}"),
+            ),
         ),
     }
 }
@@ -563,8 +747,116 @@ pub fn relay_status() -> CommandResult<RelayPayload> {
 }
 
 #[tauri::command]
+pub fn read_relay_files() -> CommandResult<RelayFilesPayload> {
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    match relay_files_payload_from_home(&home) {
+        Ok(payload) => ok("配置文件内容已读取。", payload),
+        Err(error) => failed(
+            &format!("读取配置文件失败：{error}"),
+            RelayFilesPayload {
+                config_path: home.join("config.toml").to_string_lossy().to_string(),
+                auth_path: home.join("auth.json").to_string_lossy().to_string(),
+                config_contents: String::new(),
+                auth_contents: String::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn save_relay_file(request: SaveRelayFileRequest) -> CommandResult<RelayFilesPayload> {
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    match save_relay_file_in_home(&home, &request.kind, &request.contents)
+        .and_then(|_| relay_files_payload_from_home(&home))
+    {
+        Ok(payload) => ok("配置文件已保存。", payload),
+        Err(error) => failed(
+            &format!("保存配置文件失败：{error}"),
+            relay_files_payload_from_home(&home).unwrap_or_else(|_| RelayFilesPayload {
+                config_path: home.join("config.toml").to_string_lossy().to_string(),
+                auth_path: home.join("auth.json").to_string_lossy().to_string(),
+                config_contents: String::new(),
+                auth_contents: String::new(),
+            }),
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayProfileTestPayload> {
+    let profile_name = if profile.name.trim().is_empty() {
+        "未命名供应商"
+    } else {
+        profile.name.trim()
+    };
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let test_model = if profile.test_model.trim().is_empty() {
+        settings.relay_test_model.trim()
+    } else {
+        profile.test_model.trim()
+    };
+    match codex_plus_core::relay_config::test_relay_profile(&profile, test_model).await {
+        Ok(result) => {
+            let status = if result.http_status < 400 { "ok" } else { "failed" };
+            let preview = result.response_preview.trim();
+            let detail = if preview.is_empty() {
+                "响应内容为空".to_string()
+            } else {
+                format!("响应：{preview}")
+            };
+            CommandResult {
+                status: status.to_string(),
+                message: format!(
+                    "已向「{profile_name}」用模型「{test_model}」发送 hi，HTTP {}。{detail}",
+                    result.http_status
+                ),
+                payload: RelayProfileTestPayload {
+                    http_status: result.http_status,
+                    endpoint: result.endpoint,
+                    response_preview: result.response_preview,
+                },
+            }
+        }
+        Err(error) => failed(
+            &format!("测试「{profile_name}」失败：{error}"),
+            RelayProfileTestPayload {
+                http_status: 0,
+                endpoint: String::new(),
+                response_preview: String::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
 pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let relay = settings.active_relay_profile();
+    log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
+    if relay_has_complete_files(&relay) {
+        return match codex_plus_core::relay_config::apply_relay_files_to_home(
+            &home,
+            &relay.config_contents,
+            &relay.auth_contents,
+        ) {
+            Ok(result) => {
+                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+                ok(
+                    "已切换到当前中转的完整 config.toml / auth.json。",
+                    relay_payload(status, result.backup_path),
+                )
+            }
+            Err(error) => {
+                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+                failed(
+                    &format!("切换完整中转配置失败：{error}"),
+                    relay_payload(status, None),
+                )
+            }
+        };
+    }
+
     let auth = codex_plus_core::relay_config::chatgpt_auth_status_from_home(&home);
     if !auth.authenticated {
         let status = codex_plus_core::relay_config::relay_status_from_home(&home);
@@ -574,12 +866,12 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         );
     }
 
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    let relay = settings.active_relay_profile();
-    match codex_plus_core::relay_config::apply_relay_config_to_home(
+    match codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
         &home,
         &relay.base_url,
         &relay.api_key,
+        relay.protocol,
+        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
     ) {
         Ok(result) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
@@ -603,10 +895,36 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
-    match codex_plus_core::relay_config::apply_pure_api_config_to_home(
+    log_relay_apply_request("manager.apply_pure_api_injection", &settings, &relay);
+    if relay_has_complete_files(&relay) {
+        return match codex_plus_core::relay_config::apply_relay_files_to_home(
+            &home,
+            &relay.config_contents,
+            &relay.auth_contents,
+        ) {
+            Ok(result) => {
+                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+                ok(
+                    "已切换到当前中转的完整 config.toml / auth.json。",
+                    relay_payload(status, result.backup_path),
+                )
+            }
+            Err(error) => {
+                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+                failed(
+                    &format!("切换完整纯 API 配置失败：{error}"),
+                    relay_payload(status, None),
+                )
+            }
+        };
+    }
+
+    match codex_plus_core::relay_config::apply_pure_api_config_to_home_with_protocol(
         &home,
         &relay.base_url,
         &relay.api_key,
+        relay.protocol,
+        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
     ) {
         Ok(result) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
@@ -646,6 +964,32 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
     }
 }
 
+fn relay_has_complete_files(relay: &codex_plus_core::settings::RelayProfile) -> bool {
+    !relay.config_contents.trim().is_empty()
+        && !relay.auth_contents.trim().is_empty()
+}
+
+fn log_relay_apply_request(
+    event: &str,
+    settings: &BackendSettings,
+    relay: &codex_plus_core::settings::RelayProfile,
+) {
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        event,
+        json!({
+            "activeRelayId": settings.active_relay_id,
+            "relayId": relay.id,
+            "relayName": relay.name,
+            "relayMode": relay.relay_mode,
+            "protocol": relay.protocol,
+            "baseUrl": relay.base_url,
+            "hasConfigContents": !relay.config_contents.trim().is_empty(),
+            "hasAuthContents": !relay.auth_contents.trim().is_empty(),
+            "configContainsProxy": relay.config_contents.contains("127.0.0.1:57321")
+        }),
+    );
+}
+
 fn refresh_cli_wrapper_after_settings_save(settings: &BackendSettings) -> String {
     match codex_plus_core::cli_wrapper::ensure_cli_wrapper(settings) {
         Ok(Some(install)) => format!(
@@ -670,6 +1014,42 @@ fn relay_payload(
         requires_openai_auth: status.requires_openai_auth,
         has_bearer_token: status.has_bearer_token,
         backup_path,
+    }
+}
+
+fn relay_files_payload_from_home(home: &std::path::Path) -> anyhow::Result<RelayFilesPayload> {
+    let config_path = home.join("config.toml");
+    let auth_path = home.join("auth.json");
+    Ok(RelayFilesPayload {
+        config_path: config_path.to_string_lossy().to_string(),
+        auth_path: auth_path.to_string_lossy().to_string(),
+        config_contents: read_optional_text_file(&config_path)?,
+        auth_contents: read_optional_text_file(&auth_path)?,
+    })
+}
+
+fn save_relay_file_in_home(
+    home: &std::path::Path,
+    kind: &str,
+    contents: &str,
+) -> anyhow::Result<()> {
+    let path = match kind {
+        "config" => home.join("config.toml"),
+        "auth" => home.join("auth.json"),
+        other => anyhow::bail!("未知配置文件类型：{other}"),
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)?;
+    Ok(())
+}
+
+fn read_optional_text_file(path: &std::path::Path) -> anyhow::Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Ok(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -700,27 +1080,31 @@ fn open_url(url: &str) -> anyhow::Result<()> {
 }
 
 fn settings_payload(message: &str, failure_context: &str) -> CommandResult<SettingsPayload> {
+    match settings_payload_value() {
+        Ok(payload) => ok(message, payload),
+        Err((error, payload)) => failed(&format!("{failure_context}：{error}"), payload),
+    }
+}
+
+fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsPayload)> {
     let store = SettingsStore::default();
     let settings_path = codex_plus_core::paths::default_settings_path()
         .to_string_lossy()
         .to_string();
     match store.load() {
-        Ok(settings) => ok(
-            message,
-            SettingsPayload {
-                settings,
-                settings_path,
-                user_scripts: user_script_inventory(),
-            },
-        ),
-        Err(error) => failed(
-            &format!("{failure_context}：{error}"),
+        Ok(settings) => Ok(SettingsPayload {
+            settings,
+            settings_path,
+            user_scripts: user_script_inventory(),
+        }),
+        Err(error) => Err((
+            error,
             SettingsPayload {
                 settings: BackendSettings::default(),
                 settings_path,
                 user_scripts: user_script_inventory(),
             },
-        ),
+        )),
     }
 }
 
@@ -734,6 +1118,86 @@ fn user_script_inventory() -> Value {
                 "error": error.to_string()
             })
         })
+}
+
+fn failed_script_market_payload(message: &str) -> ScriptMarketPayload {
+    ScriptMarketPayload {
+        market: json!({
+            "status": "failed",
+            "message": message,
+            "indexUrl": script_market::DEFAULT_MARKET_INDEX_URL,
+            "updatedAt": "",
+            "scripts": []
+        }),
+        user_scripts: user_script_inventory(),
+    }
+}
+
+fn script_market_payload_from_manifest(
+    manifest: &ScriptMarketManifest,
+    status: &str,
+    message: &str,
+) -> ScriptMarketPayload {
+    let user_scripts = user_script_inventory();
+    let installed = installed_market_versions(&user_scripts);
+    let scripts = manifest
+        .scripts
+        .iter()
+        .map(|script| market_script_payload(script, &installed))
+        .collect::<Vec<_>>();
+    ScriptMarketPayload {
+        market: json!({
+            "status": status,
+            "message": message,
+            "indexUrl": script_market::DEFAULT_MARKET_INDEX_URL,
+            "updatedAt": manifest.updated_at.clone().unwrap_or_default(),
+            "scripts": scripts
+        }),
+        user_scripts,
+    }
+}
+
+fn installed_market_versions(user_scripts: &Value) -> BTreeMap<String, String> {
+    user_scripts
+        .get("scripts")
+        .and_then(Value::as_array)
+        .map(|scripts| {
+            scripts
+                .iter()
+                .filter_map(|script| {
+                    let id = script.get("market_id").and_then(Value::as_str)?;
+                    if id.is_empty() {
+                        return None;
+                    }
+                    let version = script
+                        .get("version")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    Some((id.to_string(), version))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn market_script_payload(script: &MarketScript, installed: &BTreeMap<String, String>) -> Value {
+    let installed_version = installed.get(&script.id).cloned().unwrap_or_default();
+    let is_installed = !installed_version.is_empty();
+    json!({
+        "id": script.id,
+        "name": script.name,
+        "description": script.description,
+        "version": script.version,
+        "author": script.author,
+        "tags": script.tags,
+        "homepage": script.homepage,
+        "script_url": script.script_url,
+        "sha256": script.sha256,
+        "installed": is_installed,
+        "installedVersion": installed_version,
+        "updateAvailable": is_installed && installed.get(&script.id).map(|version| version != &script.version).unwrap_or(false)
+    })
 }
 
 fn default_user_script_manager() -> UserScriptManager {
@@ -1013,6 +1477,49 @@ mod tests {
 
         assert!(!text.contains("sk-"));
         assert!(text.contains("hasBearerToken"));
+    }
+
+    #[test]
+    fn relay_files_payload_reads_config_and_auth_contents() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "model_provider = \"CodexPlusPlus\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path().join("auth.json"),
+            "{\"OPENAI_API_KEY\":\"sk-test\"}\n",
+        )
+        .unwrap();
+
+        let payload = relay_files_payload_from_home(temp.path()).unwrap();
+
+        assert!(payload.config_path.ends_with("config.toml"));
+        assert!(payload.auth_path.ends_with("auth.json"));
+        assert_eq!(
+            payload.config_contents,
+            "model_provider = \"CodexPlusPlus\"\n"
+        );
+        assert_eq!(payload.auth_contents, "{\"OPENAI_API_KEY\":\"sk-test\"}\n");
+    }
+
+    #[test]
+    fn save_relay_file_in_home_only_allows_known_files() {
+        let temp = tempfile::tempdir().unwrap();
+
+        save_relay_file_in_home(temp.path(), "config", "model = \"gpt-5\"\n").unwrap();
+        save_relay_file_in_home(temp.path(), "auth", "{}\n").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
+            "model = \"gpt-5\"\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
+            "{}\n"
+        );
+        assert!(save_relay_file_in_home(temp.path(), "../bad", "").is_err());
     }
 
     #[test]

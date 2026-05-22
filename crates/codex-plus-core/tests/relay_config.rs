@@ -1,7 +1,9 @@
 use codex_plus_core::relay_config::{
-    apply_pure_api_config_to_home, apply_relay_config_to_home, chatgpt_auth_status_from_home,
-    clear_relay_config_to_home, relay_config_status_from_home,
+    apply_pure_api_config_to_home, apply_relay_config_file_to_home, apply_relay_config_to_home,
+    apply_relay_files_to_home, chatgpt_auth_status_from_home, clear_relay_config_to_home,
+    relay_config_status_from_home,
 };
+use codex_plus_core::settings::RelayProtocol;
 
 #[test]
 fn detects_chatgpt_login_from_auth_json_and_config_provider() {
@@ -145,6 +147,27 @@ model = "gpt-5-mini"
 }
 
 #[test]
+fn apply_chat_protocol_relay_points_codex_to_local_responses_proxy() {
+    let temp = tempfile::tempdir().unwrap();
+
+    let result = codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
+        temp.path(),
+        "https://chat-only.example.test/v1",
+        "sk-test-redacted",
+        RelayProtocol::ChatCompletions,
+        57321,
+    )
+    .unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(result.configured);
+    assert!(updated.contains(r#"wire_api = "responses""#));
+    assert!(updated.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    assert!(updated.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
+    assert!(!updated.contains("https://chat-only.example.test"));
+}
+
+#[test]
 fn apply_pure_api_config_writes_openai_api_key_auth_json_and_provider() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -177,6 +200,91 @@ fn apply_pure_api_config_writes_openai_api_key_auth_json_and_provider() {
     assert!(config.contains("requires_openai_auth = true"));
     assert!(config.contains(r#"base_url = "http://relay-legacy.example.test/v1""#));
     assert!(config.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
+}
+
+#[test]
+fn apply_relay_files_switches_complete_config_and_auth_json() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("config.toml"), r#"model = "old""#).unwrap();
+    std::fs::write(temp.path().join("auth.json"), r#"{"old":true}"#).unwrap();
+
+    let result = apply_relay_files_to_home(
+        temp.path(),
+        r#"model_provider = "CodexPlusPlus"
+[model_providers.CodexPlusPlus]
+name = "CodexPlusPlus"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay-a.example/v1"
+experimental_bearer_token = "sk-a"
+"#,
+        r#"{"OPENAI_API_KEY":"sk-a"}"#,
+    )
+    .unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let auth = std::fs::read_to_string(temp.path().join("auth.json")).unwrap();
+
+    assert!(result.configured);
+    assert!(result.backup_path.is_none());
+    assert!(config.contains(r#"base_url = "https://relay-a.example/v1""#));
+    assert_eq!(auth, r#"{"OPENAI_API_KEY":"sk-a"}"#);
+    assert!(std::fs::read_dir(temp.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("codex-plus-backup")
+    }));
+}
+
+#[test]
+fn apply_relay_files_allows_empty_isolated_auth_json() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("auth.json"), r#"{"OPENAI_API_KEY":"old"}"#).unwrap();
+
+    let result = apply_relay_files_to_home(
+        temp.path(),
+        r#"model_provider = "chatgpt"
+"#,
+        "",
+    )
+    .unwrap();
+
+    assert!(!result.configured);
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
+        ""
+    );
+}
+
+#[test]
+fn apply_relay_config_file_switches_config_without_touching_auth_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    std::fs::write(
+        home.join("config.toml"),
+        "model_provider = \"CodexPlusPlus\"\nbase_url = \"old\"\n",
+    )
+    .unwrap();
+    std::fs::write(home.join("auth.json"), "{\"auth_mode\":\"chatgpt\"}\n").unwrap();
+
+    let result = apply_relay_config_file_to_home(
+        home,
+        "model_provider = \"CodexPlusPlus\"\n\n[model_providers.CodexPlusPlus]\nname = \"CodexPlusPlus\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"http://127.0.0.1:57321/v1\"\nexperimental_bearer_token = \"sk-new\"\n",
+    )
+    .unwrap();
+
+    assert!(result.configured);
+    assert!(
+        std::fs::read_to_string(home.join("config.toml"))
+            .unwrap()
+            .contains("http://127.0.0.1:57321/v1")
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("auth.json")).unwrap(),
+        "{\"auth_mode\":\"chatgpt\"}\n"
+    );
 }
 
 #[test]
@@ -265,7 +373,7 @@ model = "gpt-5-mini"
     let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
 
     assert!(!result.configured);
-    assert!(result.backup_path.is_some());
+    assert!(result.backup_path.is_none());
     assert!(updated.contains(r#"model = "gpt-5""#));
     assert!(!updated.contains("model_provider ="));
     assert!(!updated.contains("OPENAI_API_KEY"));

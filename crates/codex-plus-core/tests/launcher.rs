@@ -17,7 +17,7 @@ use codex_plus_core::launcher::{
 use codex_plus_core::launcher::{WindowsProcessControlStrategy, windows_process_control_strategy};
 use codex_plus_core::ports::select_platform_loopback_port_with;
 use codex_plus_core::proxy::has_proxy_environment;
-use codex_plus_core::settings::BackendSettings;
+use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol};
 use codex_plus_core::status::StatusStore;
 
 #[test]
@@ -710,6 +710,56 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
             "status:failed",
         ]
     );
+}
+
+#[tokio::test]
+async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let settings = BackendSettings {
+        enhancements_enabled: false,
+        relay_profiles: vec![RelayProfile {
+            id: "relay-chat".to_string(),
+            name: "Chat".to_string(),
+            base_url: "https://chat-only.example.test/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            protocol: RelayProtocol::ChatCompletions,
+            relay_mode: codex_plus_core::settings::RelayMode::MixedApi,
+            official_mix_api_key: false,
+            test_model: String::new(),
+            config_contents: String::new(),
+            auth_contents: String::new(),
+        }],
+        active_relay_id: "relay-chat".to_string(),
+        ..BackendSettings::default()
+    };
+    let hooks = FakeHooks::new(events.clone()).with_settings(settings);
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 58000,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+
+    let before_stop = events.lock().unwrap().clone();
+    assert!(before_stop.contains(&"select-helper:58000".to_string()));
+    assert!(before_stop.contains(&"start-helper:57321".to_string()));
+    assert!(!before_stop.contains(&"inject:9229:57321".to_string()));
+
+    handle.wait_for_codex_exit().await.unwrap();
+
+    let after_stop = events.lock().unwrap().clone();
+    assert!(after_stop.contains(&"wait-codex".to_string()));
+    assert!(after_stop.contains(&"shutdown-helper:57321".to_string()));
 }
 
 #[tokio::test]

@@ -1,8 +1,8 @@
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use serde::Serialize;
 use serde_json::Value;
+use std::path::{Path, PathBuf};
+
+use crate::settings::{RelayProfile, RelayProtocol};
 
 const RELAY_PROVIDER: &str = "CodexPlusPlus";
 const LEGACY_RELAY_PROVIDER: &str = "CodexPP";
@@ -43,6 +43,13 @@ pub struct RelayApplyResult {
     pub config_path: String,
     pub backup_path: Option<String>,
     pub configured: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayProfileTestResult {
+    pub http_status: u16,
+    pub endpoint: String,
+    pub response_preview: String,
 }
 
 pub fn default_codex_home_dir() -> PathBuf {
@@ -124,6 +131,22 @@ pub fn apply_relay_config_to_home(
     base_url: &str,
     bearer_token: &str,
 ) -> anyhow::Result<RelayApplyResult> {
+    apply_relay_config_to_home_with_protocol(
+        home,
+        base_url,
+        bearer_token,
+        RelayProtocol::Responses,
+        crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+    )
+}
+
+pub fn apply_relay_config_to_home_with_protocol(
+    home: &Path,
+    base_url: &str,
+    bearer_token: &str,
+    protocol: RelayProtocol,
+    proxy_port: u16,
+) -> anyhow::Result<RelayApplyResult> {
     let base_url = base_url.trim();
     if base_url.is_empty() {
         anyhow::bail!("中转 Base URL 不能为空");
@@ -135,19 +158,13 @@ pub fn apply_relay_config_to_home(
     std::fs::create_dir_all(home)?;
     let config_path = home.join("config.toml");
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let backup_path = if config_path.exists() {
-        let path = home.join(format!("config.toml.codex-plus-backup-{}.bak", now_ms()));
-        std::fs::write(&path, &existing)?;
-        Some(path)
-    } else {
-        None
-    };
-    let updated = upsert_model_provider_config(&existing, base_url, bearer_token);
+    let codex_base_url = codex_base_url_for_protocol(base_url, protocol, proxy_port);
+    let updated = upsert_model_provider_config(&existing, &codex_base_url, bearer_token);
     std::fs::write(&config_path, updated)?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
-        backup_path: backup_path.map(|path| path.to_string_lossy().to_string()),
+        backup_path: None,
         configured: status.configured,
     })
 }
@@ -156,6 +173,67 @@ pub fn apply_pure_api_config_to_home(
     home: &Path,
     base_url: &str,
     bearer_token: &str,
+) -> anyhow::Result<RelayApplyResult> {
+    apply_pure_api_config_to_home_with_protocol(
+        home,
+        base_url,
+        bearer_token,
+        RelayProtocol::Responses,
+        crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+    )
+}
+
+pub fn apply_relay_files_to_home(
+    home: &Path,
+    config_contents: &str,
+    auth_contents: &str,
+) -> anyhow::Result<RelayApplyResult> {
+    if config_contents.trim().is_empty() {
+        anyhow::bail!("config.toml 内容不能为空");
+    }
+    std::fs::create_dir_all(home)?;
+
+    let config_path = home.join("config.toml");
+    let auth_path = home.join("auth.json");
+
+    std::fs::write(&config_path, config_contents)?;
+    std::fs::write(&auth_path, auth_contents)?;
+
+    let status = relay_config_status_from_home(home);
+    Ok(RelayApplyResult {
+        config_path: status.config_path,
+        backup_path: None,
+        configured: status.configured,
+    })
+}
+
+pub fn apply_relay_config_file_to_home(
+    home: &Path,
+    config_contents: &str,
+) -> anyhow::Result<RelayApplyResult> {
+    if config_contents.trim().is_empty() {
+        anyhow::bail!("config.toml 内容不能为空");
+    }
+    std::fs::create_dir_all(home)?;
+
+    let config_path = home.join("config.toml");
+
+    std::fs::write(&config_path, config_contents)?;
+
+    let status = relay_config_status_from_home(home);
+    Ok(RelayApplyResult {
+        config_path: status.config_path,
+        backup_path: None,
+        configured: status.configured,
+    })
+}
+
+pub fn apply_pure_api_config_to_home_with_protocol(
+    home: &Path,
+    base_url: &str,
+    bearer_token: &str,
+    protocol: RelayProtocol,
+    proxy_port: u16,
 ) -> anyhow::Result<RelayApplyResult> {
     let base_url = base_url.trim();
     if base_url.is_empty() {
@@ -168,11 +246,6 @@ pub fn apply_pure_api_config_to_home(
     std::fs::create_dir_all(home)?;
 
     let auth_path = home.join("auth.json");
-    if auth_path.exists() {
-        let existing_auth = std::fs::read_to_string(&auth_path).unwrap_or_default();
-        let auth_backup = home.join(format!("auth.json.codex-plus-backup-{}.bak", now_ms()));
-        std::fs::write(auth_backup, existing_auth)?;
-    }
     let auth_payload = serde_json::json!({
         "OPENAI_API_KEY": bearer_token
     });
@@ -180,21 +253,81 @@ pub fn apply_pure_api_config_to_home(
 
     let config_path = home.join("config.toml");
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let backup_path = if config_path.exists() {
-        let path = home.join(format!("config.toml.codex-plus-backup-{}.bak", now_ms()));
-        std::fs::write(&path, &existing)?;
-        Some(path)
-    } else {
-        None
-    };
-    let updated = upsert_model_provider_config(&existing, base_url, bearer_token);
+    let codex_base_url = codex_base_url_for_protocol(base_url, protocol, proxy_port);
+    let updated = upsert_model_provider_config(&existing, &codex_base_url, bearer_token);
     std::fs::write(&config_path, updated)?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
-        backup_path: backup_path.map(|path| path.to_string_lossy().to_string()),
+        backup_path: None,
         configured: status.configured,
     })
+}
+
+pub async fn test_relay_profile(
+    profile: &RelayProfile,
+    model: &str,
+) -> anyhow::Result<RelayProfileTestResult> {
+    let base_url = profile.base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() {
+        anyhow::bail!("Base URL 不能为空");
+    }
+    let api_key = profile.api_key.trim();
+    if api_key.is_empty() {
+        anyhow::bail!("API Key 不能为空");
+    }
+
+    let client = crate::http_client::proxied_client("CodexPlusPlus/RelayTest")?;
+    let endpoint = match profile.protocol {
+        RelayProtocol::Responses => format!("{base_url}/responses"),
+        RelayProtocol::ChatCompletions => format!("{base_url}/chat/completions"),
+    };
+    let test_model = model.trim();
+    if test_model.is_empty() {
+        anyhow::bail!("测试模型不能为空");
+    }
+
+    let payload = relay_profile_test_payload(profile.protocol, test_model);
+    let response = client
+        .post(&endpoint)
+        .bearer_auth(api_key)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .json(&payload)
+        .send()
+        .await?;
+    let http_status = response.status().as_u16();
+    let response_text = response.text().await.unwrap_or_default();
+    Ok(RelayProfileTestResult {
+        http_status,
+        endpoint,
+        response_preview: response_text.chars().take(320).collect(),
+    })
+}
+
+fn relay_profile_test_payload(protocol: RelayProtocol, model: &str) -> Value {
+    match protocol {
+        RelayProtocol::Responses => serde_json::json!({
+            "model": model,
+            "input": "hi",
+            "max_output_tokens": 16
+        }),
+        RelayProtocol::ChatCompletions => serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "user", "content": "hi" }
+            ],
+            "max_tokens": 16
+        }),
+    }
+}
+
+fn codex_base_url_for_protocol(base_url: &str, protocol: RelayProtocol, proxy_port: u16) -> String {
+    match protocol {
+        RelayProtocol::Responses => base_url.to_string(),
+        RelayProtocol::ChatCompletions => {
+            crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
+        }
+    }
 }
 
 pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResult> {
@@ -202,13 +335,6 @@ pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResul
     clear_pure_api_auth_json(home)?;
     let config_path = home.join("config.toml");
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let backup_path = if config_path.exists() {
-        let path = home.join(format!("config.toml.codex-plus-backup-{}.bak", now_ms()));
-        std::fs::write(&path, &existing)?;
-        Some(path)
-    } else {
-        None
-    };
     let without_relay = remove_root_key(
         &remove_table(
             &remove_table(&existing, &format!("model_providers.{RELAY_PROVIDER}")),
@@ -221,7 +347,7 @@ pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResul
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
-        backup_path: backup_path.map(|path| path.to_string_lossy().to_string()),
+        backup_path: None,
         configured: status.configured,
     })
 }
@@ -243,8 +369,6 @@ fn clear_pure_api_auth_json(home: &Path) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let auth_backup = home.join(format!("auth.json.codex-plus-backup-{}.bak", now_ms()));
-    std::fs::write(auth_backup, existing)?;
     std::fs::write(&auth_path, serde_json::to_vec_pretty(&value)?)?;
     Ok(())
 }
@@ -488,11 +612,4 @@ fn root_line_key(line: &str) -> Option<&str> {
 
 fn toml_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn now_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
 }

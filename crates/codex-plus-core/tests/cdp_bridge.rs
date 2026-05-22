@@ -252,7 +252,7 @@ fn manager_ui_exposes_pure_api_relay_mode_button() {
     let commands =
         std::fs::read_to_string(repo.join("apps/codex-plus-manager/src-tauri/src/lib.rs")).unwrap();
 
-    assert!(source.contains("切换到混合 API"));
+    assert!(source.contains("官方混入 API Key"));
     assert!(source.contains("纯 API"));
     assert!(source.contains("apply_pure_api_injection"));
     assert!(commands.contains("commands::apply_pure_api_injection"));

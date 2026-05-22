@@ -22,6 +22,18 @@ pub struct RelayProfile {
     pub base_url: String,
     #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
+    pub protocol: RelayProtocol,
+    #[serde(rename = "relayMode", default)]
+    pub relay_mode: RelayMode,
+    #[serde(rename = "officialMixApiKey", default)]
+    pub official_mix_api_key: bool,
+    #[serde(rename = "testModel", default)]
+    pub test_model: String,
+    #[serde(rename = "configContents", default)]
+    pub config_contents: String,
+    #[serde(rename = "authContents", default)]
+    pub auth_contents: String,
 }
 
 impl Default for RelayProfile {
@@ -31,8 +43,31 @@ impl Default for RelayProfile {
             name: "默认中转".to_string(),
             base_url: default_relay_base_url(),
             api_key: String::new(),
+            protocol: RelayProtocol::Responses,
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: false,
+            test_model: String::new(),
+            config_contents: String::new(),
+            auth_contents: String::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum RelayProtocol {
+    #[default]
+    Responses,
+    ChatCompletions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum RelayMode {
+    Official,
+    #[default]
+    MixedApi,
+    PureApi,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -55,6 +90,8 @@ pub struct BackendSettings {
     pub relay_profiles: Vec<RelayProfile>,
     #[serde(rename = "activeRelayId", default = "default_active_relay_id")]
     pub active_relay_id: String,
+    #[serde(rename = "relayTestModel", default = "default_relay_test_model")]
+    pub relay_test_model: String,
     #[serde(rename = "cliWrapperEnabled", default)]
     pub cli_wrapper_enabled: bool,
     #[serde(rename = "cliWrapperBaseUrl", default)]
@@ -81,6 +118,7 @@ impl Default for BackendSettings {
             relay_api_key: String::new(),
             relay_profiles: default_relay_profiles(),
             active_relay_id: default_active_relay_id(),
+            relay_test_model: default_relay_test_model(),
             cli_wrapper_enabled: false,
             cli_wrapper_base_url: String::new(),
             cli_wrapper_api_key: String::new(),
@@ -105,6 +143,12 @@ impl BackendSettings {
                     self.relay_base_url.clone()
                 },
                 api_key: self.relay_api_key.clone(),
+                protocol: RelayProtocol::Responses,
+                relay_mode: RelayMode::MixedApi,
+                official_mix_api_key: true,
+                test_model: String::new(),
+                config_contents: String::new(),
+                auth_contents: String::new(),
             };
         }
 
@@ -129,6 +173,12 @@ impl BackendSettings {
                 self.relay_base_url.clone()
             },
             api_key: self.relay_api_key.clone(),
+            protocol: RelayProtocol::Responses,
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: false,
+            test_model: String::new(),
+            config_contents: String::new(),
+            auth_contents: String::new(),
         }
     }
 }
@@ -147,6 +197,10 @@ pub fn default_relay_base_url() -> String {
 
 pub fn default_active_relay_id() -> String {
     "default".to_string()
+}
+
+pub fn default_relay_test_model() -> String {
+    "gpt-5-mini".to_string()
 }
 
 pub fn default_relay_profiles() -> Vec<RelayProfile> {
@@ -287,6 +341,16 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             Value::String(value.to_string()),
         );
     }
+    if let Some(value) = source.get("relayTestModel").and_then(Value::as_str) {
+        target.insert(
+            "relayTestModel".to_string(),
+            Value::String(if value.trim().is_empty() {
+                default_relay_test_model()
+            } else {
+                value.trim().to_string()
+            }),
+        );
+    }
     if let Some(value) = source.get("cliWrapperEnabled").and_then(Value::as_bool) {
         target.insert("cliWrapperEnabled".to_string(), Value::Bool(value));
     }
@@ -378,6 +442,8 @@ mod tests {
         assert_eq!(settings.launch_mode, LaunchMode::Patch);
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.relay_api_key.is_empty());
+        assert_eq!(settings.relay_profiles[0].relay_mode, RelayMode::Official);
+        assert_eq!(settings.relay_test_model, default_relay_test_model());
         assert!(!settings.cli_wrapper_enabled);
         assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
     }
@@ -412,6 +478,17 @@ mod tests {
                 " --ignored-trimmed-by-ui ".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn relay_profile_official_mix_api_key_defaults_to_false() {
+        let profile: RelayProfile =
+            serde_json::from_str(r#"{"id":"official","name":"官方","relayMode":"official"}"#)
+                .unwrap();
+
+        assert_eq!(profile.relay_mode, RelayMode::Official);
+        assert!(!profile.official_mix_api_key);
+        assert!(profile.test_model.is_empty());
     }
 
     #[test]
@@ -532,7 +609,8 @@ mod tests {
                         "apiKey": "sk-b"
                     }
                 ],
-                "activeRelayId": "relay-b"
+                "activeRelayId": "relay-b",
+                "relayTestModel": "claude-sonnet-4"
             }))
             .unwrap();
 
@@ -542,6 +620,7 @@ mod tests {
         assert_eq!(active.name, "中转 B");
         assert_eq!(active.base_url, "https://relay-b.example/v1");
         assert_eq!(active.api_key, "sk-b");
+        assert_eq!(updated.relay_test_model, "claude-sonnet-4");
     }
 
     #[test]
@@ -558,6 +637,8 @@ mod tests {
         assert_eq!(active.name, "默认中转");
         assert_eq!(active.base_url, "https://legacy.example/v1");
         assert_eq!(active.api_key, "sk-legacy");
+        assert_eq!(active.relay_mode, RelayMode::MixedApi);
+        assert!(active.official_mix_api_key);
     }
 
     #[test]

@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const DEFAULT_REPOSITORY: &str = "BigPizzaV3/CodexPlusPlus";
-pub const DEFAULT_RELEASE_API_URL: &str =
-    "https://api.github.com/repos/BigPizzaV3/CodexPlusPlus/releases/latest";
+pub const DEFAULT_LATEST_JSON_URL: &str =
+    "https://github.com/BigPizzaV3/CodexPlusPlus/releases/latest/download/latest.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseAsset {
@@ -103,6 +103,49 @@ pub fn release_from_github_payload(payload: &Value) -> anyhow::Result<Release> {
     })
 }
 
+pub fn release_from_latest_json_payload(payload: &Value) -> anyhow::Result<Release> {
+    let version = payload
+        .get("version")
+        .or_else(|| payload.get("tag_name"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("latest.json missing version"))?
+        .to_string();
+    let assets = payload
+        .get("assets")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|asset| {
+            let name = asset.get("name")?.as_str()?.to_string();
+            let url = asset
+                .get("url")
+                .or_else(|| asset.get("browser_download_url"))?
+                .as_str()?
+                .to_string();
+            Some((name, url))
+        })
+        .collect::<Vec<_>>();
+    let selected = select_update_asset(&assets);
+    Ok(Release {
+        version,
+        url: payload
+            .get("url")
+            .or_else(|| payload.get("html_url"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        body: payload
+            .get("body")
+            .or_else(|| payload.get("release_summary"))
+            .or_else(|| payload.get("notes"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        asset_name: selected.as_ref().map(|asset| asset.name.clone()),
+        asset_url: selected.map(|asset| asset.browser_download_url),
+    })
+}
+
 pub fn select_update_asset(assets: &[(String, String)]) -> Option<ReleaseAsset> {
     let named = assets
         .iter()
@@ -120,22 +163,22 @@ pub fn select_update_asset(assets: &[(String, String)]) -> Option<ReleaseAsset> 
     None
 }
 
-pub async fn fetch_latest_release(api_url: &str) -> anyhow::Result<Release> {
+pub async fn fetch_latest_release(latest_json_url: &str) -> anyhow::Result<Release> {
     let client =
         crate::http_client::proxied_client(&format!("Codex++/{}", crate::version::VERSION))?;
     let payload = client
-        .get(api_url)
-        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .get(latest_json_url)
+        .header(reqwest::header::ACCEPT, "application/json")
         .send()
         .await?
         .error_for_status()?
         .json::<Value>()
         .await?;
-    release_from_github_payload(&payload)
+    release_from_latest_json_payload(&payload)
 }
 
 pub async fn check_for_update(current_version: &str) -> anyhow::Result<UpdateCheck> {
-    let release = fetch_latest_release(DEFAULT_RELEASE_API_URL).await?;
+    let release = fetch_latest_release(DEFAULT_LATEST_JSON_URL).await?;
     let update_available = is_newer_version(&release.version, current_version)?;
     Ok(UpdateCheck {
         current_version: current_version.to_string(),

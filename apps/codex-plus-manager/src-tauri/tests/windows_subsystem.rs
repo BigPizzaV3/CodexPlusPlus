@@ -126,3 +126,37 @@ fn github_release_workflow_builds_separate_macos_x64_and_arm64_dmgs() {
     assert!(workflow.contains("package-dmg.sh \"$VERSION\" \"${{ matrix.arch }}\""));
     assert!(workflow.contains("target/${{ matrix.target }}/release"));
 }
+
+#[test]
+fn github_release_workflow_uploads_static_latest_json() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workflow = manifest_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .join(".github/workflows/release-assets.yml");
+    let workflow = std::fs::read_to_string(&workflow).expect("read release assets workflow");
+
+    assert!(workflow.contains("latest-json:"));
+    assert!(workflow.contains("latest.json"));
+    assert!(workflow.contains("gh release upload \"$TAG\" latest.json --clobber"));
+}
+
+#[test]
+fn relay_settings_keeps_profile_config_and_auth_files_isolated() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+    let commands_rs = manifest_dir.join("src/commands.rs");
+    let commands_rs = std::fs::read_to_string(&commands_rs).expect("read manager commands.rs");
+
+    assert!(app_tsx.contains("snapshotActiveRelayFilesBeforeSwitch"));
+    assert!(app_tsx.contains("configContents: files.configContents"));
+    assert!(app_tsx.contains("authContents: files.authContents"));
+    assert!(app_tsx.contains("relayProfileSwitchValidation(selectedBeforeSave)"));
+    assert!(app_tsx.contains("缺少独立 config.toml"));
+    assert!(app_tsx.contains("const command = selectedAfterSave.relayMode === \"pureApi\" ? \"apply_pure_api_injection\" : \"apply_relay_injection\""));
+    assert!(!commands_rs.contains("缺少独立 auth.json"));
+    assert!(commands_rs.contains("apply_relay_files_to_home"));
+}

@@ -34,13 +34,13 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "10";
+  const codexDeleteStyleVersion = "11";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "7";
   const codexExportVersion = "1";
   const codexProjectMoveVersion = "1";
-  const codexActionGroupVersion = "3";
+  const codexActionGroupVersion = "4";
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationTimelineVersion = "2";
@@ -112,7 +112,7 @@
     style.textContent = `
       .${actionGroupClass} {
         position: absolute;
-        right: 28px;
+        right: var(--codex-session-actions-right, 28px);
         top: 50%;
         transform: translateY(-50%);
         z-index: 20;
@@ -218,10 +218,12 @@
       }
       [data-codex-delete-row="true"]:hover .${actionGroupClass} { opacity: 1; }
       [data-codex-delete-row="true"]:hover [data-thread-title] {
-        -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 86px), transparent calc(100% - 80px));
-        mask-image: linear-gradient(90deg, #000 calc(100% - 86px), transparent calc(100% - 80px));
+        -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - var(--codex-session-title-mask, 86px)), transparent calc(100% - max(0px, var(--codex-session-title-mask, 86px) - 6px)));
+        mask-image: linear-gradient(90deg, #000 calc(100% - var(--codex-session-title-mask, 86px)), transparent calc(100% - max(0px, var(--codex-session-title-mask, 86px) - 6px)));
       }
-      [data-codex-delete-row="true"].codex-archive-confirm-visible .${actionGroupClass} { right: 66px; }
+      [data-codex-delete-row="true"].codex-archive-confirm-visible .${actionGroupClass} {
+        right: max(66px, var(--codex-session-actions-right, 28px));
+      }
       .${actionTooltipClass} {
         position: fixed;
         z-index: 2147483201;
@@ -4411,6 +4413,52 @@
     return row.querySelector(`.${actionGroupClass}`);
   }
 
+  function nativeActionButtonsFromRow(row) {
+    return [...row.querySelectorAll('button,[role="button"],a')]
+      .filter((node) => !node.closest(`.${actionGroupClass}`))
+      .filter((node) => {
+        const rect = node.getBoundingClientRect();
+        if (rect.width < 12 || rect.height < 12) return false;
+        const label = [
+          node.getAttribute("aria-label"),
+          node.getAttribute("title"),
+          node.dataset?.state,
+          node.textContent,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (/(pin|archive|置顶|归档)/i.test(label)) return true;
+        const rowRect = row.getBoundingClientRect();
+        return rect.left > rowRect.left + rowRect.width * 0.68;
+      });
+  }
+
+  function syncActionGroupLayout(row, group) {
+    if (!row || !group) return;
+    const rowRect = row.getBoundingClientRect();
+    const nativeButtons = nativeActionButtonsFromRow(row);
+    const leftmostNative = nativeButtons
+      .map((button) => button.getBoundingClientRect())
+      .filter((rect) => rect.width > 0 && rect.height > 0)
+      .sort((a, b) => a.left - b.left)[0];
+    const gap = 8;
+    const fallbackRight = 28;
+    const right = leftmostNative
+      ? Math.max(fallbackRight, Math.round(rowRect.right - leftmostNative.left + gap))
+      : fallbackRight;
+    const groupWidth = Math.ceil(group.getBoundingClientRect().width || 90);
+    group.style.setProperty("--codex-session-actions-right", `${right}px`);
+    row.style.setProperty("--codex-session-title-mask", `${right + groupWidth + 12}px`);
+  }
+
+  function syncActionGroupsLayout() {
+    sessionRows().forEach((row) => {
+      const group = actionGroupFromRow(row);
+      if (group) syncActionGroupLayout(row, group);
+    });
+  }
+
   function removeActionGroups(row) {
     row.querySelectorAll(`.${actionGroupClass}`).forEach((group) => group.remove());
   }
@@ -4519,7 +4567,10 @@
     const exportReady = !settings.markdownExport || existingExportButton?.dataset.codexExportVersion === codexExportVersion;
     const moveReady = !settings.projectMove || existingMoveButton?.dataset.codexProjectMoveVersion === codexProjectMoveVersion;
     const groupReady = existingGroup?.dataset.codexActionGroupVersion === codexActionGroupVersion;
-    if (groupReady && deleteReady && exportReady && moveReady && !hasUnexpectedDelete && !hasUnexpectedExport && !hasUnexpectedMove && !missingDelete && !missingExport && !missingMove) return;
+    if (groupReady && deleteReady && exportReady && moveReady && !hasUnexpectedDelete && !hasUnexpectedExport && !hasUnexpectedMove && !missingDelete && !missingExport && !missingMove) {
+      syncActionGroupLayout(row, existingGroup);
+      return;
+    }
     removeActionGroups(row);
     row.dataset.codexDeleteRow = "false";
     row.dataset.codexProjectMoveRow = "false";
@@ -4567,6 +4618,7 @@
       setTimeout(() => refreshActionButton(deleteButton, row, openDeleteConfirm), 0);
     }
     row.appendChild(group);
+    syncActionGroupLayout(row, group);
   }
 
   function tryAttachButton(row) {
@@ -6027,6 +6079,7 @@
       refreshForcePluginInstallUnlockLoop();
     }
     sessionRows().forEach(tryAttachButton);
+    syncActionGroupsLayout();
     updateDeleteButtonOffsets();
     scheduleProjectMoveProjection();
     scheduleChatsSortCorrection();

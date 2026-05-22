@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-core"
-version = "1.1.5"
+version = "1.1.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -363,6 +363,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -372,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-data"
-version = "1.1.5"
+version = "1.1.6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -388,7 +389,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-launcher"
-version = "1.1.5"
+version = "1.1.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -402,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-manager"
-version = "1.1.5"
+version = "1.1.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -414,6 +415,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tempfile",
 ]
 
 [[package]]

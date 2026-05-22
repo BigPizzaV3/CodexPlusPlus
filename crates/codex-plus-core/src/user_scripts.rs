@@ -7,10 +7,14 @@ use anyhow::Context;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
+use crate::script_market::MarketScript;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UserScriptConfig {
     pub enabled: bool,
     pub scripts: BTreeMap<String, bool>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub market: BTreeMap<String, MarketScriptInstall>,
 }
 
 impl Default for UserScriptConfig {
@@ -18,8 +22,19 @@ impl Default for UserScriptConfig {
         Self {
             enabled: true,
             scripts: BTreeMap::new(),
+            market: BTreeMap::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MarketScriptInstall {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub script_url: String,
+    pub homepage: String,
+    pub installed_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +110,30 @@ impl UserScriptManager {
         Ok(config)
     }
 
+    pub fn user_script_path_for_market_id(&self, id: &str) -> PathBuf {
+        self.user_dir.join(market_script_filename(id))
+    }
+
+    pub fn record_market_install(&self, script: &MarketScript) -> anyhow::Result<UserScriptConfig> {
+        let _guard = self.config_lock.lock().unwrap();
+        let mut config = self.load_config_unlocked();
+        let key = format!("user:{}", market_script_filename(&script.id));
+        config.scripts.entry(key.clone()).or_insert(true);
+        config.market.insert(
+            key,
+            MarketScriptInstall {
+                id: script.id.clone(),
+                name: script.name.clone(),
+                version: script.version.clone(),
+                script_url: script.script_url.clone(),
+                homepage: script.homepage.clone(),
+                installed_at: current_unix_timestamp_string(),
+            },
+        );
+        self.save_config_unlocked(&config)?;
+        Ok(config)
+    }
+
     pub fn inventory(&self) -> anyhow::Result<Value> {
         let config = self.load_config();
         let scripts = self.scan_scripts(&config)?;
@@ -128,6 +167,7 @@ impl UserScriptManager {
             .scan_script_files(config)?
             .into_iter()
             .map(|script| {
+                let market = config.market.get(&script.key);
                 let status = if !config.enabled || !script.enabled {
                     "disabled"
                 } else {
@@ -139,7 +179,12 @@ impl UserScriptManager {
                     "source": script.source,
                     "enabled": script.enabled,
                     "status": status,
-                    "error": ""
+                    "error": "",
+                    "market_id": market.as_ref().map(|item| item.id.as_str()).unwrap_or(""),
+                    "version": market.as_ref().map(|item| item.version.as_str()).unwrap_or(""),
+                    "installed": market.is_some(),
+                    "source_url": market.as_ref().map(|item| item.script_url.as_str()).unwrap_or(""),
+                    "homepage": market.as_ref().map(|item| item.homepage.as_str()).unwrap_or("")
                 })
             })
             .collect())
@@ -242,5 +287,72 @@ fn config_from_object(raw: &Map<String, Value>) -> UserScriptConfig {
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
-    UserScriptConfig { enabled, scripts }
+    let market = raw
+        .get("market")
+        .and_then(Value::as_object)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|(key, value)| Some((key.clone(), market_install_from_value(value)?)))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    UserScriptConfig {
+        enabled,
+        scripts,
+        market,
+    }
+}
+
+pub fn market_script_filename(id: &str) -> String {
+    let sanitized = sanitize_market_id(id);
+    format!(
+        "market-{}.js",
+        if sanitized.is_empty() {
+            "script".to_string()
+        } else {
+            sanitized
+        }
+    )
+}
+
+fn market_install_from_value(value: &Value) -> Option<MarketScriptInstall> {
+    let raw = value.as_object()?;
+    Some(MarketScriptInstall {
+        id: string_field(raw, "id")?,
+        name: string_field(raw, "name").unwrap_or_default(),
+        version: string_field(raw, "version")?,
+        script_url: string_field(raw, "script_url")?,
+        homepage: string_field(raw, "homepage").unwrap_or_default(),
+        installed_at: string_field(raw, "installed_at").unwrap_or_default(),
+    })
+}
+
+fn string_field(raw: &Map<String, Value>, key: &str) -> Option<String> {
+    raw.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn sanitize_market_id(id: &str) -> String {
+    id.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
+fn current_unix_timestamp_string() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
 }

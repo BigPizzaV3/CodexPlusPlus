@@ -26,3 +26,6 @@ tauri-plugin-dialog = "2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile.workspace = true

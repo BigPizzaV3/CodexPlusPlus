@@ -114,3 +114,48 @@ jobs:
         with:
           tag_name: ${{ github.event.release.tag_name }}
           files: dist/macos/*.dmg
+
+  latest-json:
+    name: Upload static latest.json
+    runs-on: ubuntu-latest
+    needs:
+      - windows-installer
+      - macos-dmg
+    steps:
+      - name: Generate latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$REPO" --json assets,body,tagName,url > release.json
+          node <<'NODE'
+          const fs = require("fs");
+          const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
+          const repo = process.env.REPO;
+          const tag = release.tagName || process.env.TAG;
+          const version = tag.replace(/^v/i, "");
+          const baseUrl = `https://github.com/${repo}/releases/download/${tag}`;
+          const assets = (release.assets || [])
+            .map((asset) => asset.name)
+            .filter((name) => name !== "latest.json")
+            .map((name) => ({ name, url: `${baseUrl}/${encodeURIComponent(name)}` }));
+          const payload = {
+            version: `v${version}`,
+            url: release.url || `https://github.com/${repo}/releases/tag/${tag}`,
+            body: release.body || "",
+            assets
+          };
+          fs.writeFileSync("latest.json", `${JSON.stringify(payload, null, 2)}\n`);
+          NODE
+          cat latest.json
+
+      - name: Upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: gh release upload "$TAG" latest.json --clobber --repo "$REPO"
