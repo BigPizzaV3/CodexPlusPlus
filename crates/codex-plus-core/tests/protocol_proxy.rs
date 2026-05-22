@@ -467,6 +467,18 @@ fn chat_completions_url_normalizes_common_base_urls() {
         chat_completions_url("https://api.example.test/v1/chat/completions"),
         "https://api.example.test/v1/chat/completions"
     );
+    assert_eq!(
+        chat_completions_url("https://api.example.test/v2"),
+        "https://api.example.test/v2/chat/completions"
+    );
+    assert_eq!(
+        chat_completions_url("https://api.example.test/v1beta"),
+        "https://api.example.test/v1beta/chat/completions"
+    );
+    assert_eq!(
+        chat_completions_url("https://api.example.test/openai#"),
+        "https://api.example.test/openai/chat/completions"
+    );
 }
 
 #[test]
@@ -486,6 +498,18 @@ fn models_url_normalizes_common_base_urls() {
     assert_eq!(
         models_url("https://api.example.test/models"),
         "https://api.example.test/models"
+    );
+    assert_eq!(
+        models_url("https://api.example.test/v2"),
+        "https://api.example.test/v2/models"
+    );
+    assert_eq!(
+        models_url("https://api.example.test/v1beta"),
+        "https://api.example.test/v1beta/models"
+    );
+    assert_eq!(
+        models_url("https://api.example.test/openai#"),
+        "https://api.example.test/openai/models"
     );
 }
 

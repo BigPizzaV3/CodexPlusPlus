@@ -200,7 +200,7 @@ pub fn default_active_relay_id() -> String {
 }
 
 pub fn default_relay_test_model() -> String {
-    "gpt-5-mini".to_string()
+    "gpt-5.4-mini".to_string()
 }
 
 pub fn default_relay_profiles() -> Vec<RelayProfile> {

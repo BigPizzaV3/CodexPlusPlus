@@ -332,7 +332,7 @@ const defaultSettings: BackendSettings = {
     },
   ],
   activeRelayId: "default",
-  relayTestModel: "gpt-5-mini",
+  relayTestModel: "gpt-5.4-mini",
   cliWrapperEnabled: false,
   cliWrapperBaseUrl: "",
   cliWrapperApiKey: "",
@@ -1806,7 +1806,7 @@ function SettingsScreen({
             <Input
               value={form.relayTestModel}
               onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
-              placeholder="例如 gpt-5-mini"
+              placeholder="例如 gpt-5.4-mini"
             />
           </Field>
           <label className="check-row">

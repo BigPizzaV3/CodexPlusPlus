@@ -381,14 +381,15 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
 }
 
 pub fn chat_completions_url(base_url: &str) -> String {
-    let base = base_url.trim().trim_end_matches('/');
+    let skip_version_prefix = base_url.trim().ends_with('#');
+    let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
     if base.to_ascii_lowercase().ends_with("/chat/completions") {
         return base.to_string();
     }
     let origin_only = base
         .split_once("://")
         .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
-    let mut url = if base.ends_with("/v1") || !origin_only {
+    let mut url = if skip_version_prefix || has_version_suffix(base) || !origin_only {
         format!("{base}/chat/completions")
     } else {
         format!("{base}/v1/chat/completions")
@@ -400,7 +401,12 @@ pub fn chat_completions_url(base_url: &str) -> String {
 }
 
 pub fn models_url(base_url: &str) -> String {
-    let mut base = base_url.trim().trim_end_matches('/').to_string();
+    let skip_version_prefix = base_url.trim().ends_with('#');
+    let mut base = base_url
+        .trim()
+        .trim_end_matches('#')
+        .trim_end_matches('/')
+        .to_string();
     if base.to_ascii_lowercase().ends_with("/chat/completions") {
         base.truncate(base.len() - "/chat/completions".len());
     }
@@ -410,7 +416,7 @@ pub fn models_url(base_url: &str) -> String {
     let origin_only = base
         .split_once("://")
         .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
-    let mut url = if base.ends_with("/v1") || !origin_only {
+    let mut url = if skip_version_prefix || has_version_suffix(&base) || !origin_only {
         format!("{base}/models")
     } else {
         format!("{base}/v1/models")
@@ -419,6 +425,14 @@ pub fn models_url(base_url: &str) -> String {
         url = url.replace("/v1/v1", "/v1");
     }
     url
+}
+
+fn has_version_suffix(base_url: &str) -> bool {
+    let segment = base_url.rsplit('/').next().unwrap_or(base_url);
+    let Some(rest) = segment.strip_prefix('v') else {
+        return false;
+    };
+    rest.chars().next().is_some_and(|ch| ch.is_ascii_digit())
 }
 
 pub fn chat_sse_to_responses_sse(input: &str) -> String {
