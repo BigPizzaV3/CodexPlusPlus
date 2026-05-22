@@ -660,7 +660,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, nativeMenuPlacement: true };
+    return { pluginEntryUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, nativeMenuPlacement: true, serviceTierControls: false };
   }
 
   function codexPlusSettings() {
@@ -679,6 +679,7 @@
         threadScrollRestore: false,
         zedRemoteOpen: false,
         nativeMenuPlacement: false,
+        serviceTierControls: false,
       };
     }
     try {
@@ -717,6 +718,14 @@
       (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
       window.__codexThreadScrollSyncTimers = [];
       window.__codexThreadScrollRuntime = null;
+    }
+    if (key === "serviceTierControls") {
+      if (value) {
+        void loadCodexServiceTierState();
+      } else {
+        removeCodexServiceTierBadges();
+        refreshCodexServiceTierControls();
+      }
     }
     renderCodexPlusMenu();
     scan();
@@ -1038,6 +1047,17 @@
   }
 
   function syncCodexServiceTierEffectiveState() {
+    if (!codexPlusSettings().serviceTierControls) {
+      codexServiceTierState = {
+        ...codexServiceTierState,
+        activeThreadId: "",
+        threadMode: "inherit",
+        effectiveServiceTier: codexServiceTierState.serviceTier || null,
+        effectiveMode: codexServiceTierEffectiveMode(codexServiceTierState.serviceTier),
+        message: "未启用",
+      };
+      return;
+    }
     const activeThreadId = validThreadScrollSessionKey(currentSessionRef().session_id);
     if (activeThreadId) bindDraftServiceTierToThread(activeThreadId);
     const storedState = readThreadServiceTierState();
@@ -1090,45 +1110,56 @@
 
   function refreshCodexServiceTierControls() {
     syncCodexServiceTierEffectiveState();
+    const featureEnabled = !!codexPlusSettings().serviceTierControls;
     const backendConnected = codexPlusBackendStatus.status === "ok";
     const backendChecking = codexPlusBackendStatus.status === "checking";
+    document.querySelectorAll("[data-codex-service-tier-controls]").forEach((node) => {
+      node.hidden = !featureEnabled;
+    });
     document.querySelectorAll("[data-codex-service-tier-status]").forEach((node) => {
-      node.dataset.status = backendConnected ? (codexServiceTierState.status || "loading") : (backendChecking ? "loading" : "failed");
-      node.textContent = backendConnected ? (codexServiceTierState.message || "未读取") : (backendChecking ? "正在检查后端…" : "未连接");
+      node.dataset.status = featureEnabled && backendConnected ? (codexServiceTierState.status || "loading") : (backendChecking ? "loading" : "failed");
+      node.textContent = featureEnabled
+        ? (backendConnected ? (codexServiceTierState.message || "未读取") : (backendChecking ? "正在检查后端…" : "未连接"))
+        : "未启用";
     });
     document.querySelectorAll("[data-codex-service-tier-inherit]").forEach((button) => {
-      button.disabled = !backendConnected || codexServiceTierState.status === "loading";
+      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "inherit");
     });
     document.querySelectorAll("[data-codex-service-tier-standard]").forEach((button) => {
-      button.disabled = !backendConnected || codexServiceTierState.status === "loading";
+      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "global-standard");
     });
     document.querySelectorAll("[data-codex-service-tier-fast]").forEach((button) => {
-      button.disabled = !backendConnected || codexServiceTierState.status === "loading";
+      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "global-fast");
     });
     document.querySelectorAll("[data-codex-service-tier-custom]").forEach((button) => {
-      button.disabled = !backendConnected || codexServiceTierState.status === "loading";
+      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "custom");
     });
     document.querySelectorAll("[data-codex-service-tier-thread-inherit]").forEach((button) => {
-      button.disabled = !backendConnected || codexServiceTierState.status === "loading";
+      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit");
       button.title = `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`;
     });
     document.querySelectorAll("[data-codex-service-tier-thread-standard]").forEach((button) => {
-      button.disabled = !backendConnected || codexServiceTierState.status === "loading";
+      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "standard");
     });
     document.querySelectorAll("[data-codex-service-tier-thread-fast]").forEach((button) => {
-      button.disabled = !backendConnected || codexServiceTierState.status === "loading";
+      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "fast");
     });
     refreshCodexServiceTierBadges();
   }
 
   async function loadCodexServiceTierState() {
+    if (!codexPlusSettings().serviceTierControls) {
+      codexServiceTierState = { ...codexServiceTierState, status: "idle", message: "未启用" };
+      refreshCodexServiceTierControls();
+      return;
+    }
     codexServiceTierState = { ...codexServiceTierState, status: "loading", message: "正在读取…" };
     refreshCodexServiceTierControls();
     try {
@@ -1183,6 +1214,7 @@
   }
 
   function codexServiceTierOverrideForRequest(method, params, threadIdHint = "") {
+    if (!codexPlusSettings().serviceTierControls) return null;
     if (!codexServiceTierRequestMethods().has(method) || !params || typeof params !== "object") return null;
     const state = readThreadServiceTierState();
     const controlMode = normalizeCodexServiceTierControlMode(state.mode);
@@ -1222,6 +1254,7 @@
   }
 
   function codexServiceTierRequestOverride(message) {
+    if (!codexPlusSettings().serviceTierControls) return message;
     if (!message || typeof message !== "object") return message;
     if (message.type === "send-cli-request-for-host") {
       const method = String(message.method || "");
@@ -1617,6 +1650,10 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
             </div>
             <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮，并允许把请求切到 Fast / priority；默认关闭以避免误触高价服务模式。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
+            </div>
+            <div class="codex-plus-row" data-codex-service-tier-controls="true">
               <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承使用 config.toml 的 service tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
               <div class="codex-plus-service-tier-control">
                 <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">正在读取…</div>
@@ -5260,6 +5297,10 @@
   }
 
   function installCodexServiceTierBadge() {
+    if (!codexPlusSettings().serviceTierControls) {
+      removeCodexServiceTierBadges();
+      return;
+    }
     const composer = codexServiceTierFindComposerEl();
     const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
     const existingBadges = Array.from(document.querySelectorAll(`[data-codex-service-tier-badge="true"]`));
@@ -5284,6 +5325,10 @@
       placement.parent.insertBefore(badge, before);
     }
     refreshCodexServiceTierBadges();
+  }
+
+  function removeCodexServiceTierBadges() {
+    document.querySelectorAll(`[data-codex-service-tier-badge="true"]`).forEach((badge) => badge.remove());
   }
 
   function conversationViewRememberOriginals(el) {

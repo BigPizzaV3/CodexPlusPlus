@@ -69,6 +69,22 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
   </tr>
   <tr>
     <td align="center">
+      <a href="https://runapi.co/register?aff=AWJq">
+        <img src="docs/images/sponsor-runapi.png" alt="RunAPI" width="150">
+      </a>
+    </td>
+    <td><a href="https://runapi.co/register?aff=AWJq"><strong>RunAPI</strong></a><br>Thanks to RunAPI for sponsoring this project! RunAPI is an efficient and stable OpenRouter alternative API platform. One API key can access OpenAI, Claude, Gemini, DeepSeek, Grok, and 150+ mainstream models at prices as low as 10% of the original rate, with seamless compatibility for tools such as Claude Code and OpenClaw.</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://apikey.fun/register?aff=CODEX">
+        <img src="docs/images/sponsor-apikey-fun.png" alt="APIKEY.FUN" width="150">
+      </a>
+    </td>
+    <td><a href="https://apikey.fun/register?aff=CODEX"><strong>APIKEY.FUN</strong></a><br>Thanks to APIKEY.FUN for sponsoring this project! APIKEY.FUN is an AI relay platform focused on open, stable, and cost-effective access to mainstream global models. It supports API relay services for Claude, OpenAI, Gemini, and other popular models, with prices as low as 7% of the official rate. Register through the dedicated link to receive up to a permanent 5% recharge discount.</td>
+  </tr>
+  <tr>
+    <td align="center">
       <a href="https://www.0029.org/?promo=AFF11F">
         <img src="docs/images/sponsor-0029.svg" alt="0029 Cloud Bridge" width="150">
       </a>
