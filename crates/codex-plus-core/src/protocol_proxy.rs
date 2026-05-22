@@ -42,7 +42,7 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
 
     let mut messages = Vec::new();
     if let Some(instructions) = body.get("instructions") {
-        let text = response_text(instructions);
+        let text = instruction_text(instructions);
         if !text.is_empty() {
             messages.push(json!({ "role": "system", "content": text }));
         }
@@ -55,7 +55,7 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
 
     let model = body.get("model").and_then(Value::as_str).unwrap_or("");
     if let Some(value) = body.get("max_output_tokens") {
-        if supports_max_completion_tokens(model) {
+        if is_openai_o_series(model) {
             result["max_completion_tokens"] = value.clone();
         } else {
             result["max_tokens"] = value.clone();
@@ -429,14 +429,12 @@ pub fn chat_sse_to_responses_sse(input: &str) -> String {
 }
 
 pub fn response_id_from_chat_id(id: Option<&str>) -> String {
-    id.map(|value| {
-        if value.starts_with("resp_") {
-            value.to_string()
-        } else {
-            format!("resp_{value}")
-        }
-    })
-    .unwrap_or_else(|| "resp_codexpp".to_string())
+    let id = id.unwrap_or("ccswitch");
+    if id.starts_with("resp_") {
+        id.to_string()
+    } else {
+        format!("resp_{id}")
+    }
 }
 
 fn push_sse(output: &mut String, event: &str, data: Value) {
@@ -512,7 +510,7 @@ impl Default for ChatSseState {
         Self {
             response_started: false,
             completed: false,
-            response_id: "resp_codexpp".to_string(),
+            response_id: "resp_ccswitch".to_string(),
             model: String::new(),
             created_at: 0,
             next_output_index: 0,
@@ -697,6 +695,7 @@ impl ChatSseState {
                         "id": item_id,
                         "type": "reasoning",
                         "status": "in_progress",
+                        "reasoning_content": "",
                         "summary": []
                     }
                 }),
@@ -913,6 +912,7 @@ impl ChatSseState {
         let item = json!({
             "id": self.reasoning.item_id,
             "type": "reasoning",
+            "reasoning_content": self.reasoning.text,
             "summary": [{ "type": "summary_text", "text": self.reasoning.text }]
         });
         self.output_items.push((output_index, item.clone()));
@@ -1248,7 +1248,7 @@ fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
         Value::String(text) => messages.push(json!({ "role": "user", "content": text })),
         Value::Array(items) => {
             let mut pending_tool_calls = Vec::new();
-            let mut pending_reasoning = None;
+            let mut pending_reasoning = Vec::new();
             for item in items {
                 append_responses_item(
                     item,
@@ -1258,11 +1258,11 @@ fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
                 );
             }
             flush_tool_calls(messages, &mut pending_tool_calls, &mut pending_reasoning);
-            flush_pending_reasoning(messages, &mut pending_reasoning);
+            flush_reasoning(messages, &mut pending_reasoning);
         }
         Value::Object(_) => {
             let mut pending_tool_calls = Vec::new();
-            let mut pending_reasoning = None;
+            let mut pending_reasoning = Vec::new();
             append_responses_item(
                 input,
                 messages,
@@ -1270,7 +1270,7 @@ fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
                 &mut pending_reasoning,
             );
             flush_tool_calls(messages, &mut pending_tool_calls, &mut pending_reasoning);
-            flush_pending_reasoning(messages, &mut pending_reasoning);
+            flush_reasoning(messages, &mut pending_reasoning);
         }
         _ => {}
     }
@@ -1280,33 +1280,35 @@ fn append_responses_item(
     item: &Value,
     messages: &mut Vec<Value>,
     pending_tool_calls: &mut Vec<Value>,
-    pending_reasoning: &mut Option<String>,
+    pending_reasoning: &mut Vec<String>,
 ) {
     match item.get("type").and_then(Value::as_str) {
-        Some("function_call") => pending_tool_calls.push(json!({
-            "id": item
-                .get("call_id")
-                .or_else(|| item.get("id"))
-                .and_then(Value::as_str)
-                .unwrap_or(""),
-            "type": "function",
-            "function": {
-                "name": item.get("name").and_then(Value::as_str).unwrap_or(""),
-                "arguments": json_string(item.get("arguments").unwrap_or(&json!({})))
-            }
-        })),
+        Some("function_call") => {
+            pending_tool_calls.push(json!({
+                "id": item
+                    .get("call_id")
+                    .or_else(|| item.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                "type": "function",
+                "function": {
+                    "name": item.get("name").and_then(Value::as_str).unwrap_or(""),
+                    "arguments": responses_arguments_to_chat(item.get("arguments").unwrap_or(&json!({})))
+                }
+            }));
+        }
         Some("function_call_output") => {
             flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": item.get("call_id").and_then(Value::as_str).unwrap_or(""),
-                "content": response_text(item.get("output").unwrap_or(&Value::Null))
+                "content": response_output_text(item.get("output").unwrap_or(&Value::Null))
             }));
         }
         Some("reasoning") => {
             if let Some(text) = responses_reasoning_text(item) {
                 if !text.is_empty() {
-                    *pending_reasoning = Some(text);
+                    pending_reasoning.push(text);
                 }
             }
         }
@@ -1317,13 +1319,18 @@ fn append_responses_item(
                 let mut message = json!({
                     "role": role,
                     "content": responses_content_to_chat_content(
+                        role,
                         item.get("content").unwrap_or(&Value::Null)
-                    )
+                        )
                 });
                 if role == "assistant" {
-                    if let Some(reasoning) = pending_reasoning.take() {
-                        message["reasoning_content"] = json!(reasoning);
+                    if !pending_reasoning.is_empty() && pending_tool_calls.is_empty() {
+                        message["reasoning_content"] =
+                            json!(std::mem::take(pending_reasoning).join("\n"));
                     }
+                } else if !pending_reasoning.is_empty() {
+                    flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
+                    flush_reasoning(messages, pending_reasoning);
                 }
                 messages.push(message);
             }
@@ -1345,31 +1352,91 @@ fn responses_role_to_chat_role(role: Option<&str>) -> &'static str {
 fn flush_tool_calls(
     messages: &mut Vec<Value>,
     pending_tool_calls: &mut Vec<Value>,
-    pending_reasoning: &mut Option<String>,
+    pending_reasoning: &mut Vec<String>,
 ) {
     if pending_tool_calls.is_empty() {
         return;
     }
+
+    if let Some(last) = messages.last_mut() {
+        if last.get("role").and_then(Value::as_str) == Some("assistant") {
+            merge_tool_calls_into_message(last, std::mem::take(pending_tool_calls));
+            return;
+        }
+    }
+
     let mut message = json!({
         "role": "assistant",
-        "content": Value::Null,
+        "content": "",
         "tool_calls": std::mem::take(pending_tool_calls)
     });
-    if let Some(reasoning) = pending_reasoning.take() {
-        message["reasoning_content"] = json!(reasoning);
+    if !pending_reasoning.is_empty() {
+        message["reasoning_content"] = json!(std::mem::take(pending_reasoning).join("\n"));
     }
     messages.push(message);
 }
 
-fn flush_pending_reasoning(messages: &mut Vec<Value>, pending_reasoning: &mut Option<String>) {
-    let Some(reasoning) = pending_reasoning.take() else {
+fn flush_reasoning(messages: &mut Vec<Value>, pending_reasoning: &mut Vec<String>) {
+    if pending_reasoning.is_empty() {
         return;
-    };
+    }
+    let reasoning = std::mem::take(pending_reasoning).join("\n");
+    if let Some(last) = messages.last_mut() {
+        if last.get("role").and_then(Value::as_str) == Some("assistant") {
+            append_reasoning_to_assistant_message(last, &reasoning);
+            return;
+        }
+    }
     messages.push(json!({
         "role": "assistant",
-        "content": Value::Null,
+        "content": "",
         "reasoning_content": reasoning
     }));
+}
+
+fn append_reasoning_to_assistant_message(message: &mut Value, reasoning: &str) {
+    if reasoning.is_empty() {
+        return;
+    }
+    let existing = message
+        .get("reasoning_content")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    message["reasoning_content"] = if existing.is_empty() {
+        json!(reasoning)
+    } else {
+        json!(format!("{existing}\n{reasoning}"))
+    };
+    if message.get("content").is_none() || message.get("content") == Some(&Value::Null) {
+        message["content"] = json!("");
+    }
+}
+
+fn merge_tool_calls_into_message(message: &mut Value, incoming: Vec<Value>) {
+    let Some(object) = message.as_object_mut() else {
+        return;
+    };
+    let existing = object
+        .entry("tool_calls".to_string())
+        .or_insert_with(|| json!([]));
+    let Some(existing_array) = existing.as_array_mut() else {
+        *existing = json!(incoming);
+        return;
+    };
+    for tool_call in incoming {
+        let id = tool_call.get("id").and_then(Value::as_str).unwrap_or("");
+        if !id.is_empty()
+            && existing_array
+                .iter()
+                .any(|item| item.get("id").and_then(Value::as_str) == Some(id))
+        {
+            continue;
+        }
+        existing_array.push(tool_call);
+    }
+    if message.get("content").is_none() || message.get("content") == Some(&Value::Null) {
+        message["content"] = json!("");
+    }
 }
 
 fn responses_reasoning_text(item: &Value) -> Option<String> {
@@ -1399,7 +1466,7 @@ fn responses_reasoning_text(item: &Value) -> Option<String> {
     None
 }
 
-fn responses_content_to_chat_content(content: &Value) -> Value {
+fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
     if content.is_null() || content.is_string() {
         return content.clone();
     }
@@ -1407,48 +1474,51 @@ fn responses_content_to_chat_content(content: &Value) -> Value {
     let Some(parts) = content.as_array() else {
         return content.clone();
     };
-    let mut text = Vec::new();
-    let mut rich_parts = Vec::new();
-    let mut has_non_text = false;
+    let mut chat_parts = Vec::new();
+    let mut has_non_text_part = false;
 
     for part in parts {
         match part.get("type").and_then(Value::as_str).unwrap_or("") {
             "input_text" | "output_text" | "text" => {
                 if let Some(value) = part.get("text").and_then(Value::as_str) {
                     if !value.is_empty() {
-                        text.push(value.to_string());
-                        rich_parts.push(json!({ "type": "text", "text": value }));
+                        chat_parts.push(json!({ "type": "text", "text": value }));
                     }
                 }
             }
             "refusal" => {
                 if let Some(value) = part.get("refusal").and_then(Value::as_str) {
                     if !value.is_empty() {
-                        text.push(value.to_string());
-                        rich_parts.push(json!({ "type": "text", "text": value }));
+                        chat_parts.push(json!({ "type": "text", "text": value }));
                     }
                 }
             }
             "input_image" => {
-                has_non_text = true;
                 if let Some(image_url) = part.get("image_url") {
                     let image_url = if image_url.is_object() {
                         image_url.clone()
                     } else {
                         json!({ "url": image_url.as_str().unwrap_or_default() })
                     };
-                    rich_parts.push(json!({ "type": "image_url", "image_url": image_url }));
+                    chat_parts.push(json!({ "type": "image_url", "image_url": image_url }));
+                    has_non_text_part = true;
                 }
             }
             _ => {}
         }
     }
 
-    if has_non_text {
-        Value::Array(rich_parts)
-    } else {
-        Value::String(text.join("\n"))
+    if !has_non_text_part {
+        return Value::String(
+            chat_parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
     }
+
+    Value::Array(chat_parts)
 }
 
 fn responses_tool_to_chat_tool(tool: &Value) -> Option<Value> {
@@ -1491,15 +1561,6 @@ fn responses_tool_choice_to_chat(tool_choice: &Value) -> Value {
                 }
             })
         }
-        Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("required") => {
-            json!("required")
-        }
-        Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("auto") => {
-            json!("auto")
-        }
-        Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("none") => {
-            json!("none")
-        }
         other => other.clone(),
     }
 }
@@ -1512,6 +1573,7 @@ fn chat_reasoning_to_response_output_item(message: &Value, response_id: &str) ->
     Some(json!({
         "id": format!("rs_{response_id}"),
         "type": "reasoning",
+        "reasoning_content": reasoning,
         "summary": [{ "type": "summary_text", "text": reasoning }]
     }))
 }
@@ -1618,7 +1680,7 @@ fn chat_tool_call_to_response_item(tool_call: &Value, index: usize) -> Value {
         .unwrap_or_else(|| format!("call_{index}"));
     let function = tool_call.get("function").unwrap_or(&Value::Null);
     let name = function.get("name").and_then(Value::as_str).unwrap_or("");
-    let arguments = json_string(function.get("arguments").unwrap_or(&json!({})));
+    let arguments = responses_arguments_to_chat(function.get("arguments").unwrap_or(&json!({})));
     json!({
         "id": format!("fc_{call_id}"),
         "type": "function_call",
@@ -1639,7 +1701,8 @@ fn chat_legacy_function_call_to_response_item(function_call: &Value) -> Value {
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let arguments = json_string(function_call.get("arguments").unwrap_or(&json!({})));
+    let arguments =
+        responses_arguments_to_chat(function_call.get("arguments").unwrap_or(&json!({})));
     json!({
         "id": format!("fc_{call_id}"),
         "type": "function_call",
@@ -1687,13 +1750,13 @@ fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
         return default_responses_usage();
     };
     let input_tokens = usage
-        .get("input_tokens")
-        .or_else(|| usage.get("prompt_tokens"))
+        .get("prompt_tokens")
+        .or_else(|| usage.get("input_tokens"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let output_tokens = usage
-        .get("output_tokens")
-        .or_else(|| usage.get("completion_tokens"))
+        .get("completion_tokens")
+        .or_else(|| usage.get("output_tokens"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let mut result = json!({
@@ -1731,45 +1794,77 @@ fn response_status(finish_reason: Option<&str>) -> &'static str {
     }
 }
 
-fn response_text(value: &Value) -> String {
+fn response_output_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => String::new(),
+        other => canonical_json_string(other),
+    }
+}
+
+fn responses_arguments_to_chat(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        other => canonical_json_string(other),
+    }
+}
+
+fn instruction_text(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
         Value::Array(parts) => parts
             .iter()
-            .map(response_text)
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.as_str())
+            })
             .filter(|text| !text.is_empty())
             .collect::<Vec<_>>()
             .join("\n\n"),
-        Value::Object(object) => object
-            .get("text")
-            .or_else(|| object.get("output"))
-            .map(response_text)
-            .unwrap_or_else(|| json_string(value)),
-        Value::Null => String::new(),
         other => other.as_str().unwrap_or_default().to_string(),
     }
 }
 
-fn json_string(value: &Value) -> String {
-    if let Some(text) = value.as_str() {
-        return text.to_string();
+fn canonical_json_string(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => serde_json::to_string(value).unwrap_or_default(),
+        Value::Array(values) => {
+            let parts = values.iter().map(canonical_json_string).collect::<Vec<_>>();
+            format!("[{}]", parts.join(","))
+        }
+        Value::Object(map) => {
+            let mut entries = map.iter().collect::<Vec<_>>();
+            entries.sort_by_key(|(key, _)| *key);
+            let parts = entries
+                .into_iter()
+                .map(|(key, value)| {
+                    let key = serde_json::to_string(key).unwrap_or_default();
+                    format!("{key}:{}", canonical_json_string(value))
+                })
+                .collect::<Vec<_>>();
+            format!("{{{}}}", parts.join(","))
+        }
     }
-    serde_json::to_string(value).unwrap_or_default()
-}
-
-fn supports_max_completion_tokens(model: &str) -> bool {
-    is_openai_o_series(model) || model.to_ascii_lowercase().starts_with("gpt-5")
 }
 
 fn supports_reasoning_effort(model: &str) -> bool {
-    let lowered = model.to_ascii_lowercase();
-    is_openai_o_series(&lowered) || lowered.starts_with("gpt-5")
+    is_openai_o_series(model)
+        || model
+            .to_lowercase()
+            .strip_prefix("gpt-")
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|ch| ch.is_ascii_digit() && ch >= '5')
 }
 
 fn is_openai_o_series(model: &str) -> bool {
-    let lowered = model.to_ascii_lowercase();
-    let Some(rest) = lowered.strip_prefix('o') else {
-        return false;
-    };
-    rest.chars().next().is_some_and(|ch| ch.is_ascii_digit())
+    model.len() > 1
+        && model.starts_with('o')
+        && model
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| byte.is_ascii_digit())
 }

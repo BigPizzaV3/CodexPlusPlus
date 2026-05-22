@@ -40,7 +40,7 @@ fn responses_request_converts_to_chat_completions() {
                 { "role": "system", "content": "You are helpful." },
                 { "role": "user", "content": "hello" }
             ],
-            "max_completion_tokens": 512,
+            "max_tokens": 512,
             "temperature": 0.2,
             "stream": true,
             "tools": [
@@ -67,7 +67,7 @@ fn responses_request_matches_ccs_reasoning_and_tool_choice_edges() {
     }))
     .unwrap();
     assert!(non_reasoning.get("reasoning_effort").is_none());
-    assert_eq!(non_reasoning["tool_choice"], "required");
+    assert_eq!(non_reasoning["tool_choice"], json!({ "type": "required" }));
 
     let reasoning = responses_to_chat_completions(json!({
         "model": "gpt-5.4",
@@ -118,7 +118,7 @@ fn responses_request_maps_developer_role_to_system_for_chat_upstream() {
 }
 
 #[test]
-fn responses_request_preserves_reasoning_content_for_tool_followup() {
+fn responses_request_preserves_reasoning_content_for_thinking_followup() {
     let converted = responses_to_chat_completions(json!({
         "model": "deepseek-reasoner",
         "input": [
@@ -154,7 +154,53 @@ fn responses_request_preserves_reasoning_content_for_tool_followup() {
     );
     assert_eq!(converted["messages"][1]["tool_calls"][0]["id"], "call_1");
     assert_eq!(converted["messages"][2]["role"], "tool");
-    assert_eq!(converted["messages"][2]["tool_call_id"], "call_1");
+}
+
+#[test]
+fn responses_request_merges_reasoning_text_and_tool_calls_like_ccx() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-pro",
+        "input": [
+            {
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [{ "type": "summary_text", "text": "I need to run go vet." }]
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "Let me run go vet." }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_001",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"go vet ./...\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_001",
+                "output": "no issues found"
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "run tests now" }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][0]["role"], "assistant");
+    assert_eq!(converted["messages"][0]["content"], "Let me run go vet.");
+    assert_eq!(
+        converted["messages"][0]["reasoning_content"],
+        "I need to run go vet."
+    );
+    assert_eq!(converted["messages"][0]["tool_calls"][0]["id"], "call_001");
+    assert_eq!(converted["messages"][1]["role"], "tool");
+    assert_eq!(converted["messages"][1]["tool_call_id"], "call_001");
+    assert_eq!(converted["messages"][2]["role"], "user");
 }
 
 #[test]
@@ -224,6 +270,10 @@ fn chat_completion_response_maps_reasoning_tool_calls_and_usage_details() {
     assert_eq!(converted["output"][0]["type"], "reasoning");
     assert_eq!(
         converted["output"][0]["summary"][0]["text"],
+        "I should check first."
+    );
+    assert_eq!(
+        converted["output"][0]["reasoning_content"],
         "I should check first."
     );
     assert_eq!(converted["output"][1]["type"], "message");
@@ -334,6 +384,7 @@ data: [DONE]
     assert!(reasoning.contains("event: response.reasoning_summary_part.added"));
     assert!(reasoning.contains("event: response.reasoning_summary_text.delta"));
     assert!(reasoning.contains("event: response.reasoning_summary_text.done"));
+    assert!(reasoning.contains("\"reasoning_content\":\"Need context. \""));
     assert!(reasoning.contains("\"type\":\"reasoning\""));
     assert!(reasoning.contains("\"text\":\"Done\""));
     assert!(reasoning.contains("\"reasoning_tokens\":3"));
