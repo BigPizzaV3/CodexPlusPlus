@@ -373,83 +373,12 @@ pub fn resolve_ssh_target_for_host_id(
     resolve_ssh_target_from_global_state(&state, host_id)
 }
 
-pub fn ordered_remote_projects_from_global_state(state: &Value) -> Vec<Value> {
-    let projects = state
-        .get("remote-projects")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|project| project.as_object().is_some())
-        .collect::<Vec<_>>();
-    let project_order = state
-        .get("project-order")
-        .and_then(Value::as_array)
-        .map(|order| {
-            order
-                .iter()
-                .map(|item| string_value(Some(item)))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let mut ordered = Vec::new();
-    for project_id in project_order {
-        if let Some(project) = projects
-            .iter()
-            .find(|project| string_value(project.get("id")) == project_id)
-        {
-            ordered.push(project.clone());
-        }
-    }
-    let ordered_ids = ordered
-        .iter()
-        .map(|project| string_value(project.get("id")))
-        .collect::<std::collections::HashSet<_>>();
-    ordered.extend(
-        projects
-            .into_iter()
-            .filter(|project| !ordered_ids.contains(&string_value(project.get("id")))),
-    );
-    ordered
-}
+mod fallback;
 
-pub fn fallback_open_request_from_global_state(state: &Value) -> Result<Value, ZedRemoteError> {
-    let selected_host_id = string_value(state.get("selected-remote-host-id"));
-    let selected_project = ordered_remote_projects_from_global_state(state)
-        .into_iter()
-        .find(|project| {
-            let project_host_id = string_value(project.get("hostId"));
-            let remote_path = string_value(project.get("remotePath"));
-            (selected_host_id.is_empty() || project_host_id == selected_host_id)
-                && remote_path.starts_with('/')
-        })
-        .ok_or(ZedRemoteError::Validation(
-            "Cannot determine remote workspace or file for Zed",
-        ))?;
-    let host_id =
-        selected_host_id.or_else_nonempty(|| string_value(selected_project.get("hostId")));
-    if host_id.is_empty() {
-        return Err(ZedRemoteError::Validation("Remote host id is required"));
-    }
-    let target = resolve_ssh_target_from_global_state(state, &host_id)?;
-    Ok(json!({
-        "hostId": host_id,
-        "ssh": { "user": target.user, "host": target.host, "port": target.port },
-        "path": string_value(selected_project.get("remotePath")),
-    }))
-}
-
-pub fn fallback_open_request_response(_payload: &Value) -> Value {
-    let path = codex_global_state_path();
-    let result = fs::read_to_string(path)
-        .map_err(ZedRemoteError::StateRead)
-        .and_then(|data| serde_json::from_str::<Value>(&data).map_err(ZedRemoteError::StateParse))
-        .and_then(|state| fallback_open_request_from_global_state(&state));
-    match result {
-        Ok(request) => json!({"status": "ok", "request": request}),
-        Err(error) => json!({"status": "failed", "message": error.to_string()}),
-    }
-}
+pub use fallback::{
+    fallback_open_request_from_global_state_with_context, fallback_open_request_response,
+    workspace_root_from_sqlite,
+};
 
 pub fn resolve_ssh_target_response(payload: &Value) -> Value {
     let host_id = string_value(payload.get("hostId"));
