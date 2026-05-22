@@ -27,6 +27,7 @@ async fn bridge_routes_cover_all_current_paths() {
             "/user-scripts/set-script-enabled",
             json!({"key": "user:a.js", "enabled": false}),
         ),
+        ("/user-scripts/delete", json!({"key": "user:a.js"})),
         ("/user-scripts/reload", json!({})),
         ("/devtools/open", json!({})),
         ("/manager/open", json!({})),
@@ -318,6 +319,8 @@ async fn user_script_manager_scans_and_persists_inventory_shape() {
     let disabled = manager.inventory().unwrap();
     manager.set_script_enabled("user:a.js", false).unwrap();
     let script_disabled = manager.inventory().unwrap();
+    manager.delete_user_script("user:a.js").unwrap();
+    let deleted = manager.inventory().unwrap();
 
     assert_eq!(listed["enabled"], true);
     assert_eq!(
@@ -337,13 +340,70 @@ async fn user_script_manager_scans_and_persists_inventory_shape() {
     assert_eq!(disabled["enabled"], false);
     assert_eq!(disabled["scripts"][0]["status"], "disabled");
     assert_eq!(script_disabled["scripts"][1]["enabled"], false);
+    assert_eq!(deleted["scripts"].as_array().unwrap().len(), 1);
+    assert!(!user_dir.join("a.js").exists());
     assert_eq!(
         serde_json::from_str::<Value>(
             &std::fs::read_to_string(temp.path().join("user_scripts.json")).unwrap()
         )
         .unwrap(),
-        json!({"enabled": false, "scripts": {"user:a.js": false}})
+        json!({"enabled": false, "scripts": {}})
     );
+}
+
+#[tokio::test]
+async fn user_script_manager_deletes_market_script_metadata_and_rejects_builtin_delete() {
+    let temp = tempfile::tempdir().unwrap();
+    let builtin_dir = temp.path().join("builtin");
+    let user_dir = temp.path().join("user");
+    std::fs::create_dir_all(&builtin_dir).unwrap();
+    std::fs::write(builtin_dir.join("demo.js"), "window.demo = true;").unwrap();
+    std::fs::create_dir_all(&user_dir).unwrap();
+    let manager = UserScriptManager::new(
+        builtin_dir,
+        user_dir.clone(),
+        temp.path().join("user_scripts.json"),
+    );
+    let script = codex_plus_core::script_market::MarketScript {
+        id: "demo".to_string(),
+        name: "Demo".to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        author: String::new(),
+        tags: Vec::new(),
+        homepage: "https://example.com/demo".to_string(),
+        script_url: "https://example.com/demo.js".to_string(),
+        sha256: String::new(),
+    };
+
+    codex_plus_core::script_market::install_market_script_content(
+        &manager,
+        &script,
+        b"window.demo = true;",
+    )
+    .unwrap();
+    manager
+        .set_script_enabled("user:market-demo.js", false)
+        .unwrap();
+
+    let error = manager.delete_user_script("builtin:demo.js").unwrap_err();
+    assert!(error.to_string().contains("only user scripts"));
+    manager.delete_user_script("user:market-demo.js").unwrap();
+
+    assert!(!user_dir.join("market-demo.js").exists());
+    assert!(
+        manager.inventory().unwrap()["scripts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|script| script["market_id"] != "demo")
+    );
+    let saved = serde_json::from_str::<Value>(
+        &std::fs::read_to_string(temp.path().join("user_scripts.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(saved.get("market").is_none());
+    assert_eq!(saved["scripts"], json!({}));
 }
 
 #[tokio::test]
@@ -734,6 +794,12 @@ impl BridgeRuntimeService for FakeRuntime {
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value> {
         assert_eq!(key, "user:a.js");
         *self.script_enabled.lock().unwrap() = enabled;
+        Ok(self.inventory(false))
+    }
+
+    async fn delete_user_script(&self, key: String) -> anyhow::Result<Value> {
+        assert_eq!(key, "user:a.js");
+        *self.script_enabled.lock().unwrap() = false;
         Ok(self.inventory(false))
     }
 

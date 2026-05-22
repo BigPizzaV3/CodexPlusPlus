@@ -519,6 +519,45 @@ pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayl
 }
 
 #[tauri::command]
+pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<SettingsPayload> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return failed("脚本 key 不能为空。", fallback_settings_payload());
+    }
+    let manager = default_user_script_manager();
+    match manager.set_script_enabled(trimmed, enabled) {
+        Ok(_) => settings_payload(
+            if enabled {
+                "脚本已启用。"
+            } else {
+                "脚本已禁用。"
+            },
+            "脚本启停失败",
+        ),
+        Err(error) => failed(
+            &format!("脚本启停失败：{error}"),
+            fallback_settings_payload(),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return failed("脚本 key 不能为空。", fallback_settings_payload());
+    }
+    let manager = default_user_script_manager();
+    match manager.delete_user_script(trimmed) {
+        Ok(_) => settings_payload("脚本已删除。", "脚本删除失败"),
+        Err(error) => failed(
+            &format!("脚本删除失败：{error}"),
+            fallback_settings_payload(),
+        ),
+    }
+}
+
+#[tauri::command]
 pub fn open_external_url(url: String) -> CommandResult<Value> {
     let trimmed = url.trim();
     if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
@@ -797,7 +836,11 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
     };
     match codex_plus_core::relay_config::test_relay_profile(&profile, test_model).await {
         Ok(result) => {
-            let status = if result.http_status < 400 { "ok" } else { "failed" };
+            let status = if result.http_status < 400 {
+                "ok"
+            } else {
+                "failed"
+            };
             let preview = result.response_preview.trim();
             let detail = if preview.is_empty() {
                 "响应内容为空".to_string()
@@ -965,8 +1008,7 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
 }
 
 fn relay_has_complete_files(relay: &codex_plus_core::settings::RelayProfile) -> bool {
-    !relay.config_contents.trim().is_empty()
-        && !relay.auth_contents.trim().is_empty()
+    !relay.config_contents.trim().is_empty() && !relay.auth_contents.trim().is_empty()
 }
 
 fn log_relay_apply_request(
@@ -1105,6 +1147,16 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
                 user_scripts: user_script_inventory(),
             },
         )),
+    }
+}
+
+fn fallback_settings_payload() -> SettingsPayload {
+    SettingsPayload {
+        settings: SettingsStore::default().load().unwrap_or_default(),
+        settings_path: codex_plus_core::paths::default_settings_path()
+            .to_string_lossy()
+            .to_string(),
+        user_scripts: user_script_inventory(),
     }
 }
 

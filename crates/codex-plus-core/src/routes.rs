@@ -56,6 +56,7 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn user_script_inventory(&self) -> anyhow::Result<Value>;
     async fn set_user_scripts_enabled(&self, enabled: bool) -> anyhow::Result<Value>;
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value>;
+    async fn delete_user_script(&self, key: String) -> anyhow::Result<Value>;
     async fn reload_user_scripts(&self) -> anyhow::Result<Value>;
     async fn open_devtools(&self) -> anyhow::Result<Value>;
     async fn open_manager(&self) -> anyhow::Result<Value>;
@@ -125,6 +126,14 @@ pub async fn handle_bridge_request(
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
             ctx.runtime.set_user_script_enabled(key, enabled).await
+        }
+        "/user-scripts/delete" => {
+            let key = payload
+                .get("key")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            ctx.runtime.delete_user_script(key).await
         }
         "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
         "/devtools/open" => ctx.runtime.open_devtools().await,
@@ -304,6 +313,16 @@ impl BridgeRuntimeService for CoreRuntimeService {
         match &self.user_scripts {
             Some(user_scripts) => {
                 user_scripts.set_script_enabled(&key, enabled)?;
+                user_scripts.inventory()
+            }
+            None => Ok(empty_user_script_inventory()),
+        }
+    }
+
+    async fn delete_user_script(&self, key: String) -> anyhow::Result<Value> {
+        match &self.user_scripts {
+            Some(user_scripts) => {
+                user_scripts.delete_user_script(&key)?;
                 user_scripts.inventory()
             }
             None => Ok(empty_user_script_inventory()),

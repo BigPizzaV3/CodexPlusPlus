@@ -35,6 +35,8 @@ import {
   MessageCircle,
   FileCode2,
   Moon,
+  Power,
+  PowerOff,
   Plus,
   RefreshCw,
   Rocket,
@@ -261,6 +263,31 @@ type ScriptMarketResult = CommandResult<{
   user_scripts: UserScriptInventory;
 }>;
 
+function syncMarketInstalledState(current: ScriptMarketResult | null, userScripts: UserScriptInventory): ScriptMarketResult | null {
+  if (!current) return current;
+  const installed = new Map(
+    (userScripts.scripts ?? [])
+      .filter((script) => script.market_id)
+      .map((script) => [script.market_id || "", script.version || ""]),
+  );
+  return {
+    ...current,
+    user_scripts: userScripts,
+    market: {
+      ...current.market,
+      scripts: current.market.scripts.map((script) => {
+        const installedVersion = installed.get(script.id) || "";
+        return {
+          ...script,
+          installed: Boolean(installedVersion),
+          installedVersion,
+          updateAvailable: Boolean(installedVersion) && installedVersion !== script.version,
+        };
+      }),
+    },
+  };
+}
+
 type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
@@ -382,6 +409,27 @@ export function App() {
       setScriptMarket(result);
       setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
       showResultNotice("脚本市场", result);
+    }
+  };
+
+  const setUserScriptEnabled = async (key: string, enabled: boolean) => {
+    const result = await run(() => call<SettingsResult>("set_user_script_enabled", { key, enabled }));
+    if (result) {
+      setSettings(result);
+      setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
+      showResultNotice("本地脚本", result);
+    }
+  };
+
+  const deleteUserScript = async (key: string) => {
+    const script = settings?.user_scripts?.scripts?.find((item) => item.key === key);
+    const name = script?.name || key;
+    if (!window.confirm(`删除脚本“${name}”？此操作会移除本地脚本文件。`)) return;
+    const result = await run(() => call<SettingsResult>("delete_user_script", { key }));
+    if (result) {
+      setSettings(result);
+      setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
+      showResultNotice("本地脚本", result);
     }
   };
 
@@ -905,6 +953,8 @@ export function App() {
       refreshAds,
       refreshScriptMarket,
       installMarketScript,
+      setUserScriptEnabled,
+      deleteUserScript,
       openExternalUrl,
       applyRelayInjection,
       applyPureApiInjection,
@@ -931,7 +981,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, removeOwnedData, update, logs, diagnostics, theme, relayFiles],
+    [route, launchForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles],
   );
   const hasUpdate = update?.updateAvailable === true;
 
@@ -1090,6 +1140,8 @@ type Actions = {
   refreshAds: () => Promise<void>;
   refreshScriptMarket: () => Promise<void>;
   installMarketScript: (id: string) => Promise<void>;
+  setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
+  deleteUserScript: (key: string) => Promise<void>;
   openExternalUrl: (url: string) => Promise<void>;
   applyRelayInjection: () => Promise<boolean>;
   applyPureApiInjection: () => Promise<boolean>;
@@ -1444,10 +1496,10 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="本地脚本" detail="内置、手动和市场安装脚本；单脚本启停仍在 Codex++ 注入菜单中管理" />
+        <CardHead title="本地脚本" detail="内置、手动和市场安装脚本；可在这里启停或删除用户脚本" />
         <CardContent>
           <div className="table">
-            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} />) : <div className="empty">未发现用户脚本。</div>}
+            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} actions={actions} />) : <div className="empty">未发现用户脚本。</div>}
           </div>
         </CardContent>
       </Panel>
@@ -2441,14 +2493,27 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ScriptRow({ script }: { script: NonNullable<UserScriptInventory["scripts"]>[number] }) {
+function ScriptRow({ script, actions }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; actions: Actions }) {
   const source = script.market_id ? `市场 · ${script.version || "未知版本"}` : script.source === "builtin" ? "内置" : "用户";
+  const canDelete = script.source === "user";
   return (
     <div className="table-row">
       <span>{script.name}</span>
       <span>{source}</span>
       <span>{script.enabled ? "启用" : "关闭"}</span>
       <span>{script.status}</span>
+      <div className="script-row-actions">
+        <Button onClick={() => void actions.setUserScriptEnabled(script.key, !script.enabled)} size="sm" variant="secondary">
+          {script.enabled ? <PowerOff className="h-4 w-4" /> : <Power className="h-4 w-4" />}
+          {script.enabled ? "禁用" : "启用"}
+        </Button>
+        {canDelete ? (
+          <Button onClick={() => void actions.deleteUserScript(script.key)} size="sm" variant="outline">
+            <Trash2 className="h-4 w-4" />
+            删除
+          </Button>
+        ) : null}
+      </div>
     </div>
   );
 }

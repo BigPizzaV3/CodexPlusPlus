@@ -34,6 +34,8 @@ pub fn run() {
             commands::load_ads,
             commands::refresh_script_market,
             commands::install_market_script,
+            commands::set_user_script_enabled,
+            commands::delete_user_script,
             commands::open_external_url,
             commands::install_entrypoints,
             commands::uninstall_entrypoints,

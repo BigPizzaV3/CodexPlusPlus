@@ -110,6 +110,47 @@ impl UserScriptManager {
         Ok(config)
     }
 
+    pub fn delete_user_script(&self, key: &str) -> anyhow::Result<UserScriptConfig> {
+        let Some(file_name) = key.strip_prefix("user:").filter(|value| !value.is_empty()) else {
+            anyhow::bail!("only user scripts can be deleted");
+        };
+        if file_name.contains(['/', '\\']) || file_name == "." || file_name == ".." {
+            anyhow::bail!("invalid user script key");
+        }
+        let path = self.user_dir.join(file_name);
+        let canonical_user_dir = self
+            .user_dir
+            .canonicalize()
+            .or_else(|_| {
+                fs::create_dir_all(&self.user_dir)?;
+                self.user_dir.canonicalize()
+            })
+            .with_context(|| {
+                format!(
+                    "failed to resolve user script directory {}",
+                    self.user_dir.display()
+                )
+            })?;
+        if path.exists() {
+            let canonical_path = path
+                .canonicalize()
+                .with_context(|| format!("failed to resolve user script {}", path.display()))?;
+            if !canonical_path.starts_with(&canonical_user_dir) {
+                anyhow::bail!("refusing to delete script outside user script directory");
+            }
+            fs::remove_file(&canonical_path).with_context(|| {
+                format!("failed to delete user script {}", canonical_path.display())
+            })?;
+        }
+
+        let _guard = self.config_lock.lock().unwrap();
+        let mut config = self.load_config_unlocked();
+        config.scripts.remove(key);
+        config.market.remove(key);
+        self.save_config_unlocked(&config)?;
+        Ok(config)
+    }
+
     pub fn user_script_path_for_market_id(&self, id: &str) -> PathBuf {
         self.user_dir.join(market_script_filename(id))
     }

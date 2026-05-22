@@ -1155,7 +1155,14 @@ body {
 }
 
 .table-row {
-  grid-template-columns: minmax(120px, 1.4fr) 90px 80px minmax(90px, 1fr);
+  grid-template-columns: minmax(120px, 1.4fr) 110px 80px minmax(90px, 1fr) auto;
+}
+
+.script-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .script-market-grid {
@@ -1379,6 +1386,14 @@ body {
     grid-column: 3;
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+
+  .table-row {
+    grid-template-columns: 1fr;
+  }
+
+  .script-row-actions {
+    justify-content: flex-start;
   }
 
   .relay-import-row {

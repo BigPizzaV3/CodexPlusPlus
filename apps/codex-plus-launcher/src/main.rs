@@ -345,6 +345,11 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         self.user_scripts.inventory()
     }
 
+    async fn delete_user_script(&self, key: String) -> anyhow::Result<Value> {
+        self.user_scripts.delete_user_script(&key)?;
+        self.user_scripts.inventory()
+    }
+
     async fn reload_user_scripts(&self) -> anyhow::Result<Value> {
         let bundle = self.user_scripts.build_enabled_bundle()?;
         let websocket_url = self.websocket_url.lock().unwrap().clone();
