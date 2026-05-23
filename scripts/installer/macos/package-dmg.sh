@@ -76,9 +76,18 @@ create_app() {
 PLIST
 }
 
+sign_app() {
+  local app_dir="$1"
+  codesign --force --deep --sign - "$app_dir"
+}
+
 prepare_icon
 create_app "Codex++" "CodexPlusPlus" "$BINARY_DIR/codex-plus-plus" "com.bigpizzav3.codexplusplus" "true"
 create_app "Codex++ 管理工具" "CodexPlusPlusManager" "$BINARY_DIR/codex-plus-plus-manager" "com.bigpizzav3.codexplusplus.manager" "false"
+ln -s /Applications "$STAGE/Applications"
+
+sign_app "$STAGE/Codex++.app"
+sign_app "$STAGE/Codex++ 管理工具.app"
 
 hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 echo "$DMG"
