@@ -38,6 +38,7 @@ struct SessionChange {
     cwd: Option<String>,
     has_user_event: bool,
     rewrite_needed: bool,
+    original_mtime: Option<SystemTime>,
 }
 
 pub fn run_provider_sync(codex_home: Option<&Path>) -> ProviderSyncResult {
@@ -245,6 +246,7 @@ fn collect_session_changes(
         } else {
             first_line.clone()
         };
+        let original_mtime = fs::metadata(&path).and_then(|m| m.modified()).ok();
         changes.push(SessionChange {
             path,
             original_first_line: first_line,
@@ -254,6 +256,7 @@ fn collect_session_changes(
             cwd,
             has_user_event,
             rewrite_needed,
+            original_mtime,
         });
     }
     Ok(changes)
@@ -370,6 +373,7 @@ fn apply_session_changes(changes: &[SessionChange]) -> anyhow::Result<()> {
             &change.path,
             format!("{}{}", change.next_first_line, change.separator),
         )?;
+        restore_file_mtime(&change.path, change.original_mtime);
     }
     Ok(())
 }
@@ -380,8 +384,16 @@ fn restore_session_changes(changes: &[SessionChange]) -> anyhow::Result<()> {
             &change.path,
             format!("{}{}", change.original_first_line, change.separator),
         )?;
+        restore_file_mtime(&change.path, change.original_mtime);
     }
     Ok(())
+}
+
+fn restore_file_mtime(path: &Path, mtime: Option<SystemTime>) {
+    let Some(mtime) = mtime else { return };
+    let Ok(file) = fs::File::options().write(true).open(path) else { return };
+    let times = std::fs::FileTimes::new().set_modified(mtime);
+    let _ = file.set_times(times);
 }
 
 fn table_columns(db: &Connection, table: &str) -> anyhow::Result<HashSet<String>> {
