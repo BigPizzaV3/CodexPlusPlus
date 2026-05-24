@@ -1114,6 +1114,21 @@ fn injection_script_does_not_add_delete_controls_on_archived_page() {
 }
 
 #[test]
+fn injection_script_normalizes_project_move_row_layout() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("normalizeProjectThreadRowLayout"));
+    assert!(script.contains("restoreProjectlessThreadRowLayout"));
+    assert!(script.contains("ensureProjectThreadIndent(row);"));
+    assert!(script.contains("removeProjectThreadIndent(row);"));
+    assert!(script.contains("codexProjectMoveIndentSpacer"));
+    assert!(script.contains("codexProjectMoveOriginalItemClass"));
+    assert!(script.contains("codexProjectMoveLayoutSource"));
+    assert!(script.contains("normalizeProjectThreadRowLayout(row, list, item);"));
+    assert!(script.contains("restoreProjectlessThreadRowLayout(row, item);"));
+}
+
+#[test]
 fn injection_script_unlocks_custom_model_catalog() {
     let script = assets::injection_script(57321);
 
