@@ -6,6 +6,10 @@ use crate::settings::{RelayProfile, RelayProtocol};
 
 const RELAY_PROVIDER: &str = "CodexPlusPlus";
 const LEGACY_RELAY_PROVIDER: &str = "CodexPP";
+const RELAY_IMAGE_GENERATION_DISABLED_COMMENT: &str =
+    "# Codex++ relay mode disables hosted image generation for relay compatibility.";
+const RELAY_IMAGE_GENERATION_SAVED_TRUE_COMMENT: &str =
+    "# Codex++ relay mode saved image_generation = true before override.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -158,8 +162,12 @@ pub fn apply_relay_config_to_home_with_protocol(
     std::fs::create_dir_all(home)?;
     let config_path = home.join("config.toml");
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let codex_base_url = codex_base_url_for_protocol(base_url, protocol, proxy_port);
-    let updated = upsert_model_provider_config(&existing, &codex_base_url, bearer_token);
+    let codex_base_url = codex_base_url_for_mixed_relay_protocol(base_url, protocol, proxy_port);
+    let updated = relay_config_with_image_generation_guard(&upsert_model_provider_config(
+        &existing,
+        &codex_base_url,
+        bearer_token,
+    ));
     std::fs::write(&config_path, updated)?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
@@ -196,7 +204,37 @@ pub fn apply_relay_files_to_home(
     let config_path = home.join("config.toml");
     let auth_path = home.join("auth.json");
 
-    std::fs::write(&config_path, config_contents)?;
+    let updated_config =
+        relay_config_with_image_generation_guard(&relay_config_with_local_responses_proxy_guard(
+            config_contents,
+            crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        ));
+    std::fs::write(&config_path, updated_config)?;
+    std::fs::write(&auth_path, auth_contents)?;
+
+    let status = relay_config_status_from_home(home);
+    Ok(RelayApplyResult {
+        config_path: status.config_path,
+        backup_path: None,
+        configured: status.configured,
+    })
+}
+
+pub fn apply_pure_api_files_to_home(
+    home: &Path,
+    config_contents: &str,
+    auth_contents: &str,
+) -> anyhow::Result<RelayApplyResult> {
+    if config_contents.trim().is_empty() {
+        anyhow::bail!("config.toml 内容不能为空");
+    }
+    std::fs::create_dir_all(home)?;
+
+    let config_path = home.join("config.toml");
+    let auth_path = home.join("auth.json");
+    let updated_config = restore_hosted_image_generation_after_relay(config_contents);
+
+    std::fs::write(&config_path, updated_config)?;
     std::fs::write(&auth_path, auth_contents)?;
 
     let status = relay_config_status_from_home(home);
@@ -253,7 +291,7 @@ pub fn apply_pure_api_config_to_home_with_protocol(
 
     let config_path = home.join("config.toml");
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let codex_base_url = codex_base_url_for_protocol(base_url, protocol, proxy_port);
+    let codex_base_url = codex_base_url_for_pure_api_protocol(base_url, protocol, proxy_port);
     let updated = upsert_model_provider_config(&existing, &codex_base_url, bearer_token);
     std::fs::write(&config_path, updated)?;
     let status = relay_config_status_from_home(home);
@@ -321,7 +359,23 @@ fn relay_profile_test_payload(protocol: RelayProtocol, model: &str) -> Value {
     }
 }
 
-fn codex_base_url_for_protocol(base_url: &str, protocol: RelayProtocol, proxy_port: u16) -> String {
+fn codex_base_url_for_mixed_relay_protocol(
+    _base_url: &str,
+    protocol: RelayProtocol,
+    proxy_port: u16,
+) -> String {
+    match protocol {
+        RelayProtocol::Responses | RelayProtocol::ChatCompletions => {
+            crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
+        }
+    }
+}
+
+fn codex_base_url_for_pure_api_protocol(
+    base_url: &str,
+    protocol: RelayProtocol,
+    proxy_port: u16,
+) -> String {
     match protocol {
         RelayProtocol::Responses => base_url.to_string(),
         RelayProtocol::ChatCompletions => {
@@ -342,7 +396,10 @@ pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResul
         ),
         "OPENAI_API_KEY",
     );
-    let updated = remove_root_key(&without_relay, "model_provider");
+    let updated = restore_hosted_image_generation_after_relay(&remove_root_key(
+        &without_relay,
+        "model_provider",
+    ));
     std::fs::write(&config_path, updated)?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
@@ -491,6 +548,33 @@ fn upsert_root_keys(contents: &str, entries: &[(&str, String)]) -> String {
     updated
 }
 
+fn upsert_table_key(contents: &str, table: &str, key: &str, value: &str) -> String {
+    let mut lines = contents
+        .lines()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+
+    if let Some((table_start, table_end)) = table_line_range(&lines, table) {
+        if let Some(index) = lines[table_start + 1..table_end]
+            .iter()
+            .position(|line| root_line_key(line) == Some(key))
+            .map(|index| table_start + 1 + index)
+        {
+            lines[index] = format!("{key} = {value}");
+        } else {
+            lines.insert(table_end, format!("{key} = {value}"));
+        }
+        return finish_lines(lines);
+    }
+
+    if !lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.push(String::new());
+    }
+    lines.push(format!("[{table}]"));
+    lines.push(format!("{key} = {value}"));
+    finish_lines(lines)
+}
+
 fn upsert_model_provider_config(contents: &str, base_url: &str, bearer_token: &str) -> String {
     let mut updated = upsert_root_keys(
         contents,
@@ -520,6 +604,147 @@ fn upsert_model_provider_config(contents: &str, base_url: &str, bearer_token: &s
         String::new(),
     ];
     lines.splice(insert_at..insert_at, provider_lines);
+    let mut output = lines.join("\n");
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output
+}
+
+fn relay_config_with_image_generation_guard(contents: &str) -> String {
+    if root_key_string(contents, "model_provider")
+        .map(|value| value == RELAY_PROVIDER || value == LEGACY_RELAY_PROVIDER)
+        .unwrap_or(false)
+    {
+        disable_hosted_image_generation_for_relay(contents)
+    } else {
+        contents.to_string()
+    }
+}
+
+fn relay_config_with_local_responses_proxy_guard(contents: &str, proxy_port: u16) -> String {
+    let Some(provider) = root_key_string(contents, "model_provider") else {
+        return contents.to_string();
+    };
+    if provider != RELAY_PROVIDER && provider != LEGACY_RELAY_PROVIDER {
+        return contents.to_string();
+    }
+
+    let table = if table_values(contents, &format!("model_providers.{provider}")).is_some() {
+        format!("model_providers.{provider}")
+    } else {
+        format!("model_providers.{RELAY_PROVIDER}")
+    };
+    upsert_table_key(
+        contents,
+        &table,
+        "base_url",
+        &format!(
+            "\"{}\"",
+            toml_escape(&crate::protocol_proxy::local_responses_proxy_base_url(
+                proxy_port
+            ))
+        ),
+    )
+}
+
+fn disable_hosted_image_generation_for_relay(contents: &str) -> String {
+    let mut lines = contents
+        .lines()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return format!(
+            "[features]\n{RELAY_IMAGE_GENERATION_DISABLED_COMMENT}\nimage_generation = false\n"
+        );
+    }
+
+    let Some((features_start, features_end)) = table_line_range(&lines, "features") else {
+        if !lines.last().is_some_and(|line| line.trim().is_empty()) {
+            lines.push(String::new());
+        }
+        lines.push("[features]".to_string());
+        lines.push(RELAY_IMAGE_GENERATION_DISABLED_COMMENT.to_string());
+        lines.push("image_generation = false".to_string());
+        return finish_lines(lines);
+    };
+
+    if let Some(image_line_index) = lines[features_start + 1..features_end]
+        .iter()
+        .position(|line| root_line_key(line) == Some("image_generation"))
+        .map(|index| features_start + 1 + index)
+    {
+        if line_value_bool(&lines[image_line_index]) == Some(true) {
+            let owned_comment = image_line_index > 0
+                && lines[image_line_index - 1].trim() == RELAY_IMAGE_GENERATION_DISABLED_COMMENT;
+            if !owned_comment {
+                lines.insert(
+                    image_line_index,
+                    RELAY_IMAGE_GENERATION_SAVED_TRUE_COMMENT.to_string(),
+                );
+            }
+            let target_index = if owned_comment {
+                image_line_index
+            } else {
+                image_line_index + 1
+            };
+            lines[target_index] = "image_generation = false".to_string();
+        }
+        return finish_lines(lines);
+    }
+
+    lines.splice(
+        features_end..features_end,
+        [
+            RELAY_IMAGE_GENERATION_DISABLED_COMMENT.to_string(),
+            "image_generation = false".to_string(),
+        ],
+    );
+    finish_lines(lines)
+}
+
+fn restore_hosted_image_generation_after_relay(contents: &str) -> String {
+    let mut output = Vec::new();
+    let mut remove_owned_false = false;
+    let mut restore_saved_true = false;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed == RELAY_IMAGE_GENERATION_DISABLED_COMMENT {
+            remove_owned_false = true;
+            continue;
+        }
+        if trimmed == RELAY_IMAGE_GENERATION_SAVED_TRUE_COMMENT {
+            restore_saved_true = true;
+            continue;
+        }
+
+        if remove_owned_false {
+            remove_owned_false = false;
+            if root_line_key(line) == Some("image_generation")
+                && line_value_bool(line) == Some(false)
+            {
+                continue;
+            }
+        }
+
+        if restore_saved_true {
+            restore_saved_true = false;
+            if root_line_key(line) == Some("image_generation")
+                && line_value_bool(line) == Some(false)
+            {
+                output.push("image_generation = true".to_string());
+                continue;
+            }
+        }
+
+        output.push(line.to_string());
+    }
+
+    finish_lines(output)
+}
+
+fn finish_lines(lines: Vec<String>) -> String {
     let mut output = lines.join("\n");
     if !output.ends_with('\n') {
         output.push('\n');
@@ -591,6 +816,29 @@ fn table_values(contents: &str, table: &str) -> Option<std::collections::HashMap
         }
     }
     in_table.then_some(values)
+}
+
+fn table_line_range(lines: &[String], table: &str) -> Option<(usize, usize)> {
+    let header = format!("[{table}]");
+    let start = lines.iter().position(|line| line.trim() == header)?;
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with('[') && trimmed.ends_with(']')
+        })
+        .map(|offset| start + 1 + offset)
+        .unwrap_or(lines.len());
+    Some((start, end))
+}
+
+fn line_value_bool(line: &str) -> Option<bool> {
+    let (_, value) = line.split_once('=')?;
+    match value.trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
 }
 
 fn unquote_toml_string(value: &str) -> String {

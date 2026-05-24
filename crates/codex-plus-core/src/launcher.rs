@@ -265,7 +265,10 @@ where
 }
 
 fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
-    settings.active_relay_profile().protocol == crate::settings::RelayProtocol::ChatCompletions
+    let relay = settings.active_relay_profile();
+    relay.protocol == crate::settings::RelayProtocol::ChatCompletions
+        || (relay.protocol == crate::settings::RelayProtocol::Responses
+            && relay.uses_official_api_key_mix())
 }
 
 pub trait IntoLaunchHooks {
@@ -737,31 +740,32 @@ async fn handle_protocol_proxy_connection(
     path: &str,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
-    let upstream = match crate::protocol_proxy::open_responses_proxy_request(request_body).await {
-        Ok(upstream) => upstream,
-        Err(error) => {
-            let body = serde_json::to_vec(&serde_json::json!({
-                "status": "failed",
-                "message": error.to_string()
-            }))?;
-            write_http_response(
-                stream,
-                "502 Bad Gateway",
-                "application/json; charset=utf-8",
-                &body,
-            )
-            .await?;
-            log_helper_response(
-                "helper.protocol_proxy_failed",
-                method,
-                path,
-                "502 Bad Gateway",
-                remote_addr_text,
-            );
-            stream.shutdown().await?;
-            return Ok(());
-        }
-    };
+    let upstream =
+        match crate::protocol_proxy::open_responses_proxy_request(request_body, path).await {
+            Ok(upstream) => upstream,
+            Err(error) => {
+                let body = serde_json::to_vec(&serde_json::json!({
+                    "status": "failed",
+                    "message": error.to_string()
+                }))?;
+                write_http_response(
+                    stream,
+                    "502 Bad Gateway",
+                    "application/json; charset=utf-8",
+                    &body,
+                )
+                .await?;
+                log_helper_response(
+                    "helper.protocol_proxy_failed",
+                    method,
+                    path,
+                    "502 Bad Gateway",
+                    remote_addr_text,
+                );
+                stream.shutdown().await?;
+                return Ok(());
+            }
+        };
 
     if !upstream.is_success() {
         let status = upstream.status();
@@ -779,6 +783,41 @@ async fn handle_protocol_proxy_connection(
             &status,
             remote_addr_text,
         );
+        stream.shutdown().await?;
+        return Ok(());
+    }
+
+    if upstream.body_mode == crate::protocol_proxy::UpstreamResponseBodyMode::ResponsesPassthrough {
+        let status = upstream.status();
+        let content_type = if upstream.content_type.is_empty() {
+            "application/json; charset=utf-8".to_string()
+        } else {
+            upstream.content_type.clone()
+        };
+        if upstream.is_stream {
+            write_http_stream_headers(stream, &status, &content_type).await?;
+            let mut bytes_stream = upstream.response.bytes_stream();
+            while let Some(chunk) = bytes_stream.next().await {
+                stream.write_all(&chunk?).await?;
+            }
+            log_helper_response(
+                "helper.responses_proxy_stream_ok",
+                method,
+                path,
+                &status,
+                remote_addr_text,
+            );
+        } else {
+            let body = upstream.response.bytes().await?.to_vec();
+            write_http_response(stream, &status, &content_type, &body).await?;
+            log_helper_response(
+                "helper.responses_proxy_ok",
+                method,
+                path,
+                &status,
+                remote_addr_text,
+            );
+        }
         stream.shutdown().await?;
         return Ok(());
     }

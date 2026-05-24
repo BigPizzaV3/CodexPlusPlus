@@ -2777,8 +2777,10 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
   };
 }
 
-function buildRelayConfigToml(profile: Pick<RelayProfile, "baseUrl" | "apiKey" | "protocol">): string {
-  const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
+function buildRelayConfigToml(profile: Pick<RelayProfile, "baseUrl" | "apiKey" | "protocol" | "relayMode" | "officialMixApiKey">): string {
+  const shouldUseProxy =
+    profile.protocol === "chatCompletions" || (profile.relayMode === "official" && profile.officialMixApiKey);
+  const baseUrl = shouldUseProxy ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
   return [
     'model_provider = "CodexPlusPlus"',

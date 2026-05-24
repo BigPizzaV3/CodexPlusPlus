@@ -127,6 +127,12 @@ impl Default for BackendSettings {
     }
 }
 
+impl RelayProfile {
+    pub fn uses_official_api_key_mix(&self) -> bool {
+        self.official_mix_api_key || self.relay_mode == RelayMode::MixedApi
+    }
+}
+
 impl BackendSettings {
     pub fn active_relay_profile(&self) -> RelayProfile {
         if self.active_relay_id == default_active_relay_id()

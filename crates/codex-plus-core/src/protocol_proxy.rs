@@ -103,6 +103,83 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     Ok(result)
 }
 
+pub fn sanitize_responses_request_for_relay(mut body: Value) -> Value {
+    let Some(object) = body.as_object_mut() else {
+        return body;
+    };
+
+    if let Some(tools) = object.get_mut("tools").and_then(Value::as_array_mut) {
+        tools.retain(|tool| !is_hosted_image_generation_tool(tool));
+        if tools.is_empty() {
+            object.remove("tools");
+        }
+    }
+
+    if let Some(tool_choice) = object.get_mut("tool_choice") {
+        sanitize_responses_tool_choice(tool_choice);
+    }
+    if object.get("tool_choice").is_some_and(|tool_choice| {
+        is_hosted_image_generation_tool_choice(tool_choice) || is_empty_allowed_tools(tool_choice)
+    }) {
+        object.remove("tool_choice");
+    }
+
+    if let Some(include) = object.get_mut("include").and_then(Value::as_array_mut) {
+        include.retain(|item| {
+            item.as_str()
+                .map(|value| !contains_hosted_image_generation_reference(value))
+                .unwrap_or(true)
+        });
+        if include.is_empty() {
+            object.remove("include");
+        }
+    }
+
+    body
+}
+
+fn is_hosted_image_generation_tool(tool: &Value) -> bool {
+    tool.get("type")
+        .and_then(Value::as_str)
+        .is_some_and(is_hosted_image_generation_type)
+}
+
+fn is_hosted_image_generation_tool_choice(tool_choice: &Value) -> bool {
+    match tool_choice {
+        Value::Object(_) => is_hosted_image_generation_tool(tool_choice),
+        Value::String(value) => is_hosted_image_generation_type(value),
+        _ => false,
+    }
+}
+
+fn sanitize_responses_tool_choice(tool_choice: &mut Value) {
+    let Some(object) = tool_choice.as_object_mut() else {
+        return;
+    };
+    if let Some(tools) = object.get_mut("tools").and_then(Value::as_array_mut) {
+        tools.retain(|tool| !is_hosted_image_generation_tool(tool));
+    }
+}
+
+fn is_empty_allowed_tools(tool_choice: &Value) -> bool {
+    let Some(object) = tool_choice.as_object() else {
+        return false;
+    };
+    object.get("type").and_then(Value::as_str) == Some("allowed_tools")
+        && object
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+}
+
+fn is_hosted_image_generation_type(tool_type: &str) -> bool {
+    matches!(tool_type, "image_generation" | "imageGeneration")
+}
+
+fn contains_hosted_image_generation_reference(value: &str) -> bool {
+    value.contains("image_generation") || value.contains("imageGeneration")
+}
+
 pub fn chat_completion_to_response(body: Value) -> anyhow::Result<Value> {
     let choices = body
         .get("choices")
@@ -152,7 +229,14 @@ pub struct UpstreamProxyResponse {
     pub status_code: u16,
     pub content_type: String,
     pub is_stream: bool,
+    pub body_mode: UpstreamResponseBodyMode,
     pub response: reqwest::Response,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpstreamResponseBodyMode {
+    ResponsesPassthrough,
+    ChatCompletionsToResponses,
 }
 
 impl UpstreamProxyResponse {
@@ -267,30 +351,41 @@ pub fn is_models_proxy_path(path: &str) -> bool {
     matches!(path, "/models" | "/v1/models")
 }
 
-pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<UpstreamProxyResponse> {
+pub async fn open_responses_proxy_request(
+    body: &str,
+    path: &str,
+) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
-    if relay.protocol != RelayProtocol::ChatCompletions {
-        anyhow::bail!("当前中转未启用 Chat Completions 协议代理");
-    }
     if relay.base_url.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Base URL 不能为空");
+        anyhow::bail!("中转上游 Base URL 不能为空");
     }
     if relay.api_key.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Key 不能为空");
+        anyhow::bail!("中转上游 Key 不能为空");
     }
 
-    let request_json: Value = serde_json::from_str(body)?;
+    let request_json = sanitize_responses_request_for_relay(serde_json::from_str(body)?);
     let is_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let chat_request = responses_to_chat_completions(request_json)?;
+    let (url, payload, body_mode) = match relay.protocol {
+        RelayProtocol::Responses => (
+            responses_url(&relay.base_url, path),
+            request_json,
+            UpstreamResponseBodyMode::ResponsesPassthrough,
+        ),
+        RelayProtocol::ChatCompletions => (
+            chat_completions_url(&relay.base_url),
+            responses_to_chat_completions(request_json)?,
+            UpstreamResponseBodyMode::ChatCompletionsToResponses,
+        ),
+    };
     let upstream = reqwest::Client::new()
-        .post(chat_completions_url(&relay.base_url))
+        .post(url)
         .bearer_auth(relay.api_key.trim())
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .json(&chat_request)
+        .json(&payload)
         .send()
         .await?;
     let status_code = upstream.status().as_u16();
@@ -305,6 +400,7 @@ pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<Upstream
         status_code,
         is_stream: is_stream || content_type.contains("text/event-stream"),
         content_type,
+        body_mode,
         response: upstream,
     })
 }
@@ -312,14 +408,11 @@ pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<Upstream
 pub async fn open_models_proxy_request() -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
-    if relay.protocol != RelayProtocol::ChatCompletions {
-        anyhow::bail!("当前中转未启用 Chat Completions 协议代理");
-    }
     if relay.base_url.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Base URL 不能为空");
+        anyhow::bail!("中转上游 Base URL 不能为空");
     }
     if relay.api_key.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Key 不能为空");
+        anyhow::bail!("中转上游 Key 不能为空");
     }
 
     let upstream = reqwest::Client::new()
@@ -339,18 +432,31 @@ pub async fn open_models_proxy_request() -> anyhow::Result<UpstreamProxyResponse
         status_code,
         is_stream: false,
         content_type,
+        body_mode: UpstreamResponseBodyMode::ResponsesPassthrough,
         response: upstream,
     })
 }
 
 pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyHttpResponse> {
-    let upstream = open_responses_proxy_request(body).await?;
+    let upstream = open_responses_proxy_request(body, "/responses").await?;
     let status_code = upstream.status_code;
     let upstream_content_type = upstream.content_type.clone();
     let is_stream = upstream.is_stream;
     let upstream_body = upstream.response.bytes().await?;
 
     if !(200..300).contains(&status_code) {
+        return Ok(ProxyHttpResponse {
+            status: http_status_line(status_code),
+            content_type: if upstream_content_type.is_empty() {
+                "application/json; charset=utf-8".to_string()
+            } else {
+                upstream_content_type
+            },
+            body: upstream_body.to_vec(),
+        });
+    }
+
+    if upstream.body_mode == UpstreamResponseBodyMode::ResponsesPassthrough {
         return Ok(ProxyHttpResponse {
             status: http_status_line(status_code),
             content_type: if upstream_content_type.is_empty() {
@@ -396,6 +502,45 @@ pub fn chat_completions_url(base_url: &str) -> String {
     };
     while url.contains("/v1/v1") {
         url = url.replace("/v1/v1", "/v1");
+    }
+    url
+}
+
+pub fn responses_url(base_url: &str, proxy_path: &str) -> String {
+    let skip_version_prefix = base_url.trim().ends_with('#');
+    let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
+    let (path, query) = proxy_path
+        .split_once('?')
+        .map_or((proxy_path, None), |(path, query)| (path, Some(query)));
+    let endpoint = match path {
+        "/responses/compact" | "/v1/responses/compact" => "/responses/compact",
+        _ => "/responses",
+    };
+    let lower = base.to_ascii_lowercase();
+    let mut url = if lower.ends_with("/responses/compact") {
+        base.to_string()
+    } else if lower.ends_with("/responses") {
+        if endpoint == "/responses/compact" {
+            format!("{base}/compact")
+        } else {
+            base.to_string()
+        }
+    } else {
+        let origin_only = base
+            .split_once("://")
+            .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
+        if skip_version_prefix || has_version_suffix(base) || !origin_only {
+            format!("{base}{endpoint}")
+        } else {
+            format!("{base}/v1{endpoint}")
+        }
+    };
+    while url.contains("/v1/v1") {
+        url = url.replace("/v1/v1", "/v1");
+    }
+    if let Some(query) = query.filter(|query| !query.is_empty()) {
+        url.push('?');
+        url.push_str(query);
     }
     url
 }

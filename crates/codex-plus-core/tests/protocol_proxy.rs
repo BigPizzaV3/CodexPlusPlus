@@ -1,6 +1,7 @@
 use codex_plus_core::protocol_proxy::{
     ChatSseToResponsesConverter, chat_completion_to_response, chat_completions_url,
     chat_sse_to_responses_sse, is_models_proxy_path, models_url, responses_to_chat_completions,
+    responses_url, sanitize_responses_request_for_relay,
 };
 use serde_json::json;
 
@@ -54,6 +55,78 @@ fn responses_request_converts_to_chat_completions() {
                 }
             ]
         })
+    );
+}
+
+#[test]
+fn responses_request_sanitizer_removes_hosted_image_generation_tool() {
+    let sanitized = sanitize_responses_request_for_relay(json!({
+        "model": "gpt-5.4",
+        "input": "hi",
+        "tool_choice": {
+            "type": "allowed_tools",
+            "mode": "auto",
+            "tools": [
+                { "type": "function", "name": "lookup" },
+                { "type": "image_generation" }
+            ]
+        },
+        "include": ["image_generation_call.results", "reasoning.encrypted_content"],
+        "tools": [
+            { "type": "function", "name": "lookup", "parameters": { "type": "object" } },
+            { "type": "image_generation", "quality": "low" },
+            { "type": "imageGeneration", "size": "1024x1024" }
+        ]
+    }));
+
+    assert_eq!(
+        sanitized["tools"],
+        json!([{ "type": "function", "name": "lookup", "parameters": { "type": "object" } }])
+    );
+    assert_eq!(
+        sanitized["tool_choice"],
+        json!({
+            "type": "allowed_tools",
+            "mode": "auto",
+            "tools": [{ "type": "function", "name": "lookup" }]
+        })
+    );
+    assert_eq!(sanitized["include"], json!(["reasoning.encrypted_content"]));
+    assert!(
+        !serde_json::to_string(&sanitized)
+            .unwrap()
+            .contains("image_generation")
+    );
+    assert!(
+        !serde_json::to_string(&sanitized)
+            .unwrap()
+            .contains("imageGeneration")
+    );
+
+    let forced = sanitize_responses_request_for_relay(json!({
+        "tool_choice": { "type": "image_generation" },
+        "tools": [{ "type": "image_generation" }]
+    }));
+    assert!(forced.get("tool_choice").is_none());
+    assert!(forced.get("tools").is_none());
+}
+
+#[test]
+fn responses_url_preserves_responses_and_compact_paths() {
+    assert_eq!(
+        responses_url("https://relay.example.test", "/responses"),
+        "https://relay.example.test/v1/responses"
+    );
+    assert_eq!(
+        responses_url("https://relay.example.test/v1", "/v1/responses/compact"),
+        "https://relay.example.test/v1/responses/compact"
+    );
+    assert_eq!(
+        responses_url(
+            "https://relay.example.test/v1/responses",
+            "/responses/compact?trace=1"
+        ),
+        "https://relay.example.test/v1/responses/compact?trace=1"
     );
 }
 

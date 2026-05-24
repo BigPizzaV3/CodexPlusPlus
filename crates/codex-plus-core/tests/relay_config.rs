@@ -1,7 +1,7 @@
 use codex_plus_core::relay_config::{
-    apply_pure_api_config_to_home, apply_relay_config_file_to_home, apply_relay_config_to_home,
-    apply_relay_files_to_home, chatgpt_auth_status_from_home, clear_relay_config_to_home,
-    relay_config_status_from_home,
+    apply_pure_api_config_to_home, apply_pure_api_files_to_home, apply_relay_config_file_to_home,
+    apply_relay_config_to_home, apply_relay_files_to_home, chatgpt_auth_status_from_home,
+    clear_relay_config_to_home, relay_config_status_from_home,
 };
 use codex_plus_core::settings::RelayProtocol;
 
@@ -141,9 +141,164 @@ model = "gpt-5-mini"
     assert!(updated.contains(r#"name = "CodexPlusPlus""#));
     assert!(updated.contains(r#"wire_api = "responses""#));
     assert!(updated.contains("requires_openai_auth = true"));
-    assert!(updated.contains(r#"base_url = "https://relay.example.test/v1""#));
+    assert!(updated.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    assert!(!updated.contains("https://relay.example.test/v1"));
     assert!(updated.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
     assert!(updated.contains("[profiles.default]"));
+}
+
+#[test]
+fn apply_relay_config_disables_hosted_image_generation_for_relay_mode() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-5"
+[features]
+plugins = true
+"#,
+    )
+    .unwrap();
+
+    let result = apply_relay_config_to_home(
+        temp.path(),
+        "https://relay.example.test/v1",
+        "sk-test-redacted",
+    )
+    .unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(result.configured);
+    assert!(updated.contains("[features]"));
+    assert!(updated.contains("plugins = true"));
+    assert!(updated.contains(
+        "# Codex++ relay mode disables hosted image generation for relay compatibility."
+    ));
+    assert!(updated.contains("image_generation = false"));
+    assert!(updated.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    assert!(!updated.contains("https://relay.example.test/v1"));
+}
+
+#[test]
+fn apply_relay_files_disables_hosted_image_generation_for_relay_mode() {
+    let temp = tempfile::tempdir().unwrap();
+
+    let config = r#"model_provider = "CodexPlusPlus"
+
+[model_providers.CodexPlusPlus]
+name = "CodexPlusPlus"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example.test/v1"
+experimental_bearer_token = "sk-test-redacted"
+
+[features]
+plugins = true
+"#;
+    let auth = r#"{"auth_mode":"chatgpt","tokens":{"access_token":"token"}}"#;
+
+    let result = apply_relay_files_to_home(temp.path(), config, auth).unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(result.configured);
+    assert!(updated.contains("[features]"));
+    assert!(updated.contains("plugins = true"));
+    assert!(updated.contains(
+        "# Codex++ relay mode disables hosted image generation for relay compatibility."
+    ));
+    assert!(updated.contains("image_generation = false"));
+}
+
+#[test]
+fn apply_pure_api_config_keeps_hosted_image_generation_unchanged() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-5"
+[features]
+image_generation = true
+"#,
+    )
+    .unwrap();
+
+    apply_pure_api_config_to_home(temp.path(), "https://relay-a.example/v1", "sk-a").unwrap();
+
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(updated.contains("image_generation = true"));
+    assert!(!updated.contains("image_generation = false"));
+    assert!(!updated.contains("Codex++ relay mode disables hosted image generation"));
+}
+
+#[test]
+fn apply_pure_api_files_restores_relay_owned_image_generation_guard() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model_provider = "CodexPlusPlus"
+[model_providers.CodexPlusPlus]
+name = "CodexPlusPlus"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example.test/v1"
+experimental_bearer_token = "sk-test"
+
+[features]
+# Codex++ relay mode disables hosted image generation for relay compatibility.
+image_generation = false
+js_repl = false
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-test"}"#,
+    )
+    .unwrap();
+
+    let result = apply_pure_api_files_to_home(
+        temp.path(),
+        &std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
+        &std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
+    )
+    .unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(result.configured);
+    assert!(result.config_path.contains("config.toml"));
+    assert!(updated.contains("[features]"));
+    assert!(updated.contains("js_repl = false"));
+    assert!(!updated.contains("image_generation = false"));
+    assert!(!updated.contains("relay mode disables hosted image generation"));
+}
+
+#[test]
+fn clear_relay_config_restores_user_image_generation_true() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-5"
+model_provider = "CodexPlusPlus"
+[model_providers.CodexPlusPlus]
+name = "CodexPlusPlus"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example.test/v1"
+experimental_bearer_token = "sk-test-redacted"
+
+[features]
+plugins = true
+# Codex++ relay mode saved image_generation = true before override.
+image_generation = false
+"#,
+    )
+    .unwrap();
+
+    clear_relay_config_to_home(temp.path()).unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(updated.contains("[features]"));
+    assert!(updated.contains("plugins = true"));
+    assert!(updated.contains("image_generation = true"));
+    assert!(!updated.contains("Codex++ relay mode saved image_generation"));
 }
 
 #[test]
@@ -227,7 +382,8 @@ experimental_bearer_token = "sk-a"
 
     assert!(result.configured);
     assert!(result.backup_path.is_none());
-    assert!(config.contains(r#"base_url = "https://relay-a.example/v1""#));
+    assert!(config.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    assert!(!config.contains("https://relay-a.example/v1"));
     assert_eq!(auth, r#"{"OPENAI_API_KEY":"sk-a"}"#);
     assert!(std::fs::read_dir(temp.path()).unwrap().all(|entry| {
         !entry

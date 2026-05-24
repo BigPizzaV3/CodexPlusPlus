@@ -1031,7 +1031,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_pure_api_injection", &settings, &relay);
     if relay_has_complete_files(&relay) {
-        return match codex_plus_core::relay_config::apply_relay_files_to_home(
+        return match codex_plus_core::relay_config::apply_pure_api_files_to_home(
             &home,
             &relay.config_contents,
             &relay.auth_contents,
