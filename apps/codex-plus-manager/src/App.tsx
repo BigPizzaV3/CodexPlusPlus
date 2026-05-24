@@ -17,7 +17,6 @@ import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  Activity,
   ArrowLeft,
   Bell,
   CheckCircle2,
@@ -41,7 +40,6 @@ import {
   RefreshCw,
   Rocket,
   Save,
-  ScrollText,
   Settings,
   ShieldCheck,
   Sun,
@@ -292,7 +290,7 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-type Route = "overview" | "relay" | "enhance" | "userScripts" | "providerSync" | "recommendations" | "maintenance" | "about" | "settings" | "logs" | "diagnostics";
+type Route = "overview" | "relay" | "enhance" | "userScripts" | "providerSync" | "recommendations" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon }> = [
@@ -305,8 +303,6 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon }> = [
   { id: "maintenance", label: "安装维护", icon: Wrench },
   { id: "about", label: "关于", icon: Info },
   { id: "settings", label: "设置", icon: Settings },
-  { id: "logs", label: "日志", icon: ScrollText },
-  { id: "diagnostics", label: "诊断", icon: Activity },
 ];
 
 const defaultSettings: BackendSettings = {
@@ -499,9 +495,11 @@ export function App() {
     }
     if (next === "providerSync") await refreshSettings(true);
     if (next === "recommendations") await refreshAds(true);
-    if (next === "about") await refreshOverview(true);
-    if (next === "logs") await refreshLogs(true);
-    if (next === "diagnostics") await refreshDiagnostics(true);
+    if (next === "about") {
+      await refreshOverview(true);
+      await refreshLogs(true);
+      await refreshDiagnostics(true);
+    }
     if (next === "maintenance") {
       await refreshOverview(true);
       await refreshWatcher(true);
@@ -968,7 +966,7 @@ export function App() {
       refreshDiagnostics,
       copyLogs: () => copyText(logs?.text ?? "", "日志已复制。"),
       copyDiagnostics: () => copyText(diagnostics?.report ?? "", "诊断报告已复制。"),
-      goLogs: () => navigate("logs"),
+      goLogs: () => navigate("about"),
       checkHealth: async () => {
         await refreshOverview(true);
         await refreshRelay(true);
@@ -1094,13 +1092,9 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "about" ? <AboutScreen overview={overview} update={update} actions={actions} /> : null}
+          {route === "about" ? <AboutScreen overview={overview} update={update} logs={logs} diagnostics={diagnostics} actions={actions} /> : null}
           {route === "settings" ? (
             <SettingsScreen settings={settings} theme={theme} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
-          ) : null}
-          {route === "logs" ? <LogsScreen logs={logs} actions={actions} /> : null}
-          {route === "diagnostics" ? (
-            <DiagnosticsScreen diagnostics={diagnostics} actions={actions} />
           ) : null}
         </section>
       </main>
@@ -1243,7 +1237,7 @@ function OverviewScreen({
               启动 Codex++
             </Button>
             <Button variant="secondary" onClick={() => void actions.goLogs()}>
-              打开日志
+              打开关于
             </Button>
           </Toolbar>
         </CardContent>
@@ -1725,10 +1719,14 @@ function MaintenanceScreen({
 function AboutScreen({
   overview,
   update,
+  logs,
+  diagnostics,
   actions,
 }: {
   overview: OverviewResult | null;
   update: UpdateResult | null;
+  logs: LogsResult | null;
+  diagnostics: DiagnosticsResult | null;
   actions: Actions;
 }) {
   return (
@@ -1773,6 +1771,8 @@ function AboutScreen({
           </Toolbar>
         </CardContent>
       </Panel>
+      <LogsPanel logs={logs} actions={actions} />
+      <DiagnosticsPanel diagnostics={diagnostics} actions={actions} />
     </>
   );
 }
@@ -1873,10 +1873,10 @@ function SettingsScreen({
   );
 }
 
-function LogsScreen({ logs, actions }: { logs: LogsResult | null; actions: Actions }) {
+function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Actions }) {
   const lines = splitLogLines(logs?.text ?? "");
   return (
-    <Panel fill>
+    <Panel>
       <CardHead title="最近日志" detail={logs?.path ?? ""} />
       <CardContent>
         <div className="log-lines">
@@ -1902,9 +1902,9 @@ function LogsScreen({ logs, actions }: { logs: LogsResult | null; actions: Actio
   );
 }
 
-function DiagnosticsScreen({ diagnostics, actions }: { diagnostics: DiagnosticsResult | null; actions: Actions }) {
+function DiagnosticsPanel({ diagnostics, actions }: { diagnostics: DiagnosticsResult | null; actions: Actions }) {
   return (
-    <Panel fill>
+    <Panel>
       <CardHead title="诊断报告" detail="包含版本、路径、设置和平台信息" />
       <CardContent>
         <Textarea className="log-view tall" readOnly value={diagnostics?.report ?? "尚未生成诊断报告。"} />
@@ -2564,10 +2564,8 @@ function routeSubtitle(route: Route) {
     providerSync: "切换模式后让旧对话重新可见",
     recommendations: "赞助商推荐与普通推荐",
     maintenance: "入口安装、修复、Watcher 与手动启动",
-    about: "版本信息、项目链接与 GitHub Release 更新",
+    about: "版本信息、项目链接、GitHub Release 更新、日志与诊断",
     settings: "主题、命令包装器和启动参数",
-    logs: "最近状态文件内容",
-    diagnostics: "可复制的运行诊断报告",
   };
   return subtitles[route];
 }
