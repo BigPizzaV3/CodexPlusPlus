@@ -187,7 +187,14 @@ pub fn stop_launcher_processes() {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn stop_launcher_processes() {
+    if let Some(bundle_path) = macos_launcher_bundle_path() {
+        stop_macos_processes_matching(bundle_path.to_string_lossy().as_ref());
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 pub fn stop_launcher_processes() {}
 
 #[cfg(windows)]
@@ -197,8 +204,23 @@ pub fn stop_codex_processes() {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn stop_codex_processes() {
+    if let Some(app_dir) = macos_codex_app_dir_from_settings() {
+        stop_codex_processes_at(&app_dir);
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 pub fn stop_codex_processes() {}
+
+#[cfg(target_os = "macos")]
+pub fn stop_codex_processes_at(app_dir: &Path) {
+    stop_macos_processes_matching(app_dir.to_string_lossy().as_ref());
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+pub fn stop_codex_processes_at(_app_dir: &Path) {}
 
 #[cfg(windows)]
 fn create_startup_shortcut(launcher_path: &Path, arguments: &str) -> anyhow::Result<()> {
@@ -243,4 +265,186 @@ fn startup_shortcut_path() -> Option<PathBuf> {
             .join("Startup")
             .join(WATCHER_STARTUP_SHORTCUT_NAME)
     })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_launcher_bundle_path() -> Option<PathBuf> {
+    let launcher = crate::install::companion_binary_path(crate::install::SILENT_BINARY);
+    launcher.ancestors().nth(3).map(Path::to_path_buf)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_codex_app_dir_from_settings() -> Option<PathBuf> {
+    let settings = crate::settings::SettingsStore::default().load().ok()?;
+    crate::app_paths::resolve_codex_app_dir_with_saved(None, Some(settings.codex_app_path.as_str()))
+}
+
+pub fn filter_macos_codex_related_port_owner_processes<'a>(
+    processes: impl IntoIterator<Item = (u32, &'a str)>,
+    current_process_id: u32,
+    trusted_fragments: impl IntoIterator<Item = &'a str>,
+) -> Vec<u32> {
+    let fragments = trusted_fragments
+        .into_iter()
+        .map(str::trim)
+        .filter(|fragment| !fragment.is_empty())
+        .collect::<Vec<_>>();
+    processes
+        .into_iter()
+        .filter(|(process_id, command)| {
+            *process_id != current_process_id
+                && fragments.iter().any(|fragment| command.contains(fragment))
+        })
+        .map(|(process_id, _)| process_id)
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+pub fn stop_codex_related_processes_listening_on_ports(app_dir: &Path, ports: &[u16]) {
+    let fragments = macos_codex_related_process_fragments(
+        app_dir,
+        &crate::relay_config::default_codex_home_dir(),
+    );
+    stop_macos_port_owner_processes(ports, &fragments, "TERM");
+    std::thread::sleep(Duration::from_millis(300));
+    stop_macos_port_owner_processes(ports, &fragments, "KILL");
+}
+
+#[cfg(target_os = "macos")]
+fn stop_macos_port_owner_processes(ports: &[u16], trusted_fragments: &[String], signal: &str) {
+    let owners = macos_listening_port_owner_processes(ports);
+    let killable = filter_macos_codex_related_port_owner_processes(
+        owners
+            .iter()
+            .map(|(process_id, command)| (*process_id, command.as_str())),
+        std::process::id(),
+        trusted_fragments.iter().map(String::as_str),
+    );
+    for process_id in killable {
+        let _ = macos_signal_process(process_id, signal);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_codex_related_process_fragments(app_dir: &Path, codex_home: &Path) -> Vec<String> {
+    let mut fragments = vec![
+        app_dir.to_string_lossy().to_string(),
+        codex_home.to_string_lossy().to_string(),
+    ];
+    if let Some(bundle_path) = macos_launcher_bundle_path() {
+        fragments.push(bundle_path.to_string_lossy().to_string());
+    }
+    fragments
+}
+
+#[cfg(target_os = "macos")]
+fn macos_listening_port_owner_processes(ports: &[u16]) -> Vec<(u32, String)> {
+    let mut process_ids = HashSet::new();
+    for port in ports.iter().copied().filter(|port| *port != 0) {
+        let Ok(output) = Command::new("lsof")
+            .arg("-nP")
+            .arg(format!("-iTCP:{port}"))
+            .arg("-sTCP:LISTEN")
+            .arg("-t")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+        else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Ok(process_id) = line.trim().parse::<u32>() {
+                process_ids.insert(process_id);
+            }
+        }
+    }
+
+    process_ids
+        .into_iter()
+        .filter_map(|process_id| {
+            macos_command_for_pid(process_id).map(|command| (process_id, command))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_command_for_pid(process_id: u32) -> Option<String> {
+    let output = Command::new("ps")
+        .arg("-p")
+        .arg(process_id.to_string())
+        .arg("-o")
+        .arg("command=")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn stop_macos_processes_matching(command_fragment: &str) {
+    let command_fragment = command_fragment.trim();
+    if command_fragment.is_empty() {
+        return;
+    }
+
+    let process_ids = macos_process_ids_matching(command_fragment);
+    if process_ids.is_empty() {
+        return;
+    }
+
+    for process_id in &process_ids {
+        let _ = macos_signal_process(*process_id, "TERM");
+    }
+    std::thread::sleep(Duration::from_millis(300));
+
+    for process_id in macos_process_ids_matching(command_fragment) {
+        let _ = macos_signal_process(process_id, "KILL");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_process_ids_matching(command_fragment: &str) -> Vec<u32> {
+    let Ok(output) = Command::new("ps")
+        .args(["-axww", "-o", "pid=,command="])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    let command_fragment = command_fragment.trim();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let process_id = parts.next()?.parse::<u32>().ok()?;
+            let command = parts.collect::<Vec<_>>().join(" ");
+            command.contains(command_fragment).then_some(process_id)
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_signal_process(
+    process_id: u32,
+    signal: &str,
+) -> std::io::Result<std::process::ExitStatus> {
+    Command::new("kill")
+        .arg(format!("-{signal}"))
+        .arg(process_id.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
 }

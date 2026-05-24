@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use codex_plus_core::install::SILENT_BINARY;
 use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
@@ -235,13 +235,29 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
 
 #[tauri::command]
 pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
+    if let Err(error) = prepare_launch_environment(&request) {
+        return failed(
+            &format!("启动前清理旧进程失败：{error}"),
+            json!({
+                "debugPort": request.debug_port,
+                "helperPort": request.helper_port
+            }),
+        );
+    }
     spawn_codex_plus_launch(request, "启动任务已在后台开始，可稍后查看概览状态。")
 }
 
 #[tauri::command]
 pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
-    codex_plus_core::watcher::stop_launcher_processes();
-    codex_plus_core::watcher::stop_codex_processes();
+    if let Err(error) = prepare_launch_environment(&request) {
+        return failed(
+            &format!("重启前清理旧进程失败：{error}"),
+            json!({
+                "debugPort": request.debug_port,
+                "helperPort": request.helper_port
+            }),
+        );
+    }
     spawn_codex_plus_launch(request, "Codex 已请求重启，启动任务正在后台运行。")
 }
 
@@ -295,6 +311,81 @@ fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
         .spawn()
         .map(|_| ())
         .map_err(|error| anyhow::anyhow!("无法启动 {}：{error}", launcher.to_string_lossy()))
+}
+
+fn prepare_launch_environment(request: &LaunchRequest) -> anyhow::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let settings = SettingsStore::default().load().unwrap_or_default();
+        let requested_app_dir = if request.app_path.trim().is_empty() {
+            None
+        } else {
+            Some(Path::new(request.app_path.trim()))
+        };
+        let Some(target_app_dir) = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
+            requested_app_dir,
+            Some(settings.codex_app_path.as_str()),
+        ) else {
+            anyhow::bail!("无法解析 Codex 应用目录");
+        };
+
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "manager.launch_cleanup_requested",
+            json!({
+                "debug_port": request.debug_port,
+                "helper_port": request.helper_port,
+                "app_path": target_app_dir.to_string_lossy().to_string()
+            }),
+        );
+
+        codex_plus_core::watcher::stop_launcher_processes();
+        codex_plus_core::watcher::stop_codex_processes_at(&target_app_dir);
+        codex_plus_core::watcher::stop_codex_related_processes_listening_on_ports(
+            &target_app_dir,
+            &[
+                request.debug_port,
+                request.helper_port,
+                codex_plus_core::ports::LAUNCHER_GUARD_PORT,
+            ],
+        );
+
+        if !wait_for_launch_ports_to_clear(request.debug_port, request.helper_port) {
+            anyhow::bail!(
+                "等待旧的 Codex/launcher 退出超时，端口 {}、{} 或守门端口 {} 仍然忙碌",
+                request.debug_port,
+                request.helper_port,
+                codex_plus_core::ports::LAUNCHER_GUARD_PORT
+            );
+        }
+
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "manager.launch_cleanup_complete",
+            json!({
+                "debug_port": request.debug_port,
+                "helper_port": request.helper_port,
+                "app_path": target_app_dir.to_string_lossy().to_string()
+            }),
+        );
+    }
+
+    Ok(())
+}
+
+fn wait_for_launch_ports_to_clear(debug_port: u16, helper_port: u16) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let launcher_busy =
+            codex_plus_core::watcher::cdp_listening(codex_plus_core::ports::LAUNCHER_GUARD_PORT);
+        let debug_busy = codex_plus_core::watcher::cdp_listening(debug_port);
+        let helper_busy = codex_plus_core::watcher::cdp_listening(helper_port);
+        if !launcher_busy && !debug_busy && !helper_busy {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 #[tauri::command]

@@ -1,7 +1,7 @@
 use codex_plus_core::watcher::{
     build_spawn_launcher_command, build_watcher_install_plan, cdp_listening, codex_process_ids,
     disable_watcher_at, enable_watcher_at, filter_killable_launcher_processes,
-    watcher_disabled_flag,
+    filter_macos_codex_related_port_owner_processes, watcher_disabled_flag,
 };
 
 #[test]
@@ -86,4 +86,32 @@ fn launcher_process_filter_protects_current_process_ancestry() {
     ];
 
     assert_eq!(filter_killable_launcher_processes(processes, 30), vec![40]);
+}
+
+#[test]
+fn macos_port_owner_filter_kills_only_codex_related_processes() {
+    let processes = [
+        (
+            10,
+            "/Users/me/.codex/future-plugin/Future Tool.app/Contents/MacOS/Future Tool",
+        ),
+        (11, "/Applications/Codex.app/Contents/MacOS/Codex"),
+        (12, "/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus"),
+        (13, "/Applications/Other.app/Contents/MacOS/Other"),
+        (30, "/Applications/Codex++ Manager.app/Contents/MacOS/test"),
+    ];
+    let fragments = [
+        "/Applications/Codex.app".to_string(),
+        "/Applications/Codex++.app".to_string(),
+        "/Users/me/.codex".to_string(),
+    ];
+
+    assert_eq!(
+        filter_macos_codex_related_port_owner_processes(
+            processes,
+            30,
+            fragments.iter().map(String::as_str),
+        ),
+        vec![10, 11, 12]
+    );
 }

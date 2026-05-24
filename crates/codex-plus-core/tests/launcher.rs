@@ -273,6 +273,7 @@ fn launcher_macos_open_command_waits_for_app_exit() {
     let command = build_macos_open_command(Path::new("/Applications/Codex.app"), 9229, &[]);
 
     assert_eq!(command[0], "open");
+    assert!(command.contains(&"-n".to_string()));
     assert!(command.contains(&"-W".to_string()));
     assert!(command.contains(&"-a".to_string()));
     assert!(command.contains(&"--args".to_string()));

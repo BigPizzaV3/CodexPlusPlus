@@ -1138,6 +1138,7 @@ pub fn build_macos_open_command(
 ) -> Vec<String> {
     let mut command = vec![
         "open".to_string(),
+        "-n".to_string(),
         "-W".to_string(),
         "-a".to_string(),
         app_dir.to_string_lossy().to_string(),
