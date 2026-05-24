@@ -247,6 +247,88 @@ fn injection_script_restores_thread_scroll_positions() {
 }
 
 #[test]
+fn injection_script_installs_upstream_branch_dropdown_adapter() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("installUpstreamBranchDropdownAdapter"));
+    assert!(script.contains("installUpstreamPendingWorktreeDispatcherPatch"));
+    assert!(script.contains("data-codex-upstream-branch-option"));
+    assert!(script.contains("codexUpstreamBranchSelection"));
+    assert!(script.contains("/upstream-worktree/defaults"));
+    assert!(script.contains("/upstream-worktree/prepare"));
+    assert!(script.contains("injectUpstreamBranchOptions"));
+    assert!(script.contains("Upstream"));
+    assert!(script.contains("data-base-branch"));
+    assert!(script.contains("data-project-id"));
+    assert!(script.contains("MutationObserver"));
+    assert!(script.contains("upstreamWorktreePayloadFromSelection"));
+    assert!(script.contains("readUpstreamBranchSelection"));
+    assert!(script.contains("writeUpstreamBranchSelection(null)"));
+    assert!(script.contains("currentProjectRepoPathFromSelectedProjectButton"));
+    assert!(script.contains("currentProjectRepoPathFromStartButton"));
+    assert!(script.contains("Start new chat in"));
+    assert!(script.contains("codexUpstreamProjectContext"));
+    assert!(script.contains("rememberStartNewChatProjectContext"));
+    assert!(script.contains("currentProjectContextForBranchMenu"));
+    assert!(script.contains("remoteProjectContextFromGlobalState"));
+    assert!(script.contains("upstreamBranchDefaultsInflight = new Map()"));
+    assert!(script.contains("upstreamRemoteBranchDefaultsCacheTtlMs"));
+    assert!(script.contains("upstreamBranchDefaultsInflight.delete(cacheKey)"));
+    assert!(script.contains("projectId:"));
+    assert!(script.contains("data-codex-upstream-branch-selection-label"));
+    assert!(script.contains("syncUpstreamBranchTriggerLabel"));
+    assert!(script.contains("syncUpstreamBranchMenuSelection"));
+    assert!(script.contains("applyUpstreamPendingWorktreeOverride"));
+    assert!(script.contains("pending-worktree-create"));
+    assert!(script.contains("qualifiedSourceRef"));
+    assert!(script.contains("refs/remotes/${remote}/${baseBranch}"));
+    assert!(script.contains("startingState: { ...request.startingState, branchName: sourceRef }"));
+    assert!(script.contains("data-codex-upstream-branch-check"));
+    assert!(script.contains("data-codex-upstream-branch-icon"));
+    assert!(script.contains("branchIconSvg"));
+    assert!(script.contains("checkmarkSvg"));
+    assert!(script.contains("aria-checked"));
+    assert!(script.contains("check.removeAttribute(\"hidden\")"));
+    assert!(script.contains("check.setAttribute(\"hidden\", \"\")"));
+    assert!(script.contains("handleNativeBranchSelection"));
+    assert!(script.contains("clearUpstreamBranchTriggerLabel"));
+    assert!(!script.contains(r#"text.includes("/")"#));
+    assert!(script.contains("newWorktreeModeActive"));
+    assert!(script.contains("effectiveElementRect"));
+    assert!(script.contains("removeUpstreamBranchOptions"));
+    assert!(script.contains("cleanupInvalidUpstreamBranchOptions"));
+    assert!(script.contains("branchMenuInNewWorktreeMode"));
+    assert!(script.contains("branchMenuTriggerIsBranchControl"));
+    assert!(script.contains("actual-upstream-refs-v16"));
+    assert!(script.contains("create and checkout new branch"));
+    assert!(script.contains("if (/^start in"));
+    assert!(script.contains("if (!branchMenuInNewWorktreeMode(trigger))"));
+}
+
+#[test]
+fn injection_script_prevents_switching_to_branches_used_by_other_worktrees() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("data-codex-branch-worktree-path"));
+    assert!(script.contains("annotateBranchMenuWorktreeUsage"));
+    assert!(script.contains("branchWorktreePathFromMenuItem"));
+    assert!(script.contains("该分支已在另一个 worktree 使用"));
+    assert!(script.contains("event.stopImmediatePropagation?.()"));
+}
+
+#[test]
+fn injection_script_rebuilds_upstream_options_for_each_project_branch_menu() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("currentProjectRepoPathForBranchMenu"));
+    assert!(script.contains("repoPathFromProjectLabel"));
+    assert!(script.contains("projectContextFromProjectLabel"));
+    assert!(script.contains("upstreamBranchOptionsMatchRefs"));
+    assert!(script.contains("upstreamBranchDefaultsCache = new Map()"));
+    assert!(script.contains("actual-upstream-refs-v16"));
+}
+
+#[test]
 fn manager_ui_exposes_pure_api_relay_mode_button() {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
