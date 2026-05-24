@@ -3,6 +3,7 @@ use rusqlite::Connection;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 use tempfile::tempdir;
 
 fn write_rollout(path: &Path, provider: &str, thread_id: &str, cwd: &str) {
@@ -267,4 +268,41 @@ fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
         .filter(|entry| entry.as_ref().unwrap().path().is_dir())
         .count();
     assert_eq!(backups, 5);
+}
+
+#[test]
+fn provider_sync_preserves_rollout_mtime() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        "model_provider = \"apigather\"\n",
+    )
+    .unwrap();
+    let rollout = home.join("sessions/2026/rollout-mtime.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+
+    let past = SystemTime::now() - Duration::from_secs(86400);
+    let file = fs::File::options().write(true).open(&rollout).unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(past))
+        .unwrap();
+    drop(file);
+
+    let mtime_before = fs::metadata(&rollout).unwrap().modified().unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.changed_session_files, 1);
+
+    let mtime_after = fs::metadata(&rollout).unwrap().modified().unwrap();
+    let drift = mtime_after
+        .duration_since(mtime_before)
+        .or_else(|e| Ok::<_, std::convert::Infallible>(e.duration()))
+        .unwrap();
+    assert!(
+        drift < Duration::from_secs(2),
+        "mtime drifted by {drift:?}, expected < 2s"
+    );
 }
