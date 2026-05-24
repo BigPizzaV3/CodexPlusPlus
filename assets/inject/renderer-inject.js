@@ -3872,6 +3872,90 @@
     list.appendChild(item);
   }
 
+  function rememberProjectMoveOriginalLayout(row, item) {
+    if (item.dataset.codexProjectMoveOriginalItemClass === undefined) item.dataset.codexProjectMoveOriginalItemClass = item.getAttribute("class") || "";
+    if (item.dataset.codexProjectMoveOriginalItemStyle === undefined) item.dataset.codexProjectMoveOriginalItemStyle = item.getAttribute("style") || "";
+    if (row.dataset.codexProjectMoveOriginalRowClass === undefined) row.dataset.codexProjectMoveOriginalRowClass = row.getAttribute("class") || "";
+    if (row.dataset.codexProjectMoveOriginalRowStyle === undefined) row.dataset.codexProjectMoveOriginalRowStyle = row.getAttribute("style") || "";
+  }
+
+  function threadRowsInList(list, excludedRow = null) {
+    return Array.from(list?.children || [])
+      .map(threadRowFromListItem)
+      .filter((candidate) => candidate && candidate !== excludedRow);
+  }
+
+  function copyProjectMoveLayout(sourceRow, row, item) {
+    const sourceItem = rowListItem(sourceRow);
+    copyProjectMoveLayoutStyles(sourceItem, item);
+    copyProjectMoveLayoutStyles(sourceRow, row);
+    item.dataset.codexProjectMoveLayoutSource = "project";
+    row.dataset.codexProjectMoveLayoutSource = "project";
+  }
+
+  function copyProjectMoveLayoutStyles(source, target) {
+    if (!source || !target || source === target) return;
+    const sourceStyle = window.getComputedStyle(source);
+    [
+      "paddingLeft",
+      "paddingRight",
+      "paddingInlineStart",
+      "paddingInlineEnd",
+      "marginLeft",
+      "marginRight",
+      "marginInlineStart",
+      "marginInlineEnd",
+    ].forEach((property) => {
+      if (sourceStyle[property]) target.style[property] = sourceStyle[property];
+    });
+    ["--padding-row-x", "--padding-row-y"].forEach((property) => {
+      const value = sourceStyle.getPropertyValue(property);
+      if (value) target.style.setProperty(property, value);
+    });
+  }
+
+  function normalizeProjectThreadRowLayout(row, list, item = rowListItem(row)) {
+    if (!row || !item || !list) return;
+    rememberProjectMoveOriginalLayout(row, item);
+    const sourceRow = threadRowsInList(list, row).find((candidate) => !rowProjectionKind(candidate));
+    if (sourceRow) copyProjectMoveLayout(sourceRow, row, item);
+  }
+
+  function normalizeProjectlessThreadRowLayout(row, list, item = rowListItem(row)) {
+    if (!row || !item || !list) return;
+    rememberProjectMoveOriginalLayout(row, item);
+    const sourceRow = threadRowsInList(list, row).find((candidate) => !rowProjectionKind(candidate));
+    if (sourceRow) {
+      copyProjectMoveLayout(sourceRow, row, item);
+      item.dataset.codexProjectMoveLayoutSource = "projectless";
+      row.dataset.codexProjectMoveLayoutSource = "projectless";
+      return;
+    }
+    restoreProjectlessThreadRowLayout(row, item);
+  }
+
+  function restoreProjectlessThreadRowLayout(row, item = rowListItem(row)) {
+    if (!row || !item) return;
+    if (item.dataset.codexProjectMoveOriginalItemClass !== undefined) {
+      item.setAttribute("class", item.dataset.codexProjectMoveOriginalItemClass);
+    }
+    if (item.dataset.codexProjectMoveOriginalItemStyle !== undefined) {
+      const originalStyle = item.dataset.codexProjectMoveOriginalItemStyle;
+      if (originalStyle) item.setAttribute("style", originalStyle);
+      else item.removeAttribute("style");
+    }
+    if (row.dataset.codexProjectMoveOriginalRowClass !== undefined) {
+      row.setAttribute("class", row.dataset.codexProjectMoveOriginalRowClass);
+    }
+    if (row.dataset.codexProjectMoveOriginalRowStyle !== undefined) {
+      const originalStyle = row.dataset.codexProjectMoveOriginalRowStyle;
+      if (originalStyle) row.setAttribute("style", originalStyle);
+      else row.removeAttribute("style");
+    }
+    delete item.dataset.codexProjectMoveLayoutSource;
+    delete row.dataset.codexProjectMoveLayoutSource;
+  }
+
   function projectMoveInjectedList(projectItem) {
     let list = projectItem.querySelector('[data-codex-project-move-injected-list="true"]');
     if (!list) {
@@ -3938,6 +4022,7 @@
     const item = rowListItem(row);
     if (!list) return false;
     insertRowItemByTime(list, item, row, target);
+    normalizeProjectThreadRowLayout(row, list, item);
     cachedSessionRowsAt = 0;
     item.dataset.codexProjectMoveTargetKind = "project";
     item.dataset.codexProjectMoveTargetCwd = targetPath(target);
@@ -3952,6 +4037,7 @@
     if (!list) return false;
     const item = rowListItem(row);
     insertRowItemByTime(list, item, row, target);
+    normalizeProjectlessThreadRowLayout(row, list, item);
     cachedSessionRowsAt = 0;
     item.dataset.codexProjectMoveTargetKind = "projectless";
     row.dataset.codexProjectMoveTargetKind = "projectless";

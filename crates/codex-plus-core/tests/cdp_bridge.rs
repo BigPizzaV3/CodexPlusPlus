@@ -163,6 +163,18 @@ fn injection_script_keeps_session_action_buttons_in_pr_style() {
 }
 
 #[test]
+fn injection_script_normalizes_project_move_row_layout() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("normalizeProjectThreadRowLayout"));
+    assert!(script.contains("restoreProjectlessThreadRowLayout"));
+    assert!(script.contains("codexProjectMoveOriginalItemClass"));
+    assert!(script.contains("codexProjectMoveLayoutSource"));
+    assert!(script.contains("normalizeProjectThreadRowLayout(row, list, item);"));
+    assert!(script.contains("restoreProjectlessThreadRowLayout(row, item);"));
+}
+
+#[test]
 fn injection_script_unlocks_custom_model_catalog() {
     let script = assets::injection_script(57321);
 
