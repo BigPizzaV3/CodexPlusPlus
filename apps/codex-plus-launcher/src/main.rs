@@ -430,6 +430,28 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value> {
         Ok(codex_plus_core::zed_remote::open_zed_remote(&payload))
     }
+
+    async fn upstream_worktree_status(&self) -> anyhow::Result<Value> {
+        Ok(codex_plus_core::upstream_worktree::status_response())
+    }
+
+    async fn upstream_worktree_defaults(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(codex_plus_core::upstream_worktree::defaults_response(
+            &payload,
+        ))
+    }
+
+    async fn upstream_worktree_prepare(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(codex_plus_core::upstream_worktree::prepare_response(
+            &payload,
+        ))
+    }
+
+    async fn upstream_worktree_create(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(codex_plus_core::upstream_worktree::create_response(
+            &payload,
+        ))
+    }
 }
 
 async fn inject_with_context(

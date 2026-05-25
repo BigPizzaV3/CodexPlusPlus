@@ -68,6 +68,10 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn resolve_zed_remote_host(&self, payload: Value) -> anyhow::Result<Value>;
     async fn fallback_zed_remote_request(&self, payload: Value) -> anyhow::Result<Value>;
     async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value>;
+    async fn upstream_worktree_status(&self) -> anyhow::Result<Value>;
+    async fn upstream_worktree_defaults(&self, payload: Value) -> anyhow::Result<Value>;
+    async fn upstream_worktree_prepare(&self, payload: Value) -> anyhow::Result<Value>;
+    async fn upstream_worktree_create(&self, payload: Value) -> anyhow::Result<Value>;
 }
 
 #[async_trait]
@@ -151,6 +155,16 @@ pub async fn handle_bridge_request(
                 .await
         }
         "/zed-remote/open" => ctx.runtime.open_zed_remote(payload.clone()).await,
+        "/upstream-worktree/status" => ctx.runtime.upstream_worktree_status().await,
+        "/upstream-worktree/defaults" => {
+            ctx.runtime
+                .upstream_worktree_defaults(payload.clone())
+                .await
+        }
+        "/upstream-worktree/prepare" => {
+            ctx.runtime.upstream_worktree_prepare(payload.clone()).await
+        }
+        "/upstream-worktree/create" => ctx.runtime.upstream_worktree_create(payload.clone()).await,
         "/delete" => result_value(ctx.data.delete(session_from_payload(&payload)).await),
         "/undo" => {
             let undo_token = payload
@@ -409,6 +423,22 @@ impl BridgeRuntimeService for CoreRuntimeService {
 
     async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value> {
         Ok(crate::zed_remote::open_zed_remote(&payload))
+    }
+
+    async fn upstream_worktree_status(&self) -> anyhow::Result<Value> {
+        Ok(crate::upstream_worktree::status_response())
+    }
+
+    async fn upstream_worktree_defaults(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(crate::upstream_worktree::defaults_response(&payload))
+    }
+
+    async fn upstream_worktree_prepare(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(crate::upstream_worktree::prepare_response(&payload))
+    }
+
+    async fn upstream_worktree_create(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(crate::upstream_worktree::create_response(&payload))
     }
 }
 

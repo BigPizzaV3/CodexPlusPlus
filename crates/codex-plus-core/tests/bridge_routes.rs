@@ -49,6 +49,16 @@ async fn bridge_routes_cover_all_current_paths() {
             "/zed-remote/open",
             json!({"ssh": {"host": "example.com"}, "path": "/home/app.py"}),
         ),
+        ("/upstream-worktree/status", json!({})),
+        ("/upstream-worktree/defaults", json!({"repoPath": "/repo"})),
+        (
+            "/upstream-worktree/prepare",
+            json!({"repoPath": "/repo", "remote": "upstream", "baseBranch": "main"}),
+        ),
+        (
+            "/upstream-worktree/create",
+            json!({"repoPath": "/repo", "branchName": "feature/demo"}),
+        ),
         ("/delete", json!({"session_id": "s1", "title": "First"})),
         ("/undo", json!({"undo_token": "undo-1"})),
         (
@@ -77,6 +87,58 @@ async fn bridge_routes_cover_all_current_paths() {
             "{path} should be routed"
         );
     }
+}
+
+#[tokio::test]
+async fn upstream_worktree_routes_are_dispatched_to_runtime() {
+    let ctx = test_context();
+
+    assert_eq!(
+        handle_bridge_request(ctx.clone(), "/upstream-worktree/status", json!({})).await,
+        json!({"status": "ok", "feature": "upstream-worktree"})
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/upstream-worktree/defaults",
+            json!({"repoPath": "/repo"}),
+        )
+        .await,
+        json!({
+            "status": "ok",
+            "repoRoot": "/repo",
+            "defaultRemote": "upstream",
+            "defaultBaseBranch": "main",
+        })
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/upstream-worktree/create",
+            json!({"repoPath": "/repo", "branchName": "feature/demo"}),
+        )
+        .await,
+        json!({
+            "status": "ok",
+            "repoRoot": "/repo",
+            "branchName": "feature/demo",
+            "worktreePath": "/repo-feature-demo",
+        })
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx,
+            "/upstream-worktree/prepare",
+            json!({"repoPath": "/repo", "remote": "upstream", "baseBranch": "main"}),
+        )
+        .await,
+        json!({
+            "status": "ok",
+            "repoRoot": "/repo",
+            "sourceRef": "upstream/main",
+            "qualifiedSourceRef": "refs/remotes/upstream/main",
+        })
+    );
 }
 
 #[tokio::test]
@@ -875,6 +937,43 @@ impl BridgeRuntimeService for FakeRuntime {
     async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value> {
         assert_eq!(payload["path"], json!("/home/app.py"));
         Ok(json!({"status": "ok", "url": "ssh://example.com/home/app.py"}))
+    }
+
+    async fn upstream_worktree_status(&self) -> anyhow::Result<Value> {
+        Ok(json!({"status": "ok", "feature": "upstream-worktree"}))
+    }
+
+    async fn upstream_worktree_defaults(&self, payload: Value) -> anyhow::Result<Value> {
+        assert_eq!(payload["repoPath"], json!("/repo"));
+        Ok(json!({
+            "status": "ok",
+            "repoRoot": "/repo",
+            "defaultRemote": "upstream",
+            "defaultBaseBranch": "main",
+        }))
+    }
+
+    async fn upstream_worktree_prepare(&self, payload: Value) -> anyhow::Result<Value> {
+        assert_eq!(payload["repoPath"], json!("/repo"));
+        assert_eq!(payload["remote"], json!("upstream"));
+        assert_eq!(payload["baseBranch"], json!("main"));
+        Ok(json!({
+            "status": "ok",
+            "repoRoot": "/repo",
+            "sourceRef": "upstream/main",
+            "qualifiedSourceRef": "refs/remotes/upstream/main",
+        }))
+    }
+
+    async fn upstream_worktree_create(&self, payload: Value) -> anyhow::Result<Value> {
+        assert_eq!(payload["repoPath"], json!("/repo"));
+        assert_eq!(payload["branchName"], json!("feature/demo"));
+        Ok(json!({
+            "status": "ok",
+            "repoRoot": "/repo",
+            "branchName": "feature/demo",
+            "worktreePath": "/repo-feature-demo",
+        }))
     }
 }
 

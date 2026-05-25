@@ -187,11 +187,7 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
 }
 
 pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
-    let path = app_dir.to_string_lossy().replace('\\', "/");
-    let package_name = path
-        .split('/')
-        .rev()
-        .find(|part| part.starts_with("OpenAI.Codex_") && part.contains("__"))?;
+    let package_name = package_name_from_app_dir(app_dir)?;
     if !package_name.starts_with("OpenAI.Codex_") || !package_name.contains("__") {
         return None;
     }
@@ -201,6 +197,16 @@ pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
         return None;
     }
     Some(format!("{identity_name}_{publisher_id}!App"))
+}
+
+fn package_name_from_app_dir(app_dir: &Path) -> Option<String> {
+    let path = app_dir.to_string_lossy().replace('\\', "/");
+    let mut parts = path.split('/').filter(|part| !part.is_empty());
+    let mut package_name = parts.next_back()?;
+    if package_name.eq_ignore_ascii_case("app") {
+        package_name = parts.next_back()?;
+    }
+    Some(package_name.to_string())
 }
 
 fn codex_package_version(package_dir: &Path) -> Option<String> {
