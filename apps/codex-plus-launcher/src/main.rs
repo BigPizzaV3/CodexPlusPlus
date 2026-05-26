@@ -172,9 +172,10 @@ impl LaunchHooks for LauncherHooks {
         app_dir: &Path,
         debug_port: u16,
         extra_args: &[String],
+        windows_codex_launch_mode: codex_plus_core::settings::WindowsCodexLaunchMode,
     ) -> anyhow::Result<codex_plus_core::launcher::CodexLaunch> {
         self.core
-            .launch_codex(app_dir, debug_port, extra_args)
+            .launch_codex(app_dir, debug_port, extra_args, windows_codex_launch_mode)
             .await
     }
 

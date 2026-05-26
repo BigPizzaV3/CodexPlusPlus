@@ -11,13 +11,16 @@ use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
     build_codex_arguments, build_codex_command, build_macos_cleanup_command,
     build_macos_open_command, build_packaged_activation, codex_process_environment_from,
-    launch_and_inject_with_hooks, with_temporary_proxy_environment,
+    launch_and_inject_with_hooks, should_stop_existing_codex_before_direct_windows_launch,
+    should_use_packaged_activation, with_temporary_proxy_environment,
 };
 #[cfg(windows)]
 use codex_plus_core::launcher::{WindowsProcessControlStrategy, windows_process_control_strategy};
 use codex_plus_core::ports::select_platform_loopback_port_with;
 use codex_plus_core::proxy::has_proxy_environment;
-use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol};
+use codex_plus_core::settings::{
+    BackendSettings, RelayProfile, RelayProtocol, WindowsCodexLaunchMode,
+};
 use codex_plus_core::status::StatusStore;
 
 #[test]
@@ -257,6 +260,48 @@ fn launcher_packaged_activation_can_preserve_process_id() {
     };
 
     assert_eq!(launch.process_id(), Some(4242));
+}
+
+#[test]
+fn launcher_uses_packaged_activation_by_default_for_windows_packages() {
+    let app_dir = PathBuf::from(
+        r"C:\Program Files\WindowsApps\OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0\app",
+    );
+
+    assert!(should_use_packaged_activation(
+        &app_dir,
+        WindowsCodexLaunchMode::PackagedActivation
+    ));
+    assert!(!should_stop_existing_codex_before_direct_windows_launch(
+        &app_dir,
+        WindowsCodexLaunchMode::PackagedActivation
+    ));
+}
+
+#[test]
+fn launcher_direct_windows_mode_skips_packaged_activation_and_requires_clean_slate() {
+    let app_dir = PathBuf::from(
+        r"C:\Program Files\WindowsApps\OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0\app",
+    );
+
+    assert!(!should_use_packaged_activation(
+        &app_dir,
+        WindowsCodexLaunchMode::DirectProcess
+    ));
+    assert!(should_stop_existing_codex_before_direct_windows_launch(
+        &app_dir,
+        WindowsCodexLaunchMode::DirectProcess
+    ));
+}
+
+#[test]
+fn launcher_direct_windows_mode_does_not_stop_portable_codex_instances() {
+    let app_dir = PathBuf::from(r"C:\Portable\Codex\app");
+
+    assert!(!should_stop_existing_codex_before_direct_windows_launch(
+        &app_dir,
+        WindowsCodexLaunchMode::DirectProcess
+    ));
 }
 
 #[cfg(windows)]
@@ -1012,6 +1057,7 @@ impl LaunchHooks for FakeHooks {
         app_dir: &Path,
         debug_port: u16,
         extra_args: &[String],
+        _windows_codex_launch_mode: WindowsCodexLaunchMode,
     ) -> anyhow::Result<CodexLaunch> {
         assert!(app_dir.ends_with("Codex.app"));
         if extra_args.is_empty() {

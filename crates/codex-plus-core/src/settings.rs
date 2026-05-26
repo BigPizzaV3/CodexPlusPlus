@@ -13,6 +13,14 @@ pub enum LaunchMode {
     Relay,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum WindowsCodexLaunchMode {
+    #[default]
+    PackagedActivation,
+    DirectProcess,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayProfile {
@@ -76,6 +84,8 @@ pub struct BackendSettings {
     pub codex_app_path: String,
     #[serde(rename = "codexExtraArgs", default)]
     pub codex_extra_args: Vec<String>,
+    #[serde(rename = "windowsCodexLaunchMode", default)]
+    pub windows_codex_launch_mode: WindowsCodexLaunchMode,
     #[serde(rename = "providerSyncEnabled", default)]
     pub provider_sync_enabled: bool,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
@@ -111,6 +121,7 @@ impl Default for BackendSettings {
         Self {
             codex_app_path: String::new(),
             codex_extra_args: Vec::new(),
+            windows_codex_launch_mode: WindowsCodexLaunchMode::PackagedActivation,
             provider_sync_enabled: false,
             enhancements_enabled: true,
             launch_mode: LaunchMode::Patch,
@@ -315,16 +326,24 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             ),
         );
     }
+    if let Some(value) = source.get("windowsCodexLaunchMode").and_then(Value::as_str)
+        && matches!(value, "packagedActivation" | "directProcess")
+    {
+        target.insert(
+            "windowsCodexLaunchMode".to_string(),
+            Value::String(value.to_string()),
+        );
+    }
     if let Some(value) = source.get("providerSyncEnabled").and_then(Value::as_bool) {
         target.insert("providerSyncEnabled".to_string(), Value::Bool(value));
     }
     if let Some(value) = source.get("enhancementsEnabled").and_then(Value::as_bool) {
         target.insert("enhancementsEnabled".to_string(), Value::Bool(value));
     }
-    if let Some(value) = source.get("launchMode").and_then(Value::as_str) {
-        if matches!(value, "patch" | "relay") {
-            target.insert("launchMode".to_string(), Value::String(value.to_string()));
-        }
+    if let Some(value) = source.get("launchMode").and_then(Value::as_str)
+        && matches!(value, "patch" | "relay")
+    {
+        target.insert("launchMode".to_string(), Value::String(value.to_string()));
     }
     if let Some(value) = source.get("relayBaseUrl").and_then(Value::as_str) {
         target.insert("relayBaseUrl".to_string(), Value::String(value.to_string()));
@@ -439,6 +458,10 @@ mod tests {
         assert!(settings.enhancements_enabled);
         assert!(settings.codex_app_path.is_empty());
         assert!(settings.codex_extra_args.is_empty());
+        assert_eq!(
+            settings.windows_codex_launch_mode,
+            WindowsCodexLaunchMode::PackagedActivation
+        );
         assert_eq!(settings.launch_mode, LaunchMode::Patch);
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.relay_api_key.is_empty());
@@ -462,6 +485,10 @@ mod tests {
         assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.codex_extra_args.is_empty());
+        assert_eq!(
+            settings.windows_codex_launch_mode,
+            WindowsCodexLaunchMode::PackagedActivation
+        );
     }
 
     #[test]
@@ -477,6 +504,17 @@ mod tests {
                 "--force_high_performance_gpu".to_string(),
                 " --ignored-trimmed-by-ui ".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn settings_deserialize_reads_windows_codex_launch_mode() {
+        let settings: BackendSettings =
+            serde_json::from_str(r#"{"windowsCodexLaunchMode":"directProcess"}"#).unwrap();
+
+        assert_eq!(
+            settings.windows_codex_launch_mode,
+            WindowsCodexLaunchMode::DirectProcess
         );
     }
 
@@ -547,6 +585,7 @@ mod tests {
             "providerSyncEnabled": true,
             "codexAppPath": "C:\\Portable\\Codex\\Codex.exe",
             "enhancementsEnabled": false,
+            "windowsCodexLaunchMode": "directProcess",
             "relayBaseUrl": "https://relay.example.test/v1",
             "relayApiKey": "sk-relay",
             "codexExtraArgs": ["--force_high_performance_gpu", "", "  ", " --enable-gpu "],
@@ -566,6 +605,10 @@ mod tests {
                 "--force_high_performance_gpu".to_string(),
                 "--enable-gpu".to_string(),
             ]
+        );
+        assert_eq!(
+            updated.windows_codex_launch_mode,
+            WindowsCodexLaunchMode::DirectProcess
         );
         assert!(updated.cli_wrapper_enabled);
         assert_eq!(updated.cli_wrapper_base_url, "https://old.test");

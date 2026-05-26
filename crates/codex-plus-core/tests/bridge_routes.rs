@@ -9,7 +9,7 @@ use codex_plus_core::routes::{
     BridgeContext, BridgeDataService, BridgeRuntimeService, BridgeSettingsService,
     CoreRuntimeService, handle_bridge_request,
 };
-use codex_plus_core::settings::BackendSettings;
+use codex_plus_core::settings::{BackendSettings, WindowsCodexLaunchMode};
 use codex_plus_core::status::StatusStore;
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
@@ -1111,6 +1111,7 @@ impl LaunchHooks for ContextHooks {
         _app_dir: &std::path::Path,
         _debug_port: u16,
         _extra_args: &[String],
+        _windows_codex_launch_mode: WindowsCodexLaunchMode,
     ) -> anyhow::Result<CodexLaunch> {
         Ok(CodexLaunch::Process {
             command: vec!["codex".to_string()],

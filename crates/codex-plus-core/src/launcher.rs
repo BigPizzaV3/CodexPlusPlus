@@ -13,7 +13,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
-use crate::settings::{BackendSettings, SettingsStore, normalize_codex_extra_args};
+use crate::settings::{
+    BackendSettings, SettingsStore, WindowsCodexLaunchMode, normalize_codex_extra_args,
+};
 use crate::status::{LaunchStatus, StatusStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +133,7 @@ pub trait LaunchHooks: Send + Sync {
         app_dir: &Path,
         debug_port: u16,
         extra_args: &[String],
+        windows_codex_launch_mode: WindowsCodexLaunchMode,
     ) -> anyhow::Result<CodexLaunch>;
     async fn bridge_context(
         &self,
@@ -212,7 +215,12 @@ where
         }
 
         let launch = hooks
-            .launch_codex(&app_dir, debug_port, &settings.codex_extra_args)
+            .launch_codex(
+                &app_dir,
+                debug_port,
+                &settings.codex_extra_args,
+                settings.windows_codex_launch_mode,
+            )
             .await?;
         launched = Some(launch.clone());
 
@@ -367,9 +375,21 @@ impl LaunchHooks for DefaultLaunchHooks {
         app_dir: &Path,
         debug_port: u16,
         extra_args: &[String],
+        windows_codex_launch_mode: WindowsCodexLaunchMode,
     ) -> anyhow::Result<CodexLaunch> {
         if cfg!(windows) {
-            if let Some(activation) = build_packaged_activation(app_dir, debug_port, extra_args) {
+            if should_stop_existing_codex_before_direct_windows_launch(
+                app_dir,
+                windows_codex_launch_mode,
+            ) {
+                crate::watcher::stop_codex_processes();
+            }
+
+            if should_use_packaged_activation(app_dir, windows_codex_launch_mode) {
+                let Some(activation) = build_packaged_activation(app_dir, debug_port, extra_args)
+                else {
+                    unreachable!("packaged activation precondition was checked");
+                };
                 let CodexLaunch::PackagedActivation {
                     app_user_model_id,
                     arguments,
@@ -990,6 +1010,22 @@ pub fn build_packaged_activation(
         arguments: command_line_arguments(&build_codex_arguments(debug_port, extra_args)),
         process_id: None,
     })
+}
+
+pub fn should_use_packaged_activation(
+    app_dir: &Path,
+    windows_codex_launch_mode: WindowsCodexLaunchMode,
+) -> bool {
+    windows_codex_launch_mode == WindowsCodexLaunchMode::PackagedActivation
+        && crate::app_paths::packaged_app_user_model_id(app_dir).is_some()
+}
+
+pub fn should_stop_existing_codex_before_direct_windows_launch(
+    app_dir: &Path,
+    windows_codex_launch_mode: WindowsCodexLaunchMode,
+) -> bool {
+    windows_codex_launch_mode == WindowsCodexLaunchMode::DirectProcess
+        && crate::app_paths::packaged_app_user_model_id(app_dir).is_some()
 }
 
 pub fn codex_process_environment() -> HashMap<String, String> {
