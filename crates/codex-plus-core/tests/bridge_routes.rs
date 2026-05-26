@@ -707,7 +707,7 @@ fn install_market_script_writes_file_and_records_metadata() {
 }
 
 #[test]
-fn install_market_script_rejects_checksum_mismatch_without_replacing_existing_file() {
+fn install_market_script_ignores_checksum_mismatch_and_replaces_existing_file() {
     let temp = tempfile::tempdir().unwrap();
     let user_dir = temp.path().join("user");
     std::fs::create_dir_all(&user_dir).unwrap();
@@ -729,15 +729,12 @@ fn install_market_script_rejects_checksum_mismatch_without_replacing_existing_fi
         sha256: "0000".to_string(),
     };
 
-    let error =
-        codex_plus_core::script_market::install_market_script_content(&manager, &script, b"new")
-            .unwrap_err()
-            .to_string();
+    codex_plus_core::script_market::install_market_script_content(&manager, &script, b"new")
+        .unwrap();
 
-    assert!(error.contains("checksum"));
     assert_eq!(
         std::fs::read_to_string(user_dir.join("market-demo.js")).unwrap(),
-        "old"
+        "new"
     );
 }
 

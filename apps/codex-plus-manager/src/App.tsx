@@ -34,6 +34,7 @@ import {
   MessageCircle,
   FileCode2,
   Moon,
+  Network,
   Power,
   PowerOff,
   Plus,
@@ -48,7 +49,7 @@ import {
   Wrench,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -95,10 +96,13 @@ type BackendSettings = {
   codexExtraArgs: string[];
   providerSyncEnabled: boolean;
   enhancementsEnabled: boolean;
+  codexGoalsEnabled: boolean;
   launchMode: LaunchMode;
   relayBaseUrl: string;
   relayApiKey: string;
   relayProfiles: RelayProfile[];
+  relayCommonConfigContents: string;
+  relayContextConfigContents: string;
   activeRelayId: string;
   relayTestModel: string;
   cliWrapperEnabled: boolean;
@@ -112,7 +116,9 @@ type LaunchMode = "patch" | "relay";
 type RelayProfile = {
   id: string;
   name: string;
+  model: string;
   baseUrl: string;
+  upstreamBaseUrl: string;
   apiKey: string;
   protocol: RelayProtocol;
   relayMode: RelayMode;
@@ -120,12 +126,48 @@ type RelayProfile = {
   testModel: string;
   configContents: string;
   authContents: string;
+  useCommonConfig: boolean;
+  contextSelection: RelayContextSelection;
+  contextSelectionInitialized: boolean;
+  contextWindow: string;
+  autoCompactLimit: string;
+  modelList: string;
+};
+
+type RelayContextSelection = {
+  mcpServers: string[];
+  skills: string[];
+  plugins: string[];
+};
+
+type ContextKind = "mcp" | "skill" | "plugin";
+
+type CodexContextEntry = {
+  id: string;
+  kind: ContextKind;
+  title: string;
+  summary: string;
+  tomlBody: string;
+  enabled: boolean;
+};
+
+type CodexContextEntries = {
+  mcpServers: CodexContextEntry[];
+  skills: CodexContextEntry[];
+  plugins: CodexContextEntry[];
 };
 
 type RelayProtocol = "responses" | "chatCompletions";
 type RelayMode = "official" | "mixedApi" | "pureApi";
 const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
+const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
 const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
+
+const emptyContextSelection = (): RelayContextSelection => ({
+  mcpServers: [],
+  skills: [],
+  plugins: [],
+});
 
 type UserScriptInventory = {
   enabled?: boolean;
@@ -168,10 +210,33 @@ type RelayFilesResult = CommandResult<{
   authContents: string;
 }>;
 
+type ContextEntriesResult = CommandResult<{
+  settings: BackendSettings;
+  entries: CodexContextEntries;
+}>;
+
+type LiveContextEntriesResult = CommandResult<{
+  entries: CodexContextEntries;
+}>;
+
+type ExtractRelayCommonConfigResult = CommandResult<{
+  commonConfigContents: string;
+  profileConfigContents: string;
+}>;
+
+type SettingsBackfillResult = CommandResult<{
+  settings: BackendSettings;
+}>;
+
 type RelayProfileTestResult = CommandResult<{
   httpStatus: number;
   endpoint: string;
   responsePreview: string;
+}>;
+
+type RelayProfileModelsResult = CommandResult<{
+  models: string[];
+  endpoint: string;
 }>;
 
 type CcsProviderImport = {
@@ -290,12 +355,13 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-type Route = "overview" | "relay" | "enhance" | "userScripts" | "providerSync" | "recommendations" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "context" | "enhance" | "userScripts" | "providerSync" | "recommendations" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon }> = [
   { id: "overview", label: "概览", icon: LayoutDashboard },
   { id: "relay", label: "供应商配置", icon: KeyRound },
+  { id: "context", label: "工具与插件", icon: Network },
   { id: "enhance", label: "页面增强", icon: Hammer },
   { id: "userScripts", label: "脚本市场", icon: FileCode2 },
   { id: "providerSync", label: "历史会话修复", icon: Link2 },
@@ -310,6 +376,7 @@ const defaultSettings: BackendSettings = {
   codexExtraArgs: [],
   providerSyncEnabled: false,
   enhancementsEnabled: true,
+  codexGoalsEnabled: false,
   launchMode: "patch",
   relayBaseUrl: "",
   relayApiKey: "",
@@ -317,7 +384,9 @@ const defaultSettings: BackendSettings = {
     {
       id: "default",
       name: "默认中转",
+      model: "",
       baseUrl: "",
+      upstreamBaseUrl: "",
       apiKey: "",
       protocol: "responses",
       relayMode: "official",
@@ -325,8 +394,16 @@ const defaultSettings: BackendSettings = {
       testModel: "",
       configContents: "",
       authContents: "",
+      useCommonConfig: true,
+      contextSelection: emptyContextSelection(),
+      contextSelectionInitialized: true,
+      contextWindow: "",
+      autoCompactLimit: "",
+      modelList: "",
     },
   ],
+  relayCommonConfigContents: "",
+  relayContextConfigContents: "",
   activeRelayId: "default",
   relayTestModel: "gpt-5.4-mini",
   cliWrapperEnabled: false,
@@ -343,6 +420,7 @@ export function App() {
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [relay, setRelay] = useState<RelayResult | null>(null);
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
+  const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
   const [ccsProviders, setCcsProviders] = useState<CcsProvidersResult | null>(null);
   const [logs, setLogs] = useState<LogsResult | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
@@ -359,6 +437,10 @@ export function App() {
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
 
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
+
+  const logDiagnostic = (event: string, detail: Record<string, unknown> = {}) => {
+    void invoke("write_diagnostic_event", { event, detail }).catch(() => {});
+  };
 
   const run = async <T,>(task: () => Promise<T>): Promise<T | null> => {
     try {
@@ -446,11 +528,29 @@ export function App() {
     return result;
   };
 
+  const refreshLiveContextEntries = async (silent = false) => {
+    const result = await run(() => call<LiveContextEntriesResult>("read_live_context_entries"));
+    if (result) {
+      setLiveContextEntries(result.entries);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("工具与插件", result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const syncLiveContextEntries = async (next: BackendSettings, silent = false) => {
+    const result = await run(() => call<LiveContextEntriesResult>("sync_live_context_entries", { request: { settings: next } }));
+    if (result) {
+      setLiveContextEntries(result.entries);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("工具与插件", result, { silentSuccess: true });
+    }
+    return result;
+  };
+
   const refreshCcsProviders = async (silent = false) => {
     const result = await run(() => call<CcsProvidersResult>("load_ccs_providers"));
     if (result) {
       setCcsProviders(result);
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice("CCS 供应商", result, { silentSuccess: true });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("外部供应商配置", result, { silentSuccess: true });
     }
     return result;
   };
@@ -488,6 +588,11 @@ export function App() {
       await refreshRelayFiles(true);
       await refreshCcsProviders(true);
     }
+    if (next === "context") {
+      await refreshSettings(true);
+      await refreshRelayFiles(true);
+      await refreshLiveContextEntries(true);
+    }
     if (next === "settings") await refreshSettings(true);
     if (next === "userScripts") {
       await refreshSettings(true);
@@ -517,7 +622,7 @@ export function App() {
   const restart = async () => {
     const result = await launchCommand("restart_codex_plus");
     if (result) {
-      showNotice("重启 Codex", result.message, result.status);
+      showNotice("重启 Codex++", result.message, result.status);
       await refreshOverview(true);
     }
   };
@@ -633,7 +738,7 @@ export function App() {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
       await refreshCcsProviders(true);
-      showResultNotice("导入 CCSwitch 配置", result);
+      showResultNotice("导入供应商配置", result);
     }
   };
 
@@ -736,9 +841,61 @@ export function App() {
     }
   };
 
+  const upsertContextEntry = async (next: BackendSettings, kind: ContextKind, id: string, tomlBody: string) => {
+    const result = await run(() =>
+      call<ContextEntriesResult>("upsert_context_entry", {
+        request: { settings: next, kind, id, tomlBody },
+      }),
+    );
+    if (!result) return null;
+    let normalized = normalizeSettings(result.settings);
+    const saveResult = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
+    if (saveResult) {
+      setSettings(saveResult);
+      normalized = normalizeSettings(saveResult.settings);
+    }
+    setSettingsForm(normalized);
+    if (!isSuccessStatus(result.status)) showResultNotice("工具与插件", result);
+    return normalized;
+  };
+
+  const deleteContextEntry = async (next: BackendSettings, kind: ContextKind, id: string) => {
+    const result = await run(() =>
+      call<ContextEntriesResult>("delete_context_entry", {
+        request: { settings: next, kind, id },
+      }),
+    );
+    if (!result) return null;
+    let normalized = normalizeSettings(result.settings);
+    const saveResult = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
+    if (saveResult) {
+      setSettings(saveResult);
+      normalized = normalizeSettings(saveResult.settings);
+    }
+    setSettingsForm(normalized);
+    if (!isSuccessStatus(result.status)) showResultNotice("工具与插件", result);
+    return normalized;
+  };
+
+  const extractRelayCommonConfig = async (configContents: string) => {
+    const result = await run(() =>
+      call<ExtractRelayCommonConfigResult>("extract_relay_common_config", {
+        request: { configContents },
+      }),
+    );
+    if (result) showResultNotice("通用配置文件", result);
+    return result && isSuccessStatus(result.status) ? result : null;
+  };
+
   const testRelayProfile = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileTestResult>("test_relay_profile", { profile }));
     if (result) showNotice("供应商测试", result.message, result.status);
+  };
+
+  const fetchRelayProfileModels = async (profile: RelayProfile) => {
+    const result = await run(() => call<RelayProfileModelsResult>("fetch_relay_profile_models", { profile }));
+    if (result) showNotice("模型列表", result.message, result.status);
+    return result && isSuccessStatus(result.status) ? result.models : null;
   };
 
   const switchOfficialMode = async () => {
@@ -756,46 +913,110 @@ export function App() {
   };
 
   const switchRelayProfile = async (next: BackendSettings) => {
+    const targetBeforeSnapshot = activeRelayProfile(next);
+    logDiagnostic("switchRelayProfile.start", {
+      currentRelayId: settingsForm.activeRelayId,
+      targetRelayId: next.activeRelayId,
+      targetRelayName: targetBeforeSnapshot.name,
+      targetRelayMode: targetBeforeSnapshot.relayMode,
+    });
     const nextWithSnapshot = await snapshotActiveRelayFilesBeforeSwitch(next);
-    if (!nextWithSnapshot) return;
+    if (!nextWithSnapshot) {
+      logDiagnostic("switchRelayProfile.snapshot_failed", {
+        currentRelayId: settingsForm.activeRelayId,
+        targetRelayId: next.activeRelayId,
+      });
+      return;
+    }
 
     const selectedBeforeSave = activeRelayProfile(nextWithSnapshot);
     const validationError = relayProfileSwitchValidation(selectedBeforeSave);
     if (validationError) {
+      logDiagnostic("switchRelayProfile.validation_failed", {
+        targetRelayId: selectedBeforeSave.id,
+        targetRelayName: selectedBeforeSave.name,
+        error: validationError,
+      });
       showNotice("供应商配置可能不正确", validationError, "failed");
       return;
     }
 
     let selectedSettings = nextWithSnapshot;
+    logDiagnostic("switchRelayProfile.save_settings_start", {
+      targetRelayId: selectedBeforeSave.id,
+      targetRelayName: selectedBeforeSave.name,
+    });
     const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: nextWithSnapshot }));
     if (settingsResult) {
       selectedSettings = normalizeSettings(settingsResult.settings);
       setSettings(settingsResult);
       setSettingsForm(selectedSettings);
       if (!isSuccessStatus(settingsResult.status)) {
+        logDiagnostic("switchRelayProfile.save_settings_failed", {
+          targetRelayId: selectedBeforeSave.id,
+          status: settingsResult.status,
+          message: settingsResult.message,
+        });
         showNotice("供应商切换", settingsResult.message, settingsResult.status);
         return;
       }
     } else {
+      logDiagnostic("switchRelayProfile.save_settings_no_result", {
+        targetRelayId: selectedBeforeSave.id,
+      });
       return;
     }
 
     const selectedAfterSave = activeRelayProfile(selectedSettings);
     const command = relayProfileSwitchCommand(selectedAfterSave);
+    logDiagnostic("switchRelayProfile.apply_start", {
+      targetRelayId: selectedAfterSave.id,
+      targetRelayName: selectedAfterSave.name,
+      command,
+    });
     const result = await run(() => call<RelayResult>(command));
-    if (!result) return;
+    if (!result) {
+      logDiagnostic("switchRelayProfile.apply_no_result", {
+        targetRelayId: selectedAfterSave.id,
+        command,
+      });
+      return;
+    }
 
     setRelay(result);
     await refreshRelayFiles(true);
-    if (!isSuccessStatus(result.status)) {
+    if (!isSuccessStatus(result.status) || (selectedAfterSave.relayMode === "pureApi" && !result.configured)) {
+      logDiagnostic("switchRelayProfile.apply_failed", {
+        targetRelayId: selectedAfterSave.id,
+        command,
+        status: result.status,
+        message: result.message,
+        configured: result.configured,
+      });
       showNotice("供应商切换", relayProfileReadinessText(selectedAfterSave, result), result.status);
       return;
     }
 
     const currentSelected = activeRelayProfile(selectedSettings);
     const launchMode = currentSelected.relayMode === "pureApi" ? "patch" : "relay";
+    logDiagnostic("switchRelayProfile.launch_mode_start", {
+      targetRelayId: currentSelected.id,
+      launchMode,
+    });
     const modeResult = await saveLaunchMode(launchMode, true, selectedSettings);
-    if (modeResult) showNotice("供应商切换", relayProfileModeSwitchedText(currentSelected), modeResult.status);
+    if (modeResult) {
+      logDiagnostic("switchRelayProfile.ok", {
+        targetRelayId: currentSelected.id,
+        launchMode,
+        status: modeResult.status,
+      });
+      showNotice("供应商切换", relayProfileModeSwitchedText(currentSelected), modeResult.status);
+    } else {
+      logDiagnostic("switchRelayProfile.launch_mode_no_result", {
+        targetRelayId: currentSelected.id,
+        launchMode,
+      });
+    }
   };
 
   const snapshotActiveRelayFilesBeforeSwitch = async (next: BackendSettings): Promise<BackendSettings | null> => {
@@ -803,24 +1024,33 @@ export function App() {
     const selected = activeRelayProfile(next);
     if (current.id === selected.id) return next;
 
-    const files = await refreshRelayFiles(true);
-    if (!files || !isSuccessStatus(files.status)) {
-      showNotice("供应商切换", files?.message ?? "读取当前配置文件失败，已停止切换以避免覆盖用户改动。", files?.status ?? "failed");
+    logDiagnostic("snapshotActiveRelayFilesBeforeSwitch.start", {
+      currentRelayId: current.id,
+      currentRelayName: current.name,
+      selectedRelayId: selected.id,
+      selectedRelayName: selected.name,
+    });
+    const result = await run(() =>
+      call<SettingsBackfillResult>("backfill_relay_profile_from_live", {
+        request: { settings: next, profileId: current.id },
+      }),
+    );
+    if (!result || !isSuccessStatus(result.status)) {
+      logDiagnostic("snapshotActiveRelayFilesBeforeSwitch.failed", {
+        currentRelayId: current.id,
+        selectedRelayId: selected.id,
+        status: result?.status,
+        message: result?.message,
+      });
+      showNotice("供应商切换", result?.message ?? "读取当前配置文件失败，已停止切换以避免覆盖用户改动。", result?.status ?? "failed");
       return null;
     }
 
-    return syncLegacyRelayFields({
-      ...next,
-      relayProfiles: next.relayProfiles.map((profile) =>
-        profile.id === current.id
-          ? {
-              ...profile,
-              configContents: files.configContents,
-              authContents: files.authContents,
-            }
-          : profile,
-      ),
+    logDiagnostic("snapshotActiveRelayFilesBeforeSwitch.ok", {
+      currentRelayId: current.id,
+      selectedRelayId: selected.id,
     });
+    return syncLegacyRelayFields(normalizeSettings(result.settings));
   };
 
 
@@ -946,6 +1176,8 @@ export function App() {
       },
       refreshRelay,
       refreshRelayFiles,
+      refreshLiveContextEntries,
+      syncLiveContextEntries,
       refreshCcsProviders,
       importCcsProviders,
       refreshAds,
@@ -958,12 +1190,17 @@ export function App() {
       applyPureApiInjection,
       clearRelayInjection,
       saveRelayFile,
+      upsertContextEntry,
+      deleteContextEntry,
+      extractRelayCommonConfig,
       testRelayProfile,
+      fetchRelayProfileModels,
       switchRelayProfile,
       switchOfficialMode,
       switchPureApiMode,
       refreshLogs,
       refreshDiagnostics,
+      showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
       copyLogs: () => copyText(logs?.text ?? "", "日志已复制。"),
       copyDiagnostics: () => copyText(diagnostics?.report ?? "", "诊断报告已复制。"),
       goLogs: () => navigate("about"),
@@ -971,7 +1208,7 @@ export function App() {
         await refreshOverview(true);
         await refreshRelay(true);
         await refreshWatcher(true);
-        showNotice("检查完成", "已刷新 Codex 应用、入口、ChatGPT 登录和 Watcher 状态。", "ok");
+        showNotice("检查完成", "已刷新 Codex 应用、入口和 Watcher 状态。", "ok");
       },
       installWatcher: () => watcherAction("install_watcher"),
       uninstallWatcher: () => watcherAction("uninstall_watcher"),
@@ -1043,9 +1280,9 @@ export function App() {
             >
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
-            <Button onClick={() => void actions.restart()} title="重启 Codex" variant="outline">
+            <Button onClick={() => void actions.restart()} title="重启 Codex++" variant="outline">
               <Rocket className="h-4 w-4" />
-              重启 Codex
+              重启 Codex++
             </Button>
             <Button onClick={() => void actions.refreshCurrent()} size="icon" title="刷新当前页面" variant="outline">
               <RefreshCw className="h-4 w-4" />
@@ -1056,18 +1293,24 @@ export function App() {
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
-              settings={settings}
-              relay={relay}
               actions={actions}
             />
           ) : null}
           {route === "relay" ? (
             <RelayScreen
               settings={settings}
-              relay={relay}
               relayFiles={relayFiles}
               ccsProviders={ccsProviders}
               form={settingsForm}
+              onFormChange={setSettingsForm}
+              actions={actions}
+            />
+          ) : null}
+          {route === "context" ? (
+            <ContextScreen
+              form={settingsForm}
+              liveEntries={liveContextEntries}
+              relayFiles={relayFiles}
               onFormChange={setSettingsForm}
               actions={actions}
             />
@@ -1129,6 +1372,8 @@ type Actions = {
   setLaunchMode: (launchMode: LaunchMode) => Promise<void>;
   refreshRelay: () => Promise<void>;
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
+  refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
+  syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   refreshCcsProviders: () => Promise<CcsProvidersResult | null>;
   importCcsProviders: () => Promise<void>;
   refreshAds: () => Promise<void>;
@@ -1141,12 +1386,22 @@ type Actions = {
   applyPureApiInjection: () => Promise<boolean>;
   clearRelayInjection: () => Promise<boolean>;
   saveRelayFile: (kind: "config" | "auth", contents: string, silent?: boolean) => Promise<void>;
+  upsertContextEntry: (
+    settings: BackendSettings,
+    kind: ContextKind,
+    id: string,
+    tomlBody: string,
+  ) => Promise<BackendSettings | null>;
+  deleteContextEntry: (settings: BackendSettings, kind: ContextKind, id: string) => Promise<BackendSettings | null>;
+  extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
+  fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
   switchRelayProfile: (settings: BackendSettings) => Promise<void>;
   switchOfficialMode: () => Promise<void>;
   switchPureApiMode: () => Promise<void>;
   refreshLogs: () => Promise<void>;
   refreshDiagnostics: () => Promise<void>;
+  showMessage: (title: string, message: string, status?: Status) => Promise<void>;
   copyLogs: () => Promise<void>;
   copyDiagnostics: () => Promise<void>;
   goLogs: () => Promise<void>;
@@ -1160,48 +1415,14 @@ type Actions = {
 
 function OverviewScreen({
   overview,
-  settings,
-  relay,
   actions,
 }: {
   overview: OverviewResult | null;
-  settings: SettingsResult | null;
-  relay: RelayResult | null;
   actions: Actions;
 }) {
-  const launchMode = settings?.settings.launchMode ?? "patch";
-  const apiMode = apiModeLabel(relay);
-  const historyProvider = relay?.configured ? "CodexPlusPlus" : "openai";
-  const health = healthItems(overview, relay);
+  const health = healthItems(overview);
   return (
     <>
-      <Panel className="hero-panel">
-        <CardContent className="hero-content">
-          <div className="hero-layout">
-            <div>
-              <div className="eyebrow">Codex++ 状态</div>
-              <h2>{health.every((item) => item.ok) ? `当前为${apiMode}` : "有项目需要处理"}</h2>
-              <p>
-                历史会话会按 {historyProvider} 显示；页面增强为
-                {launchMode === "relay" ? "兼容模式，插件入口相关功能自动关闭。" : "完整模式，会加载全部页面功能。"}
-              </p>
-            </div>
-            <Toolbar>
-              <Button onClick={() => void actions.checkHealth()}>
-                <RefreshCw className="h-4 w-4" />
-                检查
-              </Button>
-              <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>
-                <Wrench className="h-4 w-4" />
-                修复入口
-              </Button>
-              <Button variant="secondary" onClick={() => void actions.repairBackend()}>
-                修复后端
-              </Button>
-            </Toolbar>
-          </div>
-        </CardContent>
-      </Panel>
       <Panel>
         <CardHead title="健康检查" detail="概览只展示关键问题，具体配置在对应页面处理" />
         <CardContent>
@@ -1225,6 +1446,19 @@ function OverviewScreen({
               </div>
             ))}
           </div>
+          <Toolbar>
+            <Button onClick={() => void actions.checkHealth()}>
+              <RefreshCw className="h-4 w-4" />
+              检查
+            </Button>
+            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>
+              <Wrench className="h-4 w-4" />
+              修复入口
+            </Button>
+            <Button variant="secondary" onClick={() => void actions.repairBackend()}>
+              修复后端
+            </Button>
+          </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
@@ -1247,8 +1481,7 @@ function OverviewScreen({
 }
 
 function RelayScreen({
-  settings,
-  relay,
+  settings: _settings,
   relayFiles,
   ccsProviders,
   form,
@@ -1256,7 +1489,6 @@ function RelayScreen({
   actions,
 }: {
   settings: SettingsResult | null;
-  relay: RelayResult | null;
   relayFiles: RelayFilesResult | null;
   ccsProviders: CcsProvidersResult | null;
   form: BackendSettings;
@@ -1264,7 +1496,6 @@ function RelayScreen({
   actions: Actions;
 }) {
   const normalized = normalizeSettings(form);
-  const active = activeRelayProfile(normalized);
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
   const detailProfile = newProfileDraft || (detailProfileId
@@ -1288,59 +1519,33 @@ function RelayScreen({
 
   if (detailProfile) {
     return (
-      <Panel fill>
-        <CardHead title="供应商详情" detail="上面修改参数，下面实时预览这个供应商自己的 config.toml / auth.json" />
-        <CardContent>
-          <RelayProfileDetail
-            profile={detailProfile}
-            relayFiles={!isNewProfile && detailProfile.id === normalized.activeRelayId ? relayFiles : null}
-            form={normalized}
-            isNew={isNewProfile}
-            onBack={() => {
-              setNewProfileDraft(null);
-              setDetailProfileId(null);
-            }}
-            onFormChange={saveRelaySettings}
-            onSaved={() => {
-              setNewProfileDraft(null);
-              setDetailProfileId(null);
-            }}
-            actions={actions}
-          />
-        </CardContent>
-      </Panel>
+      <RelayProfileDetail
+        profile={detailProfile}
+        relayFiles={!isNewProfile && detailProfile.id === normalized.activeRelayId ? relayFiles : null}
+        form={normalized}
+        isNew={isNewProfile}
+        onBack={() => {
+          setNewProfileDraft(null);
+          setDetailProfileId(null);
+        }}
+        onFormChange={saveRelaySettings}
+        onSaved={() => {
+          setNewProfileDraft(null);
+          setDetailProfileId(null);
+        }}
+        actions={actions}
+      />
     );
   }
 
   return (
     <>
       <Panel>
-        <CardHead title="当前供应商状态" detail={relay?.configPath ?? "运行状态跟随供应商列表里的当前配置"} />
-        <CardContent>
-          <div className="relay-grid">
-            <Metric label="当前模式" value={apiModeLabel(relay)} />
-            <Metric label="ChatGPT 登录" value={relay?.authenticated ? "已检测" : "未检测"} />
-            <Metric label="登录账号" value={relay?.accountLabel ?? "-"} />
-            <Metric label="当前供应商" value={active.name || "-"} />
-            <Metric label="接入模式" value={relayModeLabel(active.relayMode)} />
-            <Metric label="上游协议" value={relayProtocolLabel(active.protocol)} />
-            <Metric label="历史会话" value={relay?.configured ? "CodexPlusPlus" : "openai"} />
-            <Metric label="页面增强" value={normalized.launchMode === "relay" ? "兼容模式" : "完整模式"} />
-            <Metric label="配置状态" value={relay?.configured ? "已写入" : "官方默认"} />
-          </div>
-          <div className="hint-line">
-            <ShieldCheck className="h-4 w-4" />
-            <span>{relayProfileReadinessText(active, relay)}</span>
-          </div>
-          {relay?.backupPath ? <div className="path-line compact-path">备份：{relay.backupPath}</div> : null}
-        </CardContent>
-      </Panel>
-      <Panel>
         <CardHead title="供应商列表" detail={`${normalized.relayProfiles.length} 个供应商配置；可拖动排序，点编辑进入详情`} />
         <CardContent>
           <div className="relay-import-row">
             <div>
-              <strong>CCSwitch 配置</strong>
+              <strong>供应商配置导入</strong>
               <span>{ccsProviderSummary(ccsProviders)}</span>
             </div>
             <Toolbar>
@@ -1355,7 +1560,7 @@ function RelayScreen({
                 variant="secondary"
               >
                 <Download className="h-4 w-4" />
-                导入 CCSwitch 配置
+                导入供应商配置
               </Button>
             </Toolbar>
           </div>
@@ -1380,14 +1585,6 @@ function RelayScreen({
             onFormChange={saveRelaySettings}
             actions={actions}
           />
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title="配置文件" detail="进入某个供应商详情后可查看和保存 config.toml / auth.json" />
-        <CardContent>
-          <div className="path-line loose">Codex++ 设置：{settings?.settings_path ?? "未加载设置文件。"}</div>
-          <div className="path-line loose">Codex config.toml：{relayFiles?.configPath ?? "-"}</div>
-          <div className="path-line loose">Codex auth.json：{relayFiles?.authPath ?? "-"}</div>
         </CardContent>
       </Panel>
     </>
@@ -2140,44 +2337,98 @@ function RelayProfileDetail({
   const isActive = !isNew && profile.id === form.activeRelayId;
   useEffect(() => {
     setDraft(
-      isActive && relayFiles
-        ? { ...profile, configContents: relayFiles.configContents, authContents: relayFiles.authContents }
-        : profile,
+      deriveRelayProfileFromFiles(
+        isActive && relayFiles
+          ? {
+            ...profile,
+            configContents: relayFiles.configContents,
+            authContents: relayFiles.authContents,
+          }
+          : profile,
+      ),
     );
   }, [profile.id, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
   const saveDraft = async () => {
-    const next = isNew ? addRelayProfile(form, draft) : updateRelayProfile(form, profile.id, draft);
+    const normalizedDraft = deriveRelayProfileFromFiles(draft);
+    const next = isNew
+      ? addRelayProfile(form, normalizedDraft)
+      : updateRelayProfile(form, profile.id, normalizedDraft);
     onFormChange(next);
     if (isActive) {
-      await actions.saveRelayFile("config", draft.configContents, true);
-      await actions.saveRelayFile("auth", draft.authContents, true);
+      await actions.saveRelayFile(
+        "config",
+        effectiveRelayConfigPreview(normalizedDraft, form, normalizedDraft),
+        true,
+      );
+      await actions.saveRelayFile("auth", normalizedDraft.authContents, true);
     }
     onSaved?.();
   };
   const switchDraft = () => {
     if (isNew) return;
+    const normalizedDraft = deriveRelayProfileFromFiles(draft);
     const next = syncLegacyRelayFields({
       ...form,
-      relayProfiles: form.relayProfiles.map((item) => (item.id === profile.id ? draft : item)),
+      relayProfiles: form.relayProfiles.map((item) => (item.id === profile.id ? normalizedDraft : item)),
       activeRelayId: profile.id,
     });
     void actions.switchRelayProfile(next);
   };
   return (
     <div className="relay-detail-page">
-      <Toolbar>
-        <Button onClick={onBack} variant="secondary">
-          <ArrowLeft className="h-4 w-4" />
-          返回列表
-        </Button>
-        <Button onClick={() => void saveDraft()}>
-          <Save className="h-4 w-4" />
-          保存
-        </Button>
-      </Toolbar>
-      <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} />
-      <RelayFileEditors profile={draft} isActive={isActive} onProfileChange={setDraft} />
+      <div className="relay-detail-sticky">
+        <Toolbar>
+          <Button onClick={onBack} variant="secondary">
+            <ArrowLeft className="h-4 w-4" />
+            返回列表
+          </Button>
+          <Button onClick={() => void saveDraft()}>
+            <Save className="h-4 w-4" />
+            保存
+          </Button>
+        </Toolbar>
+      </div>
+      <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} />
+      <RelayFileEditors
+        contextProfile={profile}
+        profile={draft}
+        form={form}
+        isActive={isActive}
+        profileId={profile.id}
+        onFormChange={onFormChange}
+        onProfileChange={setDraft}
+        actions={actions}
+      />
     </div>
+  );
+}
+
+function ContextScreen({
+  form,
+  liveEntries,
+  relayFiles,
+  onFormChange,
+  actions,
+}: {
+  form: BackendSettings;
+  liveEntries: CodexContextEntries | null;
+  relayFiles: RelayFilesResult | null;
+  onFormChange: (value: BackendSettings) => void;
+  actions: Actions;
+}) {
+  return (
+    <Panel fill>
+      <CardHead title="Codex 工具与插件" detail="独立管理 Codex 的 MCP、Skills、Plugins；切换任意供应商都会带上。" />
+      <CardContent>
+        <RelayContextManager
+          form={normalizeSettings(form)}
+          liveEntries={liveEntries}
+          relayFiles={relayFiles}
+          onFormChange={onFormChange}
+          actions={actions}
+        />
+      </CardContent>
+    </Panel>
   );
 }
 
@@ -2187,18 +2438,19 @@ function RelayProfileEditor({
   isNew = false,
   onProfileChange,
   onSwitch,
+  actions,
 }: {
   profile: RelayProfile;
   form: BackendSettings;
   isNew?: boolean;
   onProfileChange: (value: RelayProfile) => void;
   onSwitch: () => void;
+  actions: Actions;
 }) {
   const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const updateDraft = (patch: Partial<RelayProfile>) => {
-    const shouldRegenerateFiles = ["baseUrl", "apiKey", "protocol", "relayMode", "officialMixApiKey"].some((key) => key in patch);
-    const updated = { ...profile, ...patch };
-    onProfileChange(shouldRegenerateFiles ? withGeneratedRelayFiles(updated) : updated);
+    onProfileChange(applyRelayProfilePatchToFiles(profile, patch));
   };
   return (
     <div className="relay-profile-editor">
@@ -2236,13 +2488,66 @@ function RelayProfileEditor({
             <option value="pureApi">纯 API</option>
           </select>
         </Field>
-        <Field className="relay-field-test-model" label="测试模型">
+        <Field className="relay-field-config-model" label="配置模型">
           <Input
-            value={profile.testModel}
-            onChange={(event) => updateDraft({ testModel: event.currentTarget.value })}
-            placeholder={`留空使用默认：${form.relayTestModel || defaultSettings.relayTestModel}`}
+            value={profile.model}
+            onChange={(event) => updateDraft({ model: event.currentTarget.value })}
+            placeholder="写入 config.toml 的 model 字段，例如 gpt-5"
           />
         </Field>
+        <Field className="relay-field-goals" label="Codex 目标">
+          <label className="inline-check">
+            <input
+              checked={configHasCodexGoalsFeature(profile.configContents)}
+              onChange={(event) =>
+                updateDraft({
+                  configContents: setCodexGoalsFeatureInConfig(profile.configContents, event.currentTarget.checked),
+                })
+              }
+              type="checkbox"
+            />
+            <span>启用目标功能</span>
+          </label>
+        </Field>
+        <div className="relay-advanced-toggle">
+          <Button
+            aria-expanded={showAdvanced}
+            onClick={() => setShowAdvanced((current) => !current)}
+            size="sm"
+            type="button"
+            variant="secondary"
+          >
+            <Settings className="h-4 w-4" />
+            更多选项
+          </Button>
+        </div>
+        {showAdvanced ? (
+          <>
+            <Field className="relay-field-test-model" label="测试模型">
+              <Input
+                value={profile.testModel}
+                onChange={(event) => updateDraft({ testModel: event.currentTarget.value })}
+                placeholder={`留空使用默认：${form.relayTestModel || defaultSettings.relayTestModel}`}
+              />
+            </Field>
+            <Field className="relay-field-context-window" label="上下文大小">
+              <Input
+                inputMode="numeric"
+                value={profile.contextWindow}
+                onChange={(event) => updateDraft({ contextWindow: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                placeholder="留空不改写，例如 200000"
+              />
+            </Field>
+            <Field className="relay-field-auto-compact" label="压缩上下文大小">
+              <Input
+                inputMode="numeric"
+                value={profile.autoCompactLimit}
+                onChange={(event) => updateDraft({ autoCompactLimit: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                placeholder="留空不改写，例如 160000"
+              />
+            </Field>
+          </>
+        ) : null}
         {profile.relayMode === "official" ? (
           <Field className="relay-field-official-key" label="API Key">
             <label className="inline-check">
@@ -2292,6 +2597,29 @@ function RelayProfileEditor({
             </Field>
           </>
         ) : null}
+        {showApiFields ? (
+          <Field className="relay-field-model-list" label="模型列表">
+            <div className="relay-model-list-tools">
+              <Textarea
+                value={profile.modelList}
+                onChange={(event) => updateDraft({ modelList: event.currentTarget.value })}
+                placeholder="每行一个模型，例如 qwen3-coder"
+              />
+              <Button
+                onClick={async () => {
+                  const models = await actions.fetchRelayProfileModels(profile);
+                  if (models?.length) updateDraft({ modelList: models.join("\n") });
+                }}
+                size="sm"
+                type="button"
+                variant="secondary"
+              >
+                <Download className="h-4 w-4" />
+                从上游获取
+              </Button>
+            </div>
+          </Field>
+        ) : null}
       </div>
       {showApiFields && profile.protocol === "chatCompletions" ? (
         <div className="hint-line relay-protocol-hint">
@@ -2307,29 +2635,317 @@ function RelayProfileEditor({
   );
 }
 
-function RelayFileEditors({
-  profile,
-  isActive,
-  onProfileChange,
+function RelayContextManager({
+  form,
+  liveEntries,
+  relayFiles,
+  onFormChange,
+  actions,
 }: {
-  profile: RelayProfile;
-  isActive: boolean;
-  onProfileChange: (value: RelayProfile) => void;
+  form: BackendSettings;
+  liveEntries: CodexContextEntries | null;
+  relayFiles: RelayFilesResult | null;
+  onFormChange: (value: BackendSettings) => void;
+  actions: Actions;
 }) {
+  const entries = contextEntriesWithLiveEntries(form, liveEntries);
+  const [activeKind, setActiveKind] = useState<ContextKind>("mcp");
+  const [editor, setEditor] = useState<{ kind: ContextKind; entry?: CodexContextEntry } | null>(null);
+  const visibleEntries = contextEntriesByKind(entries, activeKind);
+  const label = contextKindLabel(activeKind);
+
+  const saveEntry = async (kind: ContextKind, id: string, tomlBody: string) => {
+    const next = await actions.upsertContextEntry(form, kind, id, tomlBody);
+    if (!next) return;
+    onFormChange(next);
+    setEditor(null);
+  };
+
+  const toggleContextEntryEnabled = async (entry: CodexContextEntry) => {
+    const nextBody = setContextEntryEnabled(entry.tomlBody, !entry.enabled);
+    const next = await actions.upsertContextEntry(form, entry.kind, entry.id, nextBody);
+    if (!next) return;
+    onFormChange(next);
+    const syncResult = await actions.syncLiveContextEntries(next, true);
+    if (syncResult && isSuccessStatus(syncResult.status)) {
+      void actions.refreshRelayFiles();
+    }
+  };
+
+  const deleteEntry = async (entry: CodexContextEntry) => {
+    const next = await actions.deleteContextEntry(form, entry.kind, entry.id);
+    if (!next) return;
+    onFormChange(next);
+  };
+
+  return (
+    <div className="relay-context-panel">
+      <div className="relay-context-head">
+        <div>
+          <strong>Codex 工具与插件</strong>
+          <span>MCP、Skills、Plugins 作为全局配置独立管理，切换任意供应商都会合并。</span>
+        </div>
+        <div className="relay-context-head-actions">
+          <Button onClick={() => setEditor({ kind: activeKind })} size="sm" variant="secondary">
+            <Plus className="h-4 w-4" />
+            新增{label}
+          </Button>
+        </div>
+      </div>
+      <div className="segmented">
+        {contextKindOptions.map((option) => (
+          <button
+            className={activeKind === option.kind ? "active" : ""}
+            key={option.kind}
+            onClick={() => setActiveKind(option.kind)}
+            type="button"
+          >
+            <span>{option.label}</span>
+            <small>{contextEntriesByKind(entries, option.kind).length}</small>
+          </button>
+        ))}
+      </div>
+      <div className="relay-context-summary">
+        当前共有 {visibleEntries.length} 个{label}；这些条目独立于供应商保存，会写入所有供应商切换后的 config.toml。
+      </div>
+      <div className="relay-context-list">
+        {visibleEntries.length ? (
+          visibleEntries.map((entry) => (
+            <div className="relay-context-row" key={`${entry.kind}-${entry.id}`}>
+              <strong className="context-title">{entry.title || entry.id}</strong>
+              <div className="relay-context-actions">
+                <button
+                  aria-checked={entry.enabled}
+                  aria-label={`contextEnabledSwitch-${entry.kind}-${entry.id}`}
+                  className={`context-enabled-switch ${entry.enabled ? "active" : ""}`}
+                  onClick={() => void toggleContextEntryEnabled(entry)}
+                  role="switch"
+                  title={entry.enabled ? "禁用此扩展项" : "启用此扩展项"}
+                  type="button"
+                >
+                  <span className="context-switch-track" aria-hidden="true">
+                    <span className="context-switch-thumb" />
+                  </span>
+                </button>
+                <Button onClick={() => setEditor({ kind: entry.kind, entry })} size="icon" title="编辑扩展项" variant="ghost">
+                  <Edit3 className="h-4 w-4" />
+                </Button>
+                <Button
+                  className="relay-context-delete"
+                  onClick={() => void deleteEntry(entry)}
+                  size="icon"
+                  title="删除扩展项"
+                  variant="ghost"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="empty">暂无{label}，可以从通用配置文件或这里新增。</div>
+        )}
+      </div>
+      {editor ? (
+        <ContextEntryEditor
+          entry={editor.entry}
+          kind={editor.kind}
+          onCancel={() => setEditor(null)}
+          onSave={(kind, id, tomlBody) => void saveEntry(kind, id, tomlBody)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function ContextEntryEditor({
+  kind,
+  entry,
+  onCancel,
+  onSave,
+}: {
+  kind: ContextKind;
+  entry?: CodexContextEntry;
+  onCancel: () => void;
+  onSave: (kind: ContextKind, id: string, tomlBody: string) => void;
+}) {
+  const [draftKind, setDraftKind] = useState<ContextKind>(entry?.kind ?? kind);
+  const [id, setId] = useState(entry?.id ?? "");
+  const [tomlBody, setTomlBody] = useState(entry?.tomlBody ?? "");
+  const canSave = id.trim().length > 0;
+
+  return (
+    <div className="context-editor">
+      <div className="context-editor-fields">
+        <Field label="类型">
+          <select
+            className="field-select"
+            disabled={!!entry}
+            value={draftKind}
+            onChange={(event) => setDraftKind(event.currentTarget.value as ContextKind)}
+          >
+            {contextKindOptions.map((option) => (
+              <option key={option.kind} value={option.kind}>{option.label}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="ID">
+          <Input
+            disabled={!!entry}
+            value={id}
+            onChange={(event) => setId(event.currentTarget.value.trim())}
+            placeholder="例如 context7"
+          />
+        </Field>
+      </div>
+      <Field label="TOML 配置体">
+        <Textarea
+          className="context-editor-textarea"
+          value={tomlBody}
+          onChange={(event) => setTomlBody(event.currentTarget.value)}
+          placeholder={'只填写表头下面的内容，例如：\ncommand = "npx"\nargs = ["-y", "@upstash/context7-mcp"]'}
+          spellCheck={false}
+        />
+      </Field>
+      <Toolbar>
+        <Button disabled={!canSave} onClick={() => onSave(draftKind, id.trim(), tomlBody)} size="sm">
+          <Save className="h-4 w-4" />
+          保存扩展项
+        </Button>
+        <Button onClick={onCancel} size="sm" variant="secondary">取消</Button>
+      </Toolbar>
+    </div>
+  );
+}
+
+function SyncedTextarea({
+  value,
+  onValueChange,
+  className,
+}: {
+  value: string;
+  onValueChange: (value: string) => void;
+  className?: string;
+}) {
+  const [localValue, setLocalValue] = useState(value);
+  const isFocusedRef = useRef(false);
+  const latestExternalValueRef = useRef(value);
+
+  useEffect(() => {
+    latestExternalValueRef.current = value;
+    if (!isFocusedRef.current) {
+      setLocalValue(value);
+    }
+  }, [value]);
+
+  return (
+    <Textarea
+      className={className}
+      value={localValue}
+      onBlur={() => {
+        isFocusedRef.current = false;
+        setLocalValue(latestExternalValueRef.current);
+      }}
+      onChange={(event) => {
+        const next = event.currentTarget.value;
+        setLocalValue(next);
+        onValueChange(next);
+      }}
+      onFocus={() => {
+        isFocusedRef.current = true;
+      }}
+      spellCheck={false}
+    />
+  );
+}
+
+function RelayFileEditors({
+  contextProfile,
+  profile,
+  form,
+  isActive,
+  profileId,
+  onFormChange,
+  onProfileChange,
+  actions,
+}: {
+  contextProfile: RelayProfile;
+  profile: RelayProfile;
+  form: BackendSettings;
+  isActive: boolean;
+  profileId: string;
+  onFormChange: (value: BackendSettings) => void;
+  onProfileChange: (value: RelayProfile) => void;
+  actions: Actions;
+}) {
+  const configPreview = effectiveRelayConfigPreview(profile, form, contextProfile);
+  const entries = contextEntriesForProfile(form, contextProfile);
   return (
     <div className="relay-file-grid">
       <div className="relay-file-panel">
         <div className="relay-file-head">
           <div>
-            <strong>config.toml</strong>
-            <span>{isActive ? "当前使用中：打开时从 ~/.codex/config.toml 回填，保存时写回真实文件" : "切换到此供应商时完整写入 ~/.codex/config.toml"}</span>
+            <strong>config.toml 预览</strong>
+            <span>{isActive ? "当前供应商切换后会写入的预览；上下文开关变化会立即反映" : "切换到此供应商时会写入的预览；上下文开关变化会立即反映"}</span>
           </div>
         </div>
-        <Textarea
+        <SyncedTextarea
           className="relay-file-textarea"
-          value={profile.configContents}
-          onChange={(event) => onProfileChange({ ...profile, configContents: event.currentTarget.value })}
-          spellCheck={false}
+          value={configPreview}
+          onValueChange={(value) => {
+            const withoutCommon = stripCommonConfigTextFallback(
+              value,
+              relayCombinedCommonConfig(form),
+            );
+            const configContents = stripContextEntriesFromConfig(withoutCommon, entries);
+            onProfileChange(deriveRelayProfileFromFiles({
+              ...profile,
+              configContents,
+            }));
+          }}
+        />
+      </div>
+      <div className="relay-file-panel">
+        <div className="relay-file-head">
+          <div>
+            <strong>通用配置文件</strong>
+            <span>只保留非 MCP、Skills、Plugins 的跨供应商配置；工具与插件在独立页面管理。</span>
+          </div>
+          <Button
+            onClick={async () => {
+              const extracted = await actions.extractRelayCommonConfig(profile.configContents || "");
+              if (!extracted) return;
+              const split = splitContextConfigText(extracted.commonConfigContents || "");
+              if (!split.common.trim() && !split.context.trim()) {
+                await actions.showMessage("通用配置文件", "当前供应商 config.toml 里没有可提取的通用配置。", "failed");
+                return;
+              }
+              const promotedProfile = {
+                ...profile,
+                configContents: extracted.profileConfigContents,
+              };
+              const next = syncLegacyRelayFields({
+                ...form,
+                relayCommonConfigContents: split.common,
+                relayContextConfigContents: joinTomlSectionsRootFirst([form.relayContextConfigContents || "", split.context]),
+                relayProfiles: form.relayProfiles.map((item) => (item.id === profileId ? promotedProfile : item)),
+              });
+              onFormChange(next);
+              onProfileChange(promotedProfile);
+              await actions.saveSettingsValue(next, false);
+            }}
+            size="sm"
+            type="button"
+            variant="secondary"
+          >
+            <Download className="h-4 w-4" />
+            提取当前供应商配置
+          </Button>
+        </div>
+        <SyncedTextarea
+          className="relay-file-textarea"
+          value={form.relayCommonConfigContents}
+          onValueChange={(value) => onFormChange({ ...form, relayCommonConfigContents: value })}
         />
       </div>
       <div className="relay-file-panel">
@@ -2339,11 +2955,10 @@ function RelayFileEditors({
             <span>{isActive ? "当前使用中：打开时从 ~/.codex/auth.json 回填，保存时写回真实文件" : "切换到此供应商时完整写入 ~/.codex/auth.json"}</span>
           </div>
         </div>
-        <Textarea
+        <SyncedTextarea
           className="relay-file-textarea"
           value={profile.authContents}
-          onChange={(event) => onProfileChange({ ...profile, authContents: event.currentTarget.value })}
-          spellCheck={false}
+          onValueChange={(value) => onProfileChange(deriveRelayProfileFromFiles({ ...profile, authContents: value }))}
         />
       </div>
     </div>
@@ -2559,6 +3174,7 @@ function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
     overview: "检查问题、启动与快速修复",
     relay: "管理 API 供应商、协议、Key 与配置文件",
+    context: "独立管理 MCP、Skills、Plugins",
     enhance: "会话删除、导出、项目移动和脚本能力",
     userScripts: "内置和用户自定义脚本清单",
     providerSync: "切换模式后让旧对话重新可见",
@@ -2570,11 +3186,546 @@ function routeSubtitle(route: Route) {
   return subtitles[route];
 }
 
+const contextKindOptions: Array<{ kind: ContextKind; label: string; tableName: string }> = [
+  { kind: "mcp", label: "MCP", tableName: "mcp_servers" },
+  { kind: "skill", label: "Skills", tableName: "skills" },
+  { kind: "plugin", label: "插件", tableName: "plugins" },
+];
+
+function contextKindLabel(kind: ContextKind) {
+  return contextKindOptions.find((option) => option.kind === kind)?.label ?? "扩展项";
+}
+
+function contextEntriesFromSettings(settings: BackendSettings): CodexContextEntries {
+  const commonConfig = normalizeDuplicateTomlTables(settings.relayContextConfigContents || "");
+  return {
+    mcpServers: parseContextEntries(commonConfig, "mcp", "mcp_servers"),
+    skills: parseContextEntries(commonConfig, "skill", "skills"),
+    plugins: parseContextEntries(commonConfig, "plugin", "plugins"),
+  };
+}
+
+function contextEntriesWithLiveEntries(settings: BackendSettings, liveEntries: CodexContextEntries | null): CodexContextEntries {
+  const commonEntries = contextEntriesFromSettings(settings);
+  if (!liveEntries) return commonEntries;
+  const liveByKind: Record<ContextKind, Map<string, CodexContextEntry>> = {
+    mcp: new Map(liveEntries.mcpServers.map((entry) => [entry.id, entry])),
+    skill: new Map(liveEntries.skills.map((entry) => [entry.id, entry])),
+    plugin: new Map(liveEntries.plugins.map((entry) => [entry.id, entry])),
+  };
+  return {
+    mcpServers: mergeLiveContextEntries(commonEntries.mcpServers, liveByKind.mcp),
+    skills: mergeLiveContextEntries(commonEntries.skills, liveByKind.skill),
+    plugins: mergeLiveContextEntries(commonEntries.plugins, liveByKind.plugin),
+  };
+}
+
+function mergeLiveContextEntries(entries: CodexContextEntry[], liveEntries: Map<string, CodexContextEntry>): CodexContextEntry[] {
+  const uniqueEntries = dedupeContextEntryList(entries);
+  const merged = uniqueEntries.map((entry) => {
+    const live = liveEntries.get(entry.id);
+    return withLiveEntryState(entry, live);
+  });
+  const knownIds = new Set(uniqueEntries.map((entry) => entry.id));
+  for (const liveEntry of liveEntries.values()) {
+    if (!knownIds.has(liveEntry.id)) merged.push(liveEntry);
+  }
+  return merged;
+}
+
+function withLiveEntryState(entry: CodexContextEntry, live?: CodexContextEntry): CodexContextEntry {
+  return live ? { ...entry, enabled: live.enabled } : { ...entry, enabled: false };
+}
+
+function contextEntriesForProfile(settings: BackendSettings, _profile: RelayProfile): CodexContextEntries {
+  return contextEntriesFromSettings(settings);
+}
+
+function contextEntriesFromConfig(configContents: string): CodexContextEntries {
+  return {
+    mcpServers: parseContextEntries(configContents, "mcp", "mcp_servers"),
+    skills: parseContextEntries(configContents, "skill", "skills"),
+    plugins: parseContextEntries(configContents, "plugin", "plugins"),
+  };
+}
+
+function mergeContextEntries(primary: CodexContextEntries, secondary: CodexContextEntries): CodexContextEntries {
+  return {
+    mcpServers: mergeContextEntryList(primary.mcpServers, secondary.mcpServers),
+    skills: mergeContextEntryList(primary.skills, secondary.skills),
+    plugins: mergeContextEntryList(primary.plugins, secondary.plugins),
+  };
+}
+
+function mergeContextEntryList(primary: CodexContextEntry[], secondary: CodexContextEntry[]): CodexContextEntry[] {
+  return dedupeContextEntryList([...primary, ...secondary]);
+}
+
+function dedupeContextEntryList(entries: CodexContextEntry[]): CodexContextEntry[] {
+  const byId = new Map<string, CodexContextEntry>();
+  for (const entry of entries) {
+    byId.set(entry.id, entry);
+  }
+  return Array.from(byId.values());
+}
+
+function parseContextEntries(commonConfig: string, kind: ContextKind, tableName: string): CodexContextEntry[] {
+  const escapedTable = tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const headerPattern = new RegExp(`^\\s*\\[${escapedTable}\\.([^\\]]+)\\]\\s*$`);
+  const anyHeaderPattern = /^\s*\[[^\]]+\]\s*$/;
+  const entries = new Map<string, CodexContextEntry>();
+  let currentId: string | null = null;
+  let body: string[] = [];
+
+  const flush = () => {
+    if (!currentId) return;
+    const tomlBody = ensureTrailingNewline(body.join("\n").trimEnd());
+    entries.set(currentId, {
+      id: currentId,
+      kind,
+      title: currentId,
+      summary: contextEntrySummary(tomlBody),
+      tomlBody,
+      enabled: contextEntryEnabled(tomlBody),
+    });
+  };
+
+  for (const line of commonConfig.split(/\r?\n/)) {
+    const match = line.match(headerPattern);
+    if (match) {
+      flush();
+      currentId = unquoteTomlKey(match[1].trim());
+      body = [];
+      continue;
+    }
+    if (currentId && anyHeaderPattern.test(line)) {
+      flush();
+      currentId = null;
+      body = [];
+      continue;
+    }
+    if (currentId) body.push(line);
+  }
+  flush();
+
+  return Array.from(entries.values());
+}
+
+function contextEntrySummary(tomlBody: string) {
+  return tomlBody
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith("#") && !/^enabled\s*=/.test(line))
+    ?.slice(0, 96) ?? "";
+}
+
+function contextEntryEnabled(tomlBody: string) {
+  return !tomlBody.split(/\r?\n/).some((line) => /^\s*enabled\s*=\s*false\s*(#.*)?$/i.test(line));
+}
+
+function setContextEntryEnabled(tomlBody: string, enabled: boolean) {
+  const lines = tomlBody.trimEnd().split(/\r?\n/);
+  const nextValue = `enabled = ${enabled ? "true" : "false"}`;
+  let replaced = false;
+  const next = lines.map((line) => {
+    if (/^\s*enabled\s*=/.test(line)) {
+      replaced = true;
+      return nextValue;
+    }
+    return line;
+  });
+  if (!replaced) next.unshift(nextValue);
+  return ensureTrailingNewline(next.join("\n").trimEnd());
+}
+
+function ensureTrailingNewline(value: string) {
+  return value.trim() ? `${value}\n` : "";
+}
+
+function unquoteTomlKey(key: string) {
+  if (key.length >= 2 && ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'")))) {
+    return key.slice(1, -1);
+  }
+  return key;
+}
+
+function contextEntriesByKind(entries: CodexContextEntries, kind: ContextKind): CodexContextEntry[] {
+  if (kind === "mcp") return dedupeContextEntryList(entries.mcpServers);
+  if (kind === "skill") return dedupeContextEntryList(entries.skills);
+  return dedupeContextEntryList(entries.plugins);
+}
+
+function configHasCodexGoalsFeature(configContents: string): boolean {
+  let inFeatures = false;
+  for (const line of configContents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (/^\[features\]$/.test(trimmed)) {
+      inFeatures = true;
+      continue;
+    }
+    if (inFeatures && /^\[[^\]]+\]$/.test(trimmed)) {
+      inFeatures = false;
+    }
+    if (inFeatures && /^goals\s*=\s*true\b/.test(trimmed)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function setCodexGoalsFeatureInConfig(configContents: string, enabled: boolean): string {
+  const lines = configContents.split(/\r?\n/);
+  const next: string[] = [];
+  let inFeatures = false;
+  let sawFeatures = false;
+  let featuresHasGoals = false;
+
+  const maybeInsertGoals = () => {
+    if (enabled && sawFeatures && !featuresHasGoals) {
+      next.push("goals = true");
+      featuresHasGoals = true;
+    }
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^\[features\]$/.test(trimmed)) {
+      if (inFeatures) maybeInsertGoals();
+      inFeatures = true;
+      sawFeatures = true;
+      featuresHasGoals = false;
+      next.push(line);
+      continue;
+    }
+    if (inFeatures && /^\[[^\]]+\]$/.test(trimmed)) {
+      maybeInsertGoals();
+      inFeatures = false;
+    }
+    if (inFeatures && /^goals\s*=/.test(trimmed)) {
+      if (enabled && !featuresHasGoals) {
+        next.push("goals = true");
+        featuresHasGoals = true;
+      }
+      continue;
+    }
+    next.push(line);
+  }
+
+  if (inFeatures) maybeInsertGoals();
+  if (enabled && !sawFeatures) {
+    const trimmed = ensureTrailingNewline(next.join("\n").trimEnd());
+    return joinTomlSections([trimmed, "[features]\ngoals = true"]);
+  }
+
+  return ensureTrailingNewline(next.join("\n").trimEnd());
+}
+
+function effectiveRelayConfigPreview(profile: RelayProfile, settings: BackendSettings, contextProfile = profile): string {
+  const entries = contextEntriesForProfile(settings, contextProfile);
+  const isolatedConfig = stripContextEntriesFromConfig(profile.configContents, entries);
+  const configWithLimits = applyContextLimitPreview(isolatedConfig, profile);
+  return joinTomlSectionsRootFirst([configWithLimits, settings.relayCommonConfigContents || "", selectedContextConfigToml(entries)]);
+}
+
+function selectedContextConfigToml(entries: CodexContextEntries): string {
+  const sections: string[] = [];
+  for (const option of contextKindOptions) {
+    for (const entry of dedupeContextEntryList(contextEntriesByKind(entries, option.kind))) {
+      if (!entry.enabled) continue;
+      sections.push(`[${option.tableName}.${tomlKey(entry.id)}]\n${entry.tomlBody.trimEnd()}`);
+    }
+  }
+  return ensureTrailingNewline(sections.join("\n\n"));
+}
+
+function allContextConfigToml(entries: CodexContextEntries): string {
+  const sections: string[] = [];
+  for (const option of contextKindOptions) {
+    for (const entry of dedupeContextEntryList(contextEntriesByKind(entries, option.kind))) {
+      sections.push(`[${option.tableName}.${tomlKey(entry.id)}]\n${entry.tomlBody.trimEnd()}`);
+    }
+  }
+  return ensureTrailingNewline(sections.join("\n\n"));
+}
+
+function syncLiveConfigContextState(liveConfigContents: string, settings: BackendSettings): string {
+  const entries = contextEntriesFromSettings(settings);
+  const withoutContext = stripAllContextEntriesFromConfig(liveConfigContents);
+  return joinTomlSectionsRootFirst([withoutContext, selectedContextConfigToml(entries)]);
+}
+
+function relayCombinedCommonConfig(settings: BackendSettings): string {
+  return joinTomlSectionsRootFirst([settings.relayCommonConfigContents || "", settings.relayContextConfigContents || ""]);
+}
+
+function splitContextConfigText(configContents: string): { common: string; context: string } {
+  const entries = contextEntriesFromConfig(configContents);
+  return {
+    common: stripContextEntriesFromConfig(configContents, entries),
+    context: allContextConfigToml(entries),
+  };
+}
+
+function stripContextEntriesFromConfig(configContents: string, entries: CodexContextEntries): string {
+  const knownIds: Record<ContextKind, Set<string>> = {
+    mcp: new Set(entries.mcpServers.map((entry) => entry.id)),
+    skill: new Set(entries.skills.map((entry) => entry.id)),
+    plugin: new Set(entries.plugins.map((entry) => entry.id)),
+  };
+  const lines = configContents.split(/\r?\n/);
+  const kept: string[] = [];
+  let skipping = false;
+
+  for (const line of lines) {
+    const contextHeader = contextHeaderFromLine(line);
+    if (contextHeader) {
+      skipping = knownIds[contextHeader.kind].has(contextHeader.id);
+    } else if (/^\s*\[[^\]]+\]\s*$/.test(line)) {
+      skipping = false;
+    }
+    if (!skipping) kept.push(line);
+  }
+
+  return ensureTrailingNewline(kept.join("\n").trimEnd());
+}
+
+function stripAllContextEntriesFromConfig(configContents: string): string {
+  const lines = configContents.split(/\r?\n/);
+  const kept: string[] = [];
+  let skipping = false;
+
+  for (const line of lines) {
+    const contextHeader = contextHeaderFromLine(line);
+    if (contextHeader) {
+      skipping = true;
+    } else if (/^\s*\[[^\]]+\]\s*$/.test(line)) {
+      skipping = false;
+    }
+    if (!skipping) kept.push(line);
+  }
+
+  return ensureTrailingNewline(kept.join("\n").trimEnd());
+}
+
+function stripCommonConfigTextFallback(configContents: string, commonConfig: string): string {
+  const anchors = commonConfigAnchors(commonConfig);
+  if (!anchors.rootKeys.size && !anchors.tableHeaders.size) return ensureTrailingNewline(configContents.trimEnd());
+
+  const kept: string[] = [];
+  let skippingTable = false;
+
+  for (const line of configContents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (/^\[[^\]]+\]$/.test(trimmed)) {
+      skippingTable = anchors.tableHeaders.has(trimmed);
+      if (skippingTable) continue;
+    }
+    if (skippingTable) continue;
+    const key = tomlRootKeyFromLine(trimmed);
+    if (key && anchors.rootKeys.has(key)) continue;
+    kept.push(line);
+  }
+
+  return ensureTrailingNewline(kept.join("\n").trimEnd());
+}
+
+function commonConfigAnchors(commonConfig: string): { rootKeys: Set<string>; tableHeaders: Set<string> } {
+  const rootKeys = new Set<string>();
+  const tableHeaders = new Set<string>();
+  let inRoot = true;
+
+  for (const line of commonConfig.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (/^\[[^\]]+\]$/.test(trimmed)) {
+      inRoot = false;
+      tableHeaders.add(trimmed);
+      continue;
+    }
+    if (inRoot) {
+      const key = tomlRootKeyFromLine(trimmed);
+      if (key) rootKeys.add(key);
+    }
+  }
+
+  return { rootKeys, tableHeaders };
+}
+
+function tomlRootKeyFromLine(line: string): string | null {
+  if (!line || line.startsWith("#")) return null;
+  const index = line.indexOf("=");
+  if (index < 0) return null;
+  const key = line.slice(0, index).trim();
+  return key || null;
+}
+
+function contextHeaderFromLine(line: string): { kind: ContextKind; id: string } | null {
+  for (const option of contextKindOptions) {
+    const escapedTable = option.tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = new RegExp(`^\\s*\\[${escapedTable}\\.([^\\]]+)\\]\\s*$`).exec(line);
+    if (match) return { kind: option.kind, id: unquoteTomlKey(match[1].trim()) };
+  }
+  return null;
+}
+
+function applyContextLimitPreview(configContents: string, profile: RelayProfile): string {
+  const replacements: Array<[string, string]> = [
+    ["model_context_window", profile.contextWindow],
+    ["model_auto_compact_token_limit", profile.autoCompactLimit],
+  ];
+  let lines = configContents.split(/\r?\n/);
+
+  for (const [key, value] of replacements) {
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    let replaced = false;
+    lines = lines.map((line) => {
+      if (!replaced && new RegExp(`^\\s*${key}\\s*=`).test(line)) {
+        replaced = true;
+        return `${key} = ${trimmed}`;
+      }
+      return line;
+    });
+    if (!replaced) {
+      const firstTable = lines.findIndex((line) => /^\s*\[[^\]]+\]\s*$/.test(line));
+      const insertAt = firstTable >= 0 ? firstTable : lines.length;
+      lines.splice(insertAt, 0, `${key} = ${trimmed}`);
+    }
+  }
+
+  return ensureTrailingNewline(lines.join("\n").trimEnd());
+}
+
+function removeRootTomlKey(contents: string, key: string): string {
+  const lines: string[] = [];
+  let inRoot = true;
+  for (const line of contents.split(/\r?\n/)) {
+    if (/^\s*\[[^\]]+\]\s*$/.test(line)) inRoot = false;
+    if (inRoot && new RegExp(`^\\s*${key}\\s*=`).test(line)) continue;
+    lines.push(line);
+  }
+  return ensureTrailingNewline(lines.join("\n").trimEnd());
+}
+
+function joinTomlSections(sections: string[]): string {
+  return ensureTrailingNewline(
+    sections
+      .map((section) => section.trim())
+      .filter(Boolean)
+      .join("\n\n"),
+  );
+}
+
+function joinTomlSectionsRootFirst(sections: string[]): string {
+  const rootParts: string[] = [];
+  const tableParts: string[] = [];
+
+  for (const section of sections) {
+    const { root, tables } = splitTomlRootAndTables(section);
+    if (root.trim()) rootParts.push(root.trim());
+    if (tables.trim()) tableParts.push(tables.trim());
+  }
+
+  return normalizeDuplicateTomlTables(joinTomlSections([...dedupeTomlRootLines(rootParts), ...tableParts]));
+}
+
+function normalizeDuplicateTomlTables(contents: string): string {
+  const seenHeaders = new Set<string>();
+  const kept: string[] = [];
+  let skipping = false;
+
+  for (const line of contents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (/^\[[^\]]+\]$/.test(trimmed)) {
+      skipping = seenHeaders.has(trimmed);
+      seenHeaders.add(trimmed);
+      if (skipping) continue;
+    }
+    if (!skipping) kept.push(line);
+  }
+
+  return ensureTrailingNewline(kept.join("\n").trimEnd());
+}
+
+function dedupeTomlRootLines(rootParts: string[]): string[] {
+  const rootLines = rootParts
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd());
+  const rootSeen = new Set<string>();
+  const kept: string[] = [];
+
+  for (let index = rootLines.length - 1; index >= 0; index -= 1) {
+    const line = rootLines[index];
+    const key = tomlRootKeyFromLine(line.trim());
+    if (key) {
+      if (rootSeen.has(key)) continue;
+      rootSeen.add(key);
+    }
+    kept.push(line);
+  }
+
+  const normalized = kept.reverse().join("\n").trim();
+  return normalized ? [normalized] : [];
+}
+
+function splitTomlRootAndTables(section: string): { root: string; tables: string } {
+  const lines = section.trim().split(/\r?\n/);
+  const firstTable = lines.findIndex((line) => /^\s*\[[^\]]+\]\s*$/.test(line));
+  if (firstTable < 0) return { root: lines.join("\n"), tables: "" };
+  return {
+    root: lines.slice(0, firstTable).join("\n"),
+    tables: lines.slice(firstTable).join("\n"),
+  };
+}
+
+function tomlKey(key: string): string {
+  return /^[A-Za-z0-9_-]+$/.test(key) ? key : `"${tomlString(key)}"`;
+}
+
+function contextSelectionIds(selection: RelayContextSelection, kind: ContextKind): string[] {
+  if (kind === "mcp") return selection.mcpServers;
+  if (kind === "skill") return selection.skills;
+  return selection.plugins;
+}
+
+function setContextSelectionId(selection: RelayContextSelection, kind: ContextKind, id: string, checked: boolean): RelayContextSelection {
+  const next = {
+    mcpServers: [...selection.mcpServers],
+    skills: [...selection.skills],
+    plugins: [...selection.plugins],
+  };
+  const list = contextSelectionIds(next, kind);
+  const normalizedId = id.trim();
+  const exists = list.includes(normalizedId);
+  if (checked && normalizedId && !exists) list.push(normalizedId);
+  if (!checked && exists) list.splice(list.indexOf(normalizedId), 1);
+  return next;
+}
+
+function removeContextSelectionFromSettings(settings: BackendSettings, kind: ContextKind, id: string): BackendSettings {
+  return {
+    ...settings,
+    relayProfiles: settings.relayProfiles.map((profile) => ({
+      ...profile,
+      contextSelection: setContextSelectionId(profile.contextSelection, kind, id, false),
+    })),
+  };
+}
+
+function contextSelectionForAllEntries(settings: BackendSettings): RelayContextSelection {
+  const entries = contextEntriesFromSettings(settings);
+  return {
+    mcpServers: entries.mcpServers.map((entry) => entry.id),
+    skills: entries.skills.map((entry) => entry.id),
+    plugins: entries.plugins.map((entry) => entry.id),
+  };
+}
+
 function ccsProviderSummary(result: CcsProvidersResult | null) {
-  if (!result) return "尚未读取 CCS 数据库。";
+  if (!result) return "尚未读取外部供应商数据库。";
   if (!isSuccessStatus(result.status)) return result.message;
-  if (!result.providers.length) return `未发现 CCS Codex 供应商：${result.dbPath}`;
-  return `发现 ${result.providers.length} 个 CCS Codex 供应商：${result.dbPath}`;
+  if (!result.providers.length) return `未发现 Codex 供应商配置：${result.dbPath}`;
+  return `发现 ${result.providers.length} 个 Codex 供应商配置：${result.dbPath}`;
 }
 
 function providerInitial(name: string) {
@@ -2609,12 +3760,7 @@ function isSuccessStatus(status?: Status) {
   return status === "ok" || status === "accepted";
 }
 
-function apiModeLabel(relay: RelayResult | null) {
-  if (!relay?.configured) return "官方登录";
-  return relay.authenticated ? "官方混入 API Key" : "纯 API";
-}
-
-function healthItems(overview: OverviewResult | null, relay: RelayResult | null) {
+function healthItems(overview: OverviewResult | null) {
   return [
     {
       title: "Codex 应用",
@@ -2634,24 +3780,31 @@ function healthItems(overview: OverviewResult | null, relay: RelayResult | null)
       ok: overview?.management_shortcut.status === "installed",
       detail: overview?.management_shortcut.path || "缺少管理工具快捷方式时可在安装维护页修复。",
     },
-    {
-      title: "ChatGPT 登录",
-      status: relay?.authenticated ? "ok" : "missing",
-      ok: !!relay?.authenticated,
-      detail: relay?.accountLabel || relay?.authSource || "官方混入 API Key 需要官方登录；纯 API 可不用官方登录。",
-    },
   ];
 }
 
 function normalizeSettings(settings: BackendSettings): BackendSettings {
+  const splitCommon = splitContextConfigText(settings.relayCommonConfigContents || "");
+  const relayCommonConfigContents = splitCommon.common;
+  const relayContextConfigContents = joinTomlSectionsRootFirst([
+    settings.relayContextConfigContents || "",
+    splitCommon.context,
+  ]);
+  const defaultContextSelection = contextSelectionForAllEntries({
+    ...settings,
+    relayCommonConfigContents,
+    relayContextConfigContents,
+  });
   const profiles =
     settings.relayProfiles?.length
-      ? settings.relayProfiles.map(normalizeRelayProfile)
+      ? settings.relayProfiles.map((profile) => normalizeRelayProfile(profile, defaultContextSelection))
       : [
           {
             id: settings.activeRelayId || "default",
             name: "默认中转",
+            model: "",
             baseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
+            upstreamBaseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
             apiKey: settings.relayApiKey || "",
             protocol: "responses" as RelayProtocol,
             relayMode: "official" as RelayMode,
@@ -2659,12 +3812,25 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             testModel: "",
             configContents: "",
             authContents: "",
+            useCommonConfig: true,
+            contextSelection: defaultContextSelection,
+            contextSelectionInitialized: true,
+            contextWindow: "",
+            autoCompactLimit: "",
+            modelList: "",
           },
         ];
   const activeRelayId = profiles.some((profile) => profile.id === settings.activeRelayId)
     ? settings.activeRelayId
     : profiles[0]?.id || "default";
-  return syncLegacyRelayFields({ ...defaultSettings, ...settings, relayProfiles: profiles, activeRelayId });
+  return syncLegacyRelayFields({
+    ...defaultSettings,
+    ...settings,
+    relayCommonConfigContents,
+    relayContextConfigContents,
+    relayProfiles: profiles,
+    activeRelayId,
+  });
 }
 
 function codexExtraArgsToInput(args: string[] | undefined) {
@@ -2675,21 +3841,33 @@ function inputToCodexExtraArgs(value: string) {
   return value === "" ? [] : value.split(/\r?\n/);
 }
 
-function normalizeRelayProfile(profile: RelayProfile): RelayProfile {
+function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = emptyContextSelection()): RelayProfile {
   const legacyMixedApi = profile.relayMode === "mixedApi";
-  const normalized: RelayProfile = {
+  let normalized: RelayProfile = {
     ...profile,
+    model: profile.model || "",
+    baseUrl: profile.baseUrl || defaultSettings.relayBaseUrl,
+    upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl || "",
+    apiKey: profile.apiKey || "",
     protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
     relayMode: normalizeRelayMode(profile.relayMode),
     officialMixApiKey: profile.officialMixApiKey === true || legacyMixedApi,
     testModel: profile.testModel || "",
     configContents: profile.configContents || "",
     authContents: profile.authContents || "",
+    useCommonConfig: profile.useCommonConfig !== false,
+    contextSelection: profile.contextSelectionInitialized
+      ? normalizeContextSelection(profile.contextSelection)
+      : normalizeContextSelection(undefined, defaultContextSelection),
+    contextSelectionInitialized: true,
+    contextWindow: profile.contextWindow || "",
+    autoCompactLimit: profile.autoCompactLimit || "",
+    modelList: profile.modelList || "",
   };
   if (!normalized.configContents.trim() || !normalized.authContents.trim()) {
-    return withGeneratedRelayFiles(normalized);
+    normalized = withGeneratedRelayFiles(normalized);
   }
-  return normalized;
+  return deriveRelayProfileFromFiles(normalized);
 }
 
 function activeRelayProfile(settings: BackendSettings): RelayProfile {
@@ -2707,6 +3885,24 @@ function relayProtocolLabel(protocol: RelayProtocol): string {
 function normalizeRelayMode(mode: RelayMode | undefined): RelayMode {
   if (mode === "pureApi") return mode;
   return "official";
+}
+
+function normalizeContextSelection(
+  selection?: Partial<RelayContextSelection>,
+  fallback: RelayContextSelection = emptyContextSelection(),
+): RelayContextSelection {
+  if (!selection) {
+    return {
+      mcpServers: [...fallback.mcpServers],
+      skills: [...fallback.skills],
+      plugins: [...fallback.plugins],
+    };
+  }
+  return {
+    mcpServers: Array.isArray(selection?.mcpServers) ? selection.mcpServers.map(String) : [],
+    skills: Array.isArray(selection?.skills) ? selection.skills.map(String) : [],
+    plugins: Array.isArray(selection?.plugins) ? selection.plugins.map(String) : [],
+  };
 }
 
 function relayModeLabel(mode: RelayMode): string {
@@ -2747,11 +3943,13 @@ function relayProfileReadinessText(profile: RelayProfile, relay: RelayResult | n
   }
   const hasFiles = profile.configContents.trim() && profile.authContents.trim();
   if (!hasFiles) return "当前供应商还没有完整 config.toml / auth.json。";
+  if (relay && !relay.configured) return "纯 API 配置未完整写入：请检查此供应商的 auth.json 是否包含 OPENAI_API_KEY，且 config.toml 是否包含 model_provider / provider / base_url。";
   return "纯 API 就绪：会直接写入此供应商的完整 config.toml / auth.json。";
 }
 
 function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injection" | "apply_relay_injection" | "apply_pure_api_injection" {
   if (profile.relayMode === "pureApi") return "apply_pure_api_injection";
+  if (profile.relayMode === "official" && !profile.officialMixApiKey) return "clear_relay_injection";
   if (profile.configContents.trim() && profile.authContents.trim()) return "apply_relay_injection";
   return profile.officialMixApiKey ? "apply_relay_injection" : "clear_relay_injection";
 }
@@ -2777,12 +3975,16 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
   };
 }
 
-function buildRelayConfigToml(profile: Pick<RelayProfile, "baseUrl" | "apiKey" | "protocol">): string {
+function buildRelayConfigToml(profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">): string {
   const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
-  return [
+  const rootLines = [
+    profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
     'model_provider = "CodexPlusPlus"',
     "",
+  ].filter((line): line is string => line !== null);
+  return [
+    ...rootLines,
     "[model_providers.CodexPlusPlus]",
     'name = "CodexPlusPlus"',
     'wire_api = "responses"',
@@ -2795,6 +3997,236 @@ function buildRelayConfigToml(profile: Pick<RelayProfile, "baseUrl" | "apiKey" |
 
 function buildRelayAuthJson(profile: Pick<RelayProfile, "apiKey">): string {
   return `${JSON.stringify({ OPENAI_API_KEY: profile.apiKey.trim() }, null, 2)}\n`;
+}
+
+function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
+  const configContents = profile.configContents || "";
+  const authContents = profile.authContents || "";
+  const configBaseUrl = codexBaseUrlFromConfig(configContents);
+  const chatUpstreamBaseUrl = rootTomlStringValue(configContents, CHAT_UPSTREAM_BASE_URL_KEY);
+  const isProxyConfig = configBaseUrl === PROTOCOL_PROXY_BASE_URL;
+  const upstreamBaseUrl = profile.upstreamBaseUrl || chatUpstreamBaseUrl || (configBaseUrl && !isProxyConfig ? configBaseUrl : profile.baseUrl || "");
+  return {
+    ...profile,
+    model: codexModelFromConfig(configContents),
+    baseUrl: upstreamBaseUrl,
+    upstreamBaseUrl,
+    apiKey: codexApiKeyFromAuth(authContents) || codexExperimentalBearerTokenFromConfig(configContents) || "",
+    contextWindow: codexTopLevelIntFromConfig(configContents, "model_context_window"),
+    autoCompactLimit: codexTopLevelIntFromConfig(configContents, "model_auto_compact_token_limit"),
+    configContents,
+    authContents,
+  };
+}
+
+function applyRelayProfilePatchToFiles(profile: RelayProfile, patch: Partial<RelayProfile>): RelayProfile {
+  let next: RelayProfile = { ...profile, ...patch };
+  const shouldHaveFiles =
+    next.relayMode !== "official" || next.officialMixApiKey || next.configContents.trim() || next.authContents.trim();
+  if (shouldHaveFiles && (!next.configContents.trim() || !next.authContents.trim())) {
+    next = withGeneratedRelayFiles(next);
+  }
+
+  if ("model" in patch) {
+    next.configContents = setRootTomlStringKey(next.configContents, "model", patch.model || "");
+  }
+  if ("apiKey" in patch) {
+    next.authContents = setAuthOpenAiApiKey(next.authContents, patch.apiKey || "");
+    next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "");
+  }
+  if ("baseUrl" in patch) {
+    next.upstreamBaseUrl = patch.baseUrl || "";
+  }
+  if ("upstreamBaseUrl" in patch) {
+    next.baseUrl = patch.upstreamBaseUrl || "";
+  }
+  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch) {
+    const baseUrlForConfig = next.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : next.upstreamBaseUrl || next.baseUrl;
+    next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig);
+    next.configContents = removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
+  }
+  if ("contextWindow" in patch) {
+    next.configContents = setRootTomlIntKey(next.configContents, "model_context_window", patch.contextWindow || "");
+  }
+  if ("autoCompactLimit" in patch) {
+    next.configContents = setRootTomlIntKey(
+      next.configContents,
+      "model_auto_compact_token_limit",
+      patch.autoCompactLimit || "",
+    );
+  }
+  if ("relayMode" in patch || "officialMixApiKey" in patch) {
+    if (next.relayMode === "official" && !next.officialMixApiKey) {
+      next.configContents = "";
+      next.authContents = "";
+    } else if (!next.configContents.trim() || !next.authContents.trim()) {
+      next = withGeneratedRelayFiles(next);
+    }
+  }
+
+  return deriveRelayProfileFromFiles(next);
+}
+
+function codexModelFromConfig(contents: string): string {
+  for (const line of contents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (trimmed.startsWith("[")) break;
+    const match = /^model\s*=\s*(["'])(.*)\1\s*$/.exec(trimmed);
+    if (match) return match[2].replace(/\\(["'\\])/g, "$1");
+  }
+  return "";
+}
+
+function codexBaseUrlFromConfig(contents: string): string {
+  return codexProviderStringFromConfig(contents, "base_url");
+}
+
+function codexExperimentalBearerTokenFromConfig(contents: string): string {
+  return codexProviderStringFromConfig(contents, "experimental_bearer_token");
+}
+
+function codexProviderStringFromConfig(contents: string, key: string): string {
+  const provider = rootTomlStringValue(contents, "model_provider");
+  const targetSection = provider ? `model_providers.${provider}` : "";
+  const lines = contents.split(/\r?\n/);
+  let currentSection = "";
+  const matches: string[] = [];
+
+  for (const line of lines) {
+    const section = tomlSectionName(line);
+    if (section !== null) {
+      currentSection = section;
+      continue;
+    }
+    const value = tomlStringAssignmentValue(line, key);
+    if (value === null) continue;
+    if (targetSection && currentSection === targetSection) return value;
+    if (!currentSection || !currentSection.startsWith("model_providers.")) matches.push(value);
+  }
+
+  return matches.length === 1 ? matches[0] : "";
+}
+
+function codexApiKeyFromAuth(contents: string): string {
+  try {
+    const parsed = JSON.parse(contents || "{}") as { OPENAI_API_KEY?: unknown };
+    return typeof parsed.OPENAI_API_KEY === "string" ? parsed.OPENAI_API_KEY : "";
+  } catch {
+    return "";
+  }
+}
+
+function codexTopLevelIntFromConfig(contents: string, key: string): string {
+  const topLevel = splitTomlRootAndTables(contents).root;
+  const pattern = new RegExp(`^\\s*${key}\\s*=\\s*(\\d+)\\s*(?:#.*)?$`);
+  for (const line of topLevel.split(/\r?\n/)) {
+    const match = pattern.exec(line);
+    if (match) return match[1];
+  }
+  return "";
+}
+
+function rootTomlStringValue(contents: string, key: string): string {
+  const topLevel = splitTomlRootAndTables(contents).root;
+  for (const line of topLevel.split(/\r?\n/)) {
+    const value = tomlStringAssignmentValue(line, key);
+    if (value !== null) return value;
+  }
+  return "";
+}
+
+function tomlSectionName(line: string): string | null {
+  const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+  return match ? match[1].trim() : null;
+}
+
+function tomlStringAssignmentValue(line: string, key: string): string | null {
+  const match = new RegExp(`^\\s*${key}\\s*=\\s*([\"'])(.*)\\1\\s*(?:#.*)?$`).exec(line.trim());
+  if (!match) return null;
+  return match[2].replace(/\\(["'\\])/g, "$1");
+}
+
+function setAuthOpenAiApiKey(contents: string, apiKey: string): string {
+  let parsed: Record<string, unknown> = {};
+  try {
+    const value = JSON.parse(contents || "{}");
+    if (value && typeof value === "object" && !Array.isArray(value)) parsed = value as Record<string, unknown>;
+  } catch {
+    parsed = {};
+  }
+  parsed.OPENAI_API_KEY = apiKey.trim();
+  return `${JSON.stringify(parsed, null, 2)}\n`;
+}
+
+function setRootTomlStringKey(contents: string, key: string, value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return removeRootTomlKey(contents, key);
+  return setRootTomlLine(contents, key, `${key} = "${tomlString(trimmed)}"`);
+}
+
+function setRootTomlIntKey(contents: string, key: string, value: string): string {
+  const trimmed = value.replace(/[^\d]/g, "");
+  if (!trimmed) return removeRootTomlKey(contents, key);
+  return setRootTomlLine(contents, key, `${key} = ${trimmed}`);
+}
+
+function setRootTomlLine(contents: string, key: string, lineText: string): string {
+  const lines = contents.split(/\r?\n/);
+  const firstTable = lines.findIndex((line) => /^\s*\[[^\]]+\]\s*$/.test(line));
+  const rootEnd = firstTable >= 0 ? firstTable : lines.length;
+  for (let index = 0; index < rootEnd; index += 1) {
+    if (new RegExp(`^\\s*${key}\\s*=`).test(lines[index])) {
+      lines[index] = lineText;
+      return ensureTrailingNewline(lines.join("\n").trimEnd());
+    }
+  }
+  const insertAt = key === "model" ? 0 : rootEnd;
+  lines.splice(insertAt, 0, lineText);
+  return ensureTrailingNewline(lines.join("\n").trimEnd());
+}
+
+function setCodexProviderStringKey(contents: string, key: string, value: string): string {
+  const provider = rootTomlStringValue(contents, "model_provider") || "CodexPlusPlus";
+  let next = contents;
+  if (!rootTomlStringValue(next, "model_provider")) {
+    next = setRootTomlStringKey(next, "model_provider", provider);
+  }
+  return setTomlSectionStringKey(next, `model_providers.${provider}`, key, value);
+}
+
+function setCodexExperimentalBearerToken(contents: string, apiKey: string): string {
+  return setCodexProviderStringKey(contents, "experimental_bearer_token", apiKey.trim());
+}
+
+function setTomlSectionStringKey(contents: string, sectionName: string, key: string, value: string): string {
+  const lines = contents.split(/\r?\n/);
+  let sectionStart = -1;
+  let sectionEnd = lines.length;
+  for (let index = 0; index < lines.length; index += 1) {
+    const section = tomlSectionName(lines[index]);
+    if (section === null) continue;
+    if (sectionStart >= 0) {
+      sectionEnd = index;
+      break;
+    }
+    if (section === sectionName) sectionStart = index;
+  }
+  if (sectionStart < 0) {
+    const prefix = ensureTrailingNewline(lines.join("\n").trimEnd()).trimEnd();
+    return joinTomlSections([prefix, `[${sectionName}]\n${key} = "${tomlString(value.trim())}"`]);
+  }
+  const replacement = `${key} = "${tomlString(value.trim())}"`;
+  for (let index = sectionStart + 1; index < sectionEnd; index += 1) {
+    if (new RegExp(`^\\s*${key}\\s*=`).test(lines[index])) {
+      lines[index] = replacement;
+      return ensureTrailingNewline(lines.join("\n").trimEnd());
+    }
+  }
+  let insertAt = sectionEnd;
+  while (insertAt > sectionStart + 1 && lines[insertAt - 1].trim() === "") insertAt -= 1;
+  lines.splice(insertAt, 0, replacement);
+  return ensureTrailingNewline(lines.join("\n").trimEnd());
 }
 
 function relayProfileSwitchValidation(profile: RelayProfile): string | null {
@@ -2823,9 +4255,11 @@ function tomlString(value: string): string {
 }
 
 function syncLegacyRelayFields(settings: BackendSettings): BackendSettings {
-  const active = activeRelayProfile(settings);
+  const relayProfiles = settings.relayProfiles.map(deriveRelayProfileFromFiles);
+  const active = activeRelayProfile({ ...settings, relayProfiles });
   return {
     ...settings,
+    relayProfiles,
     activeRelayId: active.id,
     relayBaseUrl: active.baseUrl,
     relayApiKey: active.apiKey,
@@ -2833,23 +4267,24 @@ function syncLegacyRelayFields(settings: BackendSettings): BackendSettings {
 }
 
 function updateRelayProfile(settings: BackendSettings, id: string, patch: Partial<RelayProfile>): BackendSettings {
-  const shouldRegenerateFiles = ["baseUrl", "apiKey", "protocol", "relayMode", "officialMixApiKey"].some((key) => key in patch);
   return syncLegacyRelayFields({
     ...settings,
     relayProfiles: settings.relayProfiles.map((profile) => {
       if (profile.id !== id) return profile;
-      const updated = { ...profile, ...patch };
-      return shouldRegenerateFiles ? withGeneratedRelayFiles(updated) : updated;
+      return deriveRelayProfileFromFiles({ ...profile, ...patch });
     }),
   });
 }
 
 function createRelayProfile(settings: BackendSettings): RelayProfile {
   const id = `relay-${Date.now().toString(36)}`;
+  const contextSelection = contextSelectionForAllEntries(settings);
   const next = {
     id,
     name: `供应商 ${settings.relayProfiles.length + 1}`,
+    model: "",
     baseUrl: defaultSettings.relayBaseUrl,
+    upstreamBaseUrl: defaultSettings.relayBaseUrl,
     apiKey: "",
     protocol: "responses" as RelayProtocol,
     relayMode: "official" as RelayMode,
@@ -2857,12 +4292,20 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     testModel: "",
     configContents: "",
     authContents: "",
+    useCommonConfig: true,
+    contextSelection,
+    contextSelectionInitialized: true,
+    contextWindow: "",
+    autoCompactLimit: "",
+    modelList: "",
   };
   return withGeneratedRelayFiles(next);
 }
 
 function addRelayProfile(settings: BackendSettings, profile: RelayProfile): BackendSettings {
-  const nextWithFiles = profile.configContents.trim() || profile.authContents.trim() ? profile : withGeneratedRelayFiles(profile);
+  const nextWithFiles = deriveRelayProfileFromFiles(
+    profile.configContents.trim() || profile.authContents.trim() ? profile : withGeneratedRelayFiles(profile),
+  );
   const activeId = settings.relayProfiles.some((item) => item.id === settings.activeRelayId)
     ? settings.activeRelayId
     : activeRelayProfile(settings).id;

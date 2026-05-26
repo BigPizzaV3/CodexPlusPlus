@@ -2,11 +2,18 @@ pub mod commands;
 pub mod install;
 
 pub fn run() {
+    install_panic_logger();
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.start",
+        serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION")
+        }),
+    );
     let Some(_guard) = acquire_single_instance_guard() else {
         return;
     };
     let show_update = commands::startup_should_show_update();
-    tauri::Builder::default()
+    let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let url = if show_update {
@@ -16,7 +23,8 @@ pub fn run() {
             };
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
                 .title("Codex++ 管理工具")
-                .inner_size(960.0, 720.0)
+                .inner_size(1180.0, 820.0)
+                .min_inner_size(960.0, 720.0)
                 .build()?;
             Ok(())
         })
@@ -54,13 +62,54 @@ pub fn run() {
             commands::relay_status,
             commands::read_relay_files,
             commands::save_relay_file,
+            commands::write_diagnostic_event,
+            commands::backfill_relay_profile_from_live,
+            commands::list_context_entries,
+            commands::read_live_context_entries,
+            commands::sync_live_context_entries,
+            commands::upsert_context_entry,
+            commands::delete_context_entry,
+            commands::extract_relay_common_config,
             commands::test_relay_profile,
+            commands::fetch_relay_profile_models,
             commands::apply_relay_injection,
             commands::apply_pure_api_injection,
             commands::clear_relay_injection
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Codex++ manager");
+        .run(tauri::generate_context!());
+    if let Err(error) = run_result {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "manager.run_failed",
+            serde_json::json!({
+                "error": error.to_string()
+            }),
+        );
+    }
+}
+
+fn install_panic_logger() {
+    std::panic::set_hook(Box::new(|panic_info| {
+        let payload = panic_info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|message| (*message).to_string())
+            .or_else(|| panic_info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "非字符串 panic payload".to_string());
+        let location = panic_info.location().map(|location| {
+            serde_json::json!({
+                "file": location.file(),
+                "line": location.line(),
+                "column": location.column()
+            })
+        });
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "manager.panic",
+            serde_json::json!({
+                "payload": payload,
+                "location": location
+            }),
+        );
+    }));
 }
 
 fn acquire_single_instance_guard() -> Option<std::net::TcpListener> {
@@ -85,10 +134,18 @@ fn acquire_single_instance_guard() -> Option<std::net::TcpListener> {
                     "error": error.to_string()
                 }),
             );
-            Some(
-                std::net::TcpListener::bind(("127.0.0.1", 0))
-                    .expect("fallback manager guard should bind"),
-            )
+            match std::net::TcpListener::bind(("127.0.0.1", 0)) {
+                Ok(listener) => Some(listener),
+                Err(fallback_error) => {
+                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "manager.guard_fallback_failed",
+                        serde_json::json!({
+                            "error": fallback_error.to_string()
+                        }),
+                    );
+                    None
+                }
+            }
         }
     }
 }

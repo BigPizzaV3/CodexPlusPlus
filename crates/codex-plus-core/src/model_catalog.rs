@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::settings::{RelayProfile, SettingsStore};
 use serde_json::{Value, json};
 
 const BASE_URL_ENV_KEYS: &[&str] = &[
@@ -35,6 +36,12 @@ struct CodexConfig {
 
 pub async fn read_codex_model_catalog() -> Value {
     let home = codex_home_dir();
+    let settings_path = crate::paths::default_settings_path();
+    if settings_path.exists() {
+        if let Ok(settings) = SettingsStore::new(settings_path).load() {
+            return relay_profile_model_catalog_value(&home, &settings.active_relay_profile());
+        }
+    }
     let env = std::env::vars().collect::<HashMap<_, _>>();
     let client = match crate::http_client::proxied_client("CodexPlusPlus/1.0") {
         Ok(client) => client,
@@ -54,6 +61,54 @@ pub async fn read_codex_model_catalog() -> Value {
         }
     };
     read_codex_model_catalog_from_home(&home, &env, client).await
+}
+
+fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Value {
+    let models = relay_profile_model_ids(profile);
+    let model = profile.model.trim().to_string();
+    let default_model = if models.iter().any(|item| item == &model) {
+        model.clone()
+    } else {
+        models.first().cloned().unwrap_or_default()
+    };
+    let provider_name = if profile.name.trim().is_empty() {
+        profile.id.trim()
+    } else {
+        profile.name.trim()
+    };
+    let model_count = models.len();
+    json!({
+        "status": if models.is_empty() { "not_configured" } else { "ok" },
+        "path": home.join("config.toml").to_string_lossy(),
+        "model": model,
+        "model_provider": profile.id.trim(),
+        "provider_name": provider_name,
+        "default_model": default_model,
+        "models": models,
+        "sources": [
+            {
+                "id": format!("relay-profile:{}", profile.id),
+                "type": "relay_profile_model_list",
+                "name": provider_name,
+                "base_url": profile.base_url.trim(),
+                "status": "ok",
+                "models": model_count,
+                "responses_api": responses_api_status("unknown", "", "")
+            }
+        ],
+        "responses_api": responses_api_status("unknown", "", "")
+    })
+}
+
+fn relay_profile_model_ids(profile: &RelayProfile) -> Vec<String> {
+    unique_strings(
+        std::iter::once(profile.model.as_str())
+            .chain(profile.model_list.split(['\r', '\n', ',']))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .collect(),
+    )
 }
 
 pub async fn read_codex_model_catalog_from_home(
@@ -112,6 +167,11 @@ pub async fn read_codex_model_catalog_from_home(
         source_status["responses_api"] = responses_api_status("unknown", "", "");
         models.extend(source_models);
         source_statuses.push(source_status);
+    }
+    let (catalog_models, catalog_status) = models_from_config_model_catalog_json(home, &effective);
+    models.extend(catalog_models);
+    if let Some(status) = catalog_status {
+        source_statuses.push(status);
     }
 
     models = unique_strings(models);
@@ -447,6 +507,40 @@ fn responses_api_status(status: &str, endpoint: &str, message: &str) -> Value {
     })
 }
 
+pub async fn fetch_relay_profile_model_ids(
+    profile: &RelayProfile,
+) -> anyhow::Result<(Vec<String>, String)> {
+    let source = ModelSource {
+        source_id: format!("relay-profile:{}", profile.id),
+        source_type: "relay_profile".to_string(),
+        name: if profile.name.trim().is_empty() {
+            profile.id.clone()
+        } else {
+            profile.name.trim().to_string()
+        },
+        base_url: if profile.upstream_base_url.trim().is_empty() {
+            profile.base_url.trim().to_string()
+        } else {
+            profile.upstream_base_url.trim().to_string()
+        },
+        api_key: profile.api_key.trim().to_string(),
+    };
+    if source.base_url.is_empty() {
+        anyhow::bail!("Base URL 不能为空");
+    }
+    let endpoint = models_endpoint(&source.base_url);
+    let client = crate::http_client::proxied_client("CodexPlusPlus/1.0")?;
+    let (models, status) = fetch_models_from_source(&client, &source).await;
+    if models.is_empty() {
+        let message = status
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("上游没有返回可用模型");
+        anyhow::bail!("{message}");
+    }
+    Ok((models, endpoint))
+}
+
 fn preferred_responses_api_status(sources: &[Value]) -> Value {
     let statuses = sources
         .iter()
@@ -515,6 +609,107 @@ fn parse_model_payload(payload: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn models_from_config_model_catalog_json(
+    home: &Path,
+    effective: &HashMap<String, String>,
+) -> (Vec<String>, Option<Value>) {
+    let raw_path = string_value(effective.get("model_catalog_json"));
+    if raw_path.is_empty() {
+        return (Vec::new(), None);
+    }
+    let path = resolve_config_path(home, &raw_path);
+    let safe_path = path.to_string_lossy().to_string();
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) => {
+            return (
+                Vec::new(),
+                Some(json!({
+                    "id": "config:model_catalog_json",
+                    "type": "model_catalog_json",
+                    "name": "Codex model catalog",
+                    "path": safe_path,
+                    "status": "failed",
+                    "message": error.to_string(),
+                    "models": 0,
+                    "responses_api": responses_api_status("unknown", "", "")
+                })),
+            );
+        }
+    };
+    let payload = match serde_json::from_str::<Value>(&contents) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return (
+                Vec::new(),
+                Some(json!({
+                    "id": "config:model_catalog_json",
+                    "type": "model_catalog_json",
+                    "name": "Codex model catalog",
+                    "path": safe_path,
+                    "status": "failed",
+                    "message": error.to_string(),
+                    "models": 0,
+                    "responses_api": responses_api_status("unknown", "", "")
+                })),
+            );
+        }
+    };
+    let models = unique_strings(parse_model_catalog_json_models(&payload));
+    let count = models.len();
+    (
+        models,
+        Some(json!({
+            "id": "config:model_catalog_json",
+            "type": "model_catalog_json",
+            "name": "Codex model catalog",
+            "path": safe_path,
+            "status": "ok",
+            "models": count,
+            "responses_api": responses_api_status("unknown", "", "")
+        })),
+    )
+}
+
+fn resolve_config_path(home: &Path, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        home.join(path)
+    }
+}
+
+fn parse_model_catalog_json_models(payload: &Value) -> Vec<String> {
+    let Some(models) = payload.get("models").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    models
+        .iter()
+        .filter(|model| catalog_model_visible_in_api(model))
+        .filter_map(|model| model.get("slug").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|slug| !slug.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn catalog_model_visible_in_api(model: &Value) -> bool {
+    let supported_in_api = model
+        .get("supported_in_api")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if !supported_in_api {
+        return false;
+    }
+    let visibility = model
+        .get("visibility")
+        .and_then(Value::as_str)
+        .unwrap_or("list")
+        .trim();
+    visibility.eq_ignore_ascii_case("list")
+}
+
 fn unique_strings(values: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut result = Vec::new();
@@ -570,9 +765,19 @@ fn string_value(value: Option<&String>) -> String {
 
 fn unquote_toml_string(value: &str) -> String {
     let value = value.trim();
+    if let Ok(parsed) = toml::from_str::<toml::Value>(&format!("value = {value}")) {
+        if let Some(value) = parsed.get("value").and_then(toml::Value::as_str) {
+            return value.to_string();
+        }
+    }
     value
         .strip_prefix('"')
         .and_then(|value| value.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+        })
         .unwrap_or(value)
         .to_string()
 }

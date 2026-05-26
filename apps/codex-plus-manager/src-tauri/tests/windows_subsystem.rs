@@ -152,11 +152,92 @@ fn relay_settings_keeps_profile_config_and_auth_files_isolated() {
     let commands_rs = std::fs::read_to_string(&commands_rs).expect("read manager commands.rs");
 
     assert!(app_tsx.contains("snapshotActiveRelayFilesBeforeSwitch"));
-    assert!(app_tsx.contains("configContents: files.configContents"));
-    assert!(app_tsx.contains("authContents: files.authContents"));
+    assert!(app_tsx.contains("backfill_relay_profile_from_live"));
     assert!(app_tsx.contains("relayProfileSwitchValidation(selectedBeforeSave)"));
     assert!(app_tsx.contains("缺少独立 config.toml"));
-    assert!(app_tsx.contains("const command = selectedAfterSave.relayMode === \"pureApi\" ? \"apply_pure_api_injection\" : \"apply_relay_injection\""));
+    assert!(app_tsx.contains("const command = relayProfileSwitchCommand(selectedAfterSave)"));
     assert!(!commands_rs.contains("缺少独立 auth.json"));
-    assert!(commands_rs.contains("apply_relay_files_to_home"));
+    assert!(commands_rs.contains("backfill_relay_profile_from_live"));
+    assert!(commands_rs.contains("apply_relay_profile_to_home_with_switch_rules"));
+}
+
+#[test]
+fn relay_context_management_is_global_not_supplier_scoped() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+    let styles = manifest_dir.parent().unwrap().join("src/styles.css");
+    let styles = std::fs::read_to_string(&styles).expect("read manager styles.css");
+
+    assert!(app_tsx.contains("作为全局配置独立管理"));
+    assert!(app_tsx.contains("label: \"工具与插件\""));
+    assert!(app_tsx.contains("title=\"Codex 工具与插件\""));
+    assert!(!app_tsx.contains("label: \"上下文配置\""));
+    assert!(!app_tsx.contains("title=\"上下文配置\""));
+    assert!(!app_tsx.contains("<strong>Codex 上下文</strong>"));
+    assert!(app_tsx.contains("id: \"context\""));
+    assert!(app_tsx.contains("function ContextScreen"));
+    assert!(app_tsx.contains("route === \"context\""));
+    assert!(app_tsx.contains("if (next === \"context\")"));
+    assert!(app_tsx.contains("selectedContextConfigToml(entries)"));
+    assert!(app_tsx.contains("toggleContextEntryEnabled"));
+    assert!(app_tsx.contains("relayFiles={relayFiles}"));
+    assert!(app_tsx.contains("read_live_context_entries"));
+    assert!(app_tsx.contains("sync_live_context_entries"));
+    assert!(app_tsx.contains("refreshLiveContextEntries"));
+    assert!(app_tsx.contains("syncLiveContextEntries(next, true)"));
+    assert!(app_tsx.contains("function contextEntriesWithLiveEntries"));
+    assert!(app_tsx.contains("liveByKind"));
+    assert!(app_tsx.contains("mergeLiveContextEntries"));
+    assert!(app_tsx.contains("withLiveEntryState"));
+    assert!(app_tsx.contains("contextEnabledSwitch"));
+    assert!(!app_tsx.contains("entry.enabled ? \"已启用\" : \"已禁用\""));
+    assert!(!app_tsx.contains("空配置体"));
+    assert!(app_tsx.contains("relay-context-delete"));
+    assert!(!app_tsx.contains("切换供应商时只合并勾选项"));
+    assert!(!app_tsx.contains("未勾选的条目不会写入"));
+    assert!(!app_tsx.contains("className=\"context-switch\""));
+    assert!(!styles.contains(".context-switch {"));
+    assert!(styles.contains(".context-enabled-switch"));
+    assert!(styles.contains(".context-switch-track"));
+    assert!(styles.contains(".context-switch-thumb"));
+    assert!(!styles.contains(".relay-context-row code"));
+    assert!(styles.contains(".relay-context-delete"));
+}
+
+#[test]
+fn manager_window_and_relay_detail_header_stay_usable() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+    let styles = manifest_dir.parent().unwrap().join("src/styles.css");
+    let styles = std::fs::read_to_string(&styles).expect("read manager styles.css");
+    let lib_rs =
+        std::fs::read_to_string(manifest_dir.join("src/lib.rs")).expect("read manager lib.rs");
+    let tauri_conf =
+        std::fs::read_to_string(manifest_dir.join("tauri.conf.json")).expect("read tauri config");
+
+    assert!(app_tsx.contains("relay-detail-sticky"));
+    assert!(!app_tsx.contains("CardHead title=\"供应商详情\""));
+    assert!(styles.contains(".relay-detail-sticky"));
+    assert!(styles.contains("position: sticky"));
+    assert!(styles.contains("top: 0"));
+    assert!(styles.contains("margin: -16px -20px 0"));
+    assert!(lib_rs.contains(".inner_size(1180.0, 820.0)"));
+    assert!(lib_rs.contains(".min_inner_size(960.0, 720.0)"));
+    assert!(tauri_conf.contains("\"width\": 1180"));
+    assert!(tauri_conf.contains("\"height\": 820"));
+    assert!(tauri_conf.contains("\"minWidth\": 960"));
+    assert!(tauri_conf.contains("\"minHeight\": 720"));
+}
+
+#[test]
+fn relay_preview_deduplicates_root_keys_when_merging_common_config() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+
+    assert!(app_tsx.contains("dedupeTomlRootLines"));
+    assert!(app_tsx.contains("rootSeen.add(key)"));
+    assert!(app_tsx.contains("joinTomlSectionsRootFirst"));
 }

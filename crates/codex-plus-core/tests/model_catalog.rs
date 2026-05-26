@@ -4,7 +4,10 @@ use std::net::TcpListener;
 use std::path::Path;
 use std::thread;
 
-use codex_plus_core::model_catalog::read_codex_model_catalog_from_home;
+use codex_plus_core::model_catalog::{
+    read_codex_model_catalog, read_codex_model_catalog_from_home,
+};
+use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol, SettingsStore};
 use serde_json::json;
 
 #[tokio::test]
@@ -63,6 +66,61 @@ experimental_bearer_token = "relay-key"
 }
 
 #[tokio::test]
+async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex_home = temp.path().join("codex-home");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    let settings_path = temp.path().join("settings.json");
+    let previous_codex_home = std::env::var_os("CODEX_HOME");
+    let previous_settings_path =
+        codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path.clone()));
+    unsafe {
+        std::env::set_var("CODEX_HOME", &codex_home);
+    }
+
+    let result = async {
+        SettingsStore::new(settings_path)
+            .save(&BackendSettings {
+                active_relay_id: "relay-a".to_string(),
+                relay_profiles: vec![RelayProfile {
+                    id: "relay-a".to_string(),
+                    name: "Relay A".to_string(),
+                    model: "qwen3-coder".to_string(),
+                    base_url: "https://example.test/v1".to_string(),
+                    protocol: RelayProtocol::Responses,
+                    model_list: "deepseek-coder\nqwen3-coder\nclaude-compatible".to_string(),
+                    ..RelayProfile::default()
+                }],
+                ..BackendSettings::default()
+            })
+            .unwrap();
+
+        read_codex_model_catalog().await
+    }
+    .await;
+
+    match previous_codex_home {
+        Some(value) => unsafe {
+            std::env::set_var("CODEX_HOME", value);
+        },
+        None => unsafe {
+            std::env::remove_var("CODEX_HOME");
+        },
+    }
+    codex_plus_core::paths::set_settings_path_for_tests(previous_settings_path);
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["model_provider"], "relay-a");
+    assert_eq!(result["provider_name"], "Relay A");
+    assert_eq!(result["default_model"], "qwen3-coder");
+    assert_eq!(
+        result["models"],
+        json!(["qwen3-coder", "deepseek-coder", "claude-compatible"])
+    );
+    assert_eq!(result["sources"][0]["type"], "relay_profile_model_list");
+}
+
+#[tokio::test]
 async fn model_catalog_uses_single_provider_when_root_model_provider_is_absent() {
     let temp = tempfile::tempdir().unwrap();
     let server = spawn_models_server(json!({
@@ -93,6 +151,114 @@ base_url = "{}/v1"
     let requests = server.finish();
     assert_eq!(requests[0].path, "/v1/models");
     assert_eq!(result["responses_api"]["status"], "unknown");
+}
+
+#[tokio::test]
+async fn model_catalog_merges_models_from_config_model_catalog_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server(json!({
+        "data": [
+            {"id": "qwen3-coder"}
+        ]
+    }));
+    let catalog_path = temp.path().join("custom-models.json");
+    std::fs::write(
+        &catalog_path,
+        json!({
+            "models": [
+                {
+                    "slug": "gpt-5.6",
+                    "display_name": "GPT-5.6",
+                    "visibility": "list",
+                    "supported_in_api": true
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "gpt-5.6"
+model_provider = "relay"
+model_catalog_json = "{}"
+
+[model_providers.relay]
+name = "Relay"
+base_url = "{}"
+experimental_bearer_token = "relay-key"
+"#,
+            catalog_path.display().to_string().replace('\\', "\\\\"),
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["default_model"], "gpt-5.6");
+    assert_eq!(result["models"], json!(["qwen3-coder", "gpt-5.6"]));
+    server.finish();
+}
+
+#[tokio::test]
+async fn model_catalog_reads_single_quoted_config_model_catalog_json_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog_path = temp.path().join("literal-path-models.json");
+    std::fs::write(
+        &catalog_path,
+        json!({
+            "models": [
+                {
+                    "slug": "gpt-5.6",
+                    "visibility": "list",
+                    "supported_in_api": true
+                },
+                {
+                    "slug": "hidden-test-model",
+                    "visibility": "hidden",
+                    "supported_in_api": true
+                },
+                {
+                    "slug": "chatgpt-only-test-model",
+                    "visibility": "list",
+                    "supported_in_api": false
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "gpt-5.6"
+model_catalog_json = '{}'
+"#,
+            catalog_path.display()
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["default_model"], "gpt-5.6");
+    assert_eq!(result["models"], json!(["gpt-5.6"]));
+    assert_eq!(result["sources"][0]["status"], "ok");
+    assert_eq!(result["sources"][0]["models"], 1);
 }
 
 #[tokio::test]
@@ -169,7 +335,21 @@ fn spawn_models_server(payload: serde_json::Value) -> ModelsServer {
                 continue;
             };
             let mut buffer = [0u8; 4096];
-            let read = stream.read(&mut buffer).unwrap();
+            let mut read = 0;
+            let read_started = std::time::Instant::now();
+            while read == 0 && read_started.elapsed() < std::time::Duration::from_secs(2) {
+                match stream.read(&mut buffer) {
+                    Ok(0) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                    Ok(bytes) => read = bytes,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("failed to read test request: {error}"),
+                }
+            }
+            if read == 0 {
+                continue;
+            }
             let request = String::from_utf8_lossy(&buffer[..read]).to_string();
             let request_path = request
                 .lines()

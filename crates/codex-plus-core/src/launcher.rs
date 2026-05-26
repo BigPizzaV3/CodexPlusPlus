@@ -125,6 +125,9 @@ pub trait LaunchHooks: Send + Sync {
     fn select_helper_port(&self, requested: u16) -> u16;
     async fn load_settings(&self) -> anyhow::Result<BackendSettings>;
     async fn run_provider_sync(&self) -> anyhow::Result<()>;
+    async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()>;
     async fn launch_codex(
         &self,
@@ -201,6 +204,7 @@ where
         if settings.provider_sync_enabled {
             hooks.run_provider_sync().await?;
         }
+        hooks.apply_active_relay_profile(&settings).await?;
 
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings);
         if protocol_proxy_enabled {
@@ -327,6 +331,34 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
         anyhow::bail!("provider sync requires launcher hooks with codex-plus-data integration")
+    }
+
+    async fn apply_active_relay_profile(&self, settings: &BackendSettings) -> anyhow::Result<()> {
+        let profile = settings.active_relay_profile();
+        let home = crate::relay_config::default_codex_home_dir();
+        let common_config = crate::relay_config::normalize_config_text(
+            &[
+                settings.relay_common_config_contents.as_str(),
+                settings.relay_context_config_contents.as_str(),
+            ]
+            .into_iter()
+            .map(str::trim)
+            .filter(|section| !section.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        );
+        if profile.relay_mode == crate::settings::RelayMode::Official
+            && !profile.official_mix_api_key
+        {
+            crate::relay_config::clear_relay_config_to_home(&home)?;
+            return Ok(());
+        }
+        crate::relay_config::apply_relay_profile_to_home_with_switch_rules(
+            &home,
+            &profile,
+            &common_config,
+        )?;
+        Ok(())
     }
 
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {

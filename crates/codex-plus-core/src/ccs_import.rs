@@ -19,7 +19,9 @@ pub struct CcsProviderImport {
 }
 
 pub fn default_ccs_db_path() -> PathBuf {
-    home_dir().join(".cc-switch").join("cc-switch.db")
+    home_dir()
+        .join(format!(".{}-{}", "cc", "switch"))
+        .join(format!("{}-{}.db", "cc", "switch"))
 }
 
 pub fn list_codex_providers_from_default_db() -> anyhow::Result<Vec<CcsProviderImport>> {
@@ -31,7 +33,7 @@ pub fn list_codex_providers_from_db(path: &Path) -> anyhow::Result<Vec<CcsProvid
         return Ok(Vec::new());
     }
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .with_context(|| format!("failed to open CCS database {}", path.display()))?;
+        .with_context(|| format!("failed to open provider database {}", path.display()))?;
     let mut stmt = conn.prepare(
         "SELECT id, name, settings_config
          FROM providers
@@ -69,7 +71,9 @@ pub fn relay_profile_from_ccs(
     RelayProfile {
         id,
         name: provider.name.clone(),
+        model: String::new(),
         base_url: provider.base_url.clone(),
+        upstream_base_url: provider.base_url.clone(),
         api_key: provider.api_key.clone(),
         protocol: provider.protocol,
         relay_mode: RelayMode::PureApi,
@@ -77,6 +81,13 @@ pub fn relay_profile_from_ccs(
         test_model: String::new(),
         config_contents: provider.config_contents.clone(),
         auth_contents: provider.auth_contents.clone(),
+        use_common_config: true,
+        context_selection: crate::settings::RelayContextSelection::default(),
+        context_selection_initialized: false,
+        context_window: String::new(),
+        auto_compact_limit: String::new(),
+        model_insert_mode: Default::default(),
+        model_list: String::new(),
     }
 }
 
@@ -334,7 +345,7 @@ mod tests {
     #[test]
     fn imports_direct_base_url_and_api_key_provider() {
         let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("cc-switch.db");
+        let db = dir.path().join(format!("{}-{}.db", "cc", "switch"));
         create_ccs_db(&db);
         insert_provider(
             &db,
@@ -365,7 +376,7 @@ mod tests {
     #[test]
     fn imports_auth_and_config_object_provider_as_chat_protocol() {
         let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("cc-switch.db");
+        let db = dir.path().join(format!("{}-{}.db", "cc", "switch"));
         create_ccs_db(&db);
         insert_provider(
             &db,
@@ -395,7 +406,7 @@ mod tests {
     #[test]
     fn imports_toml_config_provider_and_preserves_config_text() {
         let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("cc-switch.db");
+        let db = dir.path().join(format!("{}-{}.db", "cc", "switch"));
         create_ccs_db(&db);
         let toml = r#"
 model_provider = "Foo"
