@@ -106,6 +106,14 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
     </td>
     <td><a href="https://coder.visioncoder.cn"><strong>VisionCoder 开发平台</strong></a><br>感谢 VisionCoder 对本项目的支持。VisionCoder 开发平台是一个可靠高效的 API 中继服务提供商，提供 Claude Code、Codex、Gemini 等主流 AI 模型，帮助开发者和团队更轻松地集成 AI 功能，提升工作效率。VisionCoder 还为我们的用户提供 <a href="https://coder.visioncoder.cn">Token Plan</a> 限时活动：购买 1 个月，赠送 1 个月。</td>
   </tr>
+  <tr>
+    <td align="center">
+      <a href="https://aihub2api.cloud/register?promo=CODEXPLUSPLUS">
+        <img src="docs/images/sponsor-aihub2api.png" alt="AIHub2API" width="150">
+      </a>
+    </td>
+    <td><a href="https://aihub2api.cloud/register?promo=CODEXPLUSPLUS"><strong>AIHub2API</strong></a><br>感谢 AIHub2API 赞助了本项目！AIHub2API 是一家稳定、高效的 API 中转服务商，专注 Codex 中转业务，提供高缓存命中、低倍率的中转服务，网络链路优化无需使用魔法，极速响应，价格低至官方原价的 1%。通过<a href="https://aihub2api.cloud/register?promo=CODEXPLUSPLUS">专属链接注册 AIHub2API</a>，赠送 10 美金体验额度。</td>
+  </tr>
 </table>
 
 

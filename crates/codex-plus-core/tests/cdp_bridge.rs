@@ -171,6 +171,10 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("patchModelArray"));
     assert!(script.contains("patchStatsigModelDynamicConfig"));
     assert!(script.contains("patchModelJsonResponse"));
+    assert!(script.contains("installAppServerModelRequestPatch"));
+    assert!(script.contains("list-models-for-host"));
+    assert!(script.contains("appServerModelRequestMethod"));
+    assert!(script.contains("send-cli-request-for-host"));
     assert!(script.contains("Response.prototype.json"));
     assert!(script.contains("available_models"));
     assert!(script.contains("modelWhitelistUnlock"));

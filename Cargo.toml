@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.1.7"
+version = "1.1.8"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/BigPizzaV3/CodexPlusPlus"
@@ -22,11 +22,12 @@ reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "syste
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+toml = "0.8"
+toml_edit = "0.22"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 winresource = "0.1"

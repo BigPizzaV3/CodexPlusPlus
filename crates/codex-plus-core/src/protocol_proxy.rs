@@ -1,9 +1,9 @@
 //! Codex Responses API 与 OpenAI Chat Completions 的本地协议转换。
 //!
-//! 转换行为对齐 cc-switch 的 Codex Chat 转 Responses 实现；cc-switch 采用 MIT License。
-//! 相关思路来自 cc-switch，Copyright (c) 2025 Jason Young。
+//! Codex Chat 与 Responses 协议之间的转换实现。
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 
@@ -18,7 +18,6 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
     "logprobs",
     "metadata",
     "n",
-    "parallel_tool_calls",
     "presence_penalty",
     "response_format",
     "seed",
@@ -28,6 +27,86 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
     "top_logprobs",
     "user",
 ];
+
+#[derive(Debug, Clone, Default)]
+struct CodexToolContext {
+    custom_tools: BTreeMap<String, CodexCustomToolSpec>,
+    function_tools: BTreeMap<String, CodexFunctionToolSpec>,
+    has_custom_tools: bool,
+    has_namespace_tools: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CodexCustomToolSpec {
+    openai_name: String,
+    kind: CodexCustomToolKind,
+    proxy_action: Option<CodexPatchProxyAction>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CodexFunctionToolSpec {
+    namespace: String,
+    name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexCustomToolKind {
+    Raw,
+    ApplyPatch,
+    BuiltIn,
+}
+
+impl Default for CodexCustomToolKind {
+    fn default() -> Self {
+        Self::Raw
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexPatchProxyAction {
+    AddFile,
+    DeleteFile,
+    UpdateFile,
+    ReplaceFile,
+    Batch,
+}
+
+impl CodexPatchProxyAction {
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::AddFile => "add_file",
+            Self::DeleteFile => "delete_file",
+            Self::UpdateFile => "update_file",
+            Self::ReplaceFile => "replace_file",
+            Self::Batch => "batch",
+        }
+    }
+}
+
+impl CodexToolContext {
+    fn is_custom_tool_proxy(&self, upstream_name: &str) -> bool {
+        self.custom_tools.contains_key(upstream_name)
+    }
+
+    fn original_custom_tool_name(&self, upstream_name: &str) -> String {
+        self.custom_tools
+            .get(upstream_name)
+            .map(|spec| spec.openai_name.clone())
+            .unwrap_or_else(|| upstream_name.to_string())
+    }
+
+    fn openai_name_for_function_tool(&self, upstream_name: &str) -> (String, String) {
+        let Some(spec) = self.function_tools.get(upstream_name) else {
+            return (upstream_name.to_string(), String::new());
+        };
+        let name = if spec.name.is_empty() {
+            upstream_name.to_string()
+        } else {
+            spec.name.clone()
+        };
+        (name, spec.namespace.clone())
+    }
+}
 
 pub fn local_responses_proxy_base_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/v1")
@@ -51,6 +130,7 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     if let Some(input) = body.get("input") {
         append_responses_input(input, &mut messages);
     }
+    normalize_chat_messages(&mut messages);
     result["messages"] = json!(messages);
 
     let model = body.get("model").and_then(Value::as_str).unwrap_or("");
@@ -73,28 +153,47 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
             result[key] = value.clone();
         }
     }
-
-    if supports_reasoning_effort(model)
-        && let Some(effort) = body.pointer("/reasoning/effort")
-    {
-        result["reasoning_effort"] = effort.clone();
+    if body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
+        let mut stream_options = body
+            .get("stream_options")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        stream_options["include_usage"] = json!(true);
+        result["stream_options"] = stream_options;
     }
 
+    if supports_reasoning_effort(model)
+        && let Some(effort) = body.pointer("/reasoning/effort").and_then(Value::as_str)
+    {
+        result["reasoning_effort"] = json!(normalize_reasoning_effort(effort));
+    }
+
+    let tool_context = build_codex_tool_context(body.get("tools"));
+    let mut has_chat_tools = false;
     if let Some(tools) = body.get("tools").and_then(Value::as_array) {
-        let converted = tools
-            .iter()
-            .filter_map(responses_tool_to_chat_tool)
-            .collect::<Vec<_>>();
+        let converted = responses_tools_to_chat_tools(tools, &tool_context);
         if !converted.is_empty() {
+            has_chat_tools = true;
             result["tools"] = json!(converted);
         }
     }
 
-    if let Some(tool_choice) = body.get("tool_choice") {
-        result["tool_choice"] = responses_tool_choice_to_chat(tool_choice);
+    if has_chat_tools {
+        if let Some(tool_choice) = body
+            .get("tool_choice")
+            .and_then(|value| responses_tool_choice_to_chat(value, &tool_context))
+        {
+            result["tool_choice"] = tool_choice;
+        }
+        if let Some(value) = body.get("parallel_tool_calls") {
+            result["parallel_tool_calls"] = value.clone();
+        }
     }
 
     for key in EXTRA_CHAT_PASSTHROUGH_FIELDS {
+        if *key == "stream_options" && result.get("stream_options").is_some() {
+            continue;
+        }
         if let Some(value) = body.get(*key) {
             result[*key] = value.clone();
         }
@@ -104,6 +203,22 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
 }
 
 pub fn chat_completion_to_response(body: Value) -> anyhow::Result<Value> {
+    chat_completion_to_response_with_context(body, &CodexToolContext::default(), None)
+}
+
+pub fn chat_completion_to_response_with_request(
+    body: Value,
+    original_request: &Value,
+) -> anyhow::Result<Value> {
+    let context = build_codex_tool_context(original_request.get("tools"));
+    chat_completion_to_response_with_context(body, &context, Some(original_request))
+}
+
+fn chat_completion_to_response_with_context(
+    body: Value,
+    tool_context: &CodexToolContext,
+    original_request: Option<&Value>,
+) -> anyhow::Result<Value> {
     let choices = body
         .get("choices")
         .and_then(Value::as_array)
@@ -123,7 +238,10 @@ pub fn chat_completion_to_response(body: Value) -> anyhow::Result<Value> {
     if let Some(message) = chat_message_to_response_output_item(message, &response_id) {
         output.push(message);
     }
-    output.extend(chat_tool_calls_to_response_output_items(message));
+    output.extend(chat_tool_calls_to_response_output_items(
+        message,
+        tool_context,
+    ));
 
     let mut response = json!({
         "id": response_id,
@@ -138,6 +256,7 @@ pub fn chat_completion_to_response(body: Value) -> anyhow::Result<Value> {
     if choice.get("finish_reason").and_then(Value::as_str) == Some("length") {
         response["incomplete_details"] = json!({ "reason": "max_output_tokens" });
     }
+    copy_response_request_fields(&mut response, original_request);
 
     Ok(response)
 }
@@ -184,6 +303,13 @@ impl Default for ChatSseToResponsesConverter {
 }
 
 impl ChatSseToResponsesConverter {
+    pub fn with_request(original_request: &Value) -> Self {
+        Self {
+            state: ChatSseState::with_request(original_request),
+            ..Self::default()
+        }
+    }
+
     pub fn push_bytes(&mut self, bytes: &[u8]) -> Vec<u8> {
         append_utf8_safe(&mut self.buffer, &mut self.utf8_remainder, bytes);
         let mut output = String::new();
@@ -285,7 +411,7 @@ pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<Upstream
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let chat_request = responses_to_chat_completions(request_json)?;
+    let chat_request = responses_to_chat_completions(request_json.clone())?;
     let upstream = reqwest::Client::new()
         .post(chat_completions_url(&relay.base_url))
         .bearer_auth(relay.api_key.trim())
@@ -344,6 +470,7 @@ pub async fn open_models_proxy_request() -> anyhow::Result<UpstreamProxyResponse
 }
 
 pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyHttpResponse> {
+    let request_json: Value = serde_json::from_str(body)?;
     let upstream = open_responses_proxy_request(body).await?;
     let status_code = upstream.status_code;
     let upstream_content_type = upstream.content_type.clone();
@@ -367,12 +494,12 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
         return Ok(ProxyHttpResponse {
             status: "200 OK".to_string(),
             content_type: "text/event-stream; charset=utf-8".to_string(),
-            body: chat_sse_to_responses_sse(&text).into_bytes(),
+            body: chat_sse_to_responses_sse_with_request(&text, &request_json).into_bytes(),
         });
     }
 
     let chat_json: Value = serde_json::from_slice(&upstream_body)?;
-    let response_json = chat_completion_to_response(chat_json)?;
+    let response_json = chat_completion_to_response_with_request(chat_json, &request_json)?;
     Ok(ProxyHttpResponse {
         status: "200 OK".to_string(),
         content_type: "application/json; charset=utf-8".to_string(),
@@ -442,8 +569,15 @@ pub fn chat_sse_to_responses_sse(input: &str) -> String {
     String::from_utf8(output).unwrap_or_default()
 }
 
+pub fn chat_sse_to_responses_sse_with_request(input: &str, original_request: &Value) -> String {
+    let mut converter = ChatSseToResponsesConverter::with_request(original_request);
+    let mut output = converter.push_bytes(input.as_bytes());
+    output.extend(converter.finish());
+    String::from_utf8(output).unwrap_or_default()
+}
+
 pub fn response_id_from_chat_id(id: Option<&str>) -> String {
-    let id = id.unwrap_or("ccswitch");
+    let id = id.unwrap_or("compat");
     if id.starts_with("resp_") {
         id.to_string()
     } else {
@@ -517,6 +651,8 @@ struct ChatSseState {
     output_items: Vec<(u32, Value)>,
     latest_usage: Option<Value>,
     finish_reason: Option<String>,
+    tool_context: CodexToolContext,
+    original_request: Option<Value>,
 }
 
 impl Default for ChatSseState {
@@ -524,7 +660,7 @@ impl Default for ChatSseState {
         Self {
             response_started: false,
             completed: false,
-            response_id: "resp_ccswitch".to_string(),
+            response_id: "resp_compat".to_string(),
             model: String::new(),
             created_at: 0,
             next_output_index: 0,
@@ -535,11 +671,21 @@ impl Default for ChatSseState {
             output_items: Vec::new(),
             latest_usage: None,
             finish_reason: None,
+            tool_context: CodexToolContext::default(),
+            original_request: None,
         }
     }
 }
 
 impl ChatSseState {
+    fn with_request(original_request: &Value) -> Self {
+        Self {
+            tool_context: build_codex_tool_context(original_request.get("tools")),
+            original_request: Some(original_request.clone()),
+            ..Self::default()
+        }
+    }
+
     fn handle_chat_chunk_into(&mut self, chunk: &Value, output: &mut String) {
         if let Some(id) = chunk.get("id").and_then(Value::as_str) {
             self.response_id = response_id_from_chat_id(Some(id));
@@ -847,45 +993,40 @@ impl ChatSseState {
             }
             state.output_index = Some(assigned);
             state.item_id = format!("fc_{}", state.call_id);
-            push_sse(
-                output,
-                "response.output_item.added",
-                json!({
-                    "type": "response.output_item.added",
-                    "output_index": assigned,
-                    "item": {
-                        "id": state.item_id,
-                        "type": "function_call",
-                        "status": "in_progress",
-                        "call_id": state.call_id,
-                        "name": state.name,
-                        "arguments": ""
-                    }
-                }),
-            );
+            let added_item = tool_call_added_item(state, assigned, &self.tool_context);
+            push_sse(output, "response.output_item.added", added_item);
             if !pending_arguments.is_empty() {
-                push_sse(
+                push_tool_call_delta_sse(
                     output,
-                    "response.function_call_arguments.delta",
-                    json!({
-                        "type": "response.function_call_arguments.delta",
-                        "item_id": state.item_id,
-                        "output_index": assigned,
-                        "delta": pending_arguments
-                    }),
+                    state,
+                    assigned,
+                    &pending_arguments,
+                    &self.tool_context,
                 );
             }
         } else if !args_delta.is_empty() {
             if let Some(output_index) = output_index {
-                push_sse(
+                let state = ToolCallState {
+                    output_index: Some(output_index),
+                    item_id,
+                    name: self
+                        .tools
+                        .get(&chat_index)
+                        .map(|state| state.name.clone())
+                        .unwrap_or_default(),
+                    call_id: self
+                        .tools
+                        .get(&chat_index)
+                        .map(|state| state.call_id.clone())
+                        .unwrap_or_default(),
+                    ..ToolCallState::default()
+                };
+                push_tool_call_delta_sse(
                     output,
-                    "response.function_call_arguments.delta",
-                    json!({
-                        "type": "response.function_call_arguments.delta",
-                        "item_id": item_id,
-                        "output_index": output_index,
-                        "delta": args_delta
-                    }),
+                    &state,
+                    output_index,
+                    &args_delta,
+                    &self.tool_context,
                 );
             }
         }
@@ -906,6 +1047,7 @@ impl ChatSseState {
         if status == "incomplete" {
             response["incomplete_details"] = json!({ "reason": "max_output_tokens" });
         }
+        copy_response_request_fields(&mut response, self.original_request.as_ref());
         push_sse(
             output,
             "response.completed",
@@ -1034,46 +1176,16 @@ impl ChatSseState {
                 }
                 state.output_index = Some(assigned);
                 state.item_id = format!("fc_{}", state.call_id);
-                push_sse(
-                    output,
-                    "response.output_item.added",
-                    json!({
-                        "type": "response.output_item.added",
-                        "output_index": assigned,
-                        "item": {
-                            "id": state.item_id,
-                            "type": "function_call",
-                            "status": "in_progress",
-                            "call_id": state.call_id,
-                            "name": state.name,
-                            "arguments": ""
-                        }
-                    }),
-                );
+                let added_item = tool_call_added_item(state, assigned, &self.tool_context);
+                push_sse(output, "response.output_item.added", added_item);
             }
 
             let state = self.tools.get_mut(&key).expect("tool state exists");
             let output_index = state.output_index.unwrap_or(0);
-            let item = json!({
-                "id": state.item_id,
-                "type": "function_call",
-                "status": "completed",
-                "call_id": state.call_id,
-                "name": state.name,
-                "arguments": state.arguments
-            });
+            let item = tool_call_done_item(state, &self.tool_context);
             state.done = true;
             self.output_items.push((output_index, item.clone()));
-            push_sse(
-                output,
-                "response.function_call_arguments.done",
-                json!({
-                    "type": "response.function_call_arguments.done",
-                    "item_id": state.item_id,
-                    "output_index": output_index,
-                    "arguments": state.arguments
-                }),
-            );
+            push_tool_call_done_sse(output, state, output_index, &self.tool_context);
             push_sse(
                 output,
                 "response.output_item.done",
@@ -1263,12 +1375,14 @@ fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
         Value::Array(items) => {
             let mut pending_tool_calls = Vec::new();
             let mut pending_reasoning = Vec::new();
+            let mut seen_tool_call_ids = BTreeSet::new();
             for item in items {
                 append_responses_item(
                     item,
                     messages,
                     &mut pending_tool_calls,
                     &mut pending_reasoning,
+                    &mut seen_tool_call_ids,
                 );
             }
             flush_tool_calls(messages, &mut pending_tool_calls, &mut pending_reasoning);
@@ -1277,11 +1391,13 @@ fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
         Value::Object(_) => {
             let mut pending_tool_calls = Vec::new();
             let mut pending_reasoning = Vec::new();
+            let mut seen_tool_call_ids = BTreeSet::new();
             append_responses_item(
                 input,
                 messages,
                 &mut pending_tool_calls,
                 &mut pending_reasoning,
+                &mut seen_tool_call_ids,
             );
             flush_tool_calls(messages, &mut pending_tool_calls, &mut pending_reasoning);
             flush_reasoning(messages, &mut pending_reasoning);
@@ -1295,28 +1411,143 @@ fn append_responses_item(
     messages: &mut Vec<Value>,
     pending_tool_calls: &mut Vec<Value>,
     pending_reasoning: &mut Vec<String>,
+    seen_tool_call_ids: &mut BTreeSet<String>,
 ) {
     match item.get("type").and_then(Value::as_str) {
         Some("function_call") => {
+            let name = responses_history_function_name(item);
+            if name.is_empty() {
+                return;
+            }
+            let call_id = item
+                .get("call_id")
+                .or_else(|| item.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if call_id.is_empty() {
+                return;
+            }
+            seen_tool_call_ids.insert(call_id.to_string());
             pending_tool_calls.push(json!({
-                "id": item
-                    .get("call_id")
-                    .or_else(|| item.get("id"))
-                    .and_then(Value::as_str)
-                    .unwrap_or(""),
+                "id": call_id,
                 "type": "function",
                 "function": {
-                    "name": item.get("name").and_then(Value::as_str).unwrap_or(""),
+                    "name": name,
                     "arguments": responses_arguments_to_chat(item.get("arguments").unwrap_or(&json!({})))
                 }
             }));
         }
         Some("function_call_output") => {
+            let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
+            if call_id.is_empty() {
+                return;
+            }
+            if !seen_tool_call_ids.contains(call_id) {
+                flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
+                flush_reasoning(messages, pending_reasoning);
+                messages.push(orphan_tool_output_message(
+                    call_id,
+                    item.get("output").unwrap_or(&Value::Null),
+                ));
+                return;
+            }
             flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
             messages.push(json!({
                 "role": "tool",
-                "tool_call_id": item.get("call_id").and_then(Value::as_str).unwrap_or(""),
+                "tool_call_id": call_id,
                 "content": response_output_text(item.get("output").unwrap_or(&Value::Null))
+            }));
+        }
+        Some("custom_tool_call") => {
+            let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+            let input = item
+                .get("input")
+                .or_else(|| item.get("arguments"))
+                .unwrap_or(&Value::Null);
+            let (name, arguments) = build_custom_tool_call_history(name, input);
+            let call_id = item
+                .get("call_id")
+                .or_else(|| item.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if call_id.is_empty() {
+                return;
+            }
+            seen_tool_call_ids.insert(call_id.to_string());
+            pending_tool_calls.push(json!({
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": arguments
+                }
+            }));
+        }
+        Some("custom_tool_call_output") => {
+            let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
+            if call_id.is_empty() {
+                return;
+            }
+            if !seen_tool_call_ids.contains(call_id) {
+                flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
+                flush_reasoning(messages, pending_reasoning);
+                messages.push(orphan_tool_output_message(
+                    call_id,
+                    item.get("output").unwrap_or(&Value::Null),
+                ));
+                return;
+            }
+            flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": response_output_text(item.get("output").unwrap_or(&Value::Null))
+            }));
+        }
+        Some("tool_call") => {
+            if let Some(tool_use) = item.get("tool_use") {
+                let call_id = tool_use
+                    .get("id")
+                    .or_else(|| item.get("call_id"))
+                    .or_else(|| item.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if call_id.is_empty() {
+                    return;
+                }
+                seen_tool_call_ids.insert(call_id.to_string());
+                pending_tool_calls.push(json!({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_use.get("name").and_then(Value::as_str).unwrap_or(""),
+                        "arguments": responses_arguments_to_chat(tool_use.get("input").unwrap_or(&json!({})))
+                    }
+                }));
+            }
+        }
+        Some("tool_result") => {
+            flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
+            let content = item.get("content").unwrap_or(&Value::Null);
+            let call_id = content
+                .get("tool_use_id")
+                .or_else(|| item.get("tool_call_id"))
+                .or_else(|| item.get("call_id"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if call_id.is_empty() {
+                return;
+            }
+            let output = content.get("content").unwrap_or(content);
+            if !seen_tool_call_ids.contains(call_id) {
+                flush_reasoning(messages, pending_reasoning);
+                messages.push(orphan_tool_output_message(call_id, output));
+                return;
+            }
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": response_output_text(output)
             }));
         }
         Some("reasoning") => {
@@ -1348,6 +1579,37 @@ fn append_responses_item(
                 }
                 messages.push(message);
             }
+        }
+    }
+}
+
+fn orphan_tool_output_message(call_id: &str, output: &Value) -> Value {
+    json!({
+        "role": "user",
+        "content": format!(
+            "Function call output ({call_id}): {}",
+            response_output_text(output)
+        )
+    })
+}
+
+fn normalize_chat_messages(messages: &mut [Value]) {
+    for message in messages {
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let has_content = match message.get("content") {
+            Some(Value::Null) | None => false,
+            Some(Value::String(_)) => true,
+            Some(Value::Array(parts)) => !parts.is_empty(),
+            Some(_) => true,
+        };
+        let has_tool_calls = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|tool_calls| !tool_calls.is_empty());
+        if !has_content && !has_tool_calls {
+            message["content"] = json!("");
         }
     }
 }
@@ -1535,7 +1797,233 @@ fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
     Value::Array(chat_parts)
 }
 
-fn responses_tool_to_chat_tool(tool: &Value) -> Option<Value> {
+fn responses_history_function_name(item: &Value) -> String {
+    let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+    let namespace = item.get("namespace").and_then(Value::as_str).unwrap_or("");
+    if name.is_empty() {
+        String::new()
+    } else if namespace.is_empty() {
+        name.to_string()
+    } else {
+        flatten_namespace_tool_name(namespace, name)
+    }
+}
+
+fn build_codex_tool_context(tools: Option<&Value>) -> CodexToolContext {
+    let mut context = CodexToolContext::default();
+    let Some(tools) = tools.and_then(Value::as_array) else {
+        return context;
+    };
+
+    for tool in tools {
+        if let Some(name) = tool.as_str().filter(|name| !name.is_empty()) {
+            if let Some(action) = proxy_action_from_upstream_name(name) {
+                context.custom_tools.insert(
+                    name.to_string(),
+                    CodexCustomToolSpec {
+                        openai_name: "apply_patch".to_string(),
+                        kind: CodexCustomToolKind::ApplyPatch,
+                        proxy_action: Some(action),
+                    },
+                );
+                context.has_custom_tools = true;
+                continue;
+            }
+            context.custom_tools.insert(
+                name.to_string(),
+                CodexCustomToolSpec {
+                    openai_name: name.to_string(),
+                    kind: CodexCustomToolKind::Raw,
+                    proxy_action: None,
+                },
+            );
+            context.has_custom_tools = true;
+            continue;
+        }
+        let tool_type = tool.get("type").and_then(Value::as_str).unwrap_or("");
+        match tool_type {
+            "custom" => {
+                let Some(name) = tool
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|v| !v.is_empty())
+                else {
+                    continue;
+                };
+                let kind = detect_codex_custom_tool_kind(tool, name);
+                context.custom_tools.insert(
+                    name.to_string(),
+                    CodexCustomToolSpec {
+                        openai_name: name.to_string(),
+                        kind,
+                        proxy_action: None,
+                    },
+                );
+                if kind == CodexCustomToolKind::ApplyPatch {
+                    for action in [
+                        CodexPatchProxyAction::AddFile,
+                        CodexPatchProxyAction::DeleteFile,
+                        CodexPatchProxyAction::UpdateFile,
+                        CodexPatchProxyAction::ReplaceFile,
+                        CodexPatchProxyAction::Batch,
+                    ] {
+                        let proxy_name = format!("{name}_{}", action.suffix());
+                        context.custom_tools.insert(
+                            proxy_name,
+                            CodexCustomToolSpec {
+                                openai_name: name.to_string(),
+                                kind: CodexCustomToolKind::ApplyPatch,
+                                proxy_action: Some(action),
+                            },
+                        );
+                    }
+                }
+                context.has_custom_tools = true;
+            }
+            "function" => {
+                if let Some(name) = tool
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|v| !v.is_empty())
+                {
+                    context.function_tools.insert(
+                        name.to_string(),
+                        CodexFunctionToolSpec {
+                            name: name.to_string(),
+                            namespace: String::new(),
+                        },
+                    );
+                }
+            }
+            "namespace" => add_namespace_tools_to_context(&mut context, tool),
+            "web_search" | "local_shell" | "computer_use" => {
+                let name = tool
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or(tool_type);
+                context.custom_tools.insert(
+                    name.to_string(),
+                    CodexCustomToolSpec {
+                        openai_name: name.to_string(),
+                        kind: CodexCustomToolKind::BuiltIn,
+                        proxy_action: None,
+                    },
+                );
+                context.has_custom_tools = true;
+            }
+            _ => {}
+        }
+    }
+
+    context
+}
+
+fn add_namespace_tools_to_context(context: &mut CodexToolContext, namespace_tool: &Value) {
+    let namespace = namespace_tool
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let Some(children) = namespace_tool.get("tools").and_then(Value::as_array) else {
+        return;
+    };
+    for child in children {
+        if child.get("type").and_then(Value::as_str) != Some("function") {
+            continue;
+        }
+        let Some(name) = child
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+        else {
+            continue;
+        };
+        let flat = flatten_namespace_tool_name(namespace, name);
+        if namespace.is_empty() {
+            context.function_tools.insert(
+                flat,
+                CodexFunctionToolSpec {
+                    namespace: namespace.to_string(),
+                    name: name.to_string(),
+                },
+            );
+        } else if context
+            .function_tools
+            .get(&flat)
+            .is_none_or(|spec| !spec.namespace.is_empty())
+        {
+            context.function_tools.insert(
+                flat,
+                CodexFunctionToolSpec {
+                    namespace: namespace.to_string(),
+                    name: name.to_string(),
+                },
+            );
+            context.has_namespace_tools = true;
+        }
+    }
+}
+
+fn responses_tools_to_chat_tools(tools: &[Value], context: &CodexToolContext) -> Vec<Value> {
+    let mut converted = Vec::new();
+    for tool in tools {
+        if let Some(name) = tool.as_str().filter(|name| !name.is_empty()) {
+            converted.push(generic_custom_proxy_tool(name, ""));
+            continue;
+        }
+        match tool.get("type").and_then(Value::as_str).unwrap_or("") {
+            "function" => {
+                if let Some(tool) = responses_function_tool_to_chat_tool(tool) {
+                    converted.push(tool);
+                }
+            }
+            "custom" | "web_search" | "local_shell" | "computer_use" => {
+                let tool_type = tool.get("type").and_then(Value::as_str).unwrap_or("");
+                let name = tool
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or(tool_type);
+                let description = tool
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if detect_codex_custom_tool_kind(tool, name) == CodexCustomToolKind::ApplyPatch {
+                    converted.extend(apply_patch_proxy_tools(name, description));
+                } else {
+                    converted.push(generic_custom_proxy_tool(name, description));
+                }
+            }
+            "namespace" => converted.extend(namespace_tool_to_chat_tools(tool, context)),
+            _ => {}
+        }
+    }
+    converted
+}
+
+fn detect_codex_custom_tool_kind(tool: &Value, name: &str) -> CodexCustomToolKind {
+    if name == "apply_patch" {
+        return CodexCustomToolKind::ApplyPatch;
+    }
+    if let Some(definition) = tool.pointer("/format/definition").and_then(Value::as_str) {
+        if definition.contains("begin_patch")
+            && definition.contains("end_patch")
+            && definition.contains("add_hunk")
+        {
+            return CodexCustomToolKind::ApplyPatch;
+        }
+    }
+    if matches!(
+        tool.get("type").and_then(Value::as_str),
+        Some("web_search" | "local_shell" | "computer_use")
+    ) {
+        CodexCustomToolKind::BuiltIn
+    } else {
+        CodexCustomToolKind::Raw
+    }
+}
+
+fn responses_function_tool_to_chat_tool(tool: &Value) -> Option<Value> {
     if tool.get("type").and_then(Value::as_str) != Some("function") {
         return None;
     }
@@ -1549,12 +2037,17 @@ fn responses_tool_to_chat_tool(tool: &Value) -> Option<Value> {
                 object.remove("strict");
             }
         }
+        if let Some(function) = chat_tool.get_mut("function").and_then(Value::as_object_mut) {
+            let normalized =
+                normalize_chat_tool_parameters(function.get("parameters").unwrap_or(&json!({})));
+            function.insert("parameters".to_string(), normalized);
+        }
         return Some(chat_tool);
     }
     let mut function = json!({
         "name": tool.get("name").and_then(Value::as_str).unwrap_or(""),
         "description": tool.get("description").cloned().unwrap_or(Value::Null),
-        "parameters": tool.get("parameters").cloned().unwrap_or_else(|| json!({}))
+        "parameters": normalize_chat_tool_parameters(tool.get("parameters").unwrap_or(&json!({})))
     });
     if let Some(strict) = tool.get("strict") {
         function["strict"] = strict.clone();
@@ -1565,17 +2058,366 @@ fn responses_tool_to_chat_tool(tool: &Value) -> Option<Value> {
     }))
 }
 
-fn responses_tool_choice_to_chat(tool_choice: &Value) -> Value {
+fn namespace_tool_to_chat_tools(namespace_tool: &Value, context: &CodexToolContext) -> Vec<Value> {
+    let namespace = namespace_tool
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let namespace_description = namespace_tool
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let Some(children) = namespace_tool.get("tools").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut converted = Vec::new();
+    for child in children {
+        if child.get("type").and_then(Value::as_str) != Some("function") {
+            continue;
+        }
+        let Some(name) = child
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+        else {
+            continue;
+        };
+        let flat = flatten_namespace_tool_name(namespace, name);
+        if namespace != ""
+            && context
+                .function_tools
+                .get(&flat)
+                .is_some_and(|spec| spec.namespace.is_empty())
+        {
+            continue;
+        }
+        let description = combine_namespace_description(
+            namespace_description,
+            child
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        );
+        let mut function = json!({
+            "name": flat,
+            "parameters": normalize_chat_tool_parameters(child.get("parameters").unwrap_or(&json!({})))
+        });
+        if !description.is_empty() {
+            function["description"] = json!(description);
+        }
+        converted.push(json!({
+            "type": "function",
+            "function": function
+        }));
+    }
+    converted
+}
+
+fn normalize_chat_tool_parameters(parameters: &Value) -> Value {
+    let mut normalized = if parameters.is_object() {
+        parameters.clone()
+    } else {
+        json!({})
+    };
+    if normalized.get("type").is_none() {
+        normalized["type"] = json!("object");
+    }
+    if normalized.get("properties").is_none() {
+        normalized["properties"] = json!({});
+    }
+    if normalized.get("required").is_none() {
+        normalized["required"] = json!([]);
+    }
+    normalized
+}
+
+fn generic_custom_proxy_tool(name: &str, description: &str) -> Value {
+    let description = if description.trim().is_empty() {
+        format!("FREEFORM custom tool: {name}. Put only the tool input text here.")
+    } else {
+        format!(
+            "{}\n\nThis is a FREEFORM tool. Do not wrap the input in JSON or markdown.",
+            description.trim()
+        )
+    };
+    json!({
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "input": {
+                        "type": "string",
+                        "description": "Raw freeform input for this custom tool."
+                    }
+                },
+                "required": ["input"]
+            }
+        }
+    })
+}
+
+fn apply_patch_proxy_tools(name: &str, description: &str) -> Vec<Value> {
+    vec![
+        function_tool(
+            &format!("{name}_add_file"),
+            &patch_proxy_description(
+                description,
+                "add_file",
+                "Create one new file by providing a target path and full file content.",
+            ),
+            apply_patch_add_file_schema(),
+        ),
+        function_tool(
+            &format!("{name}_delete_file"),
+            &patch_proxy_description(
+                description,
+                "delete_file",
+                "Delete one file by providing a target path.",
+            ),
+            apply_patch_delete_file_schema(),
+        ),
+        function_tool(
+            &format!("{name}_update_file"),
+            &patch_proxy_description(
+                description,
+                "update_file",
+                "Edit one existing file with structured hunks.",
+            ),
+            apply_patch_update_file_schema(),
+        ),
+        function_tool(
+            &format!("{name}_replace_file"),
+            &patch_proxy_description(
+                description,
+                "replace_file",
+                "Replace one existing file by providing a target path and full new file content.",
+            ),
+            apply_patch_replace_file_schema(),
+        ),
+        function_tool(
+            &format!("{name}_batch"),
+            &patch_proxy_description(
+                description,
+                "batch",
+                "Edit files by providing structured JSON patch operations.",
+            ),
+            apply_patch_batch_schema(),
+        ),
+    ]
+}
+
+fn function_tool(name: &str, description: &str, parameters: Value) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": parameters
+        }
+    })
+}
+
+fn patch_proxy_description(description: &str, action: &str, default_description: &str) -> String {
+    if description.trim().is_empty() {
+        default_description.to_string()
+    } else {
+        format!("{} (proxy action: {action})", description.trim())
+    }
+}
+
+fn apply_patch_add_file_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "path": { "type": "string", "description": "Target file path." },
+            "content": { "type": "string", "description": "Full file content without patch '+' prefixes." }
+        },
+        "required": ["path", "content"]
+    })
+}
+
+fn apply_patch_delete_file_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "path": { "type": "string", "description": "Target file path." }
+        },
+        "required": ["path"]
+    })
+}
+
+fn apply_patch_update_file_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "path": { "type": "string", "description": "Target file path." },
+            "move_to": { "type": "string", "description": "Optional destination path for move operations." },
+            "hunks": apply_patch_hunks_schema()
+        },
+        "required": ["path", "hunks"]
+    })
+}
+
+fn apply_patch_replace_file_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "path": { "type": "string", "description": "Target file path." },
+            "content": { "type": "string", "description": "Full replacement content." }
+        },
+        "required": ["path", "content"]
+    })
+}
+
+fn apply_patch_batch_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "operations": {
+                "type": "array",
+                "description": "Ordered list of file patch operations.",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "type": "string", "enum": ["add_file", "delete_file", "update_file", "replace_file"] },
+                        "path": { "type": "string" },
+                        "move_to": { "type": "string", "description": "Optional destination path for move operations (update_file only)." },
+                        "content": { "type": "string", "description": "Full file content for add_file / replace_file." },
+                        "hunks": apply_patch_hunks_schema()
+                    },
+                    "required": ["type", "path"]
+                }
+            }
+        },
+        "required": ["operations"]
+    })
+}
+
+fn apply_patch_hunks_schema() -> Value {
+    json!({
+        "type": "array",
+        "description": "Structured update hunks (required when type=update_file).",
+        "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "context": { "type": "string", "description": "Optional @@ context header text." },
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "op": { "type": "string", "enum": ["context", "add", "remove"] },
+                            "text": { "type": "string" }
+                        },
+                        "required": ["op", "text"]
+                    }
+                }
+            },
+            "required": ["lines"]
+        }
+    })
+}
+
+fn proxy_action_from_upstream_name(name: &str) -> Option<CodexPatchProxyAction> {
+    if name.ends_with("_add_file") {
+        Some(CodexPatchProxyAction::AddFile)
+    } else if name.ends_with("_delete_file") {
+        Some(CodexPatchProxyAction::DeleteFile)
+    } else if name.ends_with("_update_file") {
+        Some(CodexPatchProxyAction::UpdateFile)
+    } else if name.ends_with("_replace_file") {
+        Some(CodexPatchProxyAction::ReplaceFile)
+    } else if name.ends_with("_batch") {
+        Some(CodexPatchProxyAction::Batch)
+    } else {
+        None
+    }
+}
+
+fn combine_namespace_description(namespace_description: &str, child_description: &str) -> String {
+    let namespace_description = namespace_description.trim();
+    let child_description = child_description.trim();
+    match (
+        namespace_description.is_empty(),
+        child_description.is_empty(),
+    ) {
+        (true, true) => String::new(),
+        (true, false) => child_description.to_string(),
+        (false, true) => namespace_description.to_string(),
+        (false, false) => format!("{namespace_description}\n\n{child_description}"),
+    }
+}
+
+fn flatten_namespace_tool_name(namespace: &str, name: &str) -> String {
+    if namespace.is_empty() {
+        return name.to_string();
+    }
+    if name.is_empty() {
+        return namespace.to_string();
+    }
+    if namespace.ends_with("__") || name.starts_with("__") {
+        format!("{namespace}{name}")
+    } else {
+        format!("{namespace}__{name}")
+    }
+}
+
+fn responses_tool_choice_to_chat(tool_choice: &Value, context: &CodexToolContext) -> Option<Value> {
     match tool_choice {
         Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("function") => {
-            json!({
+            if let Some(namespace) = object.get("namespace").and_then(Value::as_str) {
+                let name = object.get("name").and_then(Value::as_str).unwrap_or("");
+                return Some(json!({
+                    "type": "function",
+                    "function": {
+                        "name": flatten_namespace_tool_name(namespace, name)
+                    }
+                }));
+            }
+            if let Some(function) = object.get("function").and_then(Value::as_object) {
+                if let Some(namespace) = function.get("namespace").and_then(Value::as_str) {
+                    let name = function.get("name").and_then(Value::as_str).unwrap_or("");
+                    return Some(json!({
+                        "type": "function",
+                        "function": {
+                            "name": flatten_namespace_tool_name(namespace, name)
+                        }
+                    }));
+                }
+            }
+            Some(json!({
                 "type": "function",
                 "function": {
                     "name": object.get("name").and_then(Value::as_str).unwrap_or("")
                 }
-            })
+            }))
         }
-        other => other.clone(),
+        Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("custom") => {
+            let name = object.get("name").and_then(Value::as_str)?;
+            let spec = context.custom_tools.get(name)?;
+            let upstream_name = if spec.kind == CodexCustomToolKind::ApplyPatch {
+                format!("{}_batch", spec.openai_name)
+            } else {
+                spec.openai_name.clone()
+            };
+            Some(json!({
+                "type": "function",
+                "function": { "name": upstream_name }
+            }))
+        }
+        other => Some(other.clone()),
     }
 }
 
@@ -1673,19 +2515,33 @@ fn chat_message_to_response_output_item(message: &Value, response_id: &str) -> O
     }))
 }
 
-fn chat_tool_calls_to_response_output_items(message: &Value) -> Vec<Value> {
+fn chat_tool_calls_to_response_output_items(
+    message: &Value,
+    tool_context: &CodexToolContext,
+) -> Vec<Value> {
     let mut output = Vec::new();
     if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
         for (index, tool_call) in tool_calls.iter().enumerate() {
-            output.push(chat_tool_call_to_response_item(tool_call, index));
+            output.push(chat_tool_call_to_response_item(
+                tool_call,
+                index,
+                tool_context,
+            ));
         }
     } else if let Some(function_call) = message.get("function_call") {
-        output.push(chat_legacy_function_call_to_response_item(function_call));
+        output.push(chat_legacy_function_call_to_response_item(
+            function_call,
+            tool_context,
+        ));
     }
     output
 }
 
-fn chat_tool_call_to_response_item(tool_call: &Value, index: usize) -> Value {
+fn chat_tool_call_to_response_item(
+    tool_call: &Value,
+    index: usize,
+    tool_context: &CodexToolContext,
+) -> Value {
     let call_id = tool_call
         .get("id")
         .and_then(Value::as_str)
@@ -1695,17 +2551,13 @@ fn chat_tool_call_to_response_item(tool_call: &Value, index: usize) -> Value {
     let function = tool_call.get("function").unwrap_or(&Value::Null);
     let name = function.get("name").and_then(Value::as_str).unwrap_or("");
     let arguments = responses_arguments_to_chat(function.get("arguments").unwrap_or(&json!({})));
-    json!({
-        "id": format!("fc_{call_id}"),
-        "type": "function_call",
-        "status": "completed",
-        "call_id": call_id,
-        "name": name,
-        "arguments": arguments
-    })
+    response_tool_call_item(&call_id, name, &arguments, tool_context)
 }
 
-fn chat_legacy_function_call_to_response_item(function_call: &Value) -> Value {
+fn chat_legacy_function_call_to_response_item(
+    function_call: &Value,
+    tool_context: &CodexToolContext,
+) -> Value {
     let call_id = function_call
         .get("id")
         .and_then(Value::as_str)
@@ -1717,14 +2569,139 @@ fn chat_legacy_function_call_to_response_item(function_call: &Value) -> Value {
         .unwrap_or("");
     let arguments =
         responses_arguments_to_chat(function_call.get("arguments").unwrap_or(&json!({})));
-    json!({
+    response_tool_call_item(call_id, name, &arguments, tool_context)
+}
+
+fn tool_call_added_item(
+    state: &ToolCallState,
+    output_index: u32,
+    tool_context: &CodexToolContext,
+) -> Value {
+    if tool_context.is_custom_tool_proxy(&state.name) {
+        return json!({
+            "type": "response.output_item.added",
+            "output_index": output_index,
+            "item": {
+                "id": format!("ctc_{}", state.call_id),
+                "type": "custom_tool_call",
+                "status": "in_progress",
+                "call_id": state.call_id,
+                "name": tool_context.original_custom_tool_name(&state.name),
+                "input": ""
+            }
+        });
+    }
+    let (display_name, namespace) = tool_context.openai_name_for_function_tool(&state.name);
+    let mut item = json!({
+        "type": "response.output_item.added",
+        "output_index": output_index,
+        "item": {
+            "id": state.item_id,
+            "type": "function_call",
+            "status": "in_progress",
+            "call_id": state.call_id,
+            "name": display_name,
+            "arguments": ""
+        }
+    });
+    if !namespace.is_empty() {
+        item["item"]["namespace"] = json!(namespace);
+    }
+    item
+}
+
+fn push_tool_call_delta_sse(
+    output: &mut String,
+    state: &ToolCallState,
+    output_index: u32,
+    delta: &str,
+    tool_context: &CodexToolContext,
+) {
+    if tool_context.is_custom_tool_proxy(&state.name) {
+        let _ = delta;
+    } else {
+        push_sse(
+            output,
+            "response.function_call_arguments.delta",
+            json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": state.item_id,
+                "output_index": output_index,
+                "delta": delta
+            }),
+        );
+    }
+}
+
+fn push_tool_call_done_sse(
+    output: &mut String,
+    state: &ToolCallState,
+    output_index: u32,
+    tool_context: &CodexToolContext,
+) {
+    if tool_context.is_custom_tool_proxy(&state.name) {
+        push_sse(
+            output,
+            "response.custom_tool_call_input.delta",
+            json!({
+                "type": "response.custom_tool_call_input.delta",
+                "item_id": format!("ctc_{}", state.call_id),
+                "call_id": state.call_id,
+                "output_index": output_index,
+                "delta": reconstruct_custom_tool_call_input_with_context(
+                    tool_context,
+                    &state.name,
+                    &state.arguments
+                )
+            }),
+        );
+        return;
+    }
+    push_sse(
+        output,
+        "response.function_call_arguments.done",
+        json!({
+            "type": "response.function_call_arguments.done",
+            "item_id": state.item_id,
+            "output_index": output_index,
+            "arguments": state.arguments
+        }),
+    );
+}
+
+fn tool_call_done_item(state: &ToolCallState, tool_context: &CodexToolContext) -> Value {
+    response_tool_call_item(&state.call_id, &state.name, &state.arguments, tool_context)
+}
+
+fn response_tool_call_item(
+    call_id: &str,
+    name: &str,
+    arguments: &str,
+    tool_context: &CodexToolContext,
+) -> Value {
+    if tool_context.is_custom_tool_proxy(name) {
+        return json!({
+            "id": format!("ctc_{call_id}"),
+            "type": "custom_tool_call",
+            "status": "completed",
+            "call_id": call_id,
+            "name": tool_context.original_custom_tool_name(name),
+            "input": reconstruct_custom_tool_call_input_with_context(tool_context, name, arguments)
+        });
+    }
+    let (display_name, namespace) = tool_context.openai_name_for_function_tool(name);
+    let mut item = json!({
         "id": format!("fc_{call_id}"),
         "type": "function_call",
         "status": "completed",
         "call_id": call_id,
-        "name": name,
+        "name": display_name,
         "arguments": arguments
-    })
+    });
+    if !namespace.is_empty() {
+        item["namespace"] = json!(namespace);
+    }
+    item
 }
 
 fn split_leading_think_block(text: &str) -> Option<(String, String)> {
@@ -1763,31 +2740,101 @@ fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
     let Some(usage) = usage.filter(|value| value.is_object() && !value.is_null()) else {
         return default_responses_usage();
     };
-    let input_tokens = usage
+    let mut input_tokens = usage
         .get("prompt_tokens")
         .or_else(|| usage.get("input_tokens"))
+        .or_else(|| usage.get("promptTokenCount"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    let mut input_tokens_include_cache = usage.get("prompt_tokens").is_some();
     let output_tokens = usage
         .get("completion_tokens")
         .or_else(|| usage.get("output_tokens"))
+        .or_else(|| usage.get("candidatesTokenCount"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let mut result = json!({
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": usage
-            .get("total_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(input_tokens + output_tokens)
-    });
-
-    if let Some(cached) = usage
+    let mut cached_tokens = usage
         .pointer("/prompt_tokens_details/cached_tokens")
         .or_else(|| usage.pointer("/input_tokens_details/cached_tokens"))
+        .or_else(|| usage.get("cachedContentTokenCount"))
         .and_then(Value::as_u64)
-    {
-        result["input_tokens_details"] = json!({ "cached_tokens": cached });
+        .unwrap_or(0);
+    let cache_creation = usage
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let cache_creation_5m = usage
+        .get("cache_creation_5m_input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let cache_creation_1h = usage
+        .get("cache_creation_1h_input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let has_claude_cache_fields = usage.get("cache_read_input_tokens").is_some()
+        || usage.get("cache_creation_input_tokens").is_some()
+        || usage.get("cache_creation_5m_input_tokens").is_some()
+        || usage.get("cache_creation_1h_input_tokens").is_some();
+    let has_cache_details = cached_tokens > 0
+        || usage
+            .pointer("/prompt_tokens_details/cached_tokens")
+            .is_some()
+        || usage
+            .pointer("/input_tokens_details/cached_tokens")
+            .is_some();
+
+    if let Some(value) = usage.get("input_tokens").and_then(Value::as_u64) {
+        input_tokens = value;
+        input_tokens_include_cache = false;
+    }
+    if let Some(cache_read) = usage.get("cache_read_input_tokens").and_then(Value::as_u64) {
+        cached_tokens = cache_read;
+    }
+    if let Some(prompt_tokens) = usage.get("promptTokenCount").and_then(Value::as_u64) {
+        cached_tokens = usage
+            .get("cachedContentTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        input_tokens = prompt_tokens.saturating_sub(cached_tokens);
+        input_tokens_include_cache = false;
+    }
+
+    let usage_input_tokens = if input_tokens_include_cache {
+        input_tokens.saturating_sub(
+            cached_tokens
+                + effective_cache_creation_tokens(
+                    cache_creation,
+                    cache_creation_5m,
+                    cache_creation_1h,
+                ),
+        )
+    } else {
+        input_tokens
+    };
+    let should_recalculate_total = usage.get("total_tokens").is_none()
+        || cached_tokens > 0
+        || effective_cache_creation_tokens(cache_creation, cache_creation_5m, cache_creation_1h)
+            > 0
+        || usage.get("promptTokenCount").is_some();
+    let total_tokens = if should_recalculate_total {
+        usage_input_tokens
+            + output_tokens
+            + cached_tokens
+            + effective_cache_creation_tokens(cache_creation, cache_creation_5m, cache_creation_1h)
+    } else {
+        usage
+            .get("total_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(usage_input_tokens + output_tokens)
+    };
+    let mut result = json!({
+        "input_tokens": usage_input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens
+    });
+
+    if !has_claude_cache_fields && has_cache_details && cached_tokens > 0 {
+        result["input_tokens_details"] = json!({ "cached_tokens": cached_tokens });
     }
     if let Some(details) = usage.get("completion_tokens_details") {
         result["output_tokens_details"] = details.clone();
@@ -1798,7 +2845,34 @@ fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
     if let Some(cache_creation) = usage.get("cache_creation_input_tokens") {
         result["cache_creation_input_tokens"] = cache_creation.clone();
     }
+    if let Some(cache_creation) = usage.get("cache_creation_5m_input_tokens") {
+        result["cache_creation_5m_input_tokens"] = cache_creation.clone();
+    }
+    if let Some(cache_creation) = usage.get("cache_creation_1h_input_tokens") {
+        result["cache_creation_1h_input_tokens"] = cache_creation.clone();
+    }
+    let cache_ttl = match (cache_creation_5m > 0, cache_creation_1h > 0) {
+        (true, true) => Some("mixed"),
+        (true, false) => Some("5m"),
+        (false, true) => Some("1h"),
+        (false, false) => None,
+    };
+    if let Some(cache_ttl) = cache_ttl {
+        result["cache_ttl"] = json!(cache_ttl);
+    }
     result
+}
+
+fn effective_cache_creation_tokens(
+    cache_creation: u64,
+    cache_creation_5m: u64,
+    cache_creation_1h: u64,
+) -> u64 {
+    if cache_creation > 0 {
+        cache_creation
+    } else {
+        cache_creation_5m + cache_creation_1h
+    }
 }
 
 fn response_status(finish_reason: Option<&str>) -> &'static str {
@@ -1813,6 +2887,364 @@ fn response_output_text(value: &Value) -> String {
         Value::String(text) => text.clone(),
         Value::Null => String::new(),
         other => canonical_json_string(other),
+    }
+}
+
+fn build_custom_tool_call_history(name: &str, input: &Value) -> (String, String) {
+    let input = response_output_text(input);
+    if name == "apply_patch" || input.starts_with("*** Begin Patch") {
+        let operations = parse_apply_patch_operations(&input);
+        if operations.len() == 1 {
+            let action = operations[0]
+                .get("type")
+                .and_then(Value::as_str)
+                .and_then(single_apply_patch_action)
+                .unwrap_or(CodexPatchProxyAction::Batch);
+            return (
+                format!("{name}_{}", action.suffix()),
+                build_apply_patch_operation_arguments(&operations[0], action),
+            );
+        }
+        return (
+            format!("{name}_batch"),
+            json!({ "operations": operations, "raw_patch": input }).to_string(),
+        );
+    }
+    (name.to_string(), json!({ "input": input }).to_string())
+}
+
+fn reconstruct_custom_tool_call_input_with_context(
+    tool_context: &CodexToolContext,
+    upstream_name: &str,
+    arguments: &str,
+) -> String {
+    if let Some(spec) = tool_context.custom_tools.get(upstream_name) {
+        if spec.kind == CodexCustomToolKind::ApplyPatch {
+            return reconstruct_apply_patch_input(spec.proxy_action, arguments);
+        }
+    }
+    reconstruct_custom_tool_call_input(arguments)
+}
+
+fn reconstruct_custom_tool_call_input(arguments: &str) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(arguments) else {
+        return arguments.to_string();
+    };
+    value
+        .get("input")
+        .map(response_output_text)
+        .unwrap_or_else(|| arguments.to_string())
+}
+
+fn reconstruct_apply_patch_input(action: Option<CodexPatchProxyAction>, arguments: &str) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(arguments) else {
+        return arguments.to_string();
+    };
+    if let Some(raw_patch) = value
+        .get("raw_patch")
+        .or_else(|| value.get("patch"))
+        .or_else(|| value.get("input"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        return raw_patch.to_string();
+    }
+
+    let operations = match action.unwrap_or(CodexPatchProxyAction::Batch) {
+        CodexPatchProxyAction::AddFile => vec![json!({
+            "type": "add_file",
+            "path": value.get("path").and_then(Value::as_str).unwrap_or(""),
+            "content": value.get("content").and_then(Value::as_str).unwrap_or("")
+        })],
+        CodexPatchProxyAction::DeleteFile => vec![json!({
+            "type": "delete_file",
+            "path": value.get("path").and_then(Value::as_str).unwrap_or("")
+        })],
+        CodexPatchProxyAction::UpdateFile => vec![json!({
+            "type": "update_file",
+            "path": value.get("path").and_then(Value::as_str).unwrap_or(""),
+            "move_to": value.get("move_to").and_then(Value::as_str).unwrap_or(""),
+            "hunks": value.get("hunks").cloned().unwrap_or_else(|| json!([]))
+        })],
+        CodexPatchProxyAction::ReplaceFile => vec![json!({
+            "type": "replace_file",
+            "path": value.get("path").and_then(Value::as_str).unwrap_or(""),
+            "content": value.get("content").and_then(Value::as_str).unwrap_or("")
+        })],
+        CodexPatchProxyAction::Batch => value
+            .get("operations")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+    };
+
+    build_apply_patch_text(&operations)
+}
+
+fn build_apply_patch_text(operations: &[Value]) -> String {
+    let mut text = String::from("*** Begin Patch");
+    for operation in operations {
+        let op_type = operation.get("type").and_then(Value::as_str).unwrap_or("");
+        let path = operation.get("path").and_then(Value::as_str).unwrap_or("");
+        match op_type {
+            "add_file" => {
+                text.push_str(&format!("\n*** Add File: {path}"));
+                for line in operation
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .lines()
+                {
+                    text.push_str("\n+");
+                    text.push_str(line);
+                }
+            }
+            "delete_file" => {
+                text.push_str(&format!("\n*** Delete File: {path}"));
+            }
+            "update_file" => {
+                text.push_str(&format!("\n*** Update File: {path}"));
+                if let Some(move_to) = operation.get("move_to").and_then(Value::as_str) {
+                    if !move_to.is_empty() {
+                        text.push_str(&format!("\n*** Move to: {move_to}"));
+                    }
+                }
+                if let Some(hunks) = operation.get("hunks").and_then(Value::as_array) {
+                    for hunk in hunks {
+                        let context = hunk.get("context").and_then(Value::as_str).unwrap_or("");
+                        if context.is_empty() {
+                            text.push_str("\n@@");
+                        } else {
+                            text.push_str(&format!("\n@@ {context}"));
+                        }
+                        if let Some(lines) = hunk.get("lines").and_then(Value::as_array) {
+                            for line in lines {
+                                text.push('\n');
+                                text.push_str(line_op_prefix(
+                                    line.get("op").and_then(Value::as_str).unwrap_or("context"),
+                                ));
+                                text.push_str(
+                                    line.get("text").and_then(Value::as_str).unwrap_or(""),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            "replace_file" => {
+                text.push_str(&format!("\n*** Delete File: {path}"));
+                text.push_str(&format!("\n*** Add File: {path}"));
+                for line in operation
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .lines()
+                {
+                    text.push_str("\n+");
+                    text.push_str(line);
+                }
+            }
+            _ => {}
+        }
+    }
+    text.push_str("\n*** End Patch");
+    text
+}
+
+fn line_op_prefix(op: &str) -> &'static str {
+    match op {
+        "add" => "+",
+        "remove" | "delete" => "-",
+        _ => " ",
+    }
+}
+
+fn parse_apply_patch_operations(input: &str) -> Vec<Value> {
+    let mut operations = Vec::new();
+    let mut current: Option<serde_json::Map<String, Value>> = None;
+    let mut content_lines: Vec<String> = Vec::new();
+    let mut hunks: Vec<Value> = Vec::new();
+    let mut current_hunk: Option<serde_json::Map<String, Value>> = None;
+    let mut hunk_lines: Vec<Value> = Vec::new();
+
+    let flush_hunk = |current_hunk: &mut Option<serde_json::Map<String, Value>>,
+                      hunk_lines: &mut Vec<Value>,
+                      hunks: &mut Vec<Value>| {
+        if let Some(mut hunk) = current_hunk.take() {
+            hunk.insert("lines".to_string(), json!(std::mem::take(hunk_lines)));
+            hunks.push(Value::Object(hunk));
+        }
+    };
+    let flush_operation = |current: &mut Option<serde_json::Map<String, Value>>,
+                           content_lines: &mut Vec<String>,
+                           hunks: &mut Vec<Value>,
+                           operations: &mut Vec<Value>| {
+        if let Some(mut operation) = current.take() {
+            match operation.get("type").and_then(Value::as_str).unwrap_or("") {
+                "add_file" | "replace_file" => {
+                    operation.insert("content".to_string(), json!(content_lines.join("\n")));
+                }
+                "update_file" => {
+                    operation.insert("hunks".to_string(), json!(std::mem::take(hunks)));
+                }
+                _ => {}
+            }
+            content_lines.clear();
+            operations.push(Value::Object(operation));
+        }
+    };
+
+    for raw_line in input.lines() {
+        if raw_line == "*** Begin Patch" || raw_line == "*** End Patch" {
+            continue;
+        }
+        if let Some(path) = raw_line.strip_prefix("*** Add File: ") {
+            flush_hunk(&mut current_hunk, &mut hunk_lines, &mut hunks);
+            flush_operation(
+                &mut current,
+                &mut content_lines,
+                &mut hunks,
+                &mut operations,
+            );
+            current = Some(serde_json::Map::from_iter([
+                ("type".to_string(), json!("add_file")),
+                ("path".to_string(), json!(path)),
+            ]));
+            continue;
+        }
+        if let Some(path) = raw_line.strip_prefix("*** Delete File: ") {
+            flush_hunk(&mut current_hunk, &mut hunk_lines, &mut hunks);
+            flush_operation(
+                &mut current,
+                &mut content_lines,
+                &mut hunks,
+                &mut operations,
+            );
+            current = Some(serde_json::Map::from_iter([
+                ("type".to_string(), json!("delete_file")),
+                ("path".to_string(), json!(path)),
+            ]));
+            continue;
+        }
+        if let Some(path) = raw_line.strip_prefix("*** Update File: ") {
+            flush_hunk(&mut current_hunk, &mut hunk_lines, &mut hunks);
+            flush_operation(
+                &mut current,
+                &mut content_lines,
+                &mut hunks,
+                &mut operations,
+            );
+            current = Some(serde_json::Map::from_iter([
+                ("type".to_string(), json!("update_file")),
+                ("path".to_string(), json!(path)),
+            ]));
+            continue;
+        }
+        if let Some(path) = raw_line.strip_prefix("*** Move to: ") {
+            if let Some(operation) = current.as_mut() {
+                operation.insert("move_to".to_string(), json!(path));
+            }
+            continue;
+        }
+        if raw_line.starts_with("@@") {
+            flush_hunk(&mut current_hunk, &mut hunk_lines, &mut hunks);
+            let context = raw_line.strip_prefix("@@").unwrap_or("").trim().to_string();
+            current_hunk = Some(serde_json::Map::from_iter([(
+                "context".to_string(),
+                json!(context),
+            )]));
+            continue;
+        }
+        if let Some(operation) = current.as_ref() {
+            match operation.get("type").and_then(Value::as_str).unwrap_or("") {
+                "add_file" | "replace_file" => {
+                    if let Some(line) = raw_line.strip_prefix('+') {
+                        content_lines.push(line.to_string());
+                    }
+                }
+                "update_file" => {
+                    let (op, text) = match raw_line.chars().next() {
+                        Some('+') => ("add", &raw_line[1..]),
+                        Some('-') => ("remove", &raw_line[1..]),
+                        Some(' ') => ("context", &raw_line[1..]),
+                        _ => ("context", raw_line),
+                    };
+                    hunk_lines.push(json!({ "op": op, "text": text }));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    flush_hunk(&mut current_hunk, &mut hunk_lines, &mut hunks);
+    flush_operation(
+        &mut current,
+        &mut content_lines,
+        &mut hunks,
+        &mut operations,
+    );
+    operations
+}
+
+fn single_apply_patch_action(op_type: &str) -> Option<CodexPatchProxyAction> {
+    match op_type {
+        "add_file" => Some(CodexPatchProxyAction::AddFile),
+        "delete_file" => Some(CodexPatchProxyAction::DeleteFile),
+        "update_file" => Some(CodexPatchProxyAction::UpdateFile),
+        "replace_file" => Some(CodexPatchProxyAction::ReplaceFile),
+        _ => None,
+    }
+}
+
+fn build_apply_patch_operation_arguments(
+    operation: &Value,
+    action: CodexPatchProxyAction,
+) -> String {
+    match action {
+        CodexPatchProxyAction::AddFile | CodexPatchProxyAction::ReplaceFile => json!({
+            "content": operation.get("content").and_then(Value::as_str).unwrap_or(""),
+            "path": operation.get("path").and_then(Value::as_str).unwrap_or("")
+        })
+        .to_string(),
+        CodexPatchProxyAction::DeleteFile => json!({
+            "path": operation.get("path").and_then(Value::as_str).unwrap_or("")
+        })
+        .to_string(),
+        CodexPatchProxyAction::UpdateFile => {
+            let mut args = json!({
+                "hunks": operation.get("hunks").cloned().unwrap_or_else(|| json!([])),
+                "path": operation.get("path").and_then(Value::as_str).unwrap_or("")
+            });
+            if let Some(move_to) = operation.get("move_to").and_then(Value::as_str) {
+                if !move_to.is_empty() {
+                    args["move_to"] = json!(move_to);
+                }
+            }
+            args.to_string()
+        }
+        CodexPatchProxyAction::Batch => json!({ "operations": [operation.clone()] }).to_string(),
+    }
+}
+
+fn copy_response_request_fields(response: &mut Value, original_request: Option<&Value>) {
+    let Some(original_request) = original_request else {
+        return;
+    };
+    for key in [
+        "instructions",
+        "max_output_tokens",
+        "parallel_tool_calls",
+        "previous_response_id",
+        "reasoning",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_p",
+        "metadata",
+    ] {
+        if let Some(value) = original_request.get(key) {
+            response[key] = value.clone();
+        }
     }
 }
 
@@ -1872,6 +3304,19 @@ fn supports_reasoning_effort(model: &str) -> bool {
             .strip_prefix("gpt-")
             .and_then(|rest| rest.chars().next())
             .is_some_and(|ch| ch.is_ascii_digit() && ch >= '5')
+}
+
+fn normalize_reasoning_effort(effort: &str) -> &str {
+    match effort {
+        "minimal" => "low",
+        "none" => "none",
+        "auto" => "auto",
+        "low" => "low",
+        "medium" => "medium",
+        "high" => "high",
+        "xhigh" => "xhigh",
+        _ => "auto",
+    }
 }
 
 fn is_openai_o_series(model: &str) -> bool {

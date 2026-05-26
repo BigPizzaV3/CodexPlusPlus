@@ -86,10 +86,43 @@ pub struct RelayFilesPayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SettingsBackfillPayload {
+    pub settings: BackendSettings,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextEntriesPayload {
+    pub settings: BackendSettings,
+    pub entries: codex_plus_core::relay_config::CodexContextEntries,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveContextEntriesPayload {
+    pub entries: codex_plus_core::relay_config::CodexContextEntries,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractRelayCommonConfigPayload {
+    pub common_config_contents: String,
+    pub profile_config_contents: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RelayProfileTestPayload {
     pub http_status: u16,
     pub endpoint: String,
     pub response_preview: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayProfileModelsPayload {
+    pub models: Vec<String>,
+    pub endpoint: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -97,6 +130,42 @@ pub struct RelayProfileTestPayload {
 pub struct SaveRelayFileRequest {
     pub kind: String,
     pub contents: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackfillRelayProfileRequest {
+    pub settings: BackendSettings,
+    pub profile_id: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextSettingsRequest {
+    pub settings: BackendSettings,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextEntryRequest {
+    pub settings: BackendSettings,
+    pub kind: String,
+    pub id: String,
+    pub toml_body: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextDeleteRequest {
+    pub settings: BackendSettings,
+    pub kind: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractRelayCommonConfigRequest {
+    pub config_contents: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -331,14 +400,14 @@ pub fn load_ccs_providers() -> CommandResult<CcsProvidersPayload> {
     let db_path = codex_plus_core::ccs_import::default_ccs_db_path();
     match codex_plus_core::ccs_import::list_codex_providers_from_db(&db_path) {
         Ok(providers) => ok(
-            &format!("已读取 CCS Codex 供应商：{} 个。", providers.len()),
+            &format!("已读取外部 Codex 供应商配置：{} 个。", providers.len()),
             CcsProvidersPayload {
                 db_path: db_path.to_string_lossy().to_string(),
                 providers,
             },
         ),
         Err(error) => failed(
-            &format!("读取 CCS 供应商失败：{error}"),
+            &format!("读取外部供应商配置失败：{error}"),
             CcsProvidersPayload {
                 db_path: db_path.to_string_lossy().to_string(),
                 providers: Vec::new(),
@@ -355,7 +424,7 @@ pub fn import_ccs_providers() -> CommandResult<SettingsPayload> {
             let payload = settings_payload_value()
                 .map(|payload| payload)
                 .unwrap_or_else(|(_, payload)| payload);
-            return failed(&format!("读取 CCS 供应商失败：{error}"), payload);
+            return failed(&format!("读取外部供应商配置失败：{error}"), payload);
         }
     };
 
@@ -386,16 +455,16 @@ pub fn import_ccs_providers() -> CommandResult<SettingsPayload> {
     }
 
     if imported == 0 {
-        return settings_payload("没有新的 CCSwitch 供应商需要导入。", "设置读取失败");
+        return settings_payload("没有新的供应商配置需要导入。", "设置读取失败");
     }
 
     match store.save(&settings) {
         Ok(()) => settings_payload(
-            &format!("已导入 CCSwitch 供应商：{imported} 个。"),
-            "导入 CCSwitch 供应商后重新读取设置失败",
+            &format!("已导入供应商配置：{imported} 个。"),
+            "导入供应商配置后重新读取设置失败",
         ),
         Err(error) => failed(
-            &format!("保存 CCS 供应商失败：{error}"),
+            &format!("保存外部供应商配置失败：{error}"),
             settings_payload_value()
                 .map(|payload| payload)
                 .unwrap_or_else(|(_, payload)| payload),
@@ -421,7 +490,186 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
     {
         settings.codex_app_path = path.to_string_lossy().to_string();
     }
+    settings.relay_common_config_contents =
+        codex_plus_core::relay_config::sanitize_common_config_contents(
+            &settings.relay_common_config_contents,
+        );
+    let (common_without_context, extracted_context) =
+        split_relay_context_config_sections(&settings.relay_common_config_contents);
+    settings.relay_common_config_contents = common_without_context;
+    settings.relay_context_config_contents =
+        relay_join_config_sections(&[&settings.relay_context_config_contents, &extracted_context]);
+    settings.relay_context_config_contents =
+        codex_plus_core::relay_config::sanitize_common_config_contents(
+            &settings.relay_context_config_contents,
+        );
+    for profile in &mut settings.relay_profiles {
+        if let Err(error) =
+            codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
+        {
+            log_manager_event(
+                "manager.normalize_relay_profile_for_storage.failed",
+                json!({
+                    "profileId": profile.id,
+                    "profileName": profile.name,
+                    "error": error.to_string()
+                }),
+            );
+        }
+    }
+    let common_config = relay_combined_common_config(&settings);
+    if !common_config.trim().is_empty() {
+        for profile in &mut settings.relay_profiles {
+            if !profile.use_common_config || profile.config_contents.trim().is_empty() {
+                continue;
+            }
+            match codex_plus_core::relay_config::strip_common_config_from_config(
+                &profile.config_contents,
+                &common_config,
+            ) {
+                Ok(stripped) => {
+                    profile.config_contents =
+                        strip_common_config_text_fallback(&stripped, &common_config);
+                }
+                Err(_) => {
+                    profile.config_contents =
+                        strip_common_config_text_fallback(&profile.config_contents, &common_config);
+                }
+            }
+        }
+    }
     settings
+}
+
+fn relay_combined_common_config(settings: &BackendSettings) -> String {
+    relay_join_config_sections(&[
+        &settings.relay_common_config_contents,
+        &settings.relay_context_config_contents,
+    ])
+}
+
+fn relay_join_config_sections(sections: &[&str]) -> String {
+    let sections = sections
+        .iter()
+        .map(|section| section.trim())
+        .filter(|section| !section.is_empty())
+        .collect::<Vec<_>>();
+    if sections.is_empty() {
+        String::new()
+    } else {
+        codex_plus_core::relay_config::normalize_config_text(&format!(
+            "{}\n",
+            sections.join("\n\n")
+        ))
+    }
+}
+
+fn split_relay_context_config_sections(config: &str) -> (String, String) {
+    let mut common = Vec::new();
+    let mut context = Vec::new();
+    let mut in_context_table = false;
+
+    for line in config.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_context_table = trimmed.starts_with("[mcp_servers.")
+                || trimmed.starts_with("[skills.")
+                || trimmed.starts_with("[plugins.");
+        }
+        if in_context_table {
+            context.push(line);
+        } else {
+            common.push(line);
+        }
+    }
+
+    (
+        relay_join_config_sections(&[&common.join("\n")]),
+        relay_join_config_sections(&[&context.join("\n")]),
+    )
+}
+
+fn strip_common_config_text_fallback(config_contents: &str, common_config: &str) -> String {
+    let common = common_config_anchors(common_config);
+    if common.root_keys.is_empty() && common.table_headers.is_empty() {
+        return ensure_text_newline(config_contents.trim_end());
+    }
+
+    let mut kept = Vec::new();
+    let mut skipping_table = false;
+
+    for line in config_contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let header = trimmed.to_string();
+            skipping_table = common.table_headers.contains(&header);
+            if skipping_table {
+                continue;
+            }
+        }
+
+        if skipping_table {
+            continue;
+        }
+
+        if let Some(key) = toml_key_from_line(trimmed) {
+            if common.root_keys.contains(key) {
+                continue;
+            }
+        }
+
+        kept.push(line);
+    }
+
+    ensure_text_newline(kept.join("\n").trim_end())
+}
+
+struct CommonConfigAnchors {
+    root_keys: std::collections::HashSet<String>,
+    table_headers: std::collections::HashSet<String>,
+}
+
+fn common_config_anchors(common_config: &str) -> CommonConfigAnchors {
+    let mut root_keys = std::collections::HashSet::new();
+    let mut table_headers = std::collections::HashSet::new();
+    let mut in_table = false;
+
+    for line in common_config.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_table = true;
+            table_headers.insert(trimmed.to_string());
+            continue;
+        }
+        if !in_table {
+            if let Some(key) = toml_key_from_line(trimmed) {
+                root_keys.insert(key.to_string());
+            }
+        }
+    }
+
+    CommonConfigAnchors {
+        root_keys,
+        table_headers,
+    }
+}
+
+fn toml_key_from_line(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let (key, _) = trimmed.split_once('=')?;
+    let key = key.trim();
+    if key.is_empty() { None } else { Some(key) }
+}
+
+fn ensure_text_newline(value: &str) -> String {
+    if value.trim().is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", value.trim_end())
+    }
 }
 
 #[tauri::command]
@@ -822,6 +1070,257 @@ pub fn save_relay_file(request: SaveRelayFileRequest) -> CommandResult<RelayFile
 }
 
 #[tauri::command]
+pub fn write_diagnostic_event(event: String, detail: Value) -> CommandResult<Value> {
+    let event = sanitize_manager_event(&event);
+    match codex_plus_core::diagnostic_log::append_diagnostic_log(&event, detail) {
+        Ok(()) => ok("诊断日志已写入。", json!({})),
+        Err(error) => failed(&format!("写入诊断日志失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub fn backfill_relay_profile_from_live(
+    request: BackfillRelayProfileRequest,
+) -> CommandResult<SettingsBackfillPayload> {
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let mut settings = request.settings;
+    let requested_profile_id = request.profile_id.clone();
+    log_manager_event(
+        "manager.backfill_relay_profile_from_live.start",
+        json!({
+            "profileId": requested_profile_id,
+            "activeRelayId": settings.active_relay_id
+        }),
+    );
+    let Some(profile) = settings
+        .relay_profiles
+        .iter_mut()
+        .find(|profile| profile.id == request.profile_id)
+    else {
+        log_manager_event(
+            "manager.backfill_relay_profile_from_live.missing_profile",
+            json!({
+                "profileId": requested_profile_id
+            }),
+        );
+        return failed(
+            "当前供应商已不在配置列表中，已停止切换以避免覆盖用户改动。",
+            SettingsBackfillPayload { settings },
+        );
+    };
+
+    match codex_plus_core::relay_config::backfill_relay_profile_from_home_with_common(
+        &home,
+        profile,
+        &mut settings.relay_context_config_contents,
+    ) {
+        Ok(()) => {
+            log_manager_event(
+                "manager.backfill_relay_profile_from_live.ok",
+                json!({
+                    "profileId": requested_profile_id
+                }),
+            );
+            ok(
+                "当前供应商配置已从 live 文件回填。",
+                SettingsBackfillPayload { settings },
+            )
+        }
+        Err(error) => {
+            log_manager_event(
+                "manager.backfill_relay_profile_from_live.failed",
+                json!({
+                    "profileId": requested_profile_id,
+                    "error": error.to_string()
+                }),
+            );
+            failed(
+                &format!("回填当前供应商配置失败：{error}"),
+                SettingsBackfillPayload { settings },
+            )
+        }
+    }
+}
+
+#[tauri::command]
+pub fn list_context_entries(
+    request: ContextSettingsRequest,
+) -> CommandResult<ContextEntriesPayload> {
+    match codex_plus_core::relay_config::list_context_entries_from_common_config(
+        &request.settings.relay_context_config_contents,
+    ) {
+        Ok(entries) => ok(
+            "工具与插件列表已读取。",
+            ContextEntriesPayload {
+                settings: request.settings,
+                entries,
+            },
+        ),
+        Err(error) => failed(
+            &format!("读取工具与插件列表失败：{error}"),
+            ContextEntriesPayload {
+                settings: request.settings,
+                entries: empty_context_entries(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn read_live_context_entries() -> CommandResult<LiveContextEntriesPayload> {
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let config_path = home.join("config.toml");
+    let config = read_optional_text_file(&config_path).unwrap_or_default();
+    match codex_plus_core::relay_config::list_context_entries_from_common_config(&config) {
+        Ok(entries) => ok(
+            "live 工具与插件已读取。",
+            LiveContextEntriesPayload { entries },
+        ),
+        Err(error) => failed(
+            &format!("读取 live 工具与插件失败：{error}"),
+            LiveContextEntriesPayload {
+                entries: empty_context_entries(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn upsert_context_entry(request: ContextEntryRequest) -> CommandResult<ContextEntriesPayload> {
+    let mut settings = request.settings;
+    match codex_plus_core::relay_config::upsert_context_entry_in_common_config(
+        &settings.relay_context_config_contents,
+        &request.kind,
+        &request.id,
+        &request.toml_body,
+    ) {
+        Ok(common) => {
+            settings.relay_context_config_contents = common;
+            list_context_entries(ContextSettingsRequest { settings })
+        }
+        Err(error) => failed(
+            &format!("保存工具与插件失败：{error}"),
+            ContextEntriesPayload {
+                settings,
+                entries: empty_context_entries(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn sync_live_context_entries(
+    request: ContextSettingsRequest,
+) -> CommandResult<LiveContextEntriesPayload> {
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let config_path = home.join("config.toml");
+    let current_config = match read_optional_text_file(&config_path) {
+        Ok(config) => config,
+        Err(error) => {
+            return failed(
+                &format!("读取 live config.toml 失败：{error}"),
+                LiveContextEntriesPayload {
+                    entries: empty_context_entries(),
+                },
+            );
+        }
+    };
+    let updated_config = match codex_plus_core::relay_config::sync_live_config_context_entries(
+        &current_config,
+        &request.settings.relay_context_config_contents,
+    ) {
+        Ok(config) => config,
+        Err(error) => {
+            return failed(
+                &format!("同步 live 工具与插件失败：{error}"),
+                LiveContextEntriesPayload {
+                    entries: empty_context_entries(),
+                },
+            );
+        }
+    };
+    if let Some(parent) = config_path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            return failed(
+                &format!("创建 Codex 配置目录失败：{error}"),
+                LiveContextEntriesPayload {
+                    entries: empty_context_entries(),
+                },
+            );
+        }
+    }
+    if let Err(error) = std::fs::write(&config_path, &updated_config) {
+        return failed(
+            &format!("写入 live config.toml 失败：{error}"),
+            LiveContextEntriesPayload {
+                entries: empty_context_entries(),
+            },
+        );
+    }
+    match codex_plus_core::relay_config::list_context_entries_from_common_config(&updated_config) {
+        Ok(entries) => ok(
+            "live 工具与插件已同步。",
+            LiveContextEntriesPayload { entries },
+        ),
+        Err(error) => failed(
+            &format!("读取同步后的 live 工具与插件失败：{error}"),
+            LiveContextEntriesPayload {
+                entries: empty_context_entries(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn delete_context_entry(request: ContextDeleteRequest) -> CommandResult<ContextEntriesPayload> {
+    let mut settings = request.settings;
+    match codex_plus_core::relay_config::delete_context_entry_from_common_config(
+        &settings.relay_context_config_contents,
+        &request.kind,
+        &request.id,
+    ) {
+        Ok(common) => {
+            settings.relay_context_config_contents = common;
+            list_context_entries(ContextSettingsRequest { settings })
+        }
+        Err(error) => failed(
+            &format!("删除工具与插件失败：{error}"),
+            ContextEntriesPayload {
+                settings,
+                entries: empty_context_entries(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn extract_relay_common_config(
+    request: ExtractRelayCommonConfigRequest,
+) -> CommandResult<ExtractRelayCommonConfigPayload> {
+    match codex_plus_core::relay_config::extract_common_config_from_config(&request.config_contents)
+        .and_then(|common_config_contents| {
+            let profile_config_contents =
+                codex_plus_core::relay_config::strip_common_config_from_config(
+                    &request.config_contents,
+                    &common_config_contents,
+                )?;
+            Ok(ExtractRelayCommonConfigPayload {
+                common_config_contents,
+                profile_config_contents,
+            })
+        }) {
+        Ok(payload) => ok("通用配置已按兼容切换规则提取。", payload),
+        Err(error) => failed(
+            &format!("提取通用配置失败：{error}"),
+            ExtractRelayCommonConfigPayload {
+                common_config_contents: String::new(),
+                profile_config_contents: request.config_contents,
+            },
+        ),
+    }
+}
+
+#[tauri::command]
 pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayProfileTestPayload> {
     let profile_name = if profile.name.trim().is_empty() {
         "未命名供应商"
@@ -872,26 +1371,103 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
 }
 
 #[tauri::command]
+pub async fn fetch_relay_profile_models(
+    profile: RelayProfile,
+) -> CommandResult<RelayProfileModelsPayload> {
+    let profile_name = if profile.name.trim().is_empty() {
+        "未命名供应商"
+    } else {
+        profile.name.trim()
+    };
+    match codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&profile).await {
+        Ok((models, endpoint)) => ok(
+            &format!("已从「{profile_name}」获取 {} 个模型。", models.len()),
+            RelayProfileModelsPayload { models, endpoint },
+        ),
+        Err(error) => failed(
+            &format!("从「{profile_name}」获取模型失败：{error}"),
+            RelayProfileModelsPayload {
+                models: Vec::new(),
+                endpoint: String::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
 pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
-    if relay_has_complete_files(&relay) {
-        return match codex_plus_core::relay_config::apply_relay_files_to_home(
+    if relay.config_contents.trim().is_empty() == false
+        && relay.relay_mode == codex_plus_core::settings::RelayMode::Official
+        && relay.official_mix_api_key
+    {
+        return match codex_plus_core::relay_config::apply_relay_profile_config_to_home_with_context(
             &home,
-            &relay.config_contents,
-            &relay.auth_contents,
+            &relay,
+            &relay_combined_common_config(&settings),
         ) {
             Ok(result) => {
                 let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+                log_relay_apply_result(
+                    "manager.apply_relay_injection.ok",
+                    &relay,
+                    &status,
+                    result.backup_path.as_ref(),
+                    None,
+                );
                 ok(
-                    "已切换到当前中转的完整 config.toml / auth.json。",
+                    "已切换到当前供应商 config.toml，并保留官方 auth.json。",
                     relay_payload(status, result.backup_path),
                 )
             }
             Err(error) => {
                 let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+                log_relay_apply_result(
+                    "manager.apply_relay_injection.failed",
+                    &relay,
+                    &status,
+                    None,
+                    Some(error.to_string()),
+                );
+                failed(
+                    &format!("切换官方混入配置失败：{error}"),
+                    relay_payload(status, None),
+                )
+            }
+        };
+    }
+    if relay_has_complete_files(&relay) {
+        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
+            &home,
+            &relay,
+            &relay_combined_common_config(&settings),
+        ) {
+            Ok(result) => {
+                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+                log_relay_apply_result(
+                    "manager.apply_relay_injection.ok",
+                    &relay,
+                    &status,
+                    result.backup_path.as_ref(),
+                    None,
+                );
+                ok(
+                    "已按兼容切换规则切换供应商。",
+                    relay_payload(status, result.backup_path),
+                )
+            }
+            Err(error) => {
+                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+                log_relay_apply_result(
+                    "manager.apply_relay_injection.failed",
+                    &relay,
+                    &status,
+                    None,
+                    Some(error.to_string()),
+                );
                 failed(
                     &format!("切换完整中转配置失败：{error}"),
                     relay_payload(status, None),
@@ -903,6 +1479,13 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     let auth = codex_plus_core::relay_config::chatgpt_auth_status_from_home(&home);
     if !auth.authenticated {
         let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+        log_relay_apply_result(
+            "manager.apply_relay_injection.failed",
+            &relay,
+            &status,
+            None,
+            Some("未检测到 ChatGPT 登录状态".to_string()),
+        );
         return failed(
             "未检测到 ChatGPT 登录状态，已停止写入中转配置。",
             relay_payload(status, None),
@@ -918,6 +1501,13 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     ) {
         Ok(result) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+            log_relay_apply_result(
+                "manager.apply_relay_injection.ok",
+                &relay,
+                &status,
+                result.backup_path.as_ref(),
+                None,
+            );
             ok(
                 "中转配置已写入，密钥未在界面明文显示。",
                 relay_payload(status, result.backup_path),
@@ -925,6 +1515,13 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         }
         Err(error) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+            log_relay_apply_result(
+                "manager.apply_relay_injection.failed",
+                &relay,
+                &status,
+                None,
+                Some(error.to_string()),
+            );
             failed(
                 &format!("写入中转配置失败：{error}"),
                 relay_payload(status, None),
@@ -940,20 +1537,40 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_pure_api_injection", &settings, &relay);
     if relay_has_complete_files(&relay) {
-        return match codex_plus_core::relay_config::apply_relay_files_to_home(
+        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
             &home,
-            &relay.config_contents,
-            &relay.auth_contents,
+            &relay,
+            &relay_combined_common_config(&settings),
         ) {
             Ok(result) => {
                 let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+                log_relay_apply_result(
+                    "manager.apply_pure_api_injection.ok",
+                    &relay,
+                    &status,
+                    result.backup_path.as_ref(),
+                    None,
+                );
+                if !status.configured {
+                    return failed(
+                        "纯 API 配置写入后未检测到完整 CodexPlusPlus provider，请检查 config.toml / auth.json。",
+                        relay_payload(status, result.backup_path),
+                    );
+                }
                 ok(
-                    "已切换到当前中转的完整 config.toml / auth.json。",
+                    "已按兼容切换规则切换供应商。",
                     relay_payload(status, result.backup_path),
                 )
             }
             Err(error) => {
                 let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+                log_relay_apply_result(
+                    "manager.apply_pure_api_injection.failed",
+                    &relay,
+                    &status,
+                    None,
+                    Some(error.to_string()),
+                );
                 failed(
                     &format!("切换完整纯 API 配置失败：{error}"),
                     relay_payload(status, None),
@@ -971,13 +1588,33 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
     ) {
         Ok(result) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+            log_relay_apply_result(
+                "manager.apply_pure_api_injection.ok",
+                &relay,
+                &status,
+                result.backup_path.as_ref(),
+                None,
+            );
+            if !status.configured {
+                return failed(
+                    "纯 API 配置写入后未检测到完整 CodexPlusPlus provider，请检查 config.toml / auth.json。",
+                    relay_payload(status, result.backup_path),
+                );
+            }
             ok(
-                "纯 API 模式已写入：auth.json 已切换为 OPENAI_API_KEY，config.toml 已写入 CodexPlusPlus provider。",
+                "纯 API 模式已写入：config.toml 已写入 CodexPlusPlus provider，并保留 auth.json。",
                 relay_payload(status, result.backup_path),
             )
         }
         Err(error) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+            log_relay_apply_result(
+                "manager.apply_pure_api_injection.failed",
+                &relay,
+                &status,
+                None,
+                Some(error.to_string()),
+            );
             failed(
                 &format!("写入纯 API 模式失败：{error}"),
                 relay_payload(status, None),
@@ -989,9 +1626,17 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
 #[tauri::command]
 pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
+    log_manager_event("manager.clear_relay_injection.start", json!({}));
     match codex_plus_core::relay_config::clear_relay_config_to_home(&home) {
         Ok(result) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+            log_manager_event(
+                "manager.clear_relay_injection.ok",
+                json!({
+                    "configured": status.configured,
+                    "backupPath": result.backup_path.as_ref()
+                }),
+            );
             ok(
                 "已清除 CodexPlusPlus 中转 API 模式，并切换到官方 ChatGPT 登录模式。",
                 relay_payload(status, result.backup_path),
@@ -999,6 +1644,13 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
         }
         Err(error) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+            log_manager_event(
+                "manager.clear_relay_injection.failed",
+                json!({
+                    "configured": status.configured,
+                    "error": error.to_string()
+                }),
+            );
             failed(
                 &format!("清除中转配置失败：{error}"),
                 relay_payload(status, None),
@@ -1032,6 +1684,55 @@ fn log_relay_apply_request(
     );
 }
 
+fn log_relay_apply_result(
+    event: &str,
+    relay: &codex_plus_core::settings::RelayProfile,
+    status: &codex_plus_core::relay_config::RelayStatus,
+    backup_path: Option<&String>,
+    error: Option<String>,
+) {
+    log_manager_event(
+        event,
+        json!({
+            "relayId": relay.id,
+            "relayName": relay.name,
+            "relayMode": relay.relay_mode,
+            "protocol": relay.protocol,
+            "configured": status.configured,
+            "requiresOpenaiAuth": status.requires_openai_auth,
+            "hasBearerToken": status.has_bearer_token,
+            "backupPath": backup_path,
+            "error": error
+        }),
+    );
+}
+
+fn log_manager_event(event: &str, detail: Value) {
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(event, detail);
+}
+
+fn sanitize_manager_event(event: &str) -> String {
+    let suffix = event
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let suffix = suffix.trim_matches(['.', '_', '-']).trim();
+    if suffix.is_empty() {
+        "manager.ui.event".to_string()
+    } else if suffix.starts_with("manager.") {
+        suffix.to_string()
+    } else {
+        format!("manager.ui.{suffix}")
+    }
+}
+
 fn refresh_cli_wrapper_after_settings_save(settings: &BackendSettings) -> String {
     match codex_plus_core::cli_wrapper::ensure_cli_wrapper(settings) {
         Ok(Some(install)) => format!(
@@ -1056,6 +1757,14 @@ fn relay_payload(
         requires_openai_auth: status.requires_openai_auth,
         has_bearer_token: status.has_bearer_token,
         backup_path,
+    }
+}
+
+fn empty_context_entries() -> codex_plus_core::relay_config::CodexContextEntries {
+    codex_plus_core::relay_config::CodexContextEntries {
+        mcp_servers: Vec::new(),
+        skills: Vec::new(),
+        plugins: Vec::new(),
     }
 }
 
@@ -1572,6 +2281,180 @@ mod tests {
             "{}\n"
         );
         assert!(save_relay_file_in_home(temp.path(), "../bad", "").is_err());
+    }
+
+    #[test]
+    fn normalize_settings_before_save_preserves_profile_context_until_manual_extract() {
+        let settings = BackendSettings {
+            relay_common_config_contents: "[mcp_servers.context7]\ncommand = \"npx\"\n".to_string(),
+            relay_profiles: vec![RelayProfile {
+                use_common_config: false,
+                config_contents: "model = \"gpt-5\"\n\n[mcp_servers.context7]\ncommand = \"npx\"\n"
+                    .to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        let normalized = normalize_settings_before_save(settings);
+
+        assert!(
+            normalized.relay_profiles[0]
+                .config_contents
+                .contains("model = \"gpt-5\"")
+        );
+        assert!(
+            normalized.relay_profiles[0]
+                .config_contents
+                .contains("[mcp_servers.context7]")
+        );
+        assert!(
+            normalized
+                .relay_context_config_contents
+                .contains("[mcp_servers.context7]")
+        );
+        assert!(
+            !normalized
+                .relay_common_config_contents
+                .contains("[mcp_servers")
+        );
+    }
+
+    #[test]
+    fn normalize_settings_before_save_strips_common_from_enabled_profile() {
+        let settings = BackendSettings {
+            relay_common_config_contents: r#"model_reasoning_effort = "high"
+
+[features]
+goals = true
+
+[plugins."superpowers@openai-curated"]
+enabled = true
+"#
+            .to_string(),
+            relay_profiles: vec![RelayProfile {
+                use_common_config: true,
+                config_contents: r#"model = "gpt-5"
+model_reasoning_effort = "high"
+
+[features]
+goals = true
+model_reasoning_effort = "high"
+
+[plugins."superpowers@openai-curated"]
+enabled = true
+"#
+                .to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        let normalized = normalize_settings_before_save(settings);
+        let config = &normalized.relay_profiles[0].config_contents;
+
+        assert!(config.contains("model = \"gpt-5\""));
+        assert!(!config.contains("model_reasoning_effort"));
+        assert!(!config.contains("[features]"));
+        assert!(!config.contains("[plugins.\"superpowers@openai-curated\"]"));
+    }
+
+    #[test]
+    fn normalize_settings_before_save_repairs_invalid_profile_common_duplication() {
+        let settings = BackendSettings {
+            relay_common_config_contents: r#"model_reasoning_effort = "high"
+
+[marketplaces.openai-bundled]
+last_updated = "2026-05-25T11:52:46Z"
+"#
+            .to_string(),
+            relay_profiles: vec![RelayProfile {
+                use_common_config: true,
+                config_contents: r#"model = "gpt-5"
+model_reasoning_effort = "high"
+
+[marketplaces.openai-bundled]
+last_updated = "2026-05-25T11:52:46Z"
+
+[marketplaces.openai-bundled]
+last_updated = "2026-05-25T11:52:46Z"
+"#
+                .to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        let normalized = normalize_settings_before_save(settings);
+        let config = &normalized.relay_profiles[0].config_contents;
+
+        assert!(config.contains("model = \"gpt-5\""));
+        assert!(!config.contains("model_reasoning_effort"));
+        assert!(!config.contains("[marketplaces.openai-bundled]"));
+    }
+
+    #[test]
+    fn normalize_settings_before_save_removes_model_catalog_from_common_config() {
+        let settings = BackendSettings {
+            relay_common_config_contents: r#"model_catalog_json = "C:\\Users\\Administrator\\.codex\\model-catalogs\\relay-a.json"
+model_catalog_json = 'C:\Users\Administrator\.codex\model-catalogs\relay-b.json'
+model_reasoning_effort = "high"
+"#
+            .to_string(),
+            ..BackendSettings::default()
+        };
+
+        let normalized = normalize_settings_before_save(settings);
+
+        assert!(
+            !normalized
+                .relay_common_config_contents
+                .contains("model_catalog_json")
+        );
+        assert!(
+            normalized
+                .relay_common_config_contents
+                .contains("model_reasoning_effort = \"high\"")
+        );
+    }
+
+    #[test]
+    fn context_entry_commands_update_settings_payload() {
+        let settings = BackendSettings::default();
+        let upsert = upsert_context_entry(ContextEntryRequest {
+            settings: settings.clone(),
+            kind: "mcp".to_string(),
+            id: "context7".to_string(),
+            toml_body: "command = \"npx\"\n".to_string(),
+        });
+
+        assert_eq!(upsert.status, "ok");
+        assert!(
+            upsert
+                .payload
+                .settings
+                .relay_context_config_contents
+                .contains("[mcp_servers.context7]")
+        );
+
+        let listed = list_context_entries(ContextSettingsRequest {
+            settings: upsert.payload.settings.clone(),
+        });
+        assert_eq!(listed.payload.entries.mcp_servers[0].id, "context7");
+
+        let deleted = delete_context_entry(ContextDeleteRequest {
+            settings: upsert.payload.settings,
+            kind: "mcp".to_string(),
+            id: "context7".to_string(),
+        });
+        assert_eq!(deleted.status, "ok");
+        assert!(
+            !deleted
+                .payload
+                .settings
+                .relay_context_config_contents
+                .contains("[mcp_servers.context7]")
+        );
     }
 
     #[test]

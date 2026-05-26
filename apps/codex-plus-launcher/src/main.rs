@@ -163,6 +163,13 @@ impl LaunchHooks for LauncherHooks {
         Ok(())
     }
 
+    async fn apply_active_relay_profile(
+        &self,
+        settings: &codex_plus_core::settings::BackendSettings,
+    ) -> anyhow::Result<()> {
+        self.core.apply_active_relay_profile(settings).await
+    }
+
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
         self.core.start_helper(helper_port).await
     }

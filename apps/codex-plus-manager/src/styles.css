@@ -266,6 +266,7 @@ body {
 }
 
 .screen {
+  position: relative;
   display: grid;
   align-content: start;
   flex: 1 1 auto;
@@ -604,6 +605,12 @@ body {
   gap: 6px;
 }
 
+.relay-profile-card.active .relay-card-extra button:hover,
+.relay-profile-card.active .relay-card-extra button:focus-visible {
+  background: hsl(var(--primary) / 0.18);
+  color: hsl(var(--primary));
+}
+
 .relay-profile-card:hover .relay-card-actions,
 .relay-profile-card:focus-within .relay-card-actions {
   opacity: 1;
@@ -611,15 +618,41 @@ body {
 }
 
 .relay-detail-page {
+  position: absolute;
+  inset: 0;
   display: grid;
+  align-content: start;
   gap: 14px;
+  overflow: auto;
+  background: hsl(var(--background));
+  scrollbar-gutter: stable;
+}
+
+.relay-detail-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin: 0;
+  padding: 10px 20px;
+  background: hsl(var(--background));
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.relay-detail-sticky .toolbar {
+  margin-top: 0;
+  padding-top: 0;
 }
 
 .relay-profile-editor {
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
   background: hsl(var(--background));
+  margin: 0 20px;
   padding: 14px;
+}
+
+.relay-detail-page > .relay-file-grid {
+  margin: 0 20px 24px;
 }
 
 .relay-editor-head,
@@ -661,6 +694,52 @@ body {
 
 .relay-field-test-model {
   grid-column: 1;
+}
+
+.relay-field-config-model {
+  grid-column: 1;
+}
+
+.relay-field-context-window {
+  grid-column: 1;
+}
+
+.relay-field-auto-compact {
+  grid-column: 1;
+}
+
+.relay-field-goals {
+  grid-column: 1;
+}
+
+.relay-advanced-toggle {
+  grid-column: 1;
+}
+
+.relay-advanced-toggle .btn {
+  width: fit-content;
+}
+
+.relay-field-model-mode {
+  grid-column: 1;
+}
+
+.relay-field-model-list {
+  grid-column: 1;
+}
+
+.relay-model-list-tools {
+  display: grid;
+  gap: 8px;
+}
+
+.relay-model-list-tools textarea {
+  min-height: 112px;
+  resize: vertical;
+}
+
+.relay-model-list-tools button {
+  justify-self: start;
 }
 
 .relay-field-official-key {
@@ -749,6 +828,195 @@ body {
 
 .relay-protocol-hint {
   margin-top: 12px;
+}
+
+.relay-context-panel {
+  display: grid;
+  gap: 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  padding: 14px;
+}
+
+.relay-context-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.relay-context-head > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.relay-context-head-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.relay-context-head span,
+.relay-context-summary {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.segmented button {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--secondary) / 0.35);
+  color: hsl(var(--foreground));
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.segmented button.active {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.14);
+}
+
+.segmented small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.relay-context-list {
+  display: grid;
+  gap: 8px;
+}
+
+.relay-context-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--secondary) / 0.18);
+  padding: 8px;
+}
+
+.context-title {
+  min-width: 0;
+  overflow: hidden;
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-context-actions {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.context-enabled-switch {
+  display: inline-flex;
+  width: 46px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: hsl(var(--secondary) / 0.55);
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  padding: 0;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.context-enabled-switch.active {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.2);
+  color: hsl(var(--foreground));
+}
+
+.context-enabled-switch:hover {
+  border-color: hsl(var(--primary));
+  color: hsl(var(--foreground));
+}
+
+.context-switch-track {
+  position: relative;
+  display: inline-flex;
+  width: 28px;
+  height: 16px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: hsl(var(--muted-foreground) / 0.28);
+  transition: background 0.15s ease;
+}
+
+.context-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: hsl(var(--background));
+  box-shadow: 0 1px 3px hsl(var(--foreground) / 0.25);
+  transition: transform 0.15s ease;
+}
+
+.context-enabled-switch.active .context-switch-track {
+  background: hsl(var(--primary));
+}
+
+.context-enabled-switch.active .context-switch-thumb {
+  transform: translateX(12px);
+}
+
+.relay-context-delete {
+  color: hsl(var(--destructive, 0 84% 60%));
+}
+
+.relay-context-delete:hover {
+  background: hsl(var(--destructive, 0 84% 60%) / 0.12);
+  color: hsl(var(--destructive, 0 84% 60%));
+}
+
+.context-editor {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid hsl(var(--border));
+  padding-top: 12px;
+}
+
+.context-editor-fields {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.4fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.context-editor-textarea {
+  min-height: 160px;
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .relay-file-grid {
@@ -1235,7 +1503,8 @@ body {
 .toast-wrap {
   position: fixed;
   top: 16px;
-  right: 16px;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 50;
   width: min(420px, calc(100vw - 32px));
 }
@@ -1329,7 +1598,7 @@ body {
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateY(-8px);
+    transform: translateY(-10px);
   }
 
   to {
@@ -1366,6 +1635,9 @@ body {
   .grid.two,
   .form-row,
   .relay-fields,
+  .segmented,
+  .relay-context-row,
+  .context-editor-fields,
   .relay-file-grid,
   .mode-grid,
   .mode-grid.three,

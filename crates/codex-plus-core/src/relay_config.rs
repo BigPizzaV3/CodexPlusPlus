@@ -1,11 +1,25 @@
+use anyhow::Context;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::settings::{RelayProfile, RelayProtocol};
+use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol};
 
 const RELAY_PROVIDER: &str = "CodexPlusPlus";
+const STABLE_RELAY_PROVIDER: &str = RELAY_PROVIDER;
 const LEGACY_RELAY_PROVIDER: &str = "CodexPP";
+const CHAT_UPSTREAM_BASE_URL_KEY: &str = "codex_plus_chat_base_url";
+const RESERVED_MODEL_PROVIDER_IDS: &[&str] = &[
+    "amazon-bedrock",
+    "openai",
+    "ollama",
+    "lmstudio",
+    "oss",
+    "ollama-chat",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +66,25 @@ pub struct RelayProfileTestResult {
     pub response_preview: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexContextEntry {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub summary: String,
+    pub toml_body: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexContextEntries {
+    pub mcp_servers: Vec<CodexContextEntry>,
+    pub skills: Vec<CodexContextEntry>,
+    pub plugins: Vec<CodexContextEntry>,
+}
+
 pub fn default_codex_home_dir() -> PathBuf {
     directories::BaseDirs::new()
         .map(|dirs| dirs.home_dir().join(".codex"))
@@ -60,6 +93,72 @@ pub fn default_codex_home_dir() -> PathBuf {
 
 pub fn default_relay_status() -> RelayStatus {
     relay_status_from_home(&default_codex_home_dir())
+}
+
+pub fn set_codex_goals_feature_in_home(home: &Path, enabled: bool) -> anyhow::Result<()> {
+    std::fs::create_dir_all(home)?;
+    let config_path = home.join("config.toml");
+    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let updated = match parse_toml_document(&existing) {
+        Ok(mut doc) => {
+            if enabled {
+                let features = table_mut_or_insert(&mut doc, "features")?;
+                features["goals"] = toml_edit::value(true);
+            } else if let Some(features) = table_mut_if_exists(&mut doc, "features") {
+                features.remove("goals");
+                if features.is_empty() {
+                    doc.as_table_mut().remove("features");
+                }
+            }
+            ensure_trailing_newline(doc.to_string())
+        }
+        Err(_) => set_codex_goals_feature_text_fallback(&existing, enabled),
+    };
+    crate::settings::atomic_write(&config_path, updated.as_bytes())
+}
+
+fn set_codex_goals_feature_text_fallback(existing: &str, enabled: bool) -> String {
+    let mut kept = Vec::new();
+    let mut skipping_features = false;
+
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[features]" {
+            skipping_features = true;
+            continue;
+        }
+        if skipping_features && trimmed.starts_with('[') && trimmed.ends_with(']') {
+            skipping_features = false;
+        }
+        if !skipping_features {
+            kept.push(line);
+        }
+    }
+
+    let mut updated = kept.join("\n").trim_end().to_string();
+    if enabled {
+        if !updated.is_empty() {
+            updated.push_str("\n\n");
+        }
+        updated.push_str("[features]\ngoals = true");
+    }
+    ensure_trailing_newline(updated)
+}
+
+fn table_mut_or_insert<'a>(doc: &'a mut DocumentMut, key: &str) -> anyhow::Result<&'a mut Table> {
+    if !doc.as_table().contains_key(key) {
+        doc[key] = toml_edit::table();
+    }
+    if doc.get(key).and_then(Item::as_table).is_none() {
+        doc[key] = toml_edit::table();
+    }
+    doc.get_mut(key)
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| anyhow::anyhow!("{key} 必须是 TOML table"))
+}
+
+fn table_mut_if_exists<'a>(doc: &'a mut DocumentMut, key: &str) -> Option<&'a mut Table> {
+    doc.get_mut(key).and_then(Item::as_table_mut)
 }
 
 pub fn relay_status_from_home(home: &Path) -> RelayStatus {
@@ -98,10 +197,10 @@ pub fn chatgpt_auth_status_from_home(home: &Path) -> ChatGptAuthStatus {
 pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
     let config_path = home.join("config.toml");
     let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let root_provider = root_key_string(&contents, "model_provider")
-        .map(|value| value == RELAY_PROVIDER)
-        .unwrap_or(false);
-    let provider = table_values(&contents, &format!("model_providers.{RELAY_PROVIDER}"));
+    let root_provider = root_key_string(&contents, "model_provider");
+    let provider = root_provider
+        .as_ref()
+        .and_then(|provider| table_values(&contents, &format!("model_providers.{provider}")));
     let requires_openai_auth = provider
         .as_ref()
         .and_then(|values| values.get("requires_openai_auth"))
@@ -119,7 +218,10 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
         .map(|value| !unquote_toml_string(value).trim().is_empty())
         .unwrap_or(false);
     RelayConfigStatus {
-        configured: root_provider && requires_openai_auth && has_bearer_token && has_base_url,
+        configured: root_provider.is_some()
+            && requires_openai_auth
+            && has_bearer_token
+            && has_base_url,
         requires_openai_auth,
         has_bearer_token,
         config_path: config_path.to_string_lossy().to_string(),
@@ -155,16 +257,13 @@ pub fn apply_relay_config_to_home_with_protocol(
     if bearer_token.is_empty() {
         anyhow::bail!("中转 Key 不能为空");
     }
-    std::fs::create_dir_all(home)?;
-    let config_path = home.join("config.toml");
-    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
     let codex_base_url = codex_base_url_for_protocol(base_url, protocol, proxy_port);
-    let updated = upsert_model_provider_config(&existing, &codex_base_url, bearer_token);
-    std::fs::write(&config_path, updated)?;
+    let updated = upsert_model_provider_config("", &codex_base_url, bearer_token)?;
+    let backup_path = write_codex_live_atomic(home, Some(&updated), None)?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
-        backup_path: None,
+        backup_path,
         configured: status.configured,
     })
 }
@@ -193,18 +292,132 @@ pub fn apply_relay_files_to_home(
     }
     std::fs::create_dir_all(home)?;
 
-    let config_path = home.join("config.toml");
-    let auth_path = home.join("auth.json");
-
-    std::fs::write(&config_path, config_contents)?;
-    std::fs::write(&auth_path, auth_contents)?;
+    let config_contents = normalize_live_config_model_provider(home, config_contents)?;
+    let backup_path =
+        write_codex_live_atomic(home, Some(&config_contents), Some(auth_contents.as_bytes()))?;
 
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
-        backup_path: None,
+        backup_path,
         configured: status.configured,
     })
+}
+
+pub fn apply_relay_files_to_home_with_common(
+    home: &Path,
+    config_contents: &str,
+    auth_contents: &str,
+    common_config_contents: &str,
+) -> anyhow::Result<RelayApplyResult> {
+    let config_contents = merge_common_config_into_config(config_contents, common_config_contents)?;
+    apply_relay_files_to_home(home, &config_contents, auth_contents)
+}
+
+pub fn apply_relay_files_to_home_with_context(
+    home: &Path,
+    config_contents: &str,
+    auth_contents: &str,
+    common_config_contents: &str,
+    selection: &RelayContextSelection,
+    context_window: &str,
+    auto_compact_limit: &str,
+) -> anyhow::Result<RelayApplyResult> {
+    let selected_common = filter_common_config_for_selection(common_config_contents, selection)?;
+    let config_with_common = merge_common_config_into_config(config_contents, &selected_common)?;
+    let config_with_limits =
+        apply_context_limits_to_config(&config_with_common, context_window, auto_compact_limit)?;
+    apply_relay_files_to_home(home, &config_with_limits, auth_contents)
+}
+
+pub fn apply_relay_profile_files_to_home_with_context(
+    home: &Path,
+    profile: &RelayProfile,
+    common_config_contents: &str,
+) -> anyhow::Result<RelayApplyResult> {
+    let selected_common = if profile.use_common_config {
+        filter_common_config_for_selection(common_config_contents, &profile.context_selection)?
+    } else {
+        String::new()
+    };
+    let profile_config = complete_relay_profile_config(profile)?;
+    let config_with_common = merge_common_config_into_config(&profile_config, &selected_common)?;
+    let config_with_limits = apply_context_limits_to_config(
+        &config_with_common,
+        &profile.context_window,
+        &profile.auto_compact_limit,
+    )?;
+    apply_relay_files_to_home(home, &config_with_limits, &profile.auth_contents)
+}
+
+pub fn apply_relay_profile_to_home_with_switch_rules(
+    home: &Path,
+    profile: &RelayProfile,
+    common_config_contents: &str,
+) -> anyhow::Result<RelayApplyResult> {
+    let selected_common = if profile.use_common_config {
+        filter_common_config_for_selection(common_config_contents, &profile.context_selection)?
+    } else {
+        String::new()
+    };
+    let profile_config = complete_relay_profile_config(profile)?;
+    let config_with_common = merge_common_config_into_config(&profile_config, &selected_common)?;
+    let config_with_limits = apply_context_limits_to_config(
+        &config_with_common,
+        &profile.context_window,
+        &profile.auto_compact_limit,
+    )?;
+
+    if profile.relay_mode == crate::settings::RelayMode::PureApi {
+        let config_for_live =
+            prepare_provider_live_config_from_auth(&profile.auth_contents, &config_with_limits)?;
+        let auth_for_live = pure_api_auth_for_live(profile, &config_for_live)?;
+        apply_relay_files_to_home(home, &config_for_live, &auth_for_live)
+    } else if profile_should_write_auth_json(profile) {
+        apply_relay_files_to_home(home, &config_with_limits, &profile.auth_contents)
+    } else {
+        let config_for_live =
+            prepare_provider_live_config_from_auth(&profile.auth_contents, &config_with_limits)?;
+        apply_relay_config_file_to_home(home, &config_for_live)
+    }
+}
+
+fn pure_api_auth_for_live(profile: &RelayProfile, config_contents: &str) -> anyhow::Result<String> {
+    if codex_auth_api_key(&profile.auth_contents).is_some() {
+        return Ok(profile.auth_contents.clone());
+    }
+    if let Some(token) = experimental_bearer_token_from_config(config_contents)?
+        .filter(|token| !token.trim().is_empty())
+        .or_else(|| {
+            let token = profile.api_key.trim();
+            (!token.is_empty()).then(|| token.to_string())
+        })
+    {
+        return Ok(serde_json::to_string_pretty(&json!({
+            "OPENAI_API_KEY": token.trim()
+        }))?);
+    }
+    Ok(profile.auth_contents.clone())
+}
+
+pub fn apply_relay_profile_config_to_home_with_context(
+    home: &Path,
+    profile: &RelayProfile,
+    common_config_contents: &str,
+) -> anyhow::Result<RelayApplyResult> {
+    let selected_common = if profile.use_common_config {
+        filter_common_config_for_selection(common_config_contents, &profile.context_selection)?
+    } else {
+        String::new()
+    };
+    let profile_config = complete_relay_profile_config(profile)?;
+    let config_with_common = merge_common_config_into_config(&profile_config, &selected_common)?;
+    let config_with_limits = apply_context_limits_to_config(
+        &config_with_common,
+        &profile.context_window,
+        &profile.auto_compact_limit,
+    )?;
+    apply_relay_config_file_to_home(home, &config_with_limits)
 }
 
 pub fn apply_relay_config_file_to_home(
@@ -216,14 +429,13 @@ pub fn apply_relay_config_file_to_home(
     }
     std::fs::create_dir_all(home)?;
 
-    let config_path = home.join("config.toml");
-
-    std::fs::write(&config_path, config_contents)?;
+    let config_contents = normalize_live_config_model_provider(home, config_contents)?;
+    let backup_path = write_codex_live_atomic(home, Some(&config_contents), None)?;
 
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
-        backup_path: None,
+        backup_path,
         configured: status.configured,
     })
 }
@@ -243,23 +455,14 @@ pub fn apply_pure_api_config_to_home_with_protocol(
     if bearer_token.is_empty() {
         anyhow::bail!("中转 Key 不能为空");
     }
-    std::fs::create_dir_all(home)?;
-
-    let auth_path = home.join("auth.json");
-    let auth_payload = serde_json::json!({
-        "OPENAI_API_KEY": bearer_token
-    });
-    std::fs::write(&auth_path, serde_json::to_vec_pretty(&auth_payload)?)?;
-
-    let config_path = home.join("config.toml");
-    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
     let codex_base_url = codex_base_url_for_protocol(base_url, protocol, proxy_port);
-    let updated = upsert_model_provider_config(&existing, &codex_base_url, bearer_token);
-    std::fs::write(&config_path, updated)?;
+    let updated = upsert_model_provider_config("", &codex_base_url, bearer_token)?;
+    let auth = serde_json::to_vec_pretty(&json!({ "OPENAI_API_KEY": bearer_token }))?;
+    let backup_path = write_codex_live_atomic(home, Some(&updated), Some(&auth))?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
-        backup_path: None,
+        backup_path,
         configured: status.configured,
     })
 }
@@ -268,11 +471,13 @@ pub async fn test_relay_profile(
     profile: &RelayProfile,
     model: &str,
 ) -> anyhow::Result<RelayProfileTestResult> {
-    let base_url = profile.base_url.trim().trim_end_matches('/');
+    let base_url = relay_profile_base_url(profile);
+    let base_url = base_url.trim().trim_end_matches('/');
     if base_url.is_empty() {
         anyhow::bail!("Base URL 不能为空");
     }
-    let api_key = profile.api_key.trim();
+    let api_key = relay_profile_api_key(profile);
+    let api_key = api_key.trim();
     if api_key.is_empty() {
         anyhow::bail!("API Key 不能为空");
     }
@@ -332,45 +537,1293 @@ fn codex_base_url_for_protocol(base_url: &str, protocol: RelayProtocol, proxy_po
 
 pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResult> {
     std::fs::create_dir_all(home)?;
-    clear_pure_api_auth_json(home)?;
+    let auth_bytes = pure_api_auth_json_removed(home)?;
     let config_path = home.join("config.toml");
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let without_relay = remove_root_key(
-        &remove_table(
-            &remove_table(&existing, &format!("model_providers.{RELAY_PROVIDER}")),
-            &format!("model_providers.{LEGACY_RELAY_PROVIDER}"),
-        ),
-        "OPENAI_API_KEY",
+    let without_tables = remove_table(
+        &remove_table(&existing, &format!("model_providers.{RELAY_PROVIDER}")),
+        &format!("model_providers.{LEGACY_RELAY_PROVIDER}"),
     );
-    let updated = remove_root_key(&without_relay, "model_provider");
-    std::fs::write(&config_path, updated)?;
+    let mut updated = without_tables;
+    for key in [
+        "OPENAI_API_KEY",
+        "model_provider",
+        "model_catalog_json",
+        "base_url",
+    ] {
+        updated = remove_root_key(&updated, key);
+    }
+    let backup_path = write_codex_live_atomic(home, Some(&updated), auth_bytes.as_deref())?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
-        backup_path: None,
+        backup_path,
         configured: status.configured,
     })
 }
 
-fn clear_pure_api_auth_json(home: &Path) -> anyhow::Result<()> {
+fn pure_api_auth_json_removed(home: &Path) -> anyhow::Result<Option<Vec<u8>>> {
     let auth_path = home.join("auth.json");
     if !auth_path.exists() {
-        return Ok(());
+        return Ok(None);
     }
 
     let existing = std::fs::read_to_string(&auth_path)?;
     let Ok(mut value) = serde_json::from_str::<Value>(&existing) else {
-        return Ok(());
+        return Ok(None);
     };
     let Some(object) = value.as_object_mut() else {
-        return Ok(());
+        return Ok(None);
     };
     if object.remove("OPENAI_API_KEY").is_none() {
-        return Ok(());
+        return Ok(None);
     }
 
-    std::fs::write(&auth_path, serde_json::to_vec_pretty(&value)?)?;
+    Ok(Some(serde_json::to_vec_pretty(&value)?))
+}
+
+pub fn backfill_relay_profile_from_home(
+    home: &Path,
+    profile: &mut RelayProfile,
+) -> anyhow::Result<()> {
+    profile.config_contents = read_optional_text(&home.join("config.toml"))?;
+    profile.auth_contents = read_optional_text(&home.join("auth.json"))?;
+    if profile.model.trim().is_empty() {
+        if let Some(model) = root_key_string(&profile.config_contents, "model") {
+            profile.model = model;
+        }
+    }
     Ok(())
+}
+
+pub fn backfill_relay_profile_from_home_with_common(
+    home: &Path,
+    profile: &mut RelayProfile,
+    common_config_contents: &mut String,
+) -> anyhow::Result<()> {
+    let live_config = read_optional_text(&home.join("config.toml"))?;
+    let template_config = profile.config_contents.clone();
+    profile.config_contents = if profile.use_common_config {
+        strip_common_config_from_config(&live_config, common_config_contents)?
+    } else {
+        ensure_trailing_newline(live_config.clone())
+    };
+    profile.config_contents =
+        restore_profile_provider_id_for_backfill(&profile.config_contents, &template_config)?;
+    profile.auth_contents = read_optional_text(&home.join("auth.json"))?;
+    restore_profile_auth_from_live_config(profile)?;
+    if profile.model.trim().is_empty() {
+        if let Some(model) = root_key_string(&live_config, "model") {
+            profile.model = model;
+        }
+    }
+    Ok(())
+}
+
+pub fn extract_common_config_from_config(config_text: &str) -> anyhow::Result<String> {
+    let mut doc = parse_toml_document(config_text)?;
+    for key in [
+        "model",
+        "model_provider",
+        "base_url",
+        "model_catalog_json",
+        CHAT_UPSTREAM_BASE_URL_KEY,
+    ] {
+        doc.as_table_mut().remove(key);
+    }
+    doc.as_table_mut().remove("model_providers");
+    Ok(normalize_optional_toml(doc))
+}
+
+pub fn sanitize_common_config_contents(common_config: &str) -> String {
+    match parse_toml_document(common_config) {
+        Ok(mut doc) => {
+            remove_provider_specific_common_keys(doc.as_table_mut());
+            normalize_optional_toml(doc)
+        }
+        Err(_) => sanitize_common_config_text_fallback(common_config),
+    }
+}
+
+pub fn strip_common_config_from_config(
+    config_text: &str,
+    common_config_contents: &str,
+) -> anyhow::Result<String> {
+    let trimmed = common_config_contents.trim();
+    if trimmed.is_empty() {
+        return Ok(normalize_duplicate_toml_text(config_text));
+    }
+
+    match (
+        parse_toml_document(config_text),
+        parse_toml_document(trimmed),
+    ) {
+        (Ok(mut target_doc), Ok(source_doc)) => {
+            remove_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
+            Ok(normalize_optional_toml(target_doc))
+        }
+        _ => Ok(strip_common_config_text_fallback(config_text, trimmed)),
+    }
+}
+
+pub fn merge_common_config_into_config(
+    config_text: &str,
+    common_config_contents: &str,
+) -> anyhow::Result<String> {
+    let sanitized_common = sanitize_common_config_contents(common_config_contents);
+    let trimmed = sanitized_common.trim();
+    if trimmed.is_empty() {
+        return Ok(ensure_trailing_newline(config_text.to_string()));
+    }
+
+    let mut target_doc = parse_toml_document(config_text)?;
+    let source_doc = parse_toml_document(trimmed)?;
+    merge_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
+    Ok(normalize_optional_toml(target_doc))
+}
+
+pub fn list_context_entries_from_common_config(
+    common_config: &str,
+) -> anyhow::Result<CodexContextEntries> {
+    let normalized = normalize_duplicate_toml_text(common_config);
+    let doc = parse_toml_document(&normalized)?;
+    Ok(CodexContextEntries {
+        mcp_servers: list_context_entries_for_table(&doc, "mcp_servers"),
+        skills: list_context_entries_for_table(&doc, "skills"),
+        plugins: list_context_entries_for_table(&doc, "plugins"),
+    })
+}
+
+pub fn upsert_context_entry_in_common_config(
+    common_config: &str,
+    kind: &str,
+    id: &str,
+    toml_body: &str,
+) -> anyhow::Result<String> {
+    let id = id.trim();
+    if id.is_empty() {
+        anyhow::bail!("上下文 id 不能为空");
+    }
+    let table_name = context_table_name(kind)?;
+    let body_doc = parse_toml_document(toml_body)?;
+    let normalized = normalize_duplicate_toml_text(common_config);
+    let mut doc = parse_toml_document(&normalized)?;
+    if !doc.as_table().contains_key(table_name) {
+        doc[table_name] = toml_edit::table();
+    }
+    if doc[table_name].as_table().is_none() {
+        anyhow::bail!("{table_name} 必须是 TOML 表");
+    }
+    doc[table_name][id] = Item::Table(body_doc.as_table().clone());
+    Ok(normalize_optional_toml(doc))
+}
+
+pub fn delete_context_entry_from_common_config(
+    common_config: &str,
+    kind: &str,
+    id: &str,
+) -> anyhow::Result<String> {
+    let table_name = context_table_name(kind)?;
+    let normalized = normalize_duplicate_toml_text(common_config);
+    let mut doc = parse_toml_document(&normalized)?;
+    if let Some(table) = doc[table_name].as_table_mut() {
+        table.remove(id.trim());
+        if table.is_empty() {
+            doc.as_table_mut().remove(table_name);
+        }
+    }
+    Ok(normalize_optional_toml(doc))
+}
+
+pub fn filter_common_config_for_selection(
+    common_config: &str,
+    _selection: &RelayContextSelection,
+) -> anyhow::Result<String> {
+    let sanitized_common = sanitize_common_config_contents(common_config);
+    let mut filtered = parse_toml_document(&sanitized_common)?;
+    remove_disabled_context_tables(filtered.as_table_mut());
+    Ok(normalize_optional_toml(filtered))
+}
+
+pub fn sync_live_config_context_entries(
+    live_config: &str,
+    context_config: &str,
+) -> anyhow::Result<String> {
+    let normalized_live = normalize_duplicate_toml_text(live_config);
+    let normalized_context = normalize_duplicate_toml_text(context_config);
+    let mut live_doc = parse_toml_document(&normalized_live)?;
+    for table_name in ["mcp_servers", "skills", "plugins"] {
+        live_doc.as_table_mut().remove(table_name);
+    }
+    if normalized_context.trim().is_empty() {
+        return Ok(normalize_optional_toml(live_doc));
+    }
+    let mut context_doc = parse_toml_document(&normalized_context)?;
+    remove_disabled_context_tables(context_doc.as_table_mut());
+    for table_name in ["mcp_servers", "skills", "plugins"] {
+        if let Some(item) = context_doc.as_table_mut().remove(table_name) {
+            live_doc[table_name] = item;
+        }
+    }
+    Ok(normalize_optional_toml(live_doc))
+}
+
+fn remove_disabled_context_tables(table: &mut toml_edit::Table) {
+    for table_name in ["mcp_servers", "skills", "plugins"] {
+        let Some(item) = table.get_mut(table_name) else {
+            continue;
+        };
+        let Some(context_table) = item.as_table_mut() else {
+            continue;
+        };
+        let disabled_ids: Vec<String> = context_table
+            .iter()
+            .filter_map(|(id, item)| {
+                let enabled = item.as_table().map(context_entry_enabled).unwrap_or(true);
+                (!enabled).then_some(id.to_string())
+            })
+            .collect();
+        for id in disabled_ids {
+            context_table.remove(&id);
+        }
+    }
+}
+
+fn write_codex_live_atomic(
+    home: &Path,
+    config_text: Option<&str>,
+    auth_bytes: Option<&[u8]>,
+) -> anyhow::Result<Option<String>> {
+    std::fs::create_dir_all(home)?;
+    let config_path = home.join("config.toml");
+    let auth_path = home.join("auth.json");
+
+    if let Some(config_text) = config_text {
+        validate_toml_config(config_text, &config_path)?;
+    }
+    if let Some(auth_bytes) = auth_bytes {
+        validate_auth_json(auth_bytes, &auth_path)?;
+    }
+
+    let old_config = read_optional_bytes(&config_path)?;
+    let old_auth = read_optional_bytes(&auth_path)?;
+    let backup_path = create_live_backup(home, old_config.as_deref(), old_auth.as_deref())?;
+    let mut auth_written = false;
+
+    if let Some(auth_bytes) = auth_bytes {
+        if let Err(error) = crate::settings::atomic_write(&auth_path, auth_bytes) {
+            return Err(error.context("写入 auth.json 失败"));
+        }
+        auth_written = true;
+    }
+
+    if let Some(config_text) = config_text {
+        if let Err(error) = crate::settings::atomic_write(&config_path, config_text.as_bytes()) {
+            if auth_written {
+                let _ = restore_optional_file(&auth_path, old_auth.as_deref());
+            }
+            let _ = restore_optional_file(&config_path, old_config.as_deref());
+            return Err(error.context("写入 config.toml 失败"));
+        }
+    }
+
+    Ok(backup_path)
+}
+
+fn normalize_live_config_model_provider(home: &Path, config_text: &str) -> anyhow::Result<String> {
+    let current_config = read_optional_text(&home.join("config.toml"))?;
+    normalize_config_model_provider(config_text, current_config.as_str())
+}
+
+fn normalize_config_model_provider(
+    config_text: &str,
+    current_config: &str,
+) -> anyhow::Result<String> {
+    let mut doc = parse_toml_document(config_text)?;
+    let Some(target_provider) = active_provider_id(&doc) else {
+        return Ok(ensure_trailing_newline(doc.to_string()));
+    };
+    if !is_custom_provider_id(&target_provider) || !provider_table_exists(&doc, &target_provider) {
+        return Ok(ensure_trailing_newline(doc.to_string()));
+    }
+
+    let stable_provider = STABLE_RELAY_PROVIDER.to_string();
+    if stable_provider == target_provider {
+        return Ok(ensure_trailing_newline(doc.to_string()));
+    }
+
+    let _ = current_config;
+
+    rename_provider_table(&mut doc, &target_provider, &stable_provider);
+    set_provider_id(&mut doc, &stable_provider);
+    rewrite_profile_provider_refs(&mut doc, &target_provider, &stable_provider);
+    Ok(ensure_trailing_newline(doc.to_string()))
+}
+
+fn active_provider_id(doc: &DocumentMut) -> Option<String> {
+    doc.get("model_provider")
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+        .map(ToString::to_string)
+}
+
+fn active_or_default_provider_id(doc: &DocumentMut) -> String {
+    active_provider_id(doc)
+        .filter(|provider| is_custom_provider_id(provider))
+        .unwrap_or_else(|| RELAY_PROVIDER.to_string())
+}
+
+fn is_custom_provider_id(provider: &str) -> bool {
+    !provider.is_empty()
+        && provider != LEGACY_RELAY_PROVIDER
+        && !RESERVED_MODEL_PROVIDER_IDS.contains(&provider)
+}
+
+fn provider_table_exists(doc: &DocumentMut, provider_id: &str) -> bool {
+    doc.get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|table| table.get(provider_id))
+        .is_some()
+}
+
+fn parse_toml_document(contents: &str) -> anyhow::Result<DocumentMut> {
+    if contents.trim().is_empty() {
+        Ok(DocumentMut::new())
+    } else {
+        contents
+            .parse::<DocumentMut>()
+            .with_context(|| "config.toml TOML 解析失败")
+    }
+}
+
+fn remove_provider_specific_common_keys(table: &mut dyn TableLike) {
+    for key in [
+        "model",
+        "model_provider",
+        "base_url",
+        "model_catalog_json",
+        CHAT_UPSTREAM_BASE_URL_KEY,
+    ] {
+        table.remove(key);
+    }
+    table.remove("model_providers");
+}
+
+fn sanitize_common_config_text_fallback(common_config: &str) -> String {
+    let mut kept = Vec::new();
+    let mut in_root = true;
+    let mut skipping_model_providers = false;
+
+    for line in common_config.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_root = false;
+            skipping_model_providers =
+                trimmed == "[model_providers]" || trimmed.starts_with("[model_providers.");
+            if skipping_model_providers {
+                continue;
+            }
+        } else if skipping_model_providers {
+            continue;
+        }
+
+        if in_root {
+            if let Some((key, _)) = trimmed.split_once('=') {
+                let key = key.trim();
+                if matches!(
+                    key,
+                    "model"
+                        | "model_provider"
+                        | "base_url"
+                        | "model_catalog_json"
+                        | CHAT_UPSTREAM_BASE_URL_KEY
+                ) {
+                    continue;
+                }
+            }
+        }
+
+        kept.push(line);
+    }
+
+    normalize_text_toml(kept.join("\n"))
+}
+
+fn normalize_text_toml(contents: String) -> String {
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        ensure_trailing_newline(trimmed.to_string())
+    }
+}
+
+pub fn normalize_config_text(contents: &str) -> String {
+    normalize_duplicate_toml_text(contents)
+}
+
+fn normalize_duplicate_toml_text(contents: &str) -> String {
+    let mut seen_root_keys = HashSet::new();
+    let mut seen_headers = HashSet::new();
+    let mut kept = Vec::new();
+    let mut skipping_duplicate_table = false;
+    let mut in_root = true;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_root = false;
+            skipping_duplicate_table = !seen_headers.insert(trimmed.to_string());
+            if skipping_duplicate_table {
+                continue;
+            }
+            kept.push(line);
+            continue;
+        }
+
+        if skipping_duplicate_table {
+            continue;
+        }
+
+        if in_root
+            && !trimmed.is_empty()
+            && !trimmed.starts_with('#')
+            && let Some((key, _)) = trimmed.split_once('=')
+        {
+            let key = key.trim();
+            if !key.is_empty() && !key.contains('.') && !seen_root_keys.insert(key.to_string()) {
+                continue;
+            }
+        }
+
+        kept.push(line);
+    }
+
+    normalize_text_toml(kept.join("\n"))
+}
+
+fn strip_common_config_text_fallback(config_text: &str, common_config: &str) -> String {
+    let normalized = normalize_duplicate_toml_text(config_text);
+    let anchors = common_config_anchors(common_config);
+    if anchors.root_keys.is_empty() && anchors.table_headers.is_empty() {
+        return normalized;
+    }
+
+    let mut kept = Vec::new();
+    let mut skipping_table = false;
+
+    for line in normalized.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            skipping_table = anchors.table_headers.contains(trimmed);
+            if skipping_table {
+                continue;
+            }
+            kept.push(line);
+            continue;
+        }
+
+        if skipping_table {
+            continue;
+        }
+
+        if !trimmed.is_empty()
+            && !trimmed.starts_with('#')
+            && let Some((key, _)) = trimmed.split_once('=')
+            && anchors.root_keys.contains(key.trim())
+        {
+            continue;
+        }
+
+        kept.push(line);
+    }
+
+    normalize_text_toml(kept.join("\n"))
+}
+
+struct CommonConfigAnchors {
+    root_keys: HashSet<String>,
+    table_headers: HashSet<String>,
+}
+
+fn common_config_anchors(common_config: &str) -> CommonConfigAnchors {
+    let mut root_keys = HashSet::new();
+    let mut table_headers = HashSet::new();
+    let mut in_root = true;
+
+    for line in common_config.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_root = false;
+            table_headers.insert(trimmed.to_string());
+            continue;
+        }
+
+        if in_root
+            && !trimmed.is_empty()
+            && !trimmed.starts_with('#')
+            && let Some((key, _)) = trimmed.split_once('=')
+        {
+            let key = key.trim();
+            if !key.is_empty() {
+                root_keys.insert(key.to_string());
+            }
+        }
+    }
+
+    CommonConfigAnchors {
+        root_keys,
+        table_headers,
+    }
+}
+
+fn validate_toml_config(config_text: &str, path: &Path) -> anyhow::Result<()> {
+    if config_text.trim().is_empty() {
+        return Ok(());
+    }
+    config_text
+        .parse::<toml::Table>()
+        .with_context(|| format!("{} 不是有效 TOML", path.display()))?;
+    Ok(())
+}
+
+fn validate_auth_json(auth_bytes: &[u8], path: &Path) -> anyhow::Result<()> {
+    if auth_bytes.iter().all(|byte| byte.is_ascii_whitespace()) {
+        return Ok(());
+    }
+    serde_json::from_slice::<Value>(auth_bytes)
+        .with_context(|| format!("{} 不是有效 JSON", path.display()))?;
+    Ok(())
+}
+
+fn parse_optional_positive_u64(value: &str, label: &str) -> anyhow::Result<Option<u64>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let parsed = trimmed
+        .parse::<u64>()
+        .with_context(|| format!("{label}必须是正整数"))?;
+    if parsed == 0 {
+        anyhow::bail!("{label}必须大于 0");
+    }
+    Ok(Some(parsed))
+}
+
+fn apply_context_limits_to_config(
+    config_text: &str,
+    context_window: &str,
+    auto_compact_limit: &str,
+) -> anyhow::Result<String> {
+    let mut doc = parse_toml_document(config_text)?;
+    if let Some(value) = parse_optional_positive_u64(context_window, "上下文大小")? {
+        doc["model_context_window"] = toml_edit::value(value as i64);
+    }
+    if let Some(value) = parse_optional_positive_u64(auto_compact_limit, "压缩上下文大小")? {
+        doc["model_auto_compact_token_limit"] = toml_edit::value(value as i64);
+    }
+    Ok(normalize_optional_toml(doc))
+}
+
+fn toml_value_is_subset(target: &toml_edit::Value, source: &toml_edit::Value) -> bool {
+    match (target, source) {
+        (toml_edit::Value::String(target), toml_edit::Value::String(source)) => {
+            target.value() == source.value()
+        }
+        (toml_edit::Value::Integer(target), toml_edit::Value::Integer(source)) => {
+            target.value() == source.value()
+        }
+        (toml_edit::Value::Float(target), toml_edit::Value::Float(source)) => {
+            target.value() == source.value()
+        }
+        (toml_edit::Value::Boolean(target), toml_edit::Value::Boolean(source)) => {
+            target.value() == source.value()
+        }
+        (toml_edit::Value::Datetime(target), toml_edit::Value::Datetime(source)) => {
+            target.value() == source.value()
+        }
+        (toml_edit::Value::Array(target), toml_edit::Value::Array(source)) => {
+            toml_array_contains_subset(target, source)
+        }
+        (toml_edit::Value::InlineTable(target), toml_edit::Value::InlineTable(source)) => {
+            source.iter().all(|(key, source_item)| {
+                target
+                    .get(key)
+                    .is_some_and(|target_item| toml_value_is_subset(target_item, source_item))
+            })
+        }
+        _ => false,
+    }
+}
+
+fn toml_array_contains_subset(target: &toml_edit::Array, source: &toml_edit::Array) -> bool {
+    let mut matched = vec![false; target.len()];
+    let target_items: Vec<&toml_edit::Value> = target.iter().collect();
+
+    source.iter().all(|source_item| {
+        if let Some((index, _)) = target_items
+            .iter()
+            .enumerate()
+            .find(|(index, target_item)| {
+                !matched[*index] && toml_value_is_subset(target_item, source_item)
+            })
+        {
+            matched[index] = true;
+            true
+        } else {
+            false
+        }
+    })
+}
+
+fn toml_remove_array_items(target: &mut toml_edit::Array, source: &toml_edit::Array) {
+    for source_item in source.iter() {
+        let index = {
+            let target_items: Vec<&toml_edit::Value> = target.iter().collect();
+            target_items
+                .iter()
+                .enumerate()
+                .find(|(_, target_item)| toml_value_is_subset(target_item, source_item))
+                .map(|(index, _)| index)
+        };
+
+        if let Some(index) = index {
+            target.remove(index);
+        }
+    }
+}
+
+fn merge_toml_item(target: &mut Item, source: &Item) {
+    if let Some(source_table) = source.as_table_like() {
+        if let Some(target_table) = target.as_table_like_mut() {
+            merge_toml_table_like(target_table, source_table);
+            return;
+        }
+    }
+
+    *target = source.clone();
+}
+
+fn merge_toml_table_like(target: &mut dyn TableLike, source: &dyn TableLike) {
+    for (key, source_item) in source.iter() {
+        match target.get_mut(key) {
+            Some(target_item) => merge_toml_item(target_item, source_item),
+            None => {
+                target.insert(key, source_item.clone());
+            }
+        }
+    }
+}
+
+fn remove_toml_item(target: &mut Item, source: &Item) {
+    if let Some(source_table) = source.as_table_like() {
+        if let Some(target_table) = target.as_table_like_mut() {
+            remove_toml_table_like(target_table, source_table);
+            if target_table.is_empty() {
+                *target = Item::None;
+            }
+            return;
+        }
+    }
+
+    if let Some(source_value) = source.as_value() {
+        let mut remove_item = false;
+
+        if let Some(target_value) = target.as_value_mut() {
+            match (target_value, source_value) {
+                (toml_edit::Value::Array(target_arr), toml_edit::Value::Array(source_arr)) => {
+                    toml_remove_array_items(target_arr, source_arr);
+                    remove_item = target_arr.is_empty();
+                }
+                (target_value, source_value)
+                    if toml_value_is_subset(target_value, source_value) =>
+                {
+                    remove_item = true;
+                }
+                _ => {}
+            }
+        }
+
+        if remove_item {
+            *target = Item::None;
+        }
+    }
+}
+
+fn remove_toml_table_like(target: &mut dyn TableLike, source: &dyn TableLike) {
+    let keys: Vec<String> = source.iter().map(|(key, _)| key.to_string()).collect();
+
+    for key in keys {
+        let mut remove_key = false;
+        if let (Some(target_item), Some(source_item)) = (target.get_mut(&key), source.get(&key)) {
+            remove_toml_item(target_item, source_item);
+            remove_key = target_item.is_none()
+                || target_item
+                    .as_table_like()
+                    .is_some_and(|table_like| table_like.is_empty());
+        }
+
+        if remove_key {
+            target.remove(&key);
+        }
+    }
+}
+
+fn normalize_optional_toml(doc: DocumentMut) -> String {
+    let contents = doc.to_string();
+    if contents.trim().is_empty() {
+        String::new()
+    } else {
+        ensure_trailing_newline(contents)
+    }
+}
+
+fn list_context_entries_for_table(doc: &DocumentMut, table_name: &str) -> Vec<CodexContextEntry> {
+    let Some(table) = doc.get(table_name).and_then(Item::as_table) else {
+        return Vec::new();
+    };
+    table
+        .iter()
+        .filter_map(|(id, item)| {
+            let table = item.as_table()?;
+            let body = table_body_to_string(table);
+            Some(CodexContextEntry {
+                id: id.to_string(),
+                kind: context_kind_name(table_name).to_string(),
+                title: id.to_string(),
+                summary: context_entry_summary(&body),
+                toml_body: body,
+                enabled: context_entry_enabled(table),
+            })
+        })
+        .collect()
+}
+
+fn table_body_to_string(table: &Table) -> String {
+    let mut doc = DocumentMut::new();
+    merge_toml_table_like(doc.as_table_mut(), table);
+    normalize_optional_toml(doc)
+}
+
+fn context_table_name(kind: &str) -> anyhow::Result<&'static str> {
+    match kind {
+        "mcp" | "mcpServer" | "mcpServers" => Ok("mcp_servers"),
+        "skill" | "skills" => Ok("skills"),
+        "plugin" | "plugins" => Ok("plugins"),
+        other => anyhow::bail!("未知上下文类型：{other}"),
+    }
+}
+
+fn context_kind_name(table: &str) -> &'static str {
+    match table {
+        "mcp_servers" => "mcp",
+        "skills" => "skill",
+        "plugins" => "plugin",
+        _ => "unknown",
+    }
+}
+
+fn context_entry_summary(body: &str) -> String {
+    body.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .unwrap_or("")
+        .chars()
+        .take(96)
+        .collect()
+}
+
+fn context_entry_enabled(table: &Table) -> bool {
+    if table
+        .get("enabled")
+        .and_then(|value| value.as_bool())
+        .is_some_and(|enabled| !enabled)
+    {
+        return false;
+    }
+    if table
+        .get("disabled")
+        .and_then(|value| value.as_bool())
+        .is_some_and(|disabled| disabled)
+    {
+        return false;
+    }
+    true
+}
+
+fn set_provider_id(doc: &mut DocumentMut, provider_id: &str) {
+    doc["model_provider"] = toml_edit::value(provider_id);
+}
+
+fn profile_should_write_auth_json(profile: &RelayProfile) -> bool {
+    profile.relay_mode == crate::settings::RelayMode::Official
+}
+
+fn prepare_provider_live_config_from_auth(
+    auth_contents: &str,
+    config_contents: &str,
+) -> anyhow::Result<String> {
+    let token = codex_auth_api_key(auth_contents).or_else(|| {
+        experimental_bearer_token_from_config(config_contents)
+            .ok()
+            .flatten()
+    });
+    let Some(token) = token else {
+        return Ok(config_contents.to_string());
+    };
+    set_experimental_bearer_token_in_config(config_contents, &token)
+}
+
+fn restore_profile_provider_id_for_backfill(
+    live_config: &str,
+    template_config: &str,
+) -> anyhow::Result<String> {
+    let Some(template_provider_id) = provider_id_with_table_from_config(template_config)? else {
+        return Ok(ensure_trailing_newline(live_config.to_string()));
+    };
+    if live_config.trim().is_empty() {
+        return Ok(ensure_trailing_newline(live_config.to_string()));
+    }
+
+    let mut doc = parse_toml_document(live_config)?;
+    let Some(live_provider_id) = active_provider_id(&doc) else {
+        return Ok(ensure_trailing_newline(doc.to_string()));
+    };
+    if live_provider_id == template_provider_id {
+        return Ok(ensure_trailing_newline(doc.to_string()));
+    }
+
+    if let Some(providers) = doc.get_mut("model_providers").and_then(Item::as_table_mut) {
+        let Some(provider_table) = providers.remove(live_provider_id.as_str()) else {
+            return Ok(ensure_trailing_newline(doc.to_string()));
+        };
+        providers.insert(&template_provider_id, provider_table);
+    } else {
+        return Ok(ensure_trailing_newline(doc.to_string()));
+    }
+
+    rewrite_profile_provider_refs(&mut doc, &live_provider_id, &template_provider_id);
+    set_provider_id(&mut doc, &template_provider_id);
+    Ok(ensure_trailing_newline(doc.to_string()))
+}
+
+fn provider_id_with_table_from_config(config_text: &str) -> anyhow::Result<Option<String>> {
+    if config_text.trim().is_empty() {
+        return Ok(None);
+    }
+    let doc = parse_toml_document(config_text)?;
+    let Some(provider_id) = active_provider_id(&doc) else {
+        return Ok(None);
+    };
+    Ok(provider_table_exists(&doc, &provider_id).then_some(provider_id))
+}
+
+fn restore_profile_auth_from_live_config(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    let Some(token) = experimental_bearer_token_from_config(&profile.config_contents)? else {
+        return Ok(());
+    };
+    profile.config_contents =
+        remove_experimental_bearer_token_from_config(&profile.config_contents)?;
+
+    let mut auth = if profile.auth_contents.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str::<Value>(&profile.auth_contents)
+            .with_context(|| "auth.json JSON 解析失败")?
+    };
+    if !auth.is_object() {
+        auth = json!({});
+    }
+    if let Some(auth_object) = auth.as_object_mut() {
+        auth_object.insert("OPENAI_API_KEY".to_string(), Value::String(token));
+    } else {
+        anyhow::bail!("auth.json 必须是 JSON 对象");
+    }
+    profile.auth_contents = serde_json::to_string_pretty(&auth)?;
+    Ok(())
+}
+
+fn codex_auth_api_key(auth_contents: &str) -> Option<String> {
+    let auth: Value = serde_json::from_str(auth_contents).ok()?;
+    auth.get("OPENAI_API_KEY")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(ToString::to_string)
+}
+
+fn relay_profile_model(profile: &RelayProfile) -> String {
+    root_key_string(&profile.config_contents, "model")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| profile.model.trim().to_string())
+}
+
+fn relay_profile_base_url(profile: &RelayProfile) -> String {
+    if profile.protocol == RelayProtocol::ChatCompletions {
+        if !profile.upstream_base_url.trim().is_empty() {
+            return profile.upstream_base_url.trim().to_string();
+        }
+        if let Some(value) = root_key_string(&profile.config_contents, CHAT_UPSTREAM_BASE_URL_KEY)
+            .filter(|value| !value.trim().is_empty())
+        {
+            return value;
+        }
+        if !profile.base_url.trim().is_empty() {
+            return profile.base_url.trim().to_string();
+        }
+    }
+    let provider_base_url = provider_string_from_config(&profile.config_contents, "base_url")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_default();
+    if profile.protocol == RelayProtocol::ChatCompletions
+        && provider_base_url
+            == crate::protocol_proxy::local_responses_proxy_base_url(
+                crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            )
+    {
+        String::new()
+    } else if !provider_base_url.is_empty() {
+        provider_base_url
+    } else {
+        profile.base_url.trim().to_string()
+    }
+}
+
+fn relay_profile_api_key(profile: &RelayProfile) -> String {
+    codex_auth_api_key(&profile.auth_contents)
+        .or_else(|| {
+            experimental_bearer_token_from_config(&profile.config_contents)
+                .ok()
+                .flatten()
+        })
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| profile.api_key.trim().to_string())
+}
+
+fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
+    let mut doc = parse_toml_document(&profile.config_contents)?;
+    let provider_id = RELAY_PROVIDER.to_string();
+    set_provider_id(&mut doc, &provider_id);
+
+    let model = relay_profile_model(profile);
+    if !model.trim().is_empty() {
+        doc["model"] = toml_edit::value(model.trim());
+    }
+
+    let base_url = relay_profile_base_url(profile);
+    let api_key = relay_profile_api_key(profile);
+    doc.as_table_mut().remove(CHAT_UPSTREAM_BASE_URL_KEY);
+    retain_only_provider_table(&mut doc, &provider_id);
+    remove_provider_table(&mut doc, LEGACY_RELAY_PROVIDER);
+    let provider = ensure_provider_table(&mut doc, &provider_id)?;
+    provider["name"] = toml_edit::value(provider_id.as_str());
+    provider["wire_api"] = toml_edit::value("responses");
+    provider["requires_openai_auth"] = toml_edit::value(true);
+    let provider_base_url = codex_base_url_for_protocol(
+        base_url.trim(),
+        profile.protocol,
+        crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+    );
+    if !provider_base_url.trim().is_empty() {
+        provider["base_url"] = toml_edit::value(provider_base_url.trim());
+    }
+    if !api_key.trim().is_empty() {
+        provider["experimental_bearer_token"] = toml_edit::value(api_key.trim());
+    }
+
+    Ok(move_model_providers_before_profiles(
+        &ensure_trailing_newline(doc.to_string()),
+    ))
+}
+
+pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
+        profile.config_contents.clear();
+        profile.auth_contents.clear();
+        profile.model.clear();
+        profile.base_url.clear();
+        profile.api_key.clear();
+        return Ok(());
+    }
+    let source_base_url = relay_profile_base_url(profile);
+    if !profile.config_contents.trim().is_empty() {
+        profile.config_contents = complete_relay_profile_config(profile)?;
+    }
+    if profile.auth_contents.trim().is_empty() && !profile.api_key.trim().is_empty() {
+        profile.auth_contents = serde_json::to_string_pretty(&json!({
+            "OPENAI_API_KEY": profile.api_key.trim()
+        }))?;
+    }
+    profile.model = relay_profile_model(profile);
+    profile.upstream_base_url = source_base_url.clone();
+    profile.base_url = source_base_url;
+    profile.api_key = relay_profile_api_key(profile);
+    Ok(())
+}
+
+fn provider_string_from_config(config_contents: &str, key: &str) -> Option<String> {
+    let doc = parse_toml_document(config_contents).ok()?;
+    let active = active_provider_id(&doc);
+    if let Some(provider_id) = active.as_deref() {
+        if let Some(value) = doc
+            .get("model_providers")
+            .and_then(Item::as_table)
+            .and_then(|providers| providers.get(provider_id))
+            .and_then(Item::as_table)
+            .and_then(|provider| provider.get(key))
+            .and_then(Item::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(value.to_string());
+        }
+    }
+
+    for provider in provider_tables(&doc) {
+        if let Some(value) = provider
+            .get(key)
+            .and_then(Item::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn experimental_bearer_token_from_config(config_contents: &str) -> anyhow::Result<Option<String>> {
+    let doc = parse_toml_document(config_contents)?;
+    for provider in provider_tables(&doc) {
+        if let Some(token) = provider
+            .get("experimental_bearer_token")
+            .and_then(Item::as_str)
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+        {
+            return Ok(Some(token.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+fn set_experimental_bearer_token_in_config(
+    config_contents: &str,
+    token: &str,
+) -> anyhow::Result<String> {
+    let mut doc = parse_toml_document(config_contents)?;
+    let Some(provider_id) = active_provider_id(&doc) else {
+        doc.as_table_mut()
+            .insert("experimental_bearer_token", toml_edit::value(token));
+        return Ok(ensure_trailing_newline(doc.to_string()));
+    };
+
+    if !is_custom_provider_id(&provider_id) {
+        doc.as_table_mut()
+            .insert("experimental_bearer_token", toml_edit::value(token));
+        return Ok(ensure_trailing_newline(doc.to_string()));
+    }
+
+    if let Some(provider) = doc
+        .get_mut("model_providers")
+        .and_then(Item::as_table_mut)
+        .and_then(|providers| providers.get_mut(&provider_id))
+        .and_then(Item::as_table_mut)
+    {
+        provider["experimental_bearer_token"] = toml_edit::value(token);
+    } else {
+        doc.as_table_mut()
+            .insert("experimental_bearer_token", toml_edit::value(token));
+    }
+    Ok(ensure_trailing_newline(doc.to_string()))
+}
+
+fn remove_experimental_bearer_token_from_config(config_contents: &str) -> anyhow::Result<String> {
+    let mut doc = parse_toml_document(config_contents)?;
+    if let Some(providers) = doc.get_mut("model_providers").and_then(Item::as_table_mut) {
+        for (_, item) in providers.iter_mut() {
+            if let Some(provider) = item.as_table_like_mut() {
+                provider.remove("experimental_bearer_token");
+            }
+        }
+    }
+    Ok(ensure_trailing_newline(doc.to_string()))
+}
+
+fn provider_tables(doc: &DocumentMut) -> Vec<&dyn TableLike> {
+    let mut tables: Vec<&dyn TableLike> = Vec::new();
+    if let Some(providers) = doc.get("model_providers").and_then(Item::as_table) {
+        for (_, item) in providers.iter() {
+            if let Some(provider) = item.as_table_like() {
+                tables.push(provider);
+            }
+        }
+    }
+    tables
+}
+
+fn ensure_provider_table<'a>(
+    doc: &'a mut DocumentMut,
+    provider_id: &str,
+) -> anyhow::Result<&'a mut Table> {
+    let providers = table_mut_or_insert(doc, "model_providers")?;
+    if !providers.contains_key(provider_id)
+        || providers
+            .get(provider_id)
+            .and_then(Item::as_table)
+            .is_none()
+    {
+        providers.insert(provider_id, toml_edit::table());
+    }
+    providers
+        .get_mut(provider_id)
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| anyhow::anyhow!("model_providers.{provider_id} 必须是 TOML table"))
+}
+
+fn remove_provider_table(doc: &mut DocumentMut, provider_id: &str) {
+    if let Some(providers) = doc.get_mut("model_providers").and_then(Item::as_table_mut) {
+        providers.remove(provider_id);
+        if providers.is_empty() {
+            doc.as_table_mut().remove("model_providers");
+        }
+    }
+}
+
+fn retain_only_provider_table(doc: &mut DocumentMut, provider_id: &str) {
+    if let Some(providers) = doc.get_mut("model_providers").and_then(Item::as_table_mut) {
+        let provider = providers
+            .remove(provider_id)
+            .unwrap_or_else(toml_edit::table);
+        providers.clear();
+        providers.insert(provider_id, provider);
+    }
+}
+
+fn rename_provider_table(doc: &mut DocumentMut, from: &str, to: &str) {
+    if from == to {
+        return;
+    }
+    if let Some(providers) = doc.get_mut("model_providers").and_then(Item::as_table_mut) {
+        let moved = providers.remove(from).unwrap_or_else(toml_edit::table);
+        providers.insert(to, moved);
+    }
+}
+
+fn rewrite_profile_provider_refs(doc: &mut DocumentMut, from: &str, to: &str) {
+    let Some(profiles) = doc.get_mut("profiles").and_then(Item::as_table_mut) else {
+        return;
+    };
+    for (_, item) in profiles.iter_mut() {
+        let Some(profile) = item.as_table_mut() else {
+            continue;
+        };
+        if profile
+            .get("model_provider")
+            .and_then(Item::as_str)
+            .is_some_and(|provider| provider == from)
+        {
+            profile.insert("model_provider", toml_edit::value(to));
+        }
+    }
+}
+
+fn read_optional_text(path: &Path) -> anyhow::Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Ok(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn read_optional_bytes(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn restore_optional_file(path: &Path, contents: Option<&[u8]>) -> anyhow::Result<()> {
+    match contents {
+        Some(contents) => crate::settings::atomic_write(path, contents),
+        None => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        },
+    }
+}
+
+fn create_live_backup(
+    home: &Path,
+    config: Option<&[u8]>,
+    auth: Option<&[u8]>,
+) -> anyhow::Result<Option<String>> {
+    if config.is_none() && auth.is_none() {
+        return Ok(None);
+    }
+
+    let backup_dir = home
+        .join("backups")
+        .join(format!("codex-plus-live-{}", timestamp_millis()));
+    std::fs::create_dir_all(&backup_dir)?;
+    if let Some(config) = config {
+        std::fs::write(backup_dir.join("config.toml"), config)?;
+    }
+    if let Some(auth) = auth {
+        std::fs::write(backup_dir.join("auth.json"), auth)?;
+    }
+    Ok(Some(backup_dir.to_string_lossy().to_string()))
+}
+
+fn timestamp_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn ensure_trailing_newline(mut contents: String) -> String {
+    if !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    contents
+}
+
+fn move_model_providers_before_profiles(contents: &str) -> String {
+    let lines = contents.lines().collect::<Vec<_>>();
+    let Some(provider_start) = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("[model_providers."))
+    else {
+        return ensure_trailing_newline(contents.to_string());
+    };
+    let provider_end = lines[provider_start + 1..]
+        .iter()
+        .position(|line| line.trim_start().starts_with('['))
+        .map(|offset| provider_start + 1 + offset)
+        .unwrap_or(lines.len());
+    let Some(profile_start) = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("[profiles."))
+    else {
+        return ensure_trailing_newline(contents.to_string());
+    };
+    if provider_start < profile_start {
+        return ensure_trailing_newline(contents.to_string());
+    }
+
+    let mut output = Vec::with_capacity(lines.len());
+    output.extend_from_slice(&lines[..profile_start]);
+    output.extend_from_slice(&lines[provider_start..provider_end]);
+    if output.last().is_some_and(|line| !line.trim().is_empty()) {
+        output.push("");
+    }
+    output.extend_from_slice(&lines[profile_start..provider_start]);
+    output.extend_from_slice(&lines[provider_end..]);
+    ensure_trailing_newline(output.join("\n"))
 }
 
 fn auth_json_chatgpt_account_label(path: &Path) -> Option<Option<String>> {
@@ -463,68 +1916,29 @@ fn root_key_value<'a>(contents: &'a str, key: &str) -> Option<&'a str> {
     None
 }
 
-fn upsert_root_keys(contents: &str, entries: &[(&str, String)]) -> String {
-    let mut lines = contents
-        .lines()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    let root_end = lines
-        .iter()
-        .position(|line| line.trim_start().starts_with('['))
-        .unwrap_or(lines.len());
-
-    for (key, value) in entries {
-        if let Some(index) = lines[..root_end]
-            .iter()
-            .position(|line| root_line_key(line) == Some(*key))
-        {
-            lines[index] = format!("{key} = {value}");
-        } else {
-            lines.insert(root_end, format!("{key} = {value}"));
-        }
+fn upsert_model_provider_config(
+    contents: &str,
+    base_url: &str,
+    bearer_token: &str,
+) -> anyhow::Result<String> {
+    let mut doc = parse_toml_document(contents)?;
+    let provider_id = active_or_default_provider_id(&doc);
+    set_provider_id(&mut doc, &provider_id);
+    remove_provider_table(&mut doc, LEGACY_RELAY_PROVIDER);
+    if provider_id != RELAY_PROVIDER {
+        remove_provider_table(&mut doc, RELAY_PROVIDER);
     }
 
-    let mut updated = lines.join("\n");
-    if !updated.ends_with('\n') {
-        updated.push('\n');
-    }
-    updated
-}
+    let provider = ensure_provider_table(&mut doc, &provider_id)?;
+    provider["name"] = toml_edit::value(provider_id.as_str());
+    provider["wire_api"] = toml_edit::value("responses");
+    provider["requires_openai_auth"] = toml_edit::value(true);
+    provider["base_url"] = toml_edit::value(base_url);
+    provider["experimental_bearer_token"] = toml_edit::value(bearer_token);
 
-fn upsert_model_provider_config(contents: &str, base_url: &str, bearer_token: &str) -> String {
-    let mut updated = upsert_root_keys(
-        contents,
-        &[(
-            "model_provider",
-            format!("\"{}\"", toml_escape(RELAY_PROVIDER)),
-        )],
-    );
-    updated = remove_table(&updated, &format!("model_providers.{RELAY_PROVIDER}"));
-    updated = remove_table(
-        &updated,
-        &format!("model_providers.{LEGACY_RELAY_PROVIDER}"),
-    );
-
-    let mut lines = updated.lines().map(ToString::to_string).collect::<Vec<_>>();
-    let insert_at = first_non_provider_table_index(&lines).unwrap_or(lines.len());
-    let provider_lines = vec![
-        format!("[model_providers.{RELAY_PROVIDER}]"),
-        format!("name = \"{}\"", toml_escape(RELAY_PROVIDER)),
-        "wire_api = \"responses\"".to_string(),
-        "requires_openai_auth = true".to_string(),
-        format!("base_url = \"{}\"", toml_escape(base_url)),
-        format!(
-            "experimental_bearer_token = \"{}\"",
-            toml_escape(bearer_token)
-        ),
-        String::new(),
-    ];
-    lines.splice(insert_at..insert_at, provider_lines);
-    let mut output = lines.join("\n");
-    if !output.ends_with('\n') {
-        output.push('\n');
-    }
-    output
+    Ok(move_model_providers_before_profiles(
+        &ensure_trailing_newline(doc.to_string()),
+    ))
 }
 
 fn remove_table(contents: &str, table: &str) -> String {
@@ -561,13 +1975,6 @@ fn remove_root_key(contents: &str, key: &str) -> String {
         lines.push(line.to_string());
     }
     lines.join("\n")
-}
-
-fn first_non_provider_table_index(lines: &[String]) -> Option<usize> {
-    lines.iter().position(|line| {
-        let trimmed = line.trim();
-        trimmed.starts_with('[') && !trimmed.starts_with("[model_providers.")
-    })
 }
 
 fn table_values(contents: &str, table: &str) -> Option<std::collections::HashMap<String, String>> {
@@ -608,8 +2015,4 @@ fn root_line_key(line: &str) -> Option<&str> {
         return None;
     }
     trimmed.split_once('=').map(|(key, _)| key.trim())
-}
-
-fn toml_escape(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
 }

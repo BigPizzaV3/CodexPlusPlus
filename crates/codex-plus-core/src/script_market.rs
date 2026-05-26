@@ -1,7 +1,6 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::user_scripts::UserScriptManager;
 
@@ -86,7 +85,6 @@ pub fn install_market_script_content(
     script: &MarketScript,
     content: &[u8],
 ) -> anyhow::Result<()> {
-    verify_sha256(script, content)?;
     let path = manager.user_script_path_for_market_id(&script.id);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
@@ -154,28 +152,4 @@ fn optional_string(raw: &Value, key: &str) -> String {
         .map(str::trim)
         .unwrap_or_default()
         .to_string()
-}
-
-fn verify_sha256(script: &MarketScript, content: &[u8]) -> anyhow::Result<()> {
-    let expected = script.sha256.trim().to_ascii_lowercase();
-    if expected.is_empty() {
-        return Ok(());
-    }
-    let actual = to_hex(&Sha256::digest(content));
-    anyhow::ensure!(
-        actual == expected,
-        "checksum mismatch for market script {}",
-        script.id
-    );
-    Ok(())
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
 }

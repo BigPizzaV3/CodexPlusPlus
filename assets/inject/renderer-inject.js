@@ -38,7 +38,7 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "11";
+  const codexDeleteStyleVersion = "12";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "7";
@@ -61,6 +61,7 @@
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "2";
+  const codexAppServerModelRequestPatchVersion = "1";
   const codexThreadScrollMaxEntries = 120;
   const codexThreadScrollSaveThrottleMs = 120;
   const codexThreadScrollRestoreWindowMs = 3200;
@@ -228,8 +229,12 @@
       }
       [data-codex-delete-row="true"]:hover .${actionGroupClass} { opacity: 1; }
       [data-codex-delete-row="true"]:hover [data-thread-title] {
-        -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - var(--codex-session-title-mask, 86px)), transparent calc(100% - max(0px, var(--codex-session-title-mask, 86px) - 6px)));
-        mask-image: linear-gradient(90deg, #000 calc(100% - var(--codex-session-title-mask, 86px)), transparent calc(100% - max(0px, var(--codex-session-title-mask, 86px) - 6px)));
+        display: block;
+        max-width: var(--codex-session-title-max-width, 100%);
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       [data-codex-delete-row="true"].codex-archive-confirm-visible .${actionGroupClass} {
         right: max(66px, var(--codex-session-actions-right, 28px));
@@ -843,11 +848,15 @@
 
   async function loadCodexAppModule(namePart) {
     if (!codexServiceTierModulePromises.has(namePart)) {
-      codexServiceTierModulePromises.set(namePart, Promise.resolve().then(async () => {
+      const promise = Promise.resolve().then(async () => {
         const url = codexAppAssetUrl(namePart);
         if (!url) throw new Error(`未找到 Codex App asset: ${namePart}`);
         return await import(url);
-      }));
+      }).catch((error) => {
+        codexServiceTierModulePromises.delete(namePart);
+        throw error;
+      });
+      codexServiceTierModulePromises.set(namePart, promise);
     }
     return await codexServiceTierModulePromises.get(namePart);
   }
@@ -3364,13 +3373,15 @@
 
   function patchStatsigModelWhitelist() {
     statsigClients().forEach((client) => {
-      if (client.__codexPlusModelWhitelistPatched || typeof client.getDynamicConfig !== "function") return;
-      const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
-      client.getDynamicConfig = (name, options) => {
-        const result = originalGetDynamicConfig(name, options);
-        return patchStatsigModelDynamicConfig(result);
-      };
-      client.__codexPlusModelWhitelistPatched = true;
+      if (typeof client.getDynamicConfig !== "function") return;
+      if (!client.__codexPlusModelWhitelistPatched) {
+        const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
+        client.getDynamicConfig = (name, options) => {
+          const result = originalGetDynamicConfig(name, options);
+          return patchStatsigModelDynamicConfig(result);
+        };
+        client.__codexPlusModelWhitelistPatched = true;
+      }
       try {
         patchStatsigModelDynamicConfig(client.getDynamicConfig("107580212", { disableExposureLog: true }));
       } catch {
@@ -3451,10 +3462,88 @@
     return patchModelContainer(data) || patchModelContainer(message) || patchModelContainer(message?.result) || patchModelContainer(message?.result?.data);
   }
 
+  function appServerModelRequestMethod(method, params) {
+    if (method === "send-cli-request-for-host" && params?.method) return String(params.method);
+    return String(method || "");
+  }
+
+  function patchAppServerModelResult(method, result) {
+    if (method !== "list-models-for-host") return result;
+    try {
+      if (Array.isArray(result)) patchModelArray(result, true);
+      if (Array.isArray(result?.data)) patchModelArray(result.data, true);
+      if (Array.isArray(result?.models)) patchModelArray(result.models, true);
+      patchModelContainer(result);
+      patchObjectGraphForModels(result, new WeakSet(), 0);
+      sendCodexPlusDiagnostic("model_app_server_result_patched", {
+        method,
+        modelCount: Array.isArray(result?.data) ? result.data.length : Array.isArray(result?.models) ? result.models.length : Array.isArray(result) ? result.length : null,
+      });
+    } catch (error) {
+      window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+      window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+    }
+    return result;
+  }
+
+  function patchAppServerModelRequestClient(client) {
+    if (!client || typeof client.sendRequest !== "function") return false;
+    if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) return true;
+    const originalSendRequest = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
+    client.__codexPlusModelOriginalSendRequest = originalSendRequest;
+    client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
+      const result = await originalSendRequest(method, params, options);
+      if (!codexPlusModelUnlockEnabled()) return result;
+      if (!codexPlusModelNames().length) await loadCodexModelCatalog();
+      return patchAppServerModelResult(appServerModelRequestMethod(String(method || ""), params), result);
+    };
+    client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
+    return true;
+  }
+
+  function installAppServerModelRequestPatch() {
+    if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
+    const patch = async () => {
+      try {
+        const module = await loadCodexAppModule("app-server-manager-signals-");
+        const candidates = Object.values(module).filter((value) => value && typeof value === "object");
+        let patchedCount = 0;
+        for (const candidate of candidates) {
+          if (patchAppServerModelRequestClient(candidate)) patchedCount += 1;
+          if (typeof candidate.sendRequest !== "function" && typeof candidate.get === "function") {
+            try {
+              if (patchAppServerModelRequestClient(candidate.get())) patchedCount += 1;
+            } catch {
+            }
+          }
+        }
+        if (patchedCount > 0) {
+          window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
+          sendCodexPlusDiagnostic("model_app_server_request_patch_installed", {
+            candidateCount: candidates.length,
+            patchedCount,
+          });
+        } else {
+          sendCodexPlusDiagnostic("model_app_server_request_patch_not_found", {
+            exportCount: Object.keys(module || {}).length,
+            candidateCount: candidates.length,
+          });
+        }
+      } catch (error) {
+        sendCodexPlusDiagnostic("model_app_server_request_patch_failed", {
+          errorName: error?.name || "",
+          errorMessage: error?.message || String(error),
+        });
+      }
+    };
+    void patch();
+  }
+
   function patchCodexModelWhitelist() {
     if (!codexPlusModelUnlockEnabled()) return;
     installModelJsonResponsePatch();
     patchAppServerModelMessages();
+    installAppServerModelRequestPatch();
     if (!codexPlusModelNames().length) {
       loadCodexModelCatalog();
       return;
@@ -5423,9 +5512,14 @@
     const right = leftmostNative
       ? Math.max(fallbackRight, Math.round(rowRect.right - leftmostNative.left + gap))
       : fallbackRight;
-    const groupWidth = Math.ceil(group.getBoundingClientRect().width || 90);
+    const groupWidth = Math.ceil(group.getBoundingClientRect().width || 96);
+    const titleNode = row.querySelector(selectors.threadTitle);
+    const titleRect = titleNode?.getBoundingClientRect();
+    const titleLeft = titleRect?.left || rowRect.left + 40;
+    const maxTitleWidth = Math.max(24, Math.round(rowRect.width - (titleLeft - rowRect.left) - right - groupWidth - 14));
     group.style.setProperty("--codex-session-actions-right", `${right}px`);
     row.style.setProperty("--codex-session-title-mask", `${right + groupWidth + 12}px`);
+    row.style.setProperty("--codex-session-title-max-width", `${maxTitleWidth}px`);
   }
 
   function syncActionGroupsLayout() {
