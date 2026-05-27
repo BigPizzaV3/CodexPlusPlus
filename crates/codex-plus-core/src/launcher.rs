@@ -161,6 +161,9 @@ pub trait LaunchHooks: Send + Sync {
     async fn wait_for_codex_exit(&self, launch: &CodexLaunch) -> anyhow::Result<()>;
     async fn shutdown_helper(&self, helper_port: u16);
     async fn terminate_codex(&self, launch: &CodexLaunch);
+    async fn prepare_injection_retry(&self, _app_dir: &Path, _debug_port: u16) -> bool {
+        false
+    }
 }
 
 #[derive(Default)]
@@ -221,9 +224,20 @@ where
         launched = Some(launch.clone());
 
         if settings.enhancements_enabled {
-            match hooks.bridge_context(debug_port).await? {
-                Some(ctx) => hooks.inject_bridge(debug_port, helper_port, ctx).await?,
-                None => hooks.inject(debug_port, helper_port).await?,
+            if let Err(error) = inject_from_hooks(hooks.as_ref(), debug_port, helper_port).await {
+                if hooks.prepare_injection_retry(&app_dir, debug_port).await {
+                    let retry_launch = hooks
+                        .launch_codex(&app_dir, debug_port, &settings.codex_extra_args)
+                        .await?;
+                    launched = Some(retry_launch.clone());
+                    inject_from_hooks(hooks.as_ref(), debug_port, helper_port)
+                        .await
+                        .with_context(|| {
+                            format!("Codex++ injection failed after restarting Codex: {error}")
+                        })?;
+                } else {
+                    return Err(error);
+                }
             }
             hooks.start_bridge_watchdog(debug_port, helper_port).await?;
         }
@@ -265,6 +279,17 @@ where
             hooks.write_status("failed").await;
             Err(error)
         }
+    }
+}
+
+async fn inject_from_hooks(
+    hooks: &dyn LaunchHooks,
+    debug_port: u16,
+    helper_port: u16,
+) -> anyhow::Result<()> {
+    match hooks.bridge_context(debug_port).await? {
+        Some(ctx) => hooks.inject_bridge(debug_port, helper_port, ctx).await,
+        None => hooks.inject(debug_port, helper_port).await,
     }
 }
 
@@ -568,6 +593,10 @@ impl LaunchHooks for DefaultLaunchHooks {
                 process_id: None, ..
             } => {}
         }
+    }
+
+    async fn prepare_injection_retry(&self, app_dir: &Path, debug_port: u16) -> bool {
+        prepare_windows_injection_retry(app_dir, debug_port).await
     }
 }
 
@@ -1135,6 +1164,92 @@ fn runtime_evaluate_result_is_true(result: &Value) -> bool {
         .and_then(|result| result.get("value"))
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+#[cfg(windows)]
+async fn prepare_windows_injection_retry(app_dir: &Path, debug_port: u16) -> bool {
+    if crate::watcher::cdp_listening(debug_port) {
+        return false;
+    }
+
+    let app_dir = app_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let process_ids = windows_codex_processes_for_app_dir(&app_dir);
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "launcher.injection_retry_restart_codex",
+            serde_json::json!({
+                "debug_port": debug_port,
+                "codex_app": app_dir.to_string_lossy(),
+                "process_count": process_ids.len()
+            }),
+        );
+        if process_ids.is_empty() {
+            return false;
+        }
+        for process_id in &process_ids {
+            let _ = crate::windows_integration::terminate_process(*process_id);
+        }
+        wait_for_windows_processes_exit(&process_ids, std::time::Duration::from_secs(8));
+        wait_for_cdp_port_closed(debug_port, std::time::Duration::from_secs(5));
+        true
+    })
+    .await
+    .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+async fn prepare_windows_injection_retry(_app_dir: &Path, _debug_port: u16) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn windows_codex_processes_for_app_dir(app_dir: &Path) -> Vec<u32> {
+    let app_dir = normalize_path_for_process_match(app_dir);
+    let app_dir_prefix = format!("{app_dir}\\");
+    crate::windows_integration::enumerate_processes()
+        .into_iter()
+        .filter(|process| process.exe_file.eq_ignore_ascii_case("codex.exe"))
+        .filter_map(|process| {
+            let path = process.executable_path.as_deref()?;
+            let exe_path = normalize_path_for_process_match(path);
+            exe_path
+                .starts_with(&app_dir_prefix)
+                .then_some(process.process_id)
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn normalize_path_for_process_match(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
+#[cfg(windows)]
+fn wait_for_cdp_port_closed(debug_port: u16, timeout: std::time::Duration) {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if !crate::watcher::cdp_listening(debug_port) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[cfg(windows)]
+fn wait_for_windows_processes_exit(process_ids: &[u32], timeout: std::time::Duration) {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        let running = crate::windows_integration::enumerate_processes()
+            .into_iter()
+            .any(|process| process_ids.contains(&process.process_id));
+        if !running {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {

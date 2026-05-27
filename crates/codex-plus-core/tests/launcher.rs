@@ -764,6 +764,53 @@ async fn launch_lifecycle_writes_failure_and_cleans_helper_when_injection_fails(
 }
 
 #[tokio::test]
+async fn launch_lifecycle_restarts_codex_once_when_injection_retry_is_prepared() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone())
+        .with_inject_errors(vec![
+            "failed to query CDP targets".to_string(),
+            String::new(),
+        ])
+        .with_prepare_retry(true);
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![
+            "select-debug:9229",
+            "select-helper:57321",
+            "load-settings",
+            "apply-relay",
+            "start-helper:57321",
+            "launch:9229",
+            "inject:9229:57321",
+            "prepare-retry:9229",
+            "launch:9229",
+            "inject:9229:57321",
+            "status:running",
+            "wait-codex",
+            "shutdown-helper:57321",
+        ]
+    );
+}
+
+#[tokio::test]
 async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
@@ -1004,6 +1051,8 @@ struct FakeHooks {
     launch_result: CodexLaunch,
     launch_error: Option<String>,
     inject_error: Option<String>,
+    inject_errors: Arc<Mutex<Vec<String>>>,
+    prepare_retry: bool,
     provider_sync_unsupported: bool,
 }
 
@@ -1019,6 +1068,8 @@ impl FakeHooks {
             },
             launch_error: None,
             inject_error: None,
+            inject_errors: Arc::new(Mutex::new(Vec::new())),
+            prepare_retry: false,
             provider_sync_unsupported: false,
         }
     }
@@ -1035,6 +1086,16 @@ impl FakeHooks {
 
     fn with_inject_error(mut self, message: &str) -> Self {
         self.inject_error = Some(message.to_string());
+        self
+    }
+
+    fn with_inject_errors(mut self, messages: Vec<String>) -> Self {
+        self.inject_errors = Arc::new(Mutex::new(messages));
+        self
+    }
+
+    fn with_prepare_retry(mut self, prepare_retry: bool) -> Self {
+        self.prepare_retry = prepare_retry;
         self
     }
 
@@ -1130,6 +1191,19 @@ impl LaunchHooks for FakeHooks {
 
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         self.event(format!("inject:{debug_port}:{helper_port}"));
+        let next_inject_error = {
+            let mut errors = self.inject_errors.lock().unwrap();
+            if errors.is_empty() {
+                None
+            } else {
+                Some(errors.remove(0))
+            }
+        };
+        if let Some(message) = next_inject_error {
+            if !message.is_empty() {
+                anyhow::bail!(message);
+            }
+        }
         if let Some(message) = &self.inject_error {
             anyhow::bail!(message.clone());
         }
@@ -1155,5 +1229,10 @@ impl LaunchHooks for FakeHooks {
         } else {
             self.event("terminate-codex");
         }
+    }
+
+    async fn prepare_injection_retry(&self, _app_dir: &Path, debug_port: u16) -> bool {
+        self.event(format!("prepare-retry:{debug_port}"));
+        self.prepare_retry
     }
 }
