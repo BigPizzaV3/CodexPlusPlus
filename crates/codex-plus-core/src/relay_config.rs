@@ -798,15 +798,21 @@ fn write_codex_live_atomic(
     let config_path = home.join("config.toml");
     let auth_path = home.join("auth.json");
 
-    if let Some(config_text) = config_text {
+    let old_config = read_optional_bytes(&config_path)?;
+    let old_auth = read_optional_bytes(&auth_path)?;
+    let config_text = config_text
+        .map(|config_text| {
+            preserve_live_extension_config_sections(config_text, old_config.as_deref())
+        })
+        .transpose()?;
+
+    if let Some(config_text) = config_text.as_deref() {
         validate_toml_config(config_text, &config_path)?;
     }
     if let Some(auth_bytes) = auth_bytes {
         validate_auth_json(auth_bytes, &auth_path)?;
     }
 
-    let old_config = read_optional_bytes(&config_path)?;
-    let old_auth = read_optional_bytes(&auth_path)?;
     let backup_path = create_live_backup(home, old_config.as_deref(), old_auth.as_deref())?;
     let mut auth_written = false;
 
@@ -817,7 +823,7 @@ fn write_codex_live_atomic(
         auth_written = true;
     }
 
-    if let Some(config_text) = config_text {
+    if let Some(config_text) = config_text.as_deref() {
         if let Err(error) = crate::settings::atomic_write(&config_path, config_text.as_bytes()) {
             if auth_written {
                 let _ = restore_optional_file(&auth_path, old_auth.as_deref());
@@ -828,6 +834,40 @@ fn write_codex_live_atomic(
     }
 
     Ok(backup_path)
+}
+
+fn preserve_live_extension_config_sections(
+    config_text: &str,
+    old_config: Option<&[u8]>,
+) -> anyhow::Result<String> {
+    let Some(old_config) = old_config else {
+        return Ok(config_text.to_string());
+    };
+    let Ok(old_config) = std::str::from_utf8(old_config) else {
+        return Ok(config_text.to_string());
+    };
+    if old_config.trim().is_empty() {
+        return Ok(config_text.to_string());
+    }
+
+    let mut target = parse_toml_document(config_text)?;
+    let Ok(source) = parse_toml_document(old_config) else {
+        return Ok(ensure_trailing_newline(target.to_string()));
+    };
+
+    for table_name in ["marketplaces", "mcp_servers", "skills", "plugins"] {
+        let Some(source_item) = source.get(table_name) else {
+            continue;
+        };
+        match target.get_mut(table_name) {
+            Some(target_item) => merge_missing_toml_item(target_item, source_item),
+            None => {
+                target[table_name] = source_item.clone();
+            }
+        }
+    }
+
+    Ok(normalize_optional_toml(target))
 }
 
 fn normalize_live_config_model_provider(home: &Path, config_text: &str) -> anyhow::Result<String> {
@@ -1203,6 +1243,26 @@ fn merge_toml_item(target: &mut Item, source: &Item) {
     }
 
     *target = source.clone();
+}
+
+fn merge_missing_toml_item(target: &mut Item, source: &Item) {
+    if let Some(source_table) = source.as_table_like() {
+        if let Some(target_table) = target.as_table_like_mut() {
+            merge_missing_toml_table_like(target_table, source_table);
+            return;
+        }
+    }
+}
+
+fn merge_missing_toml_table_like(target: &mut dyn TableLike, source: &dyn TableLike) {
+    for (key, source_item) in source.iter() {
+        match target.get_mut(key) {
+            Some(target_item) => merge_missing_toml_item(target_item, source_item),
+            None => {
+                target.insert(key, source_item.clone());
+            }
+        }
+    }
 }
 
 fn merge_toml_table_like(target: &mut dyn TableLike, source: &dyn TableLike) {

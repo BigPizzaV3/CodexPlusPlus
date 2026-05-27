@@ -1535,6 +1535,64 @@ requires_openai_auth = true
 }
 
 #[test]
+fn apply_relay_profile_to_home_preserves_live_plugin_marketplace_and_mcp_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "old"
+model_provider = "CodexPlusPlus"
+
+[model_providers.CodexPlusPlus]
+name = "CodexPlusPlus"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://old.example/v1"
+experimental_bearer_token = "sk-old"
+
+[marketplaces.openai-curated]
+source_type = "git"
+source = "https://github.com/openai/codex"
+
+[plugins."github@openai-curated"]
+enabled = true
+
+[mcp_servers.live_tool]
+command = "node"
+
+[skills.live_skill]
+enabled = true
+"#,
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "gpt-5.5"
+model_provider = "CodexPlusPlus"
+
+[model_providers.CodexPlusPlus]
+name = "CodexPlusPlus"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"model = "gpt-5.5""#));
+    assert!(config.contains(r#"base_url = "https://relay.example/v1""#));
+    assert!(config.contains("[marketplaces.openai-curated]"));
+    assert!(config.contains("[plugins.\"github@openai-curated\"]"));
+    assert!(config.contains("[mcp_servers.live_tool]"));
+    assert!(config.contains("[skills.live_skill]"));
+}
+
+#[test]
 fn apply_relay_profile_to_home_with_switch_rules_writes_provider_even_when_auth_has_no_api_key() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {
