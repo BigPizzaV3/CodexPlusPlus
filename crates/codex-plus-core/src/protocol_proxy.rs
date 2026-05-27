@@ -116,7 +116,8 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     let mut result = json!({});
 
     if let Some(model) = body.get("model") {
-        result["model"] = model.clone();
+        let model_str = model.as_str().unwrap_or("");
+        result["model"] = serde_json::Value::String(normalize_model_name(model_str).to_string());
     }
 
     let mut messages = Vec::new();
@@ -133,7 +134,7 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     normalize_chat_messages(&mut messages);
     result["messages"] = json!(messages);
 
-    let model = body.get("model").and_then(Value::as_str).unwrap_or("");
+    let model = body.get("model").and_then(Value::as_str).map(normalize_model_name).unwrap_or("");
     if let Some(value) = body.get("max_output_tokens") {
         if is_openai_o_series(model) {
             result["max_completion_tokens"] = value.clone();
@@ -3316,6 +3317,14 @@ fn normalize_reasoning_effort(effort: &str) -> &str {
         "high" => "high",
         "xhigh" => "xhigh",
         _ => "auto",
+    }
+}
+
+fn normalize_model_name(model: &str) -> &str {
+    if model == "codex-auto-review" {
+        "deepseek-v4-pro"
+    } else {
+        model
     }
 }
 
