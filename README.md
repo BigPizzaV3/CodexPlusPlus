@@ -1,5 +1,12 @@
 # Codex++
 
+> Fork note: this repository is based on
+> [BigPizzaV3/CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus)
+> v1.1.8. This fork adds a system tray workflow for the Codex++ Manager:
+> closing the manager window minimizes it to the Windows notification area,
+> left-clicking the tray icon restores it, and the tray menu provides
+> "Open" and "Exit" actions for an explicit shutdown.
+
 <p align="center">
   <img src="docs/images/codex-plus-plus.png" alt="Codex++ 图标" width="160">
 </p>

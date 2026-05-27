@@ -1,6 +1,10 @@
 pub mod commands;
 pub mod install;
 
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager, WindowEvent};
+
 pub fn run() {
     install_panic_logger();
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
@@ -16,6 +20,7 @@ pub fn run() {
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            install_tray(app)?;
             let url = if show_update {
                 "index.html?showUpdate=1"
             } else {
@@ -27,6 +32,12 @@ pub fn run() {
                 .min_inner_size(960.0, 720.0)
                 .build()?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::backend_version,
@@ -84,6 +95,44 @@ pub fn run() {
                 "error": error.to_string()
             }),
         );
+    }
+}
+
+fn install_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "打开", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::new(app)?;
+    menu.append(&show)?;
+    menu.append(&quit)?;
+
+    let mut tray = TrayIconBuilder::new().tooltip("Codex++ 管理工具");
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.menu(&menu)
+    .on_menu_event(|app, event| match event.id().as_ref() {
+        "show" => show_main_window(app),
+        "quit" => app.exit(0),
+        _ => {}
+    })
+    .on_tray_icon_event(|tray, event| {
+        if let TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } = event
+        {
+            show_main_window(tray.app_handle());
+        }
+    })
+    .build(app)?;
+    Ok(())
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
     }
 }
 

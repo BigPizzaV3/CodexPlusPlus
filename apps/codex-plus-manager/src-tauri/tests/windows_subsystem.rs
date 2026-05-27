@@ -32,6 +32,26 @@ fn manager_uses_single_instance_guard_before_starting_tauri() {
 }
 
 #[test]
+fn manager_close_button_minimizes_to_system_tray() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+    let cargo_toml = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+        .expect("read manager Cargo.toml");
+
+    assert!(cargo_toml.contains("\"tray-icon\""));
+    assert!(lib_rs.contains("TrayIconBuilder::new()"));
+    assert!(lib_rs.contains("on_window_event"));
+    assert!(lib_rs.contains("WindowEvent::CloseRequested"));
+    assert!(lib_rs.contains("api.prevent_close()"));
+    assert!(lib_rs.contains("window.hide()"));
+    assert!(lib_rs.contains("Menu::new(app)?"));
+    assert!(lib_rs.contains("MenuItem::with_id(app, \"show\""));
+    assert!(lib_rs.contains("MenuItem::with_id(app, \"quit\""));
+    assert!(lib_rs.contains("on_menu_event"));
+    assert!(lib_rs.contains("app.exit(0)"));
+}
+
+#[test]
 fn launcher_binary_embeds_codex_icon_resource() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let launcher_build = manifest_dir
