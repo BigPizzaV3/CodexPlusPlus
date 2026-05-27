@@ -353,6 +353,7 @@ function syncMarketInstalledState(current: ScriptMarketResult | null, userScript
 
 type StartupResult = CommandResult<{
   showUpdate: boolean;
+  showStatus: boolean;
 }>;
 
 type Route = "overview" | "relay" | "context" | "enhance" | "userScripts" | "providerSync" | "recommendations" | "maintenance" | "about" | "settings";
@@ -1088,6 +1089,9 @@ export function App() {
       if (startup?.showUpdate) {
         setRoute("about");
         void checkUpdate(false);
+      } else if (startup?.showStatus) {
+        setRoute("overview");
+        void checkUpdate(true);
       } else {
         void checkUpdate(true);
       }
@@ -4385,6 +4389,9 @@ function loadInitialRoute(): Route {
   const params = new URLSearchParams(window.location.search);
   if (params.get("showUpdate") === "1" || window.location.hash === "#about") {
     return "about";
+  }
+  if (params.get("showStatus") === "1" || window.location.hash === "#overview") {
+    return "overview";
   }
   return "overview";
 }

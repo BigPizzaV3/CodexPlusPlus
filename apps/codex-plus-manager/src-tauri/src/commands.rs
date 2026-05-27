@@ -220,6 +220,7 @@ pub struct ScriptMarketPayload {
 #[serde(rename_all = "camelCase")]
 pub struct StartupPayload {
     pub show_update: bool,
+    pub show_status: bool,
 }
 
 #[tauri::command]
@@ -238,6 +239,7 @@ pub fn startup_options() -> CommandResult<StartupPayload> {
         "启动参数已读取。",
         StartupPayload {
             show_update: startup_should_show_update(),
+            show_status: startup_should_show_status(),
         },
     )
 }
@@ -249,12 +251,27 @@ pub fn startup_should_show_update() -> bool {
     )
 }
 
+pub fn startup_should_show_status() -> bool {
+    should_show_status(
+        std::env::args(),
+        std::env::var("CODEX_PLUS_SHOW_STATUS").ok().as_deref(),
+    )
+}
+
 fn should_show_update<I, S>(args: I, env_value: Option<&str>) -> bool
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
     args.into_iter().any(|arg| arg.as_ref() == "--show-update") || env_value == Some("1")
+}
+
+fn should_show_status<I, S>(args: I, env_value: Option<&str>) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter().any(|arg| arg.as_ref() == "--show-status") || env_value == Some("1")
 }
 
 #[tauri::command]
@@ -2164,9 +2181,33 @@ mod tests {
     }
 
     #[test]
+    fn startup_options_honors_show_status_environment() {
+        unsafe {
+            std::env::set_var("CODEX_PLUS_SHOW_STATUS", "1");
+        }
+
+        let result = startup_options();
+
+        unsafe {
+            std::env::remove_var("CODEX_PLUS_SHOW_STATUS");
+        }
+
+        assert_eq!(result.status, "ok");
+        assert!(result.payload.show_status);
+    }
+
+    #[test]
     fn startup_options_honors_show_update_argument() {
         assert!(should_show_update(
             ["codex-plus-plus-manager.exe", "--show-update"],
+            None
+        ));
+    }
+
+    #[test]
+    fn startup_options_honors_show_status_argument() {
+        assert!(should_show_status(
+            ["codex-plus-plus-manager.exe", "--show-status"],
             None
         ));
     }

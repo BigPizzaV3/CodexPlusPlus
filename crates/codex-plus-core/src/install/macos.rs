@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::{
     InstallOptions, MANAGER_BINARY, MANAGER_NAME, MacosAppBundle, SILENT_BINARY, SILENT_NAME,
-    install_root_or_default, option_or_current_exe,
+    install_root_or_default, option_or_current_exe_from_exe,
 };
 
 pub fn build_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBundle {
@@ -23,19 +23,23 @@ pub fn build_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBund
     } else {
         SILENT_BINARY
     };
-    let target = option_or_current_exe(
+    let current_exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let target = option_or_current_exe_from_exe(
+        &current_exe,
         if manager {
             &options.manager_path
         } else {
             &options.launcher_path
         },
         binary,
+        Some(&install_root),
     );
     let identifier_suffix = if manager { ".manager" } else { "" };
     MacosAppBundle {
         app_path: install_root.join(format!("{display_name}.app")),
         info_plist: info_plist(display_name, executable_name, identifier_suffix),
         launch_script: format!("#!/bin/sh\nexec \"{}\"\n", target.to_string_lossy()),
+        target_path: target,
     }
 }
 
@@ -77,12 +81,29 @@ fn write_bundle(bundle: &MacosAppBundle) -> anyhow::Result<()> {
     fs::create_dir_all(&resources)?;
     fs::write(contents.join("Info.plist"), &bundle.info_plist)?;
     let executable = macos.join(executable_name_from_plist(&bundle.info_plist));
-    fs::write(&executable, &bundle.launch_script)?;
+    if executable != bundle.target_path {
+        fs::write(&executable, &bundle.launch_script)?;
+    }
     let mut permissions = fs::metadata(&executable)?.permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(executable, permissions)?;
     copy_icon(&resources)?;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn launch_script_writes_executable(bundle: &MacosAppBundle) -> bool {
+    let executable = bundle
+        .app_path
+        .join("Contents")
+        .join("MacOS")
+        .join(executable_name_from_plist(&bundle.info_plist));
+    executable != bundle.target_path
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn launch_script_writes_executable(_bundle: &MacosAppBundle) -> bool {
+    true
 }
 
 #[cfg(target_os = "macos")]

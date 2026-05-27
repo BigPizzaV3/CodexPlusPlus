@@ -35,6 +35,10 @@ impl Default for LauncherHooks {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    run_launcher().await
+}
+
+async fn run_launcher() -> Result<()> {
     let Some(_guard) = acquire_single_instance_guard()? else {
         return Ok(());
     };
@@ -43,7 +47,13 @@ async fn main() -> Result<()> {
         let _ = notify_manager_when_update_available().await;
     });
     let hooks = LauncherHooks::default();
-    let handle = launch_and_inject_with_hooks(options, &hooks).await?;
+    let handle = match launch_and_inject_with_hooks(options, &hooks).await {
+        Ok(handle) => handle,
+        Err(error) => {
+            let _ = open_manager_with_status_prompt();
+            return Err(error);
+        }
+    };
     handle.wait_for_codex_exit().await?;
     Ok(())
 }
@@ -84,9 +94,23 @@ async fn notify_manager_when_update_available() -> anyhow::Result<bool> {
 }
 
 fn open_manager_with_update_prompt() -> anyhow::Result<()> {
+    open_manager_with_args(["--show-update"])
+}
+
+fn open_manager_with_status_prompt() -> anyhow::Result<()> {
+    open_manager_with_args(["--show-status"])
+}
+
+fn open_manager_with_args<I, S>(args: I) -> anyhow::Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
     let manager_path = manager_exe_path();
     let mut command = std::process::Command::new(&manager_path);
-    command.arg("--show-update");
+    for arg in args {
+        command.arg(arg);
+    }
     #[cfg(windows)]
     {
         command.creation_flags(codex_plus_core::windows_create_no_window());
@@ -558,14 +582,7 @@ fn open_url(url: &str) -> anyhow::Result<()> {
 }
 
 fn manager_exe_path() -> PathBuf {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-    let dir = exe.parent().unwrap_or_else(|| Path::new("."));
-    let suffix = if cfg!(windows) { ".exe" } else { "" };
-    dir.join(format!(
-        "{}{}",
-        codex_plus_core::install::MANAGER_BINARY,
-        suffix
-    ))
+    codex_plus_core::install::companion_binary_path(codex_plus_core::install::MANAGER_BINARY)
 }
 
 fn default_user_script_manager() -> UserScriptManager {
@@ -639,6 +656,31 @@ mod tests {
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.contains(codex_plus_core::install::MANAGER_BINARY))
         );
+    }
+
+    #[test]
+    fn installed_launcher_resolves_manager_app_executable() {
+        let launcher_exe = Path::new("/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus");
+        let manager_path = codex_plus_core::install::option_or_current_exe_from_exe(
+            launcher_exe,
+            &None,
+            codex_plus_core::install::MANAGER_BINARY,
+            Some(Path::new("/Applications")),
+        );
+
+        assert_eq!(
+            manager_path,
+            PathBuf::from("/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager")
+        );
+    }
+
+    #[test]
+    fn launcher_failure_prompt_opens_manager_status_view() {
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("open_manager_with_status_prompt"));
+        assert!(source.contains("\"--show-status\""));
+        assert!(source.contains("launch_and_inject_with_hooks(options, &hooks).await"));
     }
 }
 

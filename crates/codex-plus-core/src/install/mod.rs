@@ -48,6 +48,7 @@ pub struct MacosAppBundle {
     pub app_path: PathBuf,
     pub info_plist: String,
     pub launch_script: String,
+    pub target_path: PathBuf,
 }
 
 impl ShortcutState {
@@ -109,6 +110,10 @@ pub fn build_windows_entrypoint_plan(options: &InstallOptions) -> windows::Windo
 
 pub fn build_macos_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBundle {
     macos::build_app_bundle(options, manager)
+}
+
+pub fn macos_launch_script_writes_executable(bundle: &MacosAppBundle) -> bool {
+    macos::launch_script_writes_executable(bundle)
 }
 
 pub fn remove_owned_data() -> std::io::Result<()> {
@@ -217,11 +222,20 @@ fn entrypoint_candidates(root: &Option<PathBuf>, manager: bool) -> Vec<PathBuf> 
 }
 
 pub fn option_or_current_exe(value: &Option<PathBuf>, binary: &str) -> PathBuf {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    option_or_current_exe_from_exe(&exe, value, binary, None)
+}
+
+pub fn option_or_current_exe_from_exe(
+    exe: &Path,
+    value: &Option<PathBuf>,
+    binary: &str,
+    install_root: Option<&Path>,
+) -> PathBuf {
     if let Some(value) = value {
         return value.clone();
     }
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-    companion_binary_path_from_exe(&exe, binary)
+    companion_binary_path_from_exe_with_install_root(exe, binary, install_root)
 }
 
 pub fn companion_binary_path(binary: &str) -> PathBuf {
@@ -230,12 +244,20 @@ pub fn companion_binary_path(binary: &str) -> PathBuf {
 }
 
 pub fn companion_binary_path_from_exe(exe: &Path, binary: &str) -> PathBuf {
+    companion_binary_path_from_exe_with_install_root(exe, binary, None)
+}
+
+fn companion_binary_path_from_exe_with_install_root(
+    exe: &Path,
+    binary: &str,
+    install_root: Option<&Path>,
+) -> PathBuf {
     let dir = exe.parent().unwrap_or_else(|| Path::new("."));
     let suffix = if cfg!(windows) { ".exe" } else { "" };
+    if let Some(app_binary) = macos_installed_app_binary_from_exe(exe, binary, install_root) {
+        return app_binary;
+    }
     if binary == SILENT_BINARY {
-        if let Some(sibling_app_binary) = macos_silent_app_binary_from_exe(exe) {
-            return sibling_app_binary;
-        }
         let same_bundle = dir.join(binary);
         if same_bundle.exists() {
             return same_bundle;
@@ -244,14 +266,26 @@ pub fn companion_binary_path_from_exe(exe: &Path, binary: &str) -> PathBuf {
     dir.join(format!("{binary}{suffix}"))
 }
 
-fn macos_silent_app_binary_from_exe(exe: &Path) -> Option<PathBuf> {
-    macos_applications_dir_from_exe(exe).map(|applications_dir| {
+fn macos_installed_app_binary_from_exe(
+    exe: &Path,
+    binary: &str,
+    install_root: Option<&Path>,
+) -> Option<PathBuf> {
+    let applications_dir = install_root
+        .map(Path::to_path_buf)
+        .or_else(|| macos_applications_dir_from_exe(exe))?;
+    let (app_name, executable_name) = match binary {
+        SILENT_BINARY => (SILENT_NAME, "CodexPlusPlus"),
+        MANAGER_BINARY => (MANAGER_NAME, "CodexPlusPlusManager"),
+        _ => return None,
+    };
+    Some(
         applications_dir
-            .join(format!("{SILENT_NAME}.app"))
+            .join(format!("{app_name}.app"))
             .join("Contents")
             .join("MacOS")
-            .join("CodexPlusPlus")
-    })
+            .join(executable_name),
+    )
 }
 
 fn macos_applications_dir_from_exe(exe: &Path) -> Option<PathBuf> {

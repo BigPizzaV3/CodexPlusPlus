@@ -13,11 +13,14 @@ pub fn run() {
         return;
     };
     let show_update = commands::startup_should_show_update();
+    let show_status = commands::startup_should_show_status();
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let url = if show_update {
                 "index.html?showUpdate=1"
+            } else if show_status {
+                "index.html?showStatus=1"
             } else {
                 "index.html"
             };
