@@ -49,10 +49,21 @@ async fn main() -> Result<()> {
 }
 
 fn acquire_single_instance_guard() -> anyhow::Result<Option<std::net::TcpListener>> {
-    match codex_plus_core::ports::acquire_loopback_port_guard(
+    match codex_plus_core::ports::acquire_resilient_loopback_port_guard(
         codex_plus_core::ports::LAUNCHER_GUARD_PORT,
     ) {
-        Ok(listener) => Ok(Some(listener)),
+        Ok((listener, fallback_port)) => {
+            if let Some(actual_guard_port) = fallback_port {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "launcher.guard_fallback",
+                    json!({
+                        "requested_guard_port": codex_plus_core::ports::LAUNCHER_GUARD_PORT,
+                        "actual_guard_port": actual_guard_port
+                    }),
+                );
+            }
+            Ok(Some(listener))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                 "launcher.already_running",

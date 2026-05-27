@@ -54,3 +54,21 @@ pub fn can_connect_loopback_port(port: u16) -> bool {
 pub fn acquire_loopback_port_guard(port: u16) -> std::io::Result<TcpListener> {
     TcpListener::bind(("127.0.0.1", port))
 }
+
+pub fn acquire_resilient_loopback_port_guard(
+    port: u16,
+) -> std::io::Result<(TcpListener, Option<u16>)> {
+    match acquire_loopback_port_guard(port) {
+        Ok(listener) => Ok((listener, None)),
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            if can_connect_loopback_port(port) {
+                Err(error)
+            } else {
+                let listener = TcpListener::bind(("127.0.0.1", 0))?;
+                let actual_port = listener.local_addr().ok().map(|address| address.port());
+                Ok((listener, actual_port))
+            }
+        }
+        Err(error) => Err(error),
+    }
+}

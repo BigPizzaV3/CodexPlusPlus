@@ -113,10 +113,21 @@ fn install_panic_logger() {
 }
 
 fn acquire_single_instance_guard() -> Option<std::net::TcpListener> {
-    match codex_plus_core::ports::acquire_loopback_port_guard(
+    match codex_plus_core::ports::acquire_resilient_loopback_port_guard(
         codex_plus_core::ports::MANAGER_GUARD_PORT,
     ) {
-        Ok(listener) => Some(listener),
+        Ok((listener, fallback_port)) => {
+            if let Some(actual_guard_port) = fallback_port {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "manager.guard_fallback",
+                    serde_json::json!({
+                        "requested_guard_port": codex_plus_core::ports::MANAGER_GUARD_PORT,
+                        "actual_guard_port": actual_guard_port
+                    }),
+                );
+            }
+            Some(listener)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                 "manager.already_running",
