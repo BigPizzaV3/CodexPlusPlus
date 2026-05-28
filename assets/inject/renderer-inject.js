@@ -364,6 +364,128 @@
         background: #dc2626;
         color: #ffffff;
       }
+      /* Dark theme overrides for delete-confirm and project-move dialogs.
+         Triggered either by Codex applying a "dark" class / data-theme="dark"
+         on its document root, or by the OS-level prefers-color-scheme hint.
+         Palette matches the existing Codex++ dark modal (.codex-plus-modal-content). */
+      html.dark .codex-delete-confirm-overlay,
+      html[data-theme="dark"] .codex-delete-confirm-overlay,
+      :root[data-theme="dark"] .codex-delete-confirm-overlay {
+        background: rgba(0,0,0,.55);
+      }
+      html.dark .codex-delete-confirm-content,
+      html[data-theme="dark"] .codex-delete-confirm-content,
+      :root[data-theme="dark"] .codex-delete-confirm-content {
+        border-color: rgba(255,255,255,.12);
+        background: #2b2b2b;
+        color: #f3f4f6;
+        box-shadow: 0 24px 80px rgba(0,0,0,.55);
+      }
+      html.dark .codex-delete-confirm-message,
+      html[data-theme="dark"] .codex-delete-confirm-message,
+      :root[data-theme="dark"] .codex-delete-confirm-message {
+        color: #d1d5db;
+      }
+      html.dark .codex-delete-confirm-actions button,
+      html[data-theme="dark"] .codex-delete-confirm-actions button,
+      :root[data-theme="dark"] .codex-delete-confirm-actions button {
+        border-color: rgba(255,255,255,.18);
+        background: #3f3f46;
+        color: #f3f4f6;
+      }
+      html.dark .codex-delete-confirm-actions [data-codex-delete-confirm="true"],
+      html[data-theme="dark"] .codex-delete-confirm-actions [data-codex-delete-confirm="true"],
+      :root[data-theme="dark"] .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
+        border-color: #ef4444;
+        background: #dc2626;
+        color: #ffffff;
+      }
+      html.dark .${projectMoveOverlayClass},
+      html[data-theme="dark"] .${projectMoveOverlayClass},
+      :root[data-theme="dark"] .${projectMoveOverlayClass} {
+        background: rgba(0,0,0,.55);
+      }
+      html.dark .codex-project-move-panel,
+      html[data-theme="dark"] .codex-project-move-panel,
+      :root[data-theme="dark"] .codex-project-move-panel {
+        border-color: rgba(255,255,255,.12);
+        background: #2b2b2b;
+        color: #f3f4f6;
+        box-shadow: 0 18px 60px rgba(0,0,0,.55);
+      }
+      html.dark .codex-project-move-header,
+      html[data-theme="dark"] .codex-project-move-header,
+      :root[data-theme="dark"] .codex-project-move-header {
+        border-bottom-color: rgba(255,255,255,.1);
+      }
+      html.dark .codex-project-move-item,
+      html[data-theme="dark"] .codex-project-move-item,
+      :root[data-theme="dark"] .codex-project-move-item {
+        color: #f3f4f6;
+      }
+      html.dark .codex-project-move-item:hover,
+      html.dark .codex-project-move-item:focus-visible,
+      html[data-theme="dark"] .codex-project-move-item:hover,
+      html[data-theme="dark"] .codex-project-move-item:focus-visible,
+      :root[data-theme="dark"] .codex-project-move-item:hover,
+      :root[data-theme="dark"] .codex-project-move-item:focus-visible {
+        background: rgba(255,255,255,.08);
+      }
+      html.dark .codex-project-move-item-path,
+      html[data-theme="dark"] .codex-project-move-item-path,
+      :root[data-theme="dark"] .codex-project-move-item-path,
+      html.dark .codex-project-move-empty,
+      html[data-theme="dark"] .codex-project-move-empty,
+      :root[data-theme="dark"] .codex-project-move-empty {
+        color: #9ca3af;
+      }
+      @media (prefers-color-scheme: dark) {
+        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-overlay {
+          background: rgba(0,0,0,.55);
+        }
+        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-content {
+          border-color: rgba(255,255,255,.12);
+          background: #2b2b2b;
+          color: #f3f4f6;
+          box-shadow: 0 24px 80px rgba(0,0,0,.55);
+        }
+        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-message {
+          color: #d1d5db;
+        }
+        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-actions button {
+          border-color: rgba(255,255,255,.18);
+          background: #3f3f46;
+          color: #f3f4f6;
+        }
+        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
+          border-color: #ef4444;
+          background: #dc2626;
+          color: #ffffff;
+        }
+        html:not(.light):not([data-theme="light"]) .${projectMoveOverlayClass} {
+          background: rgba(0,0,0,.55);
+        }
+        html:not(.light):not([data-theme="light"]) .codex-project-move-panel {
+          border-color: rgba(255,255,255,.12);
+          background: #2b2b2b;
+          color: #f3f4f6;
+          box-shadow: 0 18px 60px rgba(0,0,0,.55);
+        }
+        html:not(.light):not([data-theme="light"]) .codex-project-move-header {
+          border-bottom-color: rgba(255,255,255,.1);
+        }
+        html:not(.light):not([data-theme="light"]) .codex-project-move-item {
+          color: #f3f4f6;
+        }
+        html:not(.light):not([data-theme="light"]) .codex-project-move-item:hover,
+        html:not(.light):not([data-theme="light"]) .codex-project-move-item:focus-visible {
+          background: rgba(255,255,255,.08);
+        }
+        html:not(.light):not([data-theme="light"]) .codex-project-move-item-path,
+        html:not(.light):not([data-theme="light"]) .codex-project-move-empty {
+          color: #9ca3af;
+        }
+      }
       #${codexPlusMenuId}.${codexPlusMenuFloatingClass} {
         position: fixed;
         top: var(--codex-plus-menu-top, 0);
