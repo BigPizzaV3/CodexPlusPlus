@@ -276,6 +276,7 @@ body {
   padding: 14px 20px;
   border-bottom: 1px solid hsl(var(--border));
   background: hsl(var(--card));
+  animation: topbar-enter var(--motion-normal) var(--motion-ease) both;
 }
 
 .topbar h1 {
@@ -304,7 +305,8 @@ body {
   overflow: auto;
   padding: 16px 20px 24px;
   scrollbar-gutter: stable;
-  animation: screen-enter var(--motion-slow) var(--motion-ease) both;
+  animation: screen-enter 260ms var(--motion-ease) both;
+  will-change: opacity, transform;
 }
 
 .grid {
@@ -670,6 +672,7 @@ body {
   overflow: auto;
   background: hsl(var(--background));
   scrollbar-gutter: stable;
+  animation: relay-detail-enter 280ms var(--motion-ease) both;
 }
 
 .relay-detail-sticky {
@@ -680,6 +683,7 @@ body {
   padding: 10px 20px;
   background: hsl(var(--background));
   border-bottom: 1px solid hsl(var(--border));
+  animation: relay-detail-toolbar-enter 220ms var(--motion-ease) both;
 }
 
 .relay-detail-sticky .toolbar {
@@ -693,9 +697,11 @@ body {
   background: hsl(var(--background));
   margin: 0 20px;
   padding: 14px;
+  animation: relay-editor-enter 260ms var(--motion-ease) 40ms both;
   transition:
     border-color var(--motion-normal) var(--motion-ease),
     box-shadow var(--motion-normal) var(--motion-ease);
+  will-change: opacity, transform;
 }
 
 .relay-profile-editor:focus-within {
@@ -734,6 +740,61 @@ body {
   grid-template-columns: 1fr;
   gap: 12px;
   margin-top: 12px;
+}
+
+.relay-profile-editor .field,
+.relay-profile-editor .relay-advanced-toggle,
+.relay-profile-editor .hint-line {
+  animation: relay-field-enter 220ms var(--motion-ease) both;
+}
+
+.relay-profile-editor .field:nth-child(1) {
+  animation-delay: 45ms;
+}
+
+.relay-profile-editor .field:nth-child(2) {
+  animation-delay: 70ms;
+}
+
+.relay-profile-editor .field:nth-child(3) {
+  animation-delay: 95ms;
+}
+
+.relay-profile-editor .field:nth-child(4),
+.relay-profile-editor .relay-advanced-toggle {
+  animation-delay: 120ms;
+}
+
+.relay-advanced-fields,
+.relay-api-fields {
+  display: grid;
+  grid-column: 1;
+  gap: 12px;
+  animation: relay-section-enter 240ms var(--motion-ease) both;
+  overflow: hidden;
+}
+
+.relay-advanced-fields {
+  animation-duration: 220ms;
+}
+
+.relay-advanced-fields .field:nth-child(1),
+.relay-api-fields .field:nth-child(1) {
+  animation-delay: 20ms;
+}
+
+.relay-advanced-fields .field:nth-child(2),
+.relay-api-fields .field:nth-child(2) {
+  animation-delay: 45ms;
+}
+
+.relay-advanced-fields .field:nth-child(3),
+.relay-api-fields .field:nth-child(3) {
+  animation-delay: 70ms;
+}
+
+.relay-api-fields .field:nth-child(4) {
+  animation-delay: 95ms;
 }
 
 .relay-field-name {
@@ -1765,7 +1826,79 @@ body {
 @keyframes screen-enter {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translate3d(0, 10px, 0) scale(0.992);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes topbar-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes relay-detail-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes relay-detail-toolbar-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes relay-editor-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0) scale(0.992);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes relay-section-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes relay-field-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
   }
 
   to {

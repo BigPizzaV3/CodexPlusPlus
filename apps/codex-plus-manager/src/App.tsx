@@ -1258,7 +1258,7 @@ export function App() {
         </nav>
       </aside>
       <main className="workspace">
-        <header className="topbar">
+        <header className="topbar" key={`topbar-${route}`}>
           <div>
             <h1>{routeTitle(route)}</h1>
             <p>{routeSubtitle(route)}</p>
@@ -1281,7 +1281,7 @@ export function App() {
             </Button>
           </div>
         </header>
-        <section className="screen">
+        <section className="screen" key={route}>
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
@@ -2382,7 +2382,7 @@ function RelayProfileDetail({
     void actions.switchRelayProfile(next);
   };
   return (
-    <div className="relay-detail-page">
+    <div className="relay-detail-page" key={profile.id}>
       <div className="relay-detail-sticky">
         <Toolbar>
           <Button onClick={onBack} variant="secondary">
@@ -2531,7 +2531,7 @@ function RelayProfileEditor({
           </Button>
         </div>
         {showAdvanced ? (
-          <>
+          <div className="relay-advanced-fields">
             <Field className="relay-field-test-model" label="测试模型">
               <Input
                 value={profile.testModel}
@@ -2555,7 +2555,7 @@ function RelayProfileEditor({
                 placeholder="留空不改写，例如 160000"
               />
             </Field>
-          </>
+          </div>
         ) : null}
         {profile.relayMode === "official" ? (
           <Field className="relay-field-official-key" label="API Key">
@@ -2570,7 +2570,7 @@ function RelayProfileEditor({
           </Field>
         ) : null}
         {showApiFields ? (
-          <>
+          <div className="relay-api-fields">
             <Field className="relay-field-base-url" label="Base URL">
               <Input
                 value={profile.baseUrl}
@@ -2604,7 +2604,7 @@ function RelayProfileEditor({
                 </button>
               </div>
             </Field>
-          </>
+          </div>
         ) : null}
         {showApiFields ? (
           <Field className="relay-field-model-list" label="模型列表">
