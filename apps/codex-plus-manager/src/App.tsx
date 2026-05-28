@@ -95,6 +95,8 @@ type BackendSettings = {
   codexAppPath: string;
   codexExtraArgs: string[];
   providerSyncEnabled: boolean;
+  relayProfilesEnabled: boolean;
+  ccsLinkEnabled: boolean;
   enhancementsEnabled: boolean;
   codexGoalsEnabled: boolean;
   launchMode: LaunchMode;
@@ -115,6 +117,7 @@ type LaunchMode = "patch" | "relay";
 
 type RelayProfile = {
   id: string;
+  linkedCcsProviderId: string;
   name: string;
   model: string;
   baseUrl: string;
@@ -249,11 +252,6 @@ type CcsProviderImport = {
   authContents: string;
 };
 
-type CcsProvidersResult = CommandResult<{
-  dbPath: string;
-  providers: CcsProviderImport[];
-}>;
-
 type LogsResult = CommandResult<{
   path: string;
   text: string;
@@ -375,6 +373,8 @@ const defaultSettings: BackendSettings = {
   codexAppPath: "",
   codexExtraArgs: [],
   providerSyncEnabled: false,
+  relayProfilesEnabled: true,
+  ccsLinkEnabled: false,
   enhancementsEnabled: true,
   codexGoalsEnabled: false,
   launchMode: "patch",
@@ -383,6 +383,7 @@ const defaultSettings: BackendSettings = {
   relayProfiles: [
     {
       id: "default",
+      linkedCcsProviderId: "",
       name: "默认中转",
       model: "",
       baseUrl: "",
@@ -421,7 +422,6 @@ export function App() {
   const [relay, setRelay] = useState<RelayResult | null>(null);
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
-  const [ccsProviders, setCcsProviders] = useState<CcsProvidersResult | null>(null);
   const [logs, setLogs] = useState<LogsResult | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
   const [watcher, setWatcher] = useState<WatcherResult | null>(null);
@@ -546,15 +546,6 @@ export function App() {
     return result;
   };
 
-  const refreshCcsProviders = async (silent = false) => {
-    const result = await run(() => call<CcsProvidersResult>("load_ccs_providers"));
-    if (result) {
-      setCcsProviders(result);
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice("外部供应商配置", result, { silentSuccess: true });
-    }
-    return result;
-  };
-
   const refreshLogs = async (silent = false) => {
     const result = await run(() => call<LogsResult>("read_latest_logs", { request: { lines: 240 } }));
     if (result) {
@@ -586,7 +577,6 @@ export function App() {
       await refreshSettings(true);
       await refreshRelay(true);
       await refreshRelayFiles(true);
-      await refreshCcsProviders(true);
     }
     if (next === "context") {
       await refreshSettings(true);
@@ -737,8 +727,7 @@ export function App() {
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
-      await refreshCcsProviders(true);
-      showResultNotice("导入供应商配置", result);
+      showResultNotice("联动 cc-switch", result);
     }
   };
 
@@ -913,6 +902,10 @@ export function App() {
   };
 
   const switchRelayProfile = async (next: BackendSettings) => {
+    if (!next.relayProfilesEnabled) {
+      showNotice("供应商配置已关闭", "当前不会写入 Codex config.toml / auth.json。打开供应商配置总开关后再切换。", "failed");
+      return;
+    }
     const targetBeforeSnapshot = activeRelayProfile(next);
     logDiagnostic("switchRelayProfile.start", {
       currentRelayId: settingsForm.activeRelayId,
@@ -1178,7 +1171,6 @@ export function App() {
       refreshRelayFiles,
       refreshLiveContextEntries,
       syncLiveContextEntries,
-      refreshCcsProviders,
       importCcsProviders,
       refreshAds,
       refreshScriptMarket,
@@ -1300,7 +1292,6 @@ export function App() {
             <RelayScreen
               settings={settings}
               relayFiles={relayFiles}
-              ccsProviders={ccsProviders}
               form={settingsForm}
               onFormChange={setSettingsForm}
               actions={actions}
@@ -1374,7 +1365,6 @@ type Actions = {
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
-  refreshCcsProviders: () => Promise<CcsProvidersResult | null>;
   importCcsProviders: () => Promise<void>;
   refreshAds: () => Promise<void>;
   refreshScriptMarket: () => Promise<void>;
@@ -1483,14 +1473,12 @@ function OverviewScreen({
 function RelayScreen({
   settings: _settings,
   relayFiles,
-  ccsProviders,
   form,
   onFormChange,
   actions,
 }: {
   settings: SettingsResult | null;
   relayFiles: RelayFilesResult | null;
-  ccsProviders: CcsProvidersResult | null;
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
@@ -1543,27 +1531,38 @@ function RelayScreen({
       <Panel>
         <CardHead title="供应商列表" detail={`${normalized.relayProfiles.length} 个供应商配置；可拖动排序，点编辑进入详情`} />
         <CardContent>
-          <div className="relay-import-row">
-            <div>
-              <strong>供应商配置导入</strong>
-              <span>{ccsProviderSummary(ccsProviders)}</span>
-            </div>
-            <Toolbar>
-              <Button onClick={() => void actions.refreshCcsProviders()} size="sm" variant="ghost">
-                <RefreshCw className="h-4 w-4" />
-                刷新
-              </Button>
-              <Button
-                disabled={!ccsProviders?.providers.length}
-                onClick={() => void actions.importCcsProviders()}
-                size="sm"
-                variant="secondary"
-              >
-                <Download className="h-4 w-4" />
-                导入供应商配置
-              </Button>
-            </Toolbar>
-          </div>
+          <label className="switch-row relay-master-switch">
+            <input
+              checked={normalized.relayProfilesEnabled}
+              onChange={(event) => {
+                const next = { ...normalized, relayProfilesEnabled: event.currentTarget.checked };
+                saveRelaySettings(next);
+              }}
+              type="checkbox"
+            />
+            <span>
+              <strong>启用供应商配置切换</strong>
+              <small>关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。</small>
+            </span>
+          </label>
+          <label className="switch-row relay-link-switch">
+            <input
+              checked={normalized.ccsLinkEnabled}
+              onChange={(event) => {
+                if (event.currentTarget.checked) {
+                  void actions.importCcsProviders();
+                  return;
+                }
+                const next = { ...normalized, ccsLinkEnabled: false };
+                saveRelaySettings(next);
+              }}
+              type="checkbox"
+            />
+            <span>
+              <strong>联动 cc-switch</strong>
+              <small>开启后读取 cc-switch Codex 供应商并保存时回写；同时使用多个管理工具可能导致 config.toml / auth.json 被反复覆盖。</small>
+            </span>
+          </label>
           <div className="relay-add-row">
             <Button
               variant="secondary"
@@ -1583,6 +1582,7 @@ function RelayScreen({
               setDetailProfileId(profileId);
             }}
             onFormChange={saveRelaySettings}
+            disabled={!normalized.relayProfilesEnabled}
             actions={actions}
           />
         </CardContent>
@@ -1747,7 +1747,7 @@ function ProviderSyncScreen({
               "自动修复只在 Codex++ 启动 Codex 前运行，不会常驻监控或反复改写。",
               "需要马上整理旧对话时，可以点击“立刻修复历史会话”。",
               "它不控制页面功能，也不影响 API URL 或 Key。",
-              "切回官方时历史会话会整理为 openai；切到 API 时会整理为 CodexPlusPlus。",
+              "切回官方时历史会话会整理为 openai；切到 API 时会整理为 custom。",
             ]}
           />
         </CardContent>
@@ -2120,11 +2120,13 @@ function RelayProfileList({
   form,
   onFormChange,
   onEdit,
+  disabled = false,
   actions,
 }: {
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
   onEdit: (id: string) => void;
+  disabled?: boolean;
   actions: Actions;
 }) {
   const sensors = useSensors(
@@ -2153,6 +2155,7 @@ function RelayProfileList({
               key={profile.id}
               onEdit={onEdit}
               onFormChange={onFormChange}
+              disabled={disabled}
               profile={profile}
             />
           ))}
@@ -2168,6 +2171,7 @@ function SortableRelayProfileCard({
   index,
   onFormChange,
   onEdit,
+  disabled = false,
   actions,
 }: {
   form: BackendSettings;
@@ -2175,6 +2179,7 @@ function SortableRelayProfileCard({
   index: number;
   onFormChange: (value: BackendSettings) => void;
   onEdit: (id: string) => void;
+  disabled?: boolean;
   actions: Actions;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: profile.id });
@@ -2211,18 +2216,20 @@ function SortableRelayProfileCard({
       </span>
       <span className="relay-summary">
         <strong>{profile.name || "未命名供应商"}</strong>
-        <small>{relayModeLabel(profile.relayMode)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
+        <small>{relayProfileSourceLabel(profile)} · {relayModeLabel(profile.relayMode)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
       </span>
       <span className="relay-card-actions">
         <Button
           className={`relay-use-button ${active ? "active" : ""}`}
+          disabled={disabled}
           onClick={(event) => {
             event.stopPropagation();
+            if (disabled) return;
             const next = syncLegacyRelayFields({ ...form, activeRelayId: profile.id });
             void actions.switchRelayProfile(next);
           }}
           size="sm"
-          title={active ? "当前正在使用" : "设为当前"}
+          title={disabled ? "供应商配置总开关已关闭" : active ? "当前正在使用" : "设为当前"}
           variant={active ? "secondary" : "outline"}
         >
           <CheckCircle2 className="h-4 w-4" />
@@ -2365,7 +2372,7 @@ function RelayProfileDetail({
     onSaved?.();
   };
   const switchDraft = () => {
-    if (isNew) return;
+    if (isNew || !form.relayProfilesEnabled) return;
     const normalizedDraft = deriveRelayProfileFromFiles(draft);
     const next = syncLegacyRelayFields({
       ...form,
@@ -2388,7 +2395,7 @@ function RelayProfileDetail({
           </Button>
         </Toolbar>
       </div>
-      <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} />
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} />
       <RelayFileEditors
         contextProfile={profile}
         profile={draft}
@@ -2457,11 +2464,13 @@ function RelayProfileEditor({
       <div className="relay-editor-head">
         <div>
           <strong>{profile.name || "未命名供应商"}</strong>
-          <span>{isNew ? "新建供应商需要先保存到列表" : profile.id === form.activeRelayId ? "当前正在使用" : "编辑后保存列表，再切换模式时会使用新配置"}</span>
+          <span>{relayProfileEditorStatus(profile, form, isNew)}</span>
         </div>
         {isNew ? null : (
           <Button
+            disabled={!form.relayProfilesEnabled}
             onClick={onSwitch}
+            title={!form.relayProfilesEnabled ? "供应商配置总开关已关闭" : undefined}
             variant={profile.id === form.activeRelayId ? "secondary" : "default"}
           >
             {profile.id === form.activeRelayId ? "使用中" : "设为当前"}
@@ -2631,6 +2640,14 @@ function RelayProfileEditor({
         <ShieldCheck className="h-4 w-4" />
         <span>{relayProfileModeHelp(profile)}</span>
       </div>
+      {profile.linkedCcsProviderId ? (
+        <div className="hint-line relay-protocol-hint">
+          <Link2 className="h-4 w-4" />
+          <span>
+            此供应商联动自 cc-switch：{profile.linkedCcsProviderId}。开启“保存时回写 cc-switch”后，本页保存会同步修改 cc-switch 数据库中的同一供应商。
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2952,7 +2969,7 @@ function RelayFileEditors({
         <div className="relay-file-head">
           <div>
             <strong>auth.json</strong>
-            <span>{isActive ? "当前使用中：打开时从 ~/.codex/auth.json 回填，保存时写回真实文件" : "切换到此供应商时完整写入 ~/.codex/auth.json"}</span>
+            <span>{isActive ? "当前使用中：打开时从 ~/.codex/auth.json 回填，保存后会作为此供应商 auth 存档" : "切换到此供应商时会写入 ~/.codex/auth.json"}</span>
           </div>
         </div>
         <SyncedTextarea
@@ -3721,11 +3738,16 @@ function contextSelectionForAllEntries(settings: BackendSettings): RelayContextS
   };
 }
 
-function ccsProviderSummary(result: CcsProvidersResult | null) {
-  if (!result) return "尚未读取外部供应商数据库。";
-  if (!isSuccessStatus(result.status)) return result.message;
-  if (!result.providers.length) return `未发现 Codex 供应商配置：${result.dbPath}`;
-  return `发现 ${result.providers.length} 个 Codex 供应商配置：${result.dbPath}`;
+function relayProfileSourceLabel(profile: RelayProfile) {
+  return profile.linkedCcsProviderId ? "cc-switch 联动" : "本地";
+}
+
+function relayProfileEditorStatus(profile: RelayProfile, form: BackendSettings, isNew: boolean) {
+  if (isNew) return "新建供应商需要先保存到列表";
+  if (!form.relayProfilesEnabled) return "供应商配置总开关已关闭；当前只保存配置，不写入 Codex live 文件";
+  if (profile.linkedCcsProviderId && form.ccsLinkEnabled) return "联动 cc-switch；保存后会回写外部供应商数据库";
+  if (profile.linkedCcsProviderId) return "联动 cc-switch；当前未开启保存回写";
+  return profile.id === form.activeRelayId ? "当前正在使用" : "编辑后保存列表，再切换模式时会使用新配置";
 }
 
 function providerInitial(name: string) {
@@ -3801,6 +3823,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
       : [
           {
             id: settings.activeRelayId || "default",
+            linkedCcsProviderId: "",
             name: "默认中转",
             model: "",
             baseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
@@ -3826,6 +3849,8 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
   return syncLegacyRelayFields({
     ...defaultSettings,
     ...settings,
+    relayProfilesEnabled: settings.relayProfilesEnabled !== false,
+    ccsLinkEnabled: settings.ccsLinkEnabled === true,
     relayCommonConfigContents,
     relayContextConfigContents,
     relayProfiles: profiles,
@@ -3845,6 +3870,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
   const legacyMixedApi = profile.relayMode === "mixedApi";
   let normalized: RelayProfile = {
     ...profile,
+    linkedCcsProviderId: profile.linkedCcsProviderId || "",
     model: profile.model || "",
     baseUrl: profile.baseUrl || defaultSettings.relayBaseUrl,
     upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl || "",
@@ -3923,7 +3949,7 @@ function relayProfileModeHelp(profile: RelayProfile): string {
     return "此供应商会切回官方登录模式，使用 ChatGPT 官方账号，不写入 API Key。";
   }
   if (profile.relayMode === "pureApi") {
-    return "此供应商会完整写入 config.toml / auth.json，并启用完整页面增强。";
+    return "此供应商会同时写入 config.toml 和 auth.json；API Key 也会注入到 provider bearer token。";
   }
   return "此供应商会保留官方登录模式，并把请求混入当前 API Key；页面增强仍使用兼容模式。";
 }
@@ -3942,9 +3968,9 @@ function relayProfileReadinessText(profile: RelayProfile, relay: RelayResult | n
       : "当前未登录官方账号；切到官方登录模式后仍需要先在 Codex/ChatGPT 登录。";
   }
   const hasFiles = profile.configContents.trim() && profile.authContents.trim();
-  if (!hasFiles) return "当前供应商还没有完整 config.toml / auth.json。";
-  if (relay && !relay.configured) return "纯 API 配置未完整写入：请检查此供应商的 auth.json 是否包含 OPENAI_API_KEY，且 config.toml 是否包含 model_provider / provider / base_url。";
-  return "纯 API 就绪：会直接写入此供应商的完整 config.toml / auth.json。";
+  if (!hasFiles) return "当前供应商还没有完整 config.toml / API Key 存档。";
+  if (relay && !relay.configured) return "纯 API 配置未完整写入：请检查此供应商是否有 OPENAI_API_KEY，且 config.toml 是否包含 model_provider / provider / base_url。";
+  return "纯 API 就绪：会同时写入 config.toml 和 auth.json。";
 }
 
 function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injection" | "apply_relay_injection" | "apply_pure_api_injection" {
@@ -3965,7 +3991,7 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
     return {
       ...profile,
       configContents: profile.officialMixApiKey ? buildRelayConfigToml(profile) : "",
-      authContents: "",
+      authContents: profile.authContents || "",
     };
   }
   return {
@@ -3980,13 +4006,13 @@ function buildRelayConfigToml(profile: Pick<RelayProfile, "model" | "baseUrl" | 
   const apiKey = profile.apiKey.trim();
   const rootLines = [
     profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
-    'model_provider = "CodexPlusPlus"',
+    'model_provider = "custom"',
     "",
   ].filter((line): line is string => line !== null);
   return [
     ...rootLines,
-    "[model_providers.CodexPlusPlus]",
-    'name = "CodexPlusPlus"',
+    "[model_providers.custom]",
+    'name = "custom"',
     'wire_api = "responses"',
     "requires_openai_auth = true",
     `base_url = "${tomlString(baseUrl)}"`,
@@ -4058,7 +4084,6 @@ function applyRelayProfilePatchToFiles(profile: RelayProfile, patch: Partial<Rel
   if ("relayMode" in patch || "officialMixApiKey" in patch) {
     if (next.relayMode === "official" && !next.officialMixApiKey) {
       next.configContents = "";
-      next.authContents = "";
     } else if (!next.configContents.trim() || !next.authContents.trim()) {
       next = withGeneratedRelayFiles(next);
     }
@@ -4187,7 +4212,7 @@ function setRootTomlLine(contents: string, key: string, lineText: string): strin
 }
 
 function setCodexProviderStringKey(contents: string, key: string, value: string): string {
-  const provider = rootTomlStringValue(contents, "model_provider") || "CodexPlusPlus";
+  const provider = rootTomlStringValue(contents, "model_provider") || "custom";
   let next = contents;
   if (!rootTomlStringValue(next, "model_provider")) {
     next = setRootTomlStringKey(next, "model_provider", provider);
@@ -4281,6 +4306,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
   const contextSelection = contextSelectionForAllEntries(settings);
   const next = {
     id,
+    linkedCcsProviderId: "",
     name: `供应商 ${settings.relayProfiles.length + 1}`,
     model: "",
     baseUrl: defaultSettings.relayBaseUrl,
@@ -4323,6 +4349,7 @@ function duplicateRelayProfile(settings: BackendSettings, id: string): BackendSe
   const next = {
     ...source,
     id: nextId,
+    linkedCcsProviderId: "",
     name: `${source.name || "未命名供应商"} 副本`,
   };
   const relayProfiles = [...settings.relayProfiles];

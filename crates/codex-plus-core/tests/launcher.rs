@@ -503,7 +503,6 @@ async fn launch_lifecycle_runs_sync_before_launch_writes_success_and_shutdowns_o
             "select-helper:57321",
             "load-settings",
             "provider-sync",
-            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "inject:9229:57321",
@@ -588,7 +587,6 @@ async fn launch_lifecycle_keeps_js_injection_in_relay_mode() {
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "inject:9229:57321",
@@ -630,7 +628,6 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "apply-relay",
             "launch:9229",
             "status:running",
             "wait-codex",
@@ -639,7 +636,7 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
 }
 
 #[tokio::test]
-async fn launch_lifecycle_applies_active_relay_profile_before_starting_codex() {
+async fn launch_lifecycle_does_not_apply_active_relay_profile_before_starting_codex() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -661,15 +658,38 @@ async fn launch_lifecycle_applies_active_relay_profile_before_starting_codex() {
     handle.wait_for_codex_exit().await.unwrap();
 
     let events = events.lock().unwrap().clone();
-    let apply_index = events
-        .iter()
-        .position(|event| event == "apply-relay")
-        .expect("active relay profile should be applied during launch");
-    let launch_index = events
-        .iter()
-        .position(|event| event == "launch:9229")
-        .expect("Codex should launch");
-    assert!(apply_index < launch_index);
+    assert!(!events.contains(&"apply-relay".to_string()));
+    assert!(events.contains(&"launch:9229".to_string()));
+}
+
+#[tokio::test]
+async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
+        relay_profiles_enabled: false,
+        ..BackendSettings::default()
+    });
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    let events = events.lock().unwrap().clone();
+    assert!(!events.contains(&"apply-relay".to_string()));
+    assert!(events.contains(&"launch:9229".to_string()));
 }
 
 #[tokio::test]
@@ -688,10 +708,10 @@ async fn launch_lifecycle_tolerates_duplicate_context_parent_tables_before_apply
             name: "Relay A".to_string(),
             relay_mode: codex_plus_core::settings::RelayMode::PureApi,
             config_contents: r#"model = "gpt-5.5"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://relay.example/v1"
@@ -718,7 +738,9 @@ experimental_bearer_token = "sk-test"
     .unwrap();
     handle.wait_for_codex_exit().await.unwrap();
 
-    assert!(events.lock().unwrap().contains(&"apply-relay".to_string()));
+    let events = events.lock().unwrap().clone();
+    assert!(!events.contains(&"apply-relay".to_string()));
+    assert!(events.contains(&"launch:9229".to_string()));
 }
 
 #[tokio::test]
@@ -749,7 +771,6 @@ async fn launch_lifecycle_writes_failure_and_cleans_helper_when_injection_fails(
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "inject:9229:57321",
@@ -791,7 +812,6 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "shutdown-helper:57321",
@@ -811,6 +831,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
         enhancements_enabled: false,
         relay_profiles: vec![RelayProfile {
             id: "relay-chat".to_string(),
+            linked_ccs_provider_id: String::new(),
             name: "Chat".to_string(),
             model: String::new(),
             base_url: "https://chat-only.example.test/v1".to_string(),
@@ -897,7 +918,6 @@ async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "inject:9229:57321",

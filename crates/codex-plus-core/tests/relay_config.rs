@@ -4,6 +4,7 @@ use codex_plus_core::relay_config::{
     apply_relay_profile_files_to_home_with_context, apply_relay_profile_to_home_with_switch_rules,
     backfill_relay_profile_from_home, backfill_relay_profile_from_home_with_common,
     chatgpt_auth_status_from_home, clear_relay_config_to_home,
+    clear_relay_config_to_home_with_auth,
     delete_context_entry_from_common_config, extract_common_config_from_config,
     filter_common_config_for_selection, list_context_entries_from_common_config,
     normalize_relay_profile_for_storage, relay_config_status_from_home,
@@ -97,10 +98,10 @@ fn reports_relay_configured_when_required_keys_exist() {
     std::fs::write(
         temp.path().join("config.toml"),
         r#"model = "gpt-5"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 OPENAI_API_KEY = "sk-should-be-removed"
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "http://relay-legacy.example.test/v1"
@@ -149,9 +150,9 @@ model = "gpt-5-mini"
     assert!(!updated.contains(r#"model_provider = "custom1""#));
     assert!(!updated.contains("[model_providers.custom1]"));
     assert!(!updated.contains("[profiles.default]"));
-    assert!(updated.contains(r#"model_provider = "CodexPlusPlus""#));
-    assert!(updated.contains("[model_providers.CodexPlusPlus]"));
-    assert!(updated.contains(r#"name = "CodexPlusPlus""#));
+    assert!(updated.contains(r#"model_provider = "custom""#));
+    assert!(updated.contains("[model_providers.custom]"));
+    assert!(updated.contains(r#"name = "custom""#));
     assert!(updated.contains(r#"wire_api = "responses""#));
     assert!(updated.contains("requires_openai_auth = true"));
     assert!(updated.contains(r#"base_url = "https://relay.example.test/v1""#));
@@ -190,10 +191,10 @@ fn chat_protocol_profile_keeps_upstream_base_url_separate_from_codex_proxy() {
         protocol: RelayProtocol::ChatCompletions,
         relay_mode: RelayMode::PureApi,
         config_contents: r#"model = "deepseek-chat"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "http://127.0.0.1:57321/v1"
@@ -221,7 +222,7 @@ base_url = "http://127.0.0.1:57321/v1"
 }
 
 #[test]
-fn apply_pure_api_config_preserves_auth_json_and_writes_provider_token() {
+fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
         temp.path().join("auth.json"),
@@ -243,13 +244,10 @@ fn apply_pure_api_config_preserves_auth_json_and_writes_provider_token() {
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(result.configured);
     assert!(!config.contains(r#"model = "gpt-5""#));
-    assert_eq!(
-        auth,
-        serde_json::json!({"OPENAI_API_KEY":"sk-test-redacted"})
-    );
-    assert!(config.contains(r#"model_provider = "CodexPlusPlus""#));
-    assert!(config.contains("[model_providers.CodexPlusPlus]"));
-    assert!(config.contains(r#"name = "CodexPlusPlus""#));
+    assert_eq!(auth, serde_json::json!({"OPENAI_API_KEY":"sk-test-redacted"}));
+    assert!(config.contains(r#"model_provider = "custom""#));
+    assert!(config.contains("[model_providers.custom]"));
+    assert!(config.contains(r#"name = "custom""#));
     assert!(config.contains(r#"wire_api = "responses""#));
     assert!(config.contains("requires_openai_auth = true"));
     assert!(config.contains(r#"base_url = "http://relay-legacy.example.test/v1""#));
@@ -264,9 +262,9 @@ fn apply_relay_files_switches_complete_config_and_auth_json() {
 
     let result = apply_relay_files_to_home(
         temp.path(),
-        r#"model_provider = "CodexPlusPlus"
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+        r#"model_provider = "custom"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://relay-a.example/v1"
@@ -517,13 +515,13 @@ path = "plugin.js"
 fn extracts_codex_common_config_without_provider_fields() {
     let extracted = extract_common_config_from_config(
         r#"model = "gpt-5"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 base_url = "https://root-provider.example/v1"
 model_catalog_json = "C:\\Users\\me\\.codex\\model-catalogs\\relay-a.json"
 OPENAI_API_KEY = "sk-root"
 
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+[model_providers.custom]
+name = "custom"
 base_url = "https://relay.example/v1"
 
 [mcp_servers.context7]
@@ -591,9 +589,9 @@ enabled = true
 "#;
     let stripped = strip_common_config_from_config(
         r#"model = "gpt-5"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 
-[model_providers.CodexPlusPlus]
+[model_providers.custom]
 base_url = "https://relay.example/v1"
 
 [mcp_servers.context7]
@@ -608,7 +606,7 @@ enabled = false
     .unwrap();
 
     assert!(stripped.contains(r#"model = "gpt-5""#));
-    assert!(stripped.contains("[model_providers.CodexPlusPlus]"));
+    assert!(stripped.contains("[model_providers.custom]"));
     assert!(!stripped.contains("[mcp_servers.context7]"));
     assert!(stripped.contains("[skills.writer]"));
     assert!(stripped.contains("enabled = false"));
@@ -629,10 +627,10 @@ command = "old"
     apply_relay_files_to_home_with_common(
         temp.path(),
         r#"model = "gpt-5"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 model_catalog_json = 'C:\Users\me\.codex\model-catalogs\relay-mpgm24lf.json'
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://relay.example/v1"
@@ -670,9 +668,9 @@ fn apply_relay_files_with_context_selection_writes_all_global_context() {
 
     codex_plus_core::relay_config::apply_relay_files_to_home_with_context(
         temp.path(),
-        r#"model_provider = "CodexPlusPlus"
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+        r#"model_provider = "custom"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://relay.example/v1"
@@ -713,9 +711,9 @@ fn apply_relay_files_with_context_skips_disabled_global_context() {
 
     codex_plus_core::relay_config::apply_relay_files_to_home_with_context(
         temp.path(),
-        r#"model_provider = "CodexPlusPlus"
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+        r#"model_provider = "custom"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://relay.example/v1"
@@ -756,10 +754,10 @@ fn apply_relay_profile_does_not_write_model_catalog_json_for_selected_models() {
         model: "qwen3-coder".to_string(),
         relay_mode: RelayMode::PureApi,
         config_contents: r#"model = "qwen3-coder"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://relay.example/v1"
@@ -791,10 +789,10 @@ fn apply_relay_profile_preserves_user_model_catalog_json() {
         relay_mode: RelayMode::PureApi,
         config_contents: r#"model = "qwen3-coder"
 model_catalog_json = "C:\\old\\catalog.json"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://relay.example/v1"
@@ -828,10 +826,10 @@ fn apply_relay_profile_skips_common_config_when_disabled() {
         relay_mode: RelayMode::PureApi,
         use_common_config: false,
         config_contents: r#"model = "qwen3-coder"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://relay.example/v1"
@@ -919,7 +917,7 @@ fn apply_relay_files_with_context_rejects_invalid_context_token_values() {
 
     let error = codex_plus_core::relay_config::apply_relay_files_to_home_with_context(
         temp.path(),
-        r#"model_provider = "CodexPlusPlus""#,
+        r#"model_provider = "custom""#,
         r#"{"OPENAI_API_KEY":"sk-new"}"#,
         "",
         &selection,
@@ -932,7 +930,7 @@ fn apply_relay_files_with_context_rejects_invalid_context_token_values() {
 }
 
 #[test]
-fn apply_relay_files_uses_codexplusplus_provider_id_and_updates_profile_refs() {
+fn apply_relay_files_uses_custom_provider_id_and_updates_profile_refs() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
         temp.path().join("config.toml"),
@@ -946,28 +944,28 @@ base_url = "https://old.example/v1"
 
     apply_relay_files_to_home(
         temp.path(),
-        r#"model_provider = "CodexPlusPlus"
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+        r#"model_provider = "custom"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://new.example/v1"
 experimental_bearer_token = "sk-new"
 
 [profiles.default]
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 "#,
         r#"{"OPENAI_API_KEY":"sk-new"}"#,
     )
     .unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_provider = "CodexPlusPlus""#));
-    assert!(config.contains("[model_providers.CodexPlusPlus]"));
+    assert!(config.contains(r#"model_provider = "custom""#));
+    assert!(config.contains("[model_providers.custom]"));
     assert!(config.contains(r#"base_url = "https://new.example/v1""#));
     assert!(config.contains("[profiles.default]"));
-    assert!(config.contains(r#"model_provider = "CodexPlusPlus""#));
-    assert!(!config.contains("[model_providers.custom]"));
+    assert!(config.contains(r#"model_provider = "custom""#));
+    assert!(!config.contains("[model_providers.stable-live]"));
 }
 
 #[test]
@@ -1058,9 +1056,9 @@ fn apply_relay_files_rejects_invalid_auth_json_before_config_write() {
 
     let error = apply_relay_files_to_home(
         temp.path(),
-        r#"model_provider = "CodexPlusPlus"
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+        r#"model_provider = "custom"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://relay.example/v1"
@@ -1094,7 +1092,7 @@ fn apply_relay_config_file_switches_config_without_touching_auth_json() {
 
     let result = apply_relay_config_file_to_home(
         home,
-        "model_provider = \"CodexPlusPlus\"\n\n[model_providers.CodexPlusPlus]\nname = \"CodexPlusPlus\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"http://127.0.0.1:57321/v1\"\nexperimental_bearer_token = \"sk-new\"\n",
+        "model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"http://127.0.0.1:57321/v1\"\nexperimental_bearer_token = \"sk-new\"\n",
     )
     .unwrap();
 
@@ -1129,8 +1127,8 @@ model = "gpt-5-mini"
     )
     .unwrap();
     let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    let provider_index = updated.find(r#"model_provider = "CodexPlusPlus""#).unwrap();
-    let codexpp_index = updated.find("[model_providers.CodexPlusPlus]").unwrap();
+    let provider_index = updated.find(r#"model_provider = "custom""#).unwrap();
+    let codexpp_index = updated.find("[model_providers.custom]").unwrap();
 
     assert!(provider_index < codexpp_index);
     assert!(!updated.contains("[profiles.default]"));
@@ -1158,8 +1156,8 @@ base_url = "https://old.example.test/v1"
     .unwrap();
     let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
 
-    assert!(updated.contains(r#"model_provider = "CodexPlusPlus""#));
-    assert!(updated.contains("[model_providers.CodexPlusPlus]"));
+    assert!(updated.contains(r#"model_provider = "custom""#));
+    assert!(updated.contains("[model_providers.custom]"));
     assert!(!updated.contains("[model_providers.CodexPP]"));
 }
 
@@ -1169,9 +1167,9 @@ fn clear_relay_config_removes_model_provider_and_preserves_other_config() {
     std::fs::write(
         temp.path().join("config.toml"),
         r#"model = "gpt-5"
-model_provider = "CodexPlusPlus"
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+model_provider = "custom"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://relay.example.test/v1"
@@ -1206,7 +1204,7 @@ model = "gpt-5-mini"
     assert!(!updated.contains("model_provider ="));
     assert!(!updated.contains("model_catalog_json"));
     assert!(!updated.contains("OPENAI_API_KEY"));
-    assert!(!updated.contains("[model_providers.CodexPlusPlus]"));
+    assert!(!updated.contains("[model_providers.custom]"));
     assert!(!updated.contains("[model_providers.CodexPP]"));
     assert!(!updated.contains("[model_providers]\n"));
     assert!(!updated.contains("experimental_bearer_token"));
@@ -1226,8 +1224,8 @@ fn clear_relay_config_removes_pure_api_auth_json_key_and_preserves_other_auth_fi
     std::fs::write(
         temp.path().join("config.toml"),
         r#"model = "gpt-5"
-model_provider = "CodexPlusPlus"
-[model_providers.CodexPlusPlus]
+model_provider = "custom"
+[model_providers.custom]
 name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
@@ -1265,6 +1263,38 @@ fn clear_relay_config_removes_openai_api_key_when_auth_json_only_contains_pure_a
     let auth_object = auth.as_object().unwrap();
     assert!(!auth_object.contains_key("OPENAI_API_KEY"));
     assert!(auth_object.is_empty());
+}
+
+#[test]
+fn clear_relay_config_with_auth_restores_official_profile_auth_json() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-relay"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model_provider = "custom"
+[model_providers.custom]
+base_url = "https://relay.example.test/v1"
+experimental_bearer_token = "sk-relay"
+"#,
+    )
+    .unwrap();
+
+    clear_relay_config_to_home_with_auth(
+        temp.path(),
+        Some(r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official-edited"}}"#),
+    )
+    .unwrap();
+
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
+            .unwrap();
+    assert_eq!(auth["auth_mode"], "chatgpt");
+    assert_eq!(auth["tokens"]["access_token"], "official-edited");
+    assert!(auth.get("OPENAI_API_KEY").is_none());
 }
 
 #[test]
@@ -1421,7 +1451,108 @@ experimental_bearer_token = "sk-live-token"
 }
 
 #[test]
-fn apply_relay_profile_to_home_with_switch_rules_writes_pure_api_auth() {
+fn backfill_relay_profile_prefers_live_auth_over_provider_token() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-old"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-edited"}"#,
+    )
+    .unwrap();
+    let mut profile = RelayProfile {
+        relay_mode: RelayMode::PureApi,
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-old"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+    let mut common = String::new();
+
+    backfill_relay_profile_from_home_with_common(temp.path(), &mut profile, &mut common).unwrap();
+
+    let auth: serde_json::Value = serde_json::from_str(&profile.auth_contents).unwrap();
+    assert_eq!(auth["OPENAI_API_KEY"], "sk-edited");
+    assert!(!profile.config_contents.contains("experimental_bearer_token"));
+}
+
+#[test]
+fn backfill_relay_profile_restores_provider_specific_id_after_stable_live_switch() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#,
+    )
+    .unwrap();
+    let mut provider_b = RelayProfile {
+        id: "provider-b".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model_provider = "aihubmix"
+model = "gpt-5.4"
+profile = "work"
+
+[model_providers.aihubmix]
+name = "AiHubMix"
+base_url = "https://aihubmix.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[profiles.work]
+model_provider = "aihubmix"
+model = "gpt-5.4"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"aihubmix-key"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &provider_b, "").unwrap();
+    let live_config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(live_config.contains(r#"model_provider = "custom""#));
+    assert!(live_config.contains("[model_providers.custom]"));
+    assert!(!live_config.contains("[model_providers.aihubmix]"));
+
+    let mut common = String::new();
+    backfill_relay_profile_from_home_with_common(temp.path(), &mut provider_b, &mut common)
+        .unwrap();
+
+    assert!(
+        provider_b
+            .config_contents
+            .contains(r#"model_provider = "aihubmix""#)
+    );
+    assert!(
+        provider_b
+            .config_contents
+            .contains("[model_providers.aihubmix]")
+    );
+    assert!(provider_b.config_contents.contains(r#"name = "AiHubMix""#));
+    assert!(
+        provider_b
+            .config_contents
+            .contains(r#"model_provider = "aihubmix""#)
+    );
+    assert!(
+        !provider_b
+            .config_contents
+            .contains("[model_providers.custom]")
+    );
+    let auth: serde_json::Value = serde_json::from_str(&provider_b.auth_contents).unwrap();
+    assert_eq!(auth["OPENAI_API_KEY"], "aihubmix-key");
+    assert!(auth.get("tokens").is_none());
+}
+
+#[test]
+fn apply_relay_profile_to_home_with_switch_rules_switches_auth_and_writes_provider_token() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
         temp.path().join("auth.json"),
@@ -1432,10 +1563,10 @@ fn apply_relay_profile_to_home_with_switch_rules_writes_pure_api_auth() {
         id: "relay-a".to_string(),
         relay_mode: RelayMode::PureApi,
         config_contents: r#"model = "qwen3-coder"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://relay.example/v1"
@@ -1450,10 +1581,12 @@ base_url = "https://relay.example/v1"
     let auth = std::fs::read_to_string(temp.path().join("auth.json")).unwrap();
     let auth: serde_json::Value = serde_json::from_str(&auth).unwrap();
     assert_eq!(auth["OPENAI_API_KEY"], "sk-new");
+    assert!(auth.get("auth_mode").is_none());
+    assert!(auth.get("tokens").is_none());
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
-    assert!(config.contains(r#"model_provider = "CodexPlusPlus""#));
-    assert!(config.contains("[model_providers.CodexPlusPlus]"));
+    assert!(config.contains(r#"model_provider = "custom""#));
+    assert!(config.contains("[model_providers.custom]"));
 }
 
 #[test]
@@ -1476,7 +1609,7 @@ experimental_bearer_token = "sk-live"
         base_url: "https://relay.example/v1".to_string(),
         api_key: "sk-new".to_string(),
         relay_mode: RelayMode::PureApi,
-        config_contents: r#"[model_providers.CodexPlusPlus]
+        config_contents: r#"[model_providers.custom]
 experimental_bearer_token = "sk-new"
 "#
         .to_string(),
@@ -1488,9 +1621,9 @@ experimental_bearer_token = "sk-new"
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(config.contains(r#"model = "qwen3-coder""#));
-    assert!(config.contains(r#"model_provider = "CodexPlusPlus""#));
-    assert!(config.contains("[model_providers.CodexPlusPlus]"));
-    assert!(config.contains(r#"name = "CodexPlusPlus""#));
+    assert!(config.contains(r#"model_provider = "custom""#));
+    assert!(config.contains("[model_providers.custom]"));
+    assert!(config.contains(r#"name = "custom""#));
     assert!(config.contains(r#"wire_api = "responses""#));
     assert!(config.contains("requires_openai_auth = true"));
     assert!(config.contains(r#"base_url = "https://relay.example/v1""#));
@@ -1525,9 +1658,9 @@ requires_openai_auth = true
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(config.contains(r#"model = "gpt-5.4""#));
     assert!(config.contains("disable_response_storage = true"));
-    assert!(config.contains(r#"model_provider = "CodexPlusPlus""#));
-    assert!(config.contains("[model_providers.CodexPlusPlus]"));
-    assert!(config.contains(r#"name = "CodexPlusPlus""#));
+    assert!(config.contains(r#"model_provider = "custom""#));
+    assert!(config.contains("[model_providers.custom]"));
+    assert!(config.contains(r#"name = "max_ai""#));
     assert!(config.contains(r#"base_url = "https://max2.jojocode.com/v1""#));
     assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
     assert!(!config.contains("[model_providers.max_ai]"));
@@ -1541,12 +1674,12 @@ fn apply_relay_profile_to_home_with_switch_rules_writes_provider_even_when_auth_
         id: "relay-empty-auth".to_string(),
         relay_mode: RelayMode::PureApi,
         config_contents: r#"model = "gpt-5.5"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 
 [model_providers]
 
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "http://relay-legacy.example.test/v1"
@@ -1560,22 +1693,27 @@ base_url = "http://relay-legacy.example.test/v1"
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(config.contains(r#"model = "gpt-5.5""#));
-    assert!(config.contains(r#"model_provider = "CodexPlusPlus""#));
-    assert!(config.contains("[model_providers.CodexPlusPlus]"));
+    assert!(config.contains(r#"model_provider = "custom""#));
+    assert!(config.contains("[model_providers.custom]"));
     assert!(config.contains(r#"base_url = "http://relay-legacy.example.test/v1""#));
 }
 
 #[test]
-fn apply_relay_profile_to_home_with_switch_rules_restores_auth_from_provider_token() {
+fn apply_relay_profile_to_home_with_switch_rules_switches_auth_even_when_provider_token_exists() {
     let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#,
+    )
+    .unwrap();
     let profile = RelayProfile {
         id: "relay-provider-token".to_string(),
         relay_mode: RelayMode::PureApi,
         config_contents: r#"model = "gpt-5.5"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "http://relay-legacy.example.test/v1"
@@ -1590,16 +1728,19 @@ experimental_bearer_token = "sk-provider-token"
 
     let auth = std::fs::read_to_string(temp.path().join("auth.json")).unwrap();
     let auth: serde_json::Value = serde_json::from_str(&auth).unwrap();
-    assert_eq!(auth["OPENAI_API_KEY"], "sk-provider-token");
+    assert!(auth.as_object().is_some_and(|object| object.is_empty()));
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"experimental_bearer_token = "sk-provider-token""#));
 }
 
 #[test]
 fn strip_common_config_with_duplicate_context_tables_preserves_provider_config() {
     let config = r#"model = "gpt-5.5"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "http://relay-legacy.example.test/v1"
@@ -1620,8 +1761,8 @@ command = "python"
     let stripped = strip_common_config_from_config(config, common).unwrap();
 
     assert!(stripped.contains(r#"model = "gpt-5.5""#));
-    assert!(stripped.contains(r#"model_provider = "CodexPlusPlus""#));
-    assert!(stripped.contains("[model_providers.CodexPlusPlus]"));
+    assert!(stripped.contains(r#"model_provider = "custom""#));
+    assert!(stripped.contains("[model_providers.custom]"));
     assert!(stripped.contains(r#"base_url = "http://relay-legacy.example.test/v1""#));
 }
 
@@ -1631,10 +1772,10 @@ fn apply_relay_profile_to_home_with_switch_rules_survives_official_roundtrip() {
     std::fs::write(
         temp.path().join("config.toml"),
         r#"model = "gpt-5"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+[model_providers.custom]
+name = "custom"
 base_url = "https://old.example/v1"
 wire_api = "responses"
 requires_openai_auth = true
@@ -1663,7 +1804,7 @@ experimental_bearer_token = "sk-old"
         base_url: "https://max2.jojocode.com/v1".to_string(),
         api_key: "sk-new".to_string(),
         relay_mode: RelayMode::PureApi,
-        config_contents: r#"[model_providers.CodexPlusPlus]
+        config_contents: r#"[model_providers.custom]
 experimental_bearer_token = "sk-new"
 "#
         .to_string(),
@@ -1675,9 +1816,9 @@ experimental_bearer_token = "sk-new"
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(config.contains(r#"model = "gpt-5.4""#));
-    assert!(config.contains(r#"model_provider = "CodexPlusPlus""#));
-    assert!(config.contains("[model_providers.CodexPlusPlus]"));
-    assert!(config.contains(r#"name = "CodexPlusPlus""#));
+    assert!(config.contains(r#"model_provider = "custom""#));
+    assert!(config.contains("[model_providers.custom]"));
+    assert!(config.contains(r#"name = "custom""#));
     assert!(config.contains(r#"base_url = "https://max2.jojocode.com/v1""#));
     assert!(config.contains(r#"wire_api = "responses""#));
     assert!(config.contains("requires_openai_auth = true"));

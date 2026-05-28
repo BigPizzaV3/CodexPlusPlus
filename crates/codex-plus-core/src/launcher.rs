@@ -204,8 +204,6 @@ where
         if settings.provider_sync_enabled {
             hooks.run_provider_sync().await?;
         }
-        hooks.apply_active_relay_profile(&settings).await?;
-
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings);
         if protocol_proxy_enabled {
             helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
@@ -326,7 +324,9 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn load_settings(&self) -> anyhow::Result<BackendSettings> {
-        SettingsStore::default().load()
+        let mut settings = SettingsStore::default().load()?;
+        hydrate_live_ccs_profiles(&mut settings);
+        Ok(settings)
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
@@ -334,6 +334,9 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn apply_active_relay_profile(&self, settings: &BackendSettings) -> anyhow::Result<()> {
+        if !settings.relay_profiles_enabled {
+            return Ok(());
+        }
         let profile = settings.active_relay_profile();
         let home = crate::relay_config::default_codex_home_dir();
         let common_config = crate::relay_config::normalize_config_text(
@@ -350,7 +353,9 @@ impl LaunchHooks for DefaultLaunchHooks {
         if profile.relay_mode == crate::settings::RelayMode::Official
             && !profile.official_mix_api_key
         {
-            crate::relay_config::clear_relay_config_to_home(&home)?;
+            let auth_contents = (!profile.auth_contents.trim().is_empty())
+                .then_some(profile.auth_contents.as_str());
+            crate::relay_config::clear_relay_config_to_home_with_auth(&home, auth_contents)?;
             return Ok(());
         }
         crate::relay_config::apply_relay_profile_to_home_with_switch_rules(
@@ -569,6 +574,16 @@ impl LaunchHooks for DefaultLaunchHooks {
             } => {}
         }
     }
+}
+
+fn hydrate_live_ccs_profiles(settings: &mut BackendSettings) {
+    if !settings.ccs_link_enabled {
+        return;
+    }
+    settings
+        .relay_profiles
+        .retain(|profile| profile.linked_ccs_provider_id.trim().is_empty());
+    let _ = crate::ccs_import::sync_linked_profiles_from_default_db(&mut settings.relay_profiles);
 }
 
 async fn handle_helper_connection(

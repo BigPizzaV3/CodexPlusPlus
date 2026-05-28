@@ -38,6 +38,8 @@ impl Default for RelayContextSelection {
 #[serde(rename_all = "camelCase")]
 pub struct RelayProfile {
     pub id: String,
+    #[serde(rename = "linkedCcsProviderId", default)]
+    pub linked_ccs_provider_id: String,
     pub name: String,
     #[serde(default, skip_serializing)]
     pub model: String,
@@ -79,6 +81,7 @@ impl Default for RelayProfile {
     fn default() -> Self {
         Self {
             id: "default".to_string(),
+            linked_ccs_provider_id: String::new(),
             name: "默认中转".to_string(),
             model: String::new(),
             base_url: default_relay_base_url(),
@@ -134,6 +137,10 @@ pub struct BackendSettings {
     pub codex_extra_args: Vec<String>,
     #[serde(rename = "providerSyncEnabled", default)]
     pub provider_sync_enabled: bool,
+    #[serde(rename = "relayProfilesEnabled", default = "default_true")]
+    pub relay_profiles_enabled: bool,
+    #[serde(rename = "ccsLinkEnabled", default)]
+    pub ccs_link_enabled: bool,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
     pub enhancements_enabled: bool,
     #[serde(rename = "codexGoalsEnabled", default)]
@@ -174,6 +181,8 @@ impl Default for BackendSettings {
             codex_app_path: String::new(),
             codex_extra_args: Vec::new(),
             provider_sync_enabled: false,
+            relay_profiles_enabled: true,
+            ccs_link_enabled: false,
             enhancements_enabled: true,
             codex_goals_enabled: false,
             launch_mode: LaunchMode::Patch,
@@ -201,6 +210,7 @@ impl BackendSettings {
         {
             return RelayProfile {
                 id: default_active_relay_id(),
+                linked_ccs_provider_id: String::new(),
                 name: "默认中转".to_string(),
                 model: String::new(),
                 base_url: if self.relay_base_url.is_empty() {
@@ -244,6 +254,7 @@ impl BackendSettings {
             } else {
                 self.active_relay_id.clone()
             },
+            linked_ccs_provider_id: String::new(),
             name: "默认中转".to_string(),
             model: String::new(),
             base_url: if self.relay_base_url.is_empty() {
@@ -420,6 +431,12 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     if let Some(value) = source.get("providerSyncEnabled").and_then(Value::as_bool) {
         target.insert("providerSyncEnabled".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = source.get("relayProfilesEnabled").and_then(Value::as_bool) {
+        target.insert("relayProfilesEnabled".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = source.get("ccsLinkEnabled").and_then(Value::as_bool) {
+        target.insert("ccsLinkEnabled".to_string(), Value::Bool(value));
     }
     if let Some(value) = source.get("enhancementsEnabled").and_then(Value::as_bool) {
         target.insert("enhancementsEnabled".to_string(), Value::Bool(value));
@@ -628,6 +645,8 @@ mod tests {
     fn settings_default_matches_expected_behavior() {
         let settings = BackendSettings::default();
         assert!(!settings.provider_sync_enabled);
+        assert!(settings.relay_profiles_enabled);
+        assert!(!settings.ccs_link_enabled);
         assert!(settings.enhancements_enabled);
         assert!(!settings.codex_goals_enabled);
         assert!(settings.codex_app_path.is_empty());
@@ -772,10 +791,10 @@ mod tests {
                 relay_mode: RelayMode::PureApi,
                 config_contents: r#"model = "deepseek-chat"
 codex_plus_chat_base_url = "https://api.deepseek.com"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
+[model_providers.custom]
+name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "http://127.0.0.1:57321/v1"
@@ -825,9 +844,9 @@ base_url = "http://127.0.0.1:57321/v1"
                 base_url: "https://relay.example/v1".to_string(),
                 api_key: "sk-test".to_string(),
                 config_contents: r#"model = "gpt-5.5"
-model_provider = "CodexPlusPlus"
+model_provider = "custom"
 
-[model_providers.CodexPlusPlus]
+[model_providers.custom]
 requires_openai_auth = true
 "#
                 .to_string(),

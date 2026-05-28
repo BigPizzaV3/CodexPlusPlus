@@ -373,7 +373,22 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
 
 #[tauri::command]
 pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
-    let settings = normalize_settings_before_save(settings);
+    let mut settings = normalize_settings_before_save(settings);
+    if settings.ccs_link_enabled {
+        if let Err(error) = codex_plus_core::ccs_import::write_linked_profiles_to_default_db(
+            &settings.relay_profiles,
+        ) {
+            let payload = SettingsPayload {
+                settings,
+                settings_path: codex_plus_core::paths::default_settings_path()
+                    .to_string_lossy()
+                    .to_string(),
+                user_scripts: user_script_inventory(),
+            };
+            return failed(&format!("写回 cc-switch 供应商配置失败：{error}"), payload);
+        }
+    }
+    remove_linked_ccs_profiles_for_local_storage(&mut settings);
     match SettingsStore::default().save(&settings) {
         Ok(()) => {
             let wrapper_message = refresh_cli_wrapper_after_settings_save(&settings);
@@ -418,8 +433,10 @@ pub fn load_ccs_providers() -> CommandResult<CcsProvidersPayload> {
 
 #[tauri::command]
 pub fn import_ccs_providers() -> CommandResult<SettingsPayload> {
-    let providers = match codex_plus_core::ccs_import::list_codex_providers_from_default_db() {
-        Ok(providers) => providers,
+    let store = SettingsStore::default();
+    let mut settings = store.load().unwrap_or_default();
+    let synced = match codex_plus_core::ccs_import::list_codex_providers_from_default_db() {
+        Ok(providers) => providers.len(),
         Err(error) => {
             let payload = settings_payload_value()
                 .map(|payload| payload)
@@ -427,41 +444,17 @@ pub fn import_ccs_providers() -> CommandResult<SettingsPayload> {
             return failed(&format!("读取外部供应商配置失败：{error}"), payload);
         }
     };
+    settings.ccs_link_enabled = true;
+    remove_linked_ccs_profiles_for_local_storage(&mut settings);
 
-    let store = SettingsStore::default();
-    let mut settings = store.load().unwrap_or_default();
-    let mut existing_keys: Vec<String> = settings
-        .relay_profiles
-        .iter()
-        .map(relay_profile_import_key)
-        .collect();
-    let mut existing_ids: Vec<String> = settings
-        .relay_profiles
-        .iter()
-        .map(|profile| profile.id.clone())
-        .collect();
-    let mut imported = 0usize;
-
-    for provider in providers {
-        let key = ccs_import_key(&provider.name, &provider.base_url);
-        if existing_keys.iter().any(|existing| existing == &key) {
-            continue;
-        }
-        let profile = codex_plus_core::ccs_import::relay_profile_from_ccs(&provider, &existing_ids);
-        existing_ids.push(profile.id.clone());
-        existing_keys.push(key);
-        settings.relay_profiles.push(profile);
-        imported += 1;
-    }
-
-    if imported == 0 {
-        return settings_payload("没有新的供应商配置需要导入。", "设置读取失败");
+    if synced == 0 {
+        return settings_payload("没有可联动的 cc-switch Codex 供应商配置。", "设置读取失败");
     }
 
     match store.save(&settings) {
         Ok(()) => settings_payload(
-            &format!("已导入供应商配置：{imported} 个。"),
-            "导入供应商配置后重新读取设置失败",
+            &format!("已开启 cc-switch 联动：{synced} 个供应商将直接从 cc-switch 读取。"),
+            "联动供应商配置后重新读取设置失败",
         ),
         Err(error) => failed(
             &format!("保存外部供应商配置失败：{error}"),
@@ -470,18 +463,6 @@ pub fn import_ccs_providers() -> CommandResult<SettingsPayload> {
                 .unwrap_or_else(|(_, payload)| payload),
         ),
     }
-}
-
-fn relay_profile_import_key(profile: &RelayProfile) -> String {
-    ccs_import_key(&profile.name, &profile.base_url)
-}
-
-fn ccs_import_key(name: &str, base_url: &str) -> String {
-    format!(
-        "{}\n{}",
-        name.trim().to_ascii_lowercase(),
-        base_url.trim().trim_end_matches('/').to_ascii_lowercase()
-    )
 }
 
 fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSettings {
@@ -539,6 +520,39 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
         }
     }
     settings
+}
+
+fn settings_with_live_ccs_profiles(mut settings: BackendSettings) -> BackendSettings {
+    if !settings.ccs_link_enabled {
+        return settings;
+    }
+    remove_linked_ccs_profiles_for_local_storage(&mut settings);
+    if let Err(error) = codex_plus_core::ccs_import::sync_linked_profiles_from_default_db(
+        &mut settings.relay_profiles,
+    ) {
+        log_manager_event(
+            "manager.settings_with_live_ccs_profiles.failed",
+            json!({ "error": error.to_string() }),
+        );
+    }
+    settings
+}
+
+fn remove_linked_ccs_profiles_for_local_storage(settings: &mut BackendSettings) {
+    settings
+        .relay_profiles
+        .retain(|profile| profile.linked_ccs_provider_id.trim().is_empty());
+    if !settings.ccs_link_enabled && !settings
+        .relay_profiles
+        .iter()
+        .any(|profile| profile.id == settings.active_relay_id)
+    {
+        settings.active_relay_id = settings
+            .relay_profiles
+            .first()
+            .map(|profile| profile.id.clone())
+            .unwrap_or_else(codex_plus_core::settings::default_active_relay_id);
+    }
 }
 
 fn relay_combined_common_config(settings: &BackendSettings) -> String {
@@ -840,7 +854,8 @@ pub async fn repair_shortcuts() -> InstallActionResult {
 
 #[tauri::command]
 pub fn repair_backend() -> CommandResult<SettingsPayload> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings =
+        settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default());
     let message = match codex_plus_core::cli_wrapper::ensure_cli_wrapper(&settings) {
         Ok(Some(install)) => format!(
             "后端已修复，命令包装器已指向 {}。",
@@ -1327,7 +1342,8 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
     } else {
         profile.name.trim()
     };
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings =
+        settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default());
     let test_model = if profile.test_model.trim().is_empty() {
         settings.relay_test_model.trim()
     } else {
@@ -1397,7 +1413,15 @@ pub async fn fetch_relay_profile_models(
 #[tauri::command]
 pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings =
+        settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default());
+    if !settings.relay_profiles_enabled {
+        let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+        return failed(
+            "供应商配置总开关已关闭，未写入 config.toml / auth.json。",
+            relay_payload(status, None),
+        );
+    }
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
     if relay.config_contents.trim().is_empty() == false
@@ -1533,7 +1557,15 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
 #[tauri::command]
 pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings =
+        settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default());
+    if !settings.relay_profiles_enabled {
+        let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+        return failed(
+            "供应商配置总开关已关闭，未写入 config.toml / auth.json。",
+            relay_payload(status, None),
+        );
+    }
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_pure_api_injection", &settings, &relay);
     if relay_has_complete_files(&relay) {
@@ -1553,7 +1585,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
                 );
                 if !status.configured {
                     return failed(
-                        "纯 API 配置写入后未检测到完整 CodexPlusPlus provider，请检查 config.toml / auth.json。",
+                        "纯 API 配置写入后未检测到完整 custom provider，请检查 config.toml 和供应商 API Key。",
                         relay_payload(status, result.backup_path),
                     );
                 }
@@ -1572,7 +1604,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
                     Some(error.to_string()),
                 );
                 failed(
-                    &format!("切换完整纯 API 配置失败：{error}"),
+                    &format!("切换纯 API 配置失败：{error}"),
                     relay_payload(status, None),
                 )
             }
@@ -1597,12 +1629,12 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
             );
             if !status.configured {
                 return failed(
-                    "纯 API 配置写入后未检测到完整 CodexPlusPlus provider，请检查 config.toml / auth.json。",
+                    "纯 API 配置写入后未检测到完整 custom provider，请检查 config.toml 和供应商 API Key。",
                     relay_payload(status, result.backup_path),
                 );
             }
             ok(
-                "纯 API 模式已写入：config.toml 已写入 CodexPlusPlus provider，并保留 auth.json。",
+                    "纯 API 模式已写入：config.toml 已写入 custom provider，auth.json 已切换为当前供应商。",
                 relay_payload(status, result.backup_path),
             )
         }
@@ -1626,8 +1658,16 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
 #[tauri::command]
 pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let settings =
+        settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default());
+    let relay = settings.active_relay_profile();
     log_manager_event("manager.clear_relay_injection.start", json!({}));
-    match codex_plus_core::relay_config::clear_relay_config_to_home(&home) {
+    let auth_contents = (relay.relay_mode == codex_plus_core::settings::RelayMode::Official
+        && !relay.official_mix_api_key
+        && !relay.auth_contents.trim().is_empty())
+    .then_some(relay.auth_contents.as_str());
+    match codex_plus_core::relay_config::clear_relay_config_to_home_with_auth(&home, auth_contents)
+    {
         Ok(result) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             log_manager_event(
@@ -1638,7 +1678,7 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
                 }),
             );
             ok(
-                "已清除 CodexPlusPlus 中转 API 模式，并切换到官方 ChatGPT 登录模式。",
+                "已清除 custom 中转 API 模式，并切换到官方 ChatGPT 登录模式。",
                 relay_payload(status, result.backup_path),
             )
         }
@@ -1844,7 +1884,7 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
         .to_string();
     match store.load() {
         Ok(settings) => Ok(SettingsPayload {
-            settings,
+            settings: settings_with_live_ccs_profiles(settings),
             settings_path,
             user_scripts: user_script_inventory(),
         }),
@@ -1861,7 +1901,7 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
 
 fn fallback_settings_payload() -> SettingsPayload {
     SettingsPayload {
-        settings: SettingsStore::default().load().unwrap_or_default(),
+        settings: settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default()),
         settings_path: codex_plus_core::paths::default_settings_path()
             .to_string_lossy()
             .to_string(),
@@ -2245,7 +2285,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(
             temp.path().join("config.toml"),
-            "model_provider = \"CodexPlusPlus\"\n",
+            "model_provider = \"custom\"\n",
         )
         .unwrap();
         std::fs::write(
@@ -2258,11 +2298,34 @@ mod tests {
 
         assert!(payload.config_path.ends_with("config.toml"));
         assert!(payload.auth_path.ends_with("auth.json"));
-        assert_eq!(
-            payload.config_contents,
-            "model_provider = \"CodexPlusPlus\"\n"
-        );
+        assert_eq!(payload.config_contents, "model_provider = \"custom\"\n");
         assert_eq!(payload.auth_contents, "{\"OPENAI_API_KEY\":\"sk-test\"}\n");
+    }
+
+    #[test]
+    fn apply_relay_profile_to_home_with_switch_rules_normalizes_custom_provider_id_to_stable_bucket()
+     {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = RelayProfile {
+            relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            config_contents: "model_provider = \"ai\"\nmodel = \"gpt-image-2\"\n\n[model_providers.ai]\nname = \"ai\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"https://ahg.codes\"\n"
+                .to_string(),
+            auth_contents: "{}\n".to_string(),
+            ..RelayProfile::default()
+        };
+
+        codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
+            temp.path(),
+            &profile,
+            "",
+        )
+        .unwrap();
+
+        let applied = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        assert!(applied.contains("model_provider = \"custom\""));
+        assert!(applied.contains("[model_providers.custom]"));
+        assert!(!applied.contains("[model_providers.ai]"));
     }
 
     #[test]
@@ -2318,6 +2381,57 @@ mod tests {
                 .relay_common_config_contents
                 .contains("[mcp_servers")
         );
+    }
+
+    #[test]
+    fn normalize_settings_before_save_preserves_official_profile_auth() {
+        let settings = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                relay_mode: codex_plus_core::settings::RelayMode::Official,
+                official_mix_api_key: false,
+                auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"edited"}}"#
+                    .to_string(),
+                config_contents: "model_provider = \"custom\"\n".to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        let normalized = normalize_settings_before_save(settings);
+
+        assert_eq!(
+            normalized.relay_profiles[0].auth_contents,
+            r#"{"auth_mode":"chatgpt","tokens":{"access_token":"edited"}}"#
+        );
+        assert!(normalized.relay_profiles[0].config_contents.is_empty());
+    }
+
+    #[test]
+    fn remove_linked_ccs_profiles_for_local_storage_drops_external_profiles() {
+        let mut settings = BackendSettings {
+            ccs_link_enabled: true,
+            active_relay_id: "ccs-one".to_string(),
+            relay_profiles: vec![
+                RelayProfile {
+                    id: "local".to_string(),
+                    name: "Local".to_string(),
+                    ..RelayProfile::default()
+                },
+                RelayProfile {
+                    id: "ccs-one".to_string(),
+                    linked_ccs_provider_id: "provider-one".to_string(),
+                    name: "External".to_string(),
+                    ..RelayProfile::default()
+                },
+            ],
+            ..BackendSettings::default()
+        };
+
+        remove_linked_ccs_profiles_for_local_storage(&mut settings);
+
+        assert_eq!(settings.relay_profiles.len(), 1);
+        assert_eq!(settings.relay_profiles[0].id, "local");
+        assert_eq!(settings.active_relay_id, "ccs-one");
     }
 
     #[test]

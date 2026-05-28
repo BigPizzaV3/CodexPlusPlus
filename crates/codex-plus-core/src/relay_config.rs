@@ -8,9 +8,9 @@ use toml_edit::{DocumentMut, Item, Table, TableLike};
 
 use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol};
 
-const RELAY_PROVIDER: &str = "CodexPlusPlus";
+const RELAY_PROVIDER: &str = "custom";
 const STABLE_RELAY_PROVIDER: &str = RELAY_PROVIDER;
-const LEGACY_RELAY_PROVIDER: &str = "CodexPP";
+const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
 const CHAT_UPSTREAM_BASE_URL_KEY: &str = "codex_plus_chat_base_url";
 const RESERVED_MODEL_PROVIDER_IDS: &[&str] = &[
     "amazon-bedrock",
@@ -259,7 +259,11 @@ pub fn apply_relay_config_to_home_with_protocol(
     }
     let codex_base_url = codex_base_url_for_protocol(base_url, protocol, proxy_port);
     let updated = upsert_model_provider_config("", &codex_base_url, bearer_token)?;
-    let backup_path = write_codex_live_atomic(home, Some(&updated), None)?;
+    let auth_contents = serde_json::to_string_pretty(&json!({
+        "OPENAI_API_KEY": bearer_token
+    }))?;
+    let backup_path =
+        write_codex_live_atomic(home, Some(&updated), Some(auth_contents.as_bytes()))?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
@@ -371,8 +375,7 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
     if profile.relay_mode == crate::settings::RelayMode::PureApi {
         let config_for_live =
             prepare_provider_live_config_from_auth(&profile.auth_contents, &config_with_limits)?;
-        let auth_for_live = pure_api_auth_for_live(profile, &config_for_live)?;
-        apply_relay_files_to_home(home, &config_for_live, &auth_for_live)
+        apply_relay_files_to_home(home, &config_for_live, &profile.auth_contents)
     } else if profile_should_write_auth_json(profile) {
         apply_relay_files_to_home(home, &config_with_limits, &profile.auth_contents)
     } else {
@@ -380,24 +383,6 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
             prepare_provider_live_config_from_auth(&profile.auth_contents, &config_with_limits)?;
         apply_relay_config_file_to_home(home, &config_for_live)
     }
-}
-
-fn pure_api_auth_for_live(profile: &RelayProfile, config_contents: &str) -> anyhow::Result<String> {
-    if codex_auth_api_key(&profile.auth_contents).is_some() {
-        return Ok(profile.auth_contents.clone());
-    }
-    if let Some(token) = experimental_bearer_token_from_config(config_contents)?
-        .filter(|token| !token.trim().is_empty())
-        .or_else(|| {
-            let token = profile.api_key.trim();
-            (!token.is_empty()).then(|| token.to_string())
-        })
-    {
-        return Ok(serde_json::to_string_pretty(&json!({
-            "OPENAI_API_KEY": token.trim()
-        }))?);
-    }
-    Ok(profile.auth_contents.clone())
 }
 
 pub fn apply_relay_profile_config_to_home_with_context(
@@ -457,8 +442,11 @@ pub fn apply_pure_api_config_to_home_with_protocol(
     }
     let codex_base_url = codex_base_url_for_protocol(base_url, protocol, proxy_port);
     let updated = upsert_model_provider_config("", &codex_base_url, bearer_token)?;
-    let auth = serde_json::to_vec_pretty(&json!({ "OPENAI_API_KEY": bearer_token }))?;
-    let backup_path = write_codex_live_atomic(home, Some(&updated), Some(&auth))?;
+    let auth_contents = serde_json::to_string_pretty(&json!({
+        "OPENAI_API_KEY": bearer_token
+    }))?;
+    let backup_path =
+        write_codex_live_atomic(home, Some(&updated), Some(auth_contents.as_bytes()))?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
@@ -536,14 +524,27 @@ fn codex_base_url_for_protocol(base_url: &str, protocol: RelayProtocol, proxy_po
 }
 
 pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResult> {
+    clear_relay_config_to_home_with_auth(home, None)
+}
+
+pub fn clear_relay_config_to_home_with_auth(
+    home: &Path,
+    auth_contents: Option<&str>,
+) -> anyhow::Result<RelayApplyResult> {
     std::fs::create_dir_all(home)?;
-    let auth_bytes = pure_api_auth_json_removed(home)?;
+    let auth_bytes = match auth_contents {
+        Some(contents) if !contents.trim().is_empty() => Some(contents.as_bytes().to_vec()),
+        _ => pure_api_auth_json_removed(home)?,
+    };
     let config_path = home.join("config.toml");
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let without_tables = remove_table(
-        &remove_table(&existing, &format!("model_providers.{RELAY_PROVIDER}")),
-        &format!("model_providers.{LEGACY_RELAY_PROVIDER}"),
-    );
+    let mut without_tables = remove_table(&existing, &format!("model_providers.{RELAY_PROVIDER}"));
+    for legacy_provider in LEGACY_RELAY_PROVIDERS {
+        without_tables = remove_table(
+            &without_tables,
+            &format!("model_providers.{legacy_provider}"),
+        );
+    }
     let mut updated = without_tables;
     for key in [
         "OPENAI_API_KEY",
@@ -603,6 +604,7 @@ pub fn backfill_relay_profile_from_home_with_common(
 ) -> anyhow::Result<()> {
     let live_config = read_optional_text(&home.join("config.toml"))?;
     let template_config = profile.config_contents.clone();
+    let template_auth = profile.auth_contents.clone();
     profile.config_contents = if profile.use_common_config {
         strip_common_config_from_config(&live_config, common_config_contents)?
     } else {
@@ -611,7 +613,7 @@ pub fn backfill_relay_profile_from_home_with_common(
     profile.config_contents =
         restore_profile_provider_id_for_backfill(&profile.config_contents, &template_config)?;
     profile.auth_contents = read_optional_text(&home.join("auth.json"))?;
-    restore_profile_auth_from_live_config(profile)?;
+    restore_profile_auth_from_live_config(profile, &template_auth)?;
     if profile.model.trim().is_empty() {
         if let Some(model) = root_key_string(&live_config, "model") {
             profile.model = model;
@@ -870,14 +872,14 @@ fn active_provider_id(doc: &DocumentMut) -> Option<String> {
 
 fn active_or_default_provider_id(doc: &DocumentMut) -> String {
     active_provider_id(doc)
-        .filter(|provider| is_custom_provider_id(provider))
+        .filter(|provider| {
+            is_custom_provider_id(provider) && !LEGACY_RELAY_PROVIDERS.contains(&provider.as_str())
+        })
         .unwrap_or_else(|| RELAY_PROVIDER.to_string())
 }
 
 fn is_custom_provider_id(provider: &str) -> bool {
-    !provider.is_empty()
-        && provider != LEGACY_RELAY_PROVIDER
-        && !RESERVED_MODEL_PROVIDER_IDS.contains(&provider)
+    !provider.is_empty() && !RESERVED_MODEL_PROVIDER_IDS.contains(&provider)
 }
 
 fn provider_table_exists(doc: &DocumentMut, provider_id: &str) -> bool {
@@ -1393,16 +1395,11 @@ fn restore_profile_provider_id_for_backfill(
     if live_provider_id == template_provider_id {
         return Ok(ensure_trailing_newline(doc.to_string()));
     }
-
-    if let Some(providers) = doc.get_mut("model_providers").and_then(Item::as_table_mut) {
-        let Some(provider_table) = providers.remove(live_provider_id.as_str()) else {
-            return Ok(ensure_trailing_newline(doc.to_string()));
-        };
-        providers.insert(&template_provider_id, provider_table);
-    } else {
+    if !provider_table_exists(&doc, &live_provider_id) {
         return Ok(ensure_trailing_newline(doc.to_string()));
     }
 
+    rename_provider_table(&mut doc, &live_provider_id, &template_provider_id);
     rewrite_profile_provider_refs(&mut doc, &live_provider_id, &template_provider_id);
     set_provider_id(&mut doc, &template_provider_id);
     Ok(ensure_trailing_newline(doc.to_string()))
@@ -1419,18 +1416,24 @@ fn provider_id_with_table_from_config(config_text: &str) -> anyhow::Result<Optio
     Ok(provider_table_exists(&doc, &provider_id).then_some(provider_id))
 }
 
-fn restore_profile_auth_from_live_config(profile: &mut RelayProfile) -> anyhow::Result<()> {
+fn restore_profile_auth_from_live_config(
+    profile: &mut RelayProfile,
+    template_auth: &str,
+) -> anyhow::Result<()> {
     let Some(token) = experimental_bearer_token_from_config(&profile.config_contents)? else {
         return Ok(());
     };
     profile.config_contents =
         remove_experimental_bearer_token_from_config(&profile.config_contents)?;
 
-    let mut auth = if profile.auth_contents.trim().is_empty() {
+    if !profile.auth_contents.trim().is_empty() {
+        return Ok(());
+    }
+
+    let mut auth = if template_auth.trim().is_empty() {
         json!({})
     } else {
-        serde_json::from_str::<Value>(&profile.auth_contents)
-            .with_context(|| "auth.json JSON 解析失败")?
+        serde_json::from_str::<Value>(template_auth).with_context(|| "auth.json JSON 解析失败")?
     };
     if !auth.is_object() {
         auth = json!({});
@@ -1503,7 +1506,7 @@ fn relay_profile_api_key(profile: &RelayProfile) -> String {
 
 fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(&profile.config_contents)?;
-    let provider_id = RELAY_PROVIDER.to_string();
+    let provider_id = active_or_default_provider_id(&doc);
     set_provider_id(&mut doc, &provider_id);
 
     let model = relay_profile_model(profile);
@@ -1515,11 +1518,35 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     let api_key = relay_profile_api_key(profile);
     doc.as_table_mut().remove(CHAT_UPSTREAM_BASE_URL_KEY);
     retain_only_provider_table(&mut doc, &provider_id);
-    remove_provider_table(&mut doc, LEGACY_RELAY_PROVIDER);
+    for legacy_provider in LEGACY_RELAY_PROVIDERS {
+        if provider_id != *legacy_provider {
+            remove_provider_table(&mut doc, legacy_provider);
+        }
+    }
     let provider = ensure_provider_table(&mut doc, &provider_id)?;
-    provider["name"] = toml_edit::value(provider_id.as_str());
-    provider["wire_api"] = toml_edit::value("responses");
-    provider["requires_openai_auth"] = toml_edit::value(true);
+    if provider
+        .get("name")
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+    {
+        provider["name"] = toml_edit::value(provider_id.as_str());
+    }
+    if provider
+        .get("wire_api")
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+    {
+        provider["wire_api"] = toml_edit::value("responses");
+    }
+    if provider
+        .get("requires_openai_auth")
+        .and_then(Item::as_bool)
+        .is_none()
+    {
+        provider["requires_openai_auth"] = toml_edit::value(true);
+    }
     let provider_base_url = codex_base_url_for_protocol(
         base_url.trim(),
         profile.protocol,
@@ -1540,9 +1567,9 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
 pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow::Result<()> {
     if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
         profile.config_contents.clear();
-        profile.auth_contents.clear();
         profile.model.clear();
         profile.base_url.clear();
+        profile.upstream_base_url.clear();
         profile.api_key.clear();
         return Ok(());
     }
@@ -1893,6 +1920,59 @@ fn account_label_from_jwt(token: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_live_config_model_provider_rewrites_custom_provider_id_to_stable_bucket() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "model_provider = \"ai\"\n\n[model_providers.ai]\nname = \"ai\"\nwire_api = \"responses\"\nbase_url = \"https://ahg.codes\"\n",
+        )
+        .unwrap();
+
+        let normalized = normalize_live_config_model_provider(
+            temp.path(),
+            "model_provider = \"ai\"\n\n[model_providers.ai]\nname = \"ai\"\nwire_api = \"responses\"\nbase_url = \"https://ahg.codes\"\n",
+        )
+        .unwrap();
+
+        assert!(normalized.contains("model_provider = \"custom\""));
+        assert!(normalized.contains("[model_providers.custom]"));
+        assert!(!normalized.contains("[model_providers.ai]"));
+    }
+
+    #[test]
+    fn backfill_relay_profile_from_home_with_common_restores_template_provider_id() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "model_provider = \"custom\"\nmodel = \"gpt-image-2\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"https://ahg.codes\"\n",
+        )
+        .unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{}\n").unwrap();
+
+        let mut profile = RelayProfile {
+            relay_mode: crate::settings::RelayMode::PureApi,
+            protocol: crate::settings::RelayProtocol::Responses,
+            config_contents: "model_provider = \"ai\"\nmodel = \"gpt-image-2\"\n\n[model_providers.ai]\nname = \"ai\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"https://ahg.codes\"\n"
+                .to_string(),
+            auth_contents: "{}\n".to_string(),
+            ..RelayProfile::default()
+        };
+        let mut common = String::new();
+
+        backfill_relay_profile_from_home_with_common(temp.path(), &mut profile, &mut common)
+            .unwrap();
+
+        assert!(profile.config_contents.contains("model_provider = \"ai\""));
+        assert!(profile.config_contents.contains("[model_providers.ai]"));
+        assert!(!profile.config_contents.contains("[model_providers.custom]"));
+    }
+}
+
 fn root_key_string(contents: &str, key: &str) -> Option<String> {
     root_key_value(contents, key).map(unquote_toml_string)
 }
@@ -1924,7 +2004,9 @@ fn upsert_model_provider_config(
     let mut doc = parse_toml_document(contents)?;
     let provider_id = active_or_default_provider_id(&doc);
     set_provider_id(&mut doc, &provider_id);
-    remove_provider_table(&mut doc, LEGACY_RELAY_PROVIDER);
+    for legacy_provider in LEGACY_RELAY_PROVIDERS {
+        remove_provider_table(&mut doc, legacy_provider);
+    }
     if provider_id != RELAY_PROVIDER {
         remove_provider_table(&mut doc, RELAY_PROVIDER);
     }
