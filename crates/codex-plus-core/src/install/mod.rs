@@ -129,7 +129,18 @@ pub fn default_install_root() -> Option<PathBuf> {
 
     #[cfg(target_os = "macos")]
     {
-        return Some(PathBuf::from("/Applications"));
+        let sys_apps = PathBuf::from("/Applications");
+        if sys_apps.join(format!("{SILENT_NAME}.app")).exists()
+            || sys_apps.join(format!("{MANAGER_NAME}.app")).exists()
+        {
+            return Some(sys_apps);
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = macos_applications_dir_from_exe(&exe) {
+                return Some(dir);
+            }
+        }
+        return Some(sys_apps);
     }
 
     #[cfg(not(any(windows, target_os = "macos")))]

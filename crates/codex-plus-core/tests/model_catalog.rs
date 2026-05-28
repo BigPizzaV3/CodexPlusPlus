@@ -89,6 +89,8 @@ async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
                     base_url: "https://example.test/v1".to_string(),
                     protocol: RelayProtocol::Responses,
                     model_list: "deepseek-coder\nqwen3-coder\nclaude-compatible".to_string(),
+                    config_contents: "model = \"qwen3-coder\"\n".to_string(),
+                    relay_mode: codex_plus_core::settings::RelayMode::MixedApi,
                     ..RelayProfile::default()
                 }],
                 ..BackendSettings::default()
