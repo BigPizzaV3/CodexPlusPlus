@@ -4014,7 +4014,7 @@ function relayProfileReadinessText(profile: RelayProfile, relay: RelayResult | n
 function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injection" | "apply_relay_injection" | "apply_pure_api_injection" {
   if (profile.relayMode === "pureApi") return "apply_pure_api_injection";
   if (profile.relayMode === "official" && !profile.officialMixApiKey) return "clear_relay_injection";
-  if (profile.configContents.trim() && profile.authContents.trim()) return "apply_relay_injection";
+  if (profile.configContents.trim()) return "apply_relay_injection";
   return profile.officialMixApiKey ? "apply_relay_injection" : "clear_relay_injection";
 }
 
@@ -4028,18 +4028,21 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
   if (profile.relayMode === "official") {
     return {
       ...profile,
-      configContents: profile.officialMixApiKey ? buildRelayConfigToml(profile) : "",
+      configContents: profile.officialMixApiKey ? buildRelayConfigToml(profile, { includeBearerToken: true }) : "",
       authContents: profile.authContents || "",
     };
   }
   return {
     ...profile,
-    configContents: buildRelayConfigToml(profile),
+    configContents: buildRelayConfigToml(profile, { includeBearerToken: false }),
     authContents: buildRelayAuthJson(profile),
   };
 }
 
-function buildRelayConfigToml(profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">): string {
+function buildRelayConfigToml(
+  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">,
+  options: { includeBearerToken: boolean },
+): string {
   const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
   const rootLines = [
@@ -4054,28 +4057,44 @@ function buildRelayConfigToml(profile: Pick<RelayProfile, "model" | "baseUrl" | 
     'wire_api = "responses"',
     "requires_openai_auth = true",
     `base_url = "${tomlString(baseUrl)}"`,
-    `experimental_bearer_token = "${tomlString(apiKey)}"`,
+    options.includeBearerToken ? `experimental_bearer_token = "${tomlString(apiKey)}"` : null,
     "",
-  ].join("\n");
+  ].filter((line): line is string => line !== null).join("\n");
 }
 
 function buildRelayAuthJson(profile: Pick<RelayProfile, "apiKey">): string {
   return `${JSON.stringify({ OPENAI_API_KEY: profile.apiKey.trim() }, null, 2)}\n`;
 }
 
+function buildOfficialRelayAuthJson(contents: string): string {
+  const trimmed = contents.trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "";
+    delete parsed.OPENAI_API_KEY;
+    return `${JSON.stringify(parsed, null, 2)}\n`;
+  } catch {
+    return "";
+  }
+}
+
 function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
   const configContents = profile.configContents || "";
-  const authContents = profile.authContents || "";
+  const authContents = profile.relayMode === "official" ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "";
   const configBaseUrl = codexBaseUrlFromConfig(configContents);
   const chatUpstreamBaseUrl = rootTomlStringValue(configContents, CHAT_UPSTREAM_BASE_URL_KEY);
   const isProxyConfig = configBaseUrl === PROTOCOL_PROXY_BASE_URL;
   const upstreamBaseUrl = profile.upstreamBaseUrl || chatUpstreamBaseUrl || (configBaseUrl && !isProxyConfig ? configBaseUrl : profile.baseUrl || "");
+  const configApiKey = codexExperimentalBearerTokenFromConfig(configContents);
   return {
     ...profile,
     model: codexModelFromConfig(configContents),
     baseUrl: upstreamBaseUrl,
     upstreamBaseUrl,
-    apiKey: codexApiKeyFromAuth(authContents) || codexExperimentalBearerTokenFromConfig(configContents) || "",
+    apiKey: profile.relayMode === "official"
+      ? configApiKey || profile.apiKey || ""
+      : codexApiKeyFromAuth(authContents) || configApiKey || "",
     contextWindow: codexTopLevelIntFromConfig(configContents, "model_context_window"),
     autoCompactLimit: codexTopLevelIntFromConfig(configContents, "model_auto_compact_token_limit"),
     configContents,
@@ -4087,7 +4106,8 @@ function applyRelayProfilePatchToFiles(profile: RelayProfile, patch: Partial<Rel
   let next: RelayProfile = { ...profile, ...patch };
   const shouldHaveFiles =
     next.relayMode !== "official" || next.officialMixApiKey || next.configContents.trim() || next.authContents.trim();
-  if (shouldHaveFiles && (!next.configContents.trim() || !next.authContents.trim())) {
+  const needsAuthFile = next.relayMode === "pureApi";
+  if (shouldHaveFiles && (!next.configContents.trim() || (needsAuthFile && !next.authContents.trim()))) {
     next = withGeneratedRelayFiles(next);
   }
 
@@ -4095,8 +4115,12 @@ function applyRelayProfilePatchToFiles(profile: RelayProfile, patch: Partial<Rel
     next.configContents = setRootTomlStringKey(next.configContents, "model", patch.model || "");
   }
   if ("apiKey" in patch) {
-    next.authContents = setAuthOpenAiApiKey(next.authContents, patch.apiKey || "");
-    next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "");
+    if (next.relayMode === "pureApi") {
+      next.authContents = setAuthOpenAiApiKey(next.authContents, patch.apiKey || "");
+      next.configContents = removeCodexExperimentalBearerToken(next.configContents);
+    } else {
+      next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "");
+    }
   }
   if ("baseUrl" in patch) {
     next.upstreamBaseUrl = patch.baseUrl || "";
@@ -4122,7 +4146,8 @@ function applyRelayProfilePatchToFiles(profile: RelayProfile, patch: Partial<Rel
   if ("relayMode" in patch || "officialMixApiKey" in patch) {
     if (next.relayMode === "official" && !next.officialMixApiKey) {
       next.configContents = "";
-    } else if (!next.configContents.trim() || !next.authContents.trim()) {
+      next.authContents = buildOfficialRelayAuthJson(next.authContents);
+    } else if (!next.configContents.trim() || (next.relayMode === "pureApi" && !next.authContents.trim())) {
       next = withGeneratedRelayFiles(next);
     }
   }
@@ -4255,6 +4280,7 @@ function setCodexProviderStringKey(contents: string, key: string, value: string)
   if (!rootTomlStringValue(next, "model_provider")) {
     next = setRootTomlStringKey(next, "model_provider", provider);
   }
+  next = ensureCodexProviderDefaults(next, provider);
   return setTomlSectionStringKey(next, `model_providers.${provider}`, key, value);
 }
 
@@ -4262,7 +4288,28 @@ function setCodexExperimentalBearerToken(contents: string, apiKey: string): stri
   return setCodexProviderStringKey(contents, "experimental_bearer_token", apiKey.trim());
 }
 
+function removeCodexExperimentalBearerToken(contents: string): string {
+  const provider = rootTomlStringValue(contents, "model_provider") || "custom";
+  return removeTomlSectionKey(contents, `model_providers.${provider}`, "experimental_bearer_token");
+}
+
+function ensureCodexProviderDefaults(contents: string, provider: string): string {
+  let next = contents;
+  const section = `model_providers.${provider}`;
+  next = setTomlSectionStringKey(next, section, "name", provider);
+  next = setTomlSectionStringKey(next, section, "wire_api", "responses");
+  return setTomlSectionBoolKey(next, section, "requires_openai_auth", true);
+}
+
+function setTomlSectionBoolKey(contents: string, sectionName: string, key: string, value: boolean): string {
+  return setTomlSectionRawKey(contents, sectionName, key, value ? "true" : "false");
+}
+
 function setTomlSectionStringKey(contents: string, sectionName: string, key: string, value: string): string {
+  return setTomlSectionRawKey(contents, sectionName, key, `"${tomlString(value.trim())}"`);
+}
+
+function setTomlSectionRawKey(contents: string, sectionName: string, key: string, value: string): string {
   const lines = contents.split(/\r?\n/);
   let sectionStart = -1;
   let sectionEnd = lines.length;
@@ -4277,9 +4324,9 @@ function setTomlSectionStringKey(contents: string, sectionName: string, key: str
   }
   if (sectionStart < 0) {
     const prefix = ensureTrailingNewline(lines.join("\n").trimEnd()).trimEnd();
-    return joinTomlSections([prefix, `[${sectionName}]\n${key} = "${tomlString(value.trim())}"`]);
+    return joinTomlSections([prefix, `[${sectionName}]\n${key} = ${value}`]);
   }
-  const replacement = `${key} = "${tomlString(value.trim())}"`;
+  const replacement = `${key} = ${value}`;
   for (let index = sectionStart + 1; index < sectionEnd; index += 1) {
     if (new RegExp(`^\\s*${key}\\s*=`).test(lines[index])) {
       lines[index] = replacement;
@@ -4292,14 +4339,34 @@ function setTomlSectionStringKey(contents: string, sectionName: string, key: str
   return ensureTrailingNewline(lines.join("\n").trimEnd());
 }
 
+function removeTomlSectionKey(contents: string, sectionName: string, key: string): string {
+  const lines = contents.split(/\r?\n/);
+  let sectionStart = -1;
+  let sectionEnd = lines.length;
+  for (let index = 0; index < lines.length; index += 1) {
+    const section = tomlSectionName(lines[index]);
+    if (section === null) continue;
+    if (sectionStart >= 0) {
+      sectionEnd = index;
+      break;
+    }
+    if (section === sectionName) sectionStart = index;
+  }
+  if (sectionStart < 0) return contents;
+  const next = lines.filter((line, index) => {
+    if (index <= sectionStart || index >= sectionEnd) return true;
+    return !new RegExp(`^\\s*${key}\\s*=`).test(line);
+  });
+  return ensureTrailingNewline(next.join("\n").trimEnd());
+}
+
 function relayProfileSwitchValidation(profile: RelayProfile): string | null {
   if (profile.relayMode === "official" && !profile.officialMixApiKey) return null;
   if (!profile.configContents.trim()) {
     return `供应商「${profile.name || profile.id}」缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。请先在该供应商详情里保存 config.toml。`;
   }
   if (profile.relayMode !== "official" || !authJsonHasOpenAiApiKey(profile.authContents)) return null;
-  const mode = profile.officialMixApiKey ? "官方混合 API" : "官方登录";
-  return `${mode} 的 auth.json 检测到 OPENAI_API_KEY，这通常是纯 API 登录态。请检查此供应商的 auth.json，确认它是 ChatGPT 官方登录态后再切换。`;
+  return "官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。";
 }
 
 function authJsonHasOpenAiApiKey(contents: string): boolean {

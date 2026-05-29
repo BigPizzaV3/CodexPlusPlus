@@ -1441,45 +1441,6 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     }
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
-    if relay.config_contents.trim().is_empty() == false
-        && relay.relay_mode == codex_plus_core::settings::RelayMode::Official
-        && relay.official_mix_api_key
-    {
-        return match codex_plus_core::relay_config::apply_relay_profile_config_to_home_with_context(
-            &home,
-            &relay,
-            &relay_combined_common_config(&settings),
-        ) {
-            Ok(result) => {
-                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-                log_relay_apply_result(
-                    "manager.apply_relay_injection.ok",
-                    &relay,
-                    &status,
-                    result.backup_path.as_ref(),
-                    None,
-                );
-                ok(
-                    "已切换到当前供应商 config.toml，并保留官方 auth.json。",
-                    relay_payload(status, result.backup_path),
-                )
-            }
-            Err(error) => {
-                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-                log_relay_apply_result(
-                    "manager.apply_relay_injection.failed",
-                    &relay,
-                    &status,
-                    None,
-                    Some(error.to_string()),
-                );
-                failed(
-                    &format!("切换官方混入配置失败：{error}"),
-                    relay_payload(status, None),
-                )
-            }
-        };
-    }
     if relay_has_complete_files(&relay) {
         return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
             &home,
@@ -1717,6 +1678,11 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
 }
 
 fn relay_has_complete_files(relay: &codex_plus_core::settings::RelayProfile) -> bool {
+    if relay.relay_mode == codex_plus_core::settings::RelayMode::Official
+        && relay.official_mix_api_key
+    {
+        return !relay.config_contents.trim().is_empty();
+    }
     !relay.config_contents.trim().is_empty() && !relay.auth_contents.trim().is_empty()
 }
 

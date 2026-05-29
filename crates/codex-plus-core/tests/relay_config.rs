@@ -118,6 +118,35 @@ experimental_bearer_token = "sk-test-redacted"
 }
 
 #[test]
+fn reports_pure_api_configured_from_auth_api_key_without_bearer_token() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "http://127.0.0.1:57321/v1"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#,
+    )
+    .unwrap();
+
+    let status = relay_config_status_from_home(temp.path());
+
+    assert!(status.configured);
+    assert!(status.requires_openai_auth);
+    assert!(!status.has_bearer_token);
+}
+
+#[test]
 fn apply_relay_config_writes_isolated_provider_without_live_config_carryover() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -219,6 +248,66 @@ base_url = "http://127.0.0.1:57321/v1"
     let live = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(!live.contains("codex_plus_chat_base_url"));
     assert!(live.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+}
+
+#[test]
+fn official_mix_api_profile_does_not_generate_auth_api_key() {
+    let mut profile = RelayProfile {
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        base_url: "https://relay.example/v1".to_string(),
+        api_key: "sk-mix".to_string(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    assert!(profile.auth_contents.trim().is_empty());
+    assert!(profile.config_contents.contains(r#"wire_api = "responses""#));
+    assert!(profile.config_contents.contains("requires_openai_auth = true"));
+    assert!(profile.config_contents.contains(r#"experimental_bearer_token = "sk-mix""#));
+}
+
+#[test]
+fn official_mix_api_profile_does_not_take_api_key_from_auth() {
+    let mut profile = RelayProfile {
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-pure-api"}"#.to_string(),
+        config_contents: r#"model_provider = "custom"
+
+[model_providers.custom]
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-mix"
+"#
+        .to_string(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    assert_eq!(profile.api_key, "sk-mix");
+    assert!(profile.config_contents.contains(r#"experimental_bearer_token = "sk-mix""#));
+    assert!(!profile.config_contents.contains("sk-pure-api"));
+}
+
+#[test]
+fn official_mix_api_profile_removes_auth_api_key_on_storage() {
+    let mut profile = RelayProfile {
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        api_key: "sk-official-mix".to_string(),
+        base_url: "https://relay.example/v1".to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-pure-api","auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    let auth: serde_json::Value = serde_json::from_str(&profile.auth_contents).unwrap();
+    assert!(auth.get("OPENAI_API_KEY").is_none());
+    assert_eq!(auth["auth_mode"], "chatgpt");
+    assert_eq!(auth["tokens"]["access_token"], "official");
 }
 
 #[test]
@@ -1584,7 +1673,7 @@ base_url = "https://relay.example/v1"
     assert!(auth.get("auth_mode").is_none());
     assert!(auth.get("tokens").is_none());
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
+    assert!(!config.contains("experimental_bearer_token"));
     assert!(config.contains(r#"model_provider = "custom""#));
     assert!(config.contains("[model_providers.custom]"));
 }
@@ -1627,7 +1716,7 @@ experimental_bearer_token = "sk-new"
     assert!(config.contains(r#"wire_api = "responses""#));
     assert!(config.contains("requires_openai_auth = true"));
     assert!(config.contains(r#"base_url = "https://relay.example/v1""#));
-    assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
+    assert!(!config.contains("experimental_bearer_token"));
     assert!(!config.contains("live_provider"));
     assert!(!config.contains("https://live.example/v1"));
 }
@@ -1662,7 +1751,7 @@ requires_openai_auth = true
     assert!(config.contains("[model_providers.custom]"));
     assert!(config.contains(r#"name = "max_ai""#));
     assert!(config.contains(r#"base_url = "https://max2.jojocode.com/v1""#));
-    assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
+    assert!(!config.contains("experimental_bearer_token"));
     assert!(!config.contains("[model_providers.max_ai]"));
     assert!(!config.contains(r#"model_provider = "max_ai""#));
 }
@@ -1731,7 +1820,78 @@ experimental_bearer_token = "sk-provider-token"
     assert!(auth.as_object().is_some_and(|object| object.is_empty()));
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"experimental_bearer_token = "sk-provider-token""#));
+    assert!(!config.contains("experimental_bearer_token"));
+}
+
+#[test]
+fn apply_official_mix_profile_clears_live_auth_api_key_and_keeps_login() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-pure-api","auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#,
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        id: "official-mix".to_string(),
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        config_contents: r#"model = "gpt-5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-official-mix"
+"#
+        .to_string(),
+        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let auth = std::fs::read_to_string(temp.path().join("auth.json")).unwrap();
+    let auth: serde_json::Value = serde_json::from_str(&auth).unwrap();
+    assert!(auth.get("OPENAI_API_KEY").is_none());
+    assert_eq!(auth["auth_mode"], "chatgpt");
+    assert_eq!(auth["tokens"]["access_token"], "official");
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"experimental_bearer_token = "sk-official-mix""#));
+    assert!(config.contains("requires_openai_auth = true"));
+}
+
+#[test]
+fn apply_official_mix_profile_keeps_config_token_when_api_key_field_is_empty() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "official-mix".to_string(),
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        config_contents: r#"model = "gpt-5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-from-config"
+"#
+        .to_string(),
+        auth_contents: String::new(),
+        api_key: String::new(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"experimental_bearer_token = "sk-from-config""#));
+    let auth = std::fs::read_to_string(temp.path().join("auth.json")).unwrap();
+    assert!(auth.trim().is_empty());
 }
 
 #[test]
@@ -1822,7 +1982,7 @@ experimental_bearer_token = "sk-new"
     assert!(config.contains(r#"base_url = "https://max2.jojocode.com/v1""#));
     assert!(config.contains(r#"wire_api = "responses""#));
     assert!(config.contains("requires_openai_auth = true"));
-    assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
+    assert!(!config.contains("experimental_bearer_token"));
 }
 
 #[test]
