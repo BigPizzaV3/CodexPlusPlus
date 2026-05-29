@@ -387,6 +387,23 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
             };
             return failed(&format!("写回 cc-switch 供应商配置失败：{error}"), payload);
         }
+        let active = settings.active_relay_profile();
+        if !active.linked_ccs_provider_id.trim().is_empty() {
+            if let Err(error) =
+                codex_plus_core::ccs_import::set_current_codex_provider_in_default_db(
+                    &active.linked_ccs_provider_id,
+                )
+            {
+                let payload = SettingsPayload {
+                    settings,
+                    settings_path: codex_plus_core::paths::default_settings_path()
+                        .to_string_lossy()
+                        .to_string(),
+                    user_scripts: user_script_inventory(),
+                };
+                return failed(&format!("同步 cc-switch 当前供应商失败：{error}"), payload);
+            }
+        }
     }
     remove_linked_ccs_profiles_for_local_storage(&mut settings);
     match SettingsStore::default().save(&settings) {

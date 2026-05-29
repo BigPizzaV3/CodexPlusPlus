@@ -463,13 +463,16 @@ export function App() {
     const result = await run(() => call<SettingsResult>("load_settings"));
     if (result) {
       setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
+      const normalized = normalizeSettings(result.settings);
+      setSettingsForm(normalized);
       setLaunchForm((current) => ({
         ...current,
         appPath: current.appPath || result.settings.codexAppPath || "",
       }));
       if (!silent) showResultNotice("设置已加载", result, { silentSuccess: true });
+      return normalized;
     }
+    return null;
   };
 
   const refreshScriptMarket = async (silent = false) => {
@@ -704,7 +707,8 @@ export function App() {
   };
 
   const saveSettings = async () => {
-    const result = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
+    const next = await settingsForSave(settingsForm, false);
+    const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
@@ -712,14 +716,24 @@ export function App() {
     }
   };
 
-  const saveSettingsValue = async (next: BackendSettings, silent = true) => {
-    setSettingsForm(next);
-    const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
+  const saveSettingsValue = async (next: BackendSettings, silent = true, preserveLinkedProfiles = false) => {
+    const normalized = normalizeSettings(next);
+    setSettingsForm(normalized);
+    const settingsToSave = await settingsForSave(normalized, preserveLinkedProfiles);
+    const result = await run(() => call<SettingsResult>("save_settings", { settings: settingsToSave }));
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
       if (!silent || !isSuccessStatus(result.status)) showNotice("设置保存", result.message, result.status);
     }
+  };
+
+  const settingsForSave = async (next: BackendSettings, preserveLinkedProfiles: boolean) => {
+    const normalized = normalizeSettings(next);
+    if (!normalized.ccsLinkEnabled || preserveLinkedProfiles) return normalized;
+    const refreshed = await refreshSettings(true);
+    if (!refreshed) return normalized;
+    return mergeLiveLinkedRelayProfiles(normalized, normalizeSettings(refreshed));
   };
 
   const importCcsProviders = async () => {
@@ -902,22 +916,35 @@ export function App() {
   };
 
   const switchRelayProfile = async (next: BackendSettings) => {
-    if (!next.relayProfilesEnabled) {
+    let switchSettings = normalizeSettings(next);
+    if (switchSettings.ccsLinkEnabled) {
+      const targetRelayId = switchSettings.activeRelayId;
+      const refreshed = await refreshSettings(true);
+      if (!refreshed) return;
+      const latest = normalizeSettings(refreshed);
+      if (!latest.relayProfiles.some((profile) => profile.id === targetRelayId)) {
+        showNotice("供应商切换", "目标供应商已不在 cc-switch 或本地配置中，请刷新供应商列表后重试。", "failed");
+        return;
+      }
+      switchSettings = syncLegacyRelayFields({ ...latest, activeRelayId: targetRelayId });
+    }
+    if (!switchSettings.relayProfilesEnabled) {
       showNotice("供应商配置已关闭", "当前不会写入 Codex config.toml / auth.json。打开供应商配置总开关后再切换。", "failed");
       return;
     }
-    const targetBeforeSnapshot = activeRelayProfile(next);
+    const targetBeforeSnapshot = activeRelayProfile(switchSettings);
     logDiagnostic("switchRelayProfile.start", {
       currentRelayId: settingsForm.activeRelayId,
-      targetRelayId: next.activeRelayId,
+      targetRelayId: switchSettings.activeRelayId,
       targetRelayName: targetBeforeSnapshot.name,
       targetRelayMode: targetBeforeSnapshot.relayMode,
+      ccsLinkEnabled: switchSettings.ccsLinkEnabled,
     });
-    const nextWithSnapshot = await snapshotActiveRelayFilesBeforeSwitch(next);
+    const nextWithSnapshot = await snapshotActiveRelayFilesBeforeSwitch(switchSettings);
     if (!nextWithSnapshot) {
       logDiagnostic("switchRelayProfile.snapshot_failed", {
         currentRelayId: settingsForm.activeRelayId,
-        targetRelayId: next.activeRelayId,
+        targetRelayId: switchSettings.activeRelayId,
       });
       return;
     }
@@ -1122,6 +1149,7 @@ export function App() {
       performUpdate,
       saveSettings,
       saveSettingsValue,
+      refreshSettings,
       resetSettings,
       chooseCodexAppPath: async (mode: "folder" | "file") => {
         const selected = await open(
@@ -1354,7 +1382,8 @@ type Actions = {
   checkUpdate: () => Promise<void>;
   performUpdate: () => Promise<void>;
   saveSettings: () => Promise<void>;
-  saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<void>;
+  saveSettingsValue: (settings: BackendSettings, silent?: boolean, preserveLinkedProfiles?: boolean) => Promise<void>;
+  refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
   resetSettings: () => Promise<void>;
   chooseCodexAppPath: (mode: "folder" | "file") => Promise<void>;
   clearCodexAppPath: () => Promise<void>;
@@ -1490,9 +1519,21 @@ function RelayScreen({
     ? normalized.relayProfiles.find((profile) => profile.id === detailProfileId) || null
     : null);
   const isNewProfile = !!newProfileDraft;
-  const saveRelaySettings = (next: BackendSettings) => {
+  const saveRelaySettings = (next: BackendSettings, preserveLinkedProfiles = false) => {
     onFormChange(next);
-    void actions.saveSettingsValue(next, true);
+    void actions.saveSettingsValue(next, true, preserveLinkedProfiles);
+  };
+  const editRelayProfile = async (profileId: string) => {
+    let nextSettings = normalized;
+    const profile = normalized.relayProfiles.find((item) => item.id === profileId);
+    if (profile?.linkedCcsProviderId && normalized.ccsLinkEnabled) {
+      const refreshed = await actions.refreshSettings(true);
+      if (refreshed) nextSettings = normalizeSettings(refreshed);
+    }
+    setNewProfileDraft(null);
+    setDetailProfileId(
+      nextSettings.relayProfiles.some((item) => item.id === profileId) ? profileId : null,
+    );
   };
   useEffect(() => {
     if (!newProfileDraft && detailProfileId && !normalized.relayProfiles.some((profile) => profile.id === detailProfileId)) {
@@ -1577,10 +1618,7 @@ function RelayScreen({
           </div>
           <RelayProfileList
             form={normalized}
-            onEdit={(profileId) => {
-              setNewProfileDraft(null);
-              setDetailProfileId(profileId);
-            }}
+            onEdit={(profileId) => void editRelayProfile(profileId)}
             onFormChange={saveRelaySettings}
             disabled={!normalized.relayProfilesEnabled}
             actions={actions}
@@ -2336,7 +2374,7 @@ function RelayProfileDetail({
   form: BackendSettings;
   isNew?: boolean;
   onBack: () => void;
-  onFormChange: (value: BackendSettings) => void;
+  onFormChange: (value: BackendSettings, preserveLinkedProfiles?: boolean) => void;
   onSaved?: () => void;
   actions: Actions;
 }) {
@@ -2360,7 +2398,7 @@ function RelayProfileDetail({
     const next = isNew
       ? addRelayProfile(form, normalizedDraft)
       : updateRelayProfile(form, profile.id, normalizedDraft);
-    onFormChange(next);
+    onFormChange(next, !!normalizedDraft.linkedCcsProviderId);
     if (isActive) {
       await actions.saveRelayFile(
         "config",
@@ -4289,6 +4327,27 @@ function syncLegacyRelayFields(settings: BackendSettings): BackendSettings {
     relayBaseUrl: active.baseUrl,
     relayApiKey: active.apiKey,
   };
+}
+
+function mergeLiveLinkedRelayProfiles(settings: BackendSettings, liveSettings: BackendSettings): BackendSettings {
+  const liveLinkedById = new Map(
+    liveSettings.relayProfiles
+      .filter((profile) => profile.linkedCcsProviderId.trim())
+      .map((profile) => [profile.id, profile]),
+  );
+  if (!liveLinkedById.size) return settings;
+  const existingIds = new Set(settings.relayProfiles.map((profile) => profile.id));
+  const relayProfiles = [
+    ...settings.relayProfiles.map((profile) => liveLinkedById.get(profile.id) ?? profile),
+    ...liveSettings.relayProfiles.filter((profile) => profile.linkedCcsProviderId.trim() && !existingIds.has(profile.id)),
+  ];
+  return syncLegacyRelayFields({
+    ...settings,
+    relayProfiles,
+    activeRelayId: relayProfiles.some((profile) => profile.id === settings.activeRelayId)
+      ? settings.activeRelayId
+      : liveSettings.activeRelayId,
+  });
 }
 
 function updateRelayProfile(settings: BackendSettings, id: string, patch: Partial<RelayProfile>): BackendSettings {

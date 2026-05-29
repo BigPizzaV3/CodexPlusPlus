@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -22,6 +23,12 @@ pub fn default_ccs_db_path() -> PathBuf {
     home_dir()
         .join(format!(".{}-{}", "cc", "switch"))
         .join(format!("{}-{}.db", "cc", "switch"))
+}
+
+pub fn default_ccs_settings_path() -> PathBuf {
+    home_dir()
+        .join(format!(".{}-{}", "cc", "switch"))
+        .join("settings.json")
 }
 
 pub fn list_codex_providers_from_default_db() -> anyhow::Result<Vec<CcsProviderImport>> {
@@ -67,6 +74,64 @@ pub fn sync_linked_profiles_from_db(
 
 pub fn write_linked_profiles_to_default_db(profiles: &[RelayProfile]) -> anyhow::Result<usize> {
     write_linked_profiles_to_db(&default_ccs_db_path(), profiles)
+}
+
+pub fn set_current_codex_provider_in_default_db(source_id: &str) -> anyhow::Result<bool> {
+    set_current_codex_provider(
+        &default_ccs_db_path(),
+        &default_ccs_settings_path(),
+        source_id,
+    )
+}
+
+pub fn set_current_codex_provider(
+    db_path: &Path,
+    settings_path: &Path,
+    source_id: &str,
+) -> anyhow::Result<bool> {
+    let source_id = source_id.trim();
+    if source_id.is_empty() || !db_path.exists() {
+        return Ok(false);
+    }
+
+    let mut conn = Connection::open(db_path)
+        .with_context(|| format!("failed to open provider database {}", db_path.display()))?;
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE providers SET is_current = 0 WHERE app_type = 'codex'",
+        [],
+    )?;
+    let affected = tx.execute(
+        "UPDATE providers SET is_current = 1 WHERE id = ?1 AND app_type = 'codex'",
+        params![source_id],
+    )?;
+    tx.commit()?;
+
+    if affected == 0 {
+        return Ok(false);
+    }
+    set_current_codex_provider_in_settings(settings_path, source_id)?;
+    Ok(true)
+}
+
+fn set_current_codex_provider_in_settings(path: &Path, source_id: &str) -> anyhow::Result<()> {
+    let mut settings = if path.exists() {
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("failed to read cc-switch settings {}", path.display()))?;
+        serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({}))
+    } else {
+        json!({})
+    };
+    if !settings.is_object() {
+        settings = json!({});
+    }
+    settings["currentProviderCodex"] = Value::String(source_id.to_string());
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, format!("{}\n", serde_json::to_string_pretty(&settings)?))
+        .with_context(|| format!("failed to write cc-switch settings {}", path.display()))?;
+    Ok(())
 }
 
 pub fn write_linked_profiles_to_db(
@@ -446,6 +511,7 @@ mod tests {
                 settings_config TEXT NOT NULL,
                 created_at INTEGER,
                 sort_index INTEGER,
+                is_current BOOLEAN NOT NULL DEFAULT 0,
                 PRIMARY KEY (id, app_type)
             )",
             [],
@@ -664,5 +730,46 @@ base_url = "https://toml.example/v1"
         assert_eq!(name, "After");
         assert_eq!(settings_config["auth"]["OPENAI_API_KEY"], "sk-after");
         assert_eq!(settings_config["config"], "model_provider = \"custom\"\n");
+    }
+
+    #[test]
+    fn set_current_codex_provider_updates_db_and_settings_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join(format!("{}-{}.db", "cc", "switch"));
+        let settings = dir.path().join("settings.json");
+        create_ccs_db(&db);
+        insert_provider(&db, "old", "Old", json!({ "config": "old" }), 0);
+        insert_provider(&db, "new", "New", json!({ "config": "new" }), 1);
+        Connection::open(&db)
+            .unwrap()
+            .execute(
+                "UPDATE providers SET is_current = 1 WHERE id = 'old' AND app_type = 'codex'",
+                [],
+            )
+            .unwrap();
+
+        let updated = set_current_codex_provider(&db, &settings, "new").unwrap();
+
+        assert!(updated);
+        let conn = Connection::open(&db).unwrap();
+        let old_current: i64 = conn
+            .query_row(
+                "SELECT is_current FROM providers WHERE id = 'old' AND app_type = 'codex'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let new_current: i64 = conn
+            .query_row(
+                "SELECT is_current FROM providers WHERE id = 'new' AND app_type = 'codex'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_current, 0);
+        assert_eq!(new_current, 1);
+        let settings_value: Value =
+            serde_json::from_str(&std::fs::read_to_string(settings).unwrap()).unwrap();
+        assert_eq!(settings_value["currentProviderCodex"], json!("new"));
     }
 }
