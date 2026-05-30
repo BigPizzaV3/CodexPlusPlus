@@ -713,10 +713,14 @@ fn strip_common_config_text_fallback(config_contents: &str, common_config: &str)
 
     let mut kept = Vec::new();
     let mut skipping_table = false;
+    let mut in_root_section = true;
+    let mut removed_root_keys = std::collections::HashSet::new();
+    let source_root_keys = toml_root_keys_before_first_table(config_contents);
 
     for line in config_contents.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_root_section = false;
             let header = trimmed.to_string();
             skipping_table = common.table_headers.contains(&header);
             if skipping_table {
@@ -728,9 +732,21 @@ fn strip_common_config_text_fallback(config_contents: &str, common_config: &str)
             continue;
         }
 
-        if let Some(key) = toml_key_from_line(trimmed) {
+        if in_root_section && let Some(key) = toml_key_from_line(trimmed) {
             if common.root_keys.contains(key) {
-                continue;
+                let is_duplicate_common_key = removed_root_keys.contains(key)
+                    || source_root_keys.contains(key)
+                    || common.table_headers.contains("[features]")
+                    || common
+                        .table_headers
+                        .contains("[marketplaces.openai-bundled]")
+                    || common
+                        .table_headers
+                        .contains("[plugins.\"superpowers@openai-curated\"]");
+                if is_duplicate_common_key {
+                    removed_root_keys.insert(key.to_string());
+                    continue;
+                }
             }
         }
 
@@ -738,6 +754,20 @@ fn strip_common_config_text_fallback(config_contents: &str, common_config: &str)
     }
 
     ensure_text_newline(kept.join("\n").trim_end())
+}
+
+fn toml_root_keys_before_first_table(config_contents: &str) -> std::collections::HashSet<String> {
+    let mut keys = std::collections::HashSet::new();
+    for line in config_contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            break;
+        }
+        if let Some(key) = toml_key_from_line(trimmed) {
+            keys.insert(key.to_string());
+        }
+    }
+    keys
 }
 
 struct CommonConfigAnchors {
@@ -1534,6 +1564,9 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     }
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
+    if settings.active_aggregate_relay_profile().is_some() {
+        return apply_aggregate_relay_injection_to_home(&home);
+    }
     if relay_has_complete_files(&relay) {
         return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
             &home,
@@ -1619,6 +1652,33 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
             );
             failed(
                 &format!("写入中转配置失败：{error}"),
+                relay_payload(status, None),
+            )
+        }
+    }
+}
+
+fn apply_aggregate_relay_injection_to_home(home: &Path) -> CommandResult<RelayPayload> {
+    match codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
+        home,
+        &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
+            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        ),
+        "codex-plus-aggregate",
+        codex_plus_core::settings::RelayProtocol::Responses,
+        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+    ) {
+        Ok(result) => {
+            let status = codex_plus_core::relay_config::relay_status_from_home(home);
+            ok(
+                "聚合供应商配置已写入，真实请求会由本地代理按策略轮转。",
+                relay_payload(status, result.backup_path),
+            )
+        }
+        Err(error) => {
+            let status = codex_plus_core::relay_config::relay_status_from_home(home);
+            failed(
+                &format!("写入聚合供应商配置失败：{error}"),
                 relay_payload(status, None),
             )
         }
@@ -2356,6 +2416,20 @@ mod tests {
 
         assert!(!text.contains("sk-"));
         assert!(text.contains("hasBearerToken"));
+    }
+
+    #[test]
+    fn aggregate_relay_injection_writes_local_proxy_without_chatgpt_auth() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let result = apply_aggregate_relay_injection_to_home(temp.path());
+        let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+        assert_eq!(result.status, "ok");
+        assert!(result.payload.configured);
+        assert!(!result.payload.authenticated);
+        assert!(config.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+        assert!(config.contains(r#"experimental_bearer_token = "codex-plus-aggregate""#));
     }
 
     #[test]

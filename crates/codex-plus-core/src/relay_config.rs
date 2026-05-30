@@ -1563,12 +1563,26 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
 
 pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow::Result<()> {
     if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
-        profile.config_contents.clear();
+        let has_api_config = !profile.base_url.trim().is_empty()
+            || !profile.api_key.trim().is_empty()
+            || codex_auth_api_key(&profile.auth_contents).is_some()
+            || config_has_model_provider(profile.config_contents.as_str());
+        if has_api_config {
+            profile.config_contents.clear();
+        }
+        if !profile.model_list.trim().is_empty() {
+            profile.model_list = merge_model_into_model_list(&profile.model, &profile.model_list);
+        }
         profile.model.clear();
         profile.base_url.clear();
         profile.upstream_base_url.clear();
         profile.api_key.clear();
-        profile.auth_contents = remove_openai_api_key_from_auth_contents(&profile.auth_contents)?;
+        if auth_contents_looks_like_chatgpt_auth(&profile.auth_contents) {
+            profile.auth_contents =
+                remove_openai_api_key_from_auth_contents(&profile.auth_contents)?;
+        } else {
+            profile.auth_contents.clear();
+        }
         return Ok(());
     }
     let source_base_url = relay_profile_base_url(profile);
@@ -1591,6 +1605,7 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
         profile.auth_contents = remove_openai_api_key_from_auth_contents(&profile.auth_contents)?;
     }
     profile.model = relay_profile_model(profile);
+    profile.model_list = merge_model_into_model_list(&profile.model, &profile.model_list);
     profile.upstream_base_url = source_base_url.clone();
     profile.base_url = source_base_url;
     profile.api_key = relay_profile_api_key(profile);
@@ -1611,6 +1626,48 @@ fn remove_openai_api_key_from_auth_contents(auth_contents: &str) -> anyhow::Resu
         return Ok(String::new());
     }
     Ok(format!("{}\n", serde_json::to_string_pretty(&value)?))
+}
+
+fn merge_model_into_model_list(model: &str, model_list: &str) -> String {
+    let model = model.trim();
+    let mut models = Vec::new();
+    if !model.is_empty() {
+        models.push(model.to_string());
+    }
+    for item in model_list.split(['\r', '\n', ',']).map(str::trim) {
+        if !item.is_empty() && !models.iter().any(|existing| existing == item) {
+            models.push(item.to_string());
+        }
+    }
+    models.join("\n")
+}
+
+fn config_has_model_provider(config_contents: &str) -> bool {
+    parse_toml_document(config_contents)
+        .ok()
+        .and_then(|doc| {
+            doc.get("model_provider")
+                .and_then(Item::as_str)
+                .map(str::to_string)
+        })
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn auth_contents_looks_like_chatgpt_auth(contents: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(contents) else {
+        return false;
+    };
+    let is_chatgpt = value
+        .get("auth_mode")
+        .and_then(Value::as_str)
+        .map(|mode| mode.eq_ignore_ascii_case("chatgpt"))
+        .unwrap_or(false);
+    is_chatgpt
+        && value
+            .get("tokens")
+            .map(tokens_have_login_secret)
+            .unwrap_or(false)
 }
 
 fn provider_string_from_config(config_contents: &str, key: &str) -> Option<String> {

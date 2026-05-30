@@ -151,9 +151,9 @@ pub fn wrapper_dir() -> PathBuf {
 }
 
 pub fn wrapper_dir_from_roaming(roaming: &Path) -> PathBuf {
-    let roaming_text = roaming.as_os_str().to_string_lossy();
-    if roaming_text.contains('\\') && !roaming_text.contains('/') {
-        return PathBuf::from(format!("{roaming_text}\\Codex++"));
+    let raw = roaming.as_os_str().to_string_lossy();
+    if raw.contains('\\') && (!raw.contains('/') || cfg!(not(windows))) {
+        return PathBuf::from(format!("{}\\Codex++", raw.trim_end_matches(['\\', '/'])));
     }
     roaming.join("Codex++")
 }

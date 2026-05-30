@@ -66,11 +66,7 @@ pub async fn read_codex_model_catalog() -> Value {
 fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Value {
     let models = relay_profile_model_ids(profile);
     let model = profile.model.trim().to_string();
-    let default_model = if models.iter().any(|item| item == &model) {
-        model.clone()
-    } else {
-        models.first().cloned().unwrap_or_default()
-    };
+    let default_model = models.first().cloned().unwrap_or_default();
     let provider_name = if profile.name.trim().is_empty() {
         profile.id.trim()
     } else {
@@ -102,8 +98,10 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
 
 fn relay_profile_model_ids(profile: &RelayProfile) -> Vec<String> {
     unique_strings(
-        std::iter::once(profile.model.as_str())
-            .chain(profile.model_list.split(['\r', '\n', ',']))
+        profile
+            .model_list
+            .split(['\r', '\n', ','])
+            .chain(std::iter::once(profile.model.as_str()))
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToString::to_string)

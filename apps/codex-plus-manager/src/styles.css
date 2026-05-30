@@ -499,6 +499,7 @@ body {
 .relay-add-row {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   margin-bottom: 10px;
 }
 
@@ -679,7 +680,7 @@ body {
   position: sticky;
   top: 0;
   z-index: 20;
-  margin: 0;
+  margin: -16px -20px 0;
   padding: 10px 20px;
   background: hsl(var(--background));
   border-bottom: 1px solid hsl(var(--border));
@@ -711,6 +712,11 @@ body {
 
 .relay-detail-page > .relay-file-grid {
   margin: 0 20px 24px;
+}
+
+.aggregate-editor {
+  display: grid;
+  gap: 12px;
 }
 
 .relay-editor-head,
@@ -795,6 +801,10 @@ body {
 
 .relay-api-fields .field:nth-child(4) {
   animation-delay: 95ms;
+}
+
+.aggregate-fields {
+  margin-top: 0;
 }
 
 .relay-field-name {
@@ -1252,6 +1262,86 @@ body {
   color: hsl(var(--muted-foreground));
   font-size: 13px;
   line-height: 1.45;
+}
+
+.aggregate-strategy-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.aggregate-strategy-option {
+  min-height: 118px;
+}
+
+.aggregate-members {
+  display: grid;
+  gap: 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--secondary) / 0.22);
+  padding: 12px;
+}
+
+.aggregate-members-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.aggregate-members-head > div,
+.aggregate-member-summary {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.aggregate-members-head span,
+.aggregate-member-summary small,
+.aggregate-weight-box > span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.aggregate-member-list {
+  display: grid;
+  gap: 8px;
+}
+
+.aggregate-member-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 118px;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  padding: 10px;
+}
+
+.aggregate-member-row.selected {
+  border-color: hsl(var(--primary) / 0.68);
+  background: hsl(var(--primary) / 0.1);
+}
+
+.aggregate-member-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
+.aggregate-weight-box {
+  display: grid;
+  gap: 4px;
+}
+
+.aggregate-weight-box input {
+  min-height: 34px;
+}
+
+.aggregate-preview {
+  margin-top: 0;
 }
 
 .metric-list div,
