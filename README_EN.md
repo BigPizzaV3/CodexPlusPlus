@@ -129,6 +129,21 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 
 Relay injection is for users who are already logged in with an official ChatGPT account in Codex/ChatGPT and want model requests to go through a custom compatible API.
 
+The boundary of this hybrid mode is:
+
+- The official ChatGPT/Codex login state still owns Codex App account features and the plugin entry.
+- The relay profile only controls the Base URL, key, and model names used for model requests.
+- The compatible API provider is not tied to any specific vendor; it only needs to match the selected upstream protocol and Codex configuration.
+- Clearing API mode should return Codex to the official login mode so the official account and plugins keep working.
+
+Before applying relay injection, run a minimal preflight:
+
+1. Make sure Codex has detected the ChatGPT login state and the plugin entry is available.
+2. Confirm the custom Base URL is reachable and supports the selected upstream protocol, such as a Responses-compatible endpoint.
+3. Test the target key with the smallest useful auth probe, such as a model-list request or a short message request.
+4. Only record whether the key exists and whether auth passed. Do not paste real keys into logs, screenshots, or issues.
+5. Make sure `~/.codex/config.toml` has a backup so clearing API mode can safely roll back.
+
 In the manager's Relay Injection page:
 
 1. Make sure ChatGPT login status is detected.
