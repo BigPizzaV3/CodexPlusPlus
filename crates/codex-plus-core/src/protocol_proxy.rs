@@ -412,7 +412,8 @@ pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<Upstream
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let chat_request = responses_to_chat_completions(request_json.clone())?;
-    let upstream = reqwest::Client::new()
+    let client = crate::http_client::proxied_client(&relay.user_agent)?;
+    let upstream = client
         .post(chat_completions_url(&relay.base_url))
         .bearer_auth(relay.api_key.trim())
         .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -448,7 +449,8 @@ pub async fn open_models_proxy_request() -> anyhow::Result<UpstreamProxyResponse
         anyhow::bail!("Chat Completions 上游 Key 不能为空");
     }
 
-    let upstream = reqwest::Client::new()
+    let client = crate::http_client::proxied_client(&relay.user_agent)?;
+    let upstream = client
         .get(models_url(&relay.base_url))
         .bearer_auth(relay.api_key.trim())
         .send()
