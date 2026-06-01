@@ -48,6 +48,8 @@ pub struct MacosAppBundle {
     pub app_path: PathBuf,
     pub info_plist: String,
     pub launch_script: String,
+    pub binary_source: Option<PathBuf>,
+    pub binary_target_name: Option<String>,
 }
 
 impl ShortcutState {

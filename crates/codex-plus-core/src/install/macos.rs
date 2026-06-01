@@ -2,7 +2,6 @@
 use std::fs;
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(target_os = "macos")]
 use std::path::Path;
 
 use super::{
@@ -31,12 +30,39 @@ pub fn build_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBund
         },
         binary,
     );
+    let (target, binary_source, binary_target_name) =
+        if is_bundle_executable_target(&target, executable_name) {
+            let sidecar = target
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(binary);
+            (sidecar, Some(target), Some(binary.to_string()))
+        } else {
+            (target, None, None)
+        };
     let identifier_suffix = if manager { ".manager" } else { "" };
     MacosAppBundle {
         app_path: install_root.join(format!("{display_name}.app")),
         info_plist: info_plist(display_name, executable_name, identifier_suffix),
         launch_script: format!("#!/bin/sh\nexec \"{}\"\n", target.to_string_lossy()),
+        binary_source,
+        binary_target_name,
     }
+}
+
+fn is_bundle_executable_target(target: &Path, executable_name: &str) -> bool {
+    target.file_name().and_then(|name| name.to_str()) == Some(executable_name)
+        && target
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            == Some("MacOS")
+        && target
+            .parent()
+            .and_then(|parent| parent.parent())
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            == Some("Contents")
 }
 
 #[cfg(target_os = "macos")]
@@ -76,6 +102,17 @@ fn write_bundle(bundle: &MacosAppBundle) -> anyhow::Result<()> {
     fs::create_dir_all(&macos)?;
     fs::create_dir_all(&resources)?;
     fs::write(contents.join("Info.plist"), &bundle.info_plist)?;
+    if let (Some(source), Some(target_name)) = (&bundle.binary_source, &bundle.binary_target_name) {
+        if source.exists() {
+            let target = macos.join(target_name);
+            if source != &target {
+                fs::copy(source, &target)?;
+                let mut permissions = fs::metadata(&target)?.permissions();
+                permissions.set_mode(0o755);
+                fs::set_permissions(target, permissions)?;
+            }
+        }
+    }
     let executable = macos.join(executable_name_from_plist(&bundle.info_plist));
     fs::write(&executable, &bundle.launch_script)?;
     let mut permissions = fs::metadata(&executable)?.permissions();

@@ -18,12 +18,31 @@ pub struct CdpTarget {
 }
 
 pub async fn list_targets(debug_port: u16) -> anyhow::Result<Vec<CdpTarget>> {
-    let url = format!("http://127.0.0.1:{debug_port}/json");
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(CDP_HTTP_TIMEOUT)
         .build()
         .context("failed to build CDP HTTP client")?;
+
+    let urls = [
+        format!("http://127.0.0.1:{debug_port}/json"),
+        format!("http://[::1]:{debug_port}/json"),
+    ];
+    let mut errors = Vec::new();
+    for url in urls {
+        match query_targets_url(&client, &url).await {
+            Ok(targets) => return Ok(targets),
+            Err(error) => errors.push(format!("{url}: {error:#}")),
+        }
+    }
+
+    bail!(
+        "failed to query CDP targets on loopback addresses: {}",
+        errors.join("; ")
+    )
+}
+
+async fn query_targets_url(client: &reqwest::Client, url: &str) -> anyhow::Result<Vec<CdpTarget>> {
     let response = client
         .get(url)
         .send()

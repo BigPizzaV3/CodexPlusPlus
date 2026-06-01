@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -53,8 +54,12 @@ pub fn disable_watcher() -> std::io::Result<()> {
 }
 
 pub fn cdp_listening(port: u16) -> bool {
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok()
+    [
+        SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+    ]
+    .into_iter()
+    .any(|addr| TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok())
 }
 
 pub fn build_spawn_launcher_command(launcher_path: &str, debug_port: u16) -> Vec<String> {

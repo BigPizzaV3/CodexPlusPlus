@@ -1,6 +1,6 @@
 use codex_plus_core::assets;
 use codex_plus_core::bridge::{self, BRIDGE_BINDING_NAME};
-use codex_plus_core::cdp::{CdpTarget, pick_page_target};
+use codex_plus_core::cdp::{CdpTarget, list_targets, pick_page_target};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::future::Future;
@@ -493,6 +493,46 @@ fn pick_page_target_rejects_non_pages_and_pages_without_websocket() {
             .to_string()
             .contains("No injectable Codex page target found")
     );
+}
+
+#[tokio::test]
+async fn list_targets_can_query_ipv6_loopback_cdp_endpoint() {
+    let listener = TcpListener::bind("[::1]:0")
+        .await
+        .expect("IPv6 loopback listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let body = serde_json::to_vec(&json!([
+        {
+            "id": "page-1",
+            "type": "page",
+            "title": "Codex",
+            "url": "app://-/index.html",
+            "webSocketDebuggerUrl": format!("ws://[::1]:{port}/devtools/page/page-1"),
+        }
+    ]))
+    .unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("request should arrive");
+        let mut request = [0_u8; 1024];
+        let _ = stream.readable().await;
+        let _ = stream.try_read(&mut request);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream
+            .try_write(response.as_bytes())
+            .expect("response headers should write");
+        stream.try_write(&body).expect("response body should write");
+    });
+
+    let targets = list_targets(port)
+        .await
+        .expect("CDP target query should fall back to IPv6 loopback");
+
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].id, "page-1");
+    server.await.expect("server task should complete");
 }
 
 #[tokio::test]

@@ -14,6 +14,14 @@ fn cdp_listening_returns_true_for_bound_loopback_port() {
 }
 
 #[test]
+fn cdp_listening_returns_true_for_bound_ipv6_loopback_port() {
+    let listener = std::net::TcpListener::bind("[::1]:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    assert!(cdp_listening(port));
+}
+
+#[test]
 fn cdp_listening_returns_false_for_closed_port() {
     let port = {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();

@@ -95,6 +95,26 @@ fn companion_binary_path_resolves_macos_silent_app_next_to_manager_app() {
 }
 
 #[test]
+fn macos_bundle_does_not_wrap_the_bundle_executable_in_itself() {
+    let options = InstallOptions {
+        install_root: Some("/Applications".into()),
+        launcher_path: Some("/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus".into()),
+        manager_path: Some(
+            "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager".into(),
+        ),
+        remove_owned_data: false,
+    };
+
+    let silent = build_macos_app_bundle(&options, false);
+    let manager = build_macos_app_bundle(&options, true);
+
+    assert!(!silent.launch_script.contains("CodexPlusPlus\""));
+    assert!(!manager.launch_script.contains("CodexPlusPlusManager\""));
+    assert!(silent.launch_script.contains("codex-plus-plus"));
+    assert!(manager.launch_script.contains("codex-plus-plus-manager"));
+}
+
+#[test]
 fn windows_default_install_root_uses_known_folder_before_userprofile_desktop() {
     let strategy = default_install_root_strategy();
 
