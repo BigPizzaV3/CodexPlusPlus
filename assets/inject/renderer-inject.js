@@ -107,6 +107,7 @@
     threadTitle: "[data-thread-title]",
     appHeader: ".app-header-tint",
     nativeMenuBar: "[class*=\"ms-auto\"][class*=\"flex\"][class*=\"items-center\"]",
+    headerContextMenuSurface: '[data-testid="app-shell-header-context-menu-surface"]',
     archiveNav: 'button[aria-label="已归档对话"], button[aria-label="Archived conversations"]',
     disabledInstallButton: 'button:disabled, button[aria-disabled="true"], [role="button"][aria-disabled="true"], button[data-disabled], [role="button"][data-disabled], button.cursor-not-allowed, [role="button"].cursor-not-allowed, button.pointer-events-none, [role="button"].pointer-events-none',
     pluginNavButton: 'nav[role="navigation"] button.h-token-nav-row.w-full',
@@ -2126,9 +2127,17 @@
     if (!codexPlusSettings().nativeMenuPlacement) return null;
     const header = document.querySelector(selectors.appHeader);
     const menuBar = header?.querySelector(selectors.nativeMenuBar);
-    if (!menuBar) return null;
-    const buttons = Array.from(menuBar.querySelectorAll("button")).filter((button) => !button.closest(`#${codexPlusMenuId}`));
-    return { parent: menuBar, before: buttons[buttons.length - 1]?.nextSibling || null, nativeButtonClass: buttons[buttons.length - 1]?.className || "" };
+    if (menuBar) {
+      const buttons = Array.from(menuBar.querySelectorAll("button")).filter((button) => !button.closest(`#${codexPlusMenuId}`));
+      return { parent: menuBar, before: buttons[buttons.length - 1]?.nextSibling || null, nativeButtonClass: buttons[buttons.length - 1]?.className || "" };
+    }
+    const contextSurface = header?.querySelector(selectors.headerContextMenuSurface);
+    const buttons = Array.from(contextSurface?.querySelectorAll?.("button") || [])
+      .filter((button) => !button.closest(`#${codexPlusMenuId}`) && button.getBoundingClientRect().width > 0 && button.getBoundingClientRect().height > 0);
+    const nativeButton = buttons.find((button) => !button.parentElement?.classList?.contains("inline-flex")) || buttons[0];
+    const parent = nativeButton?.parentElement;
+    if (!parent) return null;
+    return { parent, before: nativeButton, nativeButtonClass: nativeButton.className || "" };
   }
 
   function removeDuplicateCodexPlusMenus(keep) {
@@ -2142,9 +2151,22 @@
     });
   }
 
+  function normalizeCodexPlusTriggerClassName(className) {
+    const classes = String(className || "").split(/\s+/).filter(Boolean);
+    const incompatibleNativeGroupClasses = new Set(["gap-0", "rounded-l-none", "border-l-0", "pl-0.5", "pr-1.5"]);
+    const hasIncompatibleNativeGroupClass = classes.some((name) => incompatibleNativeGroupClasses.has(name));
+    const normalized = classes.filter((name) => !incompatibleNativeGroupClasses.has(name));
+    if (hasIncompatibleNativeGroupClass) {
+      ["gap-1", "rounded-lg", "border-l", "px-2"].forEach((name) => {
+        if (!normalized.includes(name)) normalized.push(name);
+      });
+    }
+    return normalized.join(" ");
+  }
+
   function configureCodexPlusTrigger(menu, trigger, nativeButtonClass) {
     if (!trigger) return;
-    if (nativeButtonClass) trigger.className = nativeButtonClass;
+    if (nativeButtonClass) trigger.className = normalizeCodexPlusTriggerClassName(nativeButtonClass);
     if (trigger.dataset.codexPlusTriggerInstalled === "5") return;
     trigger.dataset.codexPlusTriggerInstalled = "5";
     trigger.addEventListener("click", (event) => {
@@ -2220,6 +2242,13 @@
       insertionPoint = findNativeMenuInsertionPoint();
     } else if (existing && insertionPoint && existing.parentElement === insertionPoint.parent) {
       configureCodexPlusTrigger(existing, existing.querySelector("button"), insertionPoint.nativeButtonClass);
+      removeDuplicateCodexPlusMenus(existing);
+      return;
+    } else if (existing && insertionPoint) {
+      configureCodexPlusTrigger(existing, existing.querySelector("button"), insertionPoint.nativeButtonClass);
+      existing.className = "";
+      const safeBefore = insertionPoint.before?.parentElement === insertionPoint.parent ? insertionPoint.before : null;
+      insertionPoint.parent.insertBefore(existing, safeBefore);
       removeDuplicateCodexPlusMenus(existing);
       return;
     }
