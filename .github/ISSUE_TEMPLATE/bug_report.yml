@@ -1,7 +1,6 @@
 name: Bug 报告
 description: 程序崩溃、报错、配置写入异常、功能行为不符合预期。
 title: "[Bug]: "
-labels: ["type: bug", "needs triage"]
 body:
   - type: markdown
     attributes:

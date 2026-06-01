@@ -11,74 +11,36 @@ jobs:
   label:
     runs-on: ubuntu-latest
     steps:
-      - name: Ensure and apply issue labels
+      - name: Remove automatic issue labels
         uses: actions/github-script@v7
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue = context.payload.issue;
-            const title = issue.title || "";
-            const body = issue.body || "";
+            const automaticLabels = new Set([
+              "needs triage",
+              "type: bug",
+              "type: feature",
+              "type: config",
+              "type: question",
+              "area: provider-config",
+              "area: protocol",
+              "area: context-tools",
+              "area: model-catalog",
+              "area: ui",
+              "area: build"
+            ]);
 
-            const knownLabels = {
-              "needs triage": ["ededed", "Needs initial maintainer review"],
-              "type: bug": ["d73a4a", "Bug report or broken behavior"],
-              "type: feature": ["a2eeef", "Feature request or enhancement"],
-              "type: config": ["fbca04", "Provider or config related issue"],
-              "type: question": ["d876e3", "Usage question"],
-              "area: provider-config": ["c5def5", "Provider, API key, config.toml or auth.json"],
-              "area: protocol": ["bfd4f2", "Protocol conversion or proxy behavior"],
-              "area: context-tools": ["c2e0c6", "MCP, skills or plugins"],
-              "area: model-catalog": ["fef2c0", "Model list or model catalog"],
-              "area: ui": ["f9d0c4", "Interface or layout"],
-              "area: build": ["d4c5f9", "Build, packaging or installation"]
-            };
+            const labelsToRemove = issue.labels
+              .map((label) => typeof label === "string" ? label : label.name)
+              .filter((name) => automaticLabels.has(name));
 
-            for (const [name, [color, description]] of Object.entries(knownLabels)) {
-              try {
-                await github.rest.issues.getLabel({ owner, repo, name });
-              } catch (error) {
-                if (error.status !== 404) throw error;
-                await github.rest.issues.createLabel({ owner, repo, name, color, description });
-              }
-            }
-
-            const desired = new Set(["needs triage"]);
-            const text = `${title}\n${body}`;
-
-            if (/^\[Bug\]/i.test(title)) desired.add("type: bug");
-            if (/^\[Feature\]/i.test(title)) desired.add("type: feature");
-            if (/^\[Config\]/i.test(title)) desired.add("type: config");
-            if (/^\[Question\]/i.test(title)) desired.add("type: question");
-
-            if (/供应商|Base URL|API Key|config\.toml|auth\.json|model_provider|model_providers/i.test(text)) {
-              desired.add("area: provider-config");
-            }
-            if (/协议|Responses API|Chat Completions|proxy|代理|上游/i.test(text)) {
-              desired.add("area: protocol");
-            }
-            if (/MCP|skills?|plugins?|插件|工具/i.test(text)) {
-              desired.add("area: context-tools");
-            }
-            if (/model_catalog_json|模型列表|model catalog|模型目录/i.test(text)) {
-              desired.add("area: model-catalog");
-            }
-            if (/界面|布局|按钮|窗口|悬浮|UI|titlebar/i.test(text)) {
-              desired.add("area: ui");
-            }
-            if (/构建|安装|打包|build|release|installer|dmg/i.test(text)) {
-              desired.add("area: build");
-            }
-
-            const existing = new Set(issue.labels.map((label) => typeof label === "string" ? label : label.name));
-            const toAdd = [...desired].filter((label) => !existing.has(label));
-            if (toAdd.length > 0) {
-              await github.rest.issues.addLabels({
+            for (const name of labelsToRemove) {
+              await github.rest.issues.removeLabel({
                 owner,
                 repo,
                 issue_number: issue.number,
-                labels: toAdd
+                name
               });
             }
-

@@ -1,7 +1,6 @@
 name: 供应商 / 配置问题
 description: 供应商、Base URL、API Key、协议、config.toml、auth.json 相关问题。
 title: "[Config]: "
-labels: ["type: config", "area: provider-config", "needs triage"]
 body:
   - type: markdown
     attributes:

@@ -1,7 +1,6 @@
 name: 使用问题
 description: 使用方式、配置含义、是否支持某个场景等问题。
 title: "[Question]: "
-labels: ["type: question", "needs triage"]
 body:
   - type: textarea
     id: question

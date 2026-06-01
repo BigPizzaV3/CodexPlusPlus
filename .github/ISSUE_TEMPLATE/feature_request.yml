@@ -1,7 +1,6 @@
 name: 功能请求
 description: 新功能、交互优化、自动化能力、配置能力增强。
 title: "[Feature]: "
-labels: ["type: feature", "needs triage"]
 body:
   - type: textarea
     id: problem
