@@ -1299,16 +1299,25 @@ export function App() {
       refreshSettings,
       resetSettings,
       chooseCodexAppPath: async (mode: "folder" | "file") => {
-        const selected = await open(
-          mode === "folder"
-            ? { directory: true, multiple: false, title: "选择 Codex 应用目录" }
-            : {
-                directory: false,
-                multiple: false,
-                title: "选择 Codex.exe 或 Codex.app",
-                filters: [{ name: "Codex 应用", extensions: ["exe", "app"] }],
-              },
-        );
+        let selected: unknown;
+        try {
+          selected = await open(
+            mode === "folder"
+              ? { directory: true, multiple: false, title: "选择 Codex 应用目录" }
+              : {
+                  directory: false,
+                  multiple: false,
+                  title: "选择 Codex.exe 或 Codex.app",
+                  filters: [{ name: "Codex 应用", extensions: ["exe", "app"] }],
+                },
+          );
+        } catch (error) {
+          // Surface plugin failures (e.g. missing capability permission) so the
+          // buttons no longer appear unresponsive — see #345.
+          const message = error instanceof Error ? error.message : String(error);
+          showNotice("Codex 应用路径", `打开选择器失败：${message}`, "failed");
+          return;
+        }
         if (typeof selected === "string" && selected.trim()) {
           const result = await saveCodexAppPath(selected.trim());
           if (result) {
