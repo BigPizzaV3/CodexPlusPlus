@@ -37,6 +37,7 @@ impl Default for LauncherHooks {
 async fn main() -> Result<()> {
     let options = parse_launch_options(std::env::args().skip(1));
     let Some(_guard) = acquire_single_instance_guard(options.debug_port)? else {
+        activate_existing_codex_app(&options).await?;
         return Ok(());
     };
     tokio::spawn(async {
@@ -99,6 +100,38 @@ fn should_recover_stale_launcher(debug_port: u16) -> bool {
         }),
     );
     recover
+}
+
+async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {
+    let hooks = DefaultLaunchHooks::default();
+    let settings = hooks.load_settings().await?;
+    let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
+    let launch_result = hooks
+        .launch_codex(&app_dir, options.debug_port, &settings.codex_extra_args)
+        .await;
+    let process_ids = codex_plus_core::watcher::find_codex_processes();
+    let mut activated = false;
+    #[cfg(windows)]
+    {
+        for process_id in &process_ids {
+            if codex_plus_core::windows_activate_process_window(*process_id) {
+                activated = true;
+                break;
+            }
+        }
+    }
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "launcher.activate_existing_codex",
+        json!({
+            "app_dir": app_dir.to_string_lossy(),
+            "debug_port": options.debug_port,
+            "process_ids": process_ids,
+            "activated": activated,
+            "launch_ok": launch_result.is_ok(),
+            "launch_error": launch_result.as_ref().err().map(|error| error.to_string())
+        }),
+    );
+    launch_result.map(|_| ())
 }
 
 fn log_launcher_already_running(debug_port: u16) {
@@ -663,7 +696,7 @@ mod tests {
     fn launcher_uses_single_instance_guard_before_launching() {
         let source = include_str!("main.rs");
 
-        assert!(source.contains("acquire_single_instance_guard()?"));
+        assert!(source.contains("acquire_single_instance_guard(options.debug_port)?"));
         assert!(source.contains("LAUNCHER_GUARD_PORT"));
         assert!(source.contains("launcher.already_running"));
     }

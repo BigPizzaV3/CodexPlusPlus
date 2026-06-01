@@ -38,3 +38,8 @@ pub fn windows_create_no_window() -> u32 {
 pub fn windows_open_url(url: &str) -> anyhow::Result<()> {
     windows_integration::open_url(url)
 }
+
+#[cfg(windows)]
+pub fn windows_activate_process_window(process_id: u32) -> bool {
+    windows_integration::activate_process_window(process_id)
+}
