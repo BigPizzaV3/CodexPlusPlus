@@ -112,6 +112,10 @@ pub fn filter_killable_launcher_processes<'a>(
         .collect()
 }
 
+pub fn should_recover_stale_launcher(has_codex_process: bool, cdp_listening: bool) -> bool {
+    !has_codex_process && !cdp_listening
+}
+
 #[cfg(windows)]
 pub fn install_watcher(launcher_path: &Path, debug_port: u16) -> anyhow::Result<()> {
     let plan = build_watcher_install_plan(launcher_path.to_path_buf(), debug_port);

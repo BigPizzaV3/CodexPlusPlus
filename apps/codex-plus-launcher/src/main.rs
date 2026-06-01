@@ -35,10 +35,10 @@ impl Default for LauncherHooks {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let Some(_guard) = acquire_single_instance_guard()? else {
+    let options = parse_launch_options(std::env::args().skip(1));
+    let Some(_guard) = acquire_single_instance_guard(options.debug_port)? else {
         return Ok(());
     };
-    let options = parse_launch_options(std::env::args().skip(1));
     tokio::spawn(async {
         let _ = notify_manager_when_update_available().await;
     });
@@ -48,18 +48,23 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn acquire_single_instance_guard() -> anyhow::Result<Option<std::net::TcpListener>> {
-    match codex_plus_core::ports::acquire_loopback_port_guard(
-        codex_plus_core::ports::LAUNCHER_GUARD_PORT,
-    ) {
+fn acquire_single_instance_guard(debug_port: u16) -> anyhow::Result<Option<std::net::TcpListener>> {
+    acquire_single_instance_guard_with_retry(debug_port, true)
+}
+
+fn acquire_single_instance_guard_with_retry(
+    debug_port: u16,
+    allow_stale_recovery: bool,
+) -> anyhow::Result<Option<std::net::TcpListener>> {
+    match try_acquire_single_instance_guard() {
         Ok(listener) => Ok(Some(listener)),
         Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
-            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-                "launcher.already_running",
-                json!({
-                    "guard_port": codex_plus_core::ports::LAUNCHER_GUARD_PORT
-                }),
-            );
+            log_launcher_already_running(debug_port);
+            if allow_stale_recovery && should_recover_stale_launcher(debug_port) {
+                codex_plus_core::watcher::stop_launcher_processes();
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                return acquire_single_instance_guard_with_retry(debug_port, false);
+            }
             Ok(None)
         }
         Err(error) => Err(error)
@@ -71,6 +76,39 @@ fn acquire_single_instance_guard() -> anyhow::Result<Option<std::net::TcpListene
             })
             .map(Some),
     }
+}
+
+fn try_acquire_single_instance_guard() -> std::io::Result<std::net::TcpListener> {
+    codex_plus_core::ports::acquire_loopback_port_guard(
+        codex_plus_core::ports::LAUNCHER_GUARD_PORT,
+    )
+}
+
+fn should_recover_stale_launcher(debug_port: u16) -> bool {
+    let has_codex_process = !codex_plus_core::watcher::find_codex_processes().is_empty();
+    let cdp_listening = codex_plus_core::watcher::cdp_listening(debug_port);
+    let recover =
+        codex_plus_core::watcher::should_recover_stale_launcher(has_codex_process, cdp_listening);
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "launcher.stale_recovery_check",
+        json!({
+            "debug_port": debug_port,
+            "has_codex_process": has_codex_process,
+            "cdp_listening": cdp_listening,
+            "recover": recover
+        }),
+    );
+    recover
+}
+
+fn log_launcher_already_running(debug_port: u16) {
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "launcher.already_running",
+        json!({
+            "guard_port": codex_plus_core::ports::LAUNCHER_GUARD_PORT,
+            "debug_port": debug_port
+        }),
+    );
 }
 
 async fn notify_manager_when_update_available() -> anyhow::Result<bool> {
