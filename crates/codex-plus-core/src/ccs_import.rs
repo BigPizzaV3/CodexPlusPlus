@@ -232,6 +232,7 @@ pub fn relay_profile_from_ccs(
         auto_compact_limit: String::new(),
         model_insert_mode: Default::default(),
         model_list: String::new(),
+        user_agent: String::new(),
     }
 }
 

@@ -148,6 +148,7 @@ type RelayProfile = {
   contextWindow: string;
   autoCompactLimit: string;
   modelList: string;
+  userAgent: string;
 };
 
 type RelayContextSelection = {
@@ -450,6 +451,7 @@ const defaultSettings: BackendSettings = {
       contextWindow: "",
       autoCompactLimit: "",
       modelList: "",
+      userAgent: "",
     },
   ],
   relayCommonConfigContents: "",
@@ -2805,6 +2807,15 @@ function RelayProfileEditor({
             </div>
           </Field>
         ) : null}
+        {showApiFields ? (
+          <Field className="relay-field-user-agent" label="User-Agent">
+            <Input
+              value={profile.userAgent}
+              onChange={(event) => updateDraft({ userAgent: event.currentTarget.value })}
+              placeholder="留空使用默认值"
+            />
+          </Field>
+        ) : null}
       </div>
       {showApiFields && profile.protocol === "chatCompletions" ? (
         <div className="hint-line relay-protocol-hint">
@@ -4048,6 +4059,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             contextWindow: "",
             autoCompactLimit: "",
             modelList: "",
+            userAgent: "",
           },
         ];
   const activeRelayId = profiles.some((profile) => profile.id === settings.activeRelayId)
@@ -4096,6 +4108,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     contextWindow: profile.contextWindow || "",
     autoCompactLimit: profile.autoCompactLimit || "",
     modelList: profile.modelList || "",
+    userAgent: profile.userAgent || "",
   };
   if (!normalized.configContents.trim() || !normalized.authContents.trim()) {
     normalized = withGeneratedRelayFiles(normalized);
@@ -4619,6 +4632,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     contextWindow: "",
     autoCompactLimit: "",
     modelList: "",
+    userAgent: "",
   };
   return withGeneratedRelayFiles(next);
 }
