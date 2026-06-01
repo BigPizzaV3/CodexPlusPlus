@@ -2550,9 +2550,16 @@ mod tests {
 
         let normalized = normalize_settings_before_save(settings);
 
+        let auth_json: serde_json::Value =
+            serde_json::from_str(&normalized.relay_profiles[0].auth_contents).unwrap();
         assert_eq!(
-            normalized.relay_profiles[0].auth_contents,
-            r#"{"auth_mode":"chatgpt","tokens":{"access_token":"edited"}}"#
+            auth_json,
+            serde_json::json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "edited"
+                }
+            })
         );
         assert!(normalized.relay_profiles[0].config_contents.is_empty());
     }

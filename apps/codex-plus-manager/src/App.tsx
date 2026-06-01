@@ -5136,6 +5136,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       contextWindow: "",
       autoCompactLimit: "",
       modelList: "",
+      userAgent: "",
       aggregate: {
         strategy: "failover",
         members: candidates.slice(0, 1).map((profile) => ({ profileId: profile.id, weight: 1 })),
