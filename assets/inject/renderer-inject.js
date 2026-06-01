@@ -837,7 +837,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
+    return { pluginEntryUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, threadEndpointAuth: false };
   }
 
   const codexPlusBackendSettingMap = {
@@ -854,6 +854,7 @@
     upstreamWorktreeCreate: "codexAppUpstreamWorktreeCreate",
     nativeMenuPlacement: "codexAppNativeMenuPlacement",
     serviceTierControls: "codexAppServiceTierControls",
+    threadEndpointAuth: "codexAppThreadEndpointAuth",
   };
 
   function backendCodexPlusSettings() {
@@ -884,6 +885,7 @@
         upstreamWorktreeCreate: false,
         nativeMenuPlacement: false,
         serviceTierControls: false,
+        threadEndpointAuth: false,
       };
     }
     try {
@@ -1674,6 +1676,7 @@
     if (!found) return params;
     const { threadId, entry } = found;
     const nextParams = { ...(params || {}) };
+    const tempProviderId = "codex_plus_thread_temp";
     if (entry.baseUrl) nextParams.baseUrl = entry.baseUrl;
     if (entry.apiKey) {
       nextParams.apiKey = entry.apiKey;
@@ -1683,16 +1686,44 @@
       nextParams.bearerToken = entry.apiKey;
       nextParams.authToken = entry.apiKey;
     }
+    if (entry.baseUrl || entry.apiKey) {
+      const currentConfig = nextParams.config && typeof nextParams.config === "object" ? nextParams.config : {};
+      const currentNestedProviders = currentConfig.model_providers && typeof currentConfig.model_providers === "object"
+        ? currentConfig.model_providers
+        : {};
+      const currentFlatProvider = currentConfig[`model_providers.${tempProviderId}`];
+      const providerConfig = {
+        ...(currentNestedProviders[tempProviderId] && typeof currentNestedProviders[tempProviderId] === "object" ? currentNestedProviders[tempProviderId] : {}),
+        ...(currentFlatProvider && typeof currentFlatProvider === "object" ? currentFlatProvider : {}),
+        name: "Codex++ Thread Temp",
+        wire_api: "responses",
+      };
+      if (entry.baseUrl) providerConfig.base_url = entry.baseUrl;
+      if (entry.apiKey) providerConfig.experimental_bearer_token = entry.apiKey;
+      nextParams.modelProvider = tempProviderId;
+      nextParams.model_provider = tempProviderId;
+      nextParams.config = {
+        ...currentConfig,
+        model_provider: tempProviderId,
+        [`model_providers.${tempProviderId}`]: providerConfig,
+        model_providers: {
+          ...currentNestedProviders,
+          [tempProviderId]: providerConfig,
+        },
+      };
+    }
     sendCodexPlusDiagnostic("thread_endpoint_auth_request_override_applied", {
       method: String(method || ""),
       threadId,
       hasBaseUrl: !!entry.baseUrl,
       hasApiKey: !!entry.apiKey,
+      modelProvider: nextParams.modelProvider || nextParams.model_provider || "",
     });
     return nextParams;
   }
 
   function codexThreadEndpointAuthRequestOverride(message) {
+    if (!codexPlusSettings().threadEndpointAuth) return message;
     if (!message || typeof message !== "object") return message;
     if (message.type === "send-cli-request-for-host") {
       const method = String(message.method || "");
@@ -1856,7 +1887,7 @@
     overlay.id = codexThreadEndpointAuthOverlayId;
     overlay.innerHTML = `
       <div id="${codexThreadEndpointAuthPanelId}" role="dialog" aria-modal="true">
-        <h3>Per-Thread Endpoint/Auth</h3>
+        <h3>对话临时API</h3>
         <div class="row"><strong>Thread ID:</strong> <code>${escapeHtml(threadId)}</code></div>
         <div class="row">
           <label>baseUrl (http/https)</label>
@@ -1866,7 +1897,6 @@
           <label>apiKey (Bearer token)</label>
           <input id="${codexThreadEndpointAuthPanelId}-key" type="password" autocomplete="off" placeholder="${hasSavedApiKey ? "Saved (leave empty to keep)" : "sk-..."}" value="" />
         </div>
-        <div class="hint danger">apiKey 会以可逆加密形式存储到 localStorage，仅用于本地覆盖转发，不等同后端安全存储。</div>
         <div class="actions">
           <button id="${codexThreadEndpointAuthPanelId}-delete">删除此对话配置</button>
           <button id="${codexThreadEndpointAuthPanelId}-cancel">取消</button>
@@ -1901,7 +1931,7 @@
       map[threadId] = { baseUrl, apiKey, updatedAt: codexThreadEndpointAuthNowIso() };
       codexThreadEndpointAuthSaveMap(map);
       codexThreadEndpointAuthRemovePanel();
-      showToast("Thread API 配置已保存", null);
+      showToast("对话临时API配置已保存", null);
     });
   }
 
@@ -1912,7 +1942,7 @@
     const button = document.createElement("button");
     button.type = "button";
     button.setAttribute(codexThreadEndpointAuthButtonAttr, "1");
-    button.textContent = "Thread API";
+    button.textContent = "对话临时API";
     button.title = "为当前对话设置 baseUrl / apiKey";
     button.addEventListener("click", codexThreadEndpointAuthShowPanel);
     mount.appendChild(button);
@@ -2295,6 +2325,10 @@
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮，并允许把请求切到 Fast / priority；默认关闭以避免误触高价服务模式。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">对话临时API</div><div class="codex-plus-row-description">在会话页头显示“对话临时API”按钮，可按对话临时设置 baseUrl/apiKey 覆盖。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadEndpointAuth"><span></span></button>
             </div>
             <div class="codex-plus-row" data-codex-service-tier-controls="true">
               <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承使用 config.toml 的 service tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
@@ -7156,7 +7190,12 @@
     installCodexServiceTierDispatcherPatch();
     installCodexThreadEndpointAuthRuntime();
     codexThreadEndpointAuthDeleteHook();
-    installCodexThreadEndpointAuthButton();
+    if (codexPlusSettings().threadEndpointAuth) {
+      installCodexThreadEndpointAuthButton();
+    } else {
+      document.querySelector(`[${codexThreadEndpointAuthButtonAttr}="1"]`)?.remove();
+      codexThreadEndpointAuthRemovePanel();
+    }
     installCodexPlusMenu();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();
