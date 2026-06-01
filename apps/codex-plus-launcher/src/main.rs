@@ -80,9 +80,7 @@ fn acquire_single_instance_guard_with_retry(
 }
 
 fn try_acquire_single_instance_guard() -> std::io::Result<std::net::TcpListener> {
-    codex_plus_core::ports::acquire_loopback_port_guard(
-        codex_plus_core::ports::LAUNCHER_GUARD_PORT,
-    )
+    codex_plus_core::ports::acquire_loopback_port_guard(codex_plus_core::ports::LAUNCHER_GUARD_PORT)
 }
 
 fn should_recover_stale_launcher(debug_port: u16) -> bool {

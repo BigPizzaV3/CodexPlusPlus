@@ -49,7 +49,11 @@ pub struct RelayProfile {
     pub base_url: String,
     #[serde(rename = "upstreamBaseUrl", default)]
     pub upstream_base_url: String,
-    #[serde(default, skip_serializing, deserialize_with = "deserialize_profile_api_key")]
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "deserialize_profile_api_key"
+    )]
     pub api_key: String,
     #[serde(default)]
     pub protocol: RelayProtocol,
@@ -1155,22 +1159,28 @@ experimental_bearer_token = "sk-mix"
         assert!(profile.official_mix_api_key);
         assert_eq!(profile.api_key, "sk-mix");
         assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
-        assert!(profile
-            .config_contents
-            .contains(r#"experimental_bearer_token = "sk-mix""#));
+        assert!(
+            profile
+                .config_contents
+                .contains(r#"experimental_bearer_token = "sk-mix""#)
+        );
 
         let saved: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
                 .unwrap();
         assert!(saved["relayProfiles"][0].get("apiKey").is_none());
-        assert!(!saved["relayProfiles"][0]["authContents"]
-            .as_str()
-            .unwrap()
-            .contains("OPENAI_API_KEY"));
-        assert!(saved["relayProfiles"][0]["configContents"]
-            .as_str()
-            .unwrap()
-            .contains(r#"experimental_bearer_token = "sk-mix""#));
+        assert!(
+            !saved["relayProfiles"][0]["authContents"]
+                .as_str()
+                .unwrap()
+                .contains("OPENAI_API_KEY")
+        );
+        assert!(
+            saved["relayProfiles"][0]["configContents"]
+                .as_str()
+                .unwrap()
+                .contains(r#"experimental_bearer_token = "sk-mix""#)
+        );
     }
 
     #[test]
@@ -1219,11 +1229,11 @@ experimental_bearer_token = "sk-existing"
         let profile = &updated.relay_profiles[0];
         assert_eq!(profile.api_key, "sk-existing");
         assert!(!profile.config_contents.contains("sk-other"));
-        assert!(profile
-            .config_contents
-            .contains(r#"[model_providers.custom]
+        assert!(profile.config_contents.contains(
+            r#"[model_providers.custom]
 base_url = "https://relay.example/v1"
-experimental_bearer_token = "sk-existing""#));
+experimental_bearer_token = "sk-existing""#
+        ));
     }
 
     #[test]
@@ -1249,9 +1259,11 @@ experimental_bearer_token = "sk-existing""#));
 
         let profile = &updated.relay_profiles[0];
         assert_eq!(profile.api_key, "sk-new");
-        assert!(profile
-            .config_contents
-            .contains(r#"experimental_bearer_token = "sk-new""#));
+        assert!(
+            profile
+                .config_contents
+                .contains(r#"experimental_bearer_token = "sk-new""#)
+        );
         assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
     }
 
@@ -1278,9 +1290,11 @@ experimental_bearer_token = "sk-existing""#));
         assert_eq!(profile.relay_mode, RelayMode::Official);
         assert!(profile.official_mix_api_key);
         assert_eq!(profile.api_key, "22222222222222222222222222222222222");
-        assert!(profile
-            .config_contents
-            .contains(r#"experimental_bearer_token = "22222222222222222222222222222222222""#));
+        assert!(
+            profile
+                .config_contents
+                .contains(r#"experimental_bearer_token = "22222222222222222222222222222222222""#)
+        );
         assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
     }
 

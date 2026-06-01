@@ -1929,7 +1929,8 @@ requires_openai_auth = true
 experimental_bearer_token = "22222222222222222222222222222222222"
 "#
         .to_string(),
-        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#.to_string(),
+        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#
+            .to_string(),
         ..RelayProfile::default()
     };
     let mut common = String::new();
@@ -1940,9 +1941,11 @@ experimental_bearer_token = "22222222222222222222222222222222222"
     assert_eq!(profile.relay_mode, RelayMode::Official);
     assert!(profile.official_mix_api_key);
     assert_eq!(profile.api_key, "333333333333333333333");
-    assert!(profile
-        .config_contents
-        .contains(r#"experimental_bearer_token = "333333333333333333333""#));
+    assert!(
+        profile
+            .config_contents
+            .contains(r#"experimental_bearer_token = "333333333333333333333""#)
+    );
     assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
 }
 
