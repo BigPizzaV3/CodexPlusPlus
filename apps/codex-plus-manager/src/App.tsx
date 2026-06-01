@@ -289,6 +289,26 @@ type CcsProviderImport = {
   authContents: string;
 };
 
+type ProviderSyncPayload = {
+  syncStatus?: string;
+  targetProvider?: string;
+  changedSessionFiles?: number;
+  skippedLockedRolloutFiles?: string[];
+  sqliteRowsUpdated?: number;
+  sqliteProviderRowsUpdated?: number;
+  sqliteUserEventRowsUpdated?: number;
+  sqliteCwdRowsUpdated?: number;
+  updatedWorkspaceRoots?: number;
+  encryptedContentWarning?: string | null;
+};
+
+type ProviderSyncProgress = {
+  active: boolean;
+  percent: number;
+  message: string;
+  result: CommandResult<ProviderSyncPayload> | null;
+};
+
 type LogsResult = CommandResult<{
   path: string;
   text: string;
@@ -360,6 +380,15 @@ type ScriptMarketResult = CommandResult<{
   };
   user_scripts: UserScriptInventory;
 }>;
+
+function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>): string {
+  const changed = result.changedSessionFiles ?? 0;
+  const rows = result.sqliteRowsUpdated ?? 0;
+  const target = result.targetProvider || "当前 provider";
+  const skipped = result.skippedLockedRolloutFiles?.length ?? 0;
+  const skippedText = skipped ? `，跳过 ${skipped} 个占用文件` : "";
+  return `已同步到 ${target}：修复 ${changed} 个会话文件，更新 ${rows} 行索引${skippedText}。`;
+}
 
 function syncMarketInstalledState(current: ScriptMarketResult | null, userScripts: UserScriptInventory): ScriptMarketResult | null {
   if (!current) return current;
@@ -486,6 +515,12 @@ export function App() {
     helperPort: "57321",
   });
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
+  const [providerSyncProgress, setProviderSyncProgress] = useState<ProviderSyncProgress>({
+    active: false,
+    percent: 0,
+    message: "尚未运行历史会话修复。",
+    result: null,
+  });
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
 
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
@@ -841,9 +876,43 @@ export function App() {
   };
 
   const syncProvidersNow = async () => {
-    const result = await run(() => call<CommandResult<Record<string, never>>>("sync_providers_now"));
-    if (result) {
-      showNotice("历史会话修复", result.message, result.status);
+    if (providerSyncProgress.active) return;
+    setProviderSyncProgress({
+      active: true,
+      percent: 12,
+      message: "正在扫描历史会话与索引…",
+      result: null,
+    });
+    const progressTimer = window.setInterval(() => {
+      setProviderSyncProgress((current) => {
+        if (!current.active) return current;
+        return {
+          ...current,
+          percent: Math.min(88, current.percent + 8),
+          message: current.percent < 40 ? "正在检查会话 provider 标记…" : "正在写入修复与备份…",
+        };
+      });
+    }, 350);
+    try {
+      const result = await run(() => call<CommandResult<ProviderSyncPayload>>("sync_providers_now"));
+      if (result) {
+        setProviderSyncProgress({
+          active: false,
+          percent: 100,
+          message: providerSyncProgressMessage(result),
+          result,
+        });
+        showNotice("历史会话修复", result.message, result.status);
+      } else {
+        setProviderSyncProgress({
+          active: false,
+          percent: 100,
+          message: "历史会话修复失败，请查看错误提示后重试。",
+          result: null,
+        });
+      }
+    } finally {
+      window.clearInterval(progressTimer);
     }
   };
 
@@ -1410,6 +1479,7 @@ export function App() {
               settings={settings}
               form={settingsForm}
               sessions={localSessions}
+              providerSyncProgress={providerSyncProgress}
               onFormChange={setSettingsForm}
               actions={actions}
             />
@@ -1842,12 +1912,14 @@ function SessionsScreen({
   settings,
   form,
   sessions,
+  providerSyncProgress,
   onFormChange,
   actions,
 }: {
   settings: SettingsResult | null;
   form: BackendSettings;
   sessions: LocalSessionsResult | null;
+  providerSyncProgress: ProviderSyncProgress;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
@@ -1870,11 +1942,27 @@ function SessionsScreen({
               <RefreshCw className="h-4 w-4" />
               刷新会话
             </Button>
-            <Button onClick={() => void actions.syncProvidersNow()} variant="outline">
+            <Button disabled={providerSyncProgress.active} onClick={() => void actions.syncProvidersNow()} variant="outline">
               <RefreshCw className="h-4 w-4" />
-              立刻修复历史会话
+              {providerSyncProgress.active ? "正在修复…" : "立刻修复历史会话"}
             </Button>
           </Toolbar>
+          <div className="provider-sync-progress" data-active={providerSyncProgress.active}>
+            <div className="provider-sync-progress-head">
+              <strong>{providerSyncProgress.active ? "正在修复历史会话" : "历史会话修复进度"}</strong>
+              <span>{providerSyncProgress.percent}%</span>
+            </div>
+            <div
+              aria-valuemax={100}
+              aria-valuemin={0}
+              aria-valuenow={providerSyncProgress.percent}
+              className="provider-sync-progress-bar"
+              role="progressbar"
+            >
+              <div className="provider-sync-progress-fill" style={{ width: `${providerSyncProgress.percent}%` }} />
+            </div>
+            <small>{providerSyncProgress.message}</small>
+          </div>
           <div className="hint-line">
             <Info className="h-4 w-4" />
             <span>删除会创建本地备份；如果 Codex App 正在使用该会话，建议先关闭对应会话窗口再操作。</span>
@@ -3504,8 +3592,6 @@ function dedupeContextEntryList(entries: CodexContextEntry[]): CodexContextEntry
 }
 
 function parseContextEntries(commonConfig: string, kind: ContextKind, tableName: string): CodexContextEntry[] {
-  const escapedTable = tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const headerPattern = new RegExp(`^\\s*\\[${escapedTable}\\.([^\\]]+)\\]\\s*$`);
   const anyHeaderPattern = /^\s*\[[^\]]+\]\s*$/;
   const entries = new Map<string, CodexContextEntry>();
   let currentId: string | null = null;
@@ -3525,10 +3611,15 @@ function parseContextEntries(commonConfig: string, kind: ContextKind, tableName:
   };
 
   for (const line of commonConfig.split(/\r?\n/)) {
-    const match = line.match(headerPattern);
-    if (match) {
+    const path = tomlTablePathFromLine(line);
+    if (path?.[0] === tableName && path.length >= 2) {
+      const id = path[1];
+      if (currentId === id && path.length > 2) {
+        body.push(`[${path.slice(2).map(tomlKey).join(".")}]`);
+        continue;
+      }
       flush();
-      currentId = unquoteTomlKey(match[1].trim());
+      currentId = id;
       body = [];
       continue;
     }
@@ -3543,6 +3634,51 @@ function parseContextEntries(commonConfig: string, kind: ContextKind, tableName:
   flush();
 
   return Array.from(entries.values());
+}
+
+function tomlTablePathFromLine(line: string): string[] | null {
+  const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+  if (!match) return null;
+  return parseTomlDottedPath(match[1].trim());
+}
+
+function parseTomlDottedPath(path: string): string[] | null {
+  const parts: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  let escaping = false;
+
+  for (const char of path) {
+    if (quote) {
+      if (quote === '"' && escaping) {
+        current += char;
+        escaping = false;
+      } else if (quote === '"' && char === "\\") {
+        escaping = true;
+      } else if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === ".") {
+      if (!current.trim()) return null;
+      parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  if (quote || escaping || !current.trim()) return null;
+  parts.push(current.trim());
+  return parts;
 }
 
 function contextEntrySummary(tomlBody: string) {
@@ -3666,7 +3802,7 @@ function selectedContextConfigToml(entries: CodexContextEntries): string {
   for (const option of contextKindOptions) {
     for (const entry of dedupeContextEntryList(contextEntriesByKind(entries, option.kind))) {
       if (!entry.enabled) continue;
-      sections.push(`[${option.tableName}.${tomlKey(entry.id)}]\n${entry.tomlBody.trimEnd()}`);
+      sections.push(contextEntryToTomlSection(option.tableName, entry));
     }
   }
   return ensureTrailingNewline(sections.join("\n\n"));
@@ -3676,10 +3812,28 @@ function allContextConfigToml(entries: CodexContextEntries): string {
   const sections: string[] = [];
   for (const option of contextKindOptions) {
     for (const entry of dedupeContextEntryList(contextEntriesByKind(entries, option.kind))) {
-      sections.push(`[${option.tableName}.${tomlKey(entry.id)}]\n${entry.tomlBody.trimEnd()}`);
+      sections.push(contextEntryToTomlSection(option.tableName, entry));
     }
   }
   return ensureTrailingNewline(sections.join("\n\n"));
+}
+
+function contextEntryToTomlSection(tableName: string, entry: CodexContextEntry): string {
+  const parentHeader = `[${tableName}.${tomlKey(entry.id)}]`;
+  const body = entry.tomlBody
+    .trimEnd()
+    .split(/\r?\n/)
+    .map((line) => relativeContextSubtableToAbsolute(line, tableName, entry.id))
+    .join("\n");
+  return `${parentHeader}\n${body}`;
+}
+
+function relativeContextSubtableToAbsolute(line: string, tableName: string, id: string): string {
+  const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+  if (!match) return line;
+  const subtable = match[1].trim();
+  if (!subtable || subtable.includes(".")) return line;
+  return `[${tableName}.${tomlKey(id)}.${tomlKey(subtable)}]`;
 }
 
 function syncLiveConfigContextState(liveConfigContents: string, settings: BackendSettings): string {
@@ -3793,12 +3947,10 @@ function tomlRootKeyFromLine(line: string): string | null {
 }
 
 function contextHeaderFromLine(line: string): { kind: ContextKind; id: string } | null {
-  for (const option of contextKindOptions) {
-    const escapedTable = option.tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = new RegExp(`^\\s*\\[${escapedTable}\\.([^\\]]+)\\]\\s*$`).exec(line);
-    if (match) return { kind: option.kind, id: unquoteTomlKey(match[1].trim()) };
-  }
-  return null;
+  const path = tomlTablePathFromLine(line);
+  if (!path || path.length !== 2) return null;
+  const option = contextKindOptions.find((item) => item.tableName === path[0]);
+  return option ? { kind: option.kind, id: path[1] } : null;
 }
 
 function applyContextLimitPreview(configContents: string, profile: RelayProfile): string {

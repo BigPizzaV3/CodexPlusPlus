@@ -35,6 +35,54 @@ fn create_state_db(path: &Path) {
 }
 
 #[test]
+fn provider_sync_maps_official_mixed_to_custom_provider_id() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://example.com/v1"
+experimental_bearer_token = "sk-test"
+"#,
+    )
+    .unwrap();
+    let rollout = home.join("sessions/2026/rollout-official-mix.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    create_state_db(&home.join("state_5.sqlite"));
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.target_provider, "custom");
+    assert_eq!(result.changed_session_files, 1);
+    assert_eq!(result.sqlite_provider_rows_updated, 1);
+    let first: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first["payload"]["model_provider"], "custom");
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    let provider: String = db
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'thread-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "custom");
+}
+
+#[test]
 fn provider_sync_updates_rollout_sqlite_visibility_and_creates_backup() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");

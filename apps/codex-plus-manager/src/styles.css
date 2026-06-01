@@ -1386,6 +1386,48 @@ body {
   line-height: 1.45;
 }
 
+.provider-sync-progress {
+  display: grid;
+  gap: 8px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  padding: 12px;
+  margin-top: 12px;
+}
+
+.provider-sync-progress[data-active="true"] {
+  border-color: hsl(var(--primary) / 0.38);
+  background: hsl(var(--accent) / 0.35);
+}
+
+.provider-sync-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.provider-sync-progress-head span,
+.provider-sync-progress small {
+  color: hsl(var(--muted-foreground));
+}
+
+.provider-sync-progress-bar {
+  overflow: hidden;
+  height: 8px;
+  border-radius: 999px;
+  background: hsl(var(--muted));
+}
+
+.provider-sync-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, hsl(172 66% 42%), hsl(196 78% 52%));
+  transition: width 220ms var(--motion-ease);
+}
+
 .guide-list {
   margin-bottom: 12px;
 }

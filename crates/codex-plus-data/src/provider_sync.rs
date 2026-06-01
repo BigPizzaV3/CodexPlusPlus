@@ -232,24 +232,53 @@ fn read_current_provider(path: &Path) -> String {
     let Ok(text) = fs::read_to_string(path) else {
         return DEFAULT_PROVIDER.to_string();
     };
+    let provider = root_toml_string_value(&text, "model_provider").unwrap_or_default();
+    if provider.trim().is_empty() {
+        DEFAULT_PROVIDER.to_string()
+    } else {
+        provider
+    }
+}
+
+fn root_toml_string_value(text: &str, key: &str) -> Option<String> {
     for line in text.lines() {
         let stripped = line.trim();
-        if stripped.starts_with("model_provider") && stripped.contains('=') {
-            let raw = stripped
-                .split_once('=')
-                .map(|(_, value)| value.trim())
-                .unwrap_or("");
-            if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
-                let value = &raw[1..raw.len() - 1];
-                return if value.is_empty() {
-                    DEFAULT_PROVIDER.to_string()
-                } else {
-                    value.to_string()
-                };
-            }
+        if stripped.starts_with('[') {
+            break;
+        }
+        let Some(raw) = toml_key_raw_value(stripped, key) else {
+            continue;
+        };
+        return toml_string_value(raw);
+    }
+    None
+}
+
+fn toml_key_raw_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let rest = line.strip_prefix(key)?.trim_start();
+    rest.strip_prefix('=').map(str::trim_start)
+}
+
+fn toml_string_value(raw: &str) -> Option<String> {
+    let quote = raw.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let mut value = String::new();
+    let mut escaping = false;
+    for ch in raw[quote.len_utf8()..].chars() {
+        if quote == '"' && escaping {
+            value.push(ch);
+            escaping = false;
+        } else if quote == '"' && ch == '\\' {
+            escaping = true;
+        } else if ch == quote {
+            return Some(value);
+        } else {
+            value.push(ch);
         }
     }
-    DEFAULT_PROVIDER.to_string()
+    None
 }
 
 fn acquire_lock(path: &Path) -> std::io::Result<()> {
