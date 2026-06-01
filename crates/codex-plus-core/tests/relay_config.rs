@@ -1893,6 +1893,60 @@ experimental_bearer_token = "sk-saved-mix"
 }
 
 #[test]
+fn backfill_official_mix_profile_keeps_mix_mode_when_live_auth_has_api_key() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "333333333333333333333"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"333333333333333333333","auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#,
+    )
+    .unwrap();
+    let mut profile = RelayProfile {
+        id: "official-mix".to_string(),
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        config_contents: r#"model = "gpt-5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "22222222222222222222222222222222222"
+"#
+        .to_string(),
+        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#.to_string(),
+        ..RelayProfile::default()
+    };
+    let mut common = String::new();
+
+    backfill_relay_profile_from_home_with_common(temp.path(), &mut profile, &mut common).unwrap();
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    assert_eq!(profile.relay_mode, RelayMode::Official);
+    assert!(profile.official_mix_api_key);
+    assert_eq!(profile.api_key, "333333333333333333333");
+    assert!(profile
+        .config_contents
+        .contains(r#"experimental_bearer_token = "333333333333333333333""#));
+    assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
+}
+
+#[test]
 fn apply_relay_profile_to_home_with_switch_rules_switches_auth_and_writes_provider_token() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(

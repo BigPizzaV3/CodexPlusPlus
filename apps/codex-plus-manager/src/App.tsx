@@ -1607,9 +1607,9 @@ function RelayScreen({
     ? normalized.relayProfiles.find((profile) => profile.id === detailProfileId) || null
     : null);
   const isNewProfile = !!newProfileDraft;
-  const saveRelaySettings = (next: BackendSettings, preserveLinkedProfiles = false) => {
+  const saveRelaySettings = async (next: BackendSettings, preserveLinkedProfiles = false) => {
     onFormChange(next);
-    void actions.saveSettingsValue(next, true, preserveLinkedProfiles);
+    await actions.saveSettingsValue(next, true, preserveLinkedProfiles);
   };
   const editRelayProfile = async (profileId: string) => {
     let nextSettings = normalized;
@@ -1665,7 +1665,7 @@ function RelayScreen({
               checked={normalized.relayProfilesEnabled}
               onChange={(event) => {
                 const next = { ...normalized, relayProfilesEnabled: event.currentTarget.checked };
-                saveRelaySettings(next);
+                void saveRelaySettings(next);
               }}
               type="checkbox"
             />
@@ -1683,7 +1683,7 @@ function RelayScreen({
                   return;
                 }
                 const next = { ...normalized, ccsLinkEnabled: false };
-                saveRelaySettings(next);
+                void saveRelaySettings(next);
               }}
               type="checkbox"
             />
@@ -2513,7 +2513,7 @@ function RelayProfileDetail({
   form: BackendSettings;
   isNew?: boolean;
   onBack: () => void;
-  onFormChange: (value: BackendSettings, preserveLinkedProfiles?: boolean) => void;
+  onFormChange: (value: BackendSettings, preserveLinkedProfiles?: boolean) => void | Promise<void>;
   onSaved?: () => void;
   actions: Actions;
 }) {
@@ -2537,7 +2537,7 @@ function RelayProfileDetail({
     const next = isNew
       ? addRelayProfile(form, normalizedDraft)
       : updateRelayProfile(form, profile.id, normalizedDraft);
-    onFormChange(next, !!normalizedDraft.linkedCcsProviderId);
+    await onFormChange(next, !!normalizedDraft.linkedCcsProviderId);
     if (isActive) {
       await actions.saveRelayFile(
         "config",
@@ -2635,7 +2635,7 @@ function RelayProfileEditor({
   const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
   const [showAdvanced, setShowAdvanced] = useState(false);
   const updateDraft = (patch: Partial<RelayProfile>) => {
-    onProfileChange(applyRelayProfilePatchToFiles(profile, patch));
+    onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
   };
   return (
     <div className="relay-profile-editor">
@@ -4110,9 +4110,6 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     modelList: profile.modelList || "",
     userAgent: profile.userAgent || "",
   };
-  if (!normalized.configContents.trim() || !normalized.authContents.trim()) {
-    normalized = withGeneratedRelayFiles(normalized);
-  }
   return deriveRelayProfileFromFiles(normalized);
 }
 
@@ -4239,7 +4236,7 @@ function buildRelayConfigToml(
     'wire_api = "responses"',
     "requires_openai_auth = true",
     `base_url = "${tomlString(baseUrl)}"`,
-    options.includeBearerToken ? `experimental_bearer_token = "${tomlString(apiKey)}"` : null,
+    options.includeBearerToken && apiKey ? `experimental_bearer_token = "${tomlString(apiKey)}"` : null,
     "",
   ].filter((line): line is string => line !== null).join("\n");
 }
@@ -4284,12 +4281,16 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
   };
 }
 
-function applyRelayProfilePatchToFiles(profile: RelayProfile, patch: Partial<RelayProfile>): RelayProfile {
+function applyRelayProfilePatchToFiles(
+  profile: RelayProfile,
+  patch: Partial<RelayProfile>,
+  options: { allowGenerateFiles?: boolean } = {},
+): RelayProfile {
   let next: RelayProfile = { ...profile, ...patch };
   const shouldHaveFiles =
     next.relayMode !== "official" || next.officialMixApiKey || next.configContents.trim() || next.authContents.trim();
   const needsAuthFile = next.relayMode === "pureApi";
-  if (shouldHaveFiles && (!next.configContents.trim() || (needsAuthFile && !next.authContents.trim()))) {
+  if (options.allowGenerateFiles && shouldHaveFiles && (!next.configContents.trim() || (needsAuthFile && !next.authContents.trim()))) {
     next = withGeneratedRelayFiles(next);
   }
 
@@ -4329,7 +4330,7 @@ function applyRelayProfilePatchToFiles(profile: RelayProfile, patch: Partial<Rel
     if (next.relayMode === "official" && !next.officialMixApiKey) {
       next.configContents = "";
       next.authContents = buildOfficialRelayAuthJson(next.authContents);
-    } else if (!next.configContents.trim() || (next.relayMode === "pureApi" && !next.authContents.trim())) {
+    } else if (options.allowGenerateFiles && (!next.configContents.trim() || (next.relayMode === "pureApi" && !next.authContents.trim()))) {
       next = withGeneratedRelayFiles(next);
     }
   }
@@ -4467,7 +4468,10 @@ function setCodexProviderStringKey(contents: string, key: string, value: string)
 }
 
 function setCodexExperimentalBearerToken(contents: string, apiKey: string): string {
-  return setCodexProviderStringKey(contents, "experimental_bearer_token", apiKey.trim());
+  const trimmed = apiKey.trim();
+  return trimmed
+    ? setCodexProviderStringKey(contents, "experimental_bearer_token", trimmed)
+    : removeCodexExperimentalBearerToken(contents);
 }
 
 function removeCodexExperimentalBearerToken(contents: string): string {

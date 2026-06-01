@@ -1373,6 +1373,11 @@ fn restore_profile_auth_from_live_config(
     };
     profile.api_key = token.clone();
 
+    if profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key {
+        profile.auth_contents = remove_openai_api_key_from_auth_contents(&profile.auth_contents)?;
+        return Ok(());
+    }
+
     if !profile.auth_contents.trim().is_empty() {
         if codex_auth_api_key(&profile.auth_contents).is_none() {
             return Ok(());
@@ -1563,6 +1568,7 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
         profile.base_url.clear();
         profile.upstream_base_url.clear();
         profile.api_key.clear();
+        profile.auth_contents = remove_openai_api_key_from_auth_contents(&profile.auth_contents)?;
         return Ok(());
     }
     let source_base_url = relay_profile_base_url(profile);
@@ -1601,6 +1607,9 @@ fn remove_openai_api_key_from_auth_contents(auth_contents: &str) -> anyhow::Resu
         anyhow::bail!("auth.json 必须是 JSON 对象");
     };
     object.remove("OPENAI_API_KEY");
+    if object.is_empty() {
+        return Ok(String::new());
+    }
     Ok(format!("{}\n", serde_json::to_string_pretty(&value)?))
 }
 
@@ -1637,9 +1646,13 @@ fn provider_string_from_config(config_contents: &str, key: &str) -> Option<Strin
 
 fn experimental_bearer_token_from_config(config_contents: &str) -> anyhow::Result<Option<String>> {
     let doc = parse_toml_document(config_contents)?;
-    for provider in provider_tables(&doc) {
-        if let Some(token) = provider
-            .get("experimental_bearer_token")
+    if let Some(provider_id) = active_provider_id(&doc) {
+        if let Some(token) = doc
+            .get("model_providers")
+            .and_then(Item::as_table)
+            .and_then(|providers| providers.get(&provider_id))
+            .and_then(Item::as_table)
+            .and_then(|provider| provider.get("experimental_bearer_token"))
             .and_then(Item::as_str)
             .map(str::trim)
             .filter(|token| !token.is_empty())

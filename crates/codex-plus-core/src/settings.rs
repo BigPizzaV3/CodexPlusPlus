@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::Deserialize;
 use serde_json::{Map, Value};
+use toml_edit::{DocumentMut, Item};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -47,7 +49,7 @@ pub struct RelayProfile {
     pub base_url: String,
     #[serde(rename = "upstreamBaseUrl", default)]
     pub upstream_base_url: String,
-    #[serde(default, skip_serializing)]
+    #[serde(default, skip_serializing, deserialize_with = "deserialize_profile_api_key")]
     pub api_key: String,
     #[serde(default)]
     pub protocol: RelayProtocol,
@@ -367,6 +369,13 @@ where
         .unwrap_or_else(default_api_key_env))
 }
 
+fn deserialize_profile_api_key<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 pub fn normalize_codex_extra_args(args: &[String]) -> Vec<String> {
     args.iter()
         .map(|arg| arg.trim())
@@ -517,8 +526,9 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         target.insert("relayApiKey".to_string(), Value::String(value.to_string()));
     }
     if let Some(value) = source.get("relayProfiles").and_then(Value::as_array) {
-        let profiles = serde_json::from_value::<Vec<RelayProfile>>(Value::Array(value.clone()))
+        let mut profiles = serde_json::from_value::<Vec<RelayProfile>>(Value::Array(value.clone()))
             .unwrap_or_default();
+        preserve_official_mix_bearer_tokens(&mut profiles, target);
         target.insert(
             "relayProfiles".to_string(),
             serde_json::to_value(profiles).unwrap_or_else(|_| Value::Array(Vec::new())),
@@ -588,6 +598,93 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
 fn merge_bool_setting(target: &mut Map<String, Value>, source: &Map<String, Value>, key: &str) {
     if let Some(value) = source.get(key).and_then(Value::as_bool) {
         target.insert(key.to_string(), Value::Bool(value));
+    }
+}
+
+fn preserve_official_mix_bearer_tokens(
+    profiles: &mut [RelayProfile],
+    previous: &Map<String, Value>,
+) {
+    let previous_tokens = previous
+        .get("relayProfiles")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| serde_json::from_value::<RelayProfile>(value.clone()).ok())
+        .filter_map(|profile| {
+            if profile.relay_mode != RelayMode::Official || !profile.official_mix_api_key {
+                return None;
+            }
+            let token = experimental_bearer_token_from_config_text(&profile.config_contents)?;
+            Some((profile.id, token))
+        })
+        .collect::<HashMap<_, _>>();
+
+    for profile in profiles {
+        if profile.relay_mode != RelayMode::Official || !profile.official_mix_api_key {
+            continue;
+        }
+        if experimental_bearer_token_from_config_text(&profile.config_contents).is_some() {
+            continue;
+        }
+        let token = if profile.api_key.trim().is_empty() {
+            previous_tokens.get(&profile.id).cloned()
+        } else {
+            Some(profile.api_key.trim().to_string())
+        };
+        let Some(token) = token else {
+            continue;
+        };
+        profile.config_contents =
+            set_or_replace_experimental_bearer_token(&profile.config_contents, &token);
+    }
+}
+
+fn set_or_replace_experimental_bearer_token(contents: &str, token: &str) -> String {
+    let mut doc = parse_toml_document(contents).unwrap_or_else(|_| DocumentMut::new());
+    let provider_id = active_provider_id(&doc).unwrap_or_else(|| "codex-plus-relay".to_string());
+    doc["model_provider"] = toml_edit::value(provider_id.as_str());
+    doc["model_providers"][provider_id.as_str()]["experimental_bearer_token"] =
+        toml_edit::value(token.trim());
+    ensure_text_newline(doc.to_string())
+}
+
+fn ensure_text_newline(mut value: String) -> String {
+    if !value.is_empty() && !value.ends_with('\n') {
+        value.push('\n');
+    }
+    value
+}
+
+fn experimental_bearer_token_from_config_text(contents: &str) -> Option<String> {
+    let doc = parse_toml_document(contents).ok()?;
+    let provider_id = active_provider_id(&doc)?;
+    doc.get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get(&provider_id))
+        .and_then(Item::as_table)
+        .and_then(|provider| provider.get("experimental_bearer_token"))
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn active_provider_id(doc: &DocumentMut) -> Option<String> {
+    doc.get("model_provider")
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+        .map(ToString::to_string)
+}
+
+fn parse_toml_document(contents: &str) -> anyhow::Result<DocumentMut> {
+    if contents.trim().is_empty() {
+        Ok(DocumentMut::new())
+    } else {
+        contents
+            .parse::<DocumentMut>()
+            .with_context(|| "config.toml TOML 解析失败")
     }
 }
 
@@ -933,6 +1030,172 @@ requires_openai_auth = true
         assert!(profile.get("model").is_none());
         assert!(profile.get("baseUrl").is_none());
         assert!(profile.get("apiKey").is_none());
+    }
+
+    #[test]
+    fn official_mix_profile_keeps_key_in_config_not_auth() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+        let settings = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                id: "official-mix".to_string(),
+                name: "官方混入".to_string(),
+                relay_mode: RelayMode::Official,
+                official_mix_api_key: true,
+                model: "gpt-5.5".to_string(),
+                base_url: "https://relay.example/v1".to_string(),
+                api_key: "sk-mix".to_string(),
+                config_contents: r#"model = "gpt-5.5"
+model_provider = "custom"
+
+[model_providers.custom]
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-mix"
+"#
+                .to_string(),
+                auth_contents: r#"{"OPENAI_API_KEY":"sk-mix","auth_mode":"chatgpt"}"#.to_string(),
+                ..RelayProfile::default()
+            }],
+            active_relay_id: "official-mix".to_string(),
+            ..BackendSettings::default()
+        };
+
+        store.save(&settings).unwrap();
+        let loaded = store.load().unwrap();
+        let profile = &loaded.relay_profiles[0];
+
+        assert_eq!(profile.relay_mode, RelayMode::Official);
+        assert!(profile.official_mix_api_key);
+        assert_eq!(profile.api_key, "sk-mix");
+        assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
+        assert!(profile
+            .config_contents
+            .contains(r#"experimental_bearer_token = "sk-mix""#));
+
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
+        assert!(saved["relayProfiles"][0].get("apiKey").is_none());
+        assert!(!saved["relayProfiles"][0]["authContents"]
+            .as_str()
+            .unwrap()
+            .contains("OPENAI_API_KEY"));
+        assert!(saved["relayProfiles"][0]["configContents"]
+            .as_str()
+            .unwrap()
+            .contains(r#"experimental_bearer_token = "sk-mix""#));
+    }
+
+    #[test]
+    fn settings_update_preserves_official_mix_key_when_payload_loses_it() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+        store
+            .save(&BackendSettings {
+                relay_profiles: vec![RelayProfile {
+                    id: "official-mix".to_string(),
+                    name: "官方混入".to_string(),
+                    relay_mode: RelayMode::Official,
+                    official_mix_api_key: true,
+                    config_contents: r#"model_provider = "custom"
+
+[model_providers.other]
+base_url = "https://other.example/v1"
+experimental_bearer_token = "sk-other"
+
+[model_providers.custom]
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-existing"
+"#
+                    .to_string(),
+                    ..RelayProfile::default()
+                }],
+                active_relay_id: "official-mix".to_string(),
+                ..BackendSettings::default()
+            })
+            .unwrap();
+
+        let updated = store
+            .update(json!({
+                "relayProfiles": [{
+                    "id": "official-mix",
+                    "name": "官方混入",
+                    "relayMode": "official",
+                    "officialMixApiKey": true,
+                    "configContents": "model_provider = \"custom\"\n\n[model_providers.other]\nbase_url = \"https://other.example/v1\"\nexperimental_bearer_token = \"sk-other\"\n\n[model_providers.custom]\nbase_url = \"https://relay.example/v1\"\nexperimental_bearer_token = \"\"\n",
+                    "authContents": ""
+                }],
+                "activeRelayId": "official-mix"
+            }))
+            .unwrap();
+
+        let profile = &updated.relay_profiles[0];
+        assert_eq!(profile.api_key, "sk-existing");
+        assert!(!profile.config_contents.contains("sk-other"));
+        assert!(profile
+            .config_contents
+            .contains(r#"[model_providers.custom]
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-existing""#));
+    }
+
+    #[test]
+    fn official_mix_update_uses_api_key_when_config_token_missing() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "relayProfiles": [{
+                    "id": "official-mix",
+                    "name": "官方混入",
+                    "relayMode": "official",
+                    "officialMixApiKey": true,
+                    "baseUrl": "https://relay.example/v1",
+                    "apiKey": "sk-new",
+                    "configContents": "model_provider = \"custom\"\n\n[model_providers.custom]\nbase_url = \"https://relay.example/v1\"\n",
+                    "authContents": ""
+                }],
+                "activeRelayId": "official-mix"
+            }))
+            .unwrap();
+
+        let profile = &updated.relay_profiles[0];
+        assert_eq!(profile.api_key, "sk-new");
+        assert!(profile
+            .config_contents
+            .contains(r#"experimental_bearer_token = "sk-new""#));
+        assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn settings_update_preserves_manual_official_mix_config_token() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "relayProfiles": [{
+                    "id": "official-mix",
+                    "name": "官方混入",
+                    "relayMode": "official",
+                    "officialMixApiKey": true,
+                    "configContents": "model_provider = \"custom\"\n\n[model_providers.custom]\nbase_url = \"https://relay.example/v1\"\nexperimental_bearer_token = \"22222222222222222222222222222222222\"\n",
+                    "authContents": ""
+                }],
+                "activeRelayId": "official-mix"
+            }))
+            .unwrap();
+
+        let profile = &updated.relay_profiles[0];
+        assert_eq!(profile.relay_mode, RelayMode::Official);
+        assert!(profile.official_mix_api_key);
+        assert_eq!(profile.api_key, "22222222222222222222222222222222222");
+        assert!(profile
+            .config_contents
+            .contains(r#"experimental_bearer_token = "22222222222222222222222222222222222""#));
+        assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
     }
 
     #[test]
