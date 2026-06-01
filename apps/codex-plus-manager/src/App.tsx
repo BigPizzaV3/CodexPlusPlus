@@ -98,6 +98,19 @@ type BackendSettings = {
   relayProfilesEnabled: boolean;
   ccsLinkEnabled: boolean;
   enhancementsEnabled: boolean;
+  codexAppPluginEntryUnlock: boolean;
+  codexAppForcePluginInstall: boolean;
+  codexAppModelWhitelistUnlock: boolean;
+  codexAppSessionDelete: boolean;
+  codexAppMarkdownExport: boolean;
+  codexAppProjectMove: boolean;
+  codexAppConversationTimeline: boolean;
+  codexAppConversationView: boolean;
+  codexAppThreadScrollRestore: boolean;
+  codexAppZedRemoteOpen: boolean;
+  codexAppUpstreamWorktreeCreate: boolean;
+  codexAppNativeMenuPlacement: boolean;
+  codexAppServiceTierControls: boolean;
   codexGoalsEnabled: boolean;
   launchMode: LaunchMode;
   relayBaseUrl: string;
@@ -211,6 +224,29 @@ type RelayFilesResult = CommandResult<{
   authPath: string;
   configContents: string;
   authContents: string;
+}>;
+
+type LocalSession = {
+  id: string;
+  title: string;
+  cwd: string;
+  modelProvider: string;
+  archived: boolean;
+  updatedAtMs: number | null;
+  rolloutPath: string;
+};
+
+type LocalSessionsResult = CommandResult<{
+  dbPath: string;
+  sessions: LocalSession[];
+}>;
+
+type DeleteLocalSessionResult = CommandResult<{
+  status: string;
+  session_id: string;
+  message: string;
+  undo_token: string | null;
+  backup_path: string | null;
 }>;
 
 type ContextEntriesResult = CommandResult<{
@@ -353,16 +389,16 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-type Route = "overview" | "relay" | "context" | "enhance" | "userScripts" | "providerSync" | "recommendations" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "sessions" | "context" | "enhance" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon }> = [
   { id: "overview", label: "概览", icon: LayoutDashboard },
   { id: "relay", label: "供应商配置", icon: KeyRound },
+  { id: "sessions", label: "会话管理", icon: MessageCircle },
   { id: "context", label: "工具与插件", icon: Network },
   { id: "enhance", label: "页面增强", icon: Hammer },
   { id: "userScripts", label: "脚本市场", icon: FileCode2 },
-  { id: "providerSync", label: "历史会话修复", icon: Link2 },
   { id: "recommendations", label: "推荐内容", icon: ExternalLink },
   { id: "maintenance", label: "安装维护", icon: Wrench },
   { id: "about", label: "关于", icon: Info },
@@ -376,6 +412,19 @@ const defaultSettings: BackendSettings = {
   relayProfilesEnabled: true,
   ccsLinkEnabled: false,
   enhancementsEnabled: true,
+  codexAppPluginEntryUnlock: true,
+  codexAppForcePluginInstall: true,
+  codexAppModelWhitelistUnlock: true,
+  codexAppSessionDelete: true,
+  codexAppMarkdownExport: true,
+  codexAppProjectMove: true,
+  codexAppConversationTimeline: true,
+  codexAppConversationView: false,
+  codexAppThreadScrollRestore: true,
+  codexAppZedRemoteOpen: true,
+  codexAppUpstreamWorktreeCreate: true,
+  codexAppNativeMenuPlacement: true,
+  codexAppServiceTierControls: false,
   codexGoalsEnabled: false,
   launchMode: "patch",
   relayBaseUrl: "",
@@ -421,6 +470,7 @@ export function App() {
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [relay, setRelay] = useState<RelayResult | null>(null);
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
+  const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
   const [logs, setLogs] = useState<LogsResult | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
@@ -531,6 +581,29 @@ export function App() {
     return result;
   };
 
+  const refreshLocalSessions = async (silent = false) => {
+    const result = await run(() => call<LocalSessionsResult>("list_local_sessions"));
+    if (result) {
+      setLocalSessions(result);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("会话管理", result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const deleteLocalSession = async (session: LocalSession) => {
+    const title = session.title || session.id;
+    if (!window.confirm(`删除会话“${title}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。`)) return;
+    const result = await run(() =>
+      call<DeleteLocalSessionResult>("delete_local_session", {
+        request: { sessionId: session.id, title: session.title },
+      }),
+    );
+    if (result) {
+      showResultNotice("会话删除", result);
+      await refreshLocalSessions(true);
+    }
+  };
+
   const refreshLiveContextEntries = async (silent = false) => {
     const result = await run(() => call<LiveContextEntriesResult>("read_live_context_entries"));
     if (result) {
@@ -581,6 +654,10 @@ export function App() {
       await refreshRelay(true);
       await refreshRelayFiles(true);
     }
+    if (next === "sessions") {
+      await refreshSettings(true);
+      await refreshLocalSessions(true);
+    }
     if (next === "context") {
       await refreshSettings(true);
       await refreshRelayFiles(true);
@@ -591,7 +668,6 @@ export function App() {
       await refreshSettings(true);
       await refreshScriptMarket(true);
     }
-    if (next === "providerSync") await refreshSettings(true);
     if (next === "recommendations") await refreshAds(true);
     if (next === "about") {
       await refreshOverview(true);
@@ -915,7 +991,7 @@ export function App() {
     if (result) showNotice("纯 API 模式", "已切换到纯 API；页面增强已设为完整增强。", result.status);
   };
 
-  const switchRelayProfile = async (next: BackendSettings) => {
+  const switchRelayProfile = async (next: BackendSettings, previousActiveRelayId = settingsForm.activeRelayId) => {
     let switchSettings = normalizeSettings(next);
     if (switchSettings.ccsLinkEnabled) {
       const targetRelayId = switchSettings.activeRelayId;
@@ -940,7 +1016,7 @@ export function App() {
       targetRelayMode: targetBeforeSnapshot.relayMode,
       ccsLinkEnabled: switchSettings.ccsLinkEnabled,
     });
-    const nextWithSnapshot = await snapshotActiveRelayFilesBeforeSwitch(switchSettings);
+    const nextWithSnapshot = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
     if (!nextWithSnapshot) {
       logDiagnostic("switchRelayProfile.snapshot_failed", {
         currentRelayId: settingsForm.activeRelayId,
@@ -1039,8 +1115,8 @@ export function App() {
     }
   };
 
-  const snapshotActiveRelayFilesBeforeSwitch = async (next: BackendSettings): Promise<BackendSettings | null> => {
-    const current = activeRelayProfile(settingsForm);
+  const snapshotActiveRelayFilesBeforeSwitch = async (next: BackendSettings, previousActiveRelayId: string): Promise<BackendSettings | null> => {
+    const current = settingsForm.relayProfiles.find((profile) => profile.id === previousActiveRelayId) || activeRelayProfile(settingsForm);
     const selected = activeRelayProfile(next);
     if (current.id === selected.id) return next;
 
@@ -1205,6 +1281,8 @@ export function App() {
       installMarketScript,
       setUserScriptEnabled,
       deleteUserScript,
+      refreshLocalSessions,
+      deleteLocalSession,
       openExternalUrl,
       applyRelayInjection,
       applyPureApiInjection,
@@ -1236,7 +1314,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles],
+    [route, launchForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles, localSessions],
   );
   const hasUpdate = update?.updateAvailable === true;
 
@@ -1325,6 +1403,15 @@ export function App() {
               actions={actions}
             />
           ) : null}
+          {route === "sessions" ? (
+            <SessionsScreen
+              settings={settings}
+              form={settingsForm}
+              sessions={localSessions}
+              onFormChange={setSettingsForm}
+              actions={actions}
+            />
+          ) : null}
           {route === "context" ? (
             <ContextScreen
               form={settingsForm}
@@ -1338,9 +1425,6 @@ export function App() {
             <EnhanceScreen form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
           ) : null}
           {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
-          {route === "providerSync" ? (
-            <ProviderSyncScreen settings={settings} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
-          ) : null}
           {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
           {route === "maintenance" ? (
             <MaintenanceScreen
@@ -1400,6 +1484,8 @@ type Actions = {
   installMarketScript: (id: string) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
   deleteUserScript: (key: string) => Promise<void>;
+  refreshLocalSessions: () => Promise<LocalSessionsResult | null>;
+  deleteLocalSession: (session: LocalSession) => Promise<void>;
   openExternalUrl: (url: string) => Promise<void>;
   applyRelayInjection: () => Promise<boolean>;
   applyPureApiInjection: () => Promise<boolean>;
@@ -1415,7 +1501,7 @@ type Actions = {
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
-  switchRelayProfile: (settings: BackendSettings) => Promise<void>;
+  switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
   switchOfficialMode: () => Promise<void>;
   switchPureApiMode: () => Promise<void>;
   refreshLogs: () => Promise<void>;
@@ -1638,6 +1724,9 @@ function EnhanceScreen({
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
+  const setEnhanceFlag = (key: keyof BackendSettings, value: boolean) => onFormChange({ ...form, [key]: value });
+  const masterEnabled = form.enhancementsEnabled;
+  const patchMode = form.launchMode === "patch";
   return (
     <>
       <Panel>
@@ -1661,13 +1750,24 @@ function EnhanceScreen({
               <span>当前为兼容增强模式，插件入口解锁和特殊插件强制安装不会启用；其他页面功能仍可用。</span>
             </div>
           ) : null}
-          <div className="feature-list">
-            <FeatureItem title="会话删除" detail="在会话列表悬停显示删除按钮，并支持撤销。" enabled={form.enhancementsEnabled} />
-            <FeatureItem title="Markdown 导出" detail="按本地 rollout 导出带时间戳的 Markdown。" enabled={form.enhancementsEnabled} />
-            <FeatureItem title="项目移动" detail="把会话移动到普通对话或其他本地项目。" enabled={form.enhancementsEnabled} />
-            <FeatureItem title="Timeline" detail="在对话右侧显示用户提问时间线。" enabled={form.enhancementsEnabled} />
-            <FeatureItem title="插件入口解锁" detail="仅完整增强模式启用。" enabled={form.enhancementsEnabled && form.launchMode === "patch"} />
-            <FeatureItem title="特殊插件强制安装" detail="仅完整增强模式启用。" enabled={form.enhancementsEnabled && form.launchMode === "patch"} />
+          <div className="feature-switch-grid">
+            <FeatureToggle title="插件入口解锁" detail="显示并启用 Codex 插件入口；官方/混合模式通常不需要。" checked={form.codexAppPluginEntryUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginEntryUnlock", value)} />
+            <FeatureToggle title="特殊插件强制安装" detail="解除 App unavailable / 应用不可用导致的前端安装禁用。" checked={form.codexAppForcePluginInstall} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppForcePluginInstall", value)} />
+            <FeatureToggle title="模型白名单解锁" detail="从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。" checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
+            <FeatureToggle title="Fast 按钮" detail="显示服务模式切换按钮，可控制 Standard / Fast / priority。" checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
+            <FeatureToggle title="会话删除" detail="在会话列表悬停显示删除按钮，并支持撤销。" checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
+            <FeatureToggle title="Markdown 导出" detail="在会话列表显示导出按钮，导出带时间戳的 Markdown。" checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
+            <FeatureToggle title="会话项目移动" detail="把会话移动到普通对话或其他本地项目。" checked={form.codexAppProjectMove} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppProjectMove", value)} />
+            <FeatureToggle title="对话 Timeline" detail="在对话右侧显示用户提问时间线，支持摘要和跳转。" checked={form.codexAppConversationTimeline} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationTimeline", value)} />
+            <FeatureToggle title="对话居中宽度" detail="把主对话和输入框限制到固定最大宽度，适合大屏阅读。" checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
+            <FeatureToggle title="切换对话保留位置" detail="切换 thread 时恢复上一次浏览位置。" checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
+            <FeatureToggle title="Zed Remote open" detail="远程 SSH 文件引用可直接用 Zed Remote Development 打开。" checked={form.codexAppZedRemoteOpen} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppZedRemoteOpen", value)} />
+            <FeatureToggle title="Upstream worktree" detail="从最新 upstream 分支创建 Git worktree。" checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
+            <FeatureToggle title="原生菜单栏位置" detail="把 Codex++ 菜单插入 Codex 顶部原生菜单栏。" checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
+          </div>
+          <div className="hint-line">
+            <Info className="h-4 w-4" />
+            <span>如果使用官方模式或官方混入 API 模式，不需要开启插件入口解锁和特殊插件强制安装。</span>
           </div>
           <Toolbar>
             <Button onClick={() => void actions.saveSettings()}>保存增强设置</Button>
@@ -1736,22 +1836,47 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
   );
 }
 
-function ProviderSyncScreen({
+function SessionsScreen({
   settings,
   form,
+  sessions,
   onFormChange,
   actions,
 }: {
   settings: SettingsResult | null;
   form: BackendSettings;
+  sessions: LocalSessionsResult | null;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
+  const items = sessions?.sessions ?? [];
+  const activeCount = items.filter((item) => !item.archived).length;
+  const archivedCount = items.length - activeCount;
   return (
     <>
       <Panel>
-        <CardHead title="历史会话修复" detail="切换官方或 API 后，让旧对话重新出现在当前模式下" />
+        <CardHead title="会话管理" detail="读取 Codex 本地 state_5.sqlite，会删除数据库记录和对应 rollout 文件" />
         <CardContent>
+          <div className="metric-list">
+            <Metric label="会话总数" value={`${items.length} 个`} />
+            <Metric label="未归档" value={`${activeCount} 个`} />
+            <Metric label="已归档" value={`${archivedCount} 个`} />
+            <Metric label="数据库" value={sessions?.dbPath ?? "~/.codex/state_5.sqlite"} />
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.refreshLocalSessions()}>
+              <RefreshCw className="h-4 w-4" />
+              刷新会话
+            </Button>
+            <Button onClick={() => void actions.syncProvidersNow()} variant="outline">
+              <RefreshCw className="h-4 w-4" />
+              立刻修复历史会话
+            </Button>
+          </Toolbar>
+          <div className="hint-line">
+            <Info className="h-4 w-4" />
+            <span>删除会创建本地备份；如果 Codex App 正在使用该会话，建议先关闭对应会话窗口再操作。</span>
+          </div>
           <label className="switch-row">
             <input
               checked={form.providerSyncEnabled}
@@ -1763,31 +1888,38 @@ function ProviderSyncScreen({
               <small>开启后，通过 Codex++ 启动 Codex 前自动整理一次旧对话的归属标记。</small>
             </span>
           </label>
-          <div className="relay-grid compact">
-            <Metric label="自动修复" value={form.providerSyncEnabled ? "启动前执行" : "关闭"} />
-            <Metric label="设置文件" value={settings?.settings_path ?? "未加载"} />
-            <Metric label="页面增强" value={form.launchMode === "relay" ? "兼容模式" : "完整模式"} />
-          </div>
           <Toolbar>
             <Button onClick={() => void actions.saveSettings()}>保存自动修复设置</Button>
-            <Button onClick={() => void actions.syncProvidersNow()} variant="outline">
-              <RefreshCw className="h-4 w-4" />
-              立刻修复历史会话
-            </Button>
           </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="说明" detail="这是独立于页面增强的会话数据维护功能" />
+        <CardHead title="本地会话" detail={items.length ? "按更新时间倒序显示" : "点击刷新会话读取本地数据库"} />
         <CardContent>
-          <GuideList
-            items={[
-              "自动修复只在 Codex++ 启动 Codex 前运行，不会常驻监控或反复改写。",
-              "需要马上整理旧对话时，可以点击“立刻修复历史会话”。",
-              "它不控制页面功能，也不影响 API URL 或 Key。",
-              "切回官方时历史会话会整理为 openai；切到 API 时会整理为 custom。",
-            ]}
-          />
+          {items.length ? (
+            <div className="session-list">
+              {items.map((session) => (
+                <div className="session-row" key={session.id}>
+                  <div className="session-main">
+                    <strong>{session.title || "未命名会话"}</strong>
+                    <span>{session.id}</span>
+                    <small>{session.cwd || "未记录项目路径"}</small>
+                  </div>
+                  <div className="session-meta">
+                    <Badge status={session.archived ? "archived" : "ok"} />
+                    <span>{session.modelProvider || "provider 未记录"}</span>
+                    <span>{formatTime(session.updatedAtMs ?? 0)}</span>
+                  </div>
+                  <Button variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
+                    <Trash2 className="h-4 w-4" />
+                    删除
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty">未读取到本地会话，或当前 state_5.sqlite 不存在。</div>
+          )}
         </CardContent>
       </Panel>
     </>
@@ -1986,6 +2118,10 @@ function AboutScreen({
             <Button onClick={() => void actions.openExternalUrl("https://discord.gg/y96kX7A76v")} variant="secondary">
               <MessageCircle className="h-4 w-4" />
               Discord
+            </Button>
+            <Button onClick={() => void actions.openExternalUrl("https://t.me/CodexPlusPlus")} variant="secondary">
+              <MessageCircle className="h-4 w-4" />
+              Telegram
             </Button>
           </Toolbar>
         </CardContent>
@@ -2263,8 +2399,9 @@ function SortableRelayProfileCard({
           onClick={(event) => {
             event.stopPropagation();
             if (disabled) return;
+            const previousActiveRelayId = form.activeRelayId;
             const next = syncLegacyRelayFields({ ...form, activeRelayId: profile.id });
-            void actions.switchRelayProfile(next);
+            void actions.switchRelayProfile(next, previousActiveRelayId);
           }}
           size="sm"
           title={disabled ? "供应商配置总开关已关闭" : active ? "当前正在使用" : "设为当前"}
@@ -2412,12 +2549,13 @@ function RelayProfileDetail({
   const switchDraft = () => {
     if (isNew || !form.relayProfilesEnabled) return;
     const normalizedDraft = deriveRelayProfileFromFiles(draft);
+    const previousActiveRelayId = form.activeRelayId;
     const next = syncLegacyRelayFields({
       ...form,
       relayProfiles: form.relayProfiles.map((item) => (item.id === profile.id ? normalizedDraft : item)),
       activeRelayId: profile.id,
     });
-    void actions.switchRelayProfile(next);
+    void actions.switchRelayProfile(next, previousActiveRelayId);
   };
   return (
     <div className="relay-detail-page" key={profile.id}>
@@ -3055,6 +3193,36 @@ function FeatureItem({ title, detail, enabled }: { title: string; detail: string
   );
 }
 
+function FeatureToggle({
+  title,
+  detail,
+  checked,
+  disabled = false,
+  onChange,
+}: {
+  title: string;
+  detail: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <label className={`feature-toggle ${disabled ? "disabled" : ""}`}>
+      <input
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+        type="checkbox"
+      />
+      <span>
+        <strong>{title}</strong>
+        <small>{detail}</small>
+      </span>
+      <Badge status={!disabled && checked ? "ok" : "disabled"} />
+    </label>
+  );
+}
+
 function GuideList({ items }: { items: string[] }) {
   return (
     <div className="guide-list">
@@ -3229,10 +3397,10 @@ function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
     overview: "检查问题、启动与快速修复",
     relay: "管理 API 供应商、协议、Key 与配置文件",
+    sessions: "查看、删除和修复 Codex 本地会话",
     context: "独立管理 MCP、Skills、Plugins",
     enhance: "会话删除、导出、项目移动和脚本能力",
     userScripts: "内置和用户自定义脚本清单",
-    providerSync: "切换模式后让旧对话重新可见",
     recommendations: "赞助商推荐与普通推荐",
     maintenance: "入口安装、修复、Watcher 与手动启动",
     about: "版本信息、项目链接、GitHub Release 更新、日志与诊断",
@@ -3801,6 +3969,7 @@ function statusLabel(status: string) {
     ok: "正常",
     running: "运行中",
     failed: "失败",
+    archived: "已归档",
     accepted: "已受理",
     not_checked: "未检查",
     not_implemented: "未实现",

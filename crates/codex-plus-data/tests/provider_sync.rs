@@ -49,7 +49,10 @@ fn provider_sync_updates_rollout_sqlite_visibility_and_creates_backup() {
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     assert_eq!(result.target_provider, "apigather");
     assert_eq!(result.changed_session_files, 1);
-    assert_eq!(result.sqlite_rows_updated, 1);
+    assert_eq!(result.sqlite_rows_updated, 3);
+    assert_eq!(result.sqlite_provider_rows_updated, 1);
+    assert_eq!(result.sqlite_user_event_rows_updated, 1);
+    assert_eq!(result.sqlite_cwd_rows_updated, 1);
     let first: serde_json::Value = serde_json::from_str(
         fs::read_to_string(&rollout)
             .unwrap()
@@ -111,7 +114,10 @@ fn provider_sync_repairs_sqlite_when_rollout_provider_matches_and_normalizes_pat
 
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     assert_eq!(result.changed_session_files, 0);
-    assert_eq!(result.sqlite_rows_updated, 1);
+    assert_eq!(result.sqlite_rows_updated, 3);
+    assert_eq!(result.sqlite_provider_rows_updated, 1);
+    assert_eq!(result.sqlite_user_event_rows_updated, 1);
+    assert_eq!(result.sqlite_cwd_rows_updated, 1);
     let db = Connection::open(home.join("state_5.sqlite")).unwrap();
     let row: String = db
         .query_row("SELECT cwd FROM threads WHERE id = 'thread-1'", [], |row| {
@@ -275,11 +281,7 @@ fn provider_sync_preserves_rollout_mtime() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(
-        home.join("config.toml"),
-        "model_provider = \"apigather\"\n",
-    )
-    .unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
     let rollout = home.join("sessions/2026/rollout-mtime.jsonl");
     write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
 

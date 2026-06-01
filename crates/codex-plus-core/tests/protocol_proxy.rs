@@ -1,7 +1,8 @@
 use codex_plus_core::protocol_proxy::{
     ChatSseToResponsesConverter, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
-    chat_sse_to_responses_sse_with_request, is_models_proxy_path, models_url,
+    chat_sse_to_responses_sse_with_request, is_chat_completions_proxy_path, is_models_proxy_path,
+    is_responses_proxy_path, models_url, responses_error_from_upstream,
     responses_to_chat_completions,
 };
 use serde_json::json;
@@ -88,7 +89,73 @@ fn responses_request_matches_ccs_reasoning_and_tool_choice_edges() {
         "input": "hi"
     }))
     .unwrap();
-    assert_eq!(minimal["reasoning_effort"], "low");
+    assert_eq!(minimal["reasoning_effort"], "minimal");
+}
+
+#[test]
+fn proxy_route_matchers_accept_ccswitch_codex_aliases() {
+    for path in [
+        "/responses",
+        "/v1/responses",
+        "/v1/v1/responses",
+        "/codex/v1/responses",
+        "/responses/compact",
+        "/v1/responses/compact",
+        "/v1/v1/responses/compact",
+        "/codex/v1/responses/compact",
+    ] {
+        assert!(is_responses_proxy_path(path), "{path}");
+    }
+
+    for path in [
+        "/chat/completions",
+        "/v1/chat/completions",
+        "/v1/v1/chat/completions",
+        "/codex/v1/chat/completions",
+    ] {
+        assert!(is_chat_completions_proxy_path(path), "{path}");
+    }
+
+    for path in ["/models", "/v1/models", "/v1/v1/models", "/codex/v1/models"] {
+        assert!(is_models_proxy_path(path), "{path}");
+    }
+}
+
+#[test]
+fn responses_request_applies_ccswitch_reasoning_dialects() {
+    let deepseek = responses_to_chat_completions(json!({
+        "model": "deepseek-reasoner",
+        "reasoning": { "effort": "xhigh" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(deepseek["reasoning_effort"], "max");
+
+    let openrouter = responses_to_chat_completions(json!({
+        "model": "openrouter/deepseek/deepseek-r1",
+        "reasoning": { "effort": "max" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(openrouter["reasoning"]["effort"], "xhigh");
+    assert!(openrouter.get("reasoning_effort").is_none());
+
+    let openrouter_off = responses_to_chat_completions(json!({
+        "model": "openrouter/deepseek/deepseek-r1",
+        "reasoning": { "effort": "none" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(openrouter_off["reasoning"]["effort"], "none");
+
+    let kimi = responses_to_chat_completions(json!({
+        "model": "kimi-k2-thinking",
+        "reasoning": { "effort": "high" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(kimi["thinking"]["type"], "enabled");
+    assert!(kimi.get("reasoning_effort").is_none());
 }
 
 #[test]
@@ -125,6 +192,67 @@ fn responses_request_maps_developer_role_to_system_for_chat_upstream() {
             .unwrap()
             .contains("\"developer\"")
     );
+}
+
+#[test]
+fn responses_request_collapses_system_messages_to_head_for_strict_chat_upstreams() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "root system",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            },
+            {
+                "type": "message",
+                "role": "developer",
+                "content": [{ "type": "input_text", "text": "late developer" }]
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "ok" }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][0]["role"], "system");
+    assert_eq!(
+        converted["messages"][0]["content"],
+        "root system\n\nlate developer"
+    );
+    let system_count = converted["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "system")
+        .count();
+    assert_eq!(system_count, 1);
+    assert_eq!(converted["messages"][1]["role"], "user");
+    assert_eq!(converted["messages"][2]["role"], "assistant");
+}
+
+#[test]
+fn responses_request_maps_latest_reminder_to_user_like_ccswitch() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "message",
+                "role": "latest_reminder",
+                "content": [
+                    { "type": "input_text", "text": "remember this" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][0]["role"], "user");
+    assert_eq!(converted["messages"][0]["content"], "remember this");
 }
 
 #[test]
@@ -547,6 +675,24 @@ fn responses_input_replays_apply_patch_custom_history_as_proxy_tool() {
 }
 
 #[test]
+fn upstream_chat_error_is_regularized_as_responses_error_envelope() {
+    let json_error = responses_error_from_upstream(
+        400,
+        "application/json",
+        br#"{"error":{"message":"bad request","type":"invalid_request_error","code":"bad_model","param":"model"}}"#,
+    );
+    assert_eq!(json_error["error"]["message"], "bad request");
+    assert_eq!(json_error["error"]["type"], "invalid_request_error");
+    assert_eq!(json_error["error"]["code"], "bad_model");
+    assert_eq!(json_error["error"]["param"], "model");
+
+    let text_error = responses_error_from_upstream(502, "text/html", b"<html>bad gateway</html>");
+    assert_eq!(text_error["error"]["message"], "<html>bad gateway</html>");
+    assert_eq!(text_error["error"]["type"], "upstream_error");
+    assert_eq!(text_error["error"]["code"], "502");
+}
+
+#[test]
 fn chat_completion_response_converts_to_responses_response() {
     let converted = chat_completion_to_response(json!({
         "id": "chatcmpl_123",
@@ -630,6 +776,34 @@ fn chat_completion_response_maps_reasoning_tool_calls_and_usage_details() {
         converted["usage"]["output_tokens_details"]["reasoning_tokens"],
         2
     );
+}
+
+#[test]
+fn chat_completion_response_extracts_reasoning_details_like_ccswitch() {
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_reasoning_details",
+        "created": 123,
+        "model": "MiniMax-M2.7",
+        "choices": [{
+            "finish_reason": "stop",
+            "message": {
+                "role": "assistant",
+                "reasoning_details": [
+                    { "summary": "Step one." },
+                    { "parts": [{ "text": "Step two." }] }
+                ],
+                "content": "final"
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["output"][0]["type"], "reasoning");
+    assert_eq!(
+        converted["output"][0]["summary"][0]["text"],
+        "Step one.\n\nStep two."
+    );
+    assert_eq!(converted["output"][1]["content"][0]["text"], "final");
 }
 
 #[test]

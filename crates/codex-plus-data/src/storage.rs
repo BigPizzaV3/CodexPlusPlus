@@ -2,6 +2,7 @@ use crate::BackupStore;
 use codex_plus_core::models::{DeleteResult, DeleteStatus, SessionRef};
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
 use rusqlite::{Connection, ToSql};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::fs;
@@ -17,6 +18,18 @@ pub struct SQLiteStorageAdapter {
 enum SchemaKind {
     GenericSessions,
     CodexThreads,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSession {
+    pub id: String,
+    pub title: String,
+    pub cwd: String,
+    pub model_provider: String,
+    pub archived: bool,
+    pub updated_at_ms: Option<i64>,
+    pub rollout_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +68,51 @@ impl SQLiteStorageAdapter {
             }
         })();
         result.unwrap_or_else(|err| failed(&session.session_id, err.to_string()))
+    }
+
+    pub fn list_local_sessions(&self) -> anyhow::Result<Vec<LocalSession>> {
+        if !self.db_path.exists() {
+            return Ok(Vec::new());
+        }
+        let db = Connection::open(&self.db_path)?;
+        if schema_kind(&db)? != Some(SchemaKind::CodexThreads) {
+            anyhow::bail!("Unsupported local storage schema");
+        }
+        let columns = table_columns(&db, "threads")?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let title = optional_column_expression(&columns, "title", "''");
+        let cwd = optional_column_expression(&columns, "cwd", "''");
+        let model_provider = optional_column_expression(&columns, "model_provider", "''");
+        let archived = optional_column_expression(&columns, "archived", "0");
+        let updated_at_ms = if columns.contains("updated_at_ms") {
+            "updated_at_ms"
+        } else if columns.contains("updated_at") {
+            "updated_at * 1000"
+        } else if columns.contains("created_at_ms") {
+            "created_at_ms"
+        } else {
+            "NULL"
+        };
+        let rollout_path = optional_column_expression(&columns, "rollout_path", "''");
+        let sql = format!(
+            "SELECT id, {title}, {cwd}, {model_provider}, {archived}, {updated_at_ms}, {rollout_path}
+             FROM threads
+             ORDER BY COALESCE({updated_at_ms}, 0) DESC, id DESC"
+        );
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
+            Ok(LocalSession {
+                id: row.get(0)?,
+                title: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                cwd: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                model_provider: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                archived: row.get::<_, Option<i64>>(4)?.unwrap_or_default() != 0,
+                updated_at_ms: row.get(5)?,
+                rollout_path: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn undo(&self, token: &str) -> DeleteResult {
@@ -447,6 +505,18 @@ impl SQLiteStorageAdapter {
             });
         }
         Ok(local_deleted(&thread_id, &token, &backup_path))
+    }
+}
+
+fn optional_column_expression<'a>(
+    columns: &HashSet<String>,
+    column: &'a str,
+    fallback: &'a str,
+) -> &'a str {
+    if columns.contains(column) {
+        column
+    } else {
+        fallback
     }
 }
 

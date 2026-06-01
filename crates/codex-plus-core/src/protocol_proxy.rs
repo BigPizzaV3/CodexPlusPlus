@@ -27,6 +27,18 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
     "top_logprobs",
     "user",
 ];
+const ERROR_BODY_PREVIEW_LIMIT: usize = 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChatReasoningStyle {
+    Default,
+    DeepSeek,
+    LowHigh,
+    OpenRouter,
+    Thinking,
+    EnableThinking,
+    ReasoningSplit,
+}
 
 #[derive(Debug, Clone, Default)]
 struct CodexToolContext {
@@ -131,6 +143,7 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
         append_responses_input(input, &mut messages);
     }
     normalize_chat_messages(&mut messages);
+    let messages = collapse_system_messages_to_head(messages);
     result["messages"] = json!(messages);
 
     let model = body.get("model").and_then(Value::as_str).unwrap_or("");
@@ -162,11 +175,7 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
         result["stream_options"] = stream_options;
     }
 
-    if supports_reasoning_effort(model)
-        && let Some(effort) = body.pointer("/reasoning/effort").and_then(Value::as_str)
-    {
-        result["reasoning_effort"] = json!(normalize_reasoning_effort(effort));
-    }
+    apply_chat_reasoning_options(&mut result, &body, model);
 
     let tool_context = build_codex_tool_context(body.get("tools"));
     let mut has_chat_tools = false;
@@ -384,13 +393,34 @@ pub fn is_responses_proxy_path(path: &str) -> bool {
     let path = path.split_once('?').map_or(path, |(path, _)| path);
     matches!(
         path,
-        "/responses" | "/v1/responses" | "/responses/compact" | "/v1/responses/compact"
+        "/responses"
+            | "/v1/responses"
+            | "/v1/v1/responses"
+            | "/codex/v1/responses"
+            | "/responses/compact"
+            | "/v1/responses/compact"
+            | "/v1/v1/responses/compact"
+            | "/codex/v1/responses/compact"
+    )
+}
+
+pub fn is_chat_completions_proxy_path(path: &str) -> bool {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    matches!(
+        path,
+        "/chat/completions"
+            | "/v1/chat/completions"
+            | "/v1/v1/chat/completions"
+            | "/codex/v1/chat/completions"
     )
 }
 
 pub fn is_models_proxy_path(path: &str) -> bool {
     let path = path.split_once('?').map_or(path, |(path, _)| path);
-    matches!(path, "/models" | "/v1/models")
+    matches!(
+        path,
+        "/models" | "/v1/models" | "/v1/v1/models" | "/codex/v1/models"
+    )
 }
 
 pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<UpstreamProxyResponse> {
@@ -469,6 +499,49 @@ pub async fn open_models_proxy_request() -> anyhow::Result<UpstreamProxyResponse
     })
 }
 
+pub async fn open_chat_completions_proxy_request(
+    body: &str,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let relay = settings.active_relay_profile();
+    if relay.protocol != RelayProtocol::ChatCompletions {
+        anyhow::bail!("当前中转未启用 Chat Completions 协议代理");
+    }
+    if relay.base_url.trim().is_empty() {
+        anyhow::bail!("Chat Completions 上游 Base URL 不能为空");
+    }
+    if relay.api_key.trim().is_empty() {
+        anyhow::bail!("Chat Completions 上游 Key 不能为空");
+    }
+
+    let request_json: Value = serde_json::from_str(body)?;
+    let is_stream = request_json
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let upstream = reqwest::Client::new()
+        .post(chat_completions_url(&relay.base_url))
+        .bearer_auth(relay.api_key.trim())
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .json(&request_json)
+        .send()
+        .await?;
+    let status_code = upstream.status().as_u16();
+    let content_type = upstream
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    Ok(UpstreamProxyResponse {
+        status_code,
+        is_stream: is_stream || content_type.contains("text/event-stream"),
+        content_type,
+        response: upstream,
+    })
+}
+
 pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyHttpResponse> {
     let request_json: Value = serde_json::from_str(body)?;
     let upstream = open_responses_proxy_request(body).await?;
@@ -478,14 +551,12 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
     let upstream_body = upstream.response.bytes().await?;
 
     if !(200..300).contains(&status_code) {
+        let error =
+            responses_error_from_upstream(status_code, &upstream_content_type, &upstream_body);
         return Ok(ProxyHttpResponse {
             status: http_status_line(status_code),
-            content_type: if upstream_content_type.is_empty() {
-                "application/json; charset=utf-8".to_string()
-            } else {
-                upstream_content_type
-            },
-            body: upstream_body.to_vec(),
+            content_type: "application/json; charset=utf-8".to_string(),
+            body: serde_json::to_vec(&error)?,
         });
     }
 
@@ -1293,24 +1364,7 @@ fn strip_sse_field<'a>(line: &'a str, field: &str) -> Option<&'a str> {
 }
 
 fn chat_delta_reasoning_text(delta: &Value) -> Option<String> {
-    for key in ["reasoning_content", "reasoning"] {
-        if let Some(text) = delta.get(key).and_then(Value::as_str) {
-            if !text.is_empty() {
-                return Some(text.to_string());
-            }
-        }
-    }
-
-    let reasoning = delta.get("reasoning")?;
-    for key in ["content", "text", "summary"] {
-        if let Some(text) = reasoning.get(key).and_then(Value::as_str) {
-            if !text.is_empty() {
-                return Some(text.to_string());
-            }
-        }
-    }
-
-    None
+    extract_reasoning_field_text(delta)
 }
 
 enum ThinkPrefixDecision {
@@ -1367,6 +1421,70 @@ fn http_status_line(status: u16) -> String {
         503 => "503 Service Unavailable".to_string(),
         _ => format!("{status} Upstream"),
     }
+}
+
+pub fn responses_error_from_upstream(status_code: u16, content_type: &str, body: &[u8]) -> Value {
+    let (message, error_type, code, param) = upstream_error_parts(status_code, content_type, body);
+    let mut error = json!({
+        "message": message,
+        "type": error_type.unwrap_or_else(|| "upstream_error".to_string()),
+    });
+    if let Some(code) = code {
+        error["code"] = json!(code);
+    }
+    if let Some(param) = param {
+        error["param"] = json!(param);
+    }
+    json!({ "error": error })
+}
+
+fn upstream_error_parts(
+    status_code: u16,
+    content_type: &str,
+    body: &[u8],
+) -> (String, Option<String>, Option<String>, Option<String>) {
+    if content_type.to_ascii_lowercase().contains("json") {
+        if let Ok(value) = serde_json::from_slice::<Value>(body) {
+            let error = value.get("error").unwrap_or(&value);
+            let message = error
+                .get("message")
+                .or_else(|| error.get("detail"))
+                .or_else(|| error.get("error"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .unwrap_or_else(|| truncate_error_preview(&value.to_string()));
+            let error_type = error
+                .get("type")
+                .or_else(|| error.get("error_type"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let code = error.get("code").and_then(|value| {
+                value
+                    .as_str()
+                    .map(ToString::to_string)
+                    .or_else(|| value.as_i64().map(|number| number.to_string()))
+            });
+            let param = error
+                .get("param")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            return (message, error_type, code, param);
+        }
+    }
+
+    let preview = truncate_error_preview(&String::from_utf8_lossy(body));
+    let message = if preview.trim().is_empty() {
+        format!("Upstream returned HTTP {status_code}")
+    } else {
+        preview
+    };
+    (message, None, Some(status_code.to_string()), None)
+}
+
+fn truncate_error_preview(input: &str) -> String {
+    input.chars().take(ERROR_BODY_PREVIEW_LIMIT).collect()
 }
 
 fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
@@ -1614,12 +1732,39 @@ fn normalize_chat_messages(messages: &mut [Value]) {
     }
 }
 
+fn collapse_system_messages_to_head(messages: Vec<Value>) -> Vec<Value> {
+    let mut system_chunks = Vec::new();
+    let mut rest = Vec::with_capacity(messages.len());
+
+    for message in messages {
+        if message.get("role").and_then(Value::as_str) == Some("system") {
+            if let Some(text) = message.get("content").and_then(Value::as_str) {
+                if !text.trim().is_empty() {
+                    system_chunks.push(text.to_string());
+                }
+                continue;
+            }
+        }
+        rest.push(message);
+    }
+
+    let mut output = Vec::with_capacity(rest.len() + usize::from(!system_chunks.is_empty()));
+    if !system_chunks.is_empty() {
+        output.push(json!({
+            "role": "system",
+            "content": system_chunks.join("\n\n")
+        }));
+    }
+    output.extend(rest);
+    output
+}
+
 fn responses_role_to_chat_role(role: Option<&str>) -> &'static str {
     match role {
         Some("developer") | Some("system") => "system",
         Some("assistant") => "assistant",
         Some("tool") => "tool",
-        Some("latest_reminder") => "latest_reminder",
+        Some("latest_reminder") => "user",
         Some("user") | None => "user",
         Some(_) => "user",
     }
@@ -1716,30 +1861,7 @@ fn merge_tool_calls_into_message(message: &mut Value, incoming: Vec<Value>) {
 }
 
 fn responses_reasoning_text(item: &Value) -> Option<String> {
-    if let Some(text) = item.get("reasoning_content").and_then(Value::as_str) {
-        return Some(text.to_string());
-    }
-    if let Some(text) = item.get("text").and_then(Value::as_str) {
-        return Some(text.to_string());
-    }
-    if let Some(text) = item.get("content").and_then(Value::as_str) {
-        return Some(text.to_string());
-    }
-    if let Some(summary) = item.get("summary").and_then(Value::as_array) {
-        let text = summary
-            .iter()
-            .filter_map(|part| {
-                part.get("text")
-                    .or_else(|| part.get("content"))
-                    .and_then(Value::as_str)
-            })
-            .collect::<Vec<_>>()
-            .join("");
-        if !text.is_empty() {
-            return Some(text);
-        }
-    }
-    None
+    extract_reasoning_summary_text(item).or_else(|| extract_reasoning_field_text(item))
 }
 
 fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
@@ -2435,22 +2557,8 @@ fn chat_reasoning_to_response_output_item(message: &Value, response_id: &str) ->
 }
 
 fn chat_reasoning_text(message: &Value) -> Option<String> {
-    for key in ["reasoning_content", "reasoning"] {
-        if let Some(text) = message.get(key).and_then(Value::as_str) {
-            if !text.is_empty() {
-                return Some(text.to_string());
-            }
-        }
-    }
-
-    if let Some(reasoning) = message.get("reasoning") {
-        for key in ["content", "text", "summary"] {
-            if let Some(text) = reasoning.get(key).and_then(Value::as_str) {
-                if !text.is_empty() {
-                    return Some(text.to_string());
-                }
-            }
-        }
+    if let Some(reasoning) = extract_reasoning_field_text(message) {
+        return Some(reasoning);
     }
 
     if let Some(content) = message.get("content").and_then(Value::as_str) {
@@ -2730,6 +2838,99 @@ fn strip_leading_think_open_tag(text: &str) -> Option<String> {
 
 fn strip_think_answer_separator(text: &str) -> &str {
     text.trim_start_matches(['\r', '\n', '\t', ' '])
+}
+
+fn extract_reasoning_field_text(value: &Value) -> Option<String> {
+    for key in ["reasoning_content", "reasoning"] {
+        if let Some(text) = value.get(key).and_then(Value::as_str) {
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+
+    if let Some(reasoning) = value.get("reasoning") {
+        for key in ["content", "text", "summary"] {
+            if let Some(text) = reasoning.get(key).and_then(Value::as_str) {
+                if !text.is_empty() {
+                    return Some(text.to_string());
+                }
+            }
+        }
+    }
+
+    value
+        .get("reasoning_details")
+        .and_then(extract_reasoning_details_text)
+}
+
+fn extract_reasoning_details_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => (!text.is_empty()).then(|| text.to_string()),
+        Value::Array(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(extract_reasoning_detail_part_text)
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            (!text.is_empty()).then_some(text)
+        }
+        Value::Object(_) => extract_reasoning_detail_part_text(value),
+        _ => None,
+    }
+}
+
+fn extract_reasoning_detail_part_text(value: &Value) -> Option<String> {
+    for key in ["text", "content", "summary"] {
+        if let Some(text) = value.get(key).and_then(Value::as_str) {
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+
+    if let Some(parts) = value.get("parts").and_then(Value::as_array) {
+        let text = parts
+            .iter()
+            .filter_map(extract_reasoning_detail_part_text)
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        return (!text.is_empty()).then_some(text);
+    }
+
+    None
+}
+
+fn extract_reasoning_summary_text(value: &Value) -> Option<String> {
+    for key in ["reasoning_content", "content", "text"] {
+        if let Some(text) = value.get(key).and_then(Value::as_str) {
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+
+    let summary = value.get("summary")?;
+    if let Some(text) = summary.as_str() {
+        return (!text.is_empty()).then(|| text.to_string());
+    }
+
+    let parts = summary.as_array()?;
+    let text = parts
+        .iter()
+        .filter_map(|part| {
+            part.get("text")
+                .and_then(Value::as_str)
+                .or_else(|| part.get("content").and_then(Value::as_str))
+                .or_else(|| part.as_str())
+        })
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    (!text.is_empty()).then_some(text)
 }
 
 fn default_responses_usage() -> Value {
@@ -3297,6 +3498,134 @@ fn canonical_json_string(value: &Value) -> String {
     }
 }
 
+fn apply_chat_reasoning_options(result: &mut Value, body: &Value, model: &str) {
+    let Some(reasoning_enabled) = reasoning_requested(body) else {
+        return;
+    };
+    let style = infer_chat_reasoning_style(model);
+
+    match style {
+        ChatReasoningStyle::Thinking => {
+            result["thinking"] = json!({
+                "type": if reasoning_enabled { "enabled" } else { "disabled" }
+            });
+        }
+        ChatReasoningStyle::EnableThinking => {
+            result["enable_thinking"] = json!(reasoning_enabled);
+        }
+        ChatReasoningStyle::ReasoningSplit => {
+            result["reasoning_split"] = json!(reasoning_enabled);
+        }
+        _ => {}
+    }
+
+    if !reasoning_enabled {
+        if style == ChatReasoningStyle::OpenRouter {
+            result["reasoning"] = json!({ "effort": "none" });
+        }
+        return;
+    }
+
+    let Some(effort) = body.pointer("/reasoning/effort").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(mapped) = map_chat_reasoning_effort(effort, style) else {
+        return;
+    };
+
+    match style {
+        ChatReasoningStyle::OpenRouter => {
+            result["reasoning"] = json!({ "effort": mapped });
+        }
+        ChatReasoningStyle::DeepSeek
+        | ChatReasoningStyle::LowHigh
+        | ChatReasoningStyle::Default
+            if supports_reasoning_effort(model) =>
+        {
+            result["reasoning_effort"] = json!(mapped);
+        }
+        _ => {}
+    }
+}
+
+fn reasoning_requested(body: &Value) -> Option<bool> {
+    if let Some(effort) = body.pointer("/reasoning/effort").and_then(Value::as_str) {
+        return Some(!matches!(
+            effort.trim().to_ascii_lowercase().as_str(),
+            "none" | "off" | "disabled"
+        ));
+    }
+
+    body.get("reasoning").map(|value| !value.is_null())
+}
+
+fn infer_chat_reasoning_style(model: &str) -> ChatReasoningStyle {
+    let model = model.to_ascii_lowercase();
+    if model.contains("openrouter") || model.starts_with("openrouter/") {
+        return ChatReasoningStyle::OpenRouter;
+    }
+    if model.contains("deepseek") {
+        return ChatReasoningStyle::DeepSeek;
+    }
+    if model.contains("qwen") || model.contains("dashscope") || model.contains("bailian") {
+        return ChatReasoningStyle::EnableThinking;
+    }
+    if model.contains("kimi")
+        || model.contains("moonshot")
+        || model.contains("glm")
+        || model.contains("zhipu")
+        || model.contains("z.ai")
+        || model.contains("mimo")
+    {
+        return ChatReasoningStyle::Thinking;
+    }
+    if model.contains("minimax") {
+        return ChatReasoningStyle::ReasoningSplit;
+    }
+    if model.contains("siliconflow") {
+        return ChatReasoningStyle::EnableThinking;
+    }
+    if model.contains("stepfun") || model.contains("step-3.5-flash-2603") {
+        return ChatReasoningStyle::LowHigh;
+    }
+    ChatReasoningStyle::Default
+}
+
+fn map_chat_reasoning_effort(effort: &str, style: ChatReasoningStyle) -> Option<&'static str> {
+    let effort = effort.trim().to_ascii_lowercase();
+    if matches!(effort.as_str(), "none" | "off" | "disabled") {
+        return None;
+    }
+
+    match style {
+        ChatReasoningStyle::DeepSeek => match effort.as_str() {
+            "max" | "xhigh" => Some("max"),
+            _ => Some("high"),
+        },
+        ChatReasoningStyle::LowHigh => match effort.as_str() {
+            "minimal" | "low" => Some("low"),
+            _ => Some("high"),
+        },
+        ChatReasoningStyle::OpenRouter => match effort.as_str() {
+            "max" | "xhigh" => Some("xhigh"),
+            "high" => Some("high"),
+            "medium" => Some("medium"),
+            "low" => Some("low"),
+            "minimal" => Some("minimal"),
+            _ => None,
+        },
+        _ => match effort.as_str() {
+            "minimal" => Some("minimal"),
+            "low" => Some("low"),
+            "medium" => Some("medium"),
+            "high" => Some("high"),
+            "xhigh" => Some("xhigh"),
+            "max" => Some("max"),
+            _ => None,
+        },
+    }
+}
+
 fn supports_reasoning_effort(model: &str) -> bool {
     is_openai_o_series(model)
         || model
@@ -3304,19 +3633,8 @@ fn supports_reasoning_effort(model: &str) -> bool {
             .strip_prefix("gpt-")
             .and_then(|rest| rest.chars().next())
             .is_some_and(|ch| ch.is_ascii_digit() && ch >= '5')
-}
-
-fn normalize_reasoning_effort(effort: &str) -> &str {
-    match effort {
-        "minimal" => "low",
-        "none" => "none",
-        "auto" => "auto",
-        "low" => "low",
-        "medium" => "medium",
-        "high" => "high",
-        "xhigh" => "xhigh",
-        _ => "auto",
-    }
+        || infer_chat_reasoning_style(model) == ChatReasoningStyle::DeepSeek
+        || infer_chat_reasoning_style(model) == ChatReasoningStyle::LowHigh
 }
 
 fn is_openai_o_series(model: &str) -> bool {

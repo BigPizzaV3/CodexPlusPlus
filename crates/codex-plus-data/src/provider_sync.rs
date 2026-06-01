@@ -25,7 +25,13 @@ pub struct ProviderSyncResult {
     pub target_provider: String,
     pub backup_dir: Option<PathBuf>,
     pub changed_session_files: usize,
+    pub skipped_locked_rollout_files: Vec<PathBuf>,
     pub sqlite_rows_updated: usize,
+    pub sqlite_provider_rows_updated: usize,
+    pub sqlite_user_event_rows_updated: usize,
+    pub sqlite_cwd_rows_updated: usize,
+    pub updated_workspace_roots: usize,
+    pub encrypted_content_warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +45,32 @@ struct SessionChange {
     has_user_event: bool,
     rewrite_needed: bool,
     original_mtime: Option<SystemTime>,
+}
+
+#[derive(Debug, Default)]
+struct SessionChanges {
+    changes: Vec<SessionChange>,
+    skipped_locked_rollout_files: Vec<PathBuf>,
+    encrypted_content_counts: HashMap<String, usize>,
+}
+
+#[derive(Debug, Default)]
+struct AppliedSessionChanges {
+    changes: Vec<SessionChange>,
+    skipped_locked_rollout_files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Default)]
+struct SqliteUpdateCounts {
+    provider_rows: usize,
+    user_event_rows: usize,
+    cwd_rows: usize,
+}
+
+impl SqliteUpdateCounts {
+    fn total(&self) -> usize {
+        self.provider_rows + self.user_event_rows + self.cwd_rows
+    }
 }
 
 pub fn run_provider_sync(codex_home: Option<&Path>) -> ProviderSyncResult {
@@ -68,18 +100,23 @@ pub fn run_provider_sync(codex_home: Option<&Path>) -> ProviderSyncResult {
         );
     }
     let sync_result = (|| -> anyhow::Result<ProviderSyncResult> {
-        let changes = collect_session_changes(&home, &target_provider)?;
-        let rewrite_changes = changes
+        let collected = collect_session_changes(&home, &target_provider)?;
+        let encrypted_content_warning =
+            build_encrypted_content_warning(&collected.encrypted_content_counts, &target_provider);
+        let rewrite_changes = collected
+            .changes
             .iter()
             .filter(|change| change.rewrite_needed)
             .cloned()
             .collect::<Vec<_>>();
-        let thread_ids_with_user_events = changes
+        let thread_ids_with_user_events = collected
+            .changes
             .iter()
             .filter(|change| change.has_user_event)
             .filter_map(|change| change.thread_id.clone())
             .collect::<HashSet<_>>();
-        let cwd_by_thread_id = changes
+        let cwd_by_thread_id = collected
+            .changes
             .iter()
             .filter_map(|change| Some((change.thread_id.clone()?, change.cwd.clone()?)))
             .collect::<HashMap<_, _>>();
@@ -93,43 +130,59 @@ pub fn run_provider_sync(codex_home: Option<&Path>) -> ProviderSyncResult {
             count_global_state_updates(&home.join(".codex-global-state.json"))?;
         if rewrite_changes.is_empty() && sqlite_update_count == 0 && global_state_update_count == 0
         {
-            return Ok(result(
+            let mut synced = result(
                 ProviderSyncStatus::Synced,
                 "Provider sync already up to date",
                 &target_provider,
                 None,
                 0,
                 0,
-            ));
+            );
+            synced.skipped_locked_rollout_files = collected.skipped_locked_rollout_files;
+            synced.encrypted_content_warning = encrypted_content_warning;
+            return Ok(synced);
         }
         let backup_dir = create_backup(&home, &target_provider, &rewrite_changes)?;
-        apply_session_changes(&rewrite_changes)?;
-        let apply_result = (|| -> anyhow::Result<usize> {
-            let sqlite_rows_updated = apply_sqlite_update(
+        let applied = apply_session_changes(&rewrite_changes)?;
+        let apply_result = (|| -> anyhow::Result<(SqliteUpdateCounts, usize)> {
+            let sqlite_updates = apply_sqlite_update(
                 &home.join("state_5.sqlite"),
                 &target_provider,
                 &thread_ids_with_user_events,
                 &cwd_by_thread_id,
             )?;
-            apply_global_state_update(&home.join(".codex-global-state.json"))?;
+            let updated_workspace_roots =
+                apply_global_state_update(&home.join(".codex-global-state.json"))?;
             prune_backups(&home)?;
-            Ok(sqlite_rows_updated)
+            Ok((sqlite_updates, updated_workspace_roots))
         })();
-        let sqlite_rows_updated = match apply_result {
-            Ok(count) => count,
+        let (sqlite_updates, updated_workspace_roots) = match apply_result {
+            Ok(counts) => counts,
             Err(err) => {
-                let _ = restore_session_changes(&rewrite_changes);
+                let _ = restore_session_changes(&applied.changes);
                 return Err(err);
             }
         };
-        Ok(result(
+        let mut synced = result(
             ProviderSyncStatus::Synced,
             "Provider sync complete",
             &target_provider,
             Some(backup_dir),
-            rewrite_changes.len(),
-            sqlite_rows_updated,
-        ))
+            applied.changes.len(),
+            sqlite_updates.total(),
+        );
+        synced.skipped_locked_rollout_files = collected.skipped_locked_rollout_files;
+        synced
+            .skipped_locked_rollout_files
+            .extend(applied.skipped_locked_rollout_files);
+        synced.skipped_locked_rollout_files.sort();
+        synced.skipped_locked_rollout_files.dedup();
+        synced.sqlite_provider_rows_updated = sqlite_updates.provider_rows;
+        synced.sqlite_user_event_rows_updated = sqlite_updates.user_event_rows;
+        synced.sqlite_cwd_rows_updated = sqlite_updates.cwd_rows;
+        synced.updated_workspace_roots = updated_workspace_roots;
+        synced.encrypted_content_warning = encrypted_content_warning;
+        Ok(synced)
     })();
     let _ = release_lock(&lock_dir);
     sync_result.unwrap_or_else(|err| {
@@ -158,7 +211,13 @@ fn result(
         target_provider: target_provider.to_string(),
         backup_dir,
         changed_session_files,
+        skipped_locked_rollout_files: Vec::new(),
         sqlite_rows_updated,
+        sqlite_provider_rows_updated: 0,
+        sqlite_user_event_rows_updated: 0,
+        sqlite_cwd_rows_updated: 0,
+        updated_workspace_roots: 0,
+        encrypted_content_warning: None,
     }
 }
 
@@ -209,13 +268,17 @@ fn release_lock(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn collect_session_changes(
-    home: &Path,
-    target_provider: &str,
-) -> anyhow::Result<Vec<SessionChange>> {
-    let mut changes = Vec::new();
+fn collect_session_changes(home: &Path, target_provider: &str) -> anyhow::Result<SessionChanges> {
+    let mut collected = SessionChanges::default();
     for path in rollout_files(home)? {
-        let text = fs::read_to_string(&path)?;
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if is_locked_io_error(&error) => {
+                collected.skipped_locked_rollout_files.push(path);
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
         let (first_line, separator) = split_first_line(&text);
         if first_line.trim().is_empty() {
             continue;
@@ -238,6 +301,17 @@ fn collect_session_changes(
             separator.contains("\"user_message\"") || separator.contains("\"user_input\"");
         let rewrite_needed =
             payload.get("model_provider").and_then(Value::as_str) != Some(target_provider);
+        if text.contains("encrypted_content") {
+            let provider = payload
+                .get("model_provider")
+                .and_then(Value::as_str)
+                .unwrap_or("(missing)")
+                .to_string();
+            *collected
+                .encrypted_content_counts
+                .entry(provider)
+                .or_insert(0) += 1;
+        }
         if rewrite_needed {
             payload.insert("model_provider".to_string(), json!(target_provider));
         }
@@ -247,7 +321,7 @@ fn collect_session_changes(
             first_line.clone()
         };
         let original_mtime = fs::metadata(&path).and_then(|m| m.modified()).ok();
-        changes.push(SessionChange {
+        collected.changes.push(SessionChange {
             path,
             original_first_line: first_line,
             next_first_line,
@@ -259,7 +333,7 @@ fn collect_session_changes(
             original_mtime,
         });
     }
-    Ok(changes)
+    Ok(collected)
 }
 
 fn rollout_files(home: &Path) -> anyhow::Result<Vec<PathBuf>> {
@@ -311,6 +385,30 @@ fn to_desktop_workspace_path(value: &str) -> Option<String> {
         return Some(stripped[4..].replace('\\', "/"));
     }
     Some(stripped.to_string())
+}
+
+fn is_locked_io_error(error: &std::io::Error) -> bool {
+    matches!(error.kind(), std::io::ErrorKind::PermissionDenied)
+        || matches!(error.raw_os_error(), Some(32 | 33))
+}
+
+fn build_encrypted_content_warning(
+    encrypted_content_counts: &HashMap<String, usize>,
+    target_provider: &str,
+) -> Option<String> {
+    let risky_providers = encrypted_content_counts
+        .iter()
+        .filter(|(provider, count)| provider.as_str() != target_provider && **count > 0)
+        .map(|(provider, _)| provider.as_str())
+        .collect::<Vec<_>>();
+    if risky_providers.is_empty() {
+        return None;
+    }
+    let total = encrypted_content_counts.values().sum::<usize>();
+    Some(format!(
+        "检测到 {total} 个会话文件包含来自 {} 的 encrypted_content。可见会话元数据已同步到 {target_provider}，但继续或压缩这些历史可能出现 invalid_encrypted_content；需要可靠续聊时请切回原供应商/账号或开启新会话。",
+        risky_providers.join(", ")
+    ))
 }
 
 fn create_backup(
@@ -367,15 +465,26 @@ fn create_backup(
     Ok(backup_dir)
 }
 
-fn apply_session_changes(changes: &[SessionChange]) -> anyhow::Result<()> {
+fn apply_session_changes(changes: &[SessionChange]) -> anyhow::Result<AppliedSessionChanges> {
+    let mut applied = AppliedSessionChanges::default();
     for change in changes {
-        fs::write(
+        match fs::write(
             &change.path,
             format!("{}{}", change.next_first_line, change.separator),
-        )?;
+        ) {
+            Ok(()) => {}
+            Err(error) if is_locked_io_error(&error) => {
+                applied
+                    .skipped_locked_rollout_files
+                    .push(change.path.clone());
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        }
         restore_file_mtime(&change.path, change.original_mtime);
+        applied.changes.push(change.clone());
     }
-    Ok(())
+    Ok(applied)
 }
 
 fn restore_session_changes(changes: &[SessionChange]) -> anyhow::Result<()> {
@@ -391,7 +500,9 @@ fn restore_session_changes(changes: &[SessionChange]) -> anyhow::Result<()> {
 
 fn restore_file_mtime(path: &Path, mtime: Option<SystemTime>) {
     let Some(mtime) = mtime else { return };
-    let Ok(file) = fs::File::options().write(true).open(path) else { return };
+    let Ok(file) = fs::File::options().write(true).open(path) else {
+        return;
+    };
     let times = std::fs::FileTimes::new().set_modified(mtime);
     let _ = file.set_times(times);
 }
@@ -451,23 +562,24 @@ fn apply_sqlite_update(
     target_provider: &str,
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<SqliteUpdateCounts> {
     if !path.exists() {
-        return Ok(0);
+        return Ok(SqliteUpdateCounts::default());
     }
     let mut db = Connection::open(path)?;
     let columns = table_columns(&db, "threads")?;
     if !columns.contains("model_provider") {
-        return Ok(0);
+        return Ok(SqliteUpdateCounts::default());
     }
     let tx = db.transaction()?;
-    let provider_rows = tx.execute(
+    let mut counts = SqliteUpdateCounts::default();
+    counts.provider_rows = tx.execute(
         "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
         [target_provider],
     )?;
     if columns.contains("has_user_event") {
         for thread_id in user_event_thread_ids {
-            tx.execute(
+            counts.user_event_rows += tx.execute(
                 "UPDATE threads SET has_user_event = 1 WHERE id = ?1 AND COALESCE(has_user_event, 0) <> 1",
                 [thread_id],
             )?;
@@ -475,14 +587,14 @@ fn apply_sqlite_update(
     }
     if columns.contains("cwd") {
         for (thread_id, cwd) in cwd_by_thread_id {
-            tx.execute(
+            counts.cwd_rows += tx.execute(
                 "UPDATE threads SET cwd = ?1 WHERE id = ?2 AND COALESCE(cwd, '') <> ?1",
                 (cwd, thread_id),
             )?;
         }
     }
     tx.commit()?;
-    Ok(provider_rows)
+    Ok(counts)
 }
 
 fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {

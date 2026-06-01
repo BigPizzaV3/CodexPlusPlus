@@ -373,6 +373,40 @@ fn delete_codex_thread_schema_removes_related_rows_file_and_undo_restores_everyt
 }
 
 #[test]
+fn list_local_sessions_reads_codex_threads_ordered_by_update_time() {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("state_5.sqlite");
+    let backup = BackupStore::new(tmp.path().join("backups"));
+    let adapter = SQLiteStorageAdapter::new(&db_path, backup);
+    let db = Connection::open(&db_path).unwrap();
+    db.execute(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT, cwd TEXT, model_provider TEXT, archived INTEGER, updated_at_ms INTEGER)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads VALUES ('t1', 'r1.jsonl', 'First', 'C:/a', 'openai', 0, 100)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads VALUES ('t2', 'r2.jsonl', 'Second', 'C:/b', 'custom', 1, 300)",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let sessions = adapter.list_local_sessions().unwrap();
+
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions[0].id, "t2");
+    assert_eq!(sessions[0].title, "Second");
+    assert_eq!(sessions[0].model_provider, "custom");
+    assert!(sessions[0].archived);
+    assert_eq!(sessions[1].id, "t1");
+}
+
+#[test]
 fn undo_codex_thread_delete_fails_when_agent_job_was_reassigned() {
     let tmp = tempdir().unwrap();
     let db_path = tmp.path().join("state_5.sqlite");

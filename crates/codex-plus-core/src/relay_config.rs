@@ -9,7 +9,6 @@ use toml_edit::{DocumentMut, Item, Table, TableLike};
 use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol};
 
 const RELAY_PROVIDER: &str = "custom";
-const STABLE_RELAY_PROVIDER: &str = RELAY_PROVIDER;
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
 const CHAT_UPSTREAM_BASE_URL_KEY: &str = "codex_plus_chat_base_url";
 const RESERVED_MODEL_PROVIDER_IDS: &[&str] = &[
@@ -297,9 +296,8 @@ pub fn apply_relay_files_to_home(
     }
     std::fs::create_dir_all(home)?;
 
-    let config_contents = normalize_live_config_model_provider(home, config_contents)?;
     let backup_path =
-        write_codex_live_atomic(home, Some(&config_contents), Some(auth_contents.as_bytes()))?;
+        write_codex_live_atomic(home, Some(config_contents), Some(auth_contents.as_bytes()))?;
 
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
@@ -410,8 +408,7 @@ pub fn apply_relay_config_file_to_home(
     }
     std::fs::create_dir_all(home)?;
 
-    let config_contents = normalize_live_config_model_provider(home, config_contents)?;
-    let backup_path = write_codex_live_atomic(home, Some(&config_contents), None)?;
+    let backup_path = write_codex_live_atomic(home, Some(config_contents), None)?;
 
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
@@ -610,6 +607,7 @@ pub fn backfill_relay_profile_from_home_with_common(
         restore_profile_provider_id_for_backfill(&profile.config_contents, &template_config)?;
     profile.auth_contents = read_optional_text(&home.join("auth.json"))?;
     restore_profile_auth_from_live_config(profile, &template_auth)?;
+    sync_profile_mode_from_backfilled_live(profile);
     if profile.model.trim().is_empty() {
         if let Some(model) = root_key_string(&live_config, "model") {
             profile.model = model;
@@ -826,36 +824,6 @@ fn write_codex_live_atomic(
     }
 
     Ok(backup_path)
-}
-
-fn normalize_live_config_model_provider(home: &Path, config_text: &str) -> anyhow::Result<String> {
-    let current_config = read_optional_text(&home.join("config.toml"))?;
-    normalize_config_model_provider(config_text, current_config.as_str())
-}
-
-fn normalize_config_model_provider(
-    config_text: &str,
-    current_config: &str,
-) -> anyhow::Result<String> {
-    let mut doc = parse_toml_document(config_text)?;
-    let Some(target_provider) = active_provider_id(&doc) else {
-        return Ok(ensure_trailing_newline(doc.to_string()));
-    };
-    if !is_custom_provider_id(&target_provider) || !provider_table_exists(&doc, &target_provider) {
-        return Ok(ensure_trailing_newline(doc.to_string()));
-    }
-
-    let stable_provider = STABLE_RELAY_PROVIDER.to_string();
-    if stable_provider == target_provider {
-        return Ok(ensure_trailing_newline(doc.to_string()));
-    }
-
-    let _ = current_config;
-
-    rename_provider_table(&mut doc, &target_provider, &stable_provider);
-    set_provider_id(&mut doc, &stable_provider);
-    rewrite_profile_provider_refs(&mut doc, &target_provider, &stable_provider);
-    Ok(ensure_trailing_newline(doc.to_string()))
 }
 
 fn active_provider_id(doc: &DocumentMut) -> Option<String> {
@@ -1372,6 +1340,9 @@ fn restore_profile_provider_id_for_backfill(
     if live_provider_id == template_provider_id {
         return Ok(ensure_trailing_newline(doc.to_string()));
     }
+    if live_provider_id != RELAY_PROVIDER || template_provider_id == RELAY_PROVIDER {
+        return Ok(ensure_trailing_newline(doc.to_string()));
+    }
     if !provider_table_exists(&doc, &live_provider_id) {
         return Ok(ensure_trailing_newline(doc.to_string()));
     }
@@ -1400,12 +1371,19 @@ fn restore_profile_auth_from_live_config(
     let Some(token) = experimental_bearer_token_from_config(&profile.config_contents)? else {
         return Ok(());
     };
-    profile.config_contents =
-        remove_experimental_bearer_token_from_config(&profile.config_contents)?;
+    profile.api_key = token.clone();
 
     if !profile.auth_contents.trim().is_empty() {
+        if codex_auth_api_key(&profile.auth_contents).is_none() {
+            return Ok(());
+        }
+        profile.config_contents =
+            remove_experimental_bearer_token_from_config(&profile.config_contents)?;
         return Ok(());
     }
+
+    profile.config_contents =
+        remove_experimental_bearer_token_from_config(&profile.config_contents)?;
 
     let mut auth = if template_auth.trim().is_empty() {
         json!({})
@@ -1422,6 +1400,25 @@ fn restore_profile_auth_from_live_config(
     }
     profile.auth_contents = serde_json::to_string_pretty(&auth)?;
     Ok(())
+}
+
+fn sync_profile_mode_from_backfilled_live(profile: &mut RelayProfile) {
+    if codex_auth_api_key(&profile.auth_contents)
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        profile.relay_mode = crate::settings::RelayMode::PureApi;
+        profile.official_mix_api_key = false;
+        return;
+    }
+
+    let has_provider_endpoint = provider_string_from_config(&profile.config_contents, "base_url")
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    if has_provider_endpoint || !profile.api_key.trim().is_empty() {
+        profile.relay_mode = crate::settings::RelayMode::Official;
+        profile.official_mix_api_key = true;
+    }
 }
 
 fn official_profile_auth_for_switch(home: &Path, auth_contents: &str) -> anyhow::Result<String> {
@@ -1910,26 +1907,6 @@ fn account_label_from_jwt(token: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn normalize_live_config_model_provider_rewrites_custom_provider_id_to_stable_bucket() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(
-            temp.path().join("config.toml"),
-            "model_provider = \"ai\"\n\n[model_providers.ai]\nname = \"ai\"\nwire_api = \"responses\"\nbase_url = \"https://ahg.codes\"\n",
-        )
-        .unwrap();
-
-        let normalized = normalize_live_config_model_provider(
-            temp.path(),
-            "model_provider = \"ai\"\n\n[model_providers.ai]\nname = \"ai\"\nwire_api = \"responses\"\nbase_url = \"https://ahg.codes\"\n",
-        )
-        .unwrap();
-
-        assert!(normalized.contains("model_provider = \"custom\""));
-        assert!(normalized.contains("[model_providers.custom]"));
-        assert!(!normalized.contains("[model_providers.ai]"));
-    }
 
     #[test]
     fn backfill_relay_profile_from_home_with_common_restores_template_provider_id() {

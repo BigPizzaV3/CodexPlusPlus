@@ -36,6 +36,8 @@ pub fn run() {
             commands::restart_codex_plus,
             commands::load_settings,
             commands::save_settings,
+            commands::list_local_sessions,
+            commands::delete_local_session,
             commands::load_ccs_providers,
             commands::import_ccs_providers,
             commands::sync_providers_now,

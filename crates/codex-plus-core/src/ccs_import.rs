@@ -129,8 +129,11 @@ fn set_current_codex_provider_in_settings(path: &Path, source_id: &str) -> anyho
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, format!("{}\n", serde_json::to_string_pretty(&settings)?))
-        .with_context(|| format!("failed to write cc-switch settings {}", path.display()))?;
+    fs::write(
+        path,
+        format!("{}\n", serde_json::to_string_pretty(&settings)?),
+    )
+    .with_context(|| format!("failed to write cc-switch settings {}", path.display()))?;
     Ok(())
 }
 

@@ -167,12 +167,14 @@ async fn settings_routes_use_settings_service() {
     let updated = handle_bridge_request(
         ctx.clone(),
         "/settings/set",
-        json!({"providerSyncEnabled": true, "cliWrapperApiKeyEnv": ""}),
+        json!({"providerSyncEnabled": true, "codexAppSessionDelete": false, "codexAppServiceTierControls": true, "cliWrapperApiKeyEnv": ""}),
     )
     .await;
     let loaded = handle_bridge_request(ctx, "/settings/get", json!({})).await;
 
     assert_eq!(updated["providerSyncEnabled"], true);
+    assert_eq!(updated["codexAppSessionDelete"], false);
+    assert_eq!(updated["codexAppServiceTierControls"], true);
     assert_eq!(updated["cliWrapperApiKeyEnv"], "CUSTOM_OPENAI_API_KEY");
     assert_eq!(loaded, updated);
 }
@@ -799,6 +801,25 @@ impl BridgeSettingsService for FakeSettings {
         }
         if let Some(value) = payload.get("enhancementsEnabled").and_then(Value::as_bool) {
             raw.insert("enhancementsEnabled".to_string(), json!(value));
+        }
+        for key in [
+            "codexAppPluginEntryUnlock",
+            "codexAppForcePluginInstall",
+            "codexAppModelWhitelistUnlock",
+            "codexAppSessionDelete",
+            "codexAppMarkdownExport",
+            "codexAppProjectMove",
+            "codexAppConversationTimeline",
+            "codexAppConversationView",
+            "codexAppThreadScrollRestore",
+            "codexAppZedRemoteOpen",
+            "codexAppUpstreamWorktreeCreate",
+            "codexAppNativeMenuPlacement",
+            "codexAppServiceTierControls",
+        ] {
+            if let Some(value) = payload.get(key).and_then(Value::as_bool) {
+                raw.insert(key.to_string(), json!(value));
+            }
         }
         if let Some(value) = payload.get("launchMode").and_then(Value::as_str) {
             raw.insert("launchMode".to_string(), json!(value));

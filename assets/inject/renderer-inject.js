@@ -832,6 +832,32 @@
     return { pluginEntryUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
   }
 
+  const codexPlusBackendSettingMap = {
+    pluginEntryUnlock: "codexAppPluginEntryUnlock",
+    forcePluginInstall: "codexAppForcePluginInstall",
+    modelWhitelistUnlock: "codexAppModelWhitelistUnlock",
+    sessionDelete: "codexAppSessionDelete",
+    markdownExport: "codexAppMarkdownExport",
+    projectMove: "codexAppProjectMove",
+    conversationTimeline: "codexAppConversationTimeline",
+    conversationView: "codexAppConversationView",
+    threadScrollRestore: "codexAppThreadScrollRestore",
+    zedRemoteOpen: "codexAppZedRemoteOpen",
+    upstreamWorktreeCreate: "codexAppUpstreamWorktreeCreate",
+    nativeMenuPlacement: "codexAppNativeMenuPlacement",
+    serviceTierControls: "codexAppServiceTierControls",
+  };
+
+  function backendCodexPlusSettings() {
+    const settings = {};
+    Object.entries(codexPlusBackendSettingMap).forEach(([localKey, backendKey]) => {
+      if (typeof codexPlusBackendSettings[backendKey] === "boolean") {
+        settings[localKey] = codexPlusBackendSettings[backendKey];
+      }
+    });
+    return settings;
+  }
+
   function codexPlusSettings() {
     const relayPatchDisabled = codexPlusBackendSettings.launchMode === "relay";
     if (codexPlusBackendSettings.enhancementsEnabled === false) {
@@ -853,14 +879,14 @@
       };
     }
     try {
-      const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}") };
+      const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
         settings.pluginEntryUnlock = false;
         settings.forcePluginInstall = false;
       }
       return settings;
     } catch {
-      const settings = defaultCodexPlusSettings();
+      const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
         settings.pluginEntryUnlock = false;
         settings.forcePluginInstall = false;
@@ -870,6 +896,11 @@
   }
 
   function setCodexPlusSetting(key, value) {
+    const backendKey = codexPlusBackendSettingMap[key];
+    if (backendKey) {
+      setBackendSetting(backendKey, value);
+      return;
+    }
     let stored = {};
     try {
       stored = JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}");
@@ -1525,15 +1556,9 @@
     }
   }
 
-  function loadBackendSettingsForStartup(attempt = 0) {
+  function loadBackendSettingsForStartup() {
     loadBackendSettings().then((loaded) => {
-      if (loaded) {
-        scan();
-        return;
-      }
-      if (attempt < 60) {
-        setTimeout(() => loadBackendSettingsForStartup(attempt + 1), 500);
-      }
+      if (loaded) scan();
     });
   }
 
@@ -1561,17 +1586,31 @@
   let codexPlusBackendStatus = { status: "checking", message: "正在检查后端…" };
   let codexPlusBackendCheckSeq = 0;
 
+  function setCodexPlusTriggerLabel(trigger) {
+    if (!trigger) return;
+    let label = trigger.querySelector("[data-codex-plus-trigger-label]");
+    if (!label) {
+      label = document.createElement("span");
+      label.dataset.codexPlusTriggerLabel = "true";
+      trigger.appendChild(label);
+    }
+    label.textContent = `Codex++ ${codexPlusVersion}`;
+  }
+
+  function ensureCodexPlusTriggerIndicator(trigger) {
+    if (!trigger) return null;
+    let indicator = trigger.querySelector("[data-codex-backend-indicator]");
+    if (!indicator) {
+      indicator = document.createElement("span");
+      indicator.className = "codex-plus-backend-indicator";
+      indicator.dataset.codexBackendIndicator = "true";
+      trigger.prepend(indicator);
+    }
+    return indicator;
+  }
+
   function renderBackendStatus() {
     const status = codexPlusBackendStatus.status || "failed";
-    if (codexPlusBackendStatus.version) {
-      codexPlusVersion = codexPlusBackendStatus.version;
-      document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
-        node.textContent = `Codex++ ${codexPlusVersion}`;
-      });
-      document.querySelectorAll(`#${codexPlusMenuId} .codex-plus-trigger`).forEach((node) => {
-        node.textContent = `Codex++ ${codexPlusVersion}`;
-      });
-    }
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
       label.dataset.status = status;
@@ -1900,11 +1939,15 @@
               <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a></div></div>
+              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a><br>Telegram: <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noreferrer">https://t.me/CodexPlusPlus</a></div></div>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">Discord 社区</div><div class="codex-plus-row-description">加入 Discord 获取更新消息、反馈问题或交流使用体验。</div></div>
               <button type="button" class="codex-plus-action-button" data-codex-plus-discord="true">打开 Discord</button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">Telegram 频道</div><div class="codex-plus-row-description">加入 Telegram 获取更新消息和交流使用体验。</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-plus-telegram="true">打开 Telegram</button>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
@@ -1991,6 +2034,10 @@
         window.open("https://discord.gg/y96kX7A76v", "_blank");
         return;
       }
+      if (target?.closest("[data-codex-plus-telegram]")) {
+        window.open("https://t.me/CodexPlusPlus", "_blank");
+        return;
+      }
       if (target?.closest("[data-codex-backend-repair]")) {
         repairBackend();
         return;
@@ -2071,7 +2118,6 @@
     renderCodexPlusMenu();
     refreshCodexPlusBackendToggles();
     renderBackendStatus();
-    loadBackendSettings();
     void loadCodexServiceTierState();
     loadUserScripts();
   }
@@ -2183,12 +2229,9 @@
     menu.dataset.codexPlusMenuVersion = "6";
     const trigger = document.createElement("button");
     trigger.type = "button";
-    trigger.textContent = `Codex++ ${codexPlusVersion}`;
-    const indicator = document.createElement("span");
-    indicator.className = "codex-plus-backend-indicator";
-    indicator.dataset.codexBackendIndicator = "true";
-    indicator.dataset.status = codexPlusBackendStatus.status || "checking";
-    trigger.prepend(indicator);
+    const indicator = ensureCodexPlusTriggerIndicator(trigger);
+    if (indicator) indicator.dataset.status = codexPlusBackendStatus.status || "checking";
+    setCodexPlusTriggerLabel(trigger);
     const nativeButtonClass = insertionPoint?.nativeButtonClass || "codex-plus-trigger";
     configureCodexPlusTrigger(menu, trigger, nativeButtonClass);
     menu.appendChild(trigger);

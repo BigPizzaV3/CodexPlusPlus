@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use codex_plus_core::install::SILENT_BINARY;
+use codex_plus_core::models::{DeleteResult, SessionRef};
 use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
 use codex_plus_core::settings::{BackendSettings, RelayProfile, SettingsStore};
 use codex_plus_core::status::{LaunchStatus, StatusStore};
@@ -53,6 +54,21 @@ pub struct SettingsPayload {
     pub settings: BackendSettings,
     pub settings_path: String,
     pub user_scripts: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSessionsPayload {
+    pub db_path: String,
+    pub sessions: Vec<codex_plus_data::LocalSession>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteLocalSessionRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -482,6 +498,74 @@ pub fn import_ccs_providers() -> CommandResult<SettingsPayload> {
     }
 }
 
+#[tauri::command]
+pub fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
+    let db_path = codex_plus_core::relay_config::default_codex_home_dir().join("state_5.sqlite");
+    let adapter = local_session_adapter(&db_path);
+    match adapter.list_local_sessions() {
+        Ok(sessions) => ok(
+            &format!("已读取 {} 个本地会话。", sessions.len()),
+            LocalSessionsPayload {
+                db_path: db_path.to_string_lossy().to_string(),
+                sessions,
+            },
+        ),
+        Err(error) => failed(
+            &format!("读取本地会话失败：{error}"),
+            LocalSessionsPayload {
+                db_path: db_path.to_string_lossy().to_string(),
+                sessions: Vec::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult<DeleteResult> {
+    let session_id = request.session_id.trim();
+    if session_id.is_empty() {
+        return failed(
+            "会话 ID 不能为空。",
+            DeleteResult {
+                status: codex_plus_core::models::DeleteStatus::Failed,
+                session_id: String::new(),
+                message: "会话 ID 不能为空。".to_string(),
+                undo_token: None,
+                backup_path: None,
+            },
+        );
+    }
+    let db_path = codex_plus_core::relay_config::default_codex_home_dir().join("state_5.sqlite");
+    let adapter = local_session_adapter(&db_path);
+    let session = SessionRef {
+        session_id: session_id.to_string(),
+        title: request.title,
+    };
+    let result = adapter.delete_local(&session);
+    let status = if matches!(
+        result.status,
+        codex_plus_core::models::DeleteStatus::LocalDeleted
+    ) {
+        "ok"
+    } else {
+        "failed"
+    };
+    CommandResult {
+        status: status.to_string(),
+        message: result.message.clone(),
+        payload: result,
+    }
+}
+
+fn local_session_adapter(db_path: &Path) -> codex_plus_data::SQLiteStorageAdapter {
+    codex_plus_data::SQLiteStorageAdapter::new(
+        db_path,
+        codex_plus_data::BackupStore::new(
+            codex_plus_core::paths::default_app_state_dir().join("backups"),
+        ),
+    )
+}
+
 fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSettings {
     if let Some(path) =
         codex_plus_core::app_paths::normalize_codex_app_path(Path::new(&settings.codex_app_path))
@@ -559,10 +643,11 @@ fn remove_linked_ccs_profiles_for_local_storage(settings: &mut BackendSettings) 
     settings
         .relay_profiles
         .retain(|profile| profile.linked_ccs_provider_id.trim().is_empty());
-    if !settings.ccs_link_enabled && !settings
-        .relay_profiles
-        .iter()
-        .any(|profile| profile.id == settings.active_relay_id)
+    if !settings.ccs_link_enabled
+        && !settings
+            .relay_profiles
+            .iter()
+            .any(|profile| profile.id == settings.active_relay_id)
     {
         settings.active_relay_id = settings
             .relay_profiles
@@ -711,14 +796,22 @@ pub async fn sync_providers_now() -> CommandResult<Value> {
     match result {
         Ok(sync) => ok(
             &format!(
-                "供应商已同步一次：{} 个会话文件，{} 行索引。",
-                sync.changed_session_files, sync.sqlite_rows_updated
+                "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。",
+                sync.changed_session_files,
+                sync.sqlite_rows_updated,
+                sync.skipped_locked_rollout_files.len()
             ),
             json!({
                 "syncStatus": sync.status,
                 "targetProvider": sync.target_provider,
                 "changedSessionFiles": sync.changed_session_files,
+                "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files,
                 "sqliteRowsUpdated": sync.sqlite_rows_updated,
+                "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
+                "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
+                "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
+                "updatedWorkspaceRoots": sync.updated_workspace_roots,
+                "encryptedContentWarning": sync.encrypted_content_warning,
                 "backupDir": sync.backup_dir,
                 "syncMessage": sync.message,
             }),
@@ -1612,7 +1705,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
                 );
             }
             ok(
-                    "纯 API 模式已写入：config.toml 已写入 custom provider，auth.json 已切换为当前供应商。",
+                "纯 API 模式已写入：config.toml 已写入 custom provider，auth.json 已切换为当前供应商。",
                 relay_payload(status, result.backup_path),
             )
         }
@@ -1884,7 +1977,9 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
 
 fn fallback_settings_payload() -> SettingsPayload {
     SettingsPayload {
-        settings: settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default()),
+        settings: settings_with_live_ccs_profiles(
+            SettingsStore::default().load().unwrap_or_default(),
+        ),
         settings_path: codex_plus_core::paths::default_settings_path()
             .to_string_lossy()
             .to_string(),
@@ -2286,8 +2381,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_relay_profile_to_home_with_switch_rules_normalizes_custom_provider_id_to_stable_bucket()
-     {
+    fn apply_relay_profile_to_home_with_switch_rules_preserves_custom_provider_id() {
         let temp = tempfile::tempdir().unwrap();
         let profile = RelayProfile {
             relay_mode: codex_plus_core::settings::RelayMode::PureApi,
@@ -2306,9 +2400,9 @@ mod tests {
         .unwrap();
 
         let applied = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-        assert!(applied.contains("model_provider = \"custom\""));
-        assert!(applied.contains("[model_providers.custom]"));
-        assert!(!applied.contains("[model_providers.ai]"));
+        assert!(applied.contains("model_provider = \"ai\""));
+        assert!(applied.contains("[model_providers.ai]"));
+        assert!(!applied.contains("[model_providers.custom]"));
     }
 
     #[test]
