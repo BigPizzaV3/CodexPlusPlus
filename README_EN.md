@@ -250,9 +250,9 @@ scripts/installer/
 
 ## Community and Support
 
-Scan the QR code to join the Codex++ discussion group, report issues, share usage notes, or suggest features:
+Join the Codex++ discussion group to report issues, share usage notes, or suggest features:
 
-<img src="docs/images/discussion-group-qr.jpg" alt="Codex++ discussion group QR code" width="260">
+WeChat group: [get the latest QR code](https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#).
 
 If Codex++ has helped you, you can buy me a coffee or send a small tip to support continued maintenance.
 
