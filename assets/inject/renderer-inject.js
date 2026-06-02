@@ -64,6 +64,7 @@
   const codexThreadEndpointAuthRequestOverrideVersion = "1";
   const codexThreadEndpointAuthStorageKey = "codexThreadEndpointAuthOverrides";
   const codexThreadEndpointAuthCryptoVersion = "xor-v1";
+  const codexThreadEndpointAuthDraftBindWindowMs = 60 * 1000;
   const codexThreadEndpointAuthSeedSalt = "codex++-per-thread-endpoint-auth";
   const codexThreadEndpointAuthButtonAttr = "data-codex-thread-endpoint-auth-button";
   const codexThreadEndpointAuthStyleId = "codex-thread-endpoint-auth-style";
@@ -999,6 +1000,7 @@
   const codexServiceTierModulePromises = new Map();
   const codexThreadEndpointAuthState = {
     map: null,
+    draft: null,
     observer: null,
     scanTimer: 0,
     initialized: false,
@@ -1644,6 +1646,53 @@
     codexThreadEndpointAuthPersistMap(codexThreadEndpointAuthState.map);
   }
 
+  function codexThreadEndpointAuthDraftEntry() {
+    const draft = codexThreadEndpointAuthState.draft;
+    if (!draft || typeof draft !== "object") return null;
+    if (Date.now() - finiteNonNegativeNumber(draft.updatedAtMs) > codexThreadEndpointAuthDraftBindWindowMs) {
+      codexThreadEndpointAuthState.draft = null;
+      return null;
+    }
+    const baseUrl = codexThreadEndpointAuthNormalizeBaseUrl(draft.baseUrl || "");
+    const apiKey = codexThreadEndpointAuthNormalizeText(draft.apiKey || "");
+    if (!baseUrl && !apiKey) {
+      codexThreadEndpointAuthState.draft = null;
+      return null;
+    }
+    return { baseUrl, apiKey, updatedAtMs: finiteNonNegativeNumber(draft.updatedAtMs) || Date.now() };
+  }
+
+  function codexThreadEndpointAuthSetDraft(entry) {
+    const baseUrl = codexThreadEndpointAuthNormalizeBaseUrl(entry?.baseUrl || "");
+    const apiKey = codexThreadEndpointAuthNormalizeText(entry?.apiKey || "");
+    if (!baseUrl && !apiKey) {
+      codexThreadEndpointAuthState.draft = null;
+      return;
+    }
+    codexThreadEndpointAuthState.draft = {
+      baseUrl,
+      apiKey,
+      updatedAtMs: Date.now(),
+    };
+  }
+
+  function codexThreadEndpointAuthBindDraftToThread(threadId) {
+    const safeThreadId = validThreadScrollSessionKey(threadId);
+    const draft = codexThreadEndpointAuthDraftEntry();
+    if (!safeThreadId || !draft) return false;
+    const map = { ...codexThreadEndpointAuthMap() };
+    if (!map[safeThreadId]) {
+      map[safeThreadId] = {
+        baseUrl: draft.baseUrl,
+        apiKey: draft.apiKey,
+        updatedAt: codexThreadEndpointAuthNowIso(),
+      };
+      codexThreadEndpointAuthSaveMap(map);
+    }
+    codexThreadEndpointAuthState.draft = null;
+    return true;
+  }
+
   function codexThreadEndpointAuthDrop(threadId) {
     const safeThreadId = validThreadScrollSessionKey(threadId);
     if (!safeThreadId) return false;
@@ -1655,14 +1704,19 @@
   }
 
   function codexThreadEndpointAuthCurrentThreadId() {
-    return validThreadScrollSessionKey(currentSessionRef().session_id)
+    const activeThreadId = validThreadScrollSessionKey(currentSessionRef().session_id)
       || validThreadScrollSessionKey(locationThreadId())
       || "";
+    if (activeThreadId) codexThreadEndpointAuthBindDraftToThread(activeThreadId);
+    return activeThreadId;
   }
 
   function codexThreadEndpointAuthEntryForRequest(params = {}, threadIdHint = "") {
     const threadId = validThreadScrollSessionKey(params.threadId || params.conversationId || threadIdHint || codexThreadEndpointAuthCurrentThreadId());
-    if (!threadId) return null;
+    if (!threadId) {
+      const draft = codexThreadEndpointAuthDraftEntry();
+      return draft ? { threadId: "", entry: draft } : null;
+    }
     const map = codexThreadEndpointAuthMap();
     const entry = map[threadId];
     if (!entry || (!entry.baseUrl && !entry.apiKey)) return null;
@@ -1877,18 +1931,18 @@
   function codexThreadEndpointAuthShowPanel() {
     codexThreadEndpointAuthRemovePanel();
     const threadId = codexThreadEndpointAuthCurrentThreadId();
-    if (!threadId) {
-      showToast("未识别当前对话，请先打开一个具体会话", null);
-      return;
-    }
-    const existing = codexThreadEndpointAuthMap()[threadId] || { baseUrl: "", apiKey: "" };
+    const draft = codexThreadEndpointAuthDraftEntry();
+    const existing = threadId
+      ? (codexThreadEndpointAuthMap()[threadId] || { baseUrl: "", apiKey: "" })
+      : (draft || { baseUrl: "", apiKey: "" });
     const hasSavedApiKey = !!codexThreadEndpointAuthNormalizeText(existing.apiKey);
+    const isDraftTarget = !threadId;
     const overlay = document.createElement("div");
     overlay.id = codexThreadEndpointAuthOverlayId;
     overlay.innerHTML = `
       <div id="${codexThreadEndpointAuthPanelId}" role="dialog" aria-modal="true">
         <h3>对话临时API</h3>
-        <div class="row"><strong>Thread ID:</strong> <code>${escapeHtml(threadId)}</code></div>
+        <div class="row"><strong>${isDraftTarget ? "目标" : "Thread ID"}:</strong> <code>${escapeHtml(isDraftTarget ? "新对话草稿" : threadId)}</code></div>
         <div class="row">
           <label>baseUrl (http/https)</label>
           <input id="${codexThreadEndpointAuthPanelId}-base" placeholder="https://api.example.com" value="${escapeHtml(existing.baseUrl || "")}" />
@@ -1912,7 +1966,11 @@
     const keyInput = document.getElementById(`${codexThreadEndpointAuthPanelId}-key`);
     document.getElementById(`${codexThreadEndpointAuthPanelId}-cancel`)?.addEventListener("click", codexThreadEndpointAuthRemovePanel);
     document.getElementById(`${codexThreadEndpointAuthPanelId}-delete`)?.addEventListener("click", () => {
-      codexThreadEndpointAuthDrop(threadId);
+      if (threadId) {
+        codexThreadEndpointAuthDrop(threadId);
+      } else {
+        codexThreadEndpointAuthSetDraft(null);
+      }
       codexThreadEndpointAuthRemovePanel();
     });
     document.getElementById(`${codexThreadEndpointAuthPanelId}-save`)?.addEventListener("click", () => {
@@ -1927,11 +1985,15 @@
         showToast("baseUrl 必须是 http/https URL", null);
         return;
       }
-      const map = { ...codexThreadEndpointAuthMap() };
-      map[threadId] = { baseUrl, apiKey, updatedAt: codexThreadEndpointAuthNowIso() };
-      codexThreadEndpointAuthSaveMap(map);
+      if (threadId) {
+        const map = { ...codexThreadEndpointAuthMap() };
+        map[threadId] = { baseUrl, apiKey, updatedAt: codexThreadEndpointAuthNowIso() };
+        codexThreadEndpointAuthSaveMap(map);
+      } else {
+        codexThreadEndpointAuthSetDraft({ baseUrl, apiKey });
+      }
       codexThreadEndpointAuthRemovePanel();
-      showToast("对话临时API配置已保存", null);
+      showToast(threadId ? "对话临时API配置已保存" : "新对话草稿API配置已保存", null);
     });
   }
 
@@ -1957,6 +2019,7 @@
     window.__codexThreadEndpointAuth = {
       version: codexThreadEndpointAuthRequestOverrideVersion,
       getMap: () => ({ ...codexThreadEndpointAuthMap() }),
+      getDraft: () => codexThreadEndpointAuthDraftEntry(),
       dropThreadConfig: (threadId) => codexThreadEndpointAuthDrop(threadId),
     };
   }
