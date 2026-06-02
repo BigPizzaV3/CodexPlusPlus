@@ -578,4 +578,79 @@ fn archived_lookup_workspace_move_and_sort_keys_match_expected_shape() {
             ]
         })
     );
+
+    assert_eq!(
+        adapter.codex_thread_usage_history(&session("local:t1", "Codex Thread")),
+        json!({
+            "status": "ok",
+            "session_id": "t1",
+            "rollout_path": rollout_path.to_string_lossy().to_string(),
+            "history": []
+        })
+    );
+}
+
+#[test]
+fn thread_usage_history_reads_rollout_token_count_events() {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("state_5.sqlite");
+    let rollout_path = tmp.path().join("rollout.jsonl");
+    fs::write(
+        &rollout_path,
+        concat!(
+            "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"turn-1\"}}\n",
+            "{\"timestamp\":\"2026-06-02T05:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":5000,\"cached_input_tokens\":1500,\"output_tokens\":500,\"total_tokens\":5500},\"last_token_usage\":{\"input_tokens\":1200,\"cached_input_tokens\":900,\"output_tokens\":120,\"total_tokens\":1320},\"model_context_window\":258400}}}\n",
+            "{\"timestamp\":\"2026-06-02T05:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"ignore\"}}\n",
+            "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"turn-2\"}}\n",
+            "{\"timestamp\":\"2026-06-02T05:01:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":7000,\"cached_input_tokens\":2500,\"output_tokens\":750,\"total_tokens\":7750},\"last_token_usage\":{\"input_tokens\":2000,\"cached_input_tokens\":1200,\"output_tokens\":250,\"total_tokens\":2250},\"model_context_window\":258400}}}\n"
+        ),
+    )
+    .unwrap();
+    create_codex_thread_db(&db_path, &rollout_path);
+    let adapter = SQLiteStorageAdapter::new(&db_path, BackupStore::new(tmp.path().join("backups")));
+
+    assert_eq!(
+        adapter.codex_thread_usage_history(&session("local:t1", "Codex Thread")),
+        json!({
+            "status": "ok",
+            "session_id": "t1",
+            "rollout_path": rollout_path.to_string_lossy().to_string(),
+            "history": [
+                {
+                    "source": "rollout-history",
+                    "conversation_id": "local:t1",
+                    "turn_id": "turn-1",
+                    "observed_at": "2026-06-02T05:00:00Z",
+                    "usage": {
+                        "inputTokens": 1200,
+                        "outputTokens": 120,
+                        "totalTokens": 1320,
+                        "cachedTokens": 900,
+                        "cacheReadTokens": 0,
+                        "cacheCreationTokens": 0,
+                        "contextUsed": 5500,
+                        "contextLimit": 258400,
+                        "hasBreakdown": true
+                    }
+                },
+                {
+                    "source": "rollout-history",
+                    "conversation_id": "local:t1",
+                    "turn_id": "turn-2",
+                    "observed_at": "2026-06-02T05:01:00Z",
+                    "usage": {
+                        "inputTokens": 2000,
+                        "outputTokens": 250,
+                        "totalTokens": 2250,
+                        "cachedTokens": 1200,
+                        "cacheReadTokens": 0,
+                        "cacheCreationTokens": 0,
+                        "contextUsed": 7750,
+                        "contextLimit": 258400,
+                        "hasBreakdown": true
+                    }
+                }
+            ]
+        })
+    );
 }
