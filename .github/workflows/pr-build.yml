@@ -36,12 +36,12 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm run check
 
-      - name: Rust tests
-        run: cargo test --workspace
-
       - name: Build frontend
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
+
+      - name: Rust tests
+        run: cargo test --workspace
 
       - name: Build release binaries
         run: cargo build --release
