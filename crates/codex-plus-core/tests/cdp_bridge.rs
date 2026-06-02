@@ -193,6 +193,16 @@ fn injection_script_moves_export_and_project_move_into_more_menu() {
 }
 
 #[test]
+fn injection_script_keeps_chats_sort_event_driven() {
+    let script = assets::injection_script(57321).replace("\r\n", "\n");
+
+    assert!(script.contains("const chatsSortIdleDelayMs = 250;"));
+    assert!(script.contains("function scheduleChatsSortCorrection(delay = chatsSortIdleDelayMs)"));
+    assert!(!script.contains("const chatsSortRefreshIntervalMs"));
+    assert!(!script.contains("if (codexPlusSettings().projectMove) scheduleChatsSortCorrection();"));
+}
+
+#[test]
 fn injection_script_unlocks_custom_model_catalog() {
     let script = assets::injection_script(57321);
 

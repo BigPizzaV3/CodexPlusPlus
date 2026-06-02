@@ -4,6 +4,8 @@
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::collections::VecDeque;
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::{Value, json};
 
@@ -28,6 +30,7 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
     "user",
 ];
 const ERROR_BODY_PREVIEW_LIMIT: usize = 1024;
+const CHAT_HISTORY_MAX_ENTRIES: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChatReasoningStyle {
@@ -46,6 +49,41 @@ struct CodexToolContext {
     function_tools: BTreeMap<String, CodexFunctionToolSpec>,
     has_custom_tools: bool,
     has_namespace_tools: bool,
+}
+
+#[derive(Default)]
+struct ChatHistoryStore {
+    entries: BTreeMap<String, Vec<Value>>,
+    order: VecDeque<String>,
+}
+
+impl ChatHistoryStore {
+    fn get(&self, response_id: &str) -> Option<Vec<Value>> {
+        self.entries.get(response_id).cloned()
+    }
+
+    fn insert(&mut self, response_id: String, messages: Vec<Value>) {
+        if response_id.is_empty() || messages.is_empty() {
+            return;
+        }
+        if self.entries.insert(response_id.clone(), messages).is_none() {
+            self.order.push_back(response_id.clone());
+        } else {
+            self.order.retain(|id| id != &response_id);
+            self.order.push_back(response_id.clone());
+        }
+        while self.order.len() > CHAT_HISTORY_MAX_ENTRIES {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+    }
+}
+
+static CHAT_HISTORY: OnceLock<Mutex<ChatHistoryStore>> = OnceLock::new();
+
+fn chat_history_store() -> &'static Mutex<ChatHistoryStore> {
+    CHAT_HISTORY.get_or_init(|| Mutex::new(ChatHistoryStore::default()))
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +249,60 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     Ok(result)
 }
 
+pub fn responses_to_chat_completions_with_history(body: Value) -> anyhow::Result<Value> {
+    let mut result = responses_to_chat_completions(body.clone())?;
+    let Some(previous_response_id) = body
+        .get("previous_response_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(result);
+    };
+    let Some(history) = chat_history_store()
+        .lock()
+        .ok()
+        .and_then(|store| store.get(previous_response_id))
+    else {
+        return Ok(result);
+    };
+    let current = result
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    result["messages"] = json!(merge_chat_history_messages(history, current));
+    Ok(result)
+}
+
+fn merge_chat_history_messages(history: Vec<Value>, current: Vec<Value>) -> Vec<Value> {
+    let mut system_chunks = Vec::new();
+    let mut messages = Vec::with_capacity(history.len() + current.len());
+
+    for message in history.into_iter().chain(current) {
+        if message.get("role").and_then(Value::as_str) == Some("system") {
+            if let Some(text) = message.get("content").and_then(Value::as_str) {
+                let text = text.trim();
+                if !text.is_empty() && !system_chunks.iter().any(|chunk| chunk == text) {
+                    system_chunks.push(text.to_string());
+                }
+            }
+            continue;
+        }
+        messages.push(message);
+    }
+
+    if system_chunks.is_empty() {
+        return messages;
+    }
+    let mut output = Vec::with_capacity(messages.len() + 1);
+    output.push(json!({
+        "role": "system",
+        "content": system_chunks.join("\n\n")
+    }));
+    output.extend(messages);
+    output
+}
+
 pub fn chat_completion_to_response(body: Value) -> anyhow::Result<Value> {
     chat_completion_to_response_with_context(body, &CodexToolContext::default(), None)
 }
@@ -270,6 +362,47 @@ fn chat_completion_to_response_with_context(
     Ok(response)
 }
 
+pub fn store_chat_history_from_response(response: &Value, sent_messages: Vec<Value>) {
+    let Some(response_id) = response
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let mut messages = sent_messages;
+    messages.extend(response_output_to_chat_messages(
+        response.get("output").unwrap_or(&Value::Null),
+    ));
+    if let Ok(mut store) = chat_history_store().lock() {
+        store.insert(response_id.to_string(), messages);
+    }
+}
+
+fn response_output_to_chat_messages(output: &Value) -> Vec<Value> {
+    let Some(items) = output.as_array() else {
+        return Vec::new();
+    };
+    let mut messages = Vec::new();
+    let mut pending_tool_calls = Vec::new();
+    let mut pending_reasoning = Vec::new();
+    let mut seen_tool_call_ids = BTreeSet::new();
+
+    for item in items {
+        append_responses_item(
+            item,
+            &mut messages,
+            &mut pending_tool_calls,
+            &mut pending_reasoning,
+            &mut seen_tool_call_ids,
+        );
+    }
+    flush_tool_calls(&mut messages, &mut pending_tool_calls, &mut pending_reasoning);
+    flush_reasoning(&mut messages, &mut pending_reasoning);
+    normalize_chat_messages(&mut messages);
+    messages
+}
+
 pub struct ProxyHttpResponse {
     pub status: String,
     pub content_type: String,
@@ -280,6 +413,7 @@ pub struct UpstreamProxyResponse {
     pub status_code: u16,
     pub content_type: String,
     pub is_stream: bool,
+    pub request_messages: Vec<Value>,
     pub response: reqwest::Response,
 }
 
@@ -353,6 +487,10 @@ impl ChatSseToResponsesConverter {
         self.state.failed_into(&mut output, message, error_type);
         self.failed = true;
         output.into_bytes()
+    }
+
+    pub fn completed_response(&self) -> Option<&Value> {
+        self.state.completed_response.as_ref()
     }
 
     fn handle_block(&mut self, block: &str, output: &mut String) {
@@ -441,7 +579,12 @@ pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<Upstream
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let chat_request = responses_to_chat_completions(request_json.clone())?;
+    let chat_request = responses_to_chat_completions_with_history(request_json.clone())?;
+    let request_messages = chat_request
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let client = crate::http_client::proxied_client(&relay.user_agent)?;
     let upstream = client
         .post(chat_completions_url(&relay.base_url))
@@ -462,6 +605,7 @@ pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<Upstream
         status_code,
         is_stream: is_stream || content_type.contains("text/event-stream"),
         content_type,
+        request_messages,
         response: upstream,
     })
 }
@@ -497,6 +641,7 @@ pub async fn open_models_proxy_request() -> anyhow::Result<UpstreamProxyResponse
         status_code,
         is_stream: false,
         content_type,
+        request_messages: Vec::new(),
         response: upstream,
     })
 }
@@ -540,6 +685,11 @@ pub async fn open_chat_completions_proxy_request(
         status_code,
         is_stream: is_stream || content_type.contains("text/event-stream"),
         content_type,
+        request_messages: request_json
+            .get("messages")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
         response: upstream,
     })
 }
@@ -550,6 +700,7 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
     let status_code = upstream.status_code;
     let upstream_content_type = upstream.content_type.clone();
     let is_stream = upstream.is_stream;
+    let request_messages = upstream.request_messages.clone();
     let upstream_body = upstream.response.bytes().await?;
 
     if !(200..300).contains(&status_code) {
@@ -564,15 +715,22 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
 
     if is_stream {
         let text = String::from_utf8_lossy(&upstream_body);
+        let mut converter = ChatSseToResponsesConverter::with_request(&request_json);
+        let mut body = converter.push_bytes(text.as_bytes());
+        body.extend(converter.finish());
+        if let Some(response) = converter.completed_response() {
+            store_chat_history_from_response(response, request_messages);
+        }
         return Ok(ProxyHttpResponse {
             status: "200 OK".to_string(),
             content_type: "text/event-stream; charset=utf-8".to_string(),
-            body: chat_sse_to_responses_sse_with_request(&text, &request_json).into_bytes(),
+            body,
         });
     }
 
     let chat_json: Value = serde_json::from_slice(&upstream_body)?;
     let response_json = chat_completion_to_response_with_request(chat_json, &request_json)?;
+    store_chat_history_from_response(&response_json, request_messages);
     Ok(ProxyHttpResponse {
         status: "200 OK".to_string(),
         content_type: "application/json; charset=utf-8".to_string(),
@@ -726,6 +884,7 @@ struct ChatSseState {
     finish_reason: Option<String>,
     tool_context: CodexToolContext,
     original_request: Option<Value>,
+    completed_response: Option<Value>,
 }
 
 impl Default for ChatSseState {
@@ -746,6 +905,7 @@ impl Default for ChatSseState {
             finish_reason: None,
             tool_context: CodexToolContext::default(),
             original_request: None,
+            completed_response: None,
         }
     }
 }
@@ -1121,6 +1281,7 @@ impl ChatSseState {
             response["incomplete_details"] = json!({ "reason": "max_output_tokens" });
         }
         copy_response_request_fields(&mut response, self.original_request.as_ref());
+        self.completed_response = Some(response.clone());
         push_sse(
             output,
             "response.completed",

@@ -3,7 +3,8 @@ use codex_plus_core::protocol_proxy::{
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
     chat_sse_to_responses_sse_with_request, is_chat_completions_proxy_path, is_models_proxy_path,
     is_responses_proxy_path, models_url, responses_error_from_upstream,
-    responses_to_chat_completions,
+    responses_to_chat_completions, responses_to_chat_completions_with_history,
+    store_chat_history_from_response,
 };
 use serde_json::json;
 
@@ -59,6 +60,75 @@ fn responses_request_converts_to_chat_completions() {
             ]
         })
     );
+}
+
+#[test]
+fn responses_request_with_previous_response_id_replays_chat_history() {
+    let first_messages = vec![json!({ "role": "user", "content": "hello" })];
+    let first_response = chat_completion_to_response_with_request(
+        json!({
+            "id": "chatcmpl_history_first",
+            "created": 1,
+            "model": "gpt-5-mini",
+            "choices": [{
+                "message": { "role": "assistant", "content": "hi there" },
+                "finish_reason": "stop"
+            }]
+        }),
+        &json!({
+            "model": "gpt-5-mini",
+            "input": "hello"
+        }),
+    )
+    .unwrap();
+    store_chat_history_from_response(&first_response, first_messages);
+
+    let converted = responses_to_chat_completions_with_history(json!({
+        "model": "gpt-5-mini",
+        "previous_response_id": first_response["id"],
+        "input": "what did I say?"
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][0], json!({ "role": "user", "content": "hello" }));
+    assert_eq!(converted["messages"][1], json!({ "role": "assistant", "content": "hi there" }));
+    assert_eq!(converted["messages"][2], json!({ "role": "user", "content": "what did I say?" }));
+}
+
+#[test]
+fn streaming_response_can_seed_previous_response_history() {
+    let mut converter = ChatSseToResponsesConverter::with_request(&json!({
+        "model": "gpt-5-mini",
+        "input": "stream hello"
+    }));
+    let mut output = converter.push_bytes(
+        br#"data: {"id":"chatcmpl_stream_history","model":"gpt-5-mini","choices":[{"delta":{"content":"stream hi"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+"#,
+    );
+    output.extend(converter.finish());
+    let response = converter
+        .completed_response()
+        .expect("stream should produce a completed response")
+        .clone();
+    store_chat_history_from_response(
+        &response,
+        vec![json!({ "role": "user", "content": "stream hello" })],
+    );
+
+    let converted = responses_to_chat_completions_with_history(json!({
+        "model": "gpt-5-mini",
+        "previous_response_id": response["id"],
+        "input": "continue"
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][0], json!({ "role": "user", "content": "stream hello" }));
+    assert_eq!(converted["messages"][1], json!({ "role": "assistant", "content": "stream hi" }));
+    assert_eq!(converted["messages"][2], json!({ "role": "user", "content": "continue" }));
+    assert!(String::from_utf8(output).unwrap().contains("response.completed"));
 }
 
 #[test]

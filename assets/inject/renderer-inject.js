@@ -37,7 +37,7 @@
   const projectMoveProjectionTtlMs = 24 * 60 * 60 * 1000;
   const projectMoveProjectionSettleMs = 5 * 60 * 1000;
   const projectMoveRefreshDelaysMs = [50, 250, 750, 1500];
-  const chatsSortRefreshIntervalMs = 1500;
+  const chatsSortIdleDelayMs = 250;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
   const codexDeleteStyleVersion = "12";
@@ -4529,18 +4529,22 @@
     }
   }
 
-  function scheduleChatsSortCorrection(delay = chatsSortRefreshIntervalMs) {
-    if (!codexPlusSettings().projectMove || window.__codexProjectMoveChatsSortTimer) return;
+  function scheduleChatsSortCorrection(delay = chatsSortIdleDelayMs) {
+    if (!codexPlusSettings().projectMove) return;
+    const normalizedDelay = Math.max(0, Number(delay) || 0);
+    if (window.__codexProjectMoveChatsSortTimer) {
+      if (normalizedDelay > 0) return;
+      clearTimeout(window.__codexProjectMoveChatsSortTimer);
+      window.__codexProjectMoveChatsSortTimer = null;
+    }
     window.__codexProjectMoveChatsSortTimer = setTimeout(() => {
       if (window.__codexProjectMoveRuntimeId !== codexProjectMoveRuntimeId) return;
       window.__codexProjectMoveChatsSortTimer = null;
       applyChatsSortCorrection().catch((error) => {
         window.__codexProjectMoveSortFailures = window.__codexProjectMoveSortFailures || [];
         window.__codexProjectMoveSortFailures.push(String(error?.stack || error));
-      }).finally(() => {
-        if (codexPlusSettings().projectMove) scheduleChatsSortCorrection();
       });
-    }, delay);
+    }, normalizedDelay);
   }
 
   async function setProjectlessThreadIds(ref, mode) {

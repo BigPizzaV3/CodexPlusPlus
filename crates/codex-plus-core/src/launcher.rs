@@ -820,6 +820,7 @@ async fn handle_protocol_proxy_connection(
             return Ok(());
         }
     };
+    let request_messages = upstream.request_messages.clone();
 
     if !upstream.is_success() {
         let status = upstream.status();
@@ -879,6 +880,12 @@ async fn handle_protocol_proxy_connection(
             if !tail.is_empty() {
                 stream.write_all(&tail).await?;
             }
+            if let Some(response) = converter.completed_response() {
+                crate::protocol_proxy::store_chat_history_from_response(
+                    response,
+                    request_messages,
+                );
+            }
         }
         log_helper_response(
             "helper.protocol_proxy_stream_ok",
@@ -898,6 +905,7 @@ async fn handle_protocol_proxy_connection(
     } else {
         crate::protocol_proxy::chat_completion_to_response(chat_json)?
     };
+    crate::protocol_proxy::store_chat_history_from_response(&response_json, request_messages);
     let body = serde_json::to_vec(&response_json)?;
     write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body).await?;
     log_helper_response(
