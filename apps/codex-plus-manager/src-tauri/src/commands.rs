@@ -2429,6 +2429,7 @@ mod tests {
             relay_common_config_contents: "[mcp_servers.context7]\ncommand = \"npx\"\n".to_string(),
             relay_profiles: vec![RelayProfile {
                 use_common_config: false,
+                relay_mode: codex_plus_core::settings::RelayMode::PureApi,
                 config_contents: "model = \"gpt-5\"\n\n[mcp_servers.context7]\ncommand = \"npx\"\n"
                     .to_string(),
                 ..RelayProfile::default()
@@ -2477,8 +2478,9 @@ mod tests {
         let normalized = normalize_settings_before_save(settings);
 
         assert_eq!(
-            normalized.relay_profiles[0].auth_contents,
-            r#"{"auth_mode":"chatgpt","tokens":{"access_token":"edited"}}"#
+            serde_json::from_str::<serde_json::Value>(&normalized.relay_profiles[0].auth_contents)
+                .unwrap(),
+            serde_json::json!({"auth_mode":"chatgpt","tokens":{"access_token":"edited"}})
         );
         assert!(normalized.relay_profiles[0].config_contents.is_empty());
     }
@@ -2525,6 +2527,7 @@ enabled = true
             .to_string(),
             relay_profiles: vec![RelayProfile {
                 use_common_config: true,
+                relay_mode: codex_plus_core::settings::RelayMode::PureApi,
                 config_contents: r#"model = "gpt-5"
 model_reasoning_effort = "high"
 
@@ -2561,6 +2564,7 @@ last_updated = "2026-05-25T11:52:46Z"
             .to_string(),
             relay_profiles: vec![RelayProfile {
                 use_common_config: true,
+                relay_mode: codex_plus_core::settings::RelayMode::PureApi,
                 config_contents: r#"model = "gpt-5"
 model_reasoning_effort = "high"
 

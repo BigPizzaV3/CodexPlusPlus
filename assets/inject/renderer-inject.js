@@ -1557,9 +1557,15 @@
     }
   }
 
-  function loadBackendSettingsForStartup() {
+  function loadBackendSettingsForStartup(attempt = 0) {
     loadBackendSettings().then((loaded) => {
-      if (loaded) scan();
+      if (loaded) {
+        scan();
+        return;
+      }
+      if (attempt < 60) {
+        setTimeout(() => loadBackendSettingsForStartup(attempt + 1), 250);
+      }
     });
   }
 
