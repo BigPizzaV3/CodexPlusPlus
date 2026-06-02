@@ -64,7 +64,9 @@
   const codexThreadEndpointAuthRequestOverrideVersion = "1";
   const codexThreadEndpointAuthStorageKey = "codexThreadEndpointAuthOverrides";
   const codexThreadEndpointAuthCryptoVersion = "xor-v1";
-  const codexThreadEndpointAuthDraftBindWindowMs = 60 * 1000;
+  const codexThreadEndpointAuthDraftVersion = "1";
+  const codexThreadEndpointAuthDraftStorageKey = "codexThreadEndpointAuthDraft";
+  const codexThreadEndpointAuthDraftBindWindowMs = 10 * 60 * 1000;
   const codexThreadEndpointAuthSeedSalt = "codex++-per-thread-endpoint-auth";
   const codexThreadEndpointAuthButtonAttr = "data-codex-thread-endpoint-auth-button";
   const codexThreadEndpointAuthStyleId = "codex-thread-endpoint-auth-style";
@@ -1001,6 +1003,7 @@
   const codexThreadEndpointAuthState = {
     map: null,
     draft: null,
+    stats: null,
     observer: null,
     scanTimer: 0,
     initialized: false,
@@ -1646,34 +1649,108 @@
     codexThreadEndpointAuthPersistMap(codexThreadEndpointAuthState.map);
   }
 
+  function codexThreadEndpointAuthNormalizeDraft(value) {
+    if (!value || typeof value !== "object") return null;
+    const baseUrl = codexThreadEndpointAuthNormalizeBaseUrl(value.baseUrl || "");
+    const apiKey = codexThreadEndpointAuthNormalizeText(value.apiKey || "");
+    if (!baseUrl && !apiKey) return null;
+    return {
+      baseUrl,
+      apiKey,
+      updatedAtMs: finiteNonNegativeNumber(value.updatedAtMs) || Date.now(),
+    };
+  }
+
+  function codexThreadEndpointAuthReadDraft() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(codexThreadEndpointAuthDraftStorageKey) || "null");
+      const rawDraft = parsed?.version === codexThreadEndpointAuthDraftVersion ? parsed?.draft : parsed;
+      return codexThreadEndpointAuthNormalizeDraft(rawDraft);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function codexThreadEndpointAuthPersistDraft(draft) {
+    const normalized = codexThreadEndpointAuthNormalizeDraft(draft);
+    if (!normalized) {
+      localStorage.removeItem(codexThreadEndpointAuthDraftStorageKey);
+      return;
+    }
+    try {
+      localStorage.setItem(codexThreadEndpointAuthDraftStorageKey, JSON.stringify({
+        version: codexThreadEndpointAuthDraftVersion,
+        draft: normalized,
+      }));
+    } catch (_) {}
+  }
+
+  function codexThreadEndpointAuthStats() {
+    if (codexThreadEndpointAuthState.stats) return codexThreadEndpointAuthState.stats;
+    codexThreadEndpointAuthState.stats = {
+      counts: { applied: 0, skipped: 0, errors: 0 },
+      byReason: Object.create(null),
+      byMethod: Object.create(null),
+      lastDecision: null,
+    };
+    return codexThreadEndpointAuthState.stats;
+  }
+
+  function codexThreadEndpointAuthResetStats() {
+    codexThreadEndpointAuthState.stats = {
+      counts: { applied: 0, skipped: 0, errors: 0 },
+      byReason: Object.create(null),
+      byMethod: Object.create(null),
+      lastDecision: null,
+    };
+    return codexThreadEndpointAuthState.stats;
+  }
+
+  function codexThreadEndpointAuthRecordDecision(decision) {
+    const stats = codexThreadEndpointAuthStats();
+    const reason = String(decision?.reason || "unknown");
+    const method = String(decision?.method || "");
+    if (decision?.applied) {
+      stats.counts.applied += 1;
+    } else if (reason === "error") {
+      stats.counts.errors += 1;
+    } else {
+      stats.counts.skipped += 1;
+    }
+    stats.byReason[reason] = (stats.byReason[reason] || 0) + 1;
+    if (method) stats.byMethod[method] = (stats.byMethod[method] || 0) + 1;
+    stats.lastDecision = {
+      applied: !!decision?.applied,
+      reason,
+      method,
+      messageType: String(decision?.messageType || ""),
+      threadId: String(decision?.threadId || ""),
+      usedDraft: !!decision?.usedDraft,
+      hasBaseUrl: !!decision?.hasBaseUrl,
+      hasApiKey: !!decision?.hasApiKey,
+      at: codexThreadEndpointAuthNowIso(),
+    };
+    return stats.lastDecision;
+  }
+
   function codexThreadEndpointAuthDraftEntry() {
+    if (!codexThreadEndpointAuthState.draft) {
+      codexThreadEndpointAuthState.draft = codexThreadEndpointAuthReadDraft();
+    }
     const draft = codexThreadEndpointAuthState.draft;
     if (!draft || typeof draft !== "object") return null;
     if (Date.now() - finiteNonNegativeNumber(draft.updatedAtMs) > codexThreadEndpointAuthDraftBindWindowMs) {
       codexThreadEndpointAuthState.draft = null;
+      codexThreadEndpointAuthPersistDraft(null);
       return null;
     }
-    const baseUrl = codexThreadEndpointAuthNormalizeBaseUrl(draft.baseUrl || "");
-    const apiKey = codexThreadEndpointAuthNormalizeText(draft.apiKey || "");
-    if (!baseUrl && !apiKey) {
-      codexThreadEndpointAuthState.draft = null;
-      return null;
-    }
-    return { baseUrl, apiKey, updatedAtMs: finiteNonNegativeNumber(draft.updatedAtMs) || Date.now() };
+    return codexThreadEndpointAuthNormalizeDraft(draft);
   }
 
   function codexThreadEndpointAuthSetDraft(entry) {
-    const baseUrl = codexThreadEndpointAuthNormalizeBaseUrl(entry?.baseUrl || "");
-    const apiKey = codexThreadEndpointAuthNormalizeText(entry?.apiKey || "");
-    if (!baseUrl && !apiKey) {
-      codexThreadEndpointAuthState.draft = null;
-      return;
-    }
-    codexThreadEndpointAuthState.draft = {
-      baseUrl,
-      apiKey,
-      updatedAtMs: Date.now(),
-    };
+    const normalized = codexThreadEndpointAuthNormalizeDraft(entry ? { ...entry, updatedAtMs: Date.now() } : null);
+    codexThreadEndpointAuthState.draft = normalized;
+    codexThreadEndpointAuthPersistDraft(normalized);
   }
 
   function codexThreadEndpointAuthBindDraftToThread(threadId) {
@@ -1689,7 +1766,7 @@
       };
       codexThreadEndpointAuthSaveMap(map);
     }
-    codexThreadEndpointAuthState.draft = null;
+    codexThreadEndpointAuthSetDraft(null);
     return true;
   }
 
@@ -1711,24 +1788,48 @@
     return activeThreadId;
   }
 
+  function codexThreadEndpointAuthRequestMethods() {
+    return new Set(["thread/start", "thread/resume", "turn/start"]);
+  }
+
   function codexThreadEndpointAuthEntryForRequest(params = {}, threadIdHint = "") {
-    const threadId = validThreadScrollSessionKey(params.threadId || params.conversationId || threadIdHint || codexThreadEndpointAuthCurrentThreadId());
+    const method = String(params?.__codexThreadEndpointAuthMethod || "");
+    const threadId = method === "thread/start"
+      ? validThreadScrollSessionKey(params.threadId || threadIdHint)
+      : validThreadScrollSessionKey(params.threadId || params.conversationId || threadIdHint || codexThreadEndpointAuthCurrentThreadId());
     if (!threadId) {
       const draft = codexThreadEndpointAuthDraftEntry();
-      return draft ? { threadId: "", entry: draft } : null;
+      return draft ? { threadId: "", entry: draft, usedDraft: true } : null;
     }
     const map = codexThreadEndpointAuthMap();
     const entry = map[threadId];
     if (!entry || (!entry.baseUrl && !entry.apiKey)) return null;
-    return { threadId, entry };
+    return { threadId, entry, usedDraft: false };
   }
 
   function codexThreadEndpointAuthApply(method, params, threadIdHint = "") {
-    if (!["thread/start", "thread/resume", "turn/start"].includes(String(method || ""))) return params;
-    if (!params || typeof params !== "object") return params;
-    const found = codexThreadEndpointAuthEntryForRequest(params, threadIdHint);
-    if (!found) return params;
-    const { threadId, entry } = found;
+    const safeMethod = String(method || "");
+    if (!codexThreadEndpointAuthRequestMethods().has(safeMethod)) return { params, meta: { applied: false, reason: "unsupported_method", method: safeMethod } };
+    if (!params || typeof params !== "object") return { params, meta: { applied: false, reason: "invalid_params", method: safeMethod } };
+    const lookupParams = { ...params, __codexThreadEndpointAuthMethod: safeMethod };
+    const found = codexThreadEndpointAuthEntryForRequest(lookupParams, threadIdHint);
+    if (!found) {
+      const methodThreadId = safeMethod === "thread/start"
+        ? validThreadScrollSessionKey(params.threadId || threadIdHint)
+        : validThreadScrollSessionKey(params.threadId || params.conversationId || threadIdHint || codexThreadEndpointAuthCurrentThreadId());
+      const hasDraft = !!codexThreadEndpointAuthDraftEntry();
+      return {
+        params,
+        meta: {
+          applied: false,
+          reason: methodThreadId ? "no_entry_for_thread" : (hasDraft ? "draft_expired" : "no_thread_or_draft"),
+          method: safeMethod,
+          threadId: methodThreadId || "",
+          usedDraft: false,
+        },
+      };
+    }
+    const { threadId, entry, usedDraft } = found;
     const nextParams = { ...(params || {}) };
     const tempProviderId = "codex_plus_thread_temp";
     if (entry.baseUrl) nextParams.baseUrl = entry.baseUrl;
@@ -1767,57 +1868,86 @@
       };
     }
     sendCodexPlusDiagnostic("thread_endpoint_auth_request_override_applied", {
-      method: String(method || ""),
+      method: safeMethod,
       threadId,
       hasBaseUrl: !!entry.baseUrl,
       hasApiKey: !!entry.apiKey,
       modelProvider: nextParams.modelProvider || nextParams.model_provider || "",
     });
-    return nextParams;
+    return {
+      params: nextParams,
+      meta: {
+        applied: true,
+        reason: "applied",
+        method: safeMethod,
+        threadId,
+        usedDraft,
+        hasBaseUrl: !!entry.baseUrl,
+        hasApiKey: !!entry.apiKey,
+      },
+    };
   }
 
   function codexThreadEndpointAuthRequestOverride(message) {
-    if (!codexPlusSettings().threadEndpointAuth) return message;
-    if (!message || typeof message !== "object") return message;
+    if (!codexPlusSettings().threadEndpointAuth) {
+      codexThreadEndpointAuthRecordDecision({ applied: false, reason: "feature_disabled", messageType: message?.type || "" });
+      return message;
+    }
+    if (!message || typeof message !== "object") {
+      codexThreadEndpointAuthRecordDecision({ applied: false, reason: "invalid_message", messageType: "" });
+      return message;
+    }
     if (message.type === "send-cli-request-for-host") {
       const method = String(message.method || "");
-      const params = codexThreadEndpointAuthApply(method, message.params);
-      return params === message.params ? message : { ...message, params };
+      const result = codexThreadEndpointAuthApply(method, message.params);
+      codexThreadEndpointAuthRecordDecision({ ...result.meta, messageType: message.type });
+      return result.params === message.params ? message : { ...message, params: result.params };
     }
     if (message.type === "mcp-request" && message.request && typeof message.request === "object") {
       const method = String(message.request.method || "");
-      const params = codexThreadEndpointAuthApply(method, message.request.params);
-      if (params === message.request.params) return message;
-      return { ...message, request: { ...message.request, params } };
+      const result = codexThreadEndpointAuthApply(method, message.request.params);
+      codexThreadEndpointAuthRecordDecision({ ...result.meta, messageType: message.type });
+      if (result.params === message.request.params) return message;
+      return { ...message, request: { ...message.request, params: result.params } };
     }
     if (message.type === "worker-request" && message.request && typeof message.request === "object") {
       const method = String(message.request.method || "");
-      const params = codexThreadEndpointAuthApply(method, message.request.params);
-      if (params === message.request.params) return message;
-      return { ...message, request: { ...message.request, params } };
+      const result = codexThreadEndpointAuthApply(method, message.request.params);
+      codexThreadEndpointAuthRecordDecision({ ...result.meta, messageType: message.type });
+      if (result.params === message.request.params) return message;
+      return { ...message, request: { ...message.request, params: result.params } };
     }
     if (message.type === "thread-prewarm-start" && message.request && typeof message.request === "object") {
-      const params = codexThreadEndpointAuthApply("thread/start", message.request.params);
-      if (params === message.request.params) return message;
-      return { ...message, request: { ...message.request, params } };
+      const result = codexThreadEndpointAuthApply("thread/start", message.request.params);
+      codexThreadEndpointAuthRecordDecision({ ...result.meta, messageType: message.type });
+      if (result.params === message.request.params) return message;
+      return { ...message, request: { ...message.request, params: result.params } };
+    }
+    if (message.type === "start-conversation") {
+      const result = codexThreadEndpointAuthApply("thread/start", message);
+      codexThreadEndpointAuthRecordDecision({ ...result.meta, messageType: message.type });
+      return result.params === message ? message : result.params;
     }
     if (message.type === "prewarm-thread-start-for-host" && message.params && typeof message.params === "object") {
-      const params = codexThreadEndpointAuthApply("thread/start", message.params);
-      return params === message.params ? message : { ...message, params };
+      const result = codexThreadEndpointAuthApply("thread/start", message.params);
+      codexThreadEndpointAuthRecordDecision({ ...result.meta, messageType: message.type });
+      return result.params === message.params ? message : { ...message, params: result.params };
     }
     if (message.type === "start-thread-for-host") {
-      const params = codexThreadEndpointAuthApply("thread/start", message);
-      return params === message ? message : params;
+      const result = codexThreadEndpointAuthApply("thread/start", message);
+      codexThreadEndpointAuthRecordDecision({ ...result.meta, messageType: message.type });
+      return result.params === message ? message : result.params;
     }
     if (message.type === "start-turn-for-host" && message.params && typeof message.params === "object") {
-      const params = codexThreadEndpointAuthApply("turn/start", message.params, message.conversationId);
-      return params === message.params ? message : { ...message, params };
+      const result = codexThreadEndpointAuthApply("turn/start", message.params, message.conversationId);
+      codexThreadEndpointAuthRecordDecision({ ...result.meta, messageType: message.type });
+      return result.params === message.params ? message : { ...message, params: result.params };
     }
+    codexThreadEndpointAuthRecordDecision({ applied: false, reason: "unsupported_message_type", messageType: message.type || "" });
     return message;
   }
 
   function installCodexThreadEndpointAuthDispatcherPatch() {
-    if (window.__codexThreadEndpointAuthRequestOverrideInstalled === codexThreadEndpointAuthRequestOverrideVersion) return;
     const patch = async () => {
       try {
         const module = await loadCodexAppModule("setting-storage-");
@@ -1838,6 +1968,7 @@
         window.__codexThreadEndpointAuthRequestOverrideInstalled = codexThreadEndpointAuthRequestOverrideVersion;
         sendCodexPlusDiagnostic("thread_endpoint_auth_dispatcher_patch_installed", {});
       } catch (error) {
+        codexThreadEndpointAuthRecordDecision({ applied: false, reason: "error", messageType: "dispatcher-patch" });
         sendCodexPlusDiagnostic("thread_endpoint_auth_dispatcher_patch_failed", {
           errorName: error?.name || "",
           errorMessage: error?.message || String(error),
@@ -2015,11 +2146,25 @@
     codexThreadEndpointAuthState.initialized = true;
     codexThreadEndpointAuthMap();
     codexThreadEndpointAuthPersistMap(codexThreadEndpointAuthMap());
+    codexThreadEndpointAuthState.draft = codexThreadEndpointAuthReadDraft();
+    codexThreadEndpointAuthResetStats();
     installCodexThreadEndpointAuthDispatcherPatch();
     window.__codexThreadEndpointAuth = {
       version: codexThreadEndpointAuthRequestOverrideVersion,
       getMap: () => ({ ...codexThreadEndpointAuthMap() }),
       getDraft: () => codexThreadEndpointAuthDraftEntry(),
+      getStats: () => {
+        const stats = codexThreadEndpointAuthStats();
+        return {
+          installed: window.__codexThreadEndpointAuthRequestOverrideInstalled === codexThreadEndpointAuthRequestOverrideVersion,
+          draftPersisted: !!codexThreadEndpointAuthDraftEntry(),
+          counts: { ...stats.counts },
+          byReason: { ...stats.byReason },
+          byMethod: { ...stats.byMethod },
+          lastDecision: stats.lastDecision ? { ...stats.lastDecision } : null,
+        };
+      },
+      resetStats: () => codexThreadEndpointAuthResetStats(),
       dropThreadConfig: (threadId) => codexThreadEndpointAuthDrop(threadId),
     };
   }
@@ -7252,6 +7397,7 @@
     installStyle();
     installCodexServiceTierDispatcherPatch();
     installCodexThreadEndpointAuthRuntime();
+    installCodexThreadEndpointAuthDispatcherPatch();
     codexThreadEndpointAuthDeleteHook();
     if (codexPlusSettings().threadEndpointAuth) {
       installCodexThreadEndpointAuthButton();

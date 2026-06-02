@@ -241,6 +241,27 @@ fn injection_script_exposes_fast_service_tier_control() {
 }
 
 #[test]
+fn injection_script_exposes_thread_temporary_api_diagnostics_and_draft_support() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("codexThreadEndpointAuthDraftStorageKey"));
+    assert!(script.contains("codexThreadEndpointAuthDraftVersion"));
+    assert!(script.contains("codexThreadEndpointAuthResetStats"));
+    assert!(script.contains("codexThreadEndpointAuthRecordDecision"));
+    assert!(script.contains("getStats: () =>"));
+    assert!(script.contains("resetStats: () => codexThreadEndpointAuthResetStats()"));
+    assert!(script.contains("draftPersisted"));
+    assert!(script.contains("unsupported_message_type"));
+    assert!(script.contains("no_thread_or_draft"));
+    assert!(script.contains("no_entry_for_thread"));
+    assert!(script.contains("feature_disabled"));
+    assert!(script.contains("start-conversation"));
+    assert!(script.contains("codex_plus_thread_temp"));
+    assert!(script.contains("experimental_bearer_token"));
+    assert!(script.contains("model_providers"));
+}
+
+#[test]
 fn injection_script_restores_thread_scroll_positions() {
     let script = assets::injection_script(57321);
 
