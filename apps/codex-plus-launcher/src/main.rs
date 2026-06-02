@@ -336,6 +336,13 @@ impl BridgeDataService for LauncherDataService {
             .map_err(|error| anyhow::anyhow!("export markdown task failed: {error}"))
     }
 
+    async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value> {
+        let adapter = self.storage_adapter();
+        tokio::task::spawn_blocking(move || adapter.codex_thread_usage_history(&session))
+            .await
+            .map_err(|error| anyhow::anyhow!("thread usage history task failed: {error}"))
+    }
+
     async fn find_archived_thread_by_title(
         &self,
         title: String,

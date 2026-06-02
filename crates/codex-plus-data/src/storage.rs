@@ -1,10 +1,12 @@
 use crate::BackupStore;
 use codex_plus_core::models::{DeleteResult, DeleteStatus, SessionRef};
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
-use rusqlite::{Connection, ToSql};
+use rusqlite::{Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -339,6 +341,68 @@ impl SQLiteStorageAdapter {
         )
     }
 
+    pub fn codex_thread_usage_history(&self, session: &SessionRef) -> serde_json::Value {
+        if !self.db_path.exists() {
+            return json!({
+                "status": "failed",
+                "session_id": session.session_id,
+                "message": format!("Database not found: {}", self.db_path.to_string_lossy()),
+                "history": []
+            });
+        }
+        let result = (|| -> anyhow::Result<Value> {
+            let db = Connection::open(&self.db_path)?;
+            if schema_kind(&db)? != Some(SchemaKind::CodexThreads)
+                || !has_columns(&db, "threads", &["rollout_path"])?
+            {
+                return Ok(json!({
+                    "status": "failed",
+                    "session_id": session.session_id,
+                    "message": "Unsupported local storage schema",
+                    "history": []
+                }));
+            }
+            let thread_id = normalize_codex_thread_id(&session.session_id);
+            let rollout_path: Option<String> = db.query_row(
+                "SELECT rollout_path FROM threads WHERE id = ?1",
+                [&thread_id],
+                |row| row.get(0),
+            ).optional()?;
+            let Some(rollout_path) = rollout_path.filter(|path| !path.trim().is_empty()) else {
+                return Ok(json!({
+                    "status": "failed",
+                    "session_id": thread_id,
+                    "message": "Thread rollout path is empty",
+                    "history": []
+                }));
+            };
+            let rollout = PathBuf::from(&rollout_path);
+            if !rollout.is_file() {
+                return Ok(json!({
+                    "status": "failed",
+                    "session_id": thread_id,
+                    "message": format!("rollout file not found: {rollout_path}"),
+                    "history": []
+                }));
+            }
+            let history = read_rollout_usage_history(&rollout, &thread_id)?;
+            Ok(json!({
+                "status": "ok",
+                "session_id": thread_id,
+                "rollout_path": rollout_path,
+                "history": history,
+            }))
+        })();
+        result.unwrap_or_else(|err| {
+            json!({
+                "status": "failed",
+                "session_id": session.session_id,
+                "message": err.to_string(),
+                "history": []
+            })
+        })
+    }
+
     fn delete_generic_session(
         &self,
         db: &mut Connection,
@@ -538,6 +602,100 @@ fn local_deleted(session_id: &str, token: &str, backup_path: &Path) -> DeleteRes
         undo_token: Some(token.to_string()),
         backup_path: Some(backup_path.to_string_lossy().to_string()),
     }
+}
+
+fn read_rollout_usage_history(
+    rollout_path: &Path,
+    thread_id: &str,
+) -> anyhow::Result<Vec<Value>> {
+    let file = File::open(rollout_path)?;
+    let reader = BufReader::new(file);
+    let mut current_turn_id = String::new();
+    let mut history = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        match value.get("type").and_then(Value::as_str).unwrap_or_default() {
+            "turn_context" => {
+                current_turn_id = value
+                    .get("payload")
+                    .and_then(|payload| payload.get("turn_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+            }
+            "event_msg" => {
+                let payload = match value.get("payload") {
+                    Some(payload) if payload.get("type").and_then(Value::as_str) == Some("token_count") => payload,
+                    _ => continue,
+                };
+                let info = match payload.get("info") {
+                    Some(info) => info,
+                    None => continue,
+                };
+                let last = info.get("last_token_usage");
+                let total = info.get("total_token_usage");
+                let model_context_window = info
+                    .get("model_context_window")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let input_tokens = last
+                    .and_then(|usage| usage.get("input_tokens"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let output_tokens = last
+                    .and_then(|usage| usage.get("output_tokens"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let total_tokens = last
+                    .and_then(|usage| usage.get("total_tokens"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or_else(|| {
+                        total.and_then(|usage| usage.get("total_tokens"))
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0)
+                    });
+                let cached_tokens = last
+                    .and_then(|usage| usage.get("cached_input_tokens"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let context_used = total
+                    .and_then(|usage| usage.get("total_tokens"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(total_tokens);
+                if input_tokens <= 0 && output_tokens <= 0 && total_tokens <= 0 && context_used <= 0 {
+                    continue;
+                }
+                history.push(json!({
+                    "source": "rollout-history",
+                    "conversation_id": format!("local:{thread_id}"),
+                    "turn_id": current_turn_id,
+                    "observed_at": value.get("timestamp").and_then(Value::as_str).unwrap_or_default(),
+                    "usage": {
+                        "inputTokens": input_tokens,
+                        "outputTokens": output_tokens,
+                        "totalTokens": total_tokens,
+                        "cachedTokens": cached_tokens,
+                        "cacheReadTokens": 0,
+                        "cacheCreationTokens": 0,
+                        "contextUsed": context_used,
+                        "contextLimit": model_context_window,
+                        "hasBreakdown": input_tokens > 0 || output_tokens > 0 || cached_tokens > 0,
+                    }
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(history)
 }
 
 fn failed_with_undo(

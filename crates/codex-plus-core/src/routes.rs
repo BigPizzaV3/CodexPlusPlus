@@ -79,6 +79,7 @@ pub trait BridgeDataService: Send + Sync {
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult>;
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
+    async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value>;
     async fn find_archived_thread_by_title(
         &self,
         title: String,
@@ -179,6 +180,11 @@ pub async fn handle_bridge_request(
                 .export_markdown(session_from_payload(&payload))
                 .await,
         ),
+        "/thread-usage-history" => {
+            ctx.data
+                .thread_usage_history(session_from_payload(&payload))
+                .await
+        }
         "/archived-thread" => {
             let title = payload
                 .get("title")
@@ -474,6 +480,15 @@ impl BridgeDataService for UnavailableDataService {
             filename: None,
             markdown: None,
         })
+    }
+
+    async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "failed",
+            "session_id": session.session_id,
+            "message": "Thread usage history service is not wired in core launcher hooks",
+            "history": []
+        }))
     }
 
     async fn find_archived_thread_by_title(
