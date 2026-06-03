@@ -101,6 +101,13 @@ fn prepare_remote_repo(temp: &Path) -> (std::path::PathBuf, std::path::PathBuf) 
         &["remote", "add", "upstream", remote.to_str().unwrap()],
     );
     git(&seed, &["push", "-u", "upstream", "main"]);
+    git_no_repo(&[
+        "--git-dir",
+        remote.to_str().unwrap(),
+        "symbolic-ref",
+        "HEAD",
+        "refs/heads/main",
+    ]);
     (remote, seed)
 }
 

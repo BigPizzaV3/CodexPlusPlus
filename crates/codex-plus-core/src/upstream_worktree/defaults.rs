@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
@@ -94,8 +94,11 @@ pub(crate) fn worktree_branches_from_output(output: &str) -> Vec<Value> {
         let line = line.trim();
         if line.is_empty() {
             if !worktree_path.is_empty() && !branch_name.is_empty() {
+                let path = PathBuf::from(&worktree_path)
+                    .canonicalize()
+                    .unwrap_or_else(|_| PathBuf::from(&worktree_path));
                 branches.push(json!({
-                    "path": worktree_path,
+                    "path": path.to_string_lossy(),
                     "branch": branch_name,
                 }));
             }

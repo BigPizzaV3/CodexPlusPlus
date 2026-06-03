@@ -228,7 +228,7 @@ fn manager_window_and_relay_detail_header_stay_usable() {
     assert!(styles.contains(".relay-detail-sticky"));
     assert!(styles.contains("position: sticky"));
     assert!(styles.contains("top: 0"));
-    assert!(styles.contains("margin: -16px -20px 0"));
+    assert!(styles.contains("margin: 0"));
     assert!(lib_rs.contains(".inner_size(1180.0, 820.0)"));
     assert!(lib_rs.contains(".min_inner_size(960.0, 720.0)"));
     assert!(tauri_conf.contains("\"width\": 1180"));

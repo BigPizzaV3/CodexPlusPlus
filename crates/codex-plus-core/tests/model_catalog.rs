@@ -7,7 +7,9 @@ use std::thread;
 use codex_plus_core::model_catalog::{
     read_codex_model_catalog, read_codex_model_catalog_from_home,
 };
-use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol, SettingsStore};
+use codex_plus_core::settings::{
+    BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore,
+};
 use serde_json::json;
 
 #[tokio::test]
@@ -88,6 +90,7 @@ async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
                     model: "qwen3-coder".to_string(),
                     base_url: "https://example.test/v1".to_string(),
                     protocol: RelayProtocol::Responses,
+                    relay_mode: RelayMode::PureApi,
                     model_list: "deepseek-coder\nqwen3-coder\nclaude-compatible".to_string(),
                     ..RelayProfile::default()
                 }],

@@ -65,6 +65,10 @@ async fn bridge_routes_cover_all_current_paths() {
             "/export-markdown",
             json!({"session_id": "s1", "title": "First"}),
         ),
+        (
+            "/thread-usage-history",
+            json!({"session_id": "s1", "title": "First"}),
+        ),
         ("/archived-thread", json!({"title": "Archived"})),
         (
             "/move-thread-workspace",
@@ -301,6 +305,37 @@ async fn data_routes_forward_payloads_to_data_service() {
         )
         .await["filename"],
         "First.md"
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/thread-usage-history",
+            json!({"session_id": "s1", "title": "First"}),
+        )
+        .await,
+        json!({
+            "status": "ok",
+            "session_id": "s1",
+            "history": [
+                {
+                    "source": "rollout-history",
+                    "conversation_id": "local:s1",
+                    "turn_id": "turn-1",
+                    "observed_at": "2026-06-02T05:00:00Z",
+                    "usage": {
+                        "inputTokens": 1200,
+                        "outputTokens": 120,
+                        "totalTokens": 1320,
+                        "cachedTokens": 900,
+                        "cacheReadTokens": 0,
+                        "cacheCreationTokens": 0,
+                        "contextUsed": 1320,
+                        "contextLimit": 258400,
+                        "hasBreakdown": true
+                    }
+                }
+            ]
+        })
     );
     assert_eq!(
         handle_bridge_request(
@@ -1046,6 +1081,32 @@ impl BridgeDataService for FakeData {
             filename: Some("First.md".to_string()),
             markdown: Some("# First\n".to_string()),
         })
+    }
+
+    async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "ok",
+            "session_id": session.session_id,
+            "history": [
+                {
+                    "source": "rollout-history",
+                    "conversation_id": "local:s1",
+                    "turn_id": "turn-1",
+                    "observed_at": "2026-06-02T05:00:00Z",
+                    "usage": {
+                        "inputTokens": 1200,
+                        "outputTokens": 120,
+                        "totalTokens": 1320,
+                        "cachedTokens": 900,
+                        "cacheReadTokens": 0,
+                        "cacheCreationTokens": 0,
+                        "contextUsed": 1320,
+                        "contextLimit": 258400,
+                        "hasBreakdown": true
+                    }
+                }
+            ]
+        }))
     }
 
     async fn find_archived_thread_by_title(

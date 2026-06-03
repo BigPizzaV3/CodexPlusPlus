@@ -163,6 +163,36 @@ fn injection_script_keeps_session_action_buttons_in_pr_style() {
 }
 
 #[test]
+fn injection_script_moves_export_and_project_move_into_more_menu() {
+    let script = assets::injection_script(57321).replace("\r\n", "\n");
+
+    assert!(script.contains("moreButtonClass = \"codex-session-more-button\""));
+    assert!(script.contains("moreMenuClass = \"codex-session-more-menu\""));
+    assert!(script.contains("configureActionButton(moreButton, \"更多操作\", \"…\")"));
+    assert!(script.contains("createSessionMoreMenuItem(\"导出\""));
+    assert!(script.contains("createSessionMoreMenuItem(\"移动\""));
+    assert!(script.contains("group.appendChild(moreButton)"));
+    assert!(script.contains("installMoreButtonEvents(row, moreButton, openMoreMenu)"));
+    assert!(script.contains("installSessionMoreMenuAutoClose(row, moreMenu)"));
+    assert!(script.contains("updateSessionMoreMenuDirection(moreButton, moreMenu)"));
+    assert!(script.contains("positionSessionMoreMenu(moreButton, moreMenu)"));
+    assert!(script.contains("document.body.appendChild(moreMenu)"));
+    assert!(script.contains("position: fixed;"));
+    assert!(script.contains("codex-session-more-menu-open-up"));
+    assert!(script.contains("transform: translateY(calc(-100% - 34px));"));
+    assert!(script.contains("positionSessionMoreMenu(moreButton, moreMenu);"));
+    assert!(script.contains("row.classList.toggle(\"codex-session-more-open\""));
+    assert!(script.contains(".${actionGroupClass} {"));
+    assert!(script.contains("position: absolute;"));
+    assert!(script.contains("pointer-events: none;"));
+    assert!(script.contains("[data-codex-delete-row=\"true\"]:hover .${actionGroupClass} {\n        opacity: 1;\n        pointer-events: auto;\n      }"));
+    assert!(script.contains("[data-codex-delete-row=\"true\"].codex-session-more-open .${actionGroupClass} {\n        opacity: 1;\n        pointer-events: auto;\n        z-index: 2147483201;"));
+    assert!(!script.contains("installActionButtonEvents(row, moreButton, openMoreMenu)"));
+    assert!(!script.contains("group.appendChild(exportButton)"));
+    assert!(!script.contains("group.appendChild(moveButton)"));
+}
+
+#[test]
 fn injection_script_unlocks_custom_model_catalog() {
     let script = assets::injection_script(57321);
 

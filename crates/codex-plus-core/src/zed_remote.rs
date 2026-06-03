@@ -365,6 +365,9 @@ pub fn resolve_ssh_target_for_host_id(
     host_id: &str,
     state_path: Option<&Path>,
 ) -> Result<SshTarget, ZedRemoteError> {
+    if host_id.is_empty() {
+        return Err(ZedRemoteError::Validation("Remote host id is required"));
+    }
     let path = state_path
         .map(Path::to_path_buf)
         .unwrap_or_else(codex_global_state_path);

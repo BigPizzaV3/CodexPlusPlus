@@ -6,6 +6,8 @@
   const projectMoveOverlayClass = "codex-project-move-overlay";
   const actionButtonClass = "codex-session-action-button";
   const actionGroupClass = "codex-session-actions";
+  const moreButtonClass = "codex-session-more-button";
+  const moreMenuClass = "codex-session-more-menu";
   const actionTooltipClass = "codex-session-action-tooltip";
   const timelineClass = "codex-conversation-timeline";
   const timelineTrackClass = "codex-conversation-timeline-track";
@@ -44,7 +46,7 @@
   const codexDeleteVersion = "7";
   const codexExportVersion = "1";
   const codexProjectMoveVersion = "1";
-  const codexActionGroupVersion = "4";
+  const codexActionGroupVersion = "5";
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationTimelineVersion = "2";
@@ -129,6 +131,7 @@
         transform: translateY(-50%);
         z-index: 20;
         opacity: 0;
+        pointer-events: none;
         display: inline-flex;
         align-items: center;
         gap: 6px;
@@ -159,6 +162,44 @@
         background: #363839;
         color: #f4f4f5;
         outline: none;
+      }
+      .${moreMenuClass} {
+        position: fixed;
+        z-index: 2147483201;
+        min-width: 104px;
+        border: 1px solid rgba(255,255,255,.1);
+        border-radius: 10px;
+        background: #242628;
+        color: #f4f4f5;
+        box-shadow: 0 14px 40px rgba(0,0,0,.28);
+        padding: 5px;
+      }
+      .${moreMenuClass}[hidden] { display: none !important; }
+      .${moreMenuClass}.codex-session-more-menu-open-up {
+        transform: translateY(calc(-100% - 34px));
+      }
+      .codex-session-more-menu-item {
+        width: 100%;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: inherit;
+        cursor: default;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font: 13px/18px system-ui, sans-serif;
+        padding: 6px 8px;
+        text-align: left;
+      }
+      .codex-session-more-menu-item:hover,
+      .codex-session-more-menu-item:focus-visible {
+        background: #363839;
+        outline: none;
+      }
+      .codex-session-more-menu-icon {
+        width: 16px;
+        text-align: center;
       }
       .codex-archive-row-button {
         border: 1px solid #ef4444;
@@ -228,7 +269,15 @@
         box-shadow: 0 8px 30px rgba(0,0,0,.25);
         pointer-events: none;
       }
-      [data-codex-delete-row="true"]:hover .${actionGroupClass} { opacity: 1; }
+      [data-codex-delete-row="true"]:hover .${actionGroupClass} {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      [data-codex-delete-row="true"].codex-session-more-open .${actionGroupClass} {
+        opacity: 1;
+        pointer-events: auto;
+        z-index: 2147483201;
+      }
       [data-codex-delete-row="true"]:hover [data-thread-title] {
         display: block;
         max-width: var(--codex-session-title-max-width, 100%);
@@ -1557,9 +1606,15 @@
     }
   }
 
-  function loadBackendSettingsForStartup() {
+  function loadBackendSettingsForStartup(attempt = 0) {
     loadBackendSettings().then((loaded) => {
-      if (loaded) scan();
+      if (loaded) {
+        scan();
+        return;
+      }
+      if (attempt < 60) {
+        setTimeout(() => loadBackendSettingsForStartup(attempt + 1), 250);
+      }
     });
   }
 
@@ -5749,8 +5804,84 @@
     }, true);
   }
 
+  function installMoreButtonEvents(row, button, onActivate) {
+    ["pointerdown", "mousedown", "mouseup", "touchstart"].forEach((eventName) => {
+      button.addEventListener(eventName, (event) => stopActionButtonEvent(row, button, event), true);
+    });
+    button.addEventListener("pointerenter", () => showActionButtonTooltip(button));
+    button.addEventListener("pointerleave", hideActionButtonTooltip);
+    button.addEventListener("focus", () => showActionButtonTooltip(button));
+    button.addEventListener("blur", hideActionButtonTooltip);
+    button.addEventListener("pointerup", onActivate, true);
+    button.addEventListener("click", (event) => {
+      hideActionButtonTooltip();
+      stopActionButtonEvent(row, button, event);
+    }, true);
+  }
+
   function hideActionButtonTooltip() {
     document.querySelectorAll(`.${actionTooltipClass}`).forEach((node) => node.remove());
+  }
+
+  function closeSessionMoreMenus(exceptMenu = null) {
+    document.querySelectorAll(`.${moreMenuClass}`).forEach((menu) => {
+      if (menu !== exceptMenu) {
+        menu.hidden = true;
+        menu.closest?.("[data-codex-delete-row]")?.classList.remove("codex-session-more-open");
+        menu.__codexSessionMoreRow?.classList?.remove("codex-session-more-open");
+      }
+    });
+  }
+
+  function toggleSessionMoreMenu(row, button, menu) {
+    const nextHidden = !menu.hidden;
+    closeSessionMoreMenus(menu);
+    menu.hidden = nextHidden;
+    row.classList.toggle("codex-session-more-open", !menu.hidden);
+    button.setAttribute("aria-expanded", String(!menu.hidden));
+  }
+
+  function installSessionMoreMenuAutoClose(row, menu) {
+    const group = menu.__codexSessionMoreGroup || menu.closest?.(`.${actionGroupClass}`);
+    const closeIfOutside = () => {
+      window.setTimeout(() => {
+        if (menu.hidden) return;
+        const active = document.activeElement;
+        if (group?.matches?.(":hover") || menu.matches?.(":hover") || menu.contains(active)) return;
+        menu.hidden = true;
+        row.classList.remove("codex-session-more-open");
+        group?.querySelector?.(`.${moreButtonClass}`)?.setAttribute("aria-expanded", "false");
+      }, 80);
+    };
+    group?.addEventListener("pointerleave", closeIfOutside, true);
+    menu.addEventListener("pointerleave", closeIfOutside, true);
+    menu.addEventListener("focusout", closeIfOutside, true);
+  }
+
+  function updateSessionMoreMenuDirection(button, menu) {
+    menu.classList.remove("codex-session-more-menu-open-up");
+    const buttonRect = button.getBoundingClientRect();
+    const estimatedMenuHeight = Math.max(80, menu.getBoundingClientRect().height || 76);
+    if (buttonRect.bottom + 30 + estimatedMenuHeight > window.innerHeight - 8) {
+      menu.classList.add("codex-session-more-menu-open-up");
+    }
+  }
+
+  function positionSessionMoreMenu(button, menu) {
+    const rect = button.getBoundingClientRect();
+    const menuWidth = Math.max(104, menu.getBoundingClientRect().width || 104);
+    const left = Math.min(window.innerWidth - menuWidth - 8, Math.max(8, rect.right - menuWidth));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${Math.max(8, rect.bottom + 4)}px`;
+  }
+
+  function createSessionMoreMenuItem(label, icon, onActivate) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "codex-session-more-menu-item";
+    item.innerHTML = `<span class="codex-session-more-menu-icon">${icon}</span><span>${label}</span>`;
+    item.addEventListener("click", onActivate, true);
+    return item;
   }
 
   function showActionButtonTooltip(button) {
@@ -5781,6 +5912,7 @@
     const replacement = originalButton.cloneNode(true);
     installActionButtonEvents(row, replacement, onActivate);
     originalButton.replaceWith(replacement);
+    return replacement;
   }
 
   function configureActionButton(button, label, icon) {
@@ -5819,19 +5951,19 @@
     }
     const existingGroup = actionGroupFromRow(row);
     const existingDeleteButton = existingGroup?.querySelector(`.${buttonClass}`);
+    const existingMoreButton = existingGroup?.querySelector(`.${moreButtonClass}`);
     const existingExportButton = existingGroup?.querySelector(`.${exportButtonClass}`);
     const existingMoveButton = existingGroup?.querySelector(`.${projectMoveButtonClass}`);
+    const needsMoreMenu = settings.markdownExport || settings.projectMove;
     const hasUnexpectedDelete = !settings.sessionDelete && !!existingDeleteButton;
-    const hasUnexpectedExport = !settings.markdownExport && !!existingExportButton;
-    const hasUnexpectedMove = !settings.projectMove && !!existingMoveButton;
+    const hasUnexpectedMore = !needsMoreMenu && !!existingMoreButton;
+    const hasUnexpectedExport = !!existingExportButton;
+    const hasUnexpectedMove = !!existingMoveButton;
     const missingDelete = settings.sessionDelete && !existingDeleteButton;
-    const missingExport = settings.markdownExport && !existingExportButton;
-    const missingMove = settings.projectMove && !existingMoveButton;
+    const missingMore = needsMoreMenu && !existingMoreButton;
     const deleteReady = !settings.sessionDelete || existingDeleteButton?.dataset.codexDeleteVersion === codexDeleteVersion;
-    const exportReady = !settings.markdownExport || existingExportButton?.dataset.codexExportVersion === codexExportVersion;
-    const moveReady = !settings.projectMove || existingMoveButton?.dataset.codexProjectMoveVersion === codexProjectMoveVersion;
     const groupReady = existingGroup?.dataset.codexActionGroupVersion === codexActionGroupVersion;
-    if (groupReady && deleteReady && exportReady && moveReady && !hasUnexpectedDelete && !hasUnexpectedExport && !hasUnexpectedMove && !missingDelete && !missingExport && !missingMove) {
+    if (groupReady && deleteReady && !hasUnexpectedDelete && !hasUnexpectedMore && !hasUnexpectedExport && !hasUnexpectedMove && !missingDelete && !missingMore) {
       syncActionGroupLayout(row, existingGroup);
       return;
     }
@@ -5845,30 +5977,46 @@
     const group = document.createElement("div");
     group.className = actionGroupClass;
     group.dataset.codexActionGroupVersion = codexActionGroupVersion;
-    if (settings.projectMove) {
-      const moveButton = document.createElement("button");
-      moveButton.type = "button";
-      moveButton.className = `${actionButtonClass} ${projectMoveButtonClass}`;
-      moveButton.dataset.codexProjectMoveVersion = codexProjectMoveVersion;
-      configureActionButton(moveButton, "移动", "↗");
-      const openProjectMove = (event) => openProjectMoveMenuForRow(row, moveButton, ref, event);
-      installActionButtonEvents(row, moveButton, openProjectMove);
-      group.appendChild(moveButton);
-      setTimeout(() => refreshActionButton(moveButton, row, openProjectMove), 0);
-    }
-    if (settings.markdownExport) {
-      const exportButton = document.createElement("button");
-      exportButton.type = "button";
-      exportButton.className = `${actionButtonClass} ${exportButtonClass}`;
-      exportButton.dataset.codexExportVersion = codexExportVersion;
-      configureActionButton(exportButton, "导出", "⇩");
-      const openExport = (event) => {
-        stopActionButtonEvent(row, exportButton, event);
-        exportMarkdown(ref);
+    if (settings.markdownExport || settings.projectMove) {
+      const moreButton = document.createElement("button");
+      moreButton.type = "button";
+      moreButton.className = `${actionButtonClass} ${moreButtonClass}`;
+      moreButton.setAttribute("aria-haspopup", "menu");
+      moreButton.setAttribute("aria-expanded", "false");
+      configureActionButton(moreButton, "更多操作", "…");
+      const moreMenu = document.createElement("div");
+      moreMenu.className = moreMenuClass;
+      moreMenu.setAttribute("role", "menu");
+      moreMenu.hidden = true;
+      if (settings.markdownExport) {
+        moreMenu.appendChild(createSessionMoreMenuItem("导出", "⇩", (event) => {
+          stopActionButtonEvent(row, moreButton, event);
+          closeSessionMoreMenus();
+          exportMarkdown(ref);
+        }));
+      }
+      if (settings.projectMove) {
+        moreMenu.appendChild(createSessionMoreMenuItem("移动", "↗", (event) => {
+          stopActionButtonEvent(row, moreButton, event);
+          closeSessionMoreMenus();
+          openProjectMoveMenuForRow(row, moreButton, ref, event);
+        }));
+      }
+      const openMoreMenu = (event) => {
+        stopActionButtonEvent(row, moreButton, event);
+        hideActionButtonTooltip();
+        toggleSessionMoreMenu(row, moreButton, moreMenu);
+        if (!moreMenu.hidden) {
+          positionSessionMoreMenu(moreButton, moreMenu);
+          updateSessionMoreMenuDirection(moreButton, moreMenu);
+        }
       };
-      installActionButtonEvents(row, exportButton, openExport);
-      group.appendChild(exportButton);
-      setTimeout(() => refreshActionButton(exportButton, row, openExport), 0);
+      installMoreButtonEvents(row, moreButton, openMoreMenu);
+      group.appendChild(moreButton);
+      moreMenu.__codexSessionMoreRow = row;
+      moreMenu.__codexSessionMoreGroup = group;
+      document.body.appendChild(moreMenu);
+      installSessionMoreMenuAutoClose(row, moreMenu);
     }
     if (settings.sessionDelete) {
       const deleteButton = document.createElement("button");
