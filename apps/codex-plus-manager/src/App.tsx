@@ -523,9 +523,15 @@ export function App() {
   });
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
 
-  const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
+  const call = <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
+    if (!tauriRuntimeAvailable()) {
+      return Promise.reject(new Error(TAURI_RUNTIME_UNAVAILABLE_MESSAGE));
+    }
+    return invoke<T>(command, args);
+  };
 
   const logDiagnostic = (event: string, detail: Record<string, unknown> = {}) => {
+    if (!tauriRuntimeAvailable()) return;
     void invoke("write_diagnostic_event", { event, detail }).catch(() => {});
   };
 
@@ -4875,6 +4881,20 @@ function stringifyError(error: unknown) {
   if (error instanceof Error) return error.message;
   return String(error);
 }
+
+// Tauri v2 注入 window.__TAURI_INTERNALS__；缺失时说明当前不在管理工具窗口里
+// (例如用浏览器打开了 dev server，或在 devtools/自动化环境中执行),
+// 此时 @tauri-apps/api 的 invoke 会抛 "Cannot read properties of undefined (reading 'invoke')"。
+function tauriRuntimeAvailable(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== "undefined"
+  );
+}
+
+const TAURI_RUNTIME_UNAVAILABLE_MESSAGE =
+  "Tauri 运行时不可用：请在已安装的「Codex++ 管理工具」窗口中操作。" +
+  "当前页面可能是在浏览器或开发模式 (tauri dev) 下打开的，无法调用后端命令。";
 
 function loadInitialTheme(): Theme {
   if (typeof window === "undefined") return "dark";
