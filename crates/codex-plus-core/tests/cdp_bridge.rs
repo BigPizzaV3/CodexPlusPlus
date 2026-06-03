@@ -124,29 +124,84 @@ fn injection_script_unlocks_nested_disabled_plugin_install_buttons() {
 }
 
 #[test]
+fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"10\""));
+    assert!(script.contains("if (name === \"openai-bundled\") return \"\""));
+    assert!(!script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\""));
+    assert!(script.contains("if (name === \"openai-bundled\" || name === \"codex-plus-openai-bundled\") return \"OpenAI插件1(Codex++)\""));
+}
+
+#[test]
+fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"10\""));
+    assert!(script.contains("isCodexPluginBuildFlavorFilter"));
+    assert!(script.contains("source.includes(\"!u(e.marketplaceName)||e.marketplaceName===r\")"));
+    assert!(script.contains("source.includes(\"!t.includes(e.name)\")"));
+    assert!(!script.contains("if (!source.includes(\"marketplaceName\")) return false"));
+    assert!(!script.contains("if (!source.includes(\"name\")) return false"));
+}
+
+#[test]
 fn injection_script_expands_api_key_plugin_marketplace_requests() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"3\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"10\""));
     assert!(script.contains("installPluginMarketplaceRequestPatch"));
-    assert!(script.contains("patchPluginMarketplaceRequestParams"));
+    assert!(script.contains("installPluginBuildFlavorFilterPatch"));
+    assert!(script.contains("Array.prototype.filter"));
+    assert!(script.contains("codexPluginBuildFlavorFilterPatch"));
+    assert!(script.contains("isCodexPluginBuildFlavorFilter"));
+    assert!(script.contains("codexPluginOfficialMarketplaceName(plugin?.marketplaceName) && !callback(plugin)"));
+    assert!(script.contains("isCodexPluginMarketplaceHiddenFilter"));
+    assert!(script.contains("codexPluginOfficialMarketplaceName(marketplace?.name) && !callback(marketplace)"));
+    assert!(script.contains("plugin_marketplace_hidden_filter_bypassed"));
     assert!(script.contains("method === \"list-plugins\""));
     assert!(script.contains("delete next.marketplaceKinds"));
     assert!(script.contains("patchPluginMarketplaceResult"));
-    assert!(script.contains("codex-plus-openai-bundled"));
-    assert!(script.contains("codex-plus-openai-curated"));
-    assert!(script.contains("codexPluginMarketplacePathAliasForName"));
-    assert!(script.contains("if (name === \"openai-curated\") return \"remote:openai-curated\""));
-    assert!(!script.contains("openai-curated-remote"));
+    assert!(script.contains("pluginMarketplaceAliasForName"));
+    assert!(script.contains("marketplace.name = alias"));
+    assert!(script.contains("restorePluginMarketplaceName"));
+    assert!(script.contains("next.remoteMarketplaceName = restorePluginMarketplaceName(next.remoteMarketplaceName)"));
+    assert!(script.contains("if (name === \"openai-bundled\") return \"\""));
+    assert!(script.contains("if (name === \"openai-curated\") return \"codex-plus-openai-curated\""));
+    assert!(script.contains("if (name === \"openai-primary-runtime\") return \"codex-plus-openai-primary-runtime\""));
     assert!(script.contains("OpenAI插件1(Codex++)"));
     assert!(script.contains("OpenAI插件2(Codex++)"));
     assert!(script.contains("OpenAI插件3(Codex++)"));
-    assert!(script.contains("marketplace.displayName"));
-    assert!(script.contains("marketplace.label"));
-    assert!(script.contains("restorePluginMarketplaceRequestParams"));
+    assert!(script.contains("method === \"install-plugin\""));
     assert!(script.contains("plugin_marketplace_response_expanded"));
+    assert!(script.contains("plugin_build_flavor_filter_bypassed"));
+    assert!(script.contains("plugin_install_request_debug"));
+    assert!(script.contains("plugin_install_request_failed"));
+    assert!(!script.contains("marketplace.path ="));
+    assert!(!script.contains("codexPluginMarketplacePathAliasForName"));
     assert!(!script.contains("spoofAnyCodexAuthContext"));
     assert!(!script.contains("spoofChatGPTAuthMethod"));
+}
+
+#[test]
+fn injection_script_deletes_marketplace_kinds_to_request_default_catalog() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("delete next.marketplaceKinds"));
+    assert!(script.contains("plugin_marketplace_request_expanded"));
+    assert!(!script.contains("codexPluginAllowedMarketplaceKinds"));
+    assert!(!script.contains("codexPluginExpandedMarketplaceKinds"));
+    assert!(!script.contains("next.marketplaceKinds = Array.from(new Set"));
+}
+
+#[test]
+fn injection_script_logs_marketplace_grouping_diagnostics() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("plugin_marketplace_response_debug"));
+    assert!(script.contains("marketplaces: result.marketplaces.map"));
+    assert!(script.contains("pluginMarketplaceCounts"));
+    assert!(script.contains("remoteMarketplaceName"));
 }
 
 #[test]
