@@ -190,6 +190,21 @@ fn launcher_does_not_override_codex_app_environment() {
 }
 
 #[test]
+fn launcher_windows_process_wait_uses_platform_cfg_guards() {
+    let source = include_str!("../src/launcher.rs").replace("\r\n", "\n");
+
+    assert!(source.contains(
+        "#[cfg(windows)]\nasync fn wait_for_windows_process_id(process_id: u32) -> anyhow::Result<()>"
+    ));
+    assert!(source.contains(
+        "#[cfg(not(windows))]\nasync fn wait_for_windows_process_id(process_id: u32) -> anyhow::Result<()>"
+    ));
+    assert!(source.contains(
+        "#[cfg(windows)]\nfn wait_for_windows_process_id_blocking(process_id: u32) -> anyhow::Result<()>"
+    ));
+}
+
+#[test]
 fn launcher_appends_extra_codex_arguments_after_debug_arguments() {
     let app_dir = PathBuf::from(r"C:\Codex\app");
     let extra_args = vec![

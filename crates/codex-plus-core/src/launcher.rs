@@ -1378,6 +1378,7 @@ async fn is_macos_app_running(app_dir: &Path) -> bool {
             .eq_ignore_ascii_case("true")
 }
 
+#[cfg(windows)]
 async fn wait_for_windows_process_id(process_id: u32) -> anyhow::Result<()> {
     tokio::task::spawn_blocking(move || wait_for_windows_process_id_blocking(process_id))
         .await
