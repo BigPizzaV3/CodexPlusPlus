@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -150,6 +149,31 @@ pub trait LaunchHooks: Send + Sync {
     ) -> anyhow::Result<()> {
         self.inject(debug_port, helper_port).await
     }
+    async fn ensure_injection(&self, debug_port: u16, helper_port: u16) -> bool {
+        for attempt in 1..=120 {
+            let result = match self.bridge_context(debug_port).await {
+                Ok(Some(ctx)) => self.inject_bridge(debug_port, helper_port, ctx).await,
+                Ok(None) => self.inject(debug_port, helper_port).await,
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(()) => return true,
+                Err(error) => {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.ensure_injection_retry_failed",
+                        serde_json::json!({
+                            "debug_port": debug_port,
+                            "helper_port": helper_port,
+                            "attempt": attempt,
+                            "message": error.to_string()
+                        }),
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+        false
+    }
     async fn start_bridge_watchdog(
         &self,
         _debug_port: u16,
@@ -199,6 +223,7 @@ where
     let status_store = options.status_store.clone();
     let mut helper_started = false;
     let mut launched = None;
+    let mut keep_launched_on_error = false;
 
     let result: anyhow::Result<LaunchHandle> = async {
         if settings.provider_sync_enabled {
@@ -217,24 +242,39 @@ where
             .launch_codex(&app_dir, debug_port, &settings.codex_extra_args)
             .await?;
         launched = Some(launch.clone());
+        keep_launched_on_error = true;
 
+        let mut injection_degraded = false;
         if settings.enhancements_enabled {
-            match hooks.bridge_context(debug_port).await? {
-                Some(ctx) => hooks.inject_bridge(debug_port, helper_port, ctx).await?,
-                None => hooks.inject(debug_port, helper_port).await?,
+            let injection_ready = hooks.ensure_injection(debug_port, helper_port).await;
+            if injection_ready {
+                keep_launched_on_error = false;
+                hooks.start_bridge_watchdog(debug_port, helper_port).await?;
+            } else {
+                let degraded = launch_status(
+                    "running_degraded",
+                    "Codex 已启动，Codex++ 增强仍在等待页面就绪。",
+                    debug_port,
+                    helper_port,
+                    &app_dir,
+                );
+                options.status_store.save_latest(&degraded)?;
+                hooks.write_status("running_degraded").await;
+                injection_degraded = true;
             }
-            hooks.start_bridge_watchdog(debug_port, helper_port).await?;
         }
 
-        let status = launch_status(
-            "running",
-            "Codex++ launcher ready",
-            debug_port,
-            helper_port,
-            &app_dir,
-        );
-        options.status_store.save_latest(&status)?;
-        hooks.write_status("running").await;
+        if !settings.enhancements_enabled || !injection_degraded {
+            let status = launch_status(
+                "running",
+                "Codex++ launcher ready",
+                debug_port,
+                helper_port,
+                &app_dir,
+            );
+            options.status_store.save_latest(&status)?;
+            hooks.write_status("running").await;
+        }
 
         Ok(LaunchHandle {
             debug_port,
@@ -255,7 +295,9 @@ where
                 hooks.shutdown_helper(helper_port).await;
             }
             if let Some(launch) = &launched {
-                hooks.terminate_codex(launch).await;
+                if !keep_launched_on_error {
+                    hooks.terminate_codex(launch).await;
+                }
             }
             let message = error.to_string();
             let failure = launch_status("failed", &message, debug_port, helper_port, &app_dir);
@@ -415,10 +457,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                 else {
                     unreachable!();
                 };
-                let env = codex_process_environment();
-                let process_id =
-                    activate_packaged_app_with_environment(app_user_model_id, arguments, &env)
-                        .await?;
+                let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
                 return Ok(match activation {
                     CodexLaunch::PackagedActivation {
                         app_user_model_id,
@@ -446,7 +485,6 @@ impl LaunchHooks for DefaultLaunchHooks {
                 .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
             let child = Command::new(executable)
                 .args(&command[1..])
-                .envs(codex_process_environment())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -466,7 +504,6 @@ impl LaunchHooks for DefaultLaunchHooks {
         let mut child_command = Command::new(executable);
         child_command
             .args(&command[1..])
-            .envs(codex_process_environment())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         #[cfg(windows)]
@@ -1135,29 +1172,6 @@ pub fn build_packaged_activation(
     })
 }
 
-pub fn codex_process_environment() -> HashMap<String, String> {
-    let env = std::env::vars().collect::<HashMap<_, _>>();
-    codex_process_environment_from(&env, crate::proxy::detect_system_proxy)
-}
-
-pub fn codex_process_environment_from(
-    env: &HashMap<String, String>,
-    detect_system_proxy: impl FnOnce() -> Option<String>,
-) -> HashMap<String, String> {
-    let mut env = env.clone();
-    if crate::proxy::has_proxy_environment(&env) {
-        return env;
-    }
-    if let Some(proxy) = detect_system_proxy() {
-        env.entry("HTTP_PROXY".to_string())
-            .or_insert_with(|| proxy.clone());
-        env.entry("HTTPS_PROXY".to_string())
-            .or_insert_with(|| proxy.clone());
-        env.entry("ALL_PROXY".to_string()).or_insert(proxy);
-    }
-    env
-}
-
 async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
     let mut last_error = None;
     for _ in 0..20 {
@@ -1364,50 +1378,6 @@ async fn is_macos_app_running(app_dir: &Path) -> bool {
             .eq_ignore_ascii_case("true")
 }
 
-pub fn with_temporary_proxy_environment<T>(
-    env: &HashMap<String, String>,
-    run: impl FnOnce() -> T,
-) -> T {
-    let previous = apply_proxy_environment(env);
-    let result = run();
-    restore_proxy_environment(previous);
-    result
-}
-
-async fn activate_packaged_app_with_environment(
-    app_user_model_id: &str,
-    arguments: &str,
-    env: &HashMap<String, String>,
-) -> anyhow::Result<u32> {
-    let previous = apply_proxy_environment(env);
-    let result = activate_packaged_app(app_user_model_id, arguments).await;
-    restore_proxy_environment(previous);
-    result
-}
-
-fn apply_proxy_environment(
-    env: &HashMap<String, String>,
-) -> [(&'static str, Option<std::ffi::OsString>); 3] {
-    let keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"];
-    let previous = keys.map(|key| (key, std::env::var_os(key)));
-    for key in keys {
-        if let Some(value) = env.get(key) {
-            set_env_var(key, value);
-        }
-    }
-    previous
-}
-
-fn restore_proxy_environment(previous: [(&'static str, Option<std::ffi::OsString>); 3]) {
-    for (key, value) in previous {
-        match value {
-            Some(value) => set_env_var(key, value),
-            None => remove_env_var(key),
-        }
-    }
-}
-
-#[cfg(windows)]
 async fn wait_for_windows_process_id(process_id: u32) -> anyhow::Result<()> {
     tokio::task::spawn_blocking(move || wait_for_windows_process_id_blocking(process_id))
         .await
@@ -1475,25 +1445,6 @@ async fn wait_for_windows_process_id(process_id: u32) -> anyhow::Result<()> {
 #[cfg(not(windows))]
 async fn terminate_windows_process_id(process_id: u32) -> anyhow::Result<()> {
     anyhow::bail!("cannot terminate Windows process id {process_id} on this platform")
-}
-
-fn set_env_var<K, V>(key: K, value: V)
-where
-    K: AsRef<std::ffi::OsStr>,
-    V: AsRef<std::ffi::OsStr>,
-{
-    unsafe {
-        std::env::set_var(key, value);
-    }
-}
-
-fn remove_env_var<K>(key: K)
-where
-    K: AsRef<std::ffi::OsStr>,
-{
-    unsafe {
-        std::env::remove_var(key);
-    }
 }
 
 fn launch_status(

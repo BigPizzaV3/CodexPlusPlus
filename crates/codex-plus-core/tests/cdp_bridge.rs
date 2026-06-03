@@ -99,6 +99,18 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
 }
 
 #[test]
+fn injection_script_does_not_relabel_or_unlock_plugin_sidebar_entry() {
+    let script = assets::injection_script(57321);
+
+    assert!(!script.contains("enablePluginEntry"));
+    assert!(!script.contains("pluginEntryButton"));
+    assert!(!script.contains("labelUnlockedPluginEntry"));
+    assert!(!script.contains("clearPluginEntryUnlockLabel"));
+    assert!(!script.contains("插件 - 已解锁"));
+    assert!(!script.contains("Plugins - Unlocked"));
+}
+
+#[test]
 fn injection_script_unlocks_nested_disabled_plugin_install_buttons() {
     let script = assets::injection_script(57321);
 
@@ -109,6 +121,32 @@ fn injection_script_unlocks_nested_disabled_plugin_install_buttons() {
     assert!(script.contains("props[\"data-disabled\"] = undefined"));
     assert!(script.contains("button.querySelectorAll?.(\"button, [role='button'], [disabled], [aria-disabled], [data-disabled]"));
     assert!(script.contains("button.dataset.codexForceInstallUnlocked"));
+}
+
+#[test]
+fn injection_script_expands_api_key_plugin_marketplace_requests() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"3\""));
+    assert!(script.contains("installPluginMarketplaceRequestPatch"));
+    assert!(script.contains("patchPluginMarketplaceRequestParams"));
+    assert!(script.contains("method === \"list-plugins\""));
+    assert!(script.contains("delete next.marketplaceKinds"));
+    assert!(script.contains("patchPluginMarketplaceResult"));
+    assert!(script.contains("codex-plus-openai-bundled"));
+    assert!(script.contains("codex-plus-openai-curated"));
+    assert!(script.contains("codexPluginMarketplacePathAliasForName"));
+    assert!(script.contains("if (name === \"openai-curated\") return \"remote:openai-curated\""));
+    assert!(!script.contains("openai-curated-remote"));
+    assert!(script.contains("OpenAI插件1(Codex++)"));
+    assert!(script.contains("OpenAI插件2(Codex++)"));
+    assert!(script.contains("OpenAI插件3(Codex++)"));
+    assert!(script.contains("marketplace.displayName"));
+    assert!(script.contains("marketplace.label"));
+    assert!(script.contains("restorePluginMarketplaceRequestParams"));
+    assert!(script.contains("plugin_marketplace_response_expanded"));
+    assert!(!script.contains("spoofAnyCodexAuthContext"));
+    assert!(!script.contains("spoofChatGPTAuthMethod"));
 }
 
 #[test]
@@ -190,6 +228,18 @@ fn injection_script_moves_export_and_project_move_into_more_menu() {
     assert!(!script.contains("installActionButtonEvents(row, moreButton, openMoreMenu)"));
     assert!(!script.contains("group.appendChild(exportButton)"));
     assert!(!script.contains("group.appendChild(moveButton)"));
+}
+
+#[test]
+fn injection_script_does_not_add_delete_controls_on_archived_page() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("attachArchivedPageDeleteButton"));
+    assert!(script.contains("data-codex-archive-row-action"));
+    assert!(script.contains("dataset.codexArchiveRowAction = \"export\""));
+    assert!(!script.contains("dataset.codexArchiveRowAction = \"delete\""));
+    assert!(!script.contains("installArchivedDeleteAllButton"));
+    assert!(!script.contains("删除全部归档"));
 }
 
 #[test]

@@ -64,6 +64,7 @@
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "2";
   const codexAppServerModelRequestPatchVersion = "1";
+  const codexPluginMarketplaceUnlockVersion = "3";
   const codexThreadScrollMaxEntries = 120;
   const codexThreadScrollSaveThrottleMs = 120;
   const codexThreadScrollRestoreWindowMs = 3200;
@@ -879,11 +880,11 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
+    return { pluginMarketplaceUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
   }
 
   const codexPlusBackendSettingMap = {
-    pluginEntryUnlock: "codexAppPluginEntryUnlock",
+    pluginMarketplaceUnlock: "codexAppPluginEntryUnlock",
     forcePluginInstall: "codexAppForcePluginInstall",
     modelWhitelistUnlock: "codexAppModelWhitelistUnlock",
     sessionDelete: "codexAppSessionDelete",
@@ -912,7 +913,7 @@
     const relayPatchDisabled = codexPlusBackendSettings.launchMode === "relay";
     if (codexPlusBackendSettings.enhancementsEnabled === false) {
       return {
-        pluginEntryUnlock: false,
+        pluginMarketplaceUnlock: false,
         forcePluginInstall: false,
         modelWhitelistUnlock: false,
         sessionDelete: false,
@@ -931,14 +932,14 @@
     try {
       const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
-        settings.pluginEntryUnlock = false;
+        settings.pluginMarketplaceUnlock = false;
         settings.forcePluginInstall = false;
       }
       return settings;
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
-        settings.pluginEntryUnlock = false;
+        settings.pluginMarketplaceUnlock = false;
         settings.forcePluginInstall = false;
       }
       return settings;
@@ -1907,8 +1908,8 @@
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="enhancementsEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">插件选项解锁</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强模式下无需开启；ChatGPT 登录态会保留官方插件入口。" : "完整增强模式会显示并启用插件入口。"}</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginEntryUnlock" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
+              <div><div class="codex-plus-row-title">插件市场解锁</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强模式下无需开启；ChatGPT 登录态会保留官方插件市场。" : "API Key 模式下扩展插件市场请求，尽量显示完整插件列表。"}</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginMarketplaceUnlock" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">特殊插件强制安装</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强模式下无需开启；不会改插件安装入口。" : "解除 App unavailable / 应用不可用导致的前端安装禁用。"}</div></div>
@@ -2331,79 +2332,159 @@
     removeDuplicateCodexPlusMenus(menu);
   }
 
-  function reactFiberFrom(element) {
-    const fiberKey = Object.keys(element).find((key) => key.startsWith("__reactFiber"));
-    return fiberKey ? element[fiberKey] : null;
-  }
-
-  function authContextValueFrom(element) {
-    for (let fiber = reactFiberFrom(element); fiber; fiber = fiber.return) {
-      for (const value of [fiber.memoizedProps?.value, fiber.pendingProps?.value]) {
-        if (value && typeof value === "object" && typeof value.setAuthMethod === "function" && "authMethod" in value) {
-          return value;
-        }
-      }
+  function patchPluginMarketplaceRequestParams(method, params) {
+    if (method === "list-plugins") {
+      if (!params || typeof params !== "object") return params;
+    } else {
+      return params;
     }
-    return null;
+    const next = { ...params };
+    const hadMarketplaceKinds = Object.prototype.hasOwnProperty.call(next, "marketplaceKinds");
+    if (hadMarketplaceKinds) delete next.marketplaceKinds;
+    sendCodexPlusDiagnostic("plugin_marketplace_request_expanded", {
+      hadMarketplaceKinds,
+      cwdCount: Array.isArray(next.cwds) ? next.cwds.length : 0,
+    });
+    return next;
   }
 
-  function spoofChatGPTAuthMethod(element) {
-    const auth = authContextValueFrom(element);
-    if (!auth || auth.authMethod === "chatgpt") return false;
-    auth.setAuthMethod("chatgpt");
+  function pluginMarketplaceAliasForName(name) {
+    if (name === "openai-bundled") return "codex-plus-openai-bundled";
+    if (name === "openai-curated") return "codex-plus-openai-curated";
+    if (name === "openai-primary-runtime") return "codex-plus-openai-primary-runtime";
+    return "";
+  }
+
+  function codexPluginMarketplacePathAliasForName(name) {
+    if (name === "openai-curated") return "remote:openai-curated";
+    return "";
+  }
+
+  function displayNameForPluginMarketplaceAlias(alias, fallback) {
+    if (alias === "codex-plus-openai-bundled") return "OpenAI插件1(Codex++)";
+    if (alias === "codex-plus-openai-curated") return "OpenAI插件2(Codex++)";
+    if (alias === "codex-plus-openai-primary-runtime") return "OpenAI插件3(Codex++)";
+    return fallback;
+  }
+
+  function patchPluginMarketplaceObject(marketplace) {
+    if (!marketplace || typeof marketplace !== "object" || marketplace.__codexPlusMarketplaceUnlockPatched) return false;
+    const alias = pluginMarketplaceAliasForName(marketplace.name);
+    if (!alias) return false;
+    marketplace.__codexPlusOriginalName = marketplace.name;
+    const pathAlias = codexPluginMarketplacePathAliasForName(marketplace.__codexPlusOriginalName);
+    marketplace.name = alias;
+    if (pathAlias) marketplace.path = pathAlias;
+    const displayName = displayNameForPluginMarketplaceAlias(alias, marketplace.__codexPlusOriginalName);
+    marketplace.displayName = displayName;
+    marketplace.title = displayName;
+    marketplace.label = displayName;
+    if (marketplace.interface && typeof marketplace.interface === "object") {
+      marketplace.interface = {
+        ...marketplace.interface,
+        displayName,
+        name: displayName,
+        title: displayName,
+        label: displayName,
+      };
+    } else {
+      marketplace.interface = { displayName, name: displayName, title: displayName, label: displayName };
+    }
+    marketplace.__codexPlusMarketplaceUnlockPatched = true;
     return true;
+  }
+
+  function restorePluginMarketplaceRequestParams(params) {
+    if (!params || typeof params !== "object") return params;
+    if (!Array.isArray(params.marketplaceKinds)) return params;
+    const nextKinds = params.marketplaceKinds.map((kind) => {
+      if (kind === "codex-plus-openai-bundled") return "openai-bundled";
+      if (kind === "codex-plus-openai-curated") return "openai-curated";
+      if (kind === "remote:openai-curated") return "openai-curated";
+      if (kind === "codex-plus-openai-primary-runtime") return "openai-primary-runtime";
+      return kind;
+    });
+    return { ...params, marketplaceKinds: Array.from(new Set(nextKinds)) };
+  }
+
+  function patchPluginMarketplaceResult(method, result) {
+    if (method !== "list-plugins") return result;
+    let patchedCount = 0;
+    try {
+      if (Array.isArray(result?.marketplaces)) {
+        result.marketplaces.forEach((marketplace) => {
+          if (patchPluginMarketplaceObject(marketplace)) patchedCount += 1;
+        });
+      }
+      if (patchedCount > 0) {
+        sendCodexPlusDiagnostic("plugin_marketplace_response_expanded", { patchedCount });
+      }
+    } catch (error) {
+      sendCodexPlusDiagnostic("plugin_marketplace_response_patch_failed", {
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+    }
+    return result;
+  }
+
+  function patchPluginMarketplaceRequestClient(client) {
+    if (!client || typeof client.sendRequest !== "function") return false;
+    if (client.__codexPluginMarketplaceUnlockPatch === codexPluginMarketplaceUnlockVersion) return true;
+    const originalSendRequest = client.__codexPluginMarketplaceOriginalSendRequest || client.sendRequest.bind(client);
+    client.__codexPluginMarketplaceOriginalSendRequest = originalSendRequest;
+    client.sendRequest = async function codexPluginMarketplacePatchedSendRequest(method, params, options) {
+      const requestMethod = appServerModelRequestMethod(String(method || ""), params);
+      const requestParams = patchPluginMarketplaceRequestParams(requestMethod, restorePluginMarketplaceRequestParams(params));
+      const result = await originalSendRequest(method, requestParams, options);
+      return patchPluginMarketplaceResult(requestMethod, result);
+    };
+    client.__codexPluginMarketplaceUnlockPatch = codexPluginMarketplaceUnlockVersion;
+    return true;
+  }
+
+  function installPluginMarketplaceRequestPatch() {
+    if (window.__codexPluginMarketplaceUnlockInstalled === codexPluginMarketplaceUnlockVersion) return;
+    if (pluginPatchDisabledInRelayMode()) return;
+    if (!codexPlusSettings().pluginMarketplaceUnlock) return;
+    const patch = async () => {
+      try {
+        const module = await loadCodexAppModule("app-server-manager-signals-");
+        const candidates = Object.values(module).filter((value) => value && typeof value === "object");
+        let patchedCount = 0;
+        for (const candidate of candidates) {
+          if (patchPluginMarketplaceRequestClient(candidate)) patchedCount += 1;
+          if (typeof candidate.sendRequest !== "function" && typeof candidate.get === "function") {
+            try {
+              if (patchPluginMarketplaceRequestClient(candidate.get())) patchedCount += 1;
+            } catch {
+            }
+          }
+        }
+        if (patchedCount > 0) {
+          window.__codexPluginMarketplaceUnlockInstalled = codexPluginMarketplaceUnlockVersion;
+          sendCodexPlusDiagnostic("plugin_marketplace_request_patch_installed", {
+            candidateCount: candidates.length,
+            patchedCount,
+          });
+        } else {
+          sendCodexPlusDiagnostic("plugin_marketplace_request_patch_not_found", {
+            exportCount: Object.keys(module || {}).length,
+            candidateCount: candidates.length,
+          });
+        }
+      } catch (error) {
+        sendCodexPlusDiagnostic("plugin_marketplace_request_patch_failed", {
+          errorName: error?.name || "",
+          errorMessage: error?.message || String(error),
+        });
+      }
+    };
+    void patch();
   }
 
   function pluginPatchDisabledInRelayMode() {
     return !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.launchMode === "relay";
-  }
-
-  function pluginEntryButton() {
-    const byIcon = document.querySelector(`${selectors.pluginNavButton} ${selectors.pluginSvgPath}`)?.closest("button");
-    if (byIcon) return byIcon;
-    return Array.from(document.querySelectorAll(selectors.pluginNavButton))
-      .find((button) => /^(插件|Plugins)(\s+-\s+.*)?$/i.test((button.textContent || "").trim())) || null;
-  }
-
-  function labelUnlockedPluginEntry(button) {
-    const labelTextNode = Array.from(button.querySelectorAll("span, div")).reverse()
-      .flatMap((node) => Array.from(node.childNodes))
-      .find((node) => node.nodeType === 3 && /^(插件|Plugins)( - 已解锁| - Unlocked)?$/i.test((node.nodeValue || "").trim()));
-    if (!labelTextNode) return;
-    const current = (labelTextNode.nodeValue || "").trim();
-    labelTextNode.nodeValue = /^Plugins/i.test(current) ? "Plugins - Unlocked" : "插件 - 已解锁";
-  }
-
-  function clearPluginEntryUnlockLabel(button) {
-    const labelTextNode = Array.from(button.querySelectorAll("span, div")).reverse()
-      .flatMap((node) => Array.from(node.childNodes))
-      .find((node) => node.nodeType === 3 && /^(插件 - 已解锁|Plugins - Unlocked)$/i.test((node.nodeValue || "").trim()));
-    if (!labelTextNode) return;
-    labelTextNode.nodeValue = /^Plugins/i.test((labelTextNode.nodeValue || "").trim()) ? "Plugins" : "插件";
-  }
-
-  function enablePluginEntry() {
-    if (pluginPatchDisabledInRelayMode()) return;
-    if (!codexPlusSettings().pluginEntryUnlock) return;
-    const pluginButton = pluginEntryButton();
-    if (!pluginButton) return;
-    spoofChatGPTAuthMethod(pluginButton);
-    pluginButton.disabled = false;
-    pluginButton.removeAttribute("disabled");
-    pluginButton.style.display = "";
-    pluginButton.querySelectorAll("*").forEach((node) => {
-      node.style.display = "";
-    });
-    labelUnlockedPluginEntry(pluginButton);
-    const reactPropsKey = Object.keys(pluginButton).find((key) => key.startsWith("__reactProps"));
-    if (reactPropsKey) {
-      pluginButton[reactPropsKey].disabled = false;
-    }
-    if (pluginButton.dataset.codexPluginEnabled === "true") return;
-    pluginButton.dataset.codexPluginEnabled = "true";
-    pluginButton.addEventListener("click", () => {
-      spoofChatGPTAuthMethod(pluginButton);
-    }, true);
   }
 
   function pluginInstallCandidates() {
@@ -2499,11 +2580,6 @@
   }
 
   function clearPluginPatchArtifacts() {
-    const pluginButton = pluginEntryButton();
-    if (pluginButton) {
-      delete pluginButton.dataset.codexPluginEnabled;
-      clearPluginEntryUnlockLabel(pluginButton);
-    }
     pluginInstallCandidates().forEach(clearForcedInstallButtonLabel);
   }
 
@@ -6105,20 +6181,6 @@
       .find((element) => isArchiveTitleText((element.textContent || "").trim()) && element.getBoundingClientRect().x > 350);
   }
 
-  async function deleteArchivedSessions(rows) {
-    let deleted = 0;
-    for (const row of rows) {
-      const ref = await resolveArchivedThread(row);
-      if (!ref.session_id) continue;
-      const result = await postJson("/delete", ref);
-      if (result.status === "server_deleted" || result.status === "local_deleted") {
-        row.remove();
-        deleted += 1;
-      }
-    }
-    showToast(`已删除 ${deleted} 个归档会话`, null);
-  }
-
   function attachArchivedPageDeleteButton(row) {
     const settings = codexPlusSettings();
     row.querySelectorAll("[data-codex-archive-row-action]").forEach((button) => button.remove());
@@ -6149,84 +6211,6 @@
       }, true);
       insertionPoint.insertAdjacentElement("afterend", exportButton);
       insertionPoint = exportButton;
-    }
-    if (settings.sessionDelete) {
-      const deleteButton = document.createElement("button");
-      deleteButton.type = "button";
-      deleteButton.className = `codex-archive-delete-all codex-archive-row-button ${buttonClass}`;
-      deleteButton.dataset.codexArchiveRowAction = "delete";
-      deleteButton.textContent = "删除";
-      ["pointerdown", "mousedown", "mouseup", "touchstart"].forEach((eventName) => {
-        deleteButton.addEventListener(eventName, stopArchivedButtonEvent, true);
-      });
-      deleteButton.addEventListener("click", async (event) => {
-        stopArchivedButtonEvent(event);
-        const ref = await resolveArchivedThread(row);
-        if (!ref.session_id) {
-          showToast("删除失败：未找到归档会话 ID", null);
-          return;
-        }
-        if (!(await confirmDelete(ref.title))) return;
-        const result = await postJson("/delete", ref);
-        if (result.status === "server_deleted" || result.status === "local_deleted") {
-          row.remove();
-          showToast(result.message || "删除成功", result.undo_token);
-        } else {
-          showToast(result.message || "删除失败", null);
-        }
-      }, true);
-      insertionPoint.insertAdjacentElement("afterend", deleteButton);
-    }
-  }
-
-  function installArchivedDeleteAllButton() {
-    const existingButton = document.querySelector("[data-codex-archive-delete-all]");
-    if (!codexPlusSettings().sessionDelete || !archivedPageVisible()) {
-      existingButton?.remove();
-      return;
-    }
-    const rows = archivedRows();
-    if (rows.length === 0) {
-      existingButton?.remove();
-      return;
-    }
-    if (existingButton?.dataset.codexArchiveDeleteAllVersion === codexArchiveDeleteAllVersion) return;
-    existingButton?.remove();
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "codex-archive-delete-all codex-archive-action-bar";
-    Object.assign(button.style, {
-      position: "static",
-      marginLeft: "12px",
-      verticalAlign: "middle",
-      zIndex: "2147482999",
-      cursor: "pointer",
-      pointerEvents: "auto",
-      maxWidth: "fit-content",
-      alignSelf: "flex-start",
-    });
-    button.dataset.codexArchiveDeleteAll = "true";
-    button.dataset.codexArchiveDeleteAllVersion = codexArchiveDeleteAllVersion;
-    button.textContent = "删除全部归档";
-    ["pointerdown", "mousedown", "mouseup", "touchstart"].forEach((eventName) => {
-      button.addEventListener(eventName, stopArchivedButtonEvent, true);
-    });
-    const openArchivedDeleteAllConfirm = async (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation?.();
-      const currentRows = archivedRows();
-      if (currentRows.length === 0) return;
-      if (!(await confirmDelete(`全部 ${currentRows.length} 个归档会话`))) return;
-      await deleteArchivedSessions(currentRows);
-    };
-    button.addEventListener("pointerup", openArchivedDeleteAllConfirm, true);
-    button.addEventListener("click", openArchivedDeleteAllConfirm, true);
-    const title = archiveTitleContainer();
-    if (title) {
-      title.insertAdjacentElement("afterend", button);
-    } else {
-      document.body.appendChild(button);
     }
   }
 
@@ -7494,7 +7478,7 @@
       clearPluginPatchArtifacts();
       refreshForcePluginInstallUnlockLoop();
     } else {
-      enablePluginEntry();
+      installPluginMarketplaceRequestPatch();
       unblockPluginInstallButtons();
       refreshForcePluginInstallUnlockLoop();
     }
@@ -7504,7 +7488,6 @@
     scheduleProjectMoveProjection();
     scheduleChatsSortCorrection();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
-    installArchivedDeleteAllButton();
     refreshConversationTimeline();
     refreshConversationView();
     installCodexServiceTierBadge();

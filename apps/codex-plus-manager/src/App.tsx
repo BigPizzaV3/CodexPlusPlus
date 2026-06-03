@@ -1828,11 +1828,11 @@ function EnhanceScreen({
           {form.launchMode === "relay" ? (
             <div className="hint-line">
               <ShieldCheck className="h-4 w-4" />
-              <span>当前为兼容增强模式，插件入口解锁和特殊插件强制安装不会启用；其他页面功能仍可用。</span>
+              <span>当前为兼容增强模式，插件市场解锁和特殊插件强制安装不会启用；其他页面功能仍可用。</span>
             </div>
           ) : null}
           <div className="feature-switch-grid">
-            <FeatureToggle title="插件入口解锁" detail="显示并启用 Codex 插件入口；官方/混合模式通常不需要。" checked={form.codexAppPluginEntryUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginEntryUnlock", value)} />
+            <FeatureToggle title="插件市场解锁" detail="API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。" checked={form.codexAppPluginEntryUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginEntryUnlock", value)} />
             <FeatureToggle title="特殊插件强制安装" detail="解除 App unavailable / 应用不可用导致的前端安装禁用。" checked={form.codexAppForcePluginInstall} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppForcePluginInstall", value)} />
             <FeatureToggle title="模型白名单解锁" detail="从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。" checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
             <FeatureToggle title="Fast 按钮" detail="显示服务模式切换按钮，可控制 Standard / Fast / priority。" checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
@@ -1848,7 +1848,7 @@ function EnhanceScreen({
           </div>
           <div className="hint-line">
             <Info className="h-4 w-4" />
-            <span>如果使用官方模式或官方混入 API 模式，不需要开启插件入口解锁和特殊插件强制安装。</span>
+            <span>如果使用官方模式或官方混入 API 模式，不需要开启插件市场解锁和特殊插件强制安装。</span>
           </div>
           <Toolbar>
             <Button onClick={() => void actions.saveSettings()}>保存增强设置</Button>
