@@ -457,19 +457,28 @@ impl LaunchHooks for DefaultLaunchHooks {
                 else {
                     unreachable!();
                 };
-                let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
-                return Ok(match activation {
-                    CodexLaunch::PackagedActivation {
-                        app_user_model_id,
-                        arguments,
-                        ..
-                    } => CodexLaunch::PackagedActivation {
-                        app_user_model_id,
-                        arguments,
-                        process_id: Some(process_id),
-                    },
-                    CodexLaunch::Process { .. } => unreachable!(),
-                });
+                match activate_packaged_app(app_user_model_id, arguments).await {
+                    Ok(process_id) => return Ok(match activation {
+                        CodexLaunch::PackagedActivation {
+                            app_user_model_id,
+                            arguments,
+                            ..
+                        } => CodexLaunch::PackagedActivation {
+                            app_user_model_id,
+                            arguments,
+                            process_id: Some(process_id),
+                        },
+                        CodexLaunch::Process { .. } => unreachable!(),
+                    }),
+                    Err(e) => {
+                        // FIX: AUMID 激活失败时回退到直接执行 Codex.exe
+                        // 适用于 Windows Store / MSIX 包版本
+                        eprintln!(
+                            "[WARN] Packaged activation failed for AUMID {}: {}, falling back to direct execution",
+                            app_user_model_id, e
+                        );
+                    }
+                }
             }
         }
 
