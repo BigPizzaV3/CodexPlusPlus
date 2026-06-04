@@ -571,7 +571,7 @@ async fn inject_with_context(
             Ok(()) => return Ok(()),
             Err(error) => {
                 last_error = Some(error);
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
         }
     }
