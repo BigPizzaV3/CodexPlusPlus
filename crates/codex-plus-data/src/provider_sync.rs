@@ -98,6 +98,13 @@ impl SqliteUpdateCounts {
 }
 
 pub fn run_provider_sync(codex_home: Option<&Path>) -> ProviderSyncResult {
+    run_provider_sync_with_target(codex_home, None)
+}
+
+pub fn run_provider_sync_with_target(
+    codex_home: Option<&Path>,
+    explicit_target_provider: Option<&str>,
+) -> ProviderSyncResult {
     let home = codex_home
         .map(Path::to_path_buf)
         .unwrap_or_else(|| dirs_home().join(".codex"));
@@ -111,7 +118,19 @@ pub fn run_provider_sync(codex_home: Option<&Path>) -> ProviderSyncResult {
             0,
         );
     }
-    let target_provider = read_current_provider(&home.join("config.toml"));
+    let target_provider = match resolve_target_provider(&home.join("config.toml"), explicit_target_provider) {
+        Ok(provider) => provider,
+        Err(message) => {
+            return result(
+                ProviderSyncStatus::Skipped,
+                message,
+                DEFAULT_PROVIDER,
+                None,
+                0,
+                0,
+            );
+        }
+    };
     let lock_dir = home.join("tmp/provider-sync.lock");
     if acquire_lock(&lock_dir).is_err() {
         return result(
@@ -326,6 +345,30 @@ fn read_current_provider(path: &Path) -> String {
     } else {
         provider
     }
+}
+
+fn resolve_target_provider(
+    config_path: &Path,
+    explicit_target_provider: Option<&str>,
+) -> Result<String, String> {
+    if let Some(raw) = explicit_target_provider {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Ok(read_current_provider(config_path));
+        }
+        if !is_valid_explicit_provider_id(trimmed) {
+            return Err(format!("Invalid provider sync target: {trimmed:?}"));
+        }
+        return Ok(trimmed.to_string());
+    }
+    Ok(read_current_provider(config_path))
+}
+
+fn is_valid_explicit_provider_id(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
 fn list_configured_provider_ids(path: &Path) -> Vec<String> {

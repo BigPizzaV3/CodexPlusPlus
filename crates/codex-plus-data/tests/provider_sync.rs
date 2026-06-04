@@ -1,5 +1,6 @@
 use codex_plus_data::{
     ProviderSyncStatus, ProviderSyncTargetSource, load_provider_sync_targets, run_provider_sync,
+    run_provider_sync_with_target,
 };
 use rusqlite::Connection;
 use serde_json::json;
@@ -227,6 +228,62 @@ fn provider_sync_updates_rollout_sqlite_visibility_and_creates_backup() {
     let backup_dir = result.backup_dir.unwrap();
     assert!(backup_dir.join("session-meta-backup.json").exists());
     assert!(backup_dir.join("db/state_5.sqlite").exists());
+}
+
+#[test]
+fn provider_sync_explicit_target_overrides_config_without_switching_config() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    let rollout = home.join("sessions/2026/rollout-target.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    create_state_db(&home.join("state_5.sqlite"));
+
+    let result = run_provider_sync_with_target(Some(&home), Some("custom"));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.target_provider, "custom");
+    assert_eq!(
+        fs::read_to_string(home.join("config.toml")).unwrap(),
+        "model_provider = \"apigather\"\n"
+    );
+    let first: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first["payload"]["model_provider"], "custom");
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    let provider: String = db
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'thread-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "custom");
+}
+
+#[test]
+fn provider_sync_rejects_invalid_explicit_target_before_writes() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-invalid-target.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    let original = fs::read_to_string(&rollout).unwrap();
+
+    let result = run_provider_sync_with_target(Some(&home), Some("bad\nprovider"));
+
+    assert_eq!(result.status, ProviderSyncStatus::Skipped);
+    assert!(result.message.contains("Invalid provider sync target"));
+    assert_eq!(fs::read_to_string(&rollout).unwrap(), original);
+    assert!(result.backup_dir.is_none());
 }
 
 #[test]
