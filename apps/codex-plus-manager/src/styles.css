@@ -929,7 +929,8 @@ body {
   height: 16px;
 }
 
-.field-select {
+.field-select,
+.select-input {
   min-height: 40px;
   width: 100%;
   border: 1px solid hsl(var(--border));
@@ -944,7 +945,8 @@ body {
     box-shadow var(--motion-fast) var(--motion-ease);
 }
 
-.field-select:focus-visible {
+.field-select:focus-visible,
+.select-input:focus-visible {
   border-color: hsl(var(--ring));
   box-shadow: 0 0 0 3px hsl(var(--ring) / 0.14);
   outline: none;

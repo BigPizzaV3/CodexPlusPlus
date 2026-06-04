@@ -95,6 +95,9 @@ type BackendSettings = {
   codexAppPath: string;
   codexExtraArgs: string[];
   providerSyncEnabled: boolean;
+  providerSyncSavedProviders: string[];
+  providerSyncManualProviders: string[];
+  providerSyncLastSelectedProvider: string;
   relayProfilesEnabled: boolean;
   ccsLinkEnabled: boolean;
   enhancementsEnabled: boolean;
@@ -302,6 +305,23 @@ type ProviderSyncPayload = {
   encryptedContentWarning?: string | null;
 };
 
+type ProviderSyncTargetSource = "config" | "rollout" | "sqlite" | "manual";
+
+type ProviderSyncTargetOption = {
+  id: string;
+  sources: ProviderSyncTargetSource[];
+  isCurrentProvider: boolean;
+  isManual: boolean;
+  isSaved: boolean;
+};
+
+type ProviderSyncTargetsPayload = {
+  currentProvider: string;
+  targets: ProviderSyncTargetOption[];
+};
+
+type ProviderSyncTargetsResult = CommandResult<ProviderSyncTargetsPayload>;
+
 type ProviderSyncProgress = {
   active: boolean;
   percent: number;
@@ -390,6 +410,19 @@ function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>)
   return `已同步到 ${target}：修复 ${changed} 个会话文件，更新 ${rows} 行索引${skippedText}。`;
 }
 
+const providerSyncSourceLabels: Record<ProviderSyncTargetSource, string> = {
+  config: "配置",
+  rollout: "会话",
+  sqlite: "索引",
+  manual: "手动",
+};
+
+function providerSyncTargetLabel(target: ProviderSyncTargetOption): string {
+  const labels = target.sources.map((source) => providerSyncSourceLabels[source]).filter(Boolean);
+  const current = target.isCurrentProvider ? ["当前"] : [];
+  return [...labels, ...current].join(" / ") || "发现";
+}
+
 function syncMarketInstalledState(current: ScriptMarketResult | null, userScripts: UserScriptInventory): ScriptMarketResult | null {
   if (!current) return current;
   const installed = new Map(
@@ -439,6 +472,9 @@ const defaultSettings: BackendSettings = {
   codexAppPath: "",
   codexExtraArgs: [],
   providerSyncEnabled: false,
+  providerSyncSavedProviders: [],
+  providerSyncManualProviders: [],
+  providerSyncLastSelectedProvider: "",
   relayProfilesEnabled: true,
   ccsLinkEnabled: false,
   enhancementsEnabled: true,
@@ -521,6 +557,8 @@ export function App() {
     message: "尚未运行历史会话修复。",
     result: null,
   });
+  const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
+  const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
 
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
@@ -694,6 +732,7 @@ export function App() {
     if (next === "sessions") {
       await refreshSettings(true);
       await refreshLocalSessions(true);
+      await refreshProviderSyncTargets(true);
     }
     if (next === "context") {
       await refreshSettings(true);
@@ -875,12 +914,29 @@ export function App() {
     }
   };
 
+  const refreshProviderSyncTargets = async (silent = false) => {
+    const result = await run(() => call<ProviderSyncTargetsResult>("load_provider_sync_targets"));
+    if (result) {
+      setProviderSyncTargets(result);
+      const targets = result.targets ?? [];
+      const saved = settingsForm.providerSyncLastSelectedProvider;
+      const preferred =
+        targets.find((target) => target.id === saved)?.id ||
+        targets.find((target) => target.isCurrentProvider)?.id ||
+        targets[0]?.id ||
+        "openai";
+      setSelectedProviderSyncTarget((current) => (targets.some((target) => target.id === current) ? current : preferred));
+      if (!silent && !isSuccessStatus(result.status)) showNotice("Provider 同步目标", result.message, result.status);
+    }
+    return result;
+  };
+
   const syncProvidersNow = async () => {
     if (providerSyncProgress.active) return;
     setProviderSyncProgress({
       active: true,
       percent: 12,
-      message: "正在扫描历史会话与索引…",
+      message: selectedProviderSyncTarget ? `正在同步到 ${selectedProviderSyncTarget}…` : "正在扫描历史会话与索引…",
       result: null,
     });
     const progressTimer = window.setInterval(() => {
@@ -894,7 +950,10 @@ export function App() {
       });
     }, 350);
     try {
-      const result = await run(() => call<CommandResult<ProviderSyncPayload>>("sync_providers_now"));
+      const targetProvider = selectedProviderSyncTarget || undefined;
+      const result = await run(() =>
+        call<CommandResult<ProviderSyncPayload>>("sync_providers_now", { targetProvider }),
+      );
       if (result) {
         setProviderSyncProgress({
           active: false,
@@ -902,6 +961,17 @@ export function App() {
           message: providerSyncProgressMessage(result),
           result,
         });
+        if (targetProvider) {
+          const next = {
+            ...settingsForm,
+            providerSyncLastSelectedProvider: targetProvider,
+            providerSyncSavedProviders: Array.from(
+              new Set([...(settingsForm.providerSyncSavedProviders ?? []), targetProvider]),
+            ).sort(),
+          };
+          setSettingsForm(next);
+        }
+        await refreshProviderSyncTargets(true);
         showNotice("历史会话修复", result.message, result.status);
       } else {
         setProviderSyncProgress({
@@ -1261,6 +1331,7 @@ export function App() {
       await refreshOverview(true);
       await refreshSettings(true);
       await refreshRelay(true);
+      await refreshProviderSyncTargets(true);
     })();
   }, []);
 
@@ -1348,6 +1419,11 @@ export function App() {
         }
       },
       syncProvidersNow,
+      refreshProviderSyncTargets,
+      setProviderSyncTarget: (provider: string) => {
+        setSelectedProviderSyncTarget(provider);
+        setSettingsForm((current) => ({ ...current, providerSyncLastSelectedProvider: provider }));
+      },
       setLaunchMode: async (launchMode: LaunchMode) => {
         await saveLaunchMode(launchMode);
       },
@@ -1394,7 +1470,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles, localSessions],
+    [route, launchForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget],
   );
   const hasUpdate = update?.updateAvailable === true;
 
@@ -1489,6 +1565,8 @@ export function App() {
               form={settingsForm}
               sessions={localSessions}
               providerSyncProgress={providerSyncProgress}
+              providerSyncTargets={providerSyncTargets}
+              selectedProviderSyncTarget={selectedProviderSyncTarget}
               onFormChange={setSettingsForm}
               actions={actions}
             />
@@ -1554,6 +1632,8 @@ type Actions = {
   clearCodexAppPath: () => Promise<void>;
   saveManualCodexAppPath: () => Promise<void>;
   syncProvidersNow: () => Promise<void>;
+  refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
+  setProviderSyncTarget: (provider: string) => void;
   setLaunchMode: (launchMode: LaunchMode) => Promise<void>;
   refreshRelay: () => Promise<void>;
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
@@ -1922,6 +2002,8 @@ function SessionsScreen({
   form,
   sessions,
   providerSyncProgress,
+  providerSyncTargets,
+  selectedProviderSyncTarget,
   onFormChange,
   actions,
 }: {
@@ -1929,6 +2011,8 @@ function SessionsScreen({
   form: BackendSettings;
   sessions: LocalSessionsResult | null;
   providerSyncProgress: ProviderSyncProgress;
+  providerSyncTargets: ProviderSyncTargetsResult | null;
+  selectedProviderSyncTarget: string;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
@@ -1945,6 +2029,23 @@ function SessionsScreen({
             <Metric label="未归档" value={`${activeCount} 个`} />
             <Metric label="已归档" value={`${archivedCount} 个`} />
             <Metric label="数据库" value={sessions?.dbPath ?? "~/.codex/state_5.sqlite"} />
+          </div>
+          <div className="form-row">
+            <Field label="同步目标">
+              <select
+                className="select-input"
+                disabled={providerSyncProgress.active || !(providerSyncTargets?.targets ?? []).length}
+                value={selectedProviderSyncTarget}
+                onChange={(event) => actions.setProviderSyncTarget(event.currentTarget.value)}
+              >
+                {(providerSyncTargets?.targets ?? []).map((target) => (
+                  <option key={target.id} value={target.id}>
+                    {target.id}（{providerSyncTargetLabel(target)}）
+                  </option>
+                ))}
+                {!(providerSyncTargets?.targets ?? []).length ? <option value="">当前配置 provider</option> : null}
+              </select>
+            </Field>
           </div>
           <Toolbar>
             <Button onClick={() => void actions.refreshLocalSessions()}>
