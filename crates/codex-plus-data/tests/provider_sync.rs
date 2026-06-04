@@ -342,6 +342,49 @@ fn provider_sync_repairs_sqlite_when_rollout_provider_matches_and_normalizes_pat
 }
 
 #[test]
+fn provider_sync_normalizes_open_in_target_preferences_per_path() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_rollout(
+        &home.join("sessions/rollout-current.jsonl"),
+        "apigather",
+        "thread-1",
+        "\\\\?\\C:\\workspace",
+    );
+    create_state_db(&home.join("state_5.sqlite"));
+    fs::write(
+        home.join(".codex-global-state.json"),
+        json!({
+            "electron-saved-workspace-roots": ["\\\\?\\C:\\workspace"],
+            "project-order": ["\\\\?\\C:\\workspace"],
+            "active-workspace-roots": ["\\\\?\\C:\\workspace"],
+            "electron-workspace-root-labels": {"\\\\?\\C:\\workspace": "Workspace"},
+            "open-in-target-preferences": {
+                "perPath": {
+                    "\\\\?\\C:\\workspace": "terminal"
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    let state: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(home.join(".codex-global-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        state["open-in-target-preferences"]["perPath"],
+        json!({"C:/workspace": "terminal"})
+    );
+    assert!(home.join(".codex-global-state.json.bak").exists());
+}
+
+#[test]
 fn provider_sync_restores_rollout_first_line_when_later_step_fails() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");

@@ -892,7 +892,34 @@ fn normalized_global_state(state: &Map<String, Value>) -> Map<String, Value> {
             Value::Object(labels),
         );
     }
+    if let Some(open_targets) = state
+        .get("open-in-target-preferences")
+        .and_then(Value::as_object)
+    {
+        let mut next_open_targets = open_targets.clone();
+        if let Some(per_path) = copy_resolved_object_keys(
+            open_targets.get("perPath").and_then(Value::as_object),
+        ) {
+            next_open_targets.insert("perPath".to_string(), Value::Object(per_path));
+        }
+        next.insert(
+            "open-in-target-preferences".to_string(),
+            Value::Object(next_open_targets),
+        );
+    }
     next
+}
+
+fn copy_resolved_object_keys(value: Option<&Map<String, Value>>) -> Option<Map<String, Value>> {
+    let value = value?;
+    let mut next = Map::new();
+    for (key, item) in value {
+        next.insert(
+            to_desktop_workspace_path(key).unwrap_or_else(|| key.clone()),
+            item.clone(),
+        );
+    }
+    Some(next)
 }
 
 fn count_global_state_updates(path: &Path) -> anyhow::Result<usize> {
@@ -915,7 +942,11 @@ fn apply_global_state_update(path: &Path) -> anyhow::Result<usize> {
         for (key, value) in next {
             state.insert(key, value);
         }
-        fs::write(path, serde_json::to_string_pretty(&Value::Object(state))?)?;
+        let text = serde_json::to_string_pretty(&Value::Object(state))?;
+        fs::write(path, &text)?;
+        if let Some(parent) = path.parent() {
+            fs::write(parent.join(".codex-global-state.json.bak"), text)?;
+        }
     }
     Ok(count)
 }
