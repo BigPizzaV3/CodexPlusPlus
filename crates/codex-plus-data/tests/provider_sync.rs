@@ -231,6 +231,40 @@ fn provider_sync_updates_rollout_sqlite_visibility_and_creates_backup() {
 }
 
 #[test]
+fn provider_sync_backup_metadata_contains_reference_fields_and_managed_marker() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_rollout(
+        &home.join("sessions/rollout-backup.jsonl"),
+        "openai",
+        "thread-1",
+        "C:/workspace",
+    );
+    create_state_db(&home.join("state_5.sqlite"));
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    let backup_dir = result.backup_dir.unwrap();
+    let metadata: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(backup_dir.join("metadata.json")).unwrap())
+            .unwrap();
+    assert_eq!(metadata["version"], 1);
+    assert_eq!(metadata["namespace"], "provider-sync");
+    assert_eq!(metadata["codexHome"], home.to_string_lossy().to_string());
+    assert_eq!(metadata["targetProvider"], "apigather");
+    assert_eq!(metadata["changedSessionFiles"], 1);
+    assert_eq!(metadata["managedBy"], "Codex++ provider sync");
+    assert!(metadata["createdAt"].as_str().unwrap().contains('T'));
+    assert!(metadata["dbFiles"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("state_5.sqlite")));
+}
+
+#[test]
 fn provider_sync_explicit_target_overrides_config_without_switching_config() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
@@ -477,6 +511,39 @@ fn provider_sync_rolls_back_sqlite_provider_update_when_later_update_fails() {
         )
         .unwrap();
     assert_eq!(row, ("old-provider".to_string(), 1, "C:/old".to_string()));
+}
+
+#[test]
+fn provider_sync_restores_global_state_when_later_step_fails() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_rollout(
+        &home.join("sessions/rollout-current.jsonl"),
+        "apigather",
+        "thread-1",
+        "\\\\?\\C:\\workspace",
+    );
+    create_state_db(&home.join("state_5.sqlite"));
+    let state_path = home.join(".codex-global-state.json");
+    let original_state = json!({
+        "electron-saved-workspace-roots": ["\\\\?\\C:\\workspace"],
+        "project-order": ["\\\\?\\C:\\workspace"]
+    })
+    .to_string();
+    fs::write(&state_path, &original_state).unwrap();
+    fs::create_dir_all(home.join("backups_state/provider-sync/blocker")).unwrap();
+    fs::write(
+        home.join("backups_state/provider-sync/blocker/metadata.json"),
+        json!({"managedBy": "Codex++ provider sync"}).to_string(),
+    )
+    .unwrap();
+
+    let result = run_provider_sync_with_target(Some(&home), Some("bad/provider"));
+
+    assert_eq!(result.status, ProviderSyncStatus::Skipped);
+    assert_eq!(fs::read_to_string(&state_path).unwrap(), original_state);
 }
 
 #[test]

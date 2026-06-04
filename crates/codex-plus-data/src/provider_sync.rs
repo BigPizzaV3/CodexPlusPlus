@@ -657,11 +657,13 @@ fn create_backup(
         }
     }
     let db_dir = backup_dir.join("db");
+    let mut db_files = Vec::new();
     for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
         let source = home.join(name);
         if source.exists() {
             fs::create_dir_all(&db_dir)?;
             fs::copy(&source, db_dir.join(name))?;
+            db_files.push(name.to_string());
         }
     }
     let manifest = changes
@@ -680,9 +682,16 @@ fn create_backup(
     )?;
     fs::write(
         backup_dir.join("metadata.json"),
-        serde_json::to_string_pretty(
-            &json!({"managedBy": "Codex++ provider sync", "targetProvider": target_provider}),
-        )?,
+        serde_json::to_string_pretty(&json!({
+            "version": 1,
+            "namespace": "provider-sync",
+            "codexHome": home.to_string_lossy(),
+            "targetProvider": target_provider,
+            "createdAt": chrono::Utc::now().to_rfc3339(),
+            "dbFiles": db_files,
+            "changedSessionFiles": changes.len(),
+            "managedBy": "Codex++ provider sync"
+        }))?,
     )?;
     Ok(backup_dir)
 }
