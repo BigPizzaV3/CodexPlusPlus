@@ -160,6 +160,8 @@ pub struct BackendSettings {
     pub enhancements_enabled: bool,
     #[serde(rename = "codexAppPluginEntryUnlock", default = "default_true")]
     pub codex_app_plugin_entry_unlock: bool,
+    #[serde(rename = "codexAppPluginMarketplaceUnlock", default = "default_true")]
+    pub codex_app_plugin_marketplace_unlock: bool,
     #[serde(rename = "codexAppForcePluginInstall", default = "default_true")]
     pub codex_app_force_plugin_install: bool,
     #[serde(rename = "codexAppModelWhitelistUnlock", default = "default_true")]
@@ -229,6 +231,7 @@ impl Default for BackendSettings {
             ccs_link_enabled: false,
             enhancements_enabled: true,
             codex_app_plugin_entry_unlock: true,
+            codex_app_plugin_marketplace_unlock: true,
             codex_app_force_plugin_install: true,
             codex_app_model_whitelist_unlock: true,
             codex_app_session_delete: true,
@@ -508,6 +511,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         target.insert("enhancementsEnabled".to_string(), Value::Bool(value));
     }
     merge_bool_setting(target, source, "codexAppPluginEntryUnlock");
+    merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
     merge_bool_setting(target, source, "codexAppForcePluginInstall");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
     merge_bool_setting(target, source, "codexAppSessionDelete");
@@ -821,6 +825,9 @@ mod tests {
         assert!(settings.relay_profiles_enabled);
         assert!(!settings.ccs_link_enabled);
         assert!(settings.enhancements_enabled);
+        assert!(settings.codex_app_plugin_entry_unlock);
+        assert!(settings.codex_app_plugin_marketplace_unlock);
+        assert!(settings.codex_app_force_plugin_install);
         assert!(!settings.codex_goals_enabled);
         assert!(settings.codex_app_path.is_empty());
         assert!(settings.codex_extra_args.is_empty());
@@ -849,6 +856,34 @@ mod tests {
         assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.codex_extra_args.is_empty());
+    }
+
+    #[test]
+    fn settings_deserialize_keeps_plugin_unlock_switches_independent() {
+        let settings: BackendSettings = serde_json::from_str(
+            r#"{
+                "codexAppPluginEntryUnlock": false,
+                "codexAppPluginMarketplaceUnlock": true,
+                "codexAppForcePluginInstall": false
+            }"#,
+        )
+        .unwrap();
+
+        assert!(!settings.codex_app_plugin_entry_unlock);
+        assert!(settings.codex_app_plugin_marketplace_unlock);
+        assert!(!settings.codex_app_force_plugin_install);
+
+        let legacy_settings: BackendSettings = serde_json::from_str(
+            r#"{
+                "codexAppPluginEntryUnlock": false,
+                "codexAppForcePluginInstall": false
+            }"#,
+        )
+        .unwrap();
+
+        assert!(!legacy_settings.codex_app_plugin_entry_unlock);
+        assert!(legacy_settings.codex_app_plugin_marketplace_unlock);
+        assert!(!legacy_settings.codex_app_force_plugin_install);
     }
 
     #[test]
