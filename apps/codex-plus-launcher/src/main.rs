@@ -616,6 +616,12 @@ async fn try_inject_with_context(
 }
 
 fn default_codex_db_path() -> PathBuf {
+    if let Some(codex_home) = std::env::var_os("CODEX_HOME") {
+        let path = PathBuf::from(codex_home);
+        if !path.as_os_str().is_empty() {
+            return path.join("state_5.sqlite");
+        }
+    }
     directories::BaseDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
@@ -717,6 +723,24 @@ mod tests {
 
         assert_eq!(options.debug_port, LaunchOptions::default().debug_port);
         assert_eq!(options.helper_port, LaunchOptions::default().helper_port);
+    }
+
+    #[test]
+    fn default_codex_db_path_uses_codex_home() {
+        let previous = std::env::var_os("CODEX_HOME");
+        let profile_home = PathBuf::from("D:/Codex/CodexSwitcher/profiles/example/.codex");
+        unsafe {
+            std::env::set_var("CODEX_HOME", &profile_home);
+        }
+
+        assert_eq!(default_codex_db_path(), profile_home.join("state_5.sqlite"));
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("CODEX_HOME", value),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+        }
     }
 
     #[test]
