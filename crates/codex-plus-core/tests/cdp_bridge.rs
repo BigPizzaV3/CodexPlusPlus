@@ -89,6 +89,19 @@ fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
 }
 
 #[test]
+fn injection_script_menu_exposes_three_independent_plugin_switches() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("插件市场解锁"));
+    assert!(script.contains("data-codex-plus-setting=\"pluginMarketplaceUnlock\""));
+    assert!(script.contains("强制解锁入口"));
+    assert!(script.contains("data-codex-plus-setting=\"pluginEntryUnlock\""));
+    assert!(script.contains("特殊插件强制安装"));
+    assert!(script.contains("data-codex-plus-setting=\"forcePluginInstall\""));
+    assert!(script.contains("恢复 1.1.9 的入口解锁方式"));
+}
+
+#[test]
 fn injection_script_skips_plugin_patch_work_in_relay_mode() {
     let script = assets::injection_script(57321);
 
