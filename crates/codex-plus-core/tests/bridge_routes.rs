@@ -743,8 +743,22 @@ fn install_market_script_writes_file_and_records_metadata() {
     assert_eq!(inventory["scripts"][0]["market_id"], "demo");
 }
 
+fn market_script_with_sha256(sha256: &str) -> codex_plus_core::script_market::MarketScript {
+    codex_plus_core::script_market::MarketScript {
+        id: "demo".to_string(),
+        name: "Demo".to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        author: String::new(),
+        tags: Vec::new(),
+        homepage: String::new(),
+        script_url: "https://example.com/demo.js".to_string(),
+        sha256: sha256.to_string(),
+    }
+}
+
 #[test]
-fn install_market_script_ignores_checksum_mismatch_and_replaces_existing_file() {
+fn install_market_script_rejects_checksum_mismatch_and_keeps_existing_file() {
     let temp = tempfile::tempdir().unwrap();
     let user_dir = temp.path().join("user");
     std::fs::create_dir_all(&user_dir).unwrap();
@@ -754,17 +768,58 @@ fn install_market_script_ignores_checksum_mismatch_and_replaces_existing_file() 
         user_dir.clone(),
         temp.path().join("user_scripts.json"),
     );
-    let script = codex_plus_core::script_market::MarketScript {
-        id: "demo".to_string(),
-        name: "Demo".to_string(),
-        description: String::new(),
-        version: "1.0.0".to_string(),
-        author: String::new(),
-        tags: Vec::new(),
-        homepage: String::new(),
-        script_url: "https://example.com/demo.js".to_string(),
-        sha256: "0000".to_string(),
-    };
+    let script = market_script_with_sha256("0000");
+
+    let result =
+        codex_plus_core::script_market::install_market_script_content(&manager, &script, b"new");
+
+    assert!(result.is_err(), "checksum mismatch must abort the install");
+    // 安装被拒,旧版本原样保留,未记录到配置。
+    assert_eq!(
+        std::fs::read_to_string(user_dir.join("market-demo.js")).unwrap(),
+        "old"
+    );
+    assert!(
+        !manager
+            .load_config()
+            .scripts
+            .contains_key("user:market-demo.js")
+    );
+}
+
+#[test]
+fn install_market_script_accepts_matching_checksum() {
+    let temp = tempfile::tempdir().unwrap();
+    let user_dir = temp.path().join("user");
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        user_dir.clone(),
+        temp.path().join("user_scripts.json"),
+    );
+    // sha256("new")
+    let script = market_script_with_sha256(
+        "11507a0e2f5e69d5dfa40a62a1bd7b6ee57e6bcd85c67c9b8431b36fff21c437",
+    );
+
+    codex_plus_core::script_market::install_market_script_content(&manager, &script, b"new")
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(user_dir.join("market-demo.js")).unwrap(),
+        "new"
+    );
+}
+
+#[test]
+fn install_market_script_skips_verification_when_checksum_empty() {
+    let temp = tempfile::tempdir().unwrap();
+    let user_dir = temp.path().join("user");
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        user_dir.clone(),
+        temp.path().join("user_scripts.json"),
+    );
+    let script = market_script_with_sha256("");
 
     codex_plus_core::script_market::install_market_script_content(&manager, &script, b"new")
         .unwrap();

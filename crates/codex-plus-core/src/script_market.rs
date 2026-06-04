@@ -85,6 +85,9 @@ pub fn install_market_script_content(
     script: &MarketScript,
     content: &[u8],
 ) -> anyhow::Result<()> {
+    // 先校验完整性再落盘:市场脚本是注入页面执行的 JS,内容哈希是其唯一防篡改手段。
+    // 校验失败立即返回,不写文件、不记录安装,保留已有版本不变。
+    verify_script_checksum(script, content)?;
     let path = manager.user_script_path_for_market_id(&script.id);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
@@ -106,6 +109,27 @@ pub async fn install_market_script(
 ) -> anyhow::Result<()> {
     let content = download_script(&script.script_url).await?;
     install_market_script_content(manager, script, &content)
+}
+
+/// 比对下载内容与清单声明的 sha256。
+///
+/// 清单未提供 sha256(字段为空)时跳过校验以兼容无哈希的旧清单;提供时按
+/// 大小写不敏感的十六进制比对,不匹配即返回错误。
+fn verify_script_checksum(script: &MarketScript, content: &[u8]) -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+
+    let expected = script.sha256.trim();
+    if expected.is_empty() {
+        return Ok(());
+    }
+    let actual = hex::encode(Sha256::digest(content));
+    if !actual.eq_ignore_ascii_case(expected) {
+        anyhow::bail!(
+            "脚本 {} 的 sha256 校验失败:清单声明 {expected},实际下载内容为 {actual}",
+            script.id
+        );
+    }
+    Ok(())
 }
 
 fn parse_market_script(raw: Value) -> Option<MarketScript> {

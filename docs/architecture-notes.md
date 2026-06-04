@@ -451,7 +451,8 @@ Codex 把每个会话按 `model_provider` 打标,且标记散落在**三处数�
 
 - **删除防穿越**(`delete_user_script`:113):只允许 `user:` 前缀;拒含 `/ \ . ..` 的 key;再 `canonicalize` 后 `starts_with(user_dir)` 双重确认,绝不删目录外文件。
 - **市场 id 消毒**(`sanitize_market_id`:380):非 `[A-Za-z0-9_-]` 一律替 `-`,防文件名注入;空则回退 `"script"`。
-- **诚实警示:`sha256` 被解析、存储,但安装全程不校验**。`MarketScript` 带 `sha256` 字段(script_market.rs:32),`install_market_script_content` 却直接写下载字节、无 hash 比对——走读全工作区无 `Sha256`/`sha2` 校验,且测试 `install_market_script_ignores_checksum_mismatch_and_replaces_existing_file`(bridge_routes.rs:747)**明确固化了"忽略校验和不匹配"** 的行为。即:市场脚本的完整性当前只靠 HTTPS 传输信任、不靠内容哈希;而装来的脚本是注入页面执行的 JS。这是已知行为(非偶发 bug),也是后续值得补的硬化点。
+- **市场脚本完整性校验**(`verify_script_checksum`,script_market.rs):`install_market_script_content` 在落盘前先比对下载内容与清单声明的 `sha256`,不匹配即中止(不写文件、不记录安装、保留已有版本);清单未提供哈希(字段空)时跳过以兼容旧清单。这是市场脚本(注入页面执行的 JS)的防篡改手段——HTTPS 只保证传输安全,内容哈希才能保证装到本地的脚本与清单声明一致。相应测试 `install_market_script_{rejects_checksum_mismatch_and_keeps_existing_file, accepts_matching_checksum, skips_verification_when_checksum_empty}`(bridge_routes.rs)。
+  > 历史:该校验是本轮走读时**新增的硬化**。此前 `sha256` 字段仅被解析存储、安装并不校验(旧测试 `..._ignores_checksum_mismatch_...` 固化了"忽略不匹配"),走读发现后补上。
 
 ---
 
@@ -460,4 +461,4 @@ Codex 把每个会话按 `model_provider` 打标,且标记散落在**三处数�
 - `protocol_proxy` 的转换逻辑有完整单测:`crates/codex-plus-core/tests/protocol_proxy.rs`(35 个 test,覆盖请求/响应/SSE/内联 think/UTF-8 边界/apply_patch/URL 归一化)。`cargo test -p codex-plus-core --test protocol_proxy` 全绿。
 - `relay_config` 的模式/协议/common/回填/清除逻辑有 `crates/codex-plus-core/tests/relay_config.rs`(67 个 test,覆盖三模式落盘、common 合并/剥离、上下文增删、限额写入、回填恢复 provider id、清除还原)。`cargo test -p codex-plus-core --test relay_config` 走读时实跑 **67 passed; 0 failed**。
 - `provider_sync` 的三源同步与回滚有 `crates/codex-plus-data/tests/provider_sync.rs`(7 个 test,含"后续步骤失败时还原 rollout 首行");`watcher` 的开关/恢复判定/可杀进程过滤有 `crates/codex-plus-core/tests/watcher.rs`(9 个 test)。走读时实跑 **7 passed** 与 **9 passed**,均 0 failed。
-- `user_scripts`/`script_market` 的列表形状、开关/删除(拒删 builtin)、坏配置容忍、市场清单过滤、安装写文件+元数据、热重载即时 evaluate、以及"忽略 sha256 校验"行为,有 `crates/codex-plus-core/tests/bridge_routes.rs` 覆盖(20 个 test,其中 9 个直接针对用户脚本/市场)。`cargo test -p codex-plus-core --test bridge_routes` 走读时实跑 **20 passed; 0 failed**。
+- `user_scripts`/`script_market` 的列表形状、开关/删除(拒删 builtin)、坏配置容忍、市场清单过滤、安装写文件+元数据、热重载即时 evaluate、以及 **sha256 校验(拒绝不匹配 / 接受匹配 / 空哈希跳过)**,有 `crates/codex-plus-core/tests/bridge_routes.rs` 覆盖(22 个 test,其中 11 个直接针对用户脚本/市场)。`cargo test -p codex-plus-core --test bridge_routes` 实跑 **22 passed; 0 failed**。
