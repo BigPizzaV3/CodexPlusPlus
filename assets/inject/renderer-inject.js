@@ -880,11 +880,12 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
+    return { pluginEntryUnlock: true, pluginMarketplaceUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
   }
 
   const codexPlusBackendSettingMap = {
-    pluginMarketplaceUnlock: "codexAppPluginEntryUnlock",
+    pluginEntryUnlock: "codexAppPluginEntryUnlock",
+    pluginMarketplaceUnlock: "codexAppPluginMarketplaceUnlock",
     forcePluginInstall: "codexAppForcePluginInstall",
     modelWhitelistUnlock: "codexAppModelWhitelistUnlock",
     sessionDelete: "codexAppSessionDelete",
@@ -913,6 +914,7 @@
     const relayPatchDisabled = codexPlusBackendSettings.launchMode === "relay";
     if (codexPlusBackendSettings.enhancementsEnabled === false) {
       return {
+        pluginEntryUnlock: false,
         pluginMarketplaceUnlock: false,
         forcePluginInstall: false,
         modelWhitelistUnlock: false,
@@ -932,6 +934,7 @@
     try {
       const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
+        settings.pluginEntryUnlock = false;
         settings.pluginMarketplaceUnlock = false;
         settings.forcePluginInstall = false;
       }
@@ -939,6 +942,7 @@
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
+        settings.pluginEntryUnlock = false;
         settings.pluginMarketplaceUnlock = false;
         settings.forcePluginInstall = false;
       }
@@ -2599,6 +2603,79 @@
     void patch();
   }
 
+  function reactFiberFrom(element) {
+    const fiberKey = Object.keys(element).find((key) => key.startsWith("__reactFiber"));
+    return fiberKey ? element[fiberKey] : null;
+  }
+
+  function authContextValueFrom(element) {
+    for (let fiber = reactFiberFrom(element); fiber; fiber = fiber.return) {
+      for (const value of [fiber.memoizedProps?.value, fiber.pendingProps?.value]) {
+        if (value && typeof value === "object" && typeof value.setAuthMethod === "function" && "authMethod" in value) {
+          return value;
+        }
+      }
+    }
+    return null;
+  }
+
+  function spoofChatGPTAuthMethod(element) {
+    const auth = authContextValueFrom(element);
+    if (!auth || auth.authMethod === "chatgpt") return false;
+    auth.setAuthMethod("chatgpt");
+    return true;
+  }
+
+  function pluginEntryButton() {
+    const byIcon = document.querySelector(`${selectors.pluginNavButton} ${selectors.pluginSvgPath}`)?.closest("button");
+    if (byIcon) return byIcon;
+    return Array.from(document.querySelectorAll(selectors.pluginNavButton))
+      .find((button) => /^(插件|Plugins)(\s+-\s+.*)?$/i.test((button.textContent || "").trim())) || null;
+  }
+
+  function labelUnlockedPluginEntry(button) {
+    const labelTextNode = Array.from(button.querySelectorAll("span, div")).reverse()
+      .flatMap((node) => Array.from(node.childNodes))
+      .find((node) => node.nodeType === 3 && /^(插件|Plugins)( - 已解锁| - Unlocked)?$/i.test((node.nodeValue || "").trim()));
+    if (!labelTextNode) return;
+    const current = (labelTextNode.nodeValue || "").trim();
+    labelTextNode.nodeValue = /^Plugins/i.test(current) ? "Plugins - Unlocked" : "插件 - 已解锁";
+  }
+
+  function clearPluginEntryUnlockLabel(button) {
+    const labelTextNode = Array.from(button.querySelectorAll("span, div")).reverse()
+      .flatMap((node) => Array.from(node.childNodes))
+      .find((node) => node.nodeType === 3 && /^(插件 - 已解锁|Plugins - Unlocked)$/i.test((node.nodeValue || "").trim()));
+    if (!labelTextNode) return;
+    labelTextNode.nodeValue = /^Plugins/i.test((labelTextNode.nodeValue || "").trim()) ? "Plugins" : "插件";
+  }
+
+  function enablePluginEntry() {
+    if (pluginPatchDisabledInRelayMode()) return;
+    if (!codexPlusSettings().pluginEntryUnlock) return;
+    const pluginButton = pluginEntryButton();
+    if (!pluginButton) return;
+    const spoofed = spoofChatGPTAuthMethod(pluginButton);
+    pluginButton.disabled = false;
+    pluginButton.removeAttribute("disabled");
+    pluginButton.style.display = "";
+    pluginButton.querySelectorAll("*").forEach((node) => {
+      node.style.display = "";
+    });
+    labelUnlockedPluginEntry(pluginButton);
+    const reactPropsKey = Object.keys(pluginButton).find((key) => key.startsWith("__reactProps"));
+    if (reactPropsKey) {
+      pluginButton[reactPropsKey].disabled = false;
+    }
+    if (pluginButton.dataset.codexPluginEnabled !== "true") {
+      pluginButton.dataset.codexPluginEnabled = "true";
+      pluginButton.addEventListener("click", () => {
+        spoofChatGPTAuthMethod(pluginButton);
+      }, true);
+    }
+    sendCodexPlusDiagnostic("plugin_entry_unlock_applied", { spoofed });
+  }
+
   function pluginPatchDisabledInRelayMode() {
     return !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.launchMode === "relay";
   }
@@ -2696,6 +2773,11 @@
   }
 
   function clearPluginPatchArtifacts() {
+    const pluginButton = pluginEntryButton();
+    if (pluginButton) {
+      delete pluginButton.dataset.codexPluginEnabled;
+      clearPluginEntryUnlockLabel(pluginButton);
+    }
     pluginInstallCandidates().forEach(clearForcedInstallButtonLabel);
   }
 
@@ -7594,6 +7676,7 @@
       clearPluginPatchArtifacts();
       refreshForcePluginInstallUnlockLoop();
     } else {
+      enablePluginEntry();
       installPluginBuildFlavorFilterPatch();
       installPluginMarketplaceRequestPatch();
       unblockPluginInstallButtons();

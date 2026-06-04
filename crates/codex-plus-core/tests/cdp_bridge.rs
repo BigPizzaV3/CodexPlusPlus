@@ -99,15 +99,33 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
 }
 
 #[test]
-fn injection_script_does_not_relabel_or_unlock_plugin_sidebar_entry() {
+fn injection_script_restores_legacy_plugin_sidebar_entry_unlock() {
     let script = assets::injection_script(57321);
 
-    assert!(!script.contains("enablePluginEntry"));
-    assert!(!script.contains("pluginEntryButton"));
-    assert!(!script.contains("labelUnlockedPluginEntry"));
-    assert!(!script.contains("clearPluginEntryUnlockLabel"));
-    assert!(!script.contains("插件 - 已解锁"));
-    assert!(!script.contains("Plugins - Unlocked"));
+    assert!(script.contains("pluginEntryUnlock: true"));
+    assert!(script.contains("pluginEntryUnlock: \"codexAppPluginEntryUnlock\""));
+    assert!(script.contains("function reactFiberFrom(element)"));
+    assert!(script.contains("function authContextValueFrom(element)"));
+    assert!(script.contains("function spoofChatGPTAuthMethod(element)"));
+    assert!(script.contains("auth.setAuthMethod(\"chatgpt\")"));
+    assert!(script.contains("function pluginEntryButton()"));
+    assert!(script.contains("function enablePluginEntry()"));
+    assert!(script.contains("if (!codexPlusSettings().pluginEntryUnlock) return"));
+    assert!(script.contains("pluginButton.addEventListener(\"click\", () => {"));
+    assert!(script.contains("spoofChatGPTAuthMethod(pluginButton);"));
+    assert!(script.contains("插件 - 已解锁"));
+    assert!(script.contains("Plugins - Unlocked"));
+}
+
+#[test]
+fn injection_script_keeps_plugin_marketplace_unlock_separate_from_entry_unlock() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("pluginMarketplaceUnlock: true"));
+    assert!(script.contains("pluginMarketplaceUnlock: \"codexAppPluginMarketplaceUnlock\""));
+    assert!(script.contains("if (!codexPlusSettings().pluginMarketplaceUnlock) return"));
+    assert!(script.contains("installPluginBuildFlavorFilterPatch"));
+    assert!(script.contains("installPluginMarketplaceRequestPatch"));
 }
 
 #[test]
@@ -180,7 +198,6 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(!script.contains("marketplace.path ="));
     assert!(!script.contains("codexPluginMarketplacePathAliasForName"));
     assert!(!script.contains("spoofAnyCodexAuthContext"));
-    assert!(!script.contains("spoofChatGPTAuthMethod"));
 }
 
 #[test]
