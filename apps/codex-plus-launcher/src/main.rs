@@ -45,7 +45,50 @@ async fn main() -> Result<()> {
     });
     let hooks = LauncherHooks::default();
     let handle = launch_and_inject_with_hooks(options, &hooks).await?;
-    handle.wait_for_codex_exit().await?;
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "main.wait_for_codex_exit_start",
+        json!({
+            "launch_type": format!("{:?}", handle.launch),
+            "debug_port": handle.debug_port,
+            "helper_port": handle.helper_port,
+        }),
+    );
+    // FIX: wait_for_codex_exit 可能因权限或进程模型问题快速返回（如 Windows Store 回退时
+    // Codex.exe 作为 broker 启动后自身退出，或 OpenProcess 权限不足），
+    // 此时不应让 main 退出，否则 Helper 被 shutdown，Codex++ 后端断开。
+    // 改为等待 Ctrl+C 信号保持程序存活。
+    let exit_result = handle.wait_for_codex_exit().await;
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "main.wait_for_codex_exit_result",
+        json!({
+            "ok": exit_result.is_ok(),
+            "error": exit_result.as_ref().err().map(|e| e.to_string()),
+        }),
+    );
+    // FIX: wait_for_codex_exit 内部会调用 shutdown_helper 关闭 HTTP 服务器，
+    // 但 Codex 可能还在运行（broker 退出导致 wait 返回），所以重新启动 Helper
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let _ = hooks.start_helper(handle.helper_port).await;
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "main.helper_restarted",
+        json!({"helper_port": handle.helper_port, "debug_port": handle.debug_port}),
+    );
+    // 循环检测 CDP 存活，持续等待直到 CDP 断开（Codex 真正退出）
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        if !is_cdp_alive(handle.debug_port).await {
+            // CDP 不可达，等待片刻再确认（防止误判）
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            if !is_cdp_alive(handle.debug_port).await {
+                // 两次检测都不可达，说明 Codex 真正退出了
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "main.codex_exit_confirmed",
+                    json!({"debug_port": handle.debug_port}),
+                );
+                break;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -673,6 +716,11 @@ fn default_user_script_manager() -> UserScriptManager {
         config_dir.join("user_scripts"),
         config_dir.join("user_scripts.json"),
     )
+}
+
+/// 检查 Codex 的 CDP 端口是否可达（用于判断 Codex 是否仍在运行）
+async fn is_cdp_alive(debug_port: u16) -> bool {
+    codex_plus_core::cdp::list_targets(debug_port).await.is_ok()
 }
 
 fn default_user_scripts_config_dir() -> PathBuf {

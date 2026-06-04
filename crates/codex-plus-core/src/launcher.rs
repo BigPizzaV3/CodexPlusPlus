@@ -457,19 +457,28 @@ impl LaunchHooks for DefaultLaunchHooks {
                 else {
                     unreachable!();
                 };
-                let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
-                return Ok(match activation {
-                    CodexLaunch::PackagedActivation {
-                        app_user_model_id,
-                        arguments,
-                        ..
-                    } => CodexLaunch::PackagedActivation {
-                        app_user_model_id,
-                        arguments,
-                        process_id: Some(process_id),
-                    },
-                    CodexLaunch::Process { .. } => unreachable!(),
-                });
+                match activate_packaged_app(app_user_model_id, arguments).await {
+                    Ok(process_id) => return Ok(match activation {
+                        CodexLaunch::PackagedActivation {
+                            app_user_model_id,
+                            arguments,
+                            ..
+                        } => CodexLaunch::PackagedActivation {
+                            app_user_model_id,
+                            arguments,
+                            process_id: Some(process_id),
+                        },
+                        CodexLaunch::Process { .. } => unreachable!(),
+                    }),
+                    Err(e) => {
+                        // FIX: AUMID 激活失败时回退到直接执行 Codex.exe
+                        // 适用于 Windows Store / MSIX 包版本（如 OpenAI.Codex_26.601.2237.0_x64__2p2nqsd0c76g0）
+                        eprintln!(
+                            "[WARN] Packaged activation failed for AUMID {}: {}, falling back to direct execution",
+                            app_user_model_id, e
+                        );
+                    }
+                }
             }
         }
 
@@ -647,8 +656,14 @@ async fn handle_helper_connection(
         }),
     );
 
+    // FIX: 所有代理处理函数中的 `?` 错误可能传播导致连接被粗暴关闭
+    // 使用 catch-all 确保任何内部错误都写入 HTTP 错误响应再关闭连接
     if crate::protocol_proxy::is_responses_proxy_path(path) && method == "POST" {
-        return handle_protocol_proxy_connection(
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "helper.proxy_route",
+            serde_json::json!({"path": path, "method": method, "route": "responses_proxy"}),
+        );
+        let result = handle_protocol_proxy_connection(
             &mut stream,
             request_body,
             method,
@@ -656,9 +671,21 @@ async fn handle_helper_connection(
             remote_addr_text,
         )
         .await;
+        if let Err(error) = result {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "helper.proxy_catch_error",
+                serde_json::json!({"path": path, "method": method, "error": error.to_string(), "route": "responses_proxy"}),
+            );
+            write_error_response_and_shutdown(&mut stream, "500 Internal Server Error", &error.to_string()).await;
+        }
+        return Ok(());
     }
     if crate::protocol_proxy::is_chat_completions_proxy_path(path) && method == "POST" {
-        return handle_chat_completions_proxy_connection(
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "helper.proxy_route",
+            serde_json::json!({"path": path, "method": method, "route": "chat_completions_proxy"}),
+        );
+        let result = handle_chat_completions_proxy_connection(
             &mut stream,
             request_body,
             method,
@@ -666,9 +693,25 @@ async fn handle_helper_connection(
             remote_addr_text,
         )
         .await;
+        if let Err(error) = result {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "helper.proxy_catch_error",
+                serde_json::json!({"path": path, "method": method, "error": error.to_string(), "route": "chat_completions_proxy"}),
+            );
+            write_error_response_and_shutdown(&mut stream, "500 Internal Server Error", &error.to_string()).await;
+        }
+        return Ok(());
     }
     if crate::protocol_proxy::is_models_proxy_path(path) && matches!(method, "GET" | "OPTIONS") {
-        return handle_models_proxy_connection(&mut stream, method, path, remote_addr_text).await;
+        let result = handle_models_proxy_connection(&mut stream, method, path, remote_addr_text).await;
+        if let Err(error) = result {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "helper.proxy_catch_error",
+                serde_json::json!({"path": path, "method": method, "error": error.to_string(), "route": "models_proxy"}),
+            );
+            write_error_response_and_shutdown(&mut stream, "500 Internal Server Error", &error.to_string()).await;
+        }
+        return Ok(());
     }
 
     let (status, body, content_type, log_event) =
@@ -831,6 +874,34 @@ async fn handle_protocol_proxy_connection(
     path: &str,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
+    // FIX: 包装整个处理逻辑，确保所有错误都被捕获并写入 HTTP 错误响应
+    // 之前大量 `?` 运算符导致错误直接传播到 tokio task，TCP 连接被粗暴关闭
+    // Codex 客户端看到的就是 "stream disconnected before completion"
+    let result = handle_protocol_proxy_connection_inner(
+        stream,
+        request_body,
+        method,
+        path,
+        remote_addr_text,
+    )
+    .await;
+    if let Err(error) = result {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "helper.protocol_proxy_inner_error",
+            serde_json::json!({"method": method, "path": path, "error": error.to_string()}),
+        );
+        write_error_response_and_shutdown(stream, "500 Internal Server Error", &error.to_string()).await;
+    }
+    Ok(())
+}
+
+async fn handle_protocol_proxy_connection_inner(
+    stream: &mut tokio::net::TcpStream,
+    request_body: &str,
+    method: &str,
+    path: &str,
+    remote_addr_text: Option<String>,
+) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
     let upstream = match crate::protocol_proxy::open_responses_proxy_request(request_body).await {
         Ok(upstream) => upstream,
@@ -924,6 +995,7 @@ async fn handle_protocol_proxy_connection(
             "200 OK",
             remote_addr_text,
         );
+        // FIX: 流式响应已写入 [DONE]\n\n 标记，此时 shutdown() 让客户端感知到 EOF
         stream.shutdown().await?;
         return Ok(());
     }
@@ -1003,6 +1075,7 @@ async fn handle_chat_completions_proxy_connection(
             &status,
             remote_addr_text,
         );
+        // FIX: 流式响应已完整写入，shutdown() 让客户端感知到 EOF
         stream.shutdown().await?;
         return Ok(());
     }
@@ -1049,6 +1122,24 @@ async fn write_http_stream_headers(
     );
     stream.write_all(response.as_bytes()).await?;
     Ok(())
+}
+
+/// 写入 HTTP 错误响应并关闭连接，忽略所有错误（防止错误传播导致连接被粗暴关闭）
+async fn write_error_response_and_shutdown(stream: &mut tokio::net::TcpStream, status: &str, message: &str) {
+    let body = serde_json::to_vec(&serde_json::json!({
+        "status": "failed",
+        "message": message
+    }))
+    .unwrap_or_default();
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    if !body.is_empty() {
+        let _ = stream.write_all(&body).await;
+    }
+    let _ = stream.shutdown().await;
 }
 
 fn log_helper_response(

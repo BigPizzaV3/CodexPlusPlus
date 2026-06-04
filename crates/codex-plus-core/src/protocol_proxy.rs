@@ -120,6 +120,17 @@ impl CodexToolContext {
     }
 }
 
+/// 获取 relay 的上游 Base URL，使用 upstream_base_url 作为 base_url 的 fallback
+/// 配置文件可能只设置了 upstreamBaseUrl 而未设置 baseUrl，反序列化后 base_url 为空
+fn relay_base_url(relay: &crate::settings::RelayProfile) -> &str {
+    let url = relay.base_url.trim();
+    if url.is_empty() {
+        relay.upstream_base_url.trim()
+    } else {
+        url
+    }
+}
+
 pub fn local_responses_proxy_base_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/v1")
 }
@@ -426,10 +437,29 @@ pub fn is_models_proxy_path(path: &str) -> bool {
 pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "proto.open_responses_proxy_state",
+        serde_json::json!({
+            "proto": format!("{:?}", relay.protocol),
+            "base_url": relay.base_url,
+            "upstream_base_url": relay.upstream_base_url,
+            "api_key_empty": relay.api_key.trim().is_empty(),
+            "active_relay_id": settings.active_relay_id,
+            "relay_profiles_count": settings.relay_profiles.len(),
+        }),
+    );
     if relay.protocol != RelayProtocol::ChatCompletions {
         anyhow::bail!("当前中转未启用 Chat Completions 协议代理");
     }
-    if relay.base_url.trim().is_empty() {
+    // FIX: 使用 upstream_base_url 作为 base_url 的 fallback
+    // agnes-ai 等配置中只设置了 upstreamBaseUrl，没有设置 baseUrl
+    // 反序列化时 base_url 为空，导致协议代理无法获取上游地址
+    let base_url = relay_base_url(&relay);
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "proto.resolved_base_url",
+        serde_json::json!({"base_url": base_url, "chat_completions_url": crate::protocol_proxy::chat_completions_url(base_url)}),
+    );
+    if base_url.trim().is_empty() {
         anyhow::bail!("Chat Completions 上游 Base URL 不能为空");
     }
     if relay.api_key.trim().is_empty() {
@@ -444,7 +474,7 @@ pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<Upstream
     let chat_request = responses_to_chat_completions(request_json.clone())?;
     let client = crate::http_client::proxied_client(&relay.user_agent)?;
     let upstream = client
-        .post(chat_completions_url(&relay.base_url))
+        .post(chat_completions_url(&base_url))
         .bearer_auth(relay.api_key.trim())
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .json(&chat_request)
@@ -472,7 +502,8 @@ pub async fn open_models_proxy_request() -> anyhow::Result<UpstreamProxyResponse
     if relay.protocol != RelayProtocol::ChatCompletions {
         anyhow::bail!("当前中转未启用 Chat Completions 协议代理");
     }
-    if relay.base_url.trim().is_empty() {
+    let base_url = relay_base_url(&relay);
+    if base_url.trim().is_empty() {
         anyhow::bail!("Chat Completions 上游 Base URL 不能为空");
     }
     if relay.api_key.trim().is_empty() {
@@ -481,7 +512,7 @@ pub async fn open_models_proxy_request() -> anyhow::Result<UpstreamProxyResponse
 
     let client = crate::http_client::proxied_client(&relay.user_agent)?;
     let upstream = client
-        .get(models_url(&relay.base_url))
+        .get(models_url(&base_url))
         .bearer_auth(relay.api_key.trim())
         .send()
         .await?;
@@ -509,7 +540,8 @@ pub async fn open_chat_completions_proxy_request(
     if relay.protocol != RelayProtocol::ChatCompletions {
         anyhow::bail!("当前中转未启用 Chat Completions 协议代理");
     }
-    if relay.base_url.trim().is_empty() {
+    let base_url = relay_base_url(&relay);
+    if base_url.trim().is_empty() {
         anyhow::bail!("Chat Completions 上游 Base URL 不能为空");
     }
     if relay.api_key.trim().is_empty() {
@@ -521,8 +553,11 @@ pub async fn open_chat_completions_proxy_request(
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let upstream = reqwest::Client::new()
-        .post(chat_completions_url(&relay.base_url))
+    // FIX: 使用 proxied_client 而非裸 reqwest::Client::new()，确保有超时和连接池配置
+    // 旧代码使用 reqwest::Client::new() 导致没有超时配置，流式响应容易断开
+    let client = crate::http_client::proxied_client(&relay.user_agent)?;
+    let upstream = client
+        .post(chat_completions_url(&base_url))
         .bearer_auth(relay.api_key.trim())
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .json(&request_json)

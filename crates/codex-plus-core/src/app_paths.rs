@@ -191,12 +191,10 @@ pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
     if !package_name.starts_with("OpenAI.Codex_") || !package_name.contains("__") {
         return None;
     }
-    let identity_name = package_name.split_once('_')?.0;
-    let publisher_id = package_name.rsplit_once("__")?.1;
-    if publisher_id.is_empty() {
-        return None;
-    }
-    Some(format!("{identity_name}_{publisher_id}!App"))
+    // FIX: MSIX 包的 AUMID 格式就是 PackageFullName!App
+    // 之前错误地只取了 identity_name + publisher_id，丢失了版本号部分
+    // 例如：OpenAI.Codex_26.601.2237.0_x64__2p2nqsd0c76g0!App
+    Some(format!("{}!App", package_name))
 }
 
 fn package_name_from_app_dir(app_dir: &Path) -> Option<String> {
