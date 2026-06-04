@@ -284,6 +284,79 @@ rank `0`=命中本平台直接选,其余忽略。一个 Release 挂多平台多�
 
 ---
 
+## 9. 中转配置与 Profile 切换(`relay_config.rs` + `settings.rs`)
+
+第 4 章讲"中转模式下怎么翻译协议",本章讲"怎么落到 Codex 的 `~/.codex/config.toml` 与 `auth.json` 上"。Codex 本身只读这两个文件;Codex++ 的全部中转能力,最终都收敛成"**安全地改写这两个文件**"。`relay_config.rs`(约 2077 行)就是这个改写器。
+
+### 9.1 两个正交维度:模式 × 协议
+
+配置由两个独立维度决定,组合出全部形态:
+
+**模式 `RelayMode`**(settings.rs:134),决定鉴权落点:
+
+| 模式 | 鉴权放哪 | auth.json | config.toml |
+|---|---|---|---|
+| `Official` | ChatGPT 登录直连官方 | 保留 ChatGPT tokens,**去掉** `OPENAI_API_KEY` | 无 custom provider(除非开 `officialMixApiKey` 叠加) |
+| `MixedApi`(默认) | 中转 provider,key 进 config | 保留 ChatGPT 登录态(去 `OPENAI_API_KEY`),满足 `requires_openai_auth` 门槛 | `experimental_bearer_token` = 中转 key |
+| `PureApi` | 纯 API key | 写 `OPENAI_API_KEY` = 中转 key | provider 里**移除** `experimental_bearer_token` |
+
+"混合(MixedApi)"是这里的精髓:**既保留 ChatGPT 登录态、又把流量导向中转 provider**——`requires_openai_auth = true` 的门槛靠 auth.json 里的 ChatGPT tokens 过,实际 key 则藏在 config 的 `experimental_bearer_token`。
+
+**协议 `RelayProtocol`**(settings.rs:126),决定 base_url 指向(`codex_base_url_for_protocol`:510):
+
+- `Responses`:provider `base_url` 直接指中转站(透传)。
+- `ChatCompletions`:provider `base_url` 指向**本地协议代理** `local_responses_proxy_base_url(port)`,真实上游存进 `upstream_base_url` / `codex_plus_chat_base_url`(:13)。这正是第 4 章那个本地假 Responses 服务器的接线点——两章在 `codex_base_url_for_protocol` 这一个函数上闭合。
+
+### 9.2 Profile:一套可命名、可切换的中转配置
+
+`RelayProfile`(settings.rs:41)是 UI 里一行"中转配置",字段含 `relay_mode`/`protocol`/`upstream_base_url`/`api_key`/`config_contents`/`auth_contents`/`context_selection`/`context_window` 等。多 profile 即多套并存、随时切换。
+
+切换落盘的主入口 `apply_relay_profile_to_home_with_switch_rules`(:356)是一条四步流水:
+
+1. **筛 common**:`filter_common_config_for_selection`(:734)按本 profile 的 `context_selection`(选了哪些 mcp/skills/plugins)裁出共享配置子集(`use_common_config` 为假则跳过)。
+2. **补全 provider**:`complete_relay_profile_config`(:1502)把 profile 拼成完整 config.toml——定 `model_provider` id(保留自定义 id,缺省回退 `"custom"`:11)、`retain_only_provider_table` 只留当前 provider(连带删 `LEGACY_RELAY_PROVIDERS`:12 的 `CodexPlusPlus`/`CodexPP` 残留)、补 `wire_api="responses"`/`requires_openai_auth=true`、按协议写 `base_url`、按模式写/删 `experimental_bearer_token`。
+3. **合并 + 限额**:`merge_common_config_into_config`(:665)并入 common;`apply_context_limits_to_config`(:1080)把 `context_window`/`auto_compact_limit` 写成 `model_context_window` / `model_auto_compact_token_limit`。
+4. **按模式定 auth 后落盘**(:374):`PureApi` 直接写 `profile.auth_contents`;`Official`/`MixedApi` 走 `official_profile_auth_for_switch`(:1429)→ `remove_openai_api_key_from_auth_contents`,**只摘 `OPENAI_API_KEY`、保留 ChatGPT 登录的其余字段**,再落盘。
+
+### 9.3 Common Config:跨 profile 共享的那部分
+
+切来切去不该丢掉 MCP servers、skills、plugins 这些通用设置。所以它们抽到独立的 **common config**,在落盘时才并进当前 profile:
+
+- `extract_common_config_from_config`(:619):反向抽取——剥掉 `model`/`model_provider`/`base_url`/`model_providers` 等 profile 私有键,剩下的就是共享部分。
+- `sanitize_common_config_contents`(:634):再去掉 provider 专属键,确保 common 干净。
+- `merge_common_config_into_config`(:665)/ `strip_common_config_from_config`(:644):TOML 级合并/剥离,基于 `toml_value_is_subset`(:1095)做"值匹配才剥离",避免误删用户手改的同名键。
+- 上下文条目增删查:`{list,upsert,delete}_context_entry_*`(:681/693/717),按 `mcp_servers`/`skills`/`plugins` 三表管理,`sync_live_config_context_entries`(:744)据 enabled 态开关写进活动 config。
+
+### 9.4 原子写 + 备份 + 校验(`write_codex_live_atomic`:788)
+
+改的是用户正在用的活动配置,出错即 Codex 起不来,所以写入有三重保护:
+
+1. **先校验**:`validate_toml_config`(:1047)/ `validate_auth_json`(:1057) 解析通过才继续,坏内容绝不落盘。
+2. **先备份**:`create_live_backup`(:1783)把旧 config.toml/auth.json 打包成带时间戳的备份(`RelayApplyResult.backup_path` 回传给 UI 作撤销点)。
+3. **写 + 回滚**:`atomic_write` 先写 auth 再写 config;若 config 写失败而 auth 已写,`restore_optional_file` 把两个文件都还原回旧字节——不留半套坏状态。
+
+### 9.5 反向:回填与清除
+
+- **回填** `backfill_relay_profile_from_home`(:579):把当前活动的 config.toml/auth.json 反读回 `RelayProfile`(恢复 provider id、`sync_profile_mode_from_backfilled_live` 推断模式、抽出 common),让 UI 永远反映 Codex 真实在用的配置,而非陈旧缓存。
+- **清除** `clear_relay_config_to_home_with_auth`(:523):删掉 `model_providers.custom`(+ legacy)、抹掉 `model_provider`/`base_url` 等根键、按需清 `OPENAI_API_KEY`,把 Codex 还原成"无中转"。
+
+### 9.6 ChatGPT 账号识别(`auth_json_chatgpt_account_label`:1853)
+
+UI 要显示"当前登录的是哪个 ChatGPT 账号":读 auth.json,确认 `auth_mode == "chatgpt"` 且 tokens 含登录密钥,再 `account_label_from_jwt`(:1893)——base64url 解 `id_token`/`access_token` 的 JWT payload,取 `email`(或 `.../profile.email`、`name`)。纯本地解码,不发网络请求。
+
+### 9.7 接入点(注意:走 command,不走 bridge)
+
+与第 7/8 章经 CDP bridge 不同,中转配置由**管理工具的 Tauri command** 直接调用(`apps/codex-plus-manager/src-tauri/src/commands.rs`):`apply_relay_profile_to_home_with_switch_rules`(commands.rs:1538/1643)、`apply_relay_config_to_home_with_protocol`(:1590)、`apply_pure_api_config_to_home_with_protocol`(:1685)、`backfill_*`(:1237)、`clear_*`(:1740)。原因:改的是文件系统而非 Codex 页面 DOM,无需注入脚本参与。
+
+### 9.8 安全 / 鲁棒
+
+- `RESERVED_MODEL_PROVIDER_IDS`(:14):自定义 provider id 不得撞 Codex 内建(openai 等),`is_custom_provider_id`(:845)把关,防覆盖内建 provider。
+- `move_model_providers_before_profiles`(:1819):重排 TOML,保证 `[model_providers.*]` 在 `[profiles.*]` 之前,避免 toml 解析歧义。
+- 落盘前一律 validate + backup + atomic(9.4),与第 6/7/8 章"外部输入先校验、危险操作可回滚"同源。
+
+---
+
 ## 走读验证
 
-`protocol_proxy` 的转换逻辑有完整单测:`crates/codex-plus-core/tests/protocol_proxy.rs`(35 个 test,覆盖请求/响应/SSE/内联 think/UTF-8 边界/apply_patch/URL 归一化)。`cargo test -p codex-plus-core --test protocol_proxy` 全绿。
+- `protocol_proxy` 的转换逻辑有完整单测:`crates/codex-plus-core/tests/protocol_proxy.rs`(35 个 test,覆盖请求/响应/SSE/内联 think/UTF-8 边界/apply_patch/URL 归一化)。`cargo test -p codex-plus-core --test protocol_proxy` 全绿。
+- `relay_config` 的模式/协议/common/回填/清除逻辑有 `crates/codex-plus-core/tests/relay_config.rs`(67 个 test,覆盖三模式落盘、common 合并/剥离、上下文增删、限额写入、回填恢复 provider id、清除还原)。`cargo test -p codex-plus-core --test relay_config` 走读时实跑 **67 passed; 0 failed**。
