@@ -370,13 +370,32 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
+    let config_with_preserved_live =
+        preserve_live_common_config_for_switch(home, &config_with_limits)?;
 
     if profile.relay_mode == crate::settings::RelayMode::PureApi {
-        apply_relay_files_to_home(home, &config_with_limits, &profile.auth_contents)
+        apply_relay_files_to_home(home, &config_with_preserved_live, &profile.auth_contents)
     } else {
         let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
-        apply_relay_files_to_home(home, &config_with_limits, &auth_contents)
+        apply_relay_files_to_home(home, &config_with_preserved_live, &auth_contents)
     }
+}
+
+fn preserve_live_common_config_for_switch(
+    home: &Path,
+    config_contents: &str,
+) -> anyhow::Result<String> {
+    let live_config = read_optional_text(&home.join("config.toml"))?;
+    if live_config.trim().is_empty() {
+        return Ok(config_contents.to_string());
+    }
+
+    let live_common = extract_common_config_from_config(&live_config)?;
+    if live_common.trim().is_empty() {
+        return Ok(config_contents.to_string());
+    }
+
+    merge_common_config_into_config(config_contents, &live_common)
 }
 
 pub fn apply_relay_profile_config_to_home_with_context(

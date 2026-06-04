@@ -2062,6 +2062,95 @@ requires_openai_auth = true
 }
 
 #[test]
+fn apply_relay_profile_to_home_with_switch_rules_preserves_live_ui_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r##"model_provider = "legacy"
+model = "gpt-5.4"
+personality = "pragmatic"
+
+[desktop]
+appearanceLightCodeThemeId = "raycast"
+accentColor = "#ff6363"
+
+[mcp_servers.codegraph]
+type = "stdio"
+command = "codegraph"
+
+[model_providers.legacy]
+name = "legacy"
+base_url = "https://legacy.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"##,
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model_provider = "max_ai"
+model = "gpt-5.5"
+personality = "friendly"
+
+[model_providers.max_ai]
+name = "max_ai"
+base_url = "https://max.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(
+        parsed
+            .get("model_provider")
+            .and_then(|value| value.as_str()),
+        Some("max_ai"),
+        "provider-specific routing should still come from the active relay profile"
+    );
+    assert_eq!(
+        parsed.get("personality").and_then(|value| value.as_str()),
+        Some("pragmatic"),
+        "live Codex UI personality should survive relay profile writes"
+    );
+    assert_eq!(
+        parsed
+            .get("desktop")
+            .and_then(|value| value.get("appearanceLightCodeThemeId"))
+            .and_then(|value| value.as_str()),
+        Some("raycast"),
+        "live Codex desktop theme should survive relay profile writes"
+    );
+    assert!(
+        parsed
+            .get("mcp_servers")
+            .and_then(|value| value.get("codegraph"))
+            .is_some(),
+        "live Codex MCP entries should survive relay profile writes"
+    );
+    assert_eq!(
+        parsed
+            .get("model_providers")
+            .and_then(|value| value.get("max_ai"))
+            .and_then(|value| value.get("base_url"))
+            .and_then(|value| value.as_str()),
+        Some("https://max.example/v1"),
+        "provider-specific endpoint should come from the active relay profile"
+    );
+    assert!(
+        !config.contains("[model_providers.legacy]"),
+        "previous provider table should not be preserved as common config"
+    );
+}
+
+#[test]
 fn apply_relay_profile_to_home_with_switch_rules_writes_provider_even_when_auth_has_no_api_key() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {
