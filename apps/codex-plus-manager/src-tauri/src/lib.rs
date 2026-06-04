@@ -40,6 +40,7 @@ pub fn run() {
             commands::delete_local_session,
             commands::load_ccs_providers,
             commands::import_ccs_providers,
+            commands::load_provider_sync_targets,
             commands::sync_providers_now,
             commands::load_ads,
             commands::refresh_script_market,

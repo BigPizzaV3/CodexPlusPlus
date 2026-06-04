@@ -146,6 +146,12 @@ pub struct BackendSettings {
     pub codex_extra_args: Vec<String>,
     #[serde(rename = "providerSyncEnabled", default)]
     pub provider_sync_enabled: bool,
+    #[serde(rename = "providerSyncSavedProviders", default)]
+    pub provider_sync_saved_providers: Vec<String>,
+    #[serde(rename = "providerSyncManualProviders", default)]
+    pub provider_sync_manual_providers: Vec<String>,
+    #[serde(rename = "providerSyncLastSelectedProvider", default)]
+    pub provider_sync_last_selected_provider: String,
     #[serde(rename = "relayProfilesEnabled", default = "default_true")]
     pub relay_profiles_enabled: bool,
     #[serde(rename = "ccsLinkEnabled", default)]
@@ -216,6 +222,9 @@ impl Default for BackendSettings {
             codex_app_path: String::new(),
             codex_extra_args: Vec::new(),
             provider_sync_enabled: false,
+            provider_sync_saved_providers: Vec::new(),
+            provider_sync_manual_providers: Vec::new(),
+            provider_sync_last_selected_provider: String::new(),
             relay_profiles_enabled: true,
             ccs_link_enabled: false,
             enhancements_enabled: true,

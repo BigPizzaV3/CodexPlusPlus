@@ -44,6 +44,7 @@ pub enum ProviderSyncTargetSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderSyncTargetOption {
     pub id: String,
     pub sources: Vec<ProviderSyncTargetSource>,
@@ -53,6 +54,7 @@ pub struct ProviderSyncTargetOption {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderSyncTargetList {
     pub current_provider: String,
     pub targets: Vec<ProviderSyncTargetOption>,
