@@ -34,6 +34,30 @@ pub struct ProviderSyncResult {
     pub encrypted_content_warning: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderSyncTargetSource {
+    Config,
+    Rollout,
+    Sqlite,
+    Manual,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderSyncTargetOption {
+    pub id: String,
+    pub sources: Vec<ProviderSyncTargetSource>,
+    pub is_current_provider: bool,
+    pub is_manual: bool,
+    pub is_saved: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderSyncTargetList {
+    pub current_provider: String,
+    pub targets: Vec<ProviderSyncTargetOption>,
+}
+
 #[derive(Debug, Clone)]
 struct SessionChange {
     path: PathBuf,
@@ -228,6 +252,70 @@ fn dirs_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+pub fn load_provider_sync_targets(codex_home: Option<&Path>) -> ProviderSyncTargetList {
+    let home = codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dirs_home().join(".codex"));
+    let current_provider = read_current_provider(&home.join("config.toml"));
+    let mut sources: HashMap<String, HashSet<ProviderSyncTargetSource>> = HashMap::new();
+
+    fn add_sources(
+        sources: &mut HashMap<String, HashSet<ProviderSyncTargetSource>>,
+        ids: impl IntoIterator<Item = String>,
+        source: ProviderSyncTargetSource,
+    ) {
+        for id in ids {
+            if !is_valid_provider_id_for_discovery(&id) {
+                continue;
+            }
+            sources.entry(id).or_default().insert(source);
+        }
+    }
+
+    add_sources(
+        &mut sources,
+        list_configured_provider_ids(&home.join("config.toml")),
+        ProviderSyncTargetSource::Config,
+    );
+    add_sources(
+        &mut sources,
+        [current_provider.clone()],
+        ProviderSyncTargetSource::Config,
+    );
+    if let Ok(ids) = rollout_provider_ids(&home) {
+        add_sources(&mut sources, ids, ProviderSyncTargetSource::Rollout);
+    }
+    if let Ok(ids) = sqlite_provider_ids(&home.join("state_5.sqlite")) {
+        add_sources(&mut sources, ids, ProviderSyncTargetSource::Sqlite);
+    }
+
+    let mut targets = sources
+        .into_iter()
+        .map(|(id, source_set)| {
+            let mut source_list = source_set.into_iter().collect::<Vec<_>>();
+            source_list.sort();
+            ProviderSyncTargetOption {
+                is_current_provider: id == current_provider,
+                is_manual: source_list.contains(&ProviderSyncTargetSource::Manual),
+                is_saved: false,
+                id,
+                sources: source_list,
+            }
+        })
+        .collect::<Vec<_>>();
+    targets.sort_by(|left, right| {
+        right
+            .is_current_provider
+            .cmp(&left.is_current_provider)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    ProviderSyncTargetList {
+        current_provider,
+        targets,
+    }
+}
+
 fn read_current_provider(path: &Path) -> String {
     let Ok(text) = fs::read_to_string(path) else {
         return DEFAULT_PROVIDER.to_string();
@@ -238,6 +326,41 @@ fn read_current_provider(path: &Path) -> String {
     } else {
         provider
     }
+}
+
+fn list_configured_provider_ids(path: &Path) -> Vec<String> {
+    let mut ids = HashSet::new();
+    ids.insert(DEFAULT_PROVIDER.to_string());
+    let Ok(text) = fs::read_to_string(path) else {
+        return sorted_provider_ids(ids);
+    };
+    for line in text.lines() {
+        let stripped = line.trim();
+        let Some(section) = stripped
+            .strip_prefix("[model_providers.")
+            .and_then(|rest| rest.strip_suffix(']'))
+        else {
+            continue;
+        };
+        let id = section.trim();
+        if is_valid_provider_id_for_discovery(id) {
+            ids.insert(id.to_string());
+        }
+    }
+    sorted_provider_ids(ids)
+}
+
+fn sorted_provider_ids(ids: HashSet<String>) -> Vec<String> {
+    let mut ids = ids
+        .into_iter()
+        .filter(|id| !id.trim().is_empty())
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids
+}
+
+fn is_valid_provider_id_for_discovery(value: &str) -> bool {
+    !value.trim().is_empty() && !value.chars().any(char::is_control)
 }
 
 fn root_toml_string_value(text: &str, key: &str) -> Option<String> {
@@ -375,6 +498,33 @@ fn rollout_files(home: &Path) -> anyhow::Result<Vec<PathBuf>> {
     }
     files.sort();
     Ok(files)
+}
+
+fn rollout_provider_ids(home: &Path) -> anyhow::Result<Vec<String>> {
+    let mut ids = HashSet::new();
+    for path in rollout_files(home)? {
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if is_locked_io_error(&error) => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let (first_line, _) = split_first_line(&text);
+        let Ok(record) = serde_json::from_str::<Value>(&first_line) else {
+            continue;
+        };
+        let Some(provider) = record
+            .get("payload")
+            .and_then(Value::as_object)
+            .and_then(|payload| payload.get("model_provider"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        if is_valid_provider_id_for_discovery(provider) {
+            ids.insert(provider.to_string());
+        }
+    }
+    Ok(sorted_provider_ids(ids))
 }
 
 fn collect_rollout_files(root: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
@@ -544,6 +694,28 @@ fn table_columns(db: &Connection, table: &str) -> anyhow::Result<HashSet<String>
     Ok(stmt
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<rusqlite::Result<HashSet<_>>>()?)
+}
+
+fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let db = Connection::open(path)?;
+    let columns = table_columns(&db, "threads")?;
+    if !columns.contains("model_provider") {
+        return Ok(Vec::new());
+    }
+    let mut stmt = db.prepare(
+        "SELECT DISTINCT COALESCE(model_provider, '') FROM threads WHERE COALESCE(model_provider, '') <> ''",
+    )?;
+    let mut ids = HashSet::new();
+    for item in stmt.query_map([], |row| row.get::<_, String>(0))? {
+        let id = item?;
+        if is_valid_provider_id_for_discovery(&id) {
+            ids.insert(id);
+        }
+    }
+    Ok(sorted_provider_ids(ids))
 }
 
 fn count_sqlite_updates(

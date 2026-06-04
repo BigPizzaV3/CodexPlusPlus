@@ -1,4 +1,6 @@
-use codex_plus_data::{ProviderSyncStatus, run_provider_sync};
+use codex_plus_data::{
+    ProviderSyncStatus, ProviderSyncTargetSource, load_provider_sync_targets, run_provider_sync,
+};
 use rusqlite::Connection;
 use serde_json::json;
 use std::fs;
@@ -32,6 +34,100 @@ fn create_state_db(path: &Path) {
         [],
     )
     .unwrap();
+}
+
+fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
+    let db = Connection::open(path).unwrap();
+    db.execute(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER, cwd TEXT)",
+        [],
+    )
+    .unwrap();
+    for (id, provider, archived) in rows {
+        db.execute(
+            "INSERT INTO threads VALUES (?1, ?2, ?3, 1, 'C:/workspace')",
+            (id, provider, archived),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn provider_sync_targets_merge_config_rollout_sqlite_and_sort_current_first() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+
+[model_providers.apigather]
+name = "apigather"
+"#,
+    )
+    .unwrap();
+    write_rollout(
+        &home.join("sessions/2026/rollout-openai.jsonl"),
+        "openai",
+        "thread-openai",
+        "C:/workspace/openai",
+    );
+    write_rollout(
+        &home.join("archived_sessions/rollout-legacy.jsonl"),
+        "legacy-provider",
+        "thread-legacy",
+        "C:/workspace/legacy",
+    );
+    create_state_db_with_providers(
+        &home.join("state_5.sqlite"),
+        &[
+            ("thread-sqlite", "sqlite-provider", 0),
+            ("thread-openai", "openai", 1),
+        ],
+    );
+
+    let targets = load_provider_sync_targets(Some(&home));
+
+    assert_eq!(targets.current_provider, "custom");
+    let ids = targets
+        .targets
+        .iter()
+        .map(|target| target.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec![
+            "custom",
+            "apigather",
+            "legacy-provider",
+            "openai",
+            "sqlite-provider",
+        ]
+    );
+    let custom = targets
+        .targets
+        .iter()
+        .find(|target| target.id == "custom")
+        .unwrap();
+    assert!(custom.is_current_provider);
+    assert!(custom.sources.contains(&ProviderSyncTargetSource::Config));
+    let openai = targets
+        .targets
+        .iter()
+        .find(|target| target.id == "openai")
+        .unwrap();
+    assert!(openai.sources.contains(&ProviderSyncTargetSource::Config));
+    assert!(openai.sources.contains(&ProviderSyncTargetSource::Rollout));
+    assert!(openai.sources.contains(&ProviderSyncTargetSource::Sqlite));
+    let legacy = targets
+        .targets
+        .iter()
+        .find(|target| target.id == "legacy-provider")
+        .unwrap();
+    assert_eq!(legacy.sources, vec![ProviderSyncTargetSource::Rollout]);
 }
 
 #[test]
