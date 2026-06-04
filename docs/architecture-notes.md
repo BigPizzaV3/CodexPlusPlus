@@ -405,8 +405,59 @@ Codex 把每个会话按 `model_provider` 打标,且标记散落在**三处数�
 
 ---
 
+## 11. 用户脚本与脚本市场(`user_scripts.rs` + `script_market.rs`)
+
+让用户把自己写的、或从市场装的增强 JS 挂进 Codex,与第 3 章的官方注入脚本并肩运行。`user_scripts`(约 399 行)管"本地有哪些脚本、开关、打包注入";`script_market`(约 155 行)管"从远程市场拉清单、下载、安装"。
+
+### 11.1 脚本两源:builtin + user
+
+`UserScriptManager`(user_scripts.rs:41)持三个路径(launcher 里 `default_user_script_manager` 注入,main.rs:669):
+
+| 路径 | 内容 |
+|---|---|
+| `builtin_dir` | 随包内置脚本 |
+| `user_dir` | 用户/市场装的脚本(`%APPDATA%/Codex++/user_scripts`) |
+| `config_path` | `user_scripts.json`:开关状态 + 市场元数据 |
+
+`scan_script_files`(:234)扫两目录的 `*.js`,按文件名小写排序,`key = "builtin:<name>"` / `"user:<name>"`——前缀既区分来源,也是开关表与删除接口的主键。
+
+### 11.2 开关模型:全局总闸 + 单脚本
+
+`UserScriptConfig`(:13):`enabled`(全局总开关)+ `scripts: BTreeMap<key,bool>`(单脚本开关,缺省开)+ `market`(已装市场脚本的元数据)。读写走 `config_lock`(Mutex)+ `atomic_write`,`set_global_enabled`/`set_script_enabled`/`delete_user_script` 一律"锁 → load → 改 → save"(:97-152),并发安全;`config_from_object`(:319)逐字段解析、坏字段回默认,容忍手改/旧版 JSON。
+
+### 11.3 打包注入(`build_enabled_bundle`:189)
+
+全局关 → 返回空串。否则把每个启用脚本读文件、`wrap_script`(:295)各包一层 IIFE 拼成一个大 JS 串:
+
+- 注册到 `window.__codexPlusUserScripts.scripts[key]`,带 `status`(loading/loaded/failed)+ `error` + `loadedAt`。
+- **`try/catch` 隔离**:单个脚本抛错只把自己标 `failed`、错误进状态表,不连累其它脚本;连读文件失败也降级成 `throw new Error(...)` 注入而非整体失败。
+
+注入有两条路,正好衔接第 2/3 章:
+
+1. **首次注入**(launcher main.rs:594):`injection_script`(renderer-inject.js)与 user bundle 一起作为 `new_document_scripts` 交 `install_bridge` → `Page.addScriptToEvaluateOnNewDocument` 注册,每个新文档(含刷新)自动跑。
+2. **热重载**(bridge `/user-scripts/reload`,routes.rs:352):重建 bundle,用 CDP `evaluator` 即时 `Runtime.evaluate` 进当前页——改开关/装新脚本**无需重启 Codex** 即时生效。
+
+### 11.4 两类管理入口(分工同第 9/10 章)
+
+- **脚本开关/列表/删除/重载**:bridge 路由 `/user-scripts/{list,set-enabled,set-script-enabled,delete,reload}`(routes.rs:115-143)——页面内操作走 CDP bridge(第 2 章)。
+- **市场浏览/安装**:管理器 Tauri command(commands.rs:839/861 拉清单、877 安装)——纯网络/本地 IO 走 command。
+
+### 11.5 脚本市场(`script_market.rs`)
+
+- **清单源** `DEFAULT_MARKET_INDEX_URL`(:7,GitHub raw `index.json`)。`fetch_market_manifest`(:59)拉 JSON,`parse_market_manifest`(:35)解析。`parse_market_script`(:111)**严格校验必填**(id/name/version/script_url),缺一即 `filter_map` 丢弃该条——坏条目不污染整张清单。
+- **安装** `install_market_script`(:103):`download_script` 下字节 → `install_market_script_content`(:83)`atomic_write` 到 `market-<sanitized-id>.js`(`market_script_filename`:348)→ `record_market_install`(:158)落元数据(version/url/homepage/installed_at)并默认置开。
+
+### 11.6 安全 + 一处诚实警示
+
+- **删除防穿越**(`delete_user_script`:113):只允许 `user:` 前缀;拒含 `/ \ . ..` 的 key;再 `canonicalize` 后 `starts_with(user_dir)` 双重确认,绝不删目录外文件。
+- **市场 id 消毒**(`sanitize_market_id`:380):非 `[A-Za-z0-9_-]` 一律替 `-`,防文件名注入;空则回退 `"script"`。
+- **诚实警示:`sha256` 被解析、存储,但安装全程不校验**。`MarketScript` 带 `sha256` 字段(script_market.rs:32),`install_market_script_content` 却直接写下载字节、无 hash 比对——走读全工作区无 `Sha256`/`sha2` 校验,且测试 `install_market_script_ignores_checksum_mismatch_and_replaces_existing_file`(bridge_routes.rs:747)**明确固化了"忽略校验和不匹配"** 的行为。即:市场脚本的完整性当前只靠 HTTPS 传输信任、不靠内容哈希;而装来的脚本是注入页面执行的 JS。这是已知行为(非偶发 bug),也是后续值得补的硬化点。
+
+---
+
 ## 走读验证
 
 - `protocol_proxy` 的转换逻辑有完整单测:`crates/codex-plus-core/tests/protocol_proxy.rs`(35 个 test,覆盖请求/响应/SSE/内联 think/UTF-8 边界/apply_patch/URL 归一化)。`cargo test -p codex-plus-core --test protocol_proxy` 全绿。
 - `relay_config` 的模式/协议/common/回填/清除逻辑有 `crates/codex-plus-core/tests/relay_config.rs`(67 个 test,覆盖三模式落盘、common 合并/剥离、上下文增删、限额写入、回填恢复 provider id、清除还原)。`cargo test -p codex-plus-core --test relay_config` 走读时实跑 **67 passed; 0 failed**。
 - `provider_sync` 的三源同步与回滚有 `crates/codex-plus-data/tests/provider_sync.rs`(7 个 test,含"后续步骤失败时还原 rollout 首行");`watcher` 的开关/恢复判定/可杀进程过滤有 `crates/codex-plus-core/tests/watcher.rs`(9 个 test)。走读时实跑 **7 passed** 与 **9 passed**,均 0 failed。
+- `user_scripts`/`script_market` 的列表形状、开关/删除(拒删 builtin)、坏配置容忍、市场清单过滤、安装写文件+元数据、热重载即时 evaluate、以及"忽略 sha256 校验"行为,有 `crates/codex-plus-core/tests/bridge_routes.rs` 覆盖(20 个 test,其中 9 个直接针对用户脚本/市场)。`cargo test -p codex-plus-core --test bridge_routes` 走读时实跑 **20 passed; 0 failed**。
