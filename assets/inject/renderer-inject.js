@@ -116,6 +116,8 @@
     pluginNavButton: 'nav[role="navigation"] button.h-token-nav-row.w-full',
     pluginSvgPath: 'svg path[d^="M7.94562 14.0277"]',
   };
+  const headerContextButtonClass = "border-token-border user-select-none no-drag cursor-interaction flex items-center gap-1 border whitespace-nowrap focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 rounded-lg border-token-border text-token-button-tertiary-foreground bg-token-bg-fog enabled:hover:bg-token-list-hover-background data-[state=open]:bg-token-list-hover-background border h-token-button-composer px-2 py-0 text-base leading-[18px]";
+  const headerIconTextButtonClass = "border-token-border no-drag cursor-interaction flex items-center gap-1 border whitespace-nowrap select-none focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 rounded-lg text-token-text-tertiary enabled:hover:bg-token-list-hover-background data-[state=open]:bg-token-list-hover-background border-transparent h-token-button-composer px-2 py-0 text-base leading-[18px]";
 
   function installStyle() {
     const existingStyle = document.getElementById(styleId);
@@ -1672,6 +1674,13 @@
 
   function renderBackendStatus() {
     const status = codexPlusBackendStatus.status || "failed";
+    if (codexPlusBackendStatus.version) {
+      codexPlusVersion = codexPlusBackendStatus.version;
+      document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
+        node.textContent = `Codex++ ${codexPlusVersion}`;
+      });
+      document.querySelectorAll(`#${codexPlusMenuId} button`).forEach(setCodexPlusTriggerLabel);
+    }
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
       label.dataset.status = status;
@@ -2190,17 +2199,39 @@
   function findNativeMenuInsertionPoint() {
     if (!codexPlusSettings().nativeMenuPlacement) return null;
     const header = document.querySelector(selectors.appHeader);
-    const menuBar = header?.querySelector(selectors.nativeMenuBar);
+    const isIconOnlyButton = (button) => String(button.className || "").includes("aspect-square");
+    const menuBar = Array.from(header?.querySelectorAll?.(selectors.nativeMenuBar) || [])
+      .find((node) => {
+        const rect = node.getBoundingClientRect();
+        return !node.closest(".invisible") && rect.width > 0 && rect.height > 0;
+      });
     if (menuBar) {
       const buttons = Array.from(menuBar.querySelectorAll("button")).filter((button) => !button.closest(`#${codexPlusMenuId}`));
+      if (buttons.length && buttons.every(isIconOnlyButton)) return null;
+      const openLocationButton = buttons.find((button) => /^(打开位置|Open location)$/i.test(button.getAttribute("aria-label") || ""));
+      const openLocationGroup = openLocationButton?.closest?.(".inline-flex.self-start.items-stretch.overflow-hidden.rounded-lg");
+      const openLocationIndex = buttons.indexOf(openLocationButton);
+      const nativeButtonClass = openLocationButton
+        ? buttons[openLocationIndex + 1]?.className || openLocationButton.className || ""
+        : buttons[buttons.length - 1]?.className || "";
+      if (openLocationGroup?.parentElement === menuBar) return { parent: menuBar, before: openLocationGroup, nativeButtonClass };
+      if (openLocationGroup?.parentElement?.parentElement === menuBar) return { parent: menuBar, before: openLocationGroup.parentElement, nativeButtonClass };
       return { parent: menuBar, before: buttons[buttons.length - 1]?.nextSibling || null, nativeButtonClass: buttons[buttons.length - 1]?.className || "" };
     }
     const contextSurface = header?.querySelector(selectors.headerContextMenuSurface);
     const buttons = Array.from(contextSurface?.querySelectorAll?.("button") || [])
       .filter((button) => !button.closest(`#${codexPlusMenuId}`) && button.getBoundingClientRect().width > 0 && button.getBoundingClientRect().height > 0);
+    if (buttons.length && buttons.every(isIconOnlyButton)) return null;
     const nativeButton = buttons.find((button) => !button.parentElement?.classList?.contains("inline-flex")) || buttons[0];
     const parent = nativeButton?.parentElement;
-    if (!parent) return null;
+    if (!parent) {
+      const emptyButtonGroup = Array.from(contextSurface?.querySelectorAll?.("div") || [])
+        .find((node) => {
+          const className = String(node.className || "");
+          return className.includes("items-center") && className.includes("gap-2");
+        });
+      return emptyButtonGroup ? { parent: emptyButtonGroup, before: emptyButtonGroup.firstChild, nativeButtonClass: headerIconTextButtonClass } : null;
+    }
     return { parent, before: nativeButton, nativeButtonClass: nativeButton.className || "" };
   }
 
@@ -2231,6 +2262,13 @@
   function configureCodexPlusTrigger(menu, trigger, nativeButtonClass) {
     if (!trigger) return;
     if (nativeButtonClass) trigger.className = normalizeCodexPlusTriggerClassName(nativeButtonClass);
+    if (!trigger.querySelector(".codex-plus-backend-indicator")) {
+      const indicator = document.createElement("span");
+      indicator.className = "codex-plus-backend-indicator";
+      indicator.dataset.codexBackendIndicator = "true";
+      indicator.dataset.status = codexPlusBackendStatus.status || "checking";
+      trigger.prepend(indicator);
+    }
     if (trigger.dataset.codexPlusTriggerInstalled === "5") return;
     trigger.dataset.codexPlusTriggerInstalled = "5";
     trigger.addEventListener("click", (event) => {
@@ -2306,6 +2344,8 @@
       insertionPoint = findNativeMenuInsertionPoint();
     } else if (existing && insertionPoint && existing.parentElement === insertionPoint.parent) {
       configureCodexPlusTrigger(existing, existing.querySelector("button"), insertionPoint.nativeButtonClass);
+      const safeBefore = insertionPoint.before?.parentElement === insertionPoint.parent ? insertionPoint.before : null;
+      if (existing.nextSibling !== safeBefore) insertionPoint.parent.insertBefore(existing, safeBefore);
       removeDuplicateCodexPlusMenus(existing);
       return;
     } else if (existing && insertionPoint) {
@@ -2313,6 +2353,13 @@
       existing.className = "";
       const safeBefore = insertionPoint.before?.parentElement === insertionPoint.parent ? insertionPoint.before : null;
       insertionPoint.parent.insertBefore(existing, safeBefore);
+      removeDuplicateCodexPlusMenus(existing);
+      return;
+    } else if (existing) {
+      configureCodexPlusTrigger(existing, existing.querySelector("button"), headerIconTextButtonClass);
+      existing.className = codexPlusMenuFloatingClass;
+      document.documentElement.appendChild(existing);
+      updateFloatingCodexPlusMenuPosition(existing);
       removeDuplicateCodexPlusMenus(existing);
       return;
     }
@@ -2325,7 +2372,7 @@
     const indicator = ensureCodexPlusTriggerIndicator(trigger);
     if (indicator) indicator.dataset.status = codexPlusBackendStatus.status || "checking";
     setCodexPlusTriggerLabel(trigger);
-    const nativeButtonClass = insertionPoint?.nativeButtonClass || "codex-plus-trigger";
+    const nativeButtonClass = insertionPoint?.nativeButtonClass || headerIconTextButtonClass;
     configureCodexPlusTrigger(menu, trigger, nativeButtonClass);
     menu.appendChild(trigger);
     if (insertionPoint) {
