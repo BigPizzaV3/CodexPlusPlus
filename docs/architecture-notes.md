@@ -356,7 +356,57 @@ UI 要显示"当前登录的是哪个 ChatGPT 账号":读 auth.json,确认 `auth
 
 ---
 
+## 10. 后台一致性维护:会话迁移与启动保活(`provider_sync.rs` + `watcher.rs`)
+
+两条无需用户介入的后台机制,各自维护一类"切换后仍一致"的不变量:(A) 切供应商后历史会话仍可见(`provider_sync`,codex-plus-data,约 778 行);(B) launcher/注入持续存活并能开机自启(`watcher`,codex-plus-core,约 255 行)。
+
+### 10.1 问题:切供应商,历史会话"消失"
+
+Codex 把每个会话按 `model_provider` 打标,且标记散落在**三处数据源**:① 会话 rollout JSONL 首行 record 的 `payload.model_provider`;② 索引库 `state_5.sqlite` 的 `threads.model_provider`;③ 全局态 `.codex-global-state.json` 的工作区列表。一旦切到新 provider,旧标记的会话被列表筛掉、"消失"。`provider_sync` 把这三处标记一并改写成当前 provider,让历史"回来"。
+
+### 10.2 三源同步流水(`run_provider_sync`:76)
+
+读当前 provider(`read_current_provider`:231,取 config.toml 的 `model_provider`,缺省 `openai`:9)→ 目录锁 → 收集变更 → 备份 → 改三处 → 失败回滚 → 剪备份 → 释放锁。三处改写:
+
+1. **JSONL 首行**(`collect_session_changes`:300 / `apply_session_changes`:497):遍历 `sessions` + `archived_sessions`(:10)下所有 rollout 文件,只解析**首行** record,把 `payload.model_provider` 改成目标值,其余行(`separator`)原样拼回。改完 `restore_file_mtime`(:530)**还原 mtime**——否则会话在"最近"列表里被顶到最前、且显示"已修改"。
+2. **sqlite 索引**(`count_sqlite_updates`:549 / `apply_sqlite_update`:589):一个事务里 `UPDATE threads SET model_provider`,外加按 thread_id 回填 `has_user_event` / `cwd`。先 `table_columns`(:539)`PRAGMA table_info` 探测列是否存在再改——**容忍 Codex 不同版本的 schema 差异**,缺列就跳过那一项而非报错。
+3. **全局态**(`normalized_global_state`:639 / `apply_global_state_update`:692):对 `electron-saved-workspace-roots` / `project-order` / `active-workspace-roots` 去重,`electron-workspace-root-labels` 键归一;路径统一过 `to_desktop_workspace_path`(:404,处理 Windows `\\?\` 与 `\\?\UNC\` 前缀、`/`↔`\`)。
+
+### 10.3 安全 / 并发 / 诚实
+
+- **目录锁**(`acquire_lock`:284):`tmp/provider-sync.lock` 用 `mkdir` 的原子性当互斥,`owner.json` 记 pid——防"launcher 启动触发"与"管理器手动触发"撞车(抢锁失败即 `Skipped` 返回)。
+- **先备份后改**(`create_backup`:443):打包 config.toml、global-state(含 `.bak`)、sqlite(连 `-wal`/`-shm`)、会话首行 manifest(`session-meta-backup.json`),附 `metadata.json{managedBy:"Codex++ provider sync"}`。`prune_backups`(:741)只保留最近 `BACKUP_KEEP_COUNT = 5` 份,且**只删自己 managed 的**(认 metadata 标记),不误删用户备份。
+- **失败回滚**:sqlite/global-state 任一步出错 → `restore_session_changes`(:519)把已改的 JSONL 首行还原(:162),不留半套状态。
+- **锁定文件跳过**(`is_locked_io_error`:419):Windows 文件占用(os error 32/33)或 `PermissionDenied` → 记进 `skipped_locked_rollout_files` 继续,而非整体失败。
+- **幂等**:`rewrite_needed` 仅在 provider 确实不同才置位;三处都无变更即 `"already up to date"` 直接返回(:131),重复跑零副作用。
+- **加密内容警告**(`build_encrypted_content_warning`:424):若会话含别的 provider 的 `encrypted_content`,提示"元数据已同步、但续聊/压缩这些历史可能 `invalid_encrypted_content`,需可靠续聊请切回原供应商或开新会话"。这是"**可见 ≠ 可续**"的诚实提醒——同步只动元数据,解不开别家加密的正文。
+
+### 10.4 provider_sync 接入点
+
+- **启动序列**(`launcher.rs:229`,受 `provider_sync_enabled` 开关):**起 Codex 之前**先迁移,确保 Codex 一读到的就是已对齐当前 provider 的历史。
+- **管理器手动**(`commands.rs:793`):Tauri command 暴露"立即同步"。
+
+两处都 `spawn_blocking`(同步文件/sqlite IO,不阻塞异步运行时)。
+
+### 10.5 启动保活与陈旧恢复(`watcher.rs`)
+
+另一条后台线:保证 launcher 与注入活着、且能开机自启接管 Codex。主要面向 Windows。
+
+- **CDP 存活探测**(`cdp_listening`:56):对 IPv4/IPv6 loopback 各 500ms 超时连 debug port,判断注入通道是否还在。
+- **陈旧 launcher 恢复**(`should_recover_stale_launcher`:120 = `!有 Codex 进程 && !CDP 监听`):单实例 guard 抢占失败时(`main.rs:64`),若判定持有端口的是**僵尸 launcher**(Codex 没在跑、CDP 也没监听)→ `stop_launcher_processes` 杀掉陈旧进程 → 退避后重试一次抢占。
+  - **自我保护**(`filter_killable_launcher_processes`:97):沿当前进程的父链标记 `protected`,只杀**其它** `codex-plus-plus.exe`,绝不杀自己或祖先进程。
+- **Windows 自启动**(`install_watcher`:125,仅 Windows):写 HKCU `...\Run` 键 + 启动目录快捷方式(`create_startup_shortcut`:213,`show_minimized`),登录即拉起 launcher 重新接管;`uninstall_watcher`(:143)反向清理。经管理器 command 暴露(`commands.rs:1069`)。
+- **可禁用**:`watcher.disabled` 标志文件(`disable_watcher_at`:40 / `enable_watcher_at`:32)。
+- **节奏常量**:`WATCHER_INTERVAL_SECONDS=3` / `CDP_PROBE_TIMEOUT_SECONDS=0.5` / `TAKEOVER_FAILURE_BACKOFF_SECONDS=30`(:8-10)是对外暴露的节流参数。走读时这三个常量**在工作区内未被某个固定轮询循环消费**——当前恢复是 guard 抢占失败时的**按需触发**(`main.rs:64`),非常驻 3s 轮询;`cdp_listening` 的 500ms 超时与 `CDP_PROBE_TIMEOUT_SECONDS` 取值一致但系硬编码。
+
+### 10.6 两者的共性
+
+都属"后台静默维护、改前先备份/校验、并发用锁、失败可回滚、危险操作自我保护"——与第 6/7/8/9 章一脉相承,只是触发点从用户点击挪到了进程生命周期事件(启动、抢占、登录)。
+
+---
+
 ## 走读验证
 
 - `protocol_proxy` 的转换逻辑有完整单测:`crates/codex-plus-core/tests/protocol_proxy.rs`(35 个 test,覆盖请求/响应/SSE/内联 think/UTF-8 边界/apply_patch/URL 归一化)。`cargo test -p codex-plus-core --test protocol_proxy` 全绿。
 - `relay_config` 的模式/协议/common/回填/清除逻辑有 `crates/codex-plus-core/tests/relay_config.rs`(67 个 test,覆盖三模式落盘、common 合并/剥离、上下文增删、限额写入、回填恢复 provider id、清除还原)。`cargo test -p codex-plus-core --test relay_config` 走读时实跑 **67 passed; 0 failed**。
+- `provider_sync` 的三源同步与回滚有 `crates/codex-plus-data/tests/provider_sync.rs`(7 个 test,含"后续步骤失败时还原 rollout 首行");`watcher` 的开关/恢复判定/可杀进程过滤有 `crates/codex-plus-core/tests/watcher.rs`(9 个 test)。走读时实跑 **7 passed** 与 **9 passed**,均 0 failed。
