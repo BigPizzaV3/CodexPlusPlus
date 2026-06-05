@@ -1026,7 +1026,7 @@
   }
 
   let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, launchMode: "patch", codexAppVersion: "" };
-  const codexPluginLegacyEntryUnlockBeforeVersion = "26.601.21317";
+  const codexPluginLegacyEntryUnlockBeforeVersion = "26.601.2237";
 
   function parseCodexVersionParts(version) {
     const raw = String(version || "").trim();

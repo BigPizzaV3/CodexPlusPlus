@@ -115,7 +115,7 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
 fn injection_script_defines_version_gated_plugin_unlock_strategy() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginLegacyEntryUnlockBeforeVersion = \"26.601.21317\""));
+    assert!(script.contains("codexPluginLegacyEntryUnlockBeforeVersion = \"26.601.2237\""));
     assert!(script.contains("function parseCodexVersionParts(version)"));
     assert!(script.contains("function compareCodexVersions(left, right)"));
     assert!(script.contains("function codexPluginUnlockStrategy()"));
