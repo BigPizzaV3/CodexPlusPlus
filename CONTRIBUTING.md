@@ -7,7 +7,7 @@ Thank you for your interest in contributing to CodexPlusPlus!
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/MeetSohailCodes/CodexPlusPlus.git
+   git clone https://github.com/BigPizzaV3/CodexPlusPlus.git
    cd CodexPlusPlus
    ```
 
@@ -90,4 +90,13 @@ CodexPlusPlus/
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the project license.
+By contributing, you agree that your contributions will be licensed under the project license
+---
+
+## Contributors
+
+<a href="https://github.com/MeetSohailCodes">
+  <img src="https://avatars.githubusercontent.com/u/221149862?v=4" width="80" height="80" style="border-radius: 50%;" alt="MeetSohailCodes" />
+</a>
+
+**[MeetSohailCodes](https://github.com/MeetSohailCodes)** — Forked from [BigPizzaV3](https://github.com/BigPizzaV3)
