@@ -112,6 +112,29 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
 }
 
 #[test]
+fn injection_script_defines_version_gated_plugin_unlock_strategy() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("codexPluginLegacyEntryUnlockBeforeVersion = \"26.601.21317\""));
+    assert!(script.contains("function parseCodexVersionParts(version)"));
+    assert!(script.contains("function compareCodexVersions(left, right)"));
+    assert!(script.contains("function codexPluginUnlockStrategy()"));
+    assert!(script.contains("const comparison = compareCodexVersions(version, codexPluginLegacyEntryUnlockBeforeVersion)"));
+    assert!(script.contains("return comparison < 0 ? \"legacy\" : \"modern\""));
+}
+
+#[test]
+fn injection_script_gates_legacy_and_modern_plugin_unlock_by_codex_version() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("const pluginUnlockStrategy = codexPluginUnlockStrategy()"));
+    assert!(script.contains("if ((pluginUnlockStrategy === \"legacy\" || pluginUnlockStrategy === \"unknown\") && settings.pluginEntryUnlock)"));
+    assert!(script.contains("if ((pluginUnlockStrategy === \"modern\" || pluginUnlockStrategy === \"unknown\") && settings.pluginMarketplaceUnlock)"));
+    assert!(script.contains("plugin_unlock_strategy_selected"));
+    assert!(script.contains("window.__codexPluginUnlockStrategyLogged"));
+}
+
+#[test]
 fn injection_script_restores_legacy_plugin_sidebar_entry_unlock() {
     let script = assets::injection_script(57321);
 
