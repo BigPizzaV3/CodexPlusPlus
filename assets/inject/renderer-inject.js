@@ -7812,3 +7812,30 @@
   window.__codexSessionDeleteObserver = new MutationObserver(scheduleScan);
   window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, { childList: true, subtree: true });
 })();
+
+// Ensure the Context-Aware Suggestions toggle remains visible in settings.
+// The dynamically loaded codex-plus-plus.js conditionally hides this toggle
+// via shouldOverride: () => true. This monkey-patch intercepts that registration
+// and changes it to always return false, so the original settings page (with the
+// toggle) is preserved. Users can then manually disable ambient suggestions if
+// Codex++'s CDP auto-disabling fails due to race conditions with storage loading.
+(function () {
+  var attempts = 0;
+  var maxAttempts = 100;
+  var timer = setInterval(function () {
+    attempts++;
+    if (window.__patchApp && typeof window.__patchApp.registerAppComponentOverride === 'function') {
+      var original = window.__patchApp.registerAppComponentOverride;
+      window.__patchApp.registerAppComponentOverride = function (config) {
+        if (config && config.appPath && typeof config.appPath === 'string' &&
+            config.appPath.indexOf('settings') !== -1 &&
+            typeof config.shouldOverride === 'function') {
+          config.shouldOverride = function () { return false; };
+        }
+        return original.call(window.__patchApp, config);
+      };
+      clearInterval(timer);
+    }
+    if (attempts >= maxAttempts) { clearInterval(timer); }
+  }, 200);
+})();
