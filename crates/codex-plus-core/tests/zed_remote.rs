@@ -1,4 +1,6 @@
-use codex_plus_core::zed_remote::{self, SshTarget, ZedRemoteError};
+use codex_plus_core::zed_remote::{
+    self, SshTarget, ZedOpenStrategy, ZedRemoteError, ZedRemoteProjectSource,
+};
 use serde_json::json;
 
 #[test]
@@ -68,6 +70,66 @@ fn build_zed_remote_url_allows_bracketed_ipv6_host() {
 }
 
 #[test]
+fn open_strategy_defaults_to_add_to_focused_workspace() {
+    assert_eq!(
+        zed_remote::zed_open_strategy_from_payload(&json!({})),
+        ZedOpenStrategy::AddToFocusedWorkspace
+    );
+    assert_eq!(
+        zed_remote::zed_open_strategy_from_payload(&json!({"strategy": "reuseWindow"})),
+        ZedOpenStrategy::ReuseWindow
+    );
+    assert_eq!(
+        zed_remote::zed_open_strategy_from_payload(&json!({"strategy": "unknown"})),
+        ZedOpenStrategy::AddToFocusedWorkspace
+    );
+}
+
+#[test]
+fn launch_args_for_add_strategy_are_zed_dash_a_url() {
+    assert_eq!(
+        zed_remote::zed_cli_args_for_strategy(
+            ZedOpenStrategy::AddToFocusedWorkspace,
+            "ssh://example.com/home/app"
+        ),
+        vec!["-a".to_string(), "ssh://example.com/home/app".to_string()]
+    );
+}
+
+#[test]
+fn launch_args_for_reuse_strategy_are_zed_dash_r_url() {
+    assert_eq!(
+        zed_remote::zed_cli_args_for_strategy(
+            ZedOpenStrategy::ReuseWindow,
+            "ssh://example.com/home/app"
+        ),
+        vec!["-r".to_string(), "ssh://example.com/home/app".to_string()]
+    );
+}
+
+#[test]
+fn launch_args_for_new_window_strategy_are_zed_dash_n_url() {
+    assert_eq!(
+        zed_remote::zed_cli_args_for_strategy(
+            ZedOpenStrategy::NewWindow,
+            "ssh://example.com/home/app"
+        ),
+        vec!["-n".to_string(), "ssh://example.com/home/app".to_string()]
+    );
+}
+
+#[test]
+fn launch_args_for_default_strategy_are_plain_url() {
+    assert_eq!(
+        zed_remote::zed_cli_args_for_strategy(
+            ZedOpenStrategy::Default,
+            "ssh://example.com/home/app"
+        ),
+        vec!["ssh://example.com/home/app".to_string()]
+    );
+}
+
+#[test]
 fn target_from_payload_splits_codex_managed_authority() {
     let target =
         zed_remote::target_from_payload(&json!({"ssh": {"host": "longnv@192.168.100.31"}}))
@@ -81,6 +143,198 @@ fn target_from_payload_splits_codex_managed_authority() {
             port: None,
         }
     );
+}
+
+#[test]
+fn registry_lists_remote_projects_from_global_state() {
+    let state = json!({
+        "codex-managed-remote-connections": [{
+            "hostId": "remote-ssh-codex-managed:remote",
+            "hostname": "longnv@192.168.100.31",
+        }],
+        "remote-projects": [{
+            "id": "main",
+            "hostId": "remote-ssh-codex-managed:remote",
+            "remotePath": "/Users/longnv/bin/repo/sealos-skills",
+            "label": "sealos-skills",
+        }],
+        "project-order": ["main"],
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let projects = zed_remote::list_zed_remote_projects_from_state(
+        &state,
+        &json!({}),
+        Some(&temp.path().join("recent.json")),
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].label, "sealos-skills");
+    assert_eq!(
+        projects[0].source,
+        ZedRemoteProjectSource::CodexRemoteProject
+    );
+    assert_eq!(
+        projects[0].url,
+        "ssh://longnv@192.168.100.31/Users/longnv/bin/repo/sealos-skills"
+    );
+}
+
+#[test]
+fn registry_prefers_current_thread_workspace_hint() {
+    let state = json!({
+        "selected-remote-host-id": "remote-ssh-codex-managed:remote",
+        "codex-managed-remote-connections": [{
+            "hostId": "remote-ssh-codex-managed:remote",
+            "hostname": "longnv@192.168.100.31",
+        }],
+        "remote-projects": [{
+            "id": "main",
+            "hostId": "remote-ssh-codex-managed:remote",
+            "remotePath": "/Users/longnv/bin/repo/sealos-skills",
+        }],
+        "thread-workspace-root-hints": {
+            "019e39c1-worktree": "/Users/longnv/bin/repo/sealos-skills/.worktree/zed-fix",
+        },
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let projects = zed_remote::list_zed_remote_projects_from_state(
+        &state,
+        &json!({"threadId": "019e39c1-worktree"}),
+        Some(&temp.path().join("recent.json")),
+        None,
+    )
+    .unwrap();
+    let current = projects.iter().find(|project| project.is_current).unwrap();
+
+    assert_eq!(
+        current.path,
+        "/Users/longnv/bin/repo/sealos-skills/.worktree/zed-fix"
+    );
+    assert_eq!(current.source, ZedRemoteProjectSource::CurrentThread);
+}
+
+#[test]
+fn registry_dedupes_same_user_host_port_path() {
+    let state = json!({
+        "selected-remote-host-id": "remote-ssh-codex-managed:remote",
+        "codex-managed-remote-connections": [{
+            "hostId": "remote-ssh-codex-managed:remote",
+            "hostname": "longnv@192.168.100.31",
+        }],
+        "remote-projects": [{
+            "id": "main",
+            "hostId": "remote-ssh-codex-managed:remote",
+            "remotePath": "/Users/longnv/bin/repo/sealos-skills",
+        }],
+        "thread-workspace-root-hints": {
+            "019e39c1-worktree": "/Users/longnv/bin/repo/sealos-skills",
+        },
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let projects = zed_remote::list_zed_remote_projects_from_state(
+        &state,
+        &json!({"threadId": "019e39c1-worktree"}),
+        Some(&temp.path().join("recent.json")),
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(
+        projects
+            .iter()
+            .filter(|project| project.path == "/Users/longnv/bin/repo/sealos-skills")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn registry_marks_recent_opened_project() {
+    let state = json!({
+        "codex-managed-remote-connections": [{
+            "hostId": "remote-ssh-codex-managed:remote",
+            "hostname": "longnv@192.168.100.31",
+        }],
+        "remote-projects": [{
+            "id": "main",
+            "hostId": "remote-ssh-codex-managed:remote",
+            "remotePath": "/Users/longnv/bin/repo/sealos-skills",
+            "label": "sealos-skills",
+        }],
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let registry_path = temp.path().join("recent.json");
+    let mut projects = zed_remote::list_zed_remote_projects_from_state(
+        &state,
+        &json!({}),
+        Some(&registry_path),
+        None,
+    )
+    .unwrap();
+    projects[0].source = ZedRemoteProjectSource::Recent;
+    projects[0].last_opened_at_ms = Some(42);
+    std::fs::write(
+        &registry_path,
+        serde_json::to_vec(&json!({ "projects": projects })).unwrap(),
+    )
+    .unwrap();
+
+    let projects = zed_remote::list_zed_remote_projects_from_state(
+        &state,
+        &json!({}),
+        Some(&registry_path),
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(projects[0].last_opened_at_ms, Some(42));
+}
+
+#[test]
+fn registry_lists_sqlite_thread_cwd_candidates() {
+    let state = json!({
+        "codex-managed-remote-connections": [{
+            "hostId": "remote-ssh-codex-managed:remote",
+            "hostname": "longnv@192.168.100.31",
+        }],
+        "remote-projects": [{
+            "id": "main",
+            "hostId": "remote-ssh-codex-managed:remote",
+            "remotePath": "/Users/longnv/bin/repo/sealos-skills",
+        }],
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let db_path = temp.path().join("state_5.sqlite");
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    db.execute(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT NOT NULL)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads (id, cwd) VALUES (?1, ?2)",
+        (
+            "019e39c1-worktree",
+            "/Users/longnv/bin/repo/sealos-skills/.worktree/zed-fix",
+        ),
+    )
+    .unwrap();
+    drop(db);
+
+    let projects = zed_remote::list_zed_remote_projects_from_state(
+        &state,
+        &json!({}),
+        Some(&temp.path().join("recent.json")),
+        Some(&db_path),
+    )
+    .unwrap();
+
+    assert!(projects.iter().any(|project| {
+        project.source == ZedRemoteProjectSource::SqliteThreadCwd
+            && project.path == "/Users/longnv/bin/repo/sealos-skills/.worktree/zed-fix"
+    }));
 }
 
 #[test]

@@ -112,6 +112,9 @@ type BackendSettings = {
   codexAppConversationView: boolean;
   codexAppThreadScrollRestore: boolean;
   codexAppZedRemoteOpen: boolean;
+  zedRemoteOpenStrategy: ZedOpenStrategy;
+  zedRemoteProjectRegistryEnabled: boolean;
+  zedRemoteSyncToZedSettings: boolean;
   codexAppUpstreamWorktreeCreate: boolean;
   codexAppNativeMenuPlacement: boolean;
   codexAppServiceTierControls: boolean;
@@ -130,6 +133,7 @@ type BackendSettings = {
   cliWrapperApiKeyEnv: string;
 };
 
+type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
 type LaunchMode = "patch" | "relay";
 
 type RelayProfile = {
@@ -244,6 +248,31 @@ type LocalSession = {
 type LocalSessionsResult = CommandResult<{
   dbPath: string;
   sessions: LocalSession[];
+}>;
+
+type ZedRemoteProject = {
+  id: string;
+  label: string;
+  hostId: string;
+  ssh: {
+    user: string;
+    host: string;
+    port: number | null;
+  };
+  path: string;
+  url: string;
+  source: "currentThread" | "codexRemoteProject" | "threadWorkspaceHint" | "sqliteThreadCwd" | "recent" | string;
+  lastOpenedAtMs: number | null;
+  isCurrent: boolean;
+};
+
+type ZedRemoteProjectsResult = CommandResult<{
+  projects: ZedRemoteProject[];
+}>;
+
+type ZedRemoteOpenResult = CommandResult<{
+  url: string;
+  strategy: ZedOpenStrategy;
 }>;
 
 type DeleteLocalSessionResult = CommandResult<{
@@ -453,7 +482,7 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-type Route = "overview" | "relay" | "sessions" | "context" | "enhance" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "sessions" | "context" | "enhance" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon }> = [
@@ -462,6 +491,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon }> = [
   { id: "sessions", label: "会话管理", icon: MessageCircle },
   { id: "context", label: "工具与插件", icon: Network },
   { id: "enhance", label: "页面增强", icon: Hammer },
+  { id: "zedRemote", label: "Zed 远程项目", icon: ExternalLink },
   { id: "userScripts", label: "脚本市场", icon: FileCode2 },
   { id: "recommendations", label: "推荐内容", icon: ExternalLink },
   { id: "maintenance", label: "安装维护", icon: Wrench },
@@ -490,6 +520,9 @@ const defaultSettings: BackendSettings = {
   codexAppConversationView: false,
   codexAppThreadScrollRestore: true,
   codexAppZedRemoteOpen: true,
+  zedRemoteOpenStrategy: "addToFocusedWorkspace",
+  zedRemoteProjectRegistryEnabled: true,
+  zedRemoteSyncToZedSettings: false,
   codexAppUpstreamWorktreeCreate: true,
   codexAppNativeMenuPlacement: true,
   codexAppServiceTierControls: false,
@@ -540,6 +573,7 @@ export function App() {
   const [relay, setRelay] = useState<RelayResult | null>(null);
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
+  const [zedRemoteProjects, setZedRemoteProjects] = useState<ZedRemoteProjectsResult | null>(null);
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
   const [logs, setLogs] = useState<LogsResult | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
@@ -667,6 +701,44 @@ export function App() {
     return result;
   };
 
+  const refreshZedRemoteProjects = async (silent = false) => {
+    const result = await run(() => call<ZedRemoteProjectsResult>("list_zed_remote_projects"));
+    if (result) {
+      setZedRemoteProjects(result);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("Zed 远程项目", result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const openZedRemoteProject = async (
+    project: ZedRemoteProject,
+    strategy: ZedOpenStrategy = settingsForm.zedRemoteOpenStrategy || "addToFocusedWorkspace",
+  ) => {
+    const result = await run(() =>
+      call<ZedRemoteOpenResult>("open_zed_remote", {
+        payload: {
+          ssh: project.ssh,
+          hostId: project.hostId,
+          path: project.path,
+          strategy,
+          remember: settingsForm.zedRemoteProjectRegistryEnabled !== false,
+        },
+      }),
+    );
+    if (result) {
+      showResultNotice("Zed 远程打开", result);
+      await refreshZedRemoteProjects(true);
+    }
+  };
+
+  const forgetZedRemoteProject = async (project: ZedRemoteProject) => {
+    const result = await run(() => call<ZedRemoteProjectsResult>("forget_zed_remote_project", { id: project.id }));
+    if (result) {
+      setZedRemoteProjects(result);
+      showResultNotice("Zed 远程项目", result);
+    }
+  };
+
   const deleteLocalSession = async (session: LocalSession) => {
     const title = session.title || session.id;
     if (!window.confirm(`删除会话“${title}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。`)) return;
@@ -735,6 +807,10 @@ export function App() {
       await refreshSettings(true);
       await refreshLocalSessions(true);
       await refreshProviderSyncTargets(true);
+    }
+    if (next === "zedRemote") {
+      await refreshSettings(true);
+      await refreshZedRemoteProjects(true);
     }
     if (next === "context") {
       await refreshSettings(true);
@@ -1441,6 +1517,9 @@ export function App() {
       deleteUserScript,
       refreshLocalSessions,
       deleteLocalSession,
+      refreshZedRemoteProjects,
+      openZedRemoteProject,
+      forgetZedRemoteProject,
       openExternalUrl,
       applyRelayInjection,
       applyPureApiInjection,
@@ -1472,7 +1551,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget],
+    [route, launchForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget],
   );
   const hasUpdate = update?.updateAvailable === true;
 
@@ -1585,6 +1664,9 @@ export function App() {
           {route === "enhance" ? (
             <EnhanceScreen form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
           ) : null}
+          {route === "zedRemote" ? (
+            <ZedRemoteScreen projects={zedRemoteProjects} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
+          ) : null}
           {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
           {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
           {route === "maintenance" ? (
@@ -1649,6 +1731,9 @@ type Actions = {
   deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: () => Promise<LocalSessionsResult | null>;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
+  refreshZedRemoteProjects: () => Promise<ZedRemoteProjectsResult | null>;
+  openZedRemoteProject: (project: ZedRemoteProject, strategy?: ZedOpenStrategy) => Promise<void>;
+  forgetZedRemoteProject: (project: ZedRemoteProject) => Promise<void>;
   openExternalUrl: (url: string) => Promise<void>;
   applyRelayInjection: () => Promise<boolean>;
   applyPureApiInjection: () => Promise<boolean>;
@@ -1926,8 +2011,25 @@ function EnhanceScreen({
             <FeatureToggle title="对话居中宽度" detail="把主对话和输入框限制到固定最大宽度，适合大屏阅读。" checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
             <FeatureToggle title="切换对话保留位置" detail="切换 thread 时恢复上一次浏览位置。" checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
             <FeatureToggle title="Zed Remote open" detail="远程 SSH 文件引用可直接用 Zed Remote Development 打开。" checked={form.codexAppZedRemoteOpen} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppZedRemoteOpen", value)} />
+            <FeatureToggle title="Zed 项目记录" detail="维护 Codex++ 自己的远程项目最近列表。" checked={form.zedRemoteProjectRegistryEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteProjectRegistryEnabled", value)} />
+            <FeatureToggle title="同步 Zed settings" detail="高级选项，默认关闭；当前实现不主动改写 Zed settings。" checked={form.zedRemoteSyncToZedSettings} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteSyncToZedSettings", value)} />
             <FeatureToggle title="Upstream worktree" detail="从最新 upstream 分支创建 Git worktree。" checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
             <FeatureToggle title="原生菜单栏位置" detail="把 Codex++ 菜单插入 Codex 顶部原生菜单栏。" checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
+          </div>
+          <div className="zed-remote-settings">
+            <Field label="Zed 默认打开策略">
+              <select
+                className="select-input"
+                disabled={!masterEnabled}
+                onChange={(event) => onFormChange({ ...form, zedRemoteOpenStrategy: event.currentTarget.value as ZedOpenStrategy })}
+                value={form.zedRemoteOpenStrategy}
+              >
+                <option value="addToFocusedWorkspace">加入当前工作区</option>
+                <option value="reuseWindow">复用窗口</option>
+                <option value="newWindow">新窗口</option>
+                <option value="default">Zed 默认行为</option>
+              </select>
+            </Field>
           </div>
           <div className="hint-line">
             <Info className="h-4 w-4" />
@@ -1939,6 +2041,146 @@ function EnhanceScreen({
         </CardContent>
       </Panel>
     </>
+  );
+}
+
+function ZedRemoteScreen({
+  projects,
+  form,
+  onFormChange,
+  actions,
+}: {
+  projects: ZedRemoteProjectsResult | null;
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
+  actions: Actions;
+}) {
+  const allProjects = projects?.projects ?? [];
+  const currentProjects = allProjects.filter((project) => project.isCurrent);
+  const currentIds = new Set(currentProjects.map((project) => project.id));
+  const recentProjects = allProjects.filter((project) => !currentIds.has(project.id) && (project.source === "recent" || project.lastOpenedAtMs));
+  const recentIds = new Set(recentProjects.map((project) => project.id));
+  const discoveredProjects = allProjects.filter((project) => !currentIds.has(project.id) && !recentIds.has(project.id));
+  const copyUrl = async (project: ZedRemoteProject) => {
+    try {
+      await navigator.clipboard.writeText(project.url);
+      await actions.showMessage("Zed Remote URL", "ssh:// URL 已复制。", "ok");
+    } catch (error) {
+      await actions.showMessage("复制失败", stringifyError(error), "failed");
+    }
+  };
+  return (
+    <>
+      <Panel>
+        <CardHead title="Zed 远程项目" detail={`${allProjects.length} 个 Codex++ 可识别项目，默认策略：${zedStrategyLabel(form.zedRemoteOpenStrategy)}`} />
+        <CardContent>
+          <div className="metric-list">
+            <Metric label="Current" value={String(currentProjects.length)} />
+            <Metric label="Recent" value={String(recentProjects.length)} />
+            <Metric label="Discovered" value={String(discoveredProjects.length)} />
+          </div>
+          <div className="zed-remote-settings">
+            <Field label="默认打开策略">
+              <select
+                className="select-input"
+                onChange={(event) => onFormChange({ ...form, zedRemoteOpenStrategy: event.currentTarget.value as ZedOpenStrategy })}
+                value={form.zedRemoteOpenStrategy}
+              >
+                <option value="addToFocusedWorkspace">加入当前工作区</option>
+                <option value="reuseWindow">复用窗口</option>
+                <option value="newWindow">新窗口</option>
+                <option value="default">Zed 默认行为</option>
+              </select>
+            </Field>
+            <label className="switch-row compact">
+              <input
+                checked={form.zedRemoteProjectRegistryEnabled}
+                onChange={(event) => onFormChange({ ...form, zedRemoteProjectRegistryEnabled: event.currentTarget.checked })}
+                type="checkbox"
+              />
+              <span>
+                <strong>记录最近打开</strong>
+                <small>保存到 Codex++ state，不改写 Zed settings。</small>
+              </span>
+            </label>
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.refreshZedRemoteProjects()}>
+              <RefreshCw className="h-4 w-4" />
+              刷新项目
+            </Button>
+            <Button variant="secondary" onClick={() => void actions.saveSettingsValue(form, false)}>
+              <Save className="h-4 w-4" />
+              保存策略
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <ZedRemoteProjectSection title="Current" projects={currentProjects} actions={actions} onCopyUrl={copyUrl} />
+      <ZedRemoteProjectSection title="Recent" projects={recentProjects} actions={actions} onCopyUrl={copyUrl} />
+      <ZedRemoteProjectSection title="Discovered from Codex" projects={discoveredProjects} actions={actions} onCopyUrl={copyUrl} />
+    </>
+  );
+}
+
+function ZedRemoteProjectSection({
+  title,
+  projects,
+  actions,
+  onCopyUrl,
+}: {
+  title: string;
+  projects: ZedRemoteProject[];
+  actions: Actions;
+  onCopyUrl: (project: ZedRemoteProject) => Promise<void>;
+}) {
+  return (
+    <Panel>
+      <CardHead title={title} detail={`${projects.length} 个项目`} />
+      <CardContent>
+        {projects.length ? (
+          <div className="zed-remote-project-list">
+            {projects.map((project) => (
+              <div className="zed-remote-project-row" key={project.id}>
+                <div className="zed-remote-project-main">
+                  <div>
+                    <strong>{project.label}</strong>
+                    <span>{zedRemoteHostLabel(project)}</span>
+                  </div>
+                  <code>{project.path}</code>
+                  <small>
+                    {zedRemoteSourceLabel(project.source)}
+                    {project.lastOpenedAtMs ? ` · ${formatTime(project.lastOpenedAtMs)}` : ""}
+                  </small>
+                </div>
+                <div className="zed-remote-project-actions">
+                  <Button onClick={() => void actions.openZedRemoteProject(project, "addToFocusedWorkspace")} size="sm">
+                    <ExternalLink className="h-4 w-4" />
+                    加入当前工作区
+                  </Button>
+                  <Button onClick={() => void actions.openZedRemoteProject(project, "reuseWindow")} size="sm" variant="outline">
+                    复用窗口
+                  </Button>
+                  <Button onClick={() => void actions.openZedRemoteProject(project, "newWindow")} size="sm" variant="outline">
+                    新窗口
+                  </Button>
+                  <Button onClick={() => void onCopyUrl(project)} size="icon" title="复制 ssh:// URL" variant="ghost">
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                  {project.source === "recent" ? (
+                    <Button onClick={() => void actions.forgetZedRemoteProject(project)} size="icon" title="移除最近记录" variant="ghost">
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty">暂无项目。</div>
+        )}
+      </CardContent>
+    </Panel>
   );
 }
 
@@ -3612,6 +3854,7 @@ function routeSubtitle(route: Route) {
     sessions: "查看、删除和修复 Codex 本地会话",
     context: "独立管理 MCP、Skills、Plugins",
     enhance: "会话删除、导出、项目移动和脚本能力",
+    zedRemote: "管理 Codex SSH 项目并加入 Zed workspace",
     userScripts: "内置和用户自定义脚本清单",
     recommendations: "赞助商推荐与普通推荐",
     maintenance: "入口安装、修复、Watcher 与手动启动",
@@ -4968,6 +5211,28 @@ function numberOrDefault(value: string, fallback: number) {
 
 function splitLogLines(text: string) {
   return text.trimEnd().split(/\r?\n/).filter((line, index, lines) => line.length > 0 || index < lines.length - 1);
+}
+
+function zedStrategyLabel(strategy: ZedOpenStrategy) {
+  if (strategy === "reuseWindow") return "复用窗口";
+  if (strategy === "newWindow") return "新窗口";
+  if (strategy === "default") return "Zed 默认行为";
+  return "加入当前工作区";
+}
+
+function zedRemoteHostLabel(project: ZedRemoteProject) {
+  const user = project.ssh.user ? `${project.ssh.user}@` : "";
+  const port = project.ssh.port ? `:${project.ssh.port}` : "";
+  return `${user}${project.ssh.host}${port}`;
+}
+
+function zedRemoteSourceLabel(source: string) {
+  if (source === "currentThread") return "当前会话";
+  if (source === "codexRemoteProject") return "Codex remote project";
+  if (source === "threadWorkspaceHint") return "Thread workspace hint";
+  if (source === "sqliteThreadCwd") return "SQLite cwd";
+  if (source === "recent") return "最近打开";
+  return source || "未知来源";
 }
 
 function formatTime(value: number) {

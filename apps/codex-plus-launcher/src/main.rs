@@ -541,6 +541,18 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         Ok(codex_plus_core::zed_remote::open_zed_remote(&payload))
     }
 
+    async fn list_zed_remote_projects(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(codex_plus_core::zed_remote::list_zed_remote_projects_response(&payload))
+    }
+
+    async fn remember_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(codex_plus_core::zed_remote::remember_zed_remote_project_response(&payload))
+    }
+
+    async fn forget_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(codex_plus_core::zed_remote::forget_zed_remote_project_response(&payload))
+    }
+
     async fn upstream_worktree_status(&self) -> anyhow::Result<Value> {
         Ok(codex_plus_core::upstream_worktree::status_response())
     }

@@ -1388,6 +1388,76 @@ body {
   line-height: 1.45;
 }
 
+.switch-row.compact {
+  margin-bottom: 0;
+}
+
+.zed-remote-settings {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: end;
+  margin-top: 12px;
+}
+
+.zed-remote-settings .field {
+  margin-bottom: 0;
+}
+
+.zed-remote-project-list {
+  display: grid;
+  gap: 8px;
+}
+
+.zed-remote-project-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  padding: 11px 12px;
+}
+
+.zed-remote-project-main {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.zed-remote-project-main > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.zed-remote-project-main strong {
+  font-size: 14px;
+}
+
+.zed-remote-project-main span,
+.zed-remote-project-main small {
+  color: hsl(var(--muted-foreground));
+}
+
+.zed-remote-project-main code {
+  overflow: hidden;
+  border-radius: 6px;
+  background: hsl(var(--muted));
+  padding: 5px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zed-remote-project-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .provider-sync-progress {
   display: grid;
   gap: 8px;
@@ -2098,6 +2168,7 @@ body {
   .mode-grid,
   .mode-grid.three,
   .relay-grid,
+  .zed-remote-settings,
   .hero-layout {
     grid-template-columns: 1fr;
   }
@@ -2122,6 +2193,14 @@ body {
 
   .session-row {
     grid-template-columns: 1fr;
+  }
+
+  .zed-remote-project-row {
+    grid-template-columns: 1fr;
+  }
+
+  .zed-remote-project-actions {
+    justify-content: flex-start;
   }
 
   .session-meta {

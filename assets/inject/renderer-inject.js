@@ -7242,6 +7242,13 @@
     return result?.status === "ok" && result.request ? result.request : null;
   }
 
+  function zedRemoteOpenStrategy() {
+    const strategy = zedRemoteString(codexPlusBackendSettings.zedRemoteOpenStrategy);
+    return ["addToFocusedWorkspace", "reuseWindow", "newWindow", "default"].includes(strategy)
+      ? strategy
+      : "addToFocusedWorkspace";
+  }
+
   function zedRemoteString(value) {
     return typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
   }
@@ -7535,6 +7542,11 @@
       showZedRemoteToast(zedRemoteMissingHostMessage);
       return;
     }
+    nextRequest = {
+      ...nextRequest,
+      strategy: nextRequest.strategy || zedRemoteOpenStrategy(),
+      remember: codexPlusBackendSettings.zedRemoteProjectRegistryEnabled !== false,
+    };
     try {
       const result = await postJson("/zed-remote/open", nextRequest);
       if (result?.status === "ok") {
