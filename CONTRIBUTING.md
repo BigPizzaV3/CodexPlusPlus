@@ -88,6 +88,8 @@ CodexPlusPlus/
 - Include Rust version (`rustc --version`) and OS information
 - For bugs, provide minimal reproduction steps
 
+![Codex++ Management Console](docs/contibutions/localization.png)
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the project license
