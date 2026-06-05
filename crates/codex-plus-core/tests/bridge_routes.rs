@@ -94,6 +94,49 @@ async fn bridge_routes_cover_all_current_paths() {
 }
 
 #[tokio::test]
+async fn settings_get_includes_runtime_codex_app_version() {
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_codex_app_version("26.601.21317")),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
+
+    assert_eq!(result["codexAppVersion"], json!("26.601.21317"));
+    assert_eq!(result["codexAppPluginEntryUnlock"], json!(true));
+    assert_eq!(result["codexAppPluginMarketplaceUnlock"], json!(true));
+    assert_eq!(result["codexAppForcePluginInstall"], json!(true));
+}
+
+#[tokio::test]
+async fn settings_set_does_not_persist_runtime_codex_app_version() {
+    let settings = Arc::new(FakeSettings::with_codex_app_version("26.601.21317"));
+    let ctx = BridgeContext::new(
+        settings.clone(),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let result = handle_bridge_request(
+        ctx,
+        "/settings/set",
+        json!({
+            "codexAppVersion": "1.2.3",
+            "codexAppPluginMarketplaceUnlock": false
+        }),
+    )
+    .await;
+
+    assert_eq!(result["codexAppVersion"], json!("26.601.21317"));
+    assert_eq!(result["codexAppPluginMarketplaceUnlock"], json!(false));
+
+    let persisted = settings.settings.lock().unwrap().clone();
+    let persisted_value = serde_json::to_value(persisted).unwrap();
+    assert!(persisted_value.get("codexAppVersion").is_none());
+}
+
+#[tokio::test]
 async fn upstream_worktree_routes_are_dispatched_to_runtime() {
     let ctx = test_context();
 
@@ -819,6 +862,16 @@ fn test_context() -> BridgeContext {
 #[derive(Default)]
 struct FakeSettings {
     settings: Mutex<BackendSettings>,
+    codex_app_version: Mutex<String>,
+}
+
+impl FakeSettings {
+    fn with_codex_app_version(version: &str) -> Self {
+        Self {
+            settings: Mutex::new(BackendSettings::default()),
+            codex_app_version: Mutex::new(version.to_string()),
+        }
+    }
 }
 
 #[async_trait]
@@ -839,6 +892,7 @@ impl BridgeSettingsService for FakeSettings {
         }
         for key in [
             "codexAppPluginEntryUnlock",
+            "codexAppPluginMarketplaceUnlock",
             "codexAppForcePluginInstall",
             "codexAppModelWhitelistUnlock",
             "codexAppSessionDelete",
@@ -878,6 +932,10 @@ impl BridgeSettingsService for FakeSettings {
         let updated: BackendSettings = serde_json::from_value(Value::Object(raw.clone())).unwrap();
         *self.settings.lock().unwrap() = updated.clone();
         Ok(updated)
+    }
+
+    async fn codex_app_version(&self) -> anyhow::Result<String> {
+        Ok(self.codex_app_version.lock().unwrap().clone())
     }
 }
 
