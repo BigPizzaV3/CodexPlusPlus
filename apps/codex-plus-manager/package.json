@@ -20,9 +20,11 @@
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "i18next": "^26.3.1",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-i18next": "^17.0.8",
     "tailwind-merge": "^2.5.5",
     "typescript": "^5.8.0",
     "vite": "^6.0.0"

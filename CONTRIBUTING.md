@@ -5,24 +5,28 @@ Thank you for your interest in contributing to CodexPlusPlus!
 ## Development Setup
 
 1. **Clone the repository**
+
    ```bash
-   git clone https://github.com/BigPizzaV3/CodexPlusPlus.git
+   git clone https://github.com/MeetSohailCodes/CodexPlusPlus.git
    cd CodexPlusPlus
    ```
 
 2. **Install Rust toolchain**
    Ensure you have Rust 1.70+ installed:
+
    ```bash
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    rustc --version  # Should be 1.70+
    ```
 
 3. **Build the project**
+
    ```bash
    cargo build --release
    ```
 
 4. **Run tests**
+
    ```bash
    cargo test
    ```
@@ -40,6 +44,7 @@ CodexPlusPlus/
 ## Making Changes
 
 1. **Create a feature branch**
+
    ```bash
    git checkout -b feat/your-feature-name
    ```
@@ -50,12 +55,14 @@ CodexPlusPlus/
    - Update documentation as needed
 
 3. **Run the test suite**
+
    ```bash
    cargo test --all-features
    cargo clippy  # Linting
    ```
 
 4. **Commit your changes**
+
    ```bash
    git commit -m "feat: add your feature description"
    ```
