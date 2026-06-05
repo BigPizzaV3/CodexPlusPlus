@@ -1,10 +1,12 @@
 {
+  "brand.mark": "C++",
+  "brand.title": "Codex++",
   "brand.subtitle": "管理控制台",
+  "app.loading": "加载中…",
   "theme.switchDark": "切换到浅色",
   "theme.switchLight": "切换到深色",
   "topbar.restart": "重启 Codex++",
   "topbar.refresh": "刷新当前页面",
-
   "nav.overview": "概览",
   "nav.relay": "供应商配置",
   "nav.sessions": "会话管理",
@@ -15,7 +17,6 @@
   "nav.maintenance": "安装维护",
   "nav.about": "关于",
   "nav.settings": "设置",
-
   "route.overview": "概览",
   "route.relay": "供应商配置",
   "route.sessions": "会话管理",
@@ -26,7 +27,6 @@
   "route.maintenance": "安装维护",
   "route.about": "关于",
   "route.settings": "设置",
-
   "route.overview.subtitle": "检查问题、启动与快速修复",
   "route.relay.subtitle": "管理 API 供应商、协议、Key 与配置文件",
   "route.sessions.subtitle": "查看、删除和修复 Codex 本地会话",
@@ -37,7 +37,6 @@
   "route.recommendations.subtitle": "赞助商推荐与普通推荐",
   "route.maintenance.subtitle": "入口安装、修复、Watcher 与手动启动",
   "route.about.subtitle": "版本信息、项目链接、GitHub Release 更新、日志与诊断",
-
   "overview.healthCheck": "健康检查",
   "overview.healthDetail": "概览只展示关键问题，具体配置在对应页面处理",
   "overview.codexVersion": "Codex 版本",
@@ -50,7 +49,6 @@
   "overview.launchCodex": "启动 Codex++",
   "overview.openAbout": "打开关于",
   "overview.noLaunchStatus": "暂无启动状态。",
-
   "relay.providerList": "供应商列表",
   "relay.providerListDetail": "{{count}} 个供应商配置；可拖动排序，点编辑进入详情",
   "relay.enableSwitch": "启用供应商配置切换",
@@ -78,7 +76,6 @@
   "relay.configBriefOfficial": "不写 API 文件",
   "relay.configBriefMixed": "混入 API Key",
   "relay.configBriefUrlMissing": "未填写 URL",
-
   "relay.detail.back": "返回列表",
   "relay.detail.save": "保存",
   "relay.detail.name": "名称",
@@ -106,10 +103,8 @@
   "relay.detail.statusActive": "当前正在使用",
   "relay.detail.statusInactive": "编辑后保存列表，再切换模式时会使用新配置",
   "relay.detail.saveAsDefault": "保存为默认路径",
-
-  "relay.chatProtocolHint": "此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 Codex++ 启动 Codex。",
+  "relay.chatProtocolHint": "此上游会通过本地 {{endpoint}} 转成 Responses API，需要从 Codex++ 启动 Codex。",
   "relay.ccsLinkedHint": "此供应商联动自 cc-switch：{{id}}。开启「保存时回写 cc-switch」后，本页保存会同步修改 cc-switch 数据库中的同一供应商。",
-
   "enhance.title": "页面功能增强",
   "enhance.detail": "会话删除、导出、项目移动、Timeline 和用户脚本等界面能力",
   "enhance.masterSwitch": "启用 Codex++ 页面增强",
@@ -121,7 +116,6 @@
   "enhance.compatHint": "当前为兼容增强模式，插件市场解锁、强制解锁入口和特殊插件强制安装不会启用；其他页面功能仍可用。",
   "enhance.generalHint": "如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁、强制解锁入口和特殊插件强制安装。",
   "enhance.save": "保存增强设置",
-
   "enhance.pluginMarketplace": "插件市场解锁",
   "enhance.pluginMarketplaceDetail": "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。",
   "enhance.forceUnlock": "强制解锁入口",
@@ -150,9 +144,8 @@
   "enhance.upstreamWorktreeDetail": "从最新 upstream 分支创建 Git worktree。",
   "enhance.nativeMenu": "原生菜单栏位置",
   "enhance.nativeMenuDetail": "把 Codex++ 菜单插入 Codex 顶部原生菜单栏。",
-
   "sessions.title": "会话管理",
-  "sessions.detail": "读取 Codex 本地 state_5.sqlite，会删除数据库记录和对应 rollout 文件",
+  "sessions.detail": "读取 Codex 本地 {{dbPath}}，会删除数据库记录和对应 rollout 文件",
   "sessions.total": "会话总数",
   "sessions.active": "未归档",
   "sessions.archived": "已归档",
@@ -169,12 +162,11 @@
   "sessions.saveAutoFix": "保存自动修复设置",
   "sessions.localSessions": "本地会话",
   "sessions.localSessionsDetail": "按更新时间倒序显示",
-  "sessions.noSessions": "未读取到本地会话，或当前 state_5.sqlite 不存在。",
+  "sessions.noSessions": "未读取到本地会话，或当前 {{dbPath}} 不存在。",
   "sessions.unnamed": "未命名会话",
   "sessions.noProject": "未记录项目路径",
   "sessions.noProvider": "provider 未记录",
   "sessions.delete": "删除",
-
   "scripts.marketTitle": "脚本市场",
   "scripts.marketDetail": "{{total}} 个市场脚本，已安装 {{installed}} 个，本地整体 {{state}}",
   "scripts.marketStatus": "市场状态",
@@ -208,19 +200,17 @@
   "scripts.sourceUser": "用户",
   "scripts.sourceMarket": "市场",
   "scripts.sourceUnknownVersion": "未知版本",
-
   "recommendations.title": "推荐内容",
   "recommendations.detail": "与 Codex 内插件菜单使用同一个远端广告源",
   "recommendations.loaded": "已加载 {{count}} 条推荐",
   "recommendations.notLoaded": "尚未加载推荐内容",
-  "recommendations.sourceDetail": "内容来自 BigPizzaV3/Ad-List，分为赞助商推荐和普通推荐。",
+  "recommendations.sourceDetail": "内容来自 {{source}}，分为赞助商推荐和普通推荐。",
   "recommendations.refresh": "刷新推荐",
   "recommendations.sponsors": "赞助商推荐",
   "recommendations.general": "普通推荐",
   "recommendations.noSponsors": "暂无赞助商推荐。",
   "recommendations.noGeneral": "暂无普通推荐。",
   "recommendations.open": "打开",
-
   "maintenance.title": "检查与修复",
   "maintenance.detail": "检查入口、Codex 应用和 Watcher 状态",
   "maintenance.codexApp": "Codex 应用",
@@ -258,7 +248,6 @@
   "maintenance.launchCodex": "启动 Codex++",
   "maintenance.saveAsDefault": "保存为默认路径",
   "maintenance.noPath": "未记录路径",
-
   "about.title": "关于 Codex++",
   "about.detail": "本地 Codex 增强、管理工具和安装包维护",
   "about.version": "Codex++ 版本",
@@ -267,6 +256,8 @@
   "about.notDetected": "未检测到",
   "about.openProject": "打开项目主页",
   "about.feedback": "反馈问题",
+  "about.discord": "Discord",
+  "about.telegram": "Telegram",
   "about.updateTitle": "GitHub Release 更新",
   "about.updateDetail": "当前版本 {{version}}",
   "about.status": "状态",
@@ -284,7 +275,6 @@
   "about.noDiagnostics": "尚未生成诊断报告。",
   "about.regenerate": "重新生成",
   "about.copyReport": "复制报告",
-
   "settings.title": "基础设置",
   "settings.theme": "界面主题",
   "settings.themeDark": "当前为深色模式。",
@@ -302,21 +292,17 @@
   "sessions.check": "检查",
   "sessions.fix": "修复",
   "sessions.fixAll": "一键修复 ({{count}})",
-
   "overview.status": "状态",
   "overview.message": "消息",
   "overview.time": "时间",
-
   "status.enabled": "启用",
-  "status.disabled": "禁用",
+  "status.disabled": "已禁用",
   "status.unrecordedPath": "未记录路径",
   "status.unknownAuthor": "未知作者",
-
   "mode.compat": "兼容增强",
   "mode.compatDetail": "适合官方登录或官方混入 API Key；保留会话删除、导出、项目移动、Timeline 和用户脚本，关闭插件入口相关增强。",
   "mode.full": "完整增强",
   "mode.fullDetail": "适合纯 API；启用插件入口、强制安装、会话删除导出、项目移动等全部页面能力。",
-
   "relay.syncTitle": "Provider 同步",
   "relay.syncDetail": "可以混合 Provider 并使用同步操作快速设置。",
   "relay.current": "当前",
@@ -340,27 +326,24 @@
   "relay.syncPanelDetail": "同步会话、配置和索引。",
   "relay.noSyncTargets": "无可同步目标",
   "relay.executeSync": "执行同步",
-
   "context.pluginKind": "插件",
-
   "about.updateStatus": "状态",
   "about.notChecked": "未检查",
   "about.updateNotChecked": "尚未检查 GitHub Release；更新会下载并启动安装包。",
-
   "settings.save": "保存设置",
   "settings.reset": "重置设置",
   "settings.launchArgs": "Codex 启动参数",
   "settings.launchArgsDetail": "启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。",
   "settings.extraArgs": "额外参数",
   "settings.extraArgsHint": "每行一个参数，例如 --force_high_performance_gpu。不需要填写 open 或 --args。",
-
+  "settings.relayTestModelPlaceholder": "例如 {{model}}",
+  "settings.extraArgsPlaceholder": "--force_high_performance_gpu",
   "notification.copyFailed": "复制失败",
   "notification.linkOpened": "链接已打开",
   "notification.checkComplete": "检查完成",
   "notification.checkCompleteDetail": "已刷新 Codex 应用、入口和 Watcher 状态。",
   "notification.logsCopied": "日志已复制。",
   "notification.diagnosticsCopied": "诊断报告已复制。",
-
   "status.found": "已找到",
   "status.missing": "缺失",
   "status.installed": "已安装",
@@ -371,16 +354,13 @@
   "status.accepted": "已受理",
   "status.not_checked": "未检查",
   "status.not_implemented": "未实现",
-  "status.disabled": "已禁用",
   "status.unknown": "未知",
-
   "health.codexApp": "Codex 应用",
   "health.codexAppMissing": "尚未检查 Codex 应用路径。",
   "health.silentEntry": "静默启动入口",
   "health.silentEntryMissing": "缺少 Codex++ 静默启动快捷方式时可在安装维护页修复。",
   "health.managerEntry": "管理工具入口",
   "health.managerEntryMissing": "缺少管理工具快捷方式时可在安装维护页修复。",
-
   "providerSync.syncedTo": "已同步到 {{target}}：修复 {{sessions}} 个会话文件，更新 {{rows}} 行索引{{skipped}}。",
   "providerSync.skipped": "，跳过 {{count}} 个占用文件",
   "providerSync.running": "",
@@ -393,10 +373,10 @@
   "providerSync.sourceRollout": "会话",
   "providerSync.sourceSqlite": "索引",
   "providerSync.sourceManual": "手动",
-
   "lang.en": "English",
   "lang.zh": "中文",
-
+  "lang.enShort": "EN",
+  "lang.zhShort": "中",
   "provider.modeOfficialDesc": "此供应商会切回官方登录模式，使用 ChatGPT 官方账号，不写入 API Key。",
   "provider.modeMixedDesc": "此供应商会保留官方登录模式，并把请求混入当前 API Key；页面增强仍使用兼容模式。",
   "provider.modePureApiDesc": "此供应商会同时写入 config.toml 和 auth.json；API Key 也会注入到 provider bearer token。",
@@ -414,10 +394,8 @@
   "provider.officialNotLoggedIn": "当前未登录官方账号；切到官方登录模式后仍需要先在 Codex/ChatGPT 登录。",
   "provider.pureApiNotWritten": "纯 API 配置未完整写入：请检查此供应商是否有 OPENAI_API_KEY，且 config.toml 是否包含 model_provider / provider / base_url。",
   "provider.noApiFiles": "当前供应商还没有完整 config.toml / API Key 存档。",
-
-  "confirm.deleteSession": "删除会话「{{title}}」？此操作会删除本地数据库记录和 rollout 文件，并创建备份。",
-  "confirm.deleteScript": "删除脚本「{{name}}」？此操作会移除本地脚本文件。",
-
+  "confirm.deleteSession": "删除会话“{{title}}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。",
+  "confirm.deleteScript": "删除脚本“{{name}}”？此操作会移除本地脚本文件。",
   "context.title": "Codex 工具与插件",
   "context.detail": "独立管理 Codex 的 MCP、Skills、Plugins；切换任意供应商都会带上。",
   "context.summary": "当前共有 {{count}} 个{{label}}；这些条目独立于供应商保存，会写入所有供应商切换后的 config.toml。",
@@ -433,7 +411,6 @@
   "context.editorId": "ID",
   "context.editorTomlBody": "TOML 配置体",
   "context.newEntry": "新增扩展项",
-
   "editor.placeholderConfigModel": "写入 config.toml 的 model 字段，例如 gpt-5",
   "editor.placeholderTestModel": "留空使用默认：{{model}}",
   "editor.placeholderContextWindow": "留空不改写，例如 200000",
@@ -449,7 +426,6 @@
   "editor.placeholderSelectorFilter": "Codex 应用",
   "editor.labelId": "例如 context7",
   "editor.tomlPlaceholder": "只填写表头下面的内容，例如：\ncommand = \"npx\"\nargs = [\"-y\", \"@upstash/context7-mcp\"]",
-
   "configPreview.title": "config.toml 预览",
   "configPreview.activeDesc": "当前供应商切换后会写入的预览；上下文开关变化会立即反映",
   "configPreview.inactiveDesc": "切换到此供应商时会写入的预览；上下文开关变化会立即反映",
@@ -458,9 +434,8 @@
   "commonConfig.extract": "提取当前供应商配置",
   "commonConfig.noExtract": "当前供应商 config.toml 里没有可提取的通用配置。",
   "authJson.title": "auth.json",
-  "authJson.activeDesc": "当前使用中：打开时从 ~/.codex/auth.json 回填，保存后会作为此供应商 auth 存档",
-  "authJson.inactiveDesc": "切换到此供应商时会写入 ~/.codex/auth.json",
-
+  "authJson.activeDesc": "当前使用中：打开时从 {{authPath}} 回填，保存后会作为此供应商 auth 存档",
+  "authJson.inactiveDesc": "切换到此供应商时会写入 {{authPath}}",
   "notify.callFailed": "调用失败",
   "notify.overviewChecked": "概览已检查",
   "notify.settingsLoaded": "设置已加载",
@@ -501,7 +476,6 @@
   "notify.openLink": "打开链接",
   "notify.codexAppPath": "Codex 应用路径",
   "notify.checkComplete": "检查完成",
-
   "notify.switchedToOfficial": "已切回官方登录；页面增强已设为兼容增强。",
   "notify.switchedToPureApi": "已切换到纯 API；页面增强已设为完整增强。",
   "notify.targetProviderMissing": "目标供应商已不在 cc-switch 或本地配置中，请刷新供应商列表后重试。",
@@ -526,10 +500,6 @@
   "notify.newVersionFound": "发现新版本 {{version}}",
   "notify.currentProvider": "当前",
   "notify.discovered": "发现",
-
-  "confirm.deleteScript": "删除脚本“{{name}}”？此操作会移除本地脚本文件。",
-  "confirm.deleteSession": "删除会话“{{title}}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。",
-
   "relayScreen.title": "供应商列表",
   "relayScreen.detail": "{{count}} 个供应商配置；可拖动排序，点编辑进入详情",
   "relayScreen.enableSwitch": "启用供应商配置切换",
@@ -537,7 +507,6 @@
   "relayScreen.linkSwitch": "联动 cc-switch",
   "relayScreen.linkSwitchDetail": "开启后读取 cc-switch Codex 供应商并保存时回写；同时使用多个管理工具可能导致 config.toml / auth.json 被反复覆盖。",
   "relayScreen.addProvider": "添加供应商",
-
   "sortableCard.dragSort": "拖动排序",
   "sortableCard.unnamed": "未命名供应商",
   "sortableCard.switchDisabled": "供应商配置总开关已关闭",
@@ -549,7 +518,6 @@
   "sortableCard.edit": "编辑",
   "sortableCard.copy": "复制",
   "sortableCard.deleteProvider": "删除供应商",
-
   "marketScript.updatable": "可更新",
   "marketScript.installed": "已安装 {{version}}",
   "marketScript.notInstalled": "未安装",
@@ -559,10 +527,8 @@
   "marketScript.reinstall": "重新安装",
   "marketScript.install": "安装",
   "marketScript.homepage": "主页",
-
   "profileDetail.back": "返回列表",
   "profileDetail.save": "保存",
-
   "profileEditor.unnamed": "未命名供应商",
   "profileEditor.switchDisabled": "供应商配置总开关已关闭",
   "profileEditor.inUse": "使用中",
@@ -594,9 +560,8 @@
   "profileEditor.fetchUpstream": "从上游获取",
   "profileEditor.userAgent": "User-Agent",
   "profileEditor.userAgentPlaceholder": "留空使用默认值",
-  "profileEditor.responsesApiHint": "此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 Codex++ 启动 Codex。",
+  "profileEditor.responsesApiHint": "此上游会通过本地 {{endpoint}} 转成 Responses API，需要从 Codex++ 启动 Codex。",
   "profileEditor.ccsLinkedHint": "此供应商联动自 cc-switch：{{source}}。开启联动后，本页保存会同步修改 cc-switch 数据库中的同一供应商。",
-
   "contextManager.title": "Codex 工具与插件",
   "contextManager.detail": "MCP、Skills、Plugins 作为全局配置独立管理，切换任意供应商都会合并。",
   "contextManager.addNew": "新增{{label}}",
@@ -606,7 +571,6 @@
   "contextManager.editEntry": "编辑扩展项",
   "contextManager.deleteEntry": "删除扩展项",
   "contextManager.empty": "暂无{{label}}，可以从通用配置文件或这里新增。",
-
   "contextEntry.type": "类型",
   "contextEntry.id": "ID",
   "contextEntry.idPlaceholder": "例如 context7",
@@ -614,19 +578,17 @@
   "contextEntry.tomlPlaceholder": "只填写表头下面的内容，例如：\ncommand = \"npx\"\nargs = [\"-y\", \"@upstash/context7-mcp\"]",
   "contextEntry.save": "保存扩展项",
   "contextEntry.cancel": "取消",
-
   "modeSelector.compat": "兼容增强",
   "modeSelector.compatDetail": "适合官方登录或官方混入 API Key；保留会话删除、导出、项目移动、Timeline 和用户脚本，关闭插件入口相关增强。",
   "modeSelector.full": "完整增强",
   "modeSelector.fullDetail": "适合纯 API；启用插件入口、强制安装、会话删除导出、项目移动等全部页面能力。",
-
   "statusRow.noPath": "未记录路径",
-
   "latestLaunch.empty": "暂无启动状态。",
   "latestLaunch.status": "状态",
   "latestLaunch.message": "消息",
   "latestLaunch.time": "时间",
-
+  "latestLaunch.debugPort": "调试端口",
+  "latestLaunch.helperPort": "辅助端口",
   "scriptRow.sourceBuiltin": "内置",
   "scriptRow.sourceUser": "用户",
   "scriptRow.sourceMarket": "市场",
@@ -636,30 +598,14 @@
   "scriptRow.disable": "禁用",
   "scriptRow.enable": "启用",
   "scriptRow.delete": "删除",
-
   "adGrid.open": "打开",
-
-  "route.overview.subtitle": "检查问题、启动与快速修复",
-  "route.relay.subtitle": "管理 API 供应商、协议、Key 与配置文件",
-  "route.sessions.subtitle": "查看、删除和修复 Codex 本地会话",
-  "route.context.subtitle": "独立管理 MCP、Skills、Plugins",
-  "route.enhance.subtitle": "会话删除、导出、项目移动和脚本能力",
-  "route.userScripts.subtitle": "内置和用户自定义脚本清单",
-  "route.recommendations.subtitle": "赞助商推荐与普通推荐",
-  "route.maintenance.subtitle": "入口安装、修复、Watcher 与手动启动",
-  "route.about.subtitle": "版本信息、项目链接、GitHub Release 更新、日志与诊断",
-  "route.settings.subtitle": "主题、命令包装器和启动参数",
-
+  "contextKindLabel.mcp": "MCP",
+  "contextKindLabel.skill": "Skills",
   "contextKindLabel.plugin": "插件",
   "contextKindLabel.fallback": "扩展项",
-
-  "health.codexApp": "Codex 应用",
   "health.codexAppDetail": "尚未检查 Codex 应用路径。",
-  "health.silentEntry": "静默启动入口",
   "health.silentEntryDetail": "缺少 Codex++ 静默启动快捷方式时可在安装维护页修复。",
-  "health.managerEntry": "管理工具入口",
   "health.managerEntryDetail": "缺少管理工具快捷方式时可在安装维护页修复。",
-
   "statusLabel.found": "已找到",
   "statusLabel.missing": "缺失",
   "statusLabel.installed": "已安装",
@@ -672,32 +618,25 @@
   "statusLabel.notImplemented": "未实现",
   "statusLabel.disabled": "已禁用",
   "statusLabel.unknown": "未知",
-
   "relaySourceLabel.ccs": "cc-switch 联动",
   "relaySourceLabel.local": "本地",
-
   "relayProfileEditorStatus.new": "新建供应商需要先保存到列表",
   "relayProfileEditorStatus.disabled": "供应商配置总开关已关闭；当前只保存配置，不写入 Codex live 文件",
   "relayProfileEditorStatus.linked": "联动 cc-switch；保存后会回写外部供应商数据库",
   "relayProfileEditorStatus.linkedNoWrite": "联动 cc-switch；当前未开启保存回写",
   "relayProfileEditorStatus.active": "当前正在使用",
   "relayProfileEditorStatus.edited": "编辑后保存列表，再切换模式时会使用新配置",
-
   "providerInitial.fallback": "供应商",
   "providerInitial.initial": "供",
-
   "relayModeLabel.pureApi": "纯 API",
   "relayModeLabel.official": "官方登录",
-
   "relayProfileConfigBrief.mixApiKey": "混入 API Key",
   "relayProfileConfigBrief.noApiFile": "不写 API 文件",
   "relayProfileConfigBrief.noUrl": "未填写 URL",
-
   "relayProfileModeHelp.mixOfficial": "此供应商会保留官方登录模式，并把请求混入当前 API Key；页面增强仍使用兼容模式。",
   "relayProfileModeHelp.official": "此供应商会切回官方登录模式，使用 ChatGPT 官方账号，不写入 API Key。",
   "relayProfileModeHelp.pureApi": "此供应商会同时写入 config.toml 和 auth.json；API Key 也会注入到 provider bearer token。",
   "relayProfileModeHelp.mixPure": "此供应商会保留官方登录模式，并把请求混入当前 API Key；页面增强仍使用兼容模式。",
-
   "relayProfileReadiness.notLoggedInNoConfig": "当前未登录官方账号，也未配置混入 API 的 Base URL / Key。",
   "relayProfileReadiness.notLoggedIn": "当前未登录官方账号；官方登录混入 API Key 需要先登录官方账号。",
   "relayProfileReadiness.noMixConfig": "当前还没有填写混入 API 的 Base URL / Key。",
@@ -707,28 +646,23 @@
   "relayProfileReadiness.noConfig": "当前供应商还没有完整 config.toml / API Key 存档。",
   "relayProfileReadiness.pureApiIncomplete": "纯 API 配置未完整写入：请检查此供应商是否有 OPENAI_API_KEY，且 config.toml 是否包含 model_provider / provider / base_url。",
   "relayProfileReadiness.pureApiReady": "纯 API 就绪：会同时写入 config.toml 和 auth.json。",
-
+  "relayProfileReadiness.loggedInFallback": "已登录",
+  "relayProfileReadiness.detectedFallback": "已检测",
   "relayProfileModeSwitched.pureApi": "已按此供应商切换到纯 API；页面增强已设为完整增强。",
   "relayProfileModeSwitched.mixOfficial": "已按此供应商使用官方登录，并混入 API Key；页面增强已设为兼容增强。",
   "relayProfileModeSwitched.official": "已按此供应商切回官方登录；页面增强已设为兼容增强。",
-
   "relayProfileSwitchValidation.noConfig": "供应商\"{{name}}\"缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。请先在该供应商详情里保存 config.toml。",
   "relayProfileSwitchValidation.mixAuthKey": "官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。",
-
   "relayProtocol.chatCompletions": "Chat Completions 转 Responses",
   "relayProtocol.responsesApi": "Responses API",
-
   "createRelayProfile.defaultProfileName": "默认中转",
   "createRelayProfile.defaultName": "供应商 {{number}}",
   "duplicateRelayProfile.defaultName": "{{name}} 副本",
-
   "notify.selectorFailed": "打开选择器失败：{{message}}",
   "notify.pathSaved": "应用路径已保存，之后启动会自动复用。",
   "notify.pathCleared": "已清除保存路径，后续启动会回到自动探测。",
   "notify.pathRequired": "请先填写或选择应用路径。",
   "notify.checkCompleteMsg": "已刷新 Codex 应用、入口和 Watcher 状态。",
-  "notify.logsCopied": "日志已复制。",
-  "notify.diagnosticsCopied": "诊断报告已复制。",
-
-  "protocolLabel.responsesApi": "Chat Completions 转 Responses"
+  "protocolLabel.responsesApi": "Chat Completions 转 Responses",
+  "confirm.stopEnhance": "关闭页面增强？部分 Codex++ 界面功能将停止工作，直到重新开启。"
 }

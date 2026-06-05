@@ -1,10 +1,12 @@
 {
+  "brand.mark": "C++",
+  "brand.title": "Codex++",
   "brand.subtitle": "Management Console",
+  "app.loading": "Loading...",
   "theme.switchDark": "Switch to dark mode",
   "theme.switchLight": "Switch to light mode",
   "topbar.restart": "Restart Codex++",
   "topbar.refresh": "Refresh current page",
-
   "nav.overview": "Overview",
   "nav.relay": "Provider Setup",
   "nav.sessions": "Session Management",
@@ -15,7 +17,6 @@
   "nav.maintenance": "Install & Maintenance",
   "nav.about": "About",
   "nav.settings": "Settings",
-
   "route.overview": "Overview",
   "route.relay": "Provider Setup",
   "route.sessions": "Session Management",
@@ -26,18 +27,16 @@
   "route.maintenance": "Install & Maintenance",
   "route.about": "About",
   "route.settings": "Settings",
-
-  "route.overview.subtitle": "Check issues, launch & quick repairs",
-  "route.relay.subtitle": "Manage API providers, protocols, keys & config files",
-  "route.sessions.subtitle": "View, delete & repair Codex local sessions",
+  "route.overview.subtitle": "Check issues, launch & quick repair",
+  "route.relay.subtitle": "Manage API providers, protocols, keys & configs",
+  "route.sessions.subtitle": "View, delete & repair local Codex sessions",
   "route.context.subtitle": "Independently manage MCP, Skills & Plugins",
-  "route.settings.subtitle": "Theme, CLI wrapper & launch arguments",
+  "route.settings.subtitle": "Theme, CLI wrapper & launch args",
   "route.enhance.subtitle": "Session delete, export, project move & scripts",
-  "route.userScripts.subtitle": "Built-in & custom user scripts inventory",
-  "route.recommendations.subtitle": "Sponsor recommendations & general recommendations",
+  "route.userScripts.subtitle": "Built-in & user-defined script inventory",
+  "route.recommendations.subtitle": "Sponsor & general recommendations",
   "route.maintenance.subtitle": "Entry install, repair, Watcher & manual launch",
   "route.about.subtitle": "Version info, project links, GitHub Release updates, logs & diagnostics",
-
   "overview.healthCheck": "Health Check",
   "overview.healthDetail": "Overview shows key issues; detailed setup in corresponding pages",
   "overview.codexVersion": "Codex Version",
@@ -50,7 +49,6 @@
   "overview.launchCodex": "Launch Codex++",
   "overview.openAbout": "Open About",
   "overview.noLaunchStatus": "No launch status.",
-
   "relay.providerList": "Provider List",
   "relay.providerListDetail": "{{count}} provider configuration(s); drag to sort, click edit for details",
   "relay.enableSwitch": "Enable Provider Switching",
@@ -78,7 +76,6 @@
   "relay.configBriefOfficial": "Don't write API files",
   "relay.configBriefMixed": "Mixed API Key",
   "relay.configBriefUrlMissing": "No URL configured",
-
   "relay.detail.back": "Back to list",
   "relay.detail.save": "Save",
   "relay.detail.name": "Name",
@@ -106,10 +103,8 @@
   "relay.detail.statusActive": "Currently active",
   "relay.detail.statusInactive": "Edit and save, then switch to use new config",
   "relay.detail.saveAsDefault": "Save as default path",
-
-  "relay.chatProtocolHint": "This upstream will be proxied through local 127.0.0.1:57321 to Responses API; Codex must be launched from Codex++.",
+  "relay.chatProtocolHint": "This upstream will be proxied through local {{endpoint}} to Responses API; Codex must be launched from Codex++.",
   "relay.ccsLinkedHint": "This provider is linked from cc-switch: {{id}}. When 'save-back to cc-switch' is on, saving here will update the same provider in cc-switch database.",
-
   "enhance.title": "Page Enhancements",
   "enhance.detail": "Session delete, export, project move, Timeline, user scripts and more",
   "enhance.masterSwitch": "Enable Codex++ Page Enhancements",
@@ -121,7 +116,6 @@
   "enhance.compatHint": "Currently in compatible enhancement mode; plugin marketplace unlock, forced unlock, and special plugin forced install are not enabled; other features still work.",
   "enhance.generalHint": "In official or official mixed API mode, plugin marketplace unlock, forced unlock, and special plugin forced install are usually not needed.",
   "enhance.save": "Save Enhancement Settings",
-
   "enhance.pluginMarketplace": "Plugin Marketplace Unlock",
   "enhance.pluginMarketplaceDetail": "Extends API Key mode plugin marketplace requests to show full plugin list; usually not needed in official/mixed mode.",
   "enhance.forceUnlock": "Force Unlock Entry",
@@ -150,9 +144,8 @@
   "enhance.upstreamWorktreeDetail": "Create Git worktree from latest upstream branch.",
   "enhance.nativeMenu": "Native Menu Placement",
   "enhance.nativeMenuDetail": "Insert Codex++ menu into Codex top native menu bar.",
-
   "sessions.title": "Session Management",
-  "sessions.detail": "Checking version status of {{count}} explorable sessions.{{fixSize, select, 0 {} other { {{fixSize}} need repair.}}}",
+  "sessions.detail": "Reads local Codex {{dbPath}}; deletes database records and corresponding rollout files.{{fixSize, select, 0 {} other { {{fixSize}} need repair.}}}",
   "sessions.total": "Total Sessions",
   "sessions.active": "Active",
   "sessions.archived": "Archived",
@@ -169,12 +162,11 @@
   "sessions.saveAutoFix": "Save Auto-fix Settings",
   "sessions.localSessions": "Local Sessions",
   "sessions.localSessionsDetail": "Displayed in reverse update time order",
-  "sessions.noSessions": "No local sessions found, or state_5.sqlite does not exist.",
+  "sessions.noSessions": "No local sessions found, or {{dbPath}} does not exist.",
   "sessions.unnamed": "Unnamed Session",
   "sessions.noProject": "No project path recorded",
   "sessions.noProvider": "Provider not recorded",
   "sessions.delete": "Delete",
-
   "scripts.marketTitle": "Script Market",
   "scripts.marketDetail": "{{total}} market scripts, {{installed}} installed, local overall {{state}}",
   "scripts.marketStatus": "Market Status",
@@ -208,19 +200,17 @@
   "scripts.sourceUser": "User",
   "scripts.sourceMarket": "Market",
   "scripts.sourceUnknownVersion": "Unknown version",
-
   "recommendations.title": "Recommendations",
   "recommendations.detail": "Uses the same remote ad source as the Codex plugin menu",
   "recommendations.loaded": "Loaded {{count}} recommendation(s)",
   "recommendations.notLoaded": "Not yet loaded",
-  "recommendations.sourceDetail": "Content from BigPizzaV3/Ad-List, categorized as sponsor and general recommendations.",
+  "recommendations.sourceDetail": "Content from {{source}}, categorized as sponsor and general recommendations.",
   "recommendations.refresh": "Refresh",
   "recommendations.sponsors": "Sponsor Recommendations",
   "recommendations.general": "General Recommendations",
   "recommendations.noSponsors": "No sponsor recommendations.",
   "recommendations.noGeneral": "No general recommendations.",
   "recommendations.open": "Open",
-
   "maintenance.title": "Check & Repair",
   "maintenance.detail": "Check entries, Codex app & Watcher status",
   "maintenance.codexApp": "Codex App",
@@ -258,7 +248,6 @@
   "maintenance.launchCodex": "Launch Codex++",
   "maintenance.saveAsDefault": "Save as Default Path",
   "maintenance.noPath": "No path recorded",
-
   "about.title": "About Codex++",
   "about.detail": "Local Codex enhancement, management tool & installer maintenance",
   "about.version": "Codex++ Version",
@@ -267,6 +256,8 @@
   "about.notDetected": "Not detected",
   "about.openProject": "Open Project Page",
   "about.feedback": "Report Issue",
+  "about.discord": "Discord",
+  "about.telegram": "Telegram",
   "about.updateTitle": "GitHub Release Updates",
   "about.updateDetail": "Current version {{version}}",
   "about.status": "Status",
@@ -287,7 +278,6 @@
   "about.noDiagnostics": "No diagnostics report generated yet.",
   "about.regenerate": "Regenerate",
   "about.copyReport": "Copy Report",
-
   "settings.title": "Basic Settings",
   "settings.theme": "Interface Theme",
   "settings.themeDark": "Currently dark mode.",
@@ -305,21 +295,17 @@
   "sessions.check": "Check",
   "sessions.fix": "Fix",
   "sessions.fixAll": "Fix All ({{count}})",
-
   "overview.status": "Status",
   "overview.message": "Message",
   "overview.time": "Time",
-
   "status.enabled": "On",
-  "status.disabled": "Off",
+  "status.disabled": "Disabled",
   "status.unrecordedPath": "No path recorded",
   "status.unknownAuthor": "Unknown Author",
-
   "mode.compat": "Compatible Enhancements",
   "mode.compatDetail": "Suitable for official login or official mixed API Key; retains session delete, export, project move, Timeline and user scripts; plugin entry enhancements disabled.",
   "mode.full": "Full Enhancements",
   "mode.fullDetail": "Suitable for Pure API; enables plugin entry, forced install, session delete/export, project move, and all page capabilities.",
-
   "relay.syncTitle": "Provider Sync",
   "relay.syncDetail": "Can mix providers and use sync operations for quick setup.",
   "relay.current": "Current",
@@ -343,23 +329,21 @@
   "relay.syncPanelDetail": "Sync sessions, configs & indexes.",
   "relay.noSyncTargets": "No sync targets available",
   "relay.executeSync": "Execute Sync",
-
   "context.pluginKind": "Plugins",
-
   "settings.save": "Save Settings",
   "settings.reset": "Reset Settings",
   "settings.launchArgs": "Codex Launch Arguments",
   "settings.launchArgsDetail": "Appended after default CDP params. Leave empty for default launch behavior.",
   "settings.extraArgs": "Extra Arguments",
   "settings.extraArgsHint": "One argument per line, e.g. --force_high_performance_gpu. No need to include 'open' or '--args'.",
-
+  "settings.relayTestModelPlaceholder": "e.g. {{model}}",
+  "settings.extraArgsPlaceholder": "--force_high_performance_gpu",
   "notification.copyFailed": "Copy failed",
   "notification.linkOpened": "Link opened",
   "notification.checkComplete": "Check Complete",
   "notification.checkCompleteDetail": "Refreshed Codex app, entry & Watcher status.",
   "notification.logsCopied": "Logs copied.",
   "notification.diagnosticsCopied": "Diagnostics report copied.",
-
   "status.found": "Found",
   "status.missing": "Missing",
   "status.installed": "Installed",
@@ -370,16 +354,13 @@
   "status.accepted": "Accepted",
   "status.not_checked": "Not Checked",
   "status.not_implemented": "Not Implemented",
-  "status.disabled": "Disabled",
   "status.unknown": "Unknown",
-
   "health.codexApp": "Codex App",
   "health.codexAppMissing": "Codex app path not checked yet.",
   "health.silentEntry": "Silent Launcher Entry",
   "health.silentEntryMissing": "Silent launcher shortcut missing; can be repaired on Install & Maintenance page.",
-  "health.managerEntry": "Manager Entry",
+  "health.managerEntry": "Manager Console Entry",
   "health.managerEntryMissing": "Manager shortcut missing; can be repaired on Install & Maintenance page.",
-
   "providerSync.syncedTo": "Synced to {{target}}: fixed {{sessions}} session file(s), updated {{rows}} index row(s){{skipped}}.",
   "providerSync.skipped": ", skipped {{count}} locked file(s)",
   "providerSync.running": "Fixing history sessions...",
@@ -392,10 +373,10 @@
   "providerSync.sourceRollout": "Session",
   "providerSync.sourceSqlite": "Index",
   "providerSync.sourceManual": "Manual",
-
   "lang.en": "English",
   "lang.zh": "中文",
-
+  "lang.enShort": "EN",
+  "lang.zhShort": "中",
   "provider.modeOfficialDesc": "This provider switches to official login mode, uses the ChatGPT official account, does not write API Key.",
   "provider.modeMixedDesc": "This provider keeps official login mode and mixes requests with current API Key; page enhancements still use compatible mode.",
   "provider.modePureApiDesc": "This provider writes to both config.toml and auth.json; API Key is also injected into the provider bearer token.",
@@ -413,11 +394,9 @@
   "provider.officialNotLoggedIn": "Not logged in with official account; switching to official login mode requires logging in via Codex/ChatGPT first.",
   "provider.pureApiNotWritten": "Pure API config not fully written: check that this provider has OPENAI_API_KEY and config.toml contains model_provider/provider/base_url.",
   "provider.noApiFiles": "Current provider does not have a complete config.toml / API Key archive.",
-
-  "confirm.deleteSession": "Delete session \"{{title}}\"? This will delete the local DB record and rollout file, and create a backup.",
+  "confirm.deleteSession": "Delete session \"{{title}}\"? This will delete the database record and rollout files, and create a backup.",
   "confirm.deleteScript": "Delete script \"{{name}}\"? This will remove the local script file.",
-  "confirm.stopEnhance": "",
-
+  "confirm.stopEnhance": "Disable page enhancements? Some Codex++ UI features will stop working until re-enabled.",
   "context.title": "Codex Tools & Plugins",
   "context.detail": "Independently manage Codex MCP, Skills & Plugins; switching any provider will include them.",
   "context.summary": "Currently have {{count}} {{label}}; these entries are saved independently of providers and are written to config.toml after any provider switch.",
@@ -433,7 +412,6 @@
   "context.editorId": "ID",
   "context.editorTomlBody": "TOML Config Body",
   "context.newEntry": "New Item",
-
   "editor.placeholderConfigModel": "Writes to config.toml's model field, e.g. gpt-5",
   "editor.placeholderTestModel": "Leave blank to use default: {{model}}",
   "editor.placeholderContextWindow": "Leave blank to keep default, e.g. 200000",
@@ -449,7 +427,6 @@
   "editor.placeholderSelectorFilter": "Codex App",
   "editor.labelId": "e.g. context7",
   "editor.tomlPlaceholder": "Fill content below the header, e.g.:\ncommand = \"npx\"\nargs = [\"-y\", \"@upstash/context7-mcp\"]",
-
   "configPreview.title": "config.toml Preview",
   "configPreview.activeDesc": "This preview will be written on provider switch; context changes reflect immediately.",
   "configPreview.inactiveDesc": "This preview will be written when switching to this provider; context changes reflect immediately.",
@@ -458,9 +435,8 @@
   "commonConfig.extract": "Extract Current Provider Config",
   "commonConfig.noExtract": "Current provider config.toml has no extractable common config.",
   "authJson.title": "auth.json",
-  "authJson.activeDesc": "Currently active: backfilled from ~/.codex/auth.json on open; saved as this provider's auth archive",
-  "authJson.inactiveDesc": "Will write ~/.codex/auth.json when switching to this provider",
-
+  "authJson.activeDesc": "Currently active: backfilled from {{authPath}} on open; saved as this provider's auth archive",
+  "authJson.inactiveDesc": "Will write {{authPath}} when switching to this provider",
   "notify.callFailed": "Call Failed",
   "notify.overviewChecked": "Overview Checked",
   "notify.settingsLoaded": "Settings Loaded",
@@ -501,7 +477,6 @@
   "notify.openLink": "Open Link",
   "notify.codexAppPath": "Codex App Path",
   "notify.checkComplete": "Check Complete",
-
   "notify.switchedToOfficial": "Switched back to official login; page enhancement set to compatible.",
   "notify.switchedToPureApi": "Switched to Pure API; page enhancement set to full.",
   "notify.targetProviderMissing": "Target provider no longer in cc-switch or local config; refresh provider list and try again.",
@@ -526,10 +501,6 @@
   "notify.newVersionFound": "New version {{version}} found",
   "notify.currentProvider": "Current",
   "notify.discovered": "Discovered",
-
-  "confirm.deleteScript": "Delete script \"{{name}}\"? This will remove the local script file.",
-  "confirm.deleteSession": "Delete session \"{{title}}\"? This will delete the database record and rollout files, and create a backup.",
-
   "relayScreen.title": "Provider List",
   "relayScreen.detail": "{{count}} provider(s); drag to sort, click edit for details",
   "relayScreen.enableSwitch": "Enable Provider Config Switching",
@@ -537,7 +508,6 @@
   "relayScreen.linkSwitch": "Link cc-switch",
   "relayScreen.linkSwitchDetail": "When enabled, reads cc-switch Codex providers and writes back on save; using multiple management tools may cause config.toml / auth.json overwrites.",
   "relayScreen.addProvider": "Add Provider",
-
   "sortableCard.dragSort": "Drag to sort",
   "sortableCard.unnamed": "Unnamed Provider",
   "sortableCard.switchDisabled": "Provider master switch is off",
@@ -549,7 +519,6 @@
   "sortableCard.edit": "Edit",
   "sortableCard.copy": "Copy",
   "sortableCard.deleteProvider": "Delete Provider",
-
   "marketScript.updatable": "Updatable",
   "marketScript.installed": "Installed {{version}}",
   "marketScript.notInstalled": "Not installed",
@@ -559,10 +528,8 @@
   "marketScript.reinstall": "Reinstall",
   "marketScript.install": "Install",
   "marketScript.homepage": "Homepage",
-
   "profileDetail.back": "Back to List",
   "profileDetail.save": "Save",
-
   "profileEditor.unnamed": "Unnamed Provider",
   "profileEditor.switchDisabled": "Provider master switch is off",
   "profileEditor.inUse": "In Use",
@@ -594,9 +561,8 @@
   "profileEditor.fetchUpstream": "Fetch from Upstream",
   "profileEditor.userAgent": "User-Agent",
   "profileEditor.userAgentPlaceholder": "Leave empty for default",
-  "profileEditor.responsesApiHint": "This upstream will be proxied through local 127.0.0.1:57321 to Responses API; requires launching Codex via Codex++.",
+  "profileEditor.responsesApiHint": "This upstream will be proxied through local {{endpoint}} to Responses API; requires launching Codex via Codex++.",
   "profileEditor.ccsLinkedHint": "This provider is linked from cc-switch: {{source}}. When cc-switch link is on, saving here will also update the same provider in cc-switch database.",
-
   "contextManager.title": "Codex Tools & Plugins",
   "contextManager.detail": "MCP, Skills & Plugins are managed independently as global config; switching any provider merges them.",
   "contextManager.addNew": "Add New {{label}}",
@@ -606,7 +572,6 @@
   "contextManager.editEntry": "Edit entry",
   "contextManager.deleteEntry": "Delete entry",
   "contextManager.empty": "No {{label}} yet. Add via common config file or here.",
-
   "contextEntry.type": "Type",
   "contextEntry.id": "ID",
   "contextEntry.idPlaceholder": "e.g. context7",
@@ -614,19 +579,17 @@
   "contextEntry.tomlPlaceholder": "Fill content below the header, e.g.:\ncommand = \"npx\"\nargs = [\"-y\", \"@upstash/context7-mcp\"]",
   "contextEntry.save": "Save Entry",
   "contextEntry.cancel": "Cancel",
-
   "modeSelector.compat": "Compatible Enhancements",
   "modeSelector.compatDetail": "Suitable for official login or official mixed API Key; retains session delete, export, project move, Timeline and user scripts; plugin entry enhancements disabled.",
   "modeSelector.full": "Full Enhancements",
   "modeSelector.fullDetail": "Suitable for Pure API; enables plugin entry, forced install, session delete/export, project move, and all page capabilities.",
-
   "statusRow.noPath": "No path recorded",
-
   "latestLaunch.empty": "No launch status yet.",
   "latestLaunch.status": "Status",
   "latestLaunch.message": "Message",
   "latestLaunch.time": "Time",
-
+  "latestLaunch.debugPort": "Debug Port",
+  "latestLaunch.helperPort": "Helper Port",
   "scriptRow.sourceBuiltin": "Built-in",
   "scriptRow.sourceUser": "User",
   "scriptRow.sourceMarket": "Market",
@@ -636,30 +599,14 @@
   "scriptRow.disable": "Disable",
   "scriptRow.enable": "Enable",
   "scriptRow.delete": "Delete",
-
   "adGrid.open": "Open",
-
-  "route.overview.subtitle": "Check issues, launch & quick repair",
-  "route.relay.subtitle": "Manage API providers, protocols, keys & configs",
-  "route.sessions.subtitle": "View, delete & repair local Codex sessions",
-  "route.context.subtitle": "Independently manage MCP, Skills & Plugins",
-  "route.enhance.subtitle": "Session delete, export, project move & scripts",
-  "route.userScripts.subtitle": "Built-in & user-defined script inventory",
-  "route.recommendations.subtitle": "Sponsor & general recommendations",
-  "route.maintenance.subtitle": "Entry install, repair, Watcher & manual launch",
-  "route.about.subtitle": "Version info, project links, GitHub Release updates, logs & diagnostics",
-  "route.settings.subtitle": "Theme, CLI wrapper & launch args",
-
+  "contextKindLabel.mcp": "MCP",
+  "contextKindLabel.skill": "Skills",
   "contextKindLabel.plugin": "Plugin",
   "contextKindLabel.fallback": "Entry",
-
-  "health.codexApp": "Codex App",
   "health.codexAppDetail": "Codex app path not yet checked.",
-  "health.silentEntry": "Silent Launcher Entry",
   "health.silentEntryDetail": "Missing Codex++ silent launch shortcut can be fixed in maintenance page.",
-  "health.managerEntry": "Manager Console Entry",
   "health.managerEntryDetail": "Missing manager shortcut can be fixed in maintenance page.",
-
   "statusLabel.found": "Found",
   "statusLabel.missing": "Missing",
   "statusLabel.installed": "Installed",
@@ -672,32 +619,25 @@
   "statusLabel.notImplemented": "Not implemented",
   "statusLabel.disabled": "Disabled",
   "statusLabel.unknown": "Unknown",
-
   "relaySourceLabel.ccs": "cc-switch linked",
   "relaySourceLabel.local": "Local",
-
   "relayProfileEditorStatus.new": "New provider needs to be saved first",
   "relayProfileEditorStatus.disabled": "Provider master switch is off; saving config only, not writing to Codex live files",
   "relayProfileEditorStatus.linked": "Linked with cc-switch; saving will write back to external provider database",
   "relayProfileEditorStatus.linkedNoWrite": "Linked with cc-switch; writing back not currently enabled",
   "relayProfileEditorStatus.active": "Currently in use",
   "relayProfileEditorStatus.edited": "Edit and save, then new config will be used on next switch",
-
   "providerInitial.fallback": "Provider",
   "providerInitial.initial": "P",
-
   "relayModeLabel.pureApi": "Pure API",
   "relayModeLabel.official": "Official Login",
-
   "relayProfileConfigBrief.mixApiKey": "Mix API Key",
   "relayProfileConfigBrief.noApiFile": "No API file to write",
   "relayProfileConfigBrief.noUrl": "No URL filled",
-
   "relayProfileModeHelp.mixOfficial": "This provider retains official login and mixes in the current API Key; page enhancement stays in compatible mode.",
   "relayProfileModeHelp.official": "This provider switches back to official login mode, uses ChatGPT official account; no API Key written.",
   "relayProfileModeHelp.pureApi": "This provider writes both config.toml and auth.json; API Key is injected into provider bearer token.",
   "relayProfileModeHelp.mixPure": "This provider retains official login and mixes in the current API Key; page enhancement stays in compatible mode.",
-
   "relayProfileReadiness.notLoggedInNoConfig": "Not logged into official account and no mix API Base URL / Key configured.",
   "relayProfileReadiness.notLoggedIn": "Not logged into official account; official login mix API Key requires logging into official account first.",
   "relayProfileReadiness.noMixConfig": "No mix API Base URL / Key filled yet.",
@@ -707,28 +647,22 @@
   "relayProfileReadiness.noConfig": "This provider doesn't have a complete config.toml / API Key archive yet.",
   "relayProfileReadiness.pureApiIncomplete": "Pure API config not fully written: check if this provider has OPENAI_API_KEY and config.toml includes model_provider / provider / base_url.",
   "relayProfileReadiness.pureApiReady": "Pure API ready: will write both config.toml and auth.json.",
-
+  "relayProfileReadiness.loggedInFallback": "Logged in",
+  "relayProfileReadiness.detectedFallback": "Detected",
   "relayProfileModeSwitched.pureApi": "Switched to Pure API via this provider; page enhancement set to full.",
   "relayProfileModeSwitched.mixOfficial": "Switched to official login via this provider with mixed API Key; page enhancement set to compatible.",
   "relayProfileModeSwitched.official": "Switched to official login via this provider; page enhancement set to compatible.",
-
   "relayProfileSwitchValidation.noConfig": "Provider \"{{name}}\" has no independent config.toml; switch stopped to avoid displaying previous config. Please save config.toml in provider detail first.",
   "relayProfileSwitchValidation.mixAuthKey": "Official mix API mode should not save OPENAI_API_KEY in auth.json. Please clean this provider's auth.json before switching.",
-
   "relayProtocol.chatCompletions": "Chat Completions to Responses",
   "relayProtocol.responsesApi": "Responses API",
-
   "createRelayProfile.defaultProfileName": "Default Relay",
   "createRelayProfile.defaultName": "Provider {{number}}",
   "duplicateRelayProfile.defaultName": "{{name}} Copy",
-
   "notify.selectorFailed": "Failed to open picker: {{message}}",
   "notify.pathSaved": "App path saved; will be reused on subsequent launches.",
   "notify.pathCleared": "Cleared saved path; subsequent launches will fall back to auto-detection.",
   "notify.pathRequired": "Please fill or select an app path first.",
   "notify.checkCompleteMsg": "Refreshed Codex App, entry & Watcher status.",
-  "notify.logsCopied": "Logs copied.",
-  "notify.diagnosticsCopied": "Diagnostics report copied.",
-
   "protocolLabel.responsesApi": "Chat Completions → Responses"
 }
