@@ -137,6 +137,7 @@ pub trait LaunchHooks: Send + Sync {
     async fn bridge_context(
         &self,
         _debug_port: u16,
+        _app_dir: &Path,
     ) -> anyhow::Result<Option<crate::routes::BridgeContext>> {
         Ok(None)
     }
@@ -149,27 +150,15 @@ pub trait LaunchHooks: Send + Sync {
     ) -> anyhow::Result<()> {
         self.inject(debug_port, helper_port).await
     }
-    async fn ensure_injection(&self, debug_port: u16, helper_port: u16) -> bool {
-        let start = std::time::Instant::now();
-        for attempt in 1..=300 {
-            let result = match self.bridge_context(debug_port).await {
+    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, app_dir: &Path) -> bool {
+        for attempt in 1..=120 {
+            let result = match self.bridge_context(debug_port, app_dir).await {
                 Ok(Some(ctx)) => self.inject_bridge(debug_port, helper_port, ctx).await,
                 Ok(None) => self.inject(debug_port, helper_port).await,
                 Err(error) => Err(error),
             };
             match result {
-                Ok(()) => {
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "launcher.injection_succeeded",
-                        serde_json::json!({
-                            "debug_port": debug_port,
-                            "helper_port": helper_port,
-                            "attempt": attempt,
-                            "elapsed_secs": start.elapsed().as_secs_f64()
-                        }),
-                    );
-                    return true;
-                }
+                Ok(()) => return true,
                 Err(error) => {
                     let _ = crate::diagnostic_log::append_diagnostic_log(
                         "launcher.ensure_injection_retry_failed",
@@ -177,11 +166,10 @@ pub trait LaunchHooks: Send + Sync {
                             "debug_port": debug_port,
                             "helper_port": helper_port,
                             "attempt": attempt,
-                            "elapsed_secs": start.elapsed().as_secs_f64(),
                             "message": error.to_string()
                         }),
                     );
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
         }
@@ -237,7 +225,6 @@ where
     let mut helper_started = false;
     let mut launched = None;
     let mut keep_launched_on_error = false;
-    let start = std::time::Instant::now();
 
     let result: anyhow::Result<LaunchHandle> = async {
         if settings.provider_sync_enabled {
@@ -257,31 +244,11 @@ where
             .await?;
         launched = Some(launch.clone());
         keep_launched_on_error = true;
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "launcher.codex_launched",
-            serde_json::json!({
-                "elapsed_secs": start.elapsed().as_secs_f64(),
-                "debug_port": debug_port,
-            }),
-        );
 
         let mut injection_degraded = false;
         if settings.enhancements_enabled {
-            let injection_ready = hooks.ensure_injection(debug_port, helper_port).await;
+            let injection_ready = hooks.ensure_injection(debug_port, helper_port, &app_dir).await;
             if injection_ready {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "launcher.injection_complete",
-                    serde_json::json!({
-                        "elapsed_secs": start.elapsed().as_secs_f64(),
-                        "debug_port": debug_port,
-                    }),
-                );
-                // 注入后异步监控页面加载状态，定位剩余耗时瓶颈
-                let monitor_debug_port = debug_port;
-                let monitor_instant = std::time::Instant::now();
-                tokio::spawn(async move {
-                    monitor_page_loading(monitor_debug_port, monitor_instant).await;
-                });
                 keep_launched_on_error = false;
                 hooks.start_bridge_watchdog(debug_port, helper_port).await?;
             } else {
@@ -309,14 +276,6 @@ where
             options.status_store.save_latest(&status)?;
             hooks.write_status("running").await;
         }
-
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "launcher.ready",
-            serde_json::json!({
-                "elapsed_secs": start.elapsed().as_secs_f64(),
-                "status": if injection_degraded { "running_degraded" } else { "running" },
-            }),
-        );
 
         Ok(LaunchHandle {
             debug_port,
@@ -1221,7 +1180,7 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
             Ok(()) => return Ok(()),
             Err(error) => {
                 last_error = Some(error);
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
     }
@@ -1328,88 +1287,6 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         &[script],
     )
     .await
-}
-
-/// 注入后异步监控页面加载状态，定位剩余耗时瓶颈
-async fn monitor_page_loading(debug_port: u16, since: std::time::Instant) {
-    let script = r#"
-        (function() {
-            try {
-                var url = window.location.href;
-                var ready = document.readyState;
-                var title = document.title || '';
-                var bodyEl = document.body;
-                var bodyText = bodyEl ? (bodyEl.innerText || '').substring(0, 200) : '';
-                var elCount = document.querySelectorAll('*').length;
-
-                var hasChatInput = !!(document.querySelector('[data-testid="text-input"]') || document.querySelector('textarea') || document.querySelector('[contenteditable="true"]'));
-                var hasSidebar = !!(document.querySelector('[role="navigation"]') || document.querySelector('nav') || document.querySelector('[data-testid="nav"]'));
-                var hasLogin = !!(document.querySelector('[data-testid="login"]'));
-                var hasLoadingText = bodyText.indexOf('Loading') >= 0 || bodyText.indexOf('loading') >= 0;
-                var bodyPreview = bodyText.replace(/\s+/g, ' ').substring(0, 120);
-
-                return JSON.stringify({
-                    url: (url || '').substring(0,100),
-                    title: (title || '').substring(0,60),
-                    readyState: ready,
-                    elCount: elCount,
-                    chatInput: hasChatInput,
-                    sidebar: hasSidebar,
-                    login: hasLogin,
-                    loadingText: hasLoadingText,
-                    bodyPreview: bodyPreview
-                });
-            } catch(e) {
-                return 'JS_ERROR: ' + (e.message || String(e));
-            }
-        })();
-    "#;
-
-    for _ in 0..12 {
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-        let targets = match crate::cdp::list_targets(debug_port).await {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
-        let target = match crate::cdp::pick_page_target(&targets) {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
-        let ws_url = match target.web_socket_debugger_url {
-            Some(ref u) if !u.is_empty() => u.clone(),
-            _ => continue,
-        };
-        let result = crate::bridge::evaluate_script(&ws_url, script).await;
-        let info = match result {
-            Ok(val) => {
-                // 尝试解析 JS 执行结果
-                let inner = val.get("result")
-                    .and_then(|r| r.get("result"))
-                    .and_then(|r| r.get("value"));
-                match inner.and_then(|v| v.as_str()) {
-                    Some(s) => s.to_string(),
-                    None => {
-                        // 如果 value 不是字符串，检查是否有异常详情
-                        let exc = val.get("result")
-                            .and_then(|r| r.get("exceptionDetails"));
-                        match exc {
-                            Some(d) => format!("JS_EXC: {}", d),
-                            None => format!("RAW: {}", val),
-                        }
-                    }
-                }
-            }
-            Err(e) => format!("error: {}", e),
-        };
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "launcher.page_state",
-            serde_json::json!({
-                "elapsed_secs": since.elapsed().as_secs_f64(),
-                "info": info,
-            }),
-        );
-    }
 }
 
 pub fn build_macos_open_command(
