@@ -43,6 +43,18 @@ impl BridgeContext {
     ) -> Self {
         Self::new(Arc::new(CoreSettingsService::default()), runtime, data)
     }
+
+    pub fn core_with_data_and_app_dir(
+        runtime: Arc<dyn BridgeRuntimeService>,
+        data: Arc<dyn BridgeDataService>,
+        app_dir: PathBuf,
+    ) -> Self {
+        Self::new(
+            Arc::new(CoreSettingsService::with_app_dir(app_dir)),
+            runtime,
+            data,
+        )
+    }
 }
 
 #[async_trait]
@@ -247,6 +259,16 @@ pub async fn handle_bridge_request(
 #[derive(Default)]
 pub struct CoreSettingsService {
     store: SettingsStore,
+    app_dir: Option<PathBuf>,
+}
+
+impl CoreSettingsService {
+    fn with_app_dir(app_dir: PathBuf) -> Self {
+        Self {
+            store: SettingsStore::default(),
+            app_dir: Some(app_dir),
+        }
+    }
 }
 
 #[async_trait]
@@ -260,6 +282,9 @@ impl BridgeSettingsService for CoreSettingsService {
     }
 
     async fn codex_app_version(&self) -> anyhow::Result<String> {
+        if let Some(app_dir) = self.app_dir.as_deref() {
+            return Ok(crate::app_paths::codex_app_version(app_dir).unwrap_or_default());
+        }
         let settings = self.store.load().unwrap_or_default();
         let app_dir = crate::app_paths::resolve_codex_app_dir_with_saved(
             None,

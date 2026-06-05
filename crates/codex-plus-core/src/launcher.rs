@@ -137,6 +137,7 @@ pub trait LaunchHooks: Send + Sync {
     async fn bridge_context(
         &self,
         _debug_port: u16,
+        _app_dir: &Path,
     ) -> anyhow::Result<Option<crate::routes::BridgeContext>> {
         Ok(None)
     }
@@ -149,9 +150,9 @@ pub trait LaunchHooks: Send + Sync {
     ) -> anyhow::Result<()> {
         self.inject(debug_port, helper_port).await
     }
-    async fn ensure_injection(&self, debug_port: u16, helper_port: u16) -> bool {
+    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, app_dir: &Path) -> bool {
         for attempt in 1..=120 {
-            let result = match self.bridge_context(debug_port).await {
+            let result = match self.bridge_context(debug_port, app_dir).await {
                 Ok(Some(ctx)) => self.inject_bridge(debug_port, helper_port, ctx).await,
                 Ok(None) => self.inject(debug_port, helper_port).await,
                 Err(error) => Err(error),
@@ -246,7 +247,7 @@ where
 
         let mut injection_degraded = false;
         if settings.enhancements_enabled {
-            let injection_ready = hooks.ensure_injection(debug_port, helper_port).await;
+            let injection_ready = hooks.ensure_injection(debug_port, helper_port, &app_dir).await;
             if injection_ready {
                 keep_launched_on_error = false;
                 hooks.start_bridge_watchdog(debug_port, helper_port).await?;

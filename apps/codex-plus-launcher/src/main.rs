@@ -125,7 +125,7 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
     }
     let injection_ready = if settings.enhancements_enabled {
         hooks
-            .ensure_injection(options.debug_port, options.helper_port)
+            .ensure_injection(options.debug_port, options.helper_port, &app_dir)
             .await
     } else {
         false
@@ -276,11 +276,16 @@ impl LaunchHooks for LauncherHooks {
             .await
     }
 
-    async fn bridge_context(&self, debug_port: u16) -> anyhow::Result<Option<BridgeContext>> {
+    async fn bridge_context(
+        &self,
+        debug_port: u16,
+        app_dir: &Path,
+    ) -> anyhow::Result<Option<BridgeContext>> {
         self.runtime.set_debug_port(debug_port);
-        Ok(Some(BridgeContext::core_with_data(
+        Ok(Some(BridgeContext::core_with_data_and_app_dir(
             self.runtime.clone(),
             self.data.clone(),
+            app_dir.to_path_buf(),
         )))
     }
 

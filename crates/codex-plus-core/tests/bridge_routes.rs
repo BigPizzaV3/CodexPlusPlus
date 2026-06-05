@@ -137,6 +137,26 @@ async fn settings_set_does_not_persist_runtime_codex_app_version() {
 }
 
 #[tokio::test]
+async fn bridge_context_core_with_app_dir_exposes_runtime_codex_app_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp
+        .path()
+        .join("OpenAI.Codex_26.601.21317.0_x64__abc")
+        .join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("Codex.exe"), "").unwrap();
+    let ctx = BridgeContext::core_with_data_and_app_dir(
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+        app_dir,
+    );
+
+    let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
+
+    assert_eq!(result["codexAppVersion"], json!("26.601.21317.0"));
+}
+
+#[tokio::test]
 async fn upstream_worktree_routes_are_dispatched_to_runtime() {
     let ctx = test_context();
 
@@ -1256,7 +1276,11 @@ impl LaunchHooks for ContextHooks {
         })
     }
 
-    async fn bridge_context(&self, debug_port: u16) -> anyhow::Result<Option<BridgeContext>> {
+    async fn bridge_context(
+        &self,
+        debug_port: u16,
+        _app_dir: &std::path::Path,
+    ) -> anyhow::Result<Option<BridgeContext>> {
         self.event(format!("bridge-context:{debug_port}"));
         Ok(Some(test_context()))
     }
