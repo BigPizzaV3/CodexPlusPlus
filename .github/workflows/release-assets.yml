@@ -109,6 +109,18 @@ jobs:
           VERSION="${VERSION#V}"
           BINARY_DIR="$PWD/target/${{ matrix.target }}/release" bash scripts/installer/macos/package-dmg.sh "$VERSION" "${{ matrix.arch }}"
 
+      - name: Verify macOS bundle structure
+        run: |
+          set -euo pipefail
+          for app in "dist/macos/stage/Codex++.app" "dist/macos/stage/Codex++ 管理工具.app"; do
+            test -f "$app/Contents/Info.plist"
+            test -f "$app/Contents/PkgInfo"
+            test -x "$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
+            plutil -lint "$app/Contents/Info.plist" >/dev/null
+            codesign -dv "$app" >/dev/null 2>&1
+            echo "verified: $app"
+          done
+
       - name: Upload macOS DMG
         uses: softprops/action-gh-release@v2
         with:
