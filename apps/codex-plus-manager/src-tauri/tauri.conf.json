@@ -14,11 +14,12 @@
       {
         "create": false,
         "label": "main",
-        "title": "Codex++ 管理工具",
-        "width": 1180,
-        "height": 820,
+        "title": "Codex++",
+        "width": 1080,
+        "height": 620,
+        "center": true,
         "minWidth": 960,
-        "minHeight": 720
+        "minHeight": 620
       }
     ],
     "security": {

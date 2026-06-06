@@ -7,7 +7,7 @@ build/
 dist/
 target/
 apps/codex-plus-manager/src-tauri/gen/
-
+.target-ci-check
 .codex_asar_extract/
 .codex_asar_extract_latest/
 .superpowers/

@@ -69,6 +69,16 @@ export function App() {
             setSettings(result);
             const normalized = normalizeSettings(result.settings);
             setSettingsForm(normalized);
+            const storedLang = window.localStorage.getItem(STORAGE_KEYS.lang);
+            if (normalized.uiLanguage === "en" || normalized.uiLanguage === "zh") {
+                if (i18nInstance.language !== normalized.uiLanguage) {
+                    void i18nInstance.changeLanguage(normalized.uiLanguage);
+                }
+                window.localStorage.setItem(STORAGE_KEYS.lang, normalized.uiLanguage);
+            }
+            else if (storedLang === "en" || storedLang === "zh") {
+                void saveSettingsValue({ ...normalized, uiLanguage: storedLang }, true);
+            }
             setLaunchForm((current) => ({
                 ...current,
                 appPath: current.appPath || result.settings.codexAppPath || "",
@@ -939,8 +949,9 @@ export function App() {
           <div className="topbar-actions">
             <Button onClick={() => {
             const next = i18nInstance.language === "zh" ? "en" : "zh";
-            i18nInstance.changeLanguage(next);
+            void i18nInstance.changeLanguage(next);
             window.localStorage.setItem(STORAGE_KEYS.lang, next);
+            void saveSettingsValue({ ...settingsForm, uiLanguage: next }, true);
         }} size="icon" title={i18nInstance.language === "zh" ? t("lang.en") : t("lang.zh")} variant="outline">
               <span className="h-4 w-4 flex items-center justify-center text-xs font-bold">
                 {i18nInstance.language === "zh" ? t("lang.enShort") : t("lang.zhShort")}

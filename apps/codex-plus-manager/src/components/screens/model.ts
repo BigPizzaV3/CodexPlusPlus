@@ -67,6 +67,7 @@ export type BackendSettings = {
     cliWrapperBaseUrl: string;
     cliWrapperApiKey: string;
     cliWrapperApiKeyEnv: string;
+    uiLanguage: string;
 };
 export type LaunchMode = "patch" | "relay";
 export type RelayProfile = {
@@ -433,4 +434,5 @@ export const defaultSettings: BackendSettings = {
     cliWrapperBaseUrl: "",
     cliWrapperApiKey: "",
     cliWrapperApiKeyEnv: DEFAULT_CLI_WRAPPER_API_KEY_ENV,
+    uiLanguage: "",
 };

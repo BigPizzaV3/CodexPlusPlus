@@ -216,6 +216,8 @@ pub struct BackendSettings {
         deserialize_with = "empty_as_default_api_key_env"
     )]
     pub cli_wrapper_api_key_env: String,
+    #[serde(rename = "uiLanguage", default)]
+    pub ui_language: String,
 }
 
 impl Default for BackendSettings {
@@ -257,6 +259,7 @@ impl Default for BackendSettings {
             cli_wrapper_base_url: String::new(),
             cli_wrapper_api_key: String::new(),
             cli_wrapper_api_key_env: default_api_key_env(),
+            ui_language: String::new(),
         }
     }
 }
