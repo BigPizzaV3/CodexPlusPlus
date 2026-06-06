@@ -1,6 +1,6 @@
 use codex_plus_data::{
-    ProviderSyncStatus, ProviderSyncTargetSource, load_provider_sync_targets, run_provider_sync,
-    run_provider_sync_with_target,
+    load_provider_sync_targets, run_provider_sync, run_provider_sync_with_target,
+    ProviderSyncStatus, ProviderSyncTargetSource,
 };
 use rusqlite::Connection;
 use serde_json::json;
@@ -21,6 +21,27 @@ fn write_rollout(path: &Path, provider: &str, thread_id: &str, cwd: &str) {
     });
     let event = json!({"type": "event_msg", "payload": {"type": "user_message"}});
     fs::write(path, format!("{first}\n{event}\n")).unwrap();
+}
+
+fn write_rollout_with_providers(path: &Path, providers: &[&str], thread_id: &str, cwd: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut lines = Vec::new();
+    for provider in providers {
+        lines.push(
+            json!({
+                "type": "session_meta",
+                "payload": {
+                    "id": thread_id,
+                    "model_provider": provider,
+                    "cwd": cwd
+                }
+            })
+            .to_string(),
+        );
+        lines.push(json!({"type": "event_msg", "payload": {"type": "task_started"}}).to_string());
+    }
+    lines.push(json!({"type": "event_msg", "payload": {"type": "user_message"}}).to_string());
+    fs::write(path, format!("{}\n", lines.join("\n"))).unwrap();
 }
 
 fn create_state_db(path: &Path) {
@@ -177,6 +198,67 @@ experimental_bearer_token = "sk-test"
         )
         .unwrap();
     assert_eq!(provider, "custom");
+}
+
+#[test]
+fn provider_sync_rewrites_all_session_meta_model_providers() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    let rollout = home.join("sessions/2026/rollout-multi-meta.jsonl");
+    write_rollout_with_providers(
+        &rollout,
+        &["openai", "ccx", "CodexPlusPlus"],
+        "thread-1",
+        "C:/workspace",
+    );
+    create_state_db(&home.join("state_5.sqlite"));
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.target_provider, "apigather");
+    assert_eq!(result.changed_session_files, 1);
+
+    let providers = fs::read_to_string(&rollout)
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|record| record["type"] == "session_meta")
+        .map(|record| {
+            record["payload"]["model_provider"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(providers, vec!["apigather", "apigather", "apigather"]);
+}
+
+#[test]
+fn provider_sync_target_discovery_reads_all_session_meta_providers() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    write_rollout_with_providers(
+        &home.join("sessions/2026/rollout-multi-meta.jsonl"),
+        &["openai", "ccx", "CodexPlusPlus"],
+        "thread-1",
+        "C:/workspace",
+    );
+
+    let targets = load_provider_sync_targets(Some(&home));
+    let ids = targets
+        .targets
+        .iter()
+        .map(|target| target.id.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(ids.contains(&"openai"));
+    assert!(ids.contains(&"ccx"));
+    assert!(ids.contains(&"CodexPlusPlus"));
 }
 
 #[test]
