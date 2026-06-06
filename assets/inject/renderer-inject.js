@@ -1083,6 +1083,7 @@
     effectiveServiceTier: null,
     effectiveMode: "standard",
   };
+  let codexPlusNewInstanceInFlight = false;
   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
   const codexServiceTierFallbackFastValue = "priority";
   const codexServiceTierModulePromises = new Map();
@@ -1678,6 +1679,24 @@
     }
   }
 
+  async function launchCodexPlusNewInstance(source = "manual") {
+    if (codexPlusNewInstanceInFlight) return;
+    codexPlusNewInstanceInFlight = true;
+    showToast("正在启动新的 Codex++ 窗口…", null);
+    try {
+      const result = await postJson("/launcher/new-instance", { source });
+      if (result?.status === "ok") {
+        showToast(result.message || "已启动新的 Codex++ 窗口", null);
+      } else {
+        showToast(result?.message || "启动新的 Codex++ 窗口失败", null);
+      }
+    } catch (error) {
+      showToast(`启动新的 Codex++ 窗口失败：${error?.message || error}`, null);
+    } finally {
+      codexPlusNewInstanceInFlight = false;
+    }
+  }
+
   function refreshCodexPlusBackendToggles() {
     document.querySelectorAll(".codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-backend-setting");
@@ -2040,6 +2059,10 @@
               <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
             </div>
             <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">新建 Codex++ 窗口</div><div class="codex-plus-row-description">使用独立 profile、端口和 launcher 启动新的 Codex，并自动连接 Codex++；快捷键 Command+Shift+N。</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-launch-new-instance="true">新建窗口</button>
+            </div>
+            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">原生菜单栏位置</div><div class="codex-plus-row-description">把 Codex++ 菜单插入顶部原生菜单栏；默认关闭以避免页面重渲染冲突。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="nativeMenuPlacement"><span></span></button>
             </div>
@@ -2137,6 +2160,10 @@
       }
       if (target?.closest("[data-codex-open-manager]")) {
         openManagerFromCodex();
+        return;
+      }
+      if (target?.closest("[data-codex-launch-new-instance]")) {
+        launchCodexPlusNewInstance("menu");
         return;
       }
       if (target?.closest("[data-codex-plus-discord]")) {
@@ -7103,6 +7130,30 @@
 
   window.__codexPlusConversationViewCleanup = cleanupConversationView;
 
+  function codexPlusNewInstanceShortcutIgnored(event) {
+    const target = event?.target instanceof Element ? event.target : null;
+    if (!target) return false;
+    if (target.closest("input, textarea, select")) return true;
+    return !!target.closest("[contenteditable='true'], [role='textbox']");
+  }
+
+  function installCodexPlusNewInstanceShortcut() {
+    if (window.__codexPlusNewInstanceShortcutInstalled === "1") return;
+    if (window.__codexPlusNewInstanceShortcutHandler) {
+      document.removeEventListener("keydown", window.__codexPlusNewInstanceShortcutHandler, true);
+    }
+    window.__codexPlusNewInstanceShortcutHandler = (event) => {
+      if (!(event.metaKey && event.shiftKey && !event.ctrlKey && !event.altKey)) return;
+      if (String(event.key || "").toLowerCase() !== "n") return;
+      if (codexPlusNewInstanceShortcutIgnored(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      launchCodexPlusNewInstance("shortcut");
+    };
+    document.addEventListener("keydown", window.__codexPlusNewInstanceShortcutHandler, true);
+    window.__codexPlusNewInstanceShortcutInstalled = "1";
+  }
+
   function ensureConversationViewRuntime() {
     if (conversationViewState.ro && conversationViewState.mo && conversationViewState.pollId) return;
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
@@ -7132,6 +7183,7 @@
     installStyle();
     installCodexServiceTierDispatcherPatch();
     installCodexPlusMenu();
+    installCodexPlusNewInstanceShortcut();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();
     updateThreadScrollHandlers();

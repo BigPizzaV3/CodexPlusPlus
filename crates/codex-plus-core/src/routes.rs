@@ -76,6 +76,9 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn reload_user_scripts(&self) -> anyhow::Result<Value>;
     async fn open_devtools(&self) -> anyhow::Result<Value>;
     async fn open_manager(&self) -> anyhow::Result<Value>;
+    async fn launch_new_instance(&self, _payload: Value) -> anyhow::Result<Value> {
+        anyhow::bail!("New Codex++ instance launch is not wired in core launcher hooks")
+    }
     async fn backend_status(&self) -> anyhow::Result<Value>;
     async fn repair_backend(&self) -> anyhow::Result<Value>;
     async fn codex_model_catalog(&self) -> anyhow::Result<Value>;
@@ -127,7 +130,9 @@ pub async fn handle_bridge_request(
     );
     let result = match path {
         "/settings/get" => settings_value(&ctx, ctx.settings.get_settings().await).await,
-        "/settings/set" => settings_value(&ctx, ctx.settings.set_settings(payload.clone()).await).await,
+        "/settings/set" => {
+            settings_value(&ctx, ctx.settings.set_settings(payload.clone()).await).await
+        }
         "/user-scripts/list" => ctx.runtime.user_script_inventory().await,
         "/user-scripts/set-enabled" => {
             let enabled = payload
@@ -159,6 +164,7 @@ pub async fn handle_bridge_request(
         "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
         "/devtools/open" => ctx.runtime.open_devtools().await,
         "/manager/open" => ctx.runtime.open_manager().await,
+        "/launcher/new-instance" => ctx.runtime.launch_new_instance(payload.clone()).await,
         "/backend/status" => ctx.runtime.backend_status().await,
         "/backend/repair" => ctx.runtime.repair_backend().await,
         "/codex-model-catalog" | "/codex-config-model" => ctx.runtime.codex_model_catalog().await,
@@ -585,10 +591,16 @@ fn spawn_manager(manager_path: &Path) -> anyhow::Result<()> {
         .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
 }
 
-fn settings_payload_value(settings: BackendSettings, codex_app_version: String) -> anyhow::Result<Value> {
+fn settings_payload_value(
+    settings: BackendSettings,
+    codex_app_version: String,
+) -> anyhow::Result<Value> {
     let mut value = serde_json::to_value(settings)?;
     if let Some(object) = value.as_object_mut() {
-        object.insert("codexAppVersion".to_string(), Value::String(codex_app_version));
+        object.insert(
+            "codexAppVersion".to_string(),
+            Value::String(codex_app_version),
+        );
     }
     Ok(value)
 }

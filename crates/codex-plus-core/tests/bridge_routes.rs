@@ -854,6 +854,7 @@ async fn launch_lifecycle_uses_hook_supplied_bridge_context_for_injection() {
             debug_port: 9229,
             helper_port: 57321,
             status_store: StatusStore::new(temp.path().join("latest-status.json")),
+            ..LaunchOptions::default()
         },
         &hooks,
     )

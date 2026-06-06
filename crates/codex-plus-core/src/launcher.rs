@@ -65,6 +65,8 @@ pub struct LaunchOptions {
     pub app_dir: Option<PathBuf>,
     pub debug_port: u16,
     pub helper_port: u16,
+    pub guard_port: u16,
+    pub codex_extra_args: Vec<String>,
     pub status_store: StatusStore,
 }
 
@@ -74,6 +76,8 @@ impl Default for LaunchOptions {
             app_dir: None,
             debug_port: 9229,
             helper_port: 57321,
+            guard_port: crate::ports::LAUNCHER_GUARD_PORT,
+            codex_extra_args: Vec::new(),
             status_store: StatusStore::default(),
         }
     }
@@ -220,6 +224,9 @@ where
     let debug_port = hooks.select_debug_port(options.debug_port);
     let mut helper_port = hooks.select_helper_port(options.helper_port);
     let settings = hooks.load_settings().await?;
+    let mut codex_extra_args = settings.codex_extra_args.clone();
+    codex_extra_args.extend(options.codex_extra_args.clone());
+    codex_extra_args = normalize_codex_extra_args(&codex_extra_args);
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
     let status_store = options.status_store.clone();
     let mut helper_started = false;
@@ -240,14 +247,16 @@ where
         }
 
         let launch = hooks
-            .launch_codex(&app_dir, debug_port, &settings.codex_extra_args)
+            .launch_codex(&app_dir, debug_port, &codex_extra_args)
             .await?;
         launched = Some(launch.clone());
         keep_launched_on_error = true;
 
         let mut injection_degraded = false;
         if settings.enhancements_enabled {
-            let injection_ready = hooks.ensure_injection(debug_port, helper_port, &app_dir).await;
+            let injection_ready = hooks
+                .ensure_injection(debug_port, helper_port, &app_dir)
+                .await;
             if injection_ready {
                 keep_launched_on_error = false;
                 hooks.start_bridge_watchdog(debug_port, helper_port).await?;
@@ -1294,15 +1303,24 @@ pub fn build_macos_open_command(
     debug_port: u16,
     extra_args: &[String],
 ) -> Vec<String> {
-    let mut command = vec![
-        "open".to_string(),
-        "-W".to_string(),
+    let mut command = vec!["open".to_string(), "-W".to_string()];
+    if has_user_data_dir_arg(extra_args) {
+        command.push("-n".to_string());
+    }
+    command.extend([
         "-a".to_string(),
         app_dir.to_string_lossy().to_string(),
         "--args".to_string(),
-    ];
+    ]);
     command.extend(build_codex_arguments(debug_port, extra_args));
     command
+}
+
+fn has_user_data_dir_arg(extra_args: &[String]) -> bool {
+    extra_args.iter().any(|arg| {
+        let trimmed = arg.trim();
+        trimmed == "--user-data-dir" || trimmed.starts_with("--user-data-dir=")
+    })
 }
 
 pub fn build_macos_cleanup_command(

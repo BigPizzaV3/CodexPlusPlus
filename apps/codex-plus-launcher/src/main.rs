@@ -36,7 +36,8 @@ impl Default for LauncherHooks {
 #[tokio::main]
 async fn main() -> Result<()> {
     let options = parse_launch_options(std::env::args().skip(1));
-    let Some(_guard) = acquire_single_instance_guard(options.debug_port)? else {
+    let Some(_guard) = acquire_single_instance_guard(options.debug_port, options.guard_port)?
+    else {
         activate_existing_codex_app(&options).await?;
         return Ok(());
     };
@@ -49,40 +50,37 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn acquire_single_instance_guard(debug_port: u16) -> anyhow::Result<Option<std::net::TcpListener>> {
-    acquire_single_instance_guard_with_retry(debug_port, true)
+fn acquire_single_instance_guard(
+    debug_port: u16,
+    guard_port: u16,
+) -> anyhow::Result<Option<std::net::TcpListener>> {
+    acquire_single_instance_guard_with_retry(debug_port, guard_port, true)
 }
 
 fn acquire_single_instance_guard_with_retry(
     debug_port: u16,
+    guard_port: u16,
     allow_stale_recovery: bool,
 ) -> anyhow::Result<Option<std::net::TcpListener>> {
-    match try_acquire_single_instance_guard() {
+    match try_acquire_single_instance_guard(guard_port) {
         Ok(listener) => Ok(Some(listener)),
         Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
-            log_launcher_already_running(debug_port);
+            log_launcher_already_running(debug_port, guard_port);
             if allow_stale_recovery && should_recover_stale_launcher(debug_port) {
                 codex_plus_core::watcher::stop_launcher_processes();
                 std::thread::sleep(std::time::Duration::from_millis(250));
-                return acquire_single_instance_guard_with_retry(debug_port, false);
+                return acquire_single_instance_guard_with_retry(debug_port, guard_port, false);
             }
             Ok(None)
         }
         Err(error) => Err(error)
-            .with_context(|| {
-                format!(
-                    "failed to acquire launcher guard port {}",
-                    codex_plus_core::ports::LAUNCHER_GUARD_PORT
-                )
-            })
+            .with_context(|| format!("failed to acquire launcher guard port {guard_port}"))
             .map(Some),
     }
 }
 
-fn try_acquire_single_instance_guard() -> std::io::Result<std::net::TcpListener> {
-    codex_plus_core::ports::acquire_loopback_port_guard(
-        codex_plus_core::ports::LAUNCHER_GUARD_PORT,
-    )
+fn try_acquire_single_instance_guard(guard_port: u16) -> std::io::Result<std::net::TcpListener> {
+    codex_plus_core::ports::acquire_loopback_port_guard(guard_port)
 }
 
 fn should_recover_stale_launcher(debug_port: u16) -> bool {
@@ -113,7 +111,10 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
         hooks.start_helper(options.helper_port).await?;
     }
     let process_ids = codex_plus_core::watcher::find_codex_processes();
+    #[cfg(windows)]
     let mut activated = false;
+    #[cfg(not(windows))]
+    let activated = false;
     #[cfg(windows)]
     {
         for process_id in &process_ids {
@@ -154,11 +155,11 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
     launch_result.map(|_| ())
 }
 
-fn log_launcher_already_running(debug_port: u16) {
+fn log_launcher_already_running(debug_port: u16, guard_port: u16) {
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "launcher.already_running",
         json!({
-            "guard_port": codex_plus_core::ports::LAUNCHER_GUARD_PORT,
+            "guard_port": guard_port,
             "debug_port": debug_port
         }),
     );
@@ -216,6 +217,21 @@ where
                 if let Some(value) = iter.next() {
                     if let Ok(port) = value.as_ref().parse::<u16>() {
                         options.helper_port = port;
+                    }
+                }
+            }
+            "--guard-port" => {
+                if let Some(value) = iter.next() {
+                    if let Ok(port) = value.as_ref().parse::<u16>() {
+                        options.guard_port = port;
+                    }
+                }
+            }
+            "--codex-arg" => {
+                if let Some(value) = iter.next() {
+                    let value = value.as_ref().trim();
+                    if !value.is_empty() {
+                        options.codex_extra_args.push(value.to_string());
                     }
                 }
             }
@@ -282,6 +298,7 @@ impl LaunchHooks for LauncherHooks {
         app_dir: &Path,
     ) -> anyhow::Result<Option<BridgeContext>> {
         self.runtime.set_debug_port(debug_port);
+        self.runtime.set_app_dir(app_dir);
         Ok(Some(BridgeContext::core_with_data_and_app_dir(
             self.runtime.clone(),
             self.data.clone(),
@@ -417,6 +434,7 @@ impl LauncherDataService {
 
 struct LauncherRuntimeService {
     debug_port: Mutex<u16>,
+    app_dir: Mutex<Option<PathBuf>>,
     websocket_url: Mutex<Option<String>>,
     user_scripts: UserScriptManager,
 }
@@ -425,6 +443,7 @@ impl LauncherRuntimeService {
     fn new(debug_port: u16, user_scripts: UserScriptManager) -> Self {
         Self {
             debug_port: Mutex::new(debug_port),
+            app_dir: Mutex::new(None),
             websocket_url: Mutex::new(None),
             user_scripts,
         }
@@ -432,6 +451,10 @@ impl LauncherRuntimeService {
 
     fn set_debug_port(&self, debug_port: u16) {
         *self.debug_port.lock().unwrap() = debug_port;
+    }
+
+    fn set_app_dir(&self, app_dir: &Path) {
+        *self.app_dir.lock().unwrap() = Some(app_dir.to_path_buf());
     }
 
     fn set_websocket_url(&self, websocket_url: &str) {
@@ -500,6 +523,59 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         Ok(json!({
             "status": "ok",
             "path": manager_path.to_string_lossy()
+        }))
+    }
+
+    async fn launch_new_instance(&self, _payload: Value) -> anyhow::Result<Value> {
+        let current_debug_port = *self.debug_port.lock().unwrap();
+        let app_dir = self.app_dir.lock().unwrap().clone();
+        let next = next_instance_ports(current_debug_port)?;
+        let profile_dir = codex_plus_instance_profile_dir(next.index);
+        std::fs::create_dir_all(&profile_dir)
+            .map_err(|error| anyhow::anyhow!("创建 Codex++ 实例 profile 失败：{error}"))?;
+
+        let launcher_path = std::env::current_exe()
+            .map_err(|error| anyhow::anyhow!("定位 Codex++ launcher 失败：{error}"))?;
+        let mut command = std::process::Command::new(&launcher_path);
+        if let Some(app_dir) = app_dir.as_deref() {
+            command.arg("--app-path").arg(app_dir);
+        }
+        command
+            .arg("--debug-port")
+            .arg(next.debug_port.to_string())
+            .arg("--helper-port")
+            .arg(next.helper_port.to_string())
+            .arg("--guard-port")
+            .arg(next.guard_port.to_string())
+            .arg("--codex-arg")
+            .arg(format!("--user-data-dir={}", profile_dir.to_string_lossy()));
+        #[cfg(windows)]
+        {
+            command.creation_flags(codex_plus_core::windows_create_no_window());
+        }
+        let child = command
+            .spawn()
+            .map_err(|error| anyhow::anyhow!("启动新的 Codex++ 实例失败：{error}"))?;
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.new_instance_spawned",
+            json!({
+                "index": next.index,
+                "debug_port": next.debug_port,
+                "helper_port": next.helper_port,
+                "guard_port": next.guard_port,
+                "profile_dir": profile_dir.to_string_lossy(),
+                "pid": child.id()
+            }),
+        );
+        Ok(json!({
+            "status": "ok",
+            "message": format!("已启动 Codex++ ctx{}", next.index),
+            "index": next.index,
+            "debug_port": next.debug_port,
+            "helper_port": next.helper_port,
+            "guard_port": next.guard_port,
+            "profile_dir": profile_dir.to_string_lossy(),
+            "pid": child.id()
         }))
     }
 
@@ -696,6 +772,52 @@ fn default_user_scripts_config_dir() -> PathBuf {
         .join("Codex++")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InstancePorts {
+    index: u16,
+    debug_port: u16,
+    guard_port: u16,
+    helper_port: u16,
+}
+
+fn next_instance_ports(current_debug_port: u16) -> anyhow::Result<InstancePorts> {
+    for index in 2..=60 {
+        let ports = instance_ports(index);
+        if ports.debug_port == current_debug_port {
+            continue;
+        }
+        if !codex_plus_core::ports::can_bind_loopback_port(ports.debug_port) {
+            continue;
+        }
+        if !codex_plus_core::ports::can_bind_loopback_port(ports.guard_port) {
+            continue;
+        }
+        if !codex_plus_core::ports::can_bind_loopback_port(ports.helper_port) {
+            continue;
+        }
+        return Ok(ports);
+    }
+    anyhow::bail!("没有找到可用的 Codex++ 实例端口")
+}
+
+fn instance_ports(index: u16) -> InstancePorts {
+    let offset = index - 2;
+    InstancePorts {
+        index,
+        debug_port: 9230 + offset,
+        guard_port: 57322 + offset * 2,
+        helper_port: 57323 + offset * 2,
+    }
+}
+
+fn codex_plus_instance_profile_dir(index: u16) -> PathBuf {
+    directories::BaseDirs::new()
+        .map(|dirs| dirs.home_dir().join(".codex-plusplus"))
+        .unwrap_or_else(|| PathBuf::from(".codex-plusplus"))
+        .join("profiles")
+        .join(format!("ctx{index}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,27 +831,47 @@ mod tests {
             "9333",
             "--helper-port",
             "57322",
+            "--guard-port",
+            "57324",
+            "--codex-arg",
+            "--user-data-dir=/tmp/codex-ctx2",
         ]);
 
         assert_eq!(options.app_dir, Some(PathBuf::from("C:/Codex/App")));
         assert_eq!(options.debug_port, 9333);
         assert_eq!(options.helper_port, 57322);
+        assert_eq!(options.guard_port, 57324);
+        assert_eq!(
+            options.codex_extra_args,
+            vec!["--user-data-dir=/tmp/codex-ctx2".to_string()]
+        );
     }
 
     #[test]
     fn parse_launch_options_ignores_invalid_ports() {
-        let options = parse_launch_options(["--debug-port", "nope", "--helper-port", "70000"]);
+        let options = parse_launch_options([
+            "--debug-port",
+            "nope",
+            "--helper-port",
+            "70000",
+            "--guard-port",
+            "70000",
+        ]);
 
         assert_eq!(options.debug_port, LaunchOptions::default().debug_port);
         assert_eq!(options.helper_port, LaunchOptions::default().helper_port);
+        assert_eq!(options.guard_port, LaunchOptions::default().guard_port);
     }
 
     #[test]
     fn launcher_uses_single_instance_guard_before_launching() {
         let source = include_str!("main.rs");
 
-        assert!(source.contains("acquire_single_instance_guard(options.debug_port)?"));
-        assert!(source.contains("LAUNCHER_GUARD_PORT"));
+        assert!(
+            source
+                .contains("acquire_single_instance_guard(options.debug_port, options.guard_port)?")
+        );
+        assert!(source.contains("guard_port"));
         assert!(source.contains("launcher.already_running"));
     }
 
@@ -741,8 +883,33 @@ mod tests {
             "async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {\n    let hooks = LauncherHooks::default();"
         ));
         assert!(source.contains("hooks.start_helper(options.helper_port).await?"));
-        assert!(source.contains("hooks.ensure_injection(options.debug_port, options.helper_port).await"));
+        assert!(
+            source
+                .contains("hooks.ensure_injection(options.debug_port, options.helper_port).await")
+        );
         assert!(source.contains("injection_ready"));
+    }
+
+    #[test]
+    fn instance_ports_use_stable_codex_plus_groups() {
+        assert_eq!(
+            instance_ports(2),
+            InstancePorts {
+                index: 2,
+                debug_port: 9230,
+                guard_port: 57322,
+                helper_port: 57323,
+            }
+        );
+        assert_eq!(
+            instance_ports(3),
+            InstancePorts {
+                index: 3,
+                debug_port: 9231,
+                guard_port: 57324,
+                helper_port: 57325,
+            }
+        );
     }
 
     #[test]

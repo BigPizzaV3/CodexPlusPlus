@@ -320,6 +320,16 @@ fn launcher_macos_open_command_appends_extra_codex_arguments_after_args() {
 }
 
 #[test]
+fn launcher_macos_open_command_uses_new_instance_for_user_data_dir() {
+    let extra_args = vec!["--user-data-dir=/tmp/codex-ctx2".to_string()];
+    let command = build_macos_open_command(Path::new("/Applications/Codex.app"), 9230, &extra_args);
+
+    assert!(command.contains(&"-n".to_string()));
+    assert!(command.contains(&"--remote-debugging-port=9230".to_string()));
+    assert!(command.contains(&"--user-data-dir=/tmp/codex-ctx2".to_string()));
+}
+
+#[test]
 fn ports_windows_falls_back_to_ephemeral_when_requested_is_busy() {
     let selected = select_platform_loopback_port_with(9229, true, |_| false, || 43001);
 
@@ -427,6 +437,7 @@ async fn launch_lifecycle_runs_sync_before_launch_writes_success_and_shutdowns_o
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..LaunchOptions::default()
         },
         &hooks,
     )
@@ -479,6 +490,7 @@ async fn launch_lifecycle_passes_configured_extra_args_to_codex_launch() {
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..LaunchOptions::default()
         },
         &hooks,
     )
@@ -492,6 +504,38 @@ async fn launch_lifecycle_passes_configured_extra_args_to_codex_launch() {
             .unwrap()
             .contains(&"launch:9229:--force_high_performance_gpu".to_string())
     );
+}
+
+#[tokio::test]
+async fn launch_lifecycle_merges_per_launch_extra_args_to_codex_launch() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
+        codex_extra_args: vec!["--force_high_performance_gpu".to_string()],
+        ..BackendSettings::default()
+    });
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9230,
+            helper_port: 57323,
+            codex_extra_args: vec!["--user-data-dir=/tmp/codex-ctx2".to_string()],
+            status_store,
+            ..LaunchOptions::default()
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    assert!(events.lock().unwrap().contains(
+        &"launch:9230:--force_high_performance_gpu,--user-data-dir=/tmp/codex-ctx2".to_string()
+    ));
 }
 
 #[tokio::test]
@@ -512,6 +556,7 @@ async fn launch_lifecycle_keeps_js_injection_in_relay_mode() {
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..LaunchOptions::default()
         },
         &hooks,
     )
@@ -553,6 +598,7 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..LaunchOptions::default()
         },
         &hooks,
     )
@@ -588,6 +634,7 @@ async fn launch_lifecycle_does_not_apply_active_relay_profile_before_starting_co
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..LaunchOptions::default()
         },
         &hooks,
     )
@@ -618,6 +665,7 @@ async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabl
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..LaunchOptions::default()
         },
         &hooks,
     )
@@ -669,6 +717,7 @@ experimental_bearer_token = "sk-test"
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..LaunchOptions::default()
         },
         &hooks,
     )
@@ -696,6 +745,7 @@ async fn launch_lifecycle_enters_degraded_mode_and_retries_when_injection_fails(
             debug_port: 9229,
             helper_port: 57321,
             status_store: status_store.clone(),
+            ..LaunchOptions::default()
         },
         &hooks,
     )
@@ -740,6 +790,7 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
             debug_port: 9229,
             helper_port: 57321,
             status_store: status_store.clone(),
+            ..LaunchOptions::default()
         },
         &hooks,
     )
@@ -804,6 +855,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             debug_port: 9229,
             helper_port: 58000,
             status_store,
+            ..LaunchOptions::default()
         },
         &hooks,
     )
@@ -847,6 +899,7 @@ async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..LaunchOptions::default()
         },
         &hooks,
     )
@@ -891,6 +944,7 @@ async fn launch_lifecycle_keeps_packaged_process_id_running_and_retries_when_inj
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..LaunchOptions::default()
         },
         &hooks,
     )
@@ -1086,7 +1140,7 @@ impl LaunchHooks for FakeHooks {
         Ok(())
     }
 
-    async fn ensure_injection(&self, debug_port: u16, helper_port: u16) -> bool {
+    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, _app_dir: &Path) -> bool {
         self.event(format!("inject:{debug_port}:{helper_port}"));
         self.inject_error.is_none()
     }

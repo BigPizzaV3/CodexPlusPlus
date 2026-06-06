@@ -193,6 +193,10 @@ pub struct LaunchRequest {
     pub debug_port: u16,
     #[serde(default = "default_helper_port")]
     pub helper_port: u16,
+    #[serde(default = "default_guard_port")]
+    pub guard_port: u16,
+    #[serde(default)]
+    pub codex_extra_args: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -333,11 +337,16 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> CommandResult<Value> {
     let debug_port = request.debug_port;
     let helper_port = request.helper_port;
+    let guard_port = request.guard_port;
+    let codex_extra_args =
+        codex_plus_core::settings::normalize_codex_extra_args(&request.codex_extra_args);
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "manager.launch_requested",
         json!({
             "debug_port": debug_port,
             "helper_port": helper_port,
+            "guard_port": guard_port,
+            "codex_extra_args_count": codex_extra_args.len(),
             "app_path": request.app_path.trim()
         }),
     );
@@ -347,14 +356,18 @@ fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> Co
             message: accepted_message.to_string(),
             payload: json!({
                 "debugPort": debug_port,
-                "helperPort": helper_port
+                "helperPort": helper_port,
+                "guardPort": guard_port,
+                "codexExtraArgsCount": codex_extra_args.len()
             }),
         },
         Err(error) => failed(
             &format!("启动静默入口失败：{error}"),
             json!({
                 "debugPort": debug_port,
-                "helperPort": helper_port
+                "helperPort": helper_port,
+                "guardPort": guard_port,
+                "codexExtraArgsCount": codex_extra_args.len()
             }),
         ),
     }
@@ -370,7 +383,12 @@ fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
         .arg("--debug-port")
         .arg(request.debug_port.to_string())
         .arg("--helper-port")
-        .arg(request.helper_port.to_string());
+        .arg(request.helper_port.to_string())
+        .arg("--guard-port")
+        .arg(request.guard_port.to_string());
+    for arg in codex_plus_core::settings::normalize_codex_extra_args(&request.codex_extra_args) {
+        command.arg("--codex-arg").arg(arg);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -624,8 +642,10 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
         normalize_provider_sync_provider_list(settings.provider_sync_saved_providers);
     settings.provider_sync_manual_providers =
         normalize_provider_sync_provider_list(settings.provider_sync_manual_providers);
-    settings.provider_sync_last_selected_provider =
-        settings.provider_sync_last_selected_provider.trim().to_string();
+    settings.provider_sync_last_selected_provider = settings
+        .provider_sync_last_selected_provider
+        .trim()
+        .to_string();
     settings
 }
 
@@ -813,11 +833,10 @@ fn ensure_text_newline(value: &str) -> String {
 #[tauri::command]
 pub async fn load_provider_sync_targets() -> CommandResult<Value> {
     let settings = SettingsStore::default().load().unwrap_or_default();
-    let result = tauri::async_runtime::spawn_blocking(|| {
-        codex_plus_data::load_provider_sync_targets(None)
-    })
-    .await
-    .map_err(|error| anyhow::anyhow!("provider target discovery task failed: {error}"));
+    let result =
+        tauri::async_runtime::spawn_blocking(|| codex_plus_data::load_provider_sync_targets(None))
+            .await
+            .map_err(|error| anyhow::anyhow!("provider target discovery task failed: {error}"));
     match result {
         Ok(mut targets) => {
             let manual = settings
@@ -896,7 +915,9 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
         Ok(sync) => {
             if is_success_sync_status(&sync.status) {
                 persist_provider_sync_selection(
-                    target_for_settings.as_deref().unwrap_or(&sync.target_provider),
+                    target_for_settings
+                        .as_deref()
+                        .unwrap_or(&sync.target_provider),
                 );
             }
             ok(
@@ -2372,6 +2393,10 @@ fn default_debug_port() -> u16 {
 
 fn default_helper_port() -> u16 {
     57321
+}
+
+fn default_guard_port() -> u16 {
+    codex_plus_core::ports::LAUNCHER_GUARD_PORT
 }
 
 fn default_log_lines() -> usize {

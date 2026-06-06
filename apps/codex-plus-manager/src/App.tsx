@@ -551,6 +551,8 @@ export function App() {
     appPath: "",
     debugPort: "9229",
     helperPort: "57321",
+    guardPort: "57320",
+    codexExtraArgs: "",
   });
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   const [providerSyncProgress, setProviderSyncProgress] = useState<ProviderSyncProgress>({
@@ -781,6 +783,8 @@ export function App() {
           appPath: launchForm.appPath,
           debugPort: numberOrDefault(launchForm.debugPort, 9229),
           helperPort: numberOrDefault(launchForm.helperPort, 57321),
+          guardPort: numberOrDefault(launchForm.guardPort, 57320),
+          codexExtraArgs: inputToCodexExtraArgs(launchForm.codexExtraArgs),
         },
       }),
     );
@@ -2179,8 +2183,14 @@ function MaintenanceScreen({
   overview: OverviewResult | null;
   watcher: WatcherResult | null;
   settings: SettingsResult | null;
-  launchForm: { appPath: string; debugPort: string; helperPort: string };
-  onLaunchFormChange: (next: { appPath: string; debugPort: string; helperPort: string }) => void;
+  launchForm: { appPath: string; debugPort: string; helperPort: string; guardPort: string; codexExtraArgs: string };
+  onLaunchFormChange: (next: {
+    appPath: string;
+    debugPort: string;
+    helperPort: string;
+    guardPort: string;
+    codexExtraArgs: string;
+  }) => void;
   removeOwnedData: boolean;
   onRemoveOwnedDataChange: (value: boolean) => void;
   actions: Actions;
@@ -2273,7 +2283,20 @@ function MaintenanceScreen({
                 onChange={(event) => onLaunchFormChange({ ...launchForm, helperPort: event.currentTarget.value })}
               />
             </Field>
+            <Field label="Guard 端口">
+              <Input
+                value={launchForm.guardPort}
+                onChange={(event) => onLaunchFormChange({ ...launchForm, guardPort: event.currentTarget.value })}
+              />
+            </Field>
           </div>
+          <Field label="本次 Codex 参数">
+            <Textarea
+              value={launchForm.codexExtraArgs}
+              onChange={(event) => onLaunchFormChange({ ...launchForm, codexExtraArgs: event.currentTarget.value })}
+              placeholder="每行一个参数，例如 --user-data-dir=/Users/ruler/Library/Application Support/Codex++ Instances/ctx2"
+            />
+          </Field>
           <Toolbar>
             <Button onClick={() => void actions.launch()}>启动 Codex++</Button>
             <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
