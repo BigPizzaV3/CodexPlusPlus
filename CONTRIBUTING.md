@@ -5,6 +5,7 @@ Thank you for your interest in contributing to CodexPlusPlus!
 ## Development Setup
 
 1. **Clone the repository**
+
    ```bash
    git clone https://github.com/BigPizzaV3/CodexPlusPlus.git
    cd CodexPlusPlus
@@ -12,17 +13,20 @@ Thank you for your interest in contributing to CodexPlusPlus!
 
 2. **Install Rust toolchain**
    Ensure you have Rust 1.70+ installed:
+
    ```bash
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    rustc --version  # Should be 1.70+
    ```
 
 3. **Build the project**
+
    ```bash
    cargo build --release
    ```
 
 4. **Run tests**
+
    ```bash
    cargo test
    ```
@@ -40,6 +44,7 @@ CodexPlusPlus/
 ## Making Changes
 
 1. **Create a feature branch**
+
    ```bash
    git checkout -b feat/your-feature-name
    ```
@@ -50,12 +55,14 @@ CodexPlusPlus/
    - Update documentation as needed
 
 3. **Run the test suite**
+
    ```bash
    cargo test --all-features
    cargo clippy  # Linting
    ```
 
 4. **Commit your changes**
+
    ```bash
    git commit -m "feat: add your feature description"
    ```
@@ -81,6 +88,17 @@ CodexPlusPlus/
 - Include Rust version (`rustc --version`) and OS information
 - For bugs, provide minimal reproduction steps
 
+![Codex++ Management Console](docs/contibutions/localization.png)
+
 ## License
 
-By contributing, you agree that your contributions will be licensed under the project license.
+By contributing, you agree that your contributions will be licensed under the project license
+---
+
+## Contributors
+
+<a href="https://github.com/MeetSohailCodes">
+  <img src="https://avatars.githubusercontent.com/u/221149862?v=4" width="80" height="80" style="border-radius: 50%;" alt="MeetSohailCodes" />
+</a>
+
+**[MeetSohailCodes](https://github.com/MeetSohailCodes)** — Forked from [BigPizzaV3](https://github.com/BigPizzaV3)

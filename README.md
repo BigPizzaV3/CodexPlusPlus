@@ -1,11 +1,11 @@
 # Codex++
 
 <p align="center">
-  <img src="docs/images/codex-plus-plus.png" alt="Codex++ 图标" width="160">
+  <img src="docs/images/codex-plus-plus.png" alt="Codex++ Icon" width="160">
 </p>
 
 <p align="center">
-  中文 | <a href="README_EN.md">English</a>
+  <a href="README.md">中文</a> | English
 </p>
 
 <p align="center">
@@ -16,31 +16,32 @@
   <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8DB">
 </p>
 
-Codex++ 是面向 Codex App 的外部增强启动器和管理工具。它不修改 Codex App 原始安装文件，而是通过外部 launcher 启动 Codex，并使用 Chromium DevTools Protocol 注入增强脚本。
+Codex++ is an external enhancement launcher and management tool for the Codex App. It does not modify Codex App's original installation files. Instead, it launches Codex through an external launcher and injects enhancement scripts using the Chromium DevTools Protocol.
 
-## 快速使用
+## Quick Start
 
-从 [GitHub Releases](https://github.com/BigPizzaV3/CodexPlusPlus/releases) 下载最新版安装包：
+Download the latest installer from [GitHub Releases](https://github.com/BigPizzaV3/CodexPlusPlus/releases):
 
-- Windows：`CodexPlusPlus-*-windows-x64-setup.exe`
-- macOS Intel：`CodexPlusPlus-*-macos-x64.dmg`
-- macOS Apple Silicon：`CodexPlusPlus-*-macos-arm64.dmg`
+- Windows: `CodexPlusPlus-*-windows-x64-setup.exe`
+- macOS Intel: `CodexPlusPlus-*-macos-x64.dmg`
+- macOS Apple Silicon: `CodexPlusPlus-*-macos-arm64.dmg`
 
-安装后会有两个入口：
+After installation, two entry points are available:
 
-- `Codex++`：静默启动入口，不显示管理界面，只负责启动 Codex 并注入增强功能。
-- `Codex++ 管理工具`：Tauri 控制面板，用于启动、检查、修复、更新、配置中转注入、管理增强功能和用户脚本。
+- `Codex++`: Silent launcher — no UI, only launches Codex and injects enhancements.
+- `Codex++ Manager`: Tauri control panel for launching, inspecting, repairing, updating, configuring relay injection, and managing enhancements and user scripts.
 
-Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安装 `/Applications/Codex++.app` 和 `/Applications/Codex++ 管理工具.app`。
+The Windows installer creates desktop and start menu shortcuts. The macOS DMG installs `/Applications/Codex++.app` and `/Applications/Codex++ Manager.app`.
 
-## 赞助商
-<a href="mailto:1727532@qq.com">想显示在下方？</a>
+## Sponsors
+
+<a href="mailto:1727532@qq.com">Want to be featured here?</a>
 <p align="center">
 </p>
 <table>
   <tr>
-    <th width="180">🏆 赞助商 🏆</th>
-    <th>介绍</th>
+    <th width="180">🏆 Sponsor 🏆</th>
+    <th>Description</th>
   </tr>
   <tr>
     <td align="center">
@@ -48,7 +49,7 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
         <img src="docs/images/sponsor-jojocode.svg" alt="JOJO Code" height="80">
       </a>
     </td>
-    <td><a href="https://jojocode.com/"><strong>JOJO Code｜Codex++ 官方中转站</strong></a><br>感谢 JOJO Code 赞助了本项目！JOJO Code 是 Codex++ 官方中转站，面向日常开发和团队协作场景，提供稳定可用的 Codex API 接入体验，适合快速接入、长期使用和项目级工作流。</td>
+    <td><a href="https://jojocode.com/"><strong>JOJO Code｜Official Codex++ Relay</strong></a><br>Thank you to JOJO Code for sponsoring this project! JOJO Code is the official Codex++ relay service, providing stable and reliable Codex API access for daily development and team collaboration. Suitable for quick integration, long-term use, and project-level workflows.</td>
   </tr>
   <tr>
     <td align="center">
@@ -56,7 +57,7 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
         <img src="docs/images/sponsor-aigocode.png" alt="AIGoCode" height="80">
       </a>
     </td>
-    <td><a href="https://aigocode.com/invite/CodexPlusPlus"><strong>AIGoCode</strong></a><br>感谢 AIGoCode 赞助了本项目！AIGoCode 是一个集成了 Claude Code、Codex 以及 Gemini 最新模型的一站式平台，为你提供稳定、高效且高性价比的AI编程服务。本站提供灵活的订阅计划，支持多风险，国内直连，无需魔法，极速响应。AIGoCode 为 CodexPlusPlus 的用户提供了特别福利，通过<a href="https://aigocode.com/invite/CodexPlusPlus">此链接注册</a>的用户首次充值可以获得额外10%奖励额度！</td>
+    <td><a href="https://aigocode.com/invite/CodexPlusPlus"><strong>AIGoCode</strong></a><br>Thank you to AIGoCode for sponsoring this project! AIGoCode is a one-stop platform integrating Claude Code, Codex, and the latest Gemini models, offering stable, efficient, and cost-effective AI coding services. Flexible subscription plans, domestic direct connection (China), no VPN needed, blazing fast response. AIGoCode offers a special benefit for CodexPlusPlus users: <a href="https://aigocode.com/invite/CodexPlusPlus">registering via this link</a> grants an extra 10% bonus on first top-up!</td>
   </tr>
   <tr>
     <td align="center">
@@ -64,7 +65,7 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
         <img src="docs/images/sponsor-packycode.png" alt="PackyCode" height="80">
       </a>
     </td>
-    <td><a href="https://www.packyapi.com/"><strong>PackyCode</strong></a><br>感谢 PackyCode 赞助了本项目！PackyCode 是一家稳定、高效的API中转服务商，提供 Claude Code、Codex、Gemini 等多种中转服务。PackyCode 为本软件的用户提供了特别优惠，使用此链接注册并在充值时填写"CodexPlusPlus"优惠码，首次充值可以享受9折优惠！</td>
+    <td><a href="https://www.packyapi.com/"><strong>PackyCode</strong></a><br>Thank you to PackyCode for sponsoring this project! PackyCode is a stable and efficient API relay service provider, offering Claude Code, Codex, Gemini and more. PackyCode provides a special discount for users of this software — register via this link and enter the promo code <code>CodexPlusPlus</code> when topping up to get 10% off your first purchase!</td>
   </tr>
   <tr>
     <td align="center">
@@ -72,7 +73,7 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
         <img src="docs/images/sponsor-apikey-fun.png" alt="APIKEY.FUN" height="80">
       </a>
     </td>
-    <td><a href="https://apikey.fun/register?aff=CODEX"><strong>APIKEY.FUN</strong></a><br>感谢 APIKEY.FUN 赞助了本项目！APIKEY.FUN 是一家致力于提供开放、稳定、高性价比的全球主流大模型的 AI 中转站。平台支持 Claude、OpenAI、Gemini 等热门模型的 API 中转服务，价格低至官方原价的 7%。通过专属链接<a href="https://apikey.fun/register?aff=CODEX">注册 APIKEY</a>，可享受最高充值永久 95 折优惠。</td>
+    <td><a href="https://apikey.fun/register?aff=CODEX"><strong>APIKEY.FUN</strong></a><br>Thank you to APIKEY.FUN for sponsoring this project! APIKEY.FUN is an AI relay service dedicated to providing open, stable, and cost-effective access to major global LLMs. The platform supports API relay services for Claude, OpenAI, Gemini, and other popular models, with prices as low as 7% of official pricing. <a href="https://apikey.fun/register?aff=CODEX">Register via this link</a> to enjoy a permanent 5% discount on top-ups.</td>
   </tr>
   <tr>
     <td align="center">
@@ -80,15 +81,15 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
         <img src="docs/images/sponsor-runapi.png" alt="RunAPI" height="80">
       </a>
     </td>
-    <td><a href="https://runapi.co/register?aff=AWJq"><strong>RunAPI</strong></a><br>感谢 RunAPI 赞助了本项目！RunAPI 是高效稳定的 API OpenRouter 平替平台，一个 API Key 即可访问 OpenAI、Claude、Gemini、DeepSeek、Grok 等 150+ 主流模型，低至 1 折，极其稳定，可以无缝兼容 Claude Code、OpenClaw 等工具。</td>
+    <td><a href="https://runapi.co/register?aff=AWJq"><strong>RunAPI</strong></a><br>Thank you to RunAPI for sponsoring this project! RunAPI is an efficient and stable OpenRouter alternative platform. One API key grants access to 150+ mainstream models including OpenAI, Claude, Gemini, DeepSeek, Grok, etc., priced as low as 10% of official rates. Extremely stable and seamlessly compatible with Claude Code, OpenClaw, and other tools.</td>
   </tr>
   <tr>
     <td align="center">
       <a href="https://www.0029.org/?promo=AFF11F">
-        <img src="docs/images/sponsor-0029.svg" alt="0029 云桥" height="80">
+        <img src="docs/images/sponsor-0029.svg" alt="0029 Cloud Bridge" height="80">
       </a>
     </td>
-    <td><a href="https://www.0029.org/?promo=AFF11F"><strong>0029云桥｜codex api中转站(gpt5.5 gpt-image-2)</strong></a><br>支持个人和企业接入。包月套餐/按量计费，Pro/Plus 号池，全站接口稳定可用，7×24 小时技术支持！</td>
+    <td><a href="https://www.0029.org/?promo=AFF11F"><strong>0029 Cloud Bridge｜Codex API Relay (GPT-5.5, GPT-Image-2)</strong></a><br>Supports personal and enterprise access. Monthly subscription / pay-as-you-go, Pro/Plus account pool, stable and reliable interfaces across the board, 24/7 technical support!</td>
   </tr>
   <tr>
     <td align="center">
@@ -96,7 +97,7 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
         <img src="docs/images/sponsor-rawchat.svg" alt="RawChat" height="80">
       </a>
     </td>
-    <td><a href="https://rawchat.cn"><strong>RawChat｜Codex 中转站</strong></a><br>老牌中转站，支持包月套餐。低倍率调用，高缓存命中，Pro/Plus 号池，全天专人维护。</td>
+    <td><a href="https://rawchat.cn"><strong>RawChat｜Codex Relay</strong></a><br>Established relay service with monthly subscription plans. Low multiplier calls, high cache hit rate, Pro/Plus account pool, around-the-clock dedicated maintenance.</td>
   </tr>
   <tr>
     <td align="center">
@@ -104,7 +105,7 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
         <img src="https://coder.visioncoder.cn/logo.png" alt="VisionCoder" height="80">
       </a>
     </td>
-    <td><a href="https://coder.visioncoder.cn"><strong>VisionCoder 开发平台</strong></a><br>感谢 VisionCoder 对本项目的支持。VisionCoder 开发平台是一个可靠高效的 API 中继服务提供商，提供 Claude Code、Codex、Gemini 等主流 AI 模型，帮助开发者和团队更轻松地集成 AI 功能，提升工作效率。VisionCoder 还为我们的用户提供 <a href="https://coder.visioncoder.cn">Token Plan</a> 限时活动：购买 1 个月，赠送 1 个月。</td>
+    <td><a href="https://coder.visioncoder.cn"><strong>VisionCoder Development Platform</strong></a><br>Thank you to VisionCoder for supporting this project. VisionCoder Development Platform is a reliable and efficient API relay service provider offering major AI models including Claude Code, Codex, and Gemini, helping developers and teams integrate AI capabilities more easily and boost productivity. VisionCoder also offers a limited-time <a href="https://coder.visioncoder.cn">Token Plan</a> promotion: buy 1 month, get 1 month free.</td>
   </tr>
   <tr>
     <td align="center">
@@ -112,15 +113,15 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
         <img src="docs/images/sponsor-aihub2api.png" alt="AIHub2API" height="80">
       </a>
     </td>
-    <td><a href="https://aihub2api.cloud/register?promo=CODEXPLUSPLUS"><strong>AIHub2API</strong></a><br>感谢 AIHub2API 赞助了本项目！AIHub2API 是一家稳定、高效的 API 中转服务商，专注 Codex 中转业务，提供高缓存命中、低倍率的中转服务，网络链路优化无需使用魔法，极速响应，价格低至官方原价的 1%。通过<a href="https://aihub2api.cloud/register?promo=CODEXPLUSPLUS">专属链接注册 AIHub2API</a>，赠送 10 美金体验额度。</td>
+    <td><a href="https://aihub2api.cloud/register?promo=CODEXPLUSPLUS"><strong>AIHub2API</strong></a><br>Thank you to AIHub2API for sponsoring this project! AIHub2API is a stable and efficient API relay service provider specializing in Codex relay services, offering high cache hit rates and low multiplier relay services. Network-optimized with no VPN required, blazing fast response, prices as low as 1% of official pricing. <a href="https://aihub2api.cloud/register?promo=CODEXPLUSPLUS">Register via this exclusive link</a> to receive a $10 trial credit.</td>
   </tr>
   <tr>
     <td align="center">
       <a href="https://www.compshare.cn/?ytag=GPU_YY_git_codex++">
-        <img src="docs/images/sponsor-ucloud-compshare.png" alt="优云智算" height="80">
+        <img src="docs/images/sponsor-ucloud-compshare.png" alt="UCloud CompShare" height="80">
       </a>
     </td>
-    <td><a href="https://www.compshare.cn/?ytag=GPU_YY_git_codex++"><strong>优云智算</strong></a><br>感谢优云智算赞助了本项目！优云智算是 UCloud 旗下 AI 云平台，主打包月、按次的高性价比国模 Agent Plan 套餐，低至 49 元/月起。同时提供官转稳定海外模型，支持接入 Claude Code、Codex 及 API 调用，支持企业高并发、7×24 技术支持、自助开票。通过此链接注册的用户，可得免费 5 元平台体验金！</td>
+    <td><a href="https://www.compshare.cn/?ytag=GPU_YY_git_codex++"><strong>UCloud CompShare</strong></a><br>Thank you to UCloud CompShare for sponsoring this project! CompShare is UCloud's AI cloud platform, offering cost-effective monthly/per-use domestic model Agent Plan packages starting from just ¥49/month. Also provides officially relayed stable overseas models supporting Claude Code, Codex, and API access — with enterprise-grade high concurrency, 24/7 technical support, and self-service invoicing. Users registering through this link receive ¥5 free platform trial credit!</td>
   </tr>
   <tr>
     <td align="center">
@@ -128,7 +129,7 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
         <img src="docs/images/sponsor-cubence.png" alt="Cubence" height="80">
       </a>
     </td>
-    <td><a href="https://cubence.com?source=codexplusplus"><strong>Cubence</strong></a><br>感谢 Cubence 对本项目的支持。Cubence 是一家致力为客户提供稳定、高效的 API 中转服务商。从 25 年 9 月运营至今，提供了 Claude Code、Codex、Gemini 等多种模型支持。Cubence 为本开源项目多用户提供了特别的专属优惠 <code>CODEXPLUSPLUS</code>，在首次购买时享受 8.8 折优惠！</td>
+    <td><a href="https://cubence.com?source=codexplusplus"><strong>Cubence</strong></a><br>Thank you to Cubence for supporting this project. Cubence is an API relay service provider committed to delivering stable and efficient service. Since September 2025, they have been providing support for Claude Code, Codex, Gemini, and various other models. Cubence offers a special exclusive discount for open source project users: the promo code <code>CODEXPLUSPLUS</code> gives you 12% off your first purchase!</td>
   </tr>
   <tr>
     <td align="center">
@@ -136,73 +137,73 @@ Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安�
         <img src="docs/images/sponsor-maolao-api.jpg" alt="MaoLao API" height="80">
       </a>
     </td>
-    <td><a href="https://maolaoapi.com"><strong>MaoLao API</strong></a><br>MaoLao API 是一家专注 VibeCoding 主流模型的 API 中转站，有自己的纯 Pro20X/Plus 号池，所以在低倍率的情况下还能做到低价套餐，套餐所有模型以及分组无限制！猫佬API：maolaoapi.com</td>
+    <td><a href="https://maolaoapi.com"><strong>MaoLao API</strong></a><br>MaoLao API is an API relay service focused on mainstream VibeCoding models, with its own pure Pro20X/Plus account pool — enabling low-cost plans even at low multipliers. All models and groups are unrestricted in every plan! MaoLao API: maolaoapi.com</td>
   </tr>
 </table>
 
-## 交流与支持
+## Community & Support
 
-欢迎加入 Codex++ 交流群（QQ群：1103050832），反馈问题、交流使用体验或提出新功能建议。
+Join the Codex++ QQ group (QQ Group: 1103050832) to report issues, share experiences, or suggest new features.
 
-微信群：<a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">点击这里获取最新微信群二维码</a>。
+WeChat Group: <a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">Click here for the latest WeChat group QR code</a>.
 
-<img src="docs/images/discussion-group-qr.jpg" alt="Codex++ 微信群二维码" width="260">
+<img src="docs/images/discussion-group-qr.jpg" alt="Codex++ WeChat Group QR Code" width="260">
 
-Telegram 频道：<https://t.me/CodexPlusPlus>
+Telegram Channel: <https://t.me/CodexPlusPlus>
 
-如果 Codex++ 帮到了你，可以请我喝杯咖啡，或者随手赞赏支持一下继续维护。
+If Codex++ has been helpful to you, feel free to buy me a coffee or support the project via donation.
 
 <p align="center">
-  <img src="docs/images/sponsor-alipay.jpg" alt="支付宝赞赏码" width="220">
-  <img src="docs/images/sponsor-wechat.jpg" alt="微信赞赏码" width="220">
+  <img src="docs/images/sponsor-alipay.jpg" alt="Alipay Donation QR" width="220">
+  <img src="docs/images/sponsor-wechat.jpg" alt="WeChat Donation QR" width="220">
 </p>
 
-## 主要功能
+## Main Features
 
-- Rust 后端和静默 launcher，启动时不依赖额外运行时。
-- Tauri + React 管理工具，支持深色/浅色切换。
-- 外部 CDP 注入，不改 `app.asar`，不向 Codex 安装目录写入 DLL。
-- 中转注入模式：支持多个中转配置，写入 `CodexPlusPlus` provider，并可切回官方 ChatGPT 登录态。
-- 传统增强模式：插件入口解锁、特殊插件强制安装、会话删除、Markdown 导出、项目移动、Timeline 等。
-- 用户脚本独立管理，可在启动时注入自定义脚本。
-- Provider 同步：启动前同步本地会话 metadata，切换供应商后旧会话仍可见。
-- Zed 打开入口：识别远程 SSH 上下文后，可从 Codex 直接打开对应文件到 Zed Remote Development。
-- Upstream worktree 创建：可从 `upstream/<base-branch>` 创建新 worktree，创建前自动 fetch 远端分支，降低从陈旧本地 HEAD 派生导致的冲突风险。
-- GitHub Release 自动更新，管理工具和静默启动器都会检测可用更新。
-- Windows 单实例、无黑框启动、管理员权限清单、系统桌面路径识别。
-- macOS x64/arm64 分架构 DMG，静默入口隐藏 Dock 图标。
+- Rust backend and silent launcher — no additional runtime required at startup.
+- Tauri + React management tool with dark/light theme switching.
+- External CDP injection — does not modify `app.asar` or write DLLs to Codex installation directory.
+- Relay injection mode: supports multiple relay configurations, writes to `CodexPlusPlus` provider, and can switch back to official ChatGPT login.
+- Traditional enhancement mode: plugin entry unlock, forced plugin installation, session deletion, Markdown export, project move, Timeline, and more.
+- Independent user script management — inject custom scripts at startup.
+- Provider sync: synchronizes local session metadata before startup, keeping old sessions visible after switching providers.
+- Zed open entry: detects remote SSH context and opens the corresponding file directly in Zed Remote Development from Codex.
+- Upstream worktree creation: creates new worktrees from `upstream/<base-branch>`, automatically fetches remote branches beforehand to reduce merge conflicts from stale local HEAD.
+- GitHub Release auto-update — both the manager and silent launcher check for available updates.
+- Windows single instance, no-black-window launch, admin privilege manifest, system desktop path detection.
+- macOS x64/arm64 per-architecture DMG, silent launcher hides Dock icon.
 
-## 痛点与解决
+## Pain Points & Solutions
 
-API Key 登录模式下，Codex 原生插件入口会提示需要登录 ChatGPT，导致插件功能无法正常使用：
+In API Key login mode, Codex's native plugin entry prompts "Please log in to ChatGPT," making plugins unusable:
 
-![API Key 模式下插件入口不可用](docs/images/pain-plugin-disabled.png)
+![Plugin entry unavailable in API Key mode](docs/images/pain-plugin-disabled.png)
 
-Codex 原生会话列表只有归档入口，没有真正的删除按钮：
+Codex's native session list only has an archive option — no real delete button:
 
-![原生会话列表缺少删除能力](docs/images/pain-no-delete-button.png)
+![Native session list lacks delete functionality](docs/images/pain-no-delete-button.png)
 
-Codex++ 启动后会解锁插件入口，并在会话列表悬停时显示删除按钮：
+After launching Codex++, the plugin entry is unlocked, and a delete button appears on session hover:
 
-![Codex++ 解锁插件入口并添加删除按钮](docs/images/solution-plugin-and-delete.png)
+![Codex++ unlocks plugin entry and adds delete button](docs/images/solution-plugin-and-delete.png)
 
-顶部菜单栏会出现 `Codex++`，可以查看后端状态并打开设置面板：
+A `Codex++` menu bar appears at the top, showing backend status and providing access to settings:
 
-![Codex++ 后端状态指示灯](docs/images/backend-status-indicator.png)
-![Codex++ 设置面板](docs/images/settings-panel.png)
+![Codex++ backend status indicator](docs/images/backend-status-indicator.png)
+![Codex++ settings panel](docs/images/settings-panel.png)
 
-## 中转注入
+## Relay Injection
 
-中转注入适合已经在 Codex/ChatGPT 中完成官方账号登录，同时希望把模型请求转到自定义兼容 API 的场景。
+Relay injection is for users who have already logged in with an official Codex/ChatGPT account but want to route model requests to a custom compatible API.
 
-在管理工具的“中转注入”页面：
+In the "Relay Injection" page of the manager tool:
 
-1. 确认已经检测到 ChatGPT 登录状态。
-2. 添加一个或多个中转配置，填写 Base URL 和 Key。
-3. 选择当前配置并应用中转注入。
-4. 启动 `Codex++`。
+1. Confirm that ChatGPT login status has been detected.
+2. Add one or more relay configurations, providing Base URL and Key.
+3. Select the current configuration and apply relay injection.
+4. Launch `Codex++`.
 
-Codex++ 会在 `~/.codex/config.toml` 中写入类似配置：
+Codex++ writes a configuration similar to the following into `~/.codex/config.toml`:
 
 ```toml
 model_provider = "CodexPlusPlus"
@@ -215,120 +216,120 @@ base_url = "https://example.com/v1"
 experimental_bearer_token = "sk-..."
 ```
 
-如果需要回到官方登录态，在“中转注入”页面点击清除 API 模式即可移除 `OPENAI_API_KEY` 相关配置并切回官方 ChatGPT 登录模式。
+To return to official login mode, click "Clear API Mode" on the Relay Injection page to remove `OPENAI_API_KEY`-related config and switch back to official ChatGPT login.
 
-## 增强功能
+## Enhancements
 
-增强功能在管理工具中统一开关。默认开启增强注入；关闭后不会注入 Codex++ 菜单和脚本。
+Enhancements are toggled on/off from within the manager tool. Enhance injection is enabled by default; disabling it prevents the Codex++ menu and scripts from being injected.
 
-如果启用中转注入模式，插件入口解锁和强制安装不再需要，界面会提示“中转注入模式下无需开启”。会话删除、导出、移动、Timeline、推荐内容和用户脚本等增强仍可继续使用。
+If relay injection mode is enabled, plugin entry unlock and forced installation are no longer needed — the UI will indicate "Not required in relay injection mode." Session deletion, export, move, Timeline, recommendations, and user scripts remain available.
 
-## 推荐内容
+## Recommendations
 
-推荐内容来自远程广告列表：
+Recommendations are loaded from a remote ad list:
 
 ```text
 https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json
 https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json
 ```
 
-请求时会自动追加 `?v=时间戳` 绕开 CDN 旧缓存。推荐内容加载慢不会影响后端连接状态。
+Requests append `?v=timestamp` to bypass CDN cache. Slow recommendation loading does not affect backend connection status.
 
-## 自动更新与安装包
+## Auto-Update & Installers
 
-Codex++ 通过 GitHub Release 发布安装包。Windows 会生成 NSIS 安装程序，macOS 会生成 Intel x64 和 Apple Silicon arm64 两个 DMG。
+Codex++ distributes installers via GitHub Release. Windows generates an NSIS installer; macOS generates two DMG files for Intel x64 and Apple Silicon arm64.
 
-管理工具的“关于”页可以检查并启动更新。静默启动器发现新版本时会拉起管理工具并进入更新提示。
+The "About" page in the manager tool can check for and initiate updates. When the silent launcher detects a new version, it launches the manager tool and shows an update prompt.
 
-## 数据位置
+## Data Locations
 
-- Codex 配置：`~/.codex/config.toml`
-- Codex 登录状态：`~/.codex/auth.json`
-- Codex 本地数据库：`~/.codex/state_5.sqlite`
-- Codex++ 状态与日志：`~/.codex-session-delete/`
-- Provider 同步备份：`~/.codex/backups_state/provider-sync`
+- Codex config: `~/.codex/config.toml`
+- Codex login state: `~/.codex/auth.json`
+- Codex local database: `~/.codex/state_5.sqlite`
+- Codex++ state & logs: `~/.codex-session-delete/`
+- Provider sync backups: `~/.codex/backups_state/provider-sync`
 
-## 常见问题
+## FAQ
 
-### Codex++ 菜单没出现
+### Codex++ menu not appearing
 
-确认是从 `Codex++` 入口启动，而不是原版 Codex。也可以打开管理工具的“诊断”和“日志”页面查看注入状态。
+Make sure you launched Codex via the `Codex++` entry point, not the original Codex. You can also open the "Diagnostics" and "Logs" pages in the manager tool to check the injection status.
 
-### 插件内显示后端连不上
+### Plugin says backend is unreachable
 
-先在浏览器或 PowerShell 里测试：
+First test it in your browser or PowerShell:
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:57321/backend/status -Body "{}" -ContentType "application/json"
 ```
 
-如果接口正常，但插件仍显示超时，通常是 Codex 页面里的 CDP bridge 或脚本缓存问题。重启 Codex++，或在管理工具里查看日志中的 `renderer.script_loaded`、`bridge.request`、`bridge.response`。
+If the endpoint responds but the plugin still times out, it's usually a CDP bridge or script cache issue in the Codex page. Restart Codex++, or check `renderer.script_loaded`, `bridge.request`, `bridge.response` in the manager tool's logs.
 
-### Upstream worktree 和 Codex 原生创建有什么区别
+### How is Upstream worktree different from Codex's native creation?
 
-Codex++ 的 Upstream worktree 功能等价于先更新远端分支，再执行：
+Codex++'s Upstream worktree feature is equivalent to first updating the remote branch, then running:
 
 ```bash
 git worktree add -b <new-branch> <worktree-path> upstream/<base-branch>
 ```
 
-这样新 worktree 从最新的远端跟踪分支开始，而不是从当前会话所在的本地 HEAD 开始。如果 Codex++ 无法安全识别当前 Codex 版本的原生 worktree 创建表单，请从 Codex++ 菜单中手动填写仓库路径、分支名、worktree 路径、remote 和 base branch。
+This creates the new worktree from the latest remote tracking branch rather than from the local HEAD of the current session. If Codex++ cannot safely detect the current Codex version's native worktree creation form, manually fill in the repo path, branch name, worktree path, remote, and base branch from the Codex++ menu.
 
-### macOS 提示无法打开或已损坏
+### macOS says "cannot be opened" or "damaged"
 
-当前安装包未签名/未公证时，macOS Gatekeeper 可能拦截，出现“已损坏，无法打开”的提示：
+Since the current installer is unsigned/not notarized, macOS Gatekeeper may block it with a "damaged" warning:
 
-![macOS 提示 Codex++ 管理工具已损坏](docs/images/macos-damaged-warning.png)
+![macOS shows Codex++ Manager is damaged](docs/images/macos-damaged-warning.png)
 
-如果遇到该提示，可以在终端执行下面两条命令，解除苹果系统的安全隔离限制：
+If you see this, run the following two commands in the terminal to remove Apple's security quarantine:
 
 ```bash
 sudo xattr -rd com.apple.quarantine /Applications/Codex++\ 管理工具.app
 sudo xattr -rd com.apple.quarantine /Applications/Codex++.app
 ```
 
-执行后重新打开 `Codex++` 或 `Codex++ 管理工具` 即可。
+After running these, reopen `Codex++` or `Codex++ 管理工具`.
 
-### macOS Intel 能用吗
+### Can I use Codex++ on macOS Intel?
 
-可以。Release 会分别提供 `macos-x64.dmg` 和 `macos-arm64.dmg`。Intel Mac 下载 x64 包，Apple Silicon 下载 arm64 包。
+Yes. Releases provide both `macos-x64.dmg` and `macos-arm64.dmg`. Intel Macs download the x64 package; Apple Silicon Macs download the arm64 package.
 
-## 开发
+## Development
 
 ```bash
-# 前端检查
+# Frontend check
 cd apps/codex-plus-manager
 npm install
 npm run check
 npm run vite:build
 
-# Rust 检查
+# Rust check
 cd ../..
 cargo fmt --check
 cargo test
 cargo build --release
 ```
 
-主要结构：
+Main structure:
 
 ```text
 apps/
-  codex-plus-launcher/          静默启动入口
-  codex-plus-manager/           Tauri 管理工具
+  codex-plus-launcher/          Silent launcher entry point
+  codex-plus-manager/           Tauri manager tool
 assets/inject/
-  renderer-inject.js            注入到 Codex 渲染端的增强脚本
+  renderer-inject.js            Enhancement scripts injected into Codex renderer
 crates/
-  codex-plus-core/              启动、注入、配置、更新、安装、桥接等核心逻辑
-  codex-plus-data/              会话数据、导出、Provider 同步
+  codex-plus-core/              Core logic: launch, injection, config, update, install, bridge
+  codex-plus-data/              Session data, export, provider sync
 scripts/installer/
-  windows/CodexPlusPlus.nsi     Windows NSIS 安装包
-  macos/package-dmg.sh          macOS DMG 打包
+  windows/CodexPlusPlus.nsi     Windows NSIS installer
+  macos/package-dmg.sh          macOS DMG packaging
 ```
 
-## 友情链接
+## Friends
 
 - [LINUX DO](https://linux.do)
 
-## 说明
+## Disclaimer
 
-Codex++ 是外部增强工具，不修改 Codex App 原始文件。Codex App 更新后，如果页面结构变化，可能需要更新注入脚本。
+Codex++ is an external enhancement tool and does not modify Codex App's original files. If the Codex App updates and its page structure changes, the injection scripts may need updating accordingly.

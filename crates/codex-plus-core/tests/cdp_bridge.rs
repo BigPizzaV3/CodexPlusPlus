@@ -42,6 +42,7 @@ fn injection_script_prefixes_helper_url_and_sponsor_images() {
     assert!(script.contains("http://127.0.0.1:57321"));
     assert!(script.contains("window.__CODEX_PLUS_SPONSOR_IMAGES__"));
     assert!(script.contains("window.__CODEX_PLUS_VERSION__"));
+    assert!(script.contains("window.__CODEX_PLUS_UI_LANG__"));
     assert!(script.contains(codex_plus_core::version::VERSION));
     assert!(script.contains("https://discord.gg/y96kX7A76v"));
     assert!(script.contains("data-codex-plus-discord"));
@@ -85,20 +86,20 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
 fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("兼容增强模式下无需开启"));
+    assert!(script.contains("enhance.pluginMarketRelay"));
 }
 
 #[test]
 fn injection_script_menu_exposes_three_independent_plugin_switches() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("插件市场解锁"));
+    assert!(script.contains("enhance.pluginMarket"));
     assert!(script.contains("data-codex-plus-setting=\"pluginMarketplaceUnlock\""));
-    assert!(script.contains("强制解锁入口"));
+    assert!(script.contains("enhance.forceUnlock"));
     assert!(script.contains("data-codex-plus-setting=\"pluginEntryUnlock\""));
-    assert!(script.contains("特殊插件强制安装"));
+    assert!(script.contains("enhance.forceInstall"));
     assert!(script.contains("data-codex-plus-setting=\"forcePluginInstall\""));
-    assert!(script.contains("恢复 1.1.9 的入口解锁方式"));
+    assert!(script.contains("enhance.forceUnlockApi"));
 }
 
 #[test]
@@ -383,7 +384,7 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("data-codex-service-tier-controls"));
     assert!(script.contains("removeCodexServiceTierBadges"));
     assert!(script.contains("installCodexServiceTierDispatcherPatch"));
-    assert!(script.contains("服务模式"));
+    assert!(script.contains("enhance.serviceTier"));
     assert!(script.contains("data-codex-service-tier-status"));
     assert!(script.contains("data-codex-service-tier-inherit"));
     assert!(script.contains("data-codex-service-tier-standard"));
@@ -399,8 +400,8 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("codexServiceTierDefaultModeForControlMode"));
     assert!(script.contains("normalizeCodexServiceTierControlMode(state.mode) !== \"custom\""));
     assert!(script.contains("state.draft = null"));
-    assert!(script.contains("后端未连接，无法切换服务模式"));
-    assert!(script.contains("未连接"));
+    assert!(script.contains("serviceTier.backendNotConnected"));
+    assert!(script.contains("backend.notConnected"));
     assert!(script.contains("thread/start"));
     assert!(script.contains("thread/resume"));
     assert!(script.contains("turn/start"));
@@ -527,11 +528,13 @@ fn manager_ui_exposes_pure_api_relay_mode_button() {
         .and_then(std::path::Path::parent)
         .expect("core crate should live under crates/codex-plus-core");
     let source = std::fs::read_to_string(repo.join("apps/codex-plus-manager/src/App.tsx")).unwrap();
+    let zh =
+        std::fs::read_to_string(repo.join("apps/codex-plus-manager/src/i18n/zh.json")).unwrap();
     let commands =
         std::fs::read_to_string(repo.join("apps/codex-plus-manager/src-tauri/src/lib.rs")).unwrap();
 
-    assert!(source.contains("官方混入 API Key"));
-    assert!(source.contains("纯 API"));
+    assert!(zh.contains("官方混入 API Key"));
+    assert!(zh.contains("纯 API"));
     assert!(source.contains("apply_pure_api_injection"));
     assert!(commands.contains("commands::apply_pure_api_injection"));
 }

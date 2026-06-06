@@ -763,10 +763,7 @@ mod tests {
             "async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {\n    let hooks = LauncherHooks::default();"
         ));
         assert!(source.contains("hooks.start_helper(options.helper_port).await?"));
-        assert!(
-            source
-                .contains("hooks.ensure_injection(options.debug_port, options.helper_port).await")
-        );
+        assert!(source.contains("hooks.ensure_injection(options.debug_port, options.helper_port, &app_dir).await"));
         assert!(source.contains("injection_ready"));
     }
 

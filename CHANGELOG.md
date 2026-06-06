@@ -1,4 +1,11 @@
-# 更新日志
+# Changelog
+
+## 1.2.3 - 2026-06-05
+
+- Improved code modularity by splitting the large `App.tsx` implementation into focused screen, shared, and utility modules.
+- Extracted oversized screen components into dedicated files so each view now has a clearer ownership boundary.
+- Cleaned up redundant imports and dead state while keeping the existing behavior intact.
+- Added English localization updates for the latest refactor-related labels and messages.
 
 ## 1.1.8 - 2026-05-26
 

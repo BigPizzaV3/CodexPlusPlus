@@ -1,4 +1,5 @@
 (() => {
+  const t = (key, vars) => window.__codexPlusT(key, vars);
   const helperBase = window.__CODEX_SESSION_DELETE_HELPER__ || "http://127.0.0.1:57321";
   const buttonClass = "codex-delete-button";
   const exportButtonClass = "codex-export-button";
@@ -612,6 +613,24 @@
         flex: 0 0 auto;
         -webkit-app-region: no-drag;
       }
+      .codex-plus-modal-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .codex-plus-lang-toggle {
+        border: 1px solid rgba(255,255,255,.18);
+        border-radius: 8px;
+        background: rgba(255,255,255,.06);
+        color: #e5e7eb;
+        font: 12px/1 system-ui, sans-serif;
+        font-weight: 650;
+        padding: 4px 8px;
+        cursor: pointer;
+        pointer-events: auto;
+        -webkit-app-region: no-drag;
+      }
+      .codex-plus-lang-toggle:hover { background: rgba(255,255,255,.12); }
       .codex-plus-modal-title { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 650; }
       .codex-plus-backend-indicator { width: 9px; height: 9px; border-radius: 999px; background: #a1a1aa; display: inline-block; }
       .codex-plus-backend-indicator[data-status="ok"] { background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,.75); }
@@ -684,7 +703,7 @@
       .codex-plus-toggle[data-enabled="true"] span { transform: translateX(18px); }
       .codex-plus-toggle[data-relay-unneeded="true"] { width: 72px; cursor: default; background: rgba(16,163,127,.16); color: #6ee7b7; }
       .codex-plus-toggle[data-relay-unneeded="true"] span { display: none; }
-      .codex-plus-toggle[data-relay-unneeded="true"]::after { content: "无需开启"; font-size: 12px; font-weight: 650; line-height: 1; }
+      .codex-plus-toggle[data-relay-unneeded="true"]::after { content: attr(data-relay-unneeded-label); font-size: 12px; font-weight: 650; line-height: 1; }
       .codex-plus-width-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 176px; align-self: center; }
       .codex-plus-width-input {
         width: 78px;
@@ -1074,7 +1093,7 @@
   let codexServiceTierState = {
     status: "loading",
     serviceTier: null,
-    message: "正在读取…",
+    message: t("serviceTier.reading"),
     fastTierValue: "priority",
     controlMode: "inherit",
     defaultMode: "inherit",
@@ -1190,9 +1209,9 @@
   }
 
   function serviceTierGlobalStatusMessage(serviceTier) {
-    if (isFastServiceTierValue(serviceTier)) return "Fast 已开启";
-    if (!serviceTier) return "默认服务模式";
-    return `当前：${serviceTier}`;
+    if (isFastServiceTierValue(serviceTier)) return t("serviceTier.fastOn");
+    if (!serviceTier) return t("serviceTier.defaultMode");
+    return t("serviceTier.current", { tier: serviceTier });
   }
 
   function serviceTierStatusMessage(
@@ -1201,13 +1220,13 @@
     effectiveMode = codexServiceTierState.effectiveMode || "standard",
     defaultMode = codexServiceTierState.defaultMode || "inherit"
   ) {
-    if (codexServiceTierState.status === "loading") return "正在读取…";
-    if (codexServiceTierState.status === "failed") return "读取失败";
-    if (controlMode === "inherit") return `继承 config.toml：${effectiveMode}`;
-    if (controlMode === "global-standard") return "全局 Standard";
-    if (controlMode === "global-fast") return "全局 Fast";
-    if (threadMode === "inherit") return `自定义：默认 ${defaultMode}`;
-    return `自定义：当前 thread ${threadMode}`;
+    if (codexServiceTierState.status === "loading") return t("serviceTier.reading");
+    if (codexServiceTierState.status === "failed") return t("serviceTier.readFailed");
+    if (controlMode === "inherit") return t("serviceTier.inheritConfigToml", { mode: effectiveMode });
+    if (controlMode === "global-standard") return t("serviceTier.globalStandard");
+    if (controlMode === "global-fast") return t("serviceTier.globalFast");
+    if (threadMode === "inherit") return t("serviceTier.customDefault", { defaultMode });
+    return t("serviceTier.customThreadCurrent", { threadMode });
   }
 
   function readThreadServiceTierState() {
@@ -1325,7 +1344,7 @@
 
   function setCodexServiceTierControlMode(mode) {
     if (codexPlusBackendStatus.status !== "ok") {
-      showToast("后端未连接，无法切换服务模式", null);
+      showToast(t("serviceTier.backendNotConnected"), null);
       refreshCodexServiceTierControls();
       return;
     }
@@ -1342,12 +1361,12 @@
     writeThreadServiceTierState(state);
     refreshCodexServiceTierControls();
     const labels = {
-      inherit: "继承 config.toml",
-      "global-standard": "全局 Standard",
-      "global-fast": "全局 Fast",
-      custom: "自定义",
+      inherit: t("serviceTier.inheritConfig"),
+      "global-standard": t("serviceTier.globalStandard"),
+      "global-fast": t("serviceTier.globalFast"),
+      custom: t("serviceTier.custom"),
     };
-    showToast(`服务模式：${labels[normalizedMode] || normalizedMode}`, null);
+    showToast(t("serviceTier.modeToast", { mode: labels[normalizedMode] || normalizedMode }), null);
   }
 
   function syncCodexServiceTierEffectiveState() {
@@ -1358,7 +1377,7 @@
         threadMode: "inherit",
         effectiveServiceTier: codexServiceTierState.serviceTier || null,
         effectiveMode: codexServiceTierEffectiveMode(codexServiceTierState.serviceTier),
-        message: "未启用",
+        message: t("serviceTier.notEnabled"),
       };
       return;
     }
@@ -1384,18 +1403,18 @@
   }
 
   function codexServiceTierBadgeState() {
-    if (codexPlusBackendStatus.status === "checking") return { tier: "loading", label: "...", disabled: true, title: "服务模式：正在检查后端连接" };
-    if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
-    if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
-    if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
+    if (codexPlusBackendStatus.status === "checking") return { tier: "loading", label: "...", disabled: true, title: t("serviceTier.checkingBackend") };
+    if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: t("backend.notConnected"), disabled: true, title: t("serviceTier.backendDisconnected") };
+    if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: t("serviceTier.readingTitle") };
+    if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: t("serviceTier.readFailedTitle") };
     const effectiveMode = codexServiceTierState.effectiveMode || "standard";
     const scope = codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode !== "inherit"
-      ? `当前 thread：${codexServiceTierState.threadMode}`
+      ? t("serviceTier.scopeThread", { mode: codexServiceTierState.threadMode })
       : serviceTierStatusMessage(codexServiceTierState.controlMode, codexServiceTierState.threadMode, effectiveMode, codexServiceTierState.defaultMode);
     const title = [
-      `服务模式：${scope}`,
-      "Standard：使用标准处理；不在请求上设置 priority。",
-      "Fast：对请求使用 service_tier=\"priority\"，官方说明其延迟更低且更一致，但会按更高价格计费；rate limit 与 Standard 共享，流量快速上涨时可能回落到 Standard。",
+      t("serviceTier.titleScope", { scope }),
+      t("serviceTier.standardHelp"),
+      t("serviceTier.fastHelp"),
     ].join("\n");
     if (effectiveMode === "fast") return { tier: "fast", label: "fast", title };
     return { tier: "standard", label: "standard", title };
@@ -1423,8 +1442,8 @@
     document.querySelectorAll("[data-codex-service-tier-status]").forEach((node) => {
       node.dataset.status = featureEnabled && backendConnected ? (codexServiceTierState.status || "loading") : (backendChecking ? "loading" : "failed");
       node.textContent = featureEnabled
-        ? (backendConnected ? (codexServiceTierState.message || "未读取") : (backendChecking ? "正在检查后端…" : "未连接"))
-        : "未启用";
+        ? (backendConnected ? (codexServiceTierState.message || t("serviceTier.notRead")) : (backendChecking ? t("serviceTier.checkingBackendShort") : t("backend.notConnected")))
+        : t("serviceTier.notEnabled");
     });
     document.querySelectorAll("[data-codex-service-tier-inherit]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
@@ -1445,7 +1464,7 @@
     document.querySelectorAll("[data-codex-service-tier-thread-inherit]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit");
-      button.title = `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`;
+      button.title = t("serviceTier.threadInheritTitleMode", { mode: codexServiceTierState.defaultMode || "inherit" });
     });
     document.querySelectorAll("[data-codex-service-tier-thread-standard]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
@@ -1460,11 +1479,11 @@
 
   async function loadCodexServiceTierState() {
     if (!codexPlusSettings().serviceTierControls) {
-      codexServiceTierState = { ...codexServiceTierState, status: "idle", message: "未启用" };
+      codexServiceTierState = { ...codexServiceTierState, status: "idle", message: t("serviceTier.notEnabled") };
       refreshCodexServiceTierControls();
       return;
     }
-    codexServiceTierState = { ...codexServiceTierState, status: "loading", message: "正在读取…" };
+    codexServiceTierState = { ...codexServiceTierState, status: "loading", message: t("serviceTier.reading") };
     refreshCodexServiceTierControls();
     try {
       const serviceTier = await getCodexServiceTierSetting();
@@ -1478,7 +1497,7 @@
       codexServiceTierState = {
         ...codexServiceTierState,
         status: "failed",
-        message: "读取失败",
+        message: t("serviceTier.readFailed"),
       };
       sendCodexPlusDiagnostic("service_tier_read_failed", {
         errorName: error?.name || "",
@@ -1491,7 +1510,7 @@
 
   function setCodexThreadServiceTierMode(mode) {
     if (codexPlusBackendStatus.status !== "ok") {
-      showToast("后端未连接，无法切换服务模式", null);
+      showToast(t("serviceTier.backendNotConnected"), null);
       refreshCodexServiceTierControls();
       return;
     }
@@ -1499,13 +1518,13 @@
     const threadId = validThreadScrollSessionKey(currentSessionRef().session_id);
     setCodexThreadServiceTierOverride(threadId, normalizedMode);
     refreshCodexServiceTierControls();
-    const target = threadId ? "当前 thread" : "新 thread 草稿";
-    showToast(`${target}服务模式：${normalizedMode === "inherit" ? "继承" : normalizedMode}`, null);
+    const target = threadId ? t("serviceTier.threadCurrent") : t("serviceTier.threadDraft");
+    showToast(t("serviceTier.threadToast", { target, mode: normalizedMode === "inherit" ? t("serviceTier.inheritLabel") : normalizedMode }), null);
   }
 
   function toggleCodexServiceTierFromBadge() {
     if (codexPlusBackendStatus.status !== "ok") {
-      showToast("后端未连接，无法切换服务模式", null);
+      showToast(t("serviceTier.backendNotConnected"), null);
       refreshCodexServiceTierControls();
       return;
     }
@@ -1647,6 +1666,9 @@
       }
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
+      if (settings.uiLanguage === "en" || settings.uiLanguage === "zh") {
+        window.__codexPlusSetLang(settings.uiLanguage);
+      }
       refreshCodexPlusBackendToggles();
       return true;
     } catch (_) {
@@ -1683,12 +1705,15 @@
       const key = button.getAttribute("data-codex-backend-setting");
       button.dataset.enabled = String(!!codexPlusBackendSettings[key]);
     });
+    document.querySelectorAll(".codex-plus-toggle[data-relay-unneeded]").forEach((button) => {
+      button.dataset.relayUnneededLabel = t("relay.notNeeded");
+    });
     renderCodexPlusMenu();
     scan();
   }
 
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
-  let codexPlusBackendStatus = { status: "checking", message: "正在检查后端…" };
+  let codexPlusBackendStatus = { status: "checking", message: t("backend.checking") };
   let codexPlusBackendCheckSeq = 0;
 
   function setCodexPlusTriggerLabel(trigger) {
@@ -1719,11 +1744,11 @@
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
       label.dataset.status = status;
-      label.textContent = codexPlusBackendStatus.message || (status === "ok" ? "后端已连接" : "未连接");
+      label.textContent = codexPlusBackendStatus.message || (status === "ok" ? t("backend.connected") : t("backend.notConnected"));
     }
     document.querySelectorAll("[data-codex-backend-indicator]").forEach((indicator) => {
       indicator.dataset.status = status;
-      indicator.title = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "未连接";
+      indicator.title = status === "ok" ? t("backend.connected") : status === "checking" ? t("backend.checkingShort") : t("backend.notConnected");
     });
     const repair = document.querySelector("[data-codex-backend-repair]");
     if (repair) repair.hidden = status === "ok" || status === "checking";
@@ -1733,7 +1758,7 @@
   function withBackendTimeout(request) {
     return Promise.race([
       request,
-      new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "后端检查超时", timeout: true }), 2000)),
+      new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: t("backend.timeout"), timeout: true }), 2000)),
     ]);
   }
 
@@ -1753,12 +1778,12 @@
   }
 
   async function repairBackend() {
-    codexPlusBackendStatus = { status: "checking", message: "正在修复后端…" };
+    codexPlusBackendStatus = { status: "checking", message: t("backend.repairing") };
     renderBackendStatus();
     try {
       codexPlusBackendStatus = await postJson("/backend/repair", {});
     } catch (error) {
-      codexPlusBackendStatus = { status: "failed", message: "后端修复失败" };
+      codexPlusBackendStatus = { status: "failed", message: t("backend.repairFailed") };
     }
     renderBackendStatus();
   }
@@ -1766,9 +1791,9 @@
   async function openManagerFromCodex() {
     const result = await postJson("/manager/open", {});
     if (result.status === "ok") {
-      showToast("管理工具已打开", null);
+      showToast(t("manager.opened"), null);
     } else {
-      showToast(result.message || "打开管理工具失败", null);
+      showToast(result.message || t("manager.openFailed"), null);
     }
   }
 
@@ -1779,25 +1804,33 @@
   }
 
   function userScriptStatusLabel(status) {
-    return { loaded: "已加载", failed: "失败", disabled: "已禁用", not_loaded: "未加载", loading: "加载中" }[status] || status || "未知";
+    return {
+      loaded: t("scriptStatus.loaded"),
+      failed: t("scriptStatus.failed"),
+      disabled: t("scriptStatus.disabled"),
+      not_loaded: t("scriptStatus.notLoaded"),
+      loading: t("scriptStatus.loading"),
+    }[status] || status || t("scriptStatus.unknown");
   }
 
   function renderUserScripts() {
     const enabledToggle = document.querySelector("[data-codex-user-scripts-enabled]");
     if (enabledToggle) enabledToggle.dataset.enabled = String(!!codexPlusUserScripts.enabled);
     const dirs = document.querySelector("[data-codex-user-script-dirs]");
-    if (dirs) dirs.textContent = `内置：${codexPlusUserScripts.builtin_dir || "未找到"}  用户：${codexPlusUserScripts.user_dir || "未找到"}`;
+    if (dirs) {
+      dirs.textContent = `${t("userScripts.dirBuiltin", { path: codexPlusUserScripts.builtin_dir || t("userScripts.dirMissing") })}  ${t("userScripts.dirUser", { path: codexPlusUserScripts.user_dir || t("userScripts.dirMissing") })}`;
+    }
     const list = document.querySelector("[data-codex-user-script-list]");
     if (!list) return;
     if (!codexPlusUserScripts.scripts?.length) {
-      list.textContent = "未发现用户脚本。";
+      list.textContent = t("userScripts.none");
       return;
     }
     list.innerHTML = codexPlusUserScripts.scripts.map((script) => `
       <div class="codex-plus-user-script-item">
         <div>
           <div class="codex-plus-user-script-name">${escapeHtml(script.name || script.key)}</div>
-          <div class="codex-plus-user-script-meta">${script.source === "builtin" ? "内置" : "用户"} · ${userScriptStatusLabel(script.status)}</div>
+          <div class="codex-plus-user-script-meta">${script.source === "builtin" ? t("userScripts.builtin") : t("userScripts.user")} · ${userScriptStatusLabel(script.status)}</div>
           ${script.error ? `<div class="codex-plus-user-script-error">${escapeHtml(script.error)}</div>` : ""}
         </div>
         <button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(script.key)}" data-enabled="${String(!!script.enabled)}"><span></span></button>
@@ -1849,23 +1882,23 @@
           <div class="codex-plus-ad-highlights">
             ${ad.highlights.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
           </div>
-          <a class="codex-plus-ad-link" href="${escapeHtml(ad.url)}" target="_blank" rel="noreferrer">访问 ${escapeHtml(new URL(ad.url).hostname)}</a>
+          <a class="codex-plus-ad-link" href="${escapeHtml(ad.url)}" target="_blank" rel="noreferrer">${t("ads.visit", { host: escapeHtml(new URL(ad.url).hostname) })}</a>
         </div>
       </article>
     `).join("");
   }
 
   function renderCodexPlusAds() {
-    if (!codexPlusAdsLoaded) return `<div class="codex-plus-ad-empty">推荐内容加载中…</div>`;
-    if (!codexPlusAds.length) return `<div class="codex-plus-ad-empty">暂无推荐内容。</div>`;
+    if (!codexPlusAdsLoaded) return `<div class="codex-plus-ad-empty">${escapeHtml(t("ads.loading"))}</div>`;
+    if (!codexPlusAds.length) return `<div class="codex-plus-ad-empty">${escapeHtml(t("ads.empty"))}</div>`;
     return `
       <section class="codex-plus-ad-section">
-        <h3 class="codex-plus-ad-section-title">赞助商推荐</h3>
-        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("sponsor", "暂无赞助商推荐。")}</div>
+        <h3 class="codex-plus-ad-section-title">${escapeHtml(t("ads.sponsors"))}</h3>
+        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("sponsor", t("ads.sponsorsEmpty"))}</div>
       </section>
       <section class="codex-plus-ad-section">
-        <h3 class="codex-plus-ad-section-title">普通推荐</h3>
-        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("normal", "暂无普通推荐。")}</div>
+        <h3 class="codex-plus-ad-section-title">${escapeHtml(t("ads.general"))}</h3>
+        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("normal", t("ads.generalEmpty"))}</div>
       </section>
     `;
   }
@@ -1930,170 +1963,175 @@
     document.querySelectorAll('[data-codex-plus-dialog="true"]').forEach((node) => node.remove());
     const overlay = document.createElement("div");
     overlay.className = "codex-plus-modal-overlay";
+    const relayMode = codexPlusBackendSettings.launchMode === "relay";
+    const relayUnneededAttrs = relayMode ? `disabled data-relay-unneeded="true" data-relay-unneeded-label="${escapeHtml(t("relay.notNeeded"))}"` : "";
     overlay.innerHTML = `
       <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="Codex++">
         <div class="codex-plus-modal-header">
           <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span data-codex-plus-version="true">Codex++ ${codexPlusVersion}</span></div>
-          <button type="button" class="codex-plus-modal-close" aria-label="关闭">×</button>
+          <div class="codex-plus-modal-header-actions">
+            <button type="button" class="codex-plus-lang-toggle" data-codex-plus-lang-toggle="true" title="${escapeHtml(t("modal.langSwitch"))}">${window.__codexPlusGetLang() === "zh" ? "EN" : "中"}</button>
+            <button type="button" class="codex-plus-modal-close" aria-label="${escapeHtml(t("modal.close"))}">×</button>
+          </div>
         </div>
         <div class="codex-plus-tabs" role="tablist" aria-label="Codex++">
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">主页</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="false">用户脚本</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="sponsor" data-active="false">推荐内容</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="support" data-active="false">请作者喝咖啡</button>
+          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">${t("tab.home")}</button>
+          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="false">${t("tab.userScripts")}</button>
+          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="sponsor" data-active="false">${t("tab.recommendations")}</button>
+          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="support" data-active="false">${t("tab.support")}</button>
         </div>
         <div class="codex-plus-modal-body">
           <div class="codex-plus-panel" data-codex-plus-panel="home">
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">后端连接</div><div class="codex-plus-row-description">每 5 秒检查一次 launcher 后端状态；断开时可尝试修复后端运行。</div></div>
+              <div><div class="codex-plus-row-title">${t("backend.title")}</div><div class="codex-plus-row-description">${t("backend.detail")}</div></div>
               <div class="codex-plus-backend-status">
-                <div class="codex-plus-backend-label" data-codex-backend-status="true" data-status="checking">正在检查后端…</div>
-                <button type="button" class="codex-plus-backend-repair" data-codex-backend-repair="true" hidden>修复后端运行</button>
+                <div class="codex-plus-backend-label" data-codex-backend-status="true" data-status="checking">${t("backend.checking")}</div>
+                <button type="button" class="codex-plus-backend-repair" data-codex-backend-repair="true" hidden>${t("backend.repair")}</button>
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">页面功能增强</div><div class="codex-plus-row-description">关闭后停用删除、导出、移动、Timeline、插件相关和菜单位置增强。</div></div>
+              <div><div class="codex-plus-row-title">${t("enhance.master")}</div><div class="codex-plus-row-description">${t("enhance.masterDetail")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="enhancementsEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">插件市场解锁</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强模式下无需开启；ChatGPT 登录态会保留官方插件市场。" : "API Key 模式下扩展插件市场请求，尽量显示完整插件列表。"}</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginMarketplaceUnlock" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
+              <div><div class="codex-plus-row-title">${t("enhance.pluginMarket")}</div><div class="codex-plus-row-description">${relayMode ? t("enhance.pluginMarketRelay") : t("enhance.pluginMarketApi")}</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginMarketplaceUnlock" ${relayUnneededAttrs}><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">强制解锁入口</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强模式下无需开启；官方登录态会保留插件入口。" : "恢复 1.1.9 的入口解锁方式，强制显示并启用插件入口。"}</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginEntryUnlock" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
+              <div><div class="codex-plus-row-title">${t("enhance.forceUnlock")}</div><div class="codex-plus-row-description">${relayMode ? t("enhance.forceUnlockRelay") : t("enhance.forceUnlockApi")}</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginEntryUnlock" ${relayUnneededAttrs}><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">特殊插件强制安装</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强模式下无需开启；不会改插件安装入口。" : "解除 App unavailable / 应用不可用导致的前端安装禁用。"}</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="forcePluginInstall" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
+              <div><div class="codex-plus-row-title">${t("enhance.forceInstall")}</div><div class="codex-plus-row-description">${relayMode ? t("enhance.forceInstallRelay") : t("enhance.forceInstallApi")}</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="forcePluginInstall" ${relayUnneededAttrs}><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">模型白名单解锁</div><div class="codex-plus-row-description">从环境变量和 Codex config.toml 中的中转站 /v1/models 拉取模型，并补进模型选择列表。</div></div>
+              <div><div class="codex-plus-row-title">${t("enhance.modelWhitelist")}</div><div class="codex-plus-row-description">${t("enhance.modelWhitelistDetail")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮，并允许把请求切到 Fast / priority；默认关闭以避免误触高价服务模式。</div></div>
+              <div><div class="codex-plus-row-title">${t("enhance.fastButton")}</div><div class="codex-plus-row-description">${t("enhance.fastButtonDetail")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
             </div>
             <div class="codex-plus-row" data-codex-service-tier-controls="true">
-              <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承使用 config.toml 的 service tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
+              <div><div class="codex-plus-row-title">${t("enhance.serviceTier")}</div><div class="codex-plus-row-description">${t("enhance.serviceTierDetail")}</div></div>
               <div class="codex-plus-service-tier-control">
-                <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">正在读取…</div>
+                <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">${t("serviceTier.reading")}</div>
                 <div class="codex-plus-service-tier-actions">
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">继承</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">全局 Standard</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">全局 Fast</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-custom="true">自定义</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">${t("serviceTier.inherit")}</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">${t("serviceTier.globalStandard")}</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">${t("serviceTier.globalFast")}</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-custom="true">${t("serviceTier.custom")}</button>
                 </div>
                 <div class="codex-plus-service-tier-actions codex-plus-service-tier-thread-actions">
-                  <span class="codex-plus-service-tier-thread-label">当前 thread 覆盖</span>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="当前 thread 不单独覆盖，继承 config.toml">继承</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="仅当前 thread 使用 Standard，并切到自定义模式">Standard</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="仅当前 thread 使用 Fast，并切到自定义模式">Fast</button>
+                  <span class="codex-plus-service-tier-thread-label">${t("serviceTier.threadOverride")}</span>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="${escapeHtml(t("serviceTier.threadInheritTitle"))}">${t("serviceTier.inherit")}</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="${escapeHtml(t("serviceTier.threadStandardTitle"))}">Standard</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="${escapeHtml(t("serviceTier.threadFastTitle"))}">Fast</button>
                 </div>
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示删除按钮，并支持撤销。</div></div>
+              <div><div class="codex-plus-row-title">${t("enhance.sessionDelete")}</div><div class="codex-plus-row-description">${t("enhance.sessionDeleteDetail")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionDelete"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Markdown 导出</div><div class="codex-plus-row-description">在会话列表显示导出按钮，按本地 rollout 导出带时间戳的 Markdown。</div></div>
+              <div><div class="codex-plus-row-title">${t("enhance.markdownExport")}</div><div class="codex-plus-row-description">${t("enhance.markdownExportDetail")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="markdownExport"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">会话项目移动</div><div class="codex-plus-row-description">在会话列表悬停显示移动按钮，可移动到普通对话或其他本地项目。</div></div>
+              <div><div class="codex-plus-row-title">${t("enhance.projectMove")}</div><div class="codex-plus-row-description">${t("enhance.projectMoveDetail")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="projectMove"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">对话 Timeline</div><div class="codex-plus-row-description">在对话右侧显示用户提问时间线，悬停查看摘要，点击跳转。</div></div>
+              <div><div class="codex-plus-row-title">${t("enhance.timeline")}</div><div class="codex-plus-row-description">${t("enhance.timelineDetail")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationTimeline"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">对话居中宽度</div><div class="codex-plus-row-description">开启后把主对话和输入框限制到固定最大宽度，适合大屏阅读。</div></div>
+              <div><div class="codex-plus-row-title">${t("enhance.conversationWidth")}</div><div class="codex-plus-row-description">${t("enhance.conversationWidthDetail")}</div></div>
               <div class="codex-plus-width-control">
                 <input class="codex-plus-width-input" data-codex-plus-conversation-view-width="true" min="${conversationViewMinWidth}" max="${conversationViewMaxAllowedWidth}" step="10" type="number" value="${conversationViewWidth()}">
                 <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationView"><span></span></button>
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">切换对话保留位置</div><div class="codex-plus-row-description">开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。</div></div>
+              <div><div class="codex-plus-row-title">${t("enhance.scrollRestore")}</div><div class="codex-plus-row-description">${t("enhance.scrollRestoreDetail")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Zed Remote open</div><div class="codex-plus-row-description">Open supported remote SSH file references in Zed without patching Codex.app.</div></div>
+              <div><div class="codex-plus-row-title">${t("enhance.zedRemote")}</div><div class="codex-plus-row-description">${t("enhance.zedRemoteDetail")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="zedRemoteOpen"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Upstream worktree</div><div class="codex-plus-row-description">Create a Git worktree from a fresh upstream branch, equivalent to git worktree add -b branch path upstream/base.</div></div>
+              <div><div class="codex-plus-row-title">${t("enhance.upstreamWorktree")}</div><div class="codex-plus-row-description">${t("enhance.upstreamWorktreeDetail")}</div></div>
               <div class="codex-plus-worktree-actions">
-                <button type="button" class="codex-plus-action-button" data-codex-upstream-worktree-open="true">创建</button>
+                <button type="button" class="codex-plus-action-button" data-codex-upstream-worktree-open="true">${t("enhance.upstreamCreate")}</button>
                 <button type="button" class="codex-plus-toggle" data-codex-plus-setting="upstreamWorktreeCreate"><span></span></button>
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">历史会话修复</div><div class="codex-plus-row-description">切换官方登录、混合 API 或纯 API 后，让旧对话重新显示在当前模式下。</div></div>
+              <div><div class="codex-plus-row-title">${t("enhance.historyFix")}</div><div class="codex-plus-row-description">${t("enhance.historyFixDetail")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">页面增强模式</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强：保留会话删除、导出、项目移动、Timeline 和用户脚本，仅关闭插件入口相关增强。" : "完整增强：加载插件入口、强制安装、项目路径移动等全部页面能力。"}</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
+              <div><div class="codex-plus-row-title">${t("enhance.modeTitle")}</div><div class="codex-plus-row-description">${relayMode ? t("enhance.modeRelay") : t("enhance.modePatch")}</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">${t("enhance.openManager")}</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">原生菜单栏位置</div><div class="codex-plus-row-description">把 Codex++ 菜单插入顶部原生菜单栏；默认关闭以避免页面重渲染冲突。</div></div>
+              <div><div class="codex-plus-row-title">${t("enhance.nativeMenu")}</div><div class="codex-plus-row-description">${t("enhance.nativeMenuDetail")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="nativeMenuPlacement"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户脚本报错。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
+              <div><div class="codex-plus-row-title">${t("enhance.devtools")}</div><div class="codex-plus-row-description">${t("enhance.devtoolsDetail")}</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">${t("enhance.devtoolsAction")}</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a><br>Telegram: <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noreferrer">https://t.me/CodexPlusPlus</a></div></div>
+              <div><div class="codex-plus-row-title">${t("about.title")}</div><div class="codex-plus-about">${t("about.body")}<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a><br>Telegram: <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noreferrer">https://t.me/CodexPlusPlus</a></div></div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Discord 社区</div><div class="codex-plus-row-description">加入 Discord 获取更新消息、反馈问题或交流使用体验。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-plus-discord="true">打开 Discord</button>
+              <div><div class="codex-plus-row-title">${t("about.discordTitle")}</div><div class="codex-plus-row-description">${t("about.discordDetail")}</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-plus-discord="true">${t("about.discordAction")}</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Telegram 频道</div><div class="codex-plus-row-description">加入 Telegram 获取更新消息和交流使用体验。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-plus-telegram="true">打开 Telegram</button>
+              <div><div class="codex-plus-row-title">${t("about.telegramTitle")}</div><div class="codex-plus-row-description">${t("about.telegramDetail")}</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-plus-telegram="true">${t("about.telegramAction")}</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
-              <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">提出问题</button>
+              <div><div class="codex-plus-row-title">${t("about.issueTitle")}</div><div class="codex-plus-row-description">${t("about.issueDetail")}</div></div>
+              <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">${t("about.issueAction")}</button>
             </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="userScripts" hidden>
             <div class="codex-plus-row" data-codex-user-scripts-section="true">
               <div>
-                <div class="codex-plus-row-title">用户脚本</div>
-                <div class="codex-plus-row-description">启用用户脚本：自动加载内置目录和用户配置目录中的 .js 文件。</div>
-                <div class="codex-plus-user-script-warning">禁用后需重载页面或重启 Codex++ 才能完全移除已执行效果。</div>
-                <div class="codex-plus-user-script-dirs" data-codex-user-script-dirs="true">正在读取脚本目录…</div>
-                <div class="codex-plus-user-script-list" data-codex-user-script-list="true">正在读取用户脚本…</div>
+                <div class="codex-plus-row-title">${t("userScripts.title")}</div>
+                <div class="codex-plus-row-description">${t("userScripts.detail")}</div>
+                <div class="codex-plus-user-script-warning">${t("userScripts.warning")}</div>
+                <div class="codex-plus-user-script-dirs" data-codex-user-script-dirs="true">${t("userScripts.readingDirs")}</div>
+                <div class="codex-plus-user-script-list" data-codex-user-script-list="true">${t("userScripts.reading")}</div>
               </div>
               <div class="codex-plus-user-script-actions">
                 <button type="button" class="codex-plus-toggle" data-codex-user-scripts-enabled="true"><span></span></button>
-                <button type="button" class="codex-plus-user-script-reload" data-codex-user-scripts-reload="true">重新加载用户脚本</button>
+                <button type="button" class="codex-plus-user-script-reload" data-codex-user-scripts-reload="true">${t("userScripts.reload")}</button>
               </div>
             </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="sponsor" hidden>
-            <div class="codex-plus-sponsor-text">推荐内容分为赞助商推荐和普通推荐。赞助商推荐来自支持 Codex++ 继续维护的合作方；普通推荐用于展示适合 Codex 用户的服务与信息。</div>
+            <div class="codex-plus-sponsor-text">${t("ads.intro")}</div>
             <div class="codex-plus-ad-remote">
               ${renderCodexPlusAds()}
             </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="support" hidden>
-            <div class="codex-plus-sponsor-text">如果 Codex++ 帮到了你，可以请我喝杯咖啡，或者随手赞赏支持一下继续维护。</div>
+            <div class="codex-plus-sponsor-text">${t("support.intro")}</div>
             <div class="codex-plus-sponsor-grid">
               <div class="codex-plus-sponsor-card">
-                <div class="codex-plus-sponsor-card-title">支付宝</div>
-                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.alipay || `${helperBase}/assets/sponsor-alipay.jpg`}" alt="支付宝赞赏码">
+                <div class="codex-plus-sponsor-card-title">${t("support.alipay")}</div>
+                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.alipay || `${helperBase}/assets/sponsor-alipay.jpg`}" alt="${escapeHtml(t("support.alipayAlt"))}">
               </div>
               <div class="codex-plus-sponsor-card">
-                <div class="codex-plus-sponsor-card-title">微信</div>
-                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.wechat || `${helperBase}/assets/sponsor-wechat.jpg`}" alt="微信赞赏码">
+                <div class="codex-plus-sponsor-card-title">${t("support.wechat")}</div>
+                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.wechat || `${helperBase}/assets/sponsor-wechat.jpg`}" alt="${escapeHtml(t("support.wechatAlt"))}">
               </div>
             </div>
           </div>
@@ -2124,6 +2162,14 @@
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if (event.target === overlay || target?.closest(".codex-plus-modal-close")) {
         overlay.remove();
+        return;
+      }
+      if (target?.closest("[data-codex-plus-lang-toggle]")) {
+        const nextLang = window.__codexPlusGetLang() === "zh" ? "en" : "zh";
+        window.__codexPlusSetLang(nextLang);
+        void setBackendSetting("uiLanguage", nextLang);
+        overlay.remove();
+        openCodexPlusModal();
         return;
       }
       const tabButton = target?.closest("[data-codex-plus-tab]");
@@ -3600,7 +3646,7 @@
     function bridgeWithBackendTimeout(path, payload) {
       return Promise.race([
         window.__codexSessionDeleteBridge(path, payload),
-        new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "后端检查超时", timeout: true }), 2000)),
+        new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: t("backend.timeout"), timeout: true }), 2000)),
       ]);
     }
     async function fetchBackendStatusFromHelper(path, payload) {
