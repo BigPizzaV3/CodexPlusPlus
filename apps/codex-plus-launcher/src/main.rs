@@ -49,16 +49,27 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn acquire_single_instance_guard(debug_port: u16) -> anyhow::Result<Option<std::net::TcpListener>> {
+fn acquire_single_instance_guard(
+    debug_port: u16,
+) -> anyhow::Result<Option<codex_plus_core::ports::LoopbackPortGuard>> {
     acquire_single_instance_guard_with_retry(debug_port, true)
 }
 
 fn acquire_single_instance_guard_with_retry(
     debug_port: u16,
     allow_stale_recovery: bool,
-) -> anyhow::Result<Option<std::net::TcpListener>> {
+) -> anyhow::Result<Option<codex_plus_core::ports::LoopbackPortGuard>> {
     match try_acquire_single_instance_guard() {
-        Ok(listener) => Ok(Some(listener)),
+        Ok(guard) => {
+            if let Some(fallback_lock_path) = guard.fallback_path() {
+                log_launcher_guard_fallback(fallback_lock_path);
+            }
+            Ok(Some(guard))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            log_launcher_already_running(debug_port);
+            Ok(None)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
             log_launcher_already_running(debug_port);
             if allow_stale_recovery && should_recover_stale_launcher(debug_port) {
@@ -79,10 +90,21 @@ fn acquire_single_instance_guard_with_retry(
     }
 }
 
-fn try_acquire_single_instance_guard() -> std::io::Result<std::net::TcpListener> {
-    codex_plus_core::ports::acquire_loopback_port_guard(
+fn try_acquire_single_instance_guard() -> std::io::Result<codex_plus_core::ports::LoopbackPortGuard>
+{
+    codex_plus_core::ports::acquire_resilient_loopback_port_guard(
         codex_plus_core::ports::LAUNCHER_GUARD_PORT,
     )
+}
+
+fn log_launcher_guard_fallback(fallback_lock_path: &Path) {
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "launcher.guard_fallback",
+        json!({
+            "requested_guard_port": codex_plus_core::ports::LAUNCHER_GUARD_PORT,
+            "fallback_lock_path": fallback_lock_path
+        }),
+    );
 }
 
 fn should_recover_stale_launcher(debug_port: u16) -> bool {
@@ -741,7 +763,10 @@ mod tests {
             "async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {\n    let hooks = LauncherHooks::default();"
         ));
         assert!(source.contains("hooks.start_helper(options.helper_port).await?"));
-        assert!(source.contains("hooks.ensure_injection(options.debug_port, options.helper_port).await"));
+        assert!(
+            source
+                .contains("hooks.ensure_injection(options.debug_port, options.helper_port).await")
+        );
         assert!(source.contains("injection_ready"));
     }
 
