@@ -36,11 +36,10 @@ prepare_icon() {
 
 create_app() {
   local app_name="$1"
-  local binary_path="$2"
-  local bundle_id="$3"
-  local lsui_element="${4:-false}"
-  local executable_name
-  executable_name="$(basename "$binary_path")"
+  local executable_name="$2"
+  local binary_path="$3"
+  local bundle_id="$4"
+  local lsui_element="${5:-false}"
   local app_dir="$STAGE/$app_name.app"
 
   if [ ! -x "$binary_path" ]; then
@@ -119,8 +118,8 @@ verify_app() {
 }
 
 prepare_icon
-create_app "Codex++" "$BINARY_DIR/codex-plus-plus" "com.bigpizzav3.codexplusplus" "true"
-create_app "Codex++ 管理工具" "$BINARY_DIR/codex-plus-plus-manager" "com.bigpizzav3.codexplusplus.manager" "false"
+create_app "Codex++" "CodexPlusPlus" "$BINARY_DIR/codex-plus-plus" "com.bigpizzav3.codexplusplus" "true"
+create_app "Codex++ 管理工具" "CodexPlusPlusManager" "$BINARY_DIR/codex-plus-plus-manager" "com.bigpizzav3.codexplusplus.manager" "false"
 ln -s /Applications "$STAGE/Applications"
 
 sign_app "$STAGE/Codex++.app"
