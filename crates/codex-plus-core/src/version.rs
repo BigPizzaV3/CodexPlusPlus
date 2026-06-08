@@ -1,4 +1,4 @@
-pub const VERSION: &str = "1.2.3";
+pub const VERSION: &str = "1.2.4";
 
 #[cfg(test)]
 mod tests {
@@ -6,6 +6,6 @@ mod tests {
 
     #[test]
     fn exposes_workspace_version() {
-        assert_eq!(VERSION, "1.2.3");
+        assert_eq!(VERSION, "1.2.4");
     }
 }
