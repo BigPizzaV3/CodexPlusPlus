@@ -84,6 +84,9 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn resolve_zed_remote_host(&self, payload: Value) -> anyhow::Result<Value>;
     async fn fallback_zed_remote_request(&self, payload: Value) -> anyhow::Result<Value>;
     async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value>;
+    async fn list_zed_remote_projects(&self, payload: Value) -> anyhow::Result<Value>;
+    async fn remember_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value>;
+    async fn forget_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value>;
     async fn upstream_worktree_status(&self) -> anyhow::Result<Value>;
     async fn upstream_worktree_defaults(&self, payload: Value) -> anyhow::Result<Value>;
     async fn upstream_worktree_prepare(&self, payload: Value) -> anyhow::Result<Value>;
@@ -127,7 +130,9 @@ pub async fn handle_bridge_request(
     );
     let result = match path {
         "/settings/get" => settings_value(&ctx, ctx.settings.get_settings().await).await,
-        "/settings/set" => settings_value(&ctx, ctx.settings.set_settings(payload.clone()).await).await,
+        "/settings/set" => {
+            settings_value(&ctx, ctx.settings.set_settings(payload.clone()).await).await
+        }
         "/user-scripts/list" => ctx.runtime.user_script_inventory().await,
         "/user-scripts/set-enabled" => {
             let enabled = payload
@@ -172,6 +177,15 @@ pub async fn handle_bridge_request(
                 .await
         }
         "/zed-remote/open" => ctx.runtime.open_zed_remote(payload.clone()).await,
+        "/zed-remote/projects" => ctx.runtime.list_zed_remote_projects(payload.clone()).await,
+        "/zed-remote/remember-project" => {
+            ctx.runtime
+                .remember_zed_remote_project(payload.clone())
+                .await
+        }
+        "/zed-remote/forget-project" => {
+            ctx.runtime.forget_zed_remote_project(payload.clone()).await
+        }
         "/upstream-worktree/status" => ctx.runtime.upstream_worktree_status().await,
         "/upstream-worktree/defaults" => {
             ctx.runtime
@@ -472,6 +486,24 @@ impl BridgeRuntimeService for CoreRuntimeService {
         Ok(crate::zed_remote::open_zed_remote(&payload))
     }
 
+    async fn list_zed_remote_projects(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(crate::zed_remote::list_zed_remote_projects_response(
+            &payload,
+        ))
+    }
+
+    async fn remember_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(crate::zed_remote::remember_zed_remote_project_response(
+            &payload,
+        ))
+    }
+
+    async fn forget_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(crate::zed_remote::forget_zed_remote_project_response(
+            &payload,
+        ))
+    }
+
     async fn upstream_worktree_status(&self) -> anyhow::Result<Value> {
         Ok(crate::upstream_worktree::status_response())
     }
@@ -585,10 +617,16 @@ fn spawn_manager(manager_path: &Path) -> anyhow::Result<()> {
         .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
 }
 
-fn settings_payload_value(settings: BackendSettings, codex_app_version: String) -> anyhow::Result<Value> {
+fn settings_payload_value(
+    settings: BackendSettings,
+    codex_app_version: String,
+) -> anyhow::Result<Value> {
     let mut value = serde_json::to_value(settings)?;
     if let Some(object) = value.as_object_mut() {
-        object.insert("codexAppVersion".to_string(), Value::String(codex_app_version));
+        object.insert(
+            "codexAppVersion".to_string(),
+            Value::String(codex_app_version),
+        );
     }
     Ok(value)
 }

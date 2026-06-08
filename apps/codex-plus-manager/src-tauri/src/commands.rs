@@ -9,6 +9,7 @@ use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
 use codex_plus_core::settings::{BackendSettings, RelayProfile, SettingsStore};
 use codex_plus_core::status::{LaunchStatus, StatusStore};
 use codex_plus_core::user_scripts::UserScriptManager;
+use codex_plus_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -61,6 +62,19 @@ pub struct SettingsPayload {
 pub struct LocalSessionsPayload {
     pub db_path: String,
     pub sessions: Vec<codex_plus_data::LocalSession>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZedRemoteProjectsPayload {
+    pub projects: Vec<ZedRemoteProject>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZedRemoteOpenPayload {
+    pub url: String,
+    pub strategy: ZedOpenStrategy,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -518,6 +532,79 @@ pub fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
             },
         ),
     }
+}
+
+#[tauri::command]
+pub fn list_zed_remote_projects() -> CommandResult<ZedRemoteProjectsPayload> {
+    let result = codex_plus_core::zed_remote::list_zed_remote_projects_response(&json!({}));
+    if result.get("status").and_then(Value::as_str) == Some("ok") {
+        let projects = serde_json::from_value::<Vec<ZedRemoteProject>>(
+            result
+                .get("projects")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(Vec::new())),
+        )
+        .unwrap_or_default();
+        return ok(
+            &format!("已读取 {} 个 Zed 远程项目。", projects.len()),
+            ZedRemoteProjectsPayload { projects },
+        );
+    }
+    failed(
+        result
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("读取 Zed 远程项目失败。"),
+        ZedRemoteProjectsPayload {
+            projects: Vec::new(),
+        },
+    )
+}
+
+#[tauri::command]
+pub fn open_zed_remote(payload: Value) -> CommandResult<ZedRemoteOpenPayload> {
+    let result = codex_plus_core::zed_remote::open_zed_remote(&payload);
+    let strategy = result
+        .get("strategy")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<ZedOpenStrategy>(value).ok())
+        .unwrap_or_default();
+    let url = result
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if result.get("status").and_then(Value::as_str) == Some("ok") {
+        return ok(
+            "已在 Zed Remote 打开项目。",
+            ZedRemoteOpenPayload { url, strategy },
+        );
+    }
+    failed(
+        result
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("无法在 Zed Remote 打开项目。"),
+        ZedRemoteOpenPayload { url, strategy },
+    )
+}
+
+#[tauri::command]
+pub fn forget_zed_remote_project(id: String) -> CommandResult<ZedRemoteProjectsPayload> {
+    let result =
+        codex_plus_core::zed_remote::forget_zed_remote_project_response(&json!({ "id": id }));
+    if result.get("status").and_then(Value::as_str) != Some("ok") {
+        return failed(
+            result
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("移除 Zed 远程项目失败。"),
+            ZedRemoteProjectsPayload {
+                projects: Vec::new(),
+            },
+        );
+    }
+    list_zed_remote_projects()
 }
 
 #[tauri::command]
