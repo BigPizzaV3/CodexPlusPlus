@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -63,14 +63,25 @@ pub struct ProviderSyncTargetList {
 #[derive(Debug, Clone)]
 struct SessionChange {
     path: PathBuf,
-    original_first_line: String,
-    next_first_line: String,
-    separator: String,
+    original_text: String,
+    next_text: String,
+    original_session_meta_lines: Vec<String>,
     thread_id: Option<String>,
     cwd: Option<String>,
     has_user_event: bool,
     rewrite_needed: bool,
     original_mtime: Option<SystemTime>,
+}
+
+#[derive(Debug, Default)]
+struct RolloutRewrite {
+    next_text: String,
+    rewrite_needed: bool,
+    thread_id: Option<String>,
+    cwd: Option<String>,
+    providers: Vec<String>,
+    original_session_meta_lines: Vec<String>,
+    session_meta_count: usize,
 }
 
 #[derive(Debug, Default)]
@@ -120,19 +131,20 @@ pub fn run_provider_sync_with_target(
             0,
         );
     }
-    let target_provider = match resolve_target_provider(&home.join("config.toml"), explicit_target_provider) {
-        Ok(provider) => provider,
-        Err(message) => {
-            return result(
-                ProviderSyncStatus::Skipped,
-                message,
-                DEFAULT_PROVIDER,
-                None,
-                0,
-                0,
-            );
-        }
-    };
+    let target_provider =
+        match resolve_target_provider(&home.join("config.toml"), explicit_target_provider) {
+            Ok(provider) => provider,
+            Err(message) => {
+                return result(
+                    ProviderSyncStatus::Skipped,
+                    message,
+                    DEFAULT_PROVIDER,
+                    None,
+                    0,
+                    0,
+                );
+            }
+        };
     let lock_dir = home.join("tmp/provider-sync.lock");
     if acquire_lock(&lock_dir).is_err() {
         return result(
@@ -476,61 +488,86 @@ fn collect_session_changes(home: &Path, target_provider: &str) -> anyhow::Result
             }
             Err(error) => return Err(error.into()),
         };
-        let (first_line, separator) = split_first_line(&text);
-        if first_line.trim().is_empty() {
+        let rewrite = rewrite_rollout_session_meta_providers(&text, target_provider)?;
+        if rewrite.session_meta_count == 0 {
             continue;
         }
-        let Ok(mut record) = serde_json::from_str::<Value>(&first_line) else {
-            continue;
-        };
-        let Some(payload) = record.get_mut("payload").and_then(Value::as_object_mut) else {
-            continue;
-        };
-        let thread_id = payload
-            .get("id")
-            .and_then(Value::as_str)
-            .map(ToString::to_string);
-        let cwd = payload
-            .get("cwd")
-            .and_then(Value::as_str)
-            .and_then(to_desktop_workspace_path);
-        let has_user_event =
-            separator.contains("\"user_message\"") || separator.contains("\"user_input\"");
-        let rewrite_needed =
-            payload.get("model_provider").and_then(Value::as_str) != Some(target_provider);
+        let has_user_event = text.contains("\"user_message\"") || text.contains("\"user_input\"");
         if text.contains("encrypted_content") {
-            let provider = payload
-                .get("model_provider")
-                .and_then(Value::as_str)
-                .unwrap_or("(missing)")
-                .to_string();
-            *collected
-                .encrypted_content_counts
-                .entry(provider)
-                .or_insert(0) += 1;
+            for provider in &rewrite.providers {
+                *collected
+                    .encrypted_content_counts
+                    .entry(provider.clone())
+                    .or_insert(0) += 1;
+            }
         }
-        if rewrite_needed {
-            payload.insert("model_provider".to_string(), json!(target_provider));
-        }
-        let next_first_line = if rewrite_needed {
-            serde_json::to_string(&record)?
-        } else {
-            first_line.clone()
-        };
         let original_mtime = fs::metadata(&path).and_then(|m| m.modified()).ok();
         collected.changes.push(SessionChange {
             path,
-            original_first_line: first_line,
-            next_first_line,
-            separator,
-            thread_id,
-            cwd,
+            original_text: text,
+            next_text: rewrite.next_text,
+            original_session_meta_lines: rewrite.original_session_meta_lines,
+            thread_id: rewrite.thread_id,
+            cwd: rewrite.cwd,
             has_user_event,
-            rewrite_needed,
+            rewrite_needed: rewrite.rewrite_needed,
             original_mtime,
         });
     }
     Ok(collected)
+}
+
+fn rewrite_rollout_session_meta_providers(
+    text: &str,
+    target_provider: &str,
+) -> anyhow::Result<RolloutRewrite> {
+    let mut rewrite = RolloutRewrite::default();
+    for segment in text.split_inclusive('\n') {
+        let (line, line_ending) = split_line_ending(segment);
+        let mut next_line = line.to_string();
+        if !line.trim().is_empty() {
+            if let Ok(mut record) = serde_json::from_str::<Value>(line) {
+                if record.get("type").and_then(Value::as_str) == Some("session_meta") {
+                    let Some(payload) = record.get_mut("payload").and_then(Value::as_object_mut)
+                    else {
+                        rewrite.next_text.push_str(&next_line);
+                        rewrite.next_text.push_str(line_ending);
+                        continue;
+                    };
+                    rewrite.session_meta_count += 1;
+                    rewrite.original_session_meta_lines.push(line.to_string());
+                    if rewrite.thread_id.is_none() {
+                        rewrite.thread_id = payload
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string);
+                    }
+                    if rewrite.cwd.is_none() {
+                        rewrite.cwd = payload
+                            .get("cwd")
+                            .and_then(Value::as_str)
+                            .and_then(to_desktop_workspace_path);
+                    }
+                    let provider = payload
+                        .get("model_provider")
+                        .and_then(Value::as_str)
+                        .unwrap_or("(missing)")
+                        .to_string();
+                    rewrite.providers.push(provider);
+                    if payload.get("model_provider").and_then(Value::as_str)
+                        != Some(target_provider)
+                    {
+                        payload.insert("model_provider".to_string(), json!(target_provider));
+                        next_line = serde_json::to_string(&record)?;
+                        rewrite.rewrite_needed = true;
+                    }
+                }
+            }
+        }
+        rewrite.next_text.push_str(&next_line);
+        rewrite.next_text.push_str(line_ending);
+    }
+    Ok(rewrite)
 }
 
 fn rollout_files(home: &Path) -> anyhow::Result<Vec<PathBuf>> {
@@ -553,20 +590,25 @@ fn rollout_provider_ids(home: &Path) -> anyhow::Result<Vec<String>> {
             Err(error) if is_locked_io_error(&error) => continue,
             Err(error) => return Err(error.into()),
         };
-        let (first_line, _) = split_first_line(&text);
-        let Ok(record) = serde_json::from_str::<Value>(&first_line) else {
-            continue;
-        };
-        let Some(provider) = record
-            .get("payload")
-            .and_then(Value::as_object)
-            .and_then(|payload| payload.get("model_provider"))
-            .and_then(Value::as_str)
-        else {
-            continue;
-        };
-        if is_valid_provider_id_for_discovery(provider) {
-            ids.insert(provider.to_string());
+        for segment in text.split_inclusive('\n') {
+            let (line, _) = split_line_ending(segment);
+            let Ok(record) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if record.get("type").and_then(Value::as_str) != Some("session_meta") {
+                continue;
+            }
+            let Some(provider) = record
+                .get("payload")
+                .and_then(Value::as_object)
+                .and_then(|payload| payload.get("model_provider"))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            if is_valid_provider_id_for_discovery(provider) {
+                ids.insert(provider.to_string());
+            }
         }
     }
     Ok(sorted_provider_ids(ids))
@@ -588,11 +630,13 @@ fn collect_rollout_files(root: &Path, files: &mut Vec<PathBuf>) -> anyhow::Resul
     Ok(())
 }
 
-fn split_first_line(text: &str) -> (String, String) {
-    if let Some(index) = text.find('\n') {
-        (text[..index].to_string(), text[index..].to_string())
+fn split_line_ending(segment: &str) -> (&str, &str) {
+    if let Some(line) = segment.strip_suffix("\r\n") {
+        (line, "\r\n")
+    } else if let Some(line) = segment.strip_suffix('\n') {
+        (line, "\n")
     } else {
-        (text.to_string(), String::new())
+        (segment, "")
     }
 }
 
@@ -673,8 +717,7 @@ fn create_backup(
         .map(|change| {
             json!({
                 "path": change.path.to_string_lossy(),
-                "originalFirstLine": change.original_first_line,
-                "separator": change.separator,
+                "originalSessionMetaLines": change.original_session_meta_lines,
             })
         })
         .collect::<Vec<_>>();
@@ -701,10 +744,7 @@ fn create_backup(
 fn apply_session_changes(changes: &[SessionChange]) -> anyhow::Result<AppliedSessionChanges> {
     let mut applied = AppliedSessionChanges::default();
     for change in changes {
-        match fs::write(
-            &change.path,
-            format!("{}{}", change.next_first_line, change.separator),
-        ) {
+        match fs::write(&change.path, &change.next_text) {
             Ok(()) => {}
             Err(error) if is_locked_io_error(&error) => {
                 applied
@@ -722,10 +762,7 @@ fn apply_session_changes(changes: &[SessionChange]) -> anyhow::Result<AppliedSes
 
 fn restore_session_changes(changes: &[SessionChange]) -> anyhow::Result<()> {
     for change in changes {
-        fs::write(
-            &change.path,
-            format!("{}{}", change.original_first_line, change.separator),
-        )?;
+        fs::write(&change.path, &change.original_text)?;
         restore_file_mtime(&change.path, change.original_mtime);
     }
     Ok(())
@@ -908,9 +945,9 @@ fn normalized_global_state(state: &Map<String, Value>) -> Map<String, Value> {
         .and_then(Value::as_object)
     {
         let mut next_open_targets = open_targets.clone();
-        if let Some(per_path) = copy_resolved_object_keys(
-            open_targets.get("perPath").and_then(Value::as_object),
-        ) {
+        if let Some(per_path) =
+            copy_resolved_object_keys(open_targets.get("perPath").and_then(Value::as_object))
+        {
             next_open_targets.insert("perPath".to_string(), Value::Object(per_path));
         }
         next.insert(
