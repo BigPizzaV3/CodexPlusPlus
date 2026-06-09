@@ -57,6 +57,7 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v", "V")
+          $version = $version -replace '[\\/]', '-'
           if (-not $version -or $version -eq "main") {
             $version = "0.0.0-${{ github.run_number }}"
           }
@@ -124,6 +125,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION#V}"
+          VERSION="${VERSION//\//-}"
           if [ -z "$VERSION" ] || [ "$VERSION" = "main" ]; then
             VERSION="0.0.0-${GITHUB_RUN_NUMBER}"
           fi
