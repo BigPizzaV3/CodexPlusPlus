@@ -1444,7 +1444,9 @@ fn codex_auth_api_key(auth_contents: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn relay_profile_model(profile: &RelayProfile) -> String {
+/// 解析 profile 實際使用的模型：優先取 config.toml 裡的 `model =`，
+/// 否則退回 profile.model 欄位。供應商測試用它做回退，避免串到別家供應商的模型名。
+pub fn relay_profile_model(profile: &RelayProfile) -> String {
     root_key_string(&profile.config_contents, "model")
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| profile.model.trim().to_string())
@@ -1947,6 +1949,34 @@ mod tests {
         assert!(profile.config_contents.contains("model_provider = \"ai\""));
         assert!(profile.config_contents.contains("[model_providers.ai]"));
         assert!(!profile.config_contents.contains("[model_providers.custom]"));
+    }
+
+    #[test]
+    fn relay_profile_model_prefers_config_then_field_then_empty() {
+        // 1. 供應商測試的回退第一級：config.toml 的 model = 優先
+        let from_config = RelayProfile {
+            config_contents: "model = \"deepseek-v4-flash\"\nmodel_provider = \"custom\"\n"
+                .to_string(),
+            model: "should-not-be-used".to_string(),
+            ..RelayProfile::default()
+        };
+        assert_eq!(relay_profile_model(&from_config), "deepseek-v4-flash");
+
+        // 2. config 沒寫 model 時退回 profile.model 欄位
+        let from_field = RelayProfile {
+            config_contents: "model_provider = \"custom\"\n".to_string(),
+            model: "deepseek-v4-pro".to_string(),
+            ..RelayProfile::default()
+        };
+        assert_eq!(relay_profile_model(&from_field), "deepseek-v4-pro");
+
+        // 3. 兩者皆空 → 空字串；呼叫端據此才回退到全域 relayTestModel
+        let empty = RelayProfile {
+            config_contents: String::new(),
+            model: String::new(),
+            ..RelayProfile::default()
+        };
+        assert!(relay_profile_model(&empty).trim().is_empty());
     }
 }
 
