@@ -94,10 +94,36 @@ pub fn resolve_codex_app_dir(app_dir: Option<&Path>) -> Option<PathBuf> {
         return normalize_codex_app_path(app_dir);
     }
     if cfg!(target_os = "macos") {
-        find_macos_codex_app_default()
-    } else {
-        find_latest_codex_app_dir_default()
+        return find_macos_codex_app_default();
     }
+    // Windows: try MS Store version first, then standalone install
+    find_latest_codex_app_dir_default()
+        .or_else(|| find_standalone_codex_app_dir())
+}
+
+/// Search for standalone Codex installations (non-MS Store).
+///
+/// Common paths:
+/// - %LOCALAPPDATA%\OpenAI\Codex\bin\  (standalone installer)
+/// - %LOCALAPPDATA%\OpenAI\Codex\      (user data root)
+/// - %LOCALAPPDATA%\Programs\OpenAI\Codex\ (alternative)
+pub fn find_standalone_codex_app_dir() -> Option<PathBuf> {
+    let local_appdata = std::env::var_os("LOCALAPPDATA")?;
+
+    let candidates: &[PathBuf] = &[
+        PathBuf::from(&local_appdata).join("OpenAI").join("Codex").join("bin"),
+        PathBuf::from(&local_appdata).join("OpenAI").join("Codex"),
+        PathBuf::from(&local_appdata).join("Programs").join("OpenAI").join("Codex"),
+    ];
+
+    for candidate in candidates {
+        if let Some(path) = normalize_codex_app_path(candidate) {
+            if build_codex_executable(&path).exists() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 pub fn resolve_codex_app_dir_with_saved(
