@@ -1086,7 +1086,7 @@ impl LaunchHooks for FakeHooks {
         Ok(())
     }
 
-    async fn ensure_injection(&self, debug_port: u16, helper_port: u16) -> bool {
+    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, _app_dir: &Path) -> bool {
         self.event(format!("inject:{debug_port}:{helper_port}"));
         self.inject_error.is_none()
     }
