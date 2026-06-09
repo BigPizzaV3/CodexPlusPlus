@@ -84,6 +84,14 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
 }
 
 #[test]
+fn injection_script_clears_existing_backend_heartbeat_before_reinstalling() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("clearInterval(window.__codexPlusBackendHeartbeat)"));
+    assert!(script.contains("window.__codexPlusBackendHeartbeat = null"));
+}
+
+#[test]
 fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
     let script = assets::injection_script(57321);
 
@@ -185,7 +193,9 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
 
     assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"10\""));
     assert!(script.contains("if (name === \"openai-bundled\") return \"\""));
-    assert!(!script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\""));
+    assert!(
+        !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
+    );
     assert!(script.contains("if (name === \"openai-bundled\" || name === \"codex-plus-openai-bundled\") return \"OpenAI插件1(Codex++)\""));
 }
 
@@ -211,9 +221,13 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("Array.prototype.filter"));
     assert!(script.contains("codexPluginBuildFlavorFilterPatch"));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
-    assert!(script.contains("codexPluginOfficialMarketplaceName(plugin?.marketplaceName) && !callback(plugin)"));
+    assert!(script.contains(
+        "codexPluginOfficialMarketplaceName(plugin?.marketplaceName) && !callback(plugin)"
+    ));
     assert!(script.contains("isCodexPluginMarketplaceHiddenFilter"));
-    assert!(script.contains("codexPluginOfficialMarketplaceName(marketplace?.name) && !callback(marketplace)"));
+    assert!(script.contains(
+        "codexPluginOfficialMarketplaceName(marketplace?.name) && !callback(marketplace)"
+    ));
     assert!(script.contains("plugin_marketplace_hidden_filter_bypassed"));
     assert!(script.contains("method === \"list-plugins\""));
     assert!(script.contains("delete next.marketplaceKinds"));
@@ -221,10 +235,16 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("pluginMarketplaceAliasForName"));
     assert!(script.contains("marketplace.name = alias"));
     assert!(script.contains("restorePluginMarketplaceName"));
-    assert!(script.contains("next.remoteMarketplaceName = restorePluginMarketplaceName(next.remoteMarketplaceName)"));
+    assert!(script.contains(
+        "next.remoteMarketplaceName = restorePluginMarketplaceName(next.remoteMarketplaceName)"
+    ));
     assert!(script.contains("if (name === \"openai-bundled\") return \"\""));
-    assert!(script.contains("if (name === \"openai-curated\") return \"codex-plus-openai-curated\""));
-    assert!(script.contains("if (name === \"openai-primary-runtime\") return \"codex-plus-openai-primary-runtime\""));
+    assert!(
+        script.contains("if (name === \"openai-curated\") return \"codex-plus-openai-curated\"")
+    );
+    assert!(script.contains(
+        "if (name === \"openai-primary-runtime\") return \"codex-plus-openai-primary-runtime\""
+    ));
     assert!(script.contains("OpenAI插件1(Codex++)"));
     assert!(script.contains("OpenAI插件2(Codex++)"));
     assert!(script.contains("OpenAI插件3(Codex++)"));
@@ -388,7 +408,12 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("codexServiceTierMaybeLoadModelCatalog"));
     assert!(script.contains("fastBlocked"));
     assert!(script.contains("data-tier=\"unsupported\""));
-    assert!(script.contains("nextParams.service_tier = override.serviceTier"));
+    assert!(script.contains("\"vscode-api-\", \"setting-storage-\""));
+    assert!(script.contains("codexDispatcherFromModule"));
+    assert!(script.contains("loadCodexAppDispatcher"));
+    assert!(
+        script.contains("serviceTier: override.serviceTier, service_tier: override.serviceTier")
+    );
     assert!(script.contains("serviceTierControls: false"));
     assert!(script.contains("data-codex-plus-setting=\"serviceTierControls\""));
     assert!(script.contains("data-codex-service-tier-controls"));
@@ -456,6 +481,11 @@ fn injection_script_applies_fast_service_tier_contract() {
         cases["unsupportedModel"]["service_tier"],
         serde_json::Value::Null
     );
+    assert_eq!(cases["unsupportedMiniModel"]["serviceTier"], serde_json::Value::Null);
+    assert_eq!(
+        cases["unsupportedMiniModel"]["service_tier"],
+        serde_json::Value::Null
+    );
 
     assert_eq!(cases["turnWithoutModel"]["serviceTier"], "priority");
     assert_eq!(cases["turnWithoutModelDiagnosticModel"], "gpt-5.4");
@@ -469,7 +499,93 @@ fn injection_script_applies_fast_service_tier_contract() {
         serde_json::Value::Null
     );
 
+    assert_eq!(cases["selectedModelName"], "gpt-5.5");
+    assert_eq!(
+        cases["selectedModelFastAvailability"]["modelName"],
+        "gpt-5.5"
+    );
+    assert_eq!(cases["selectedModelFastAvailability"]["supported"], true);
+    assert_eq!(cases["selectedModelAliasName"], "gpt-5.5");
+    assert_eq!(
+        cases["selectedModelAliasFastAvailability"]["modelName"],
+        "gpt-5.5"
+    );
+    assert_eq!(
+        cases["selectedModelAliasFastAvailability"]["supported"],
+        true
+    );
+    assert_eq!(cases["selectedModelCompactAliasName"], "gpt-5.5");
+    assert_eq!(
+        cases["selectedModelCompactAliasFastAvailability"]["supported"],
+        true
+    );
+    assert_eq!(cases["selectedModelMiniAliasName"], "gpt-5.4-mini");
+    assert_eq!(
+        cases["selectedModelMiniAliasFastAvailability"]["supported"],
+        false
+    );
+    assert_eq!(
+        cases["selectedModelCompactMiniAliasName"],
+        "gpt-5.4-mini"
+    );
+    assert_eq!(
+        cases["selectedModelCompactMiniAliasFastAvailability"]["supported"],
+        false
+    );
+
+    assert_eq!(cases["globalFastUnsupportedState"]["mode"], "global-fast");
+    assert_eq!(cases["globalFastUnsupportedState"]["defaultMode"], "fast");
+    assert_eq!(cases["globalFastUnsupportedBadge"]["tier"], "hidden");
+    assert_eq!(cases["globalFastUnsupportedBadge"]["hidden"], true);
+    assert_eq!(
+        cases["threadFastRejectedState"]["entries"]["thread-12345678"]["mode"],
+        "standard"
+    );
+
     assert_eq!(cases["startConversation"]["serviceTier"], "priority");
+}
+
+#[test]
+fn injection_script_installs_fast_service_tier_dispatcher_patch() {
+    let cases = run_service_tier_dispatcher_harness();
+
+    assert_eq!(cases["installed"], true);
+    assert_eq!(cases["startConversation"]["type"], "start-conversation");
+    assert_eq!(
+        cases["startConversation"]["payload"]["serviceTier"],
+        "priority"
+    );
+    assert_eq!(
+        cases["startConversation"]["payload"]["service_tier"],
+        "priority"
+    );
+    assert_eq!(cases["turnStart"]["type"], "turn/start");
+    assert_eq!(cases["turnStart"]["payload"]["serviceTier"], "priority");
+    assert_eq!(cases["turnStart"]["payload"]["service_tier"], "priority");
+}
+
+#[test]
+fn injection_script_installs_fast_badge_in_current_composer_dom() {
+    let cases = run_service_tier_badge_harness();
+
+    assert_eq!(cases["badgeCount"], 1);
+    assert_eq!(cases["badgeText"], "fast");
+    assert_eq!(cases["badgeTier"], "fast");
+    assert_eq!(cases["rightGroupChildren"][0], "fast");
+    assert_eq!(cases["rightGroupChildren"][1], "5.5 Extra High");
+    assert_eq!(cases["unsupportedBadgeCount"], 0);
+    assert_eq!(cases["unsupportedRightGroupChildren"][0], "deepseek-v4-pro");
+    assert_eq!(cases["unsupportedMiniBadgeCount"], 0);
+    assert_eq!(cases["unsupportedMiniRightGroupChildren"][0], "5.4-mini");
+    assert_eq!(cases["unsupportedCompactMiniBadgeCount"], 0);
+    assert_eq!(
+        cases["unsupportedCompactMiniRightGroupChildren"][0],
+        "5.4-MiniExtra High"
+    );
+    assert_eq!(cases["restoredCompactBadgeCount"], 1);
+    assert_eq!(cases["restoredCompactBadgeText"], "fast");
+    assert_eq!(cases["restoredBadgeCount"], 1);
+    assert_eq!(cases["restoredBadgeText"], "fast");
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
@@ -485,7 +601,8 @@ fn run_service_tier_contract_harness() -> serde_json::Value {
 const scriptPath = {script_path};
 const store = new Map();
 store.set("codexPlusSettings", JSON.stringify({{ serviceTierControls: true }}));
-function node() {{
+let selectedModelNode = null;
+function node(text = "") {{
   return {{
     appendChild() {{}},
     prepend() {{}},
@@ -501,7 +618,7 @@ function node() {{
     style: {{}},
     children: [],
     isConnected: true,
-    textContent: "",
+    textContent: text,
     innerHTML: "",
   }};
 }}
@@ -512,7 +629,7 @@ globalThis.document = {{
   documentElement: node(),
   body: node(),
   createElement: () => node(),
-  querySelector: () => null,
+  querySelector: (selector) => String(selector || "").includes("composer") ? selectedModelNode : null,
   querySelectorAll: () => [],
   addEventListener() {{}},
   removeEventListener() {{}},
@@ -544,6 +661,12 @@ const unsupportedModel = api.applyServiceTierOverride("turn/start", {{
   service_tier: "priority",
 }}, "conv-should-not-be-model");
 
+const unsupportedMiniModel = api.applyServiceTierOverride("turn/start", {{
+  threadId: "thread-12345678",
+  model: "gpt-5.4-mini",
+  service_tier: "priority",
+}}, "conv-should-not-be-model");
+
 const turnWithoutModel = api.applyServiceTierOverride("turn/start", {{
   threadId: "thread-12345678",
   service_tier: null,
@@ -558,6 +681,48 @@ const customInheritUnsupported = api.applyServiceTierOverride("turn/start", {{
   service_tier: "priority",
 }}, "");
 
+api.setModelCatalog({{ status: "ok", model: "gpt-4.1", default_model: "gpt-4.1", models: ["gpt-4.1", "gpt-5.5"] }});
+selectedModelNode = node("gpt-5.5");
+const selectedModelName = api.currentModelName();
+const selectedModelFastAvailability = api.fastAvailability();
+selectedModelNode = null;
+
+selectedModelNode = node("5.5 Extra High");
+const selectedModelAliasName = api.currentModelName();
+const selectedModelAliasFastAvailability = api.fastAvailability();
+selectedModelNode = null;
+
+selectedModelNode = node("Full access5.5Extra High");
+const selectedModelCompactAliasName = api.currentModelName();
+const selectedModelCompactAliasFastAvailability = api.fastAvailability();
+selectedModelNode = null;
+
+selectedModelNode = node("Full accessfast5.4-MiniExtra High");
+const selectedModelCompactMiniAliasName = api.currentModelName();
+const selectedModelCompactMiniAliasFastAvailability = api.fastAvailability();
+selectedModelNode = null;
+
+selectedModelNode = node("Full access5.4-mini");
+const selectedModelMiniAliasName = api.currentModelName();
+const selectedModelMiniAliasFastAvailability = api.fastAvailability();
+selectedModelNode = null;
+
+api.setBackendStatus({{ status: "ok", message: "ok" }});
+api.setServiceTierState({{ status: "ok", serviceTier: null, fastTierValue: "priority" }});
+api.setModelCatalog({{ status: "ok", model: "gpt-4.1", default_model: "gpt-4.1", models: ["gpt-4.1"] }});
+api.setThreadState({{ mode: "global-standard", defaultMode: "standard", entries: {{}} }});
+selectedModelNode = node("deepseek-v4-pro");
+api.setControlMode("global-fast");
+const globalFastUnsupportedState = api.threadState();
+const globalFastUnsupportedBadge = api.badgeState();
+selectedModelNode = null;
+
+api.setThreadState({{ mode: "custom", defaultMode: "inherit", entries: {{ "thread-12345678": {{ mode: "standard", at: Date.now() }} }} }});
+selectedModelNode = node("deepseek-v4-pro");
+api.setThreadMode("fast");
+const threadFastRejectedState = api.threadState();
+selectedModelNode = null;
+
 api.setModelCatalog({{ status: "ok", model: "gpt-5.5", default_model: "gpt-5.5", models: ["gpt-5.5"] }});
 api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
 const startConversation = api.requestOverride({{
@@ -569,9 +734,23 @@ const startConversation = api.requestOverride({{
 process.stdout.write(JSON.stringify({{
   supportedFast,
   unsupportedModel,
+  unsupportedMiniModel,
   turnWithoutModel,
   turnWithoutModelDiagnosticModel,
   customInheritUnsupported,
+  selectedModelName,
+  selectedModelFastAvailability,
+  selectedModelAliasName,
+  selectedModelAliasFastAvailability,
+  selectedModelCompactAliasName,
+  selectedModelCompactAliasFastAvailability,
+  selectedModelMiniAliasName,
+  selectedModelMiniAliasFastAvailability,
+  selectedModelCompactMiniAliasName,
+  selectedModelCompactMiniAliasFastAvailability,
+  globalFastUnsupportedState,
+  globalFastUnsupportedBadge,
+  threadFastRejectedState,
   startConversation,
 }}));
 "#,
@@ -585,6 +764,398 @@ process.stdout.write(JSON.stringify({{
         .arg(&harness_path)
         .output()
         .expect("node should run service-tier harness");
+    assert!(
+        output.status.success(),
+        "node harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("harness stdout should be JSON")
+}
+
+fn run_service_tier_badge_harness() -> serde_json::Value {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("renderer-inject.js");
+    let harness_path = temp.path().join("service-tier-badge-harness.cjs");
+    std::fs::write(&script_path, assets::injection_script(57321))
+        .expect("injection script should be written");
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    write!(
+        harness,
+        r#"
+const scriptPath = {script_path};
+const store = new Map();
+store.set("codexPlusSettings", JSON.stringify({{ serviceTierControls: true }}));
+
+function datasetKey(name) {{
+  return name.replace(/^data-/, "").replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+}}
+
+class FakeElement {{
+  constructor(tagName = "div", options = {{}}) {{
+    this.tagName = tagName.toUpperCase();
+    this.className = options.className || "";
+    this.textContent = options.textContent || "";
+    this.value = options.value || "";
+    this.dataset = {{}};
+    this.style = {{}};
+    this.children = [];
+    this.parentElement = null;
+    this.isConnected = true;
+    this.attributes = new Map();
+    this.rect = options.rect || {{ x: 0, y: 0, width: 10, height: 10 }};
+    if (options.role) this.setAttribute("role", options.role);
+    if (options.ariaLabel) this.setAttribute("aria-label", options.ariaLabel);
+    if (options.contenteditable) this.setAttribute("contenteditable", options.contenteditable);
+  }}
+
+  appendChild(child) {{
+    return this.insertBefore(child, null);
+  }}
+
+  insertBefore(child, before) {{
+    child.remove?.();
+    child.parentElement = this;
+    child.isConnected = true;
+    const index = before ? this.children.indexOf(before) : -1;
+    if (index >= 0) this.children.splice(index, 0, child);
+    else this.children.push(child);
+    return child;
+  }}
+
+  prepend(child) {{
+    return this.insertBefore(child, this.children[0] || null);
+  }}
+
+  remove() {{
+    if (!this.parentElement) return;
+    const siblings = this.parentElement.children;
+    const index = siblings.indexOf(this);
+    if (index >= 0) siblings.splice(index, 1);
+    this.parentElement = null;
+    this.isConnected = false;
+  }}
+
+  setAttribute(name, value) {{
+    this.attributes.set(name, String(value));
+    if (name.startsWith("data-")) this.dataset[datasetKey(name)] = String(value);
+  }}
+
+  getAttribute(name) {{
+    if (name.startsWith("data-")) return this.dataset[datasetKey(name)] || null;
+    return this.attributes.has(name) ? this.attributes.get(name) : null;
+  }}
+
+  removeAttribute(name) {{
+    this.attributes.delete(name);
+    if (name.startsWith("data-")) delete this.dataset[datasetKey(name)];
+  }}
+
+  addEventListener() {{}}
+  removeEventListener() {{}}
+
+  getBoundingClientRect() {{
+    return {{
+      x: this.rect.x,
+      y: this.rect.y,
+      left: this.rect.x,
+      top: this.rect.y,
+      width: this.rect.width,
+      height: this.rect.height,
+      right: this.rect.x + this.rect.width,
+      bottom: this.rect.y + this.rect.height,
+    }};
+  }}
+
+  matches(selector) {{
+    return String(selector || "").split(",").some((part) => this.matchesOne(part.trim()));
+  }}
+
+  matchesOne(selector) {{
+    if (!selector) return false;
+    if (selector === "div") return this.tagName === "DIV";
+    if (selector === "button") return this.tagName === "BUTTON";
+    if (selector === ".composer-footer") return this.hasClass("composer-footer");
+    if (selector === ".ProseMirror") return this.hasClass("ProseMirror");
+    if (selector === "[contenteditable='true']" || selector === '[contenteditable="true"]') return this.getAttribute("contenteditable") === "true";
+    if (selector === "[role='button']" || selector === '[role="button"]') return this.getAttribute("role") === "button";
+    if (selector === "[data-codex-service-tier-badge=\"true\"]" || selector === "[data-codex-service-tier-badge='true']") return this.dataset.codexServiceTierBadge === "true";
+    if (selector === "div[class*='_footer_']") return this.tagName === "DIV" && String(this.className).includes("_footer_");
+    if (selector === "div[class*='grid-cols']") return this.tagName === "DIV" && String(this.className).includes("grid-cols");
+    return false;
+  }}
+
+  hasClass(className) {{
+    return String(this.className).split(/\s+/).includes(className);
+  }}
+
+  querySelectorAll(selector) {{
+    const result = [];
+    const visit = (node) => {{
+      node.children.forEach((child) => {{
+        if (child.matches(selector)) result.push(child);
+        visit(child);
+      }});
+    }};
+    visit(this);
+    return result;
+  }}
+
+  querySelector(selector) {{
+    return this.querySelectorAll(selector)[0] || null;
+  }}
+
+  closest(selector) {{
+    for (let node = this; node; node = node.parentElement) {{
+      if (node.matches(selector)) return node;
+    }}
+    return null;
+  }}
+}}
+
+globalThis.HTMLElement = FakeElement;
+globalThis.window = globalThis;
+window.__CODEX_PLUS_TEST_SERVICE_TIER__ = true;
+globalThis.getComputedStyle = () => ({{ display: "block", visibility: "visible" }});
+
+const body = new FakeElement("body", {{ rect: {{ x: 0, y: 0, width: 1296, height: 840 }} }});
+const shell = body.appendChild(new FakeElement("div", {{ className: "relative flex flex-col bg-token-input-background", rect: {{ x: 424, y: 728, width: 736, height: 96 }} }}));
+const inner = shell.appendChild(new FakeElement("div", {{ className: "relative z-10 flex min-h-0 flex-1 flex-col", rect: {{ x: 424, y: 728, width: 736, height: 96 }} }}));
+const editorWrap = inner.appendChild(new FakeElement("div", {{ className: "mb-1 flex-grow overflow-y-auto px-3", rect: {{ x: 424, y: 740, width: 736, height: 44 }} }}));
+editorWrap.appendChild(new FakeElement("div", {{ className: "ProseMirror", contenteditable: "true", rect: {{ x: 436, y: 740, width: 712, height: 44 }} }}));
+const footer = inner.appendChild(new FakeElement("div", {{ className: "_footer_1nujl_2 grid grid-cols-[minmax(0,auto)_auto_minmax(0,1fr)] items-center gap-[5px] select-none mb-2 px-2", rect: {{ x: 424, y: 788, width: 736, height: 28 }} }}));
+const leftGroup = footer.appendChild(new FakeElement("div", {{ className: "flex min-w-0 items-center gap-[5px]", textContent: "Full access", rect: {{ x: 432, y: 788, width: 149, height: 28 }} }}));
+leftGroup.appendChild(new FakeElement("button", {{ ariaLabel: "Add files and more", rect: {{ x: 432, y: 788, width: 28, height: 28 }} }}));
+leftGroup.appendChild(new FakeElement("button", {{ textContent: "Full access", rect: {{ x: 465, y: 788, width: 116, height: 28 }} }}));
+footer.appendChild(new FakeElement("div", {{ className: "flex items-center", rect: {{ x: 586, y: 802, width: 1, height: 1 }} }}));
+const rightGroup = footer.appendChild(new FakeElement("div", {{ className: "flex min-w-0 items-center justify-end gap-2 w-full", textContent: "5.5 Extra High", rect: {{ x: 591, y: 788, width: 561, height: 28 }} }}));
+rightGroup.appendChild(new FakeElement("button", {{ textContent: "5.5 Extra High", rect: {{ x: 993, y: 788, width: 123, height: 28 }} }}));
+rightGroup.appendChild(new FakeElement("button", {{ ariaLabel: "Send", rect: {{ x: 1124, y: 788, width: 28, height: 28 }} }}));
+
+globalThis.document = {{
+  scripts: [],
+  documentElement: body,
+  body,
+  createElement: (tagName) => new FakeElement(tagName, {{ rect: {{ x: 0, y: 0, width: 54, height: 24 }} }}),
+  querySelector: (selector) => body.querySelector(selector),
+  querySelectorAll: (selector) => body.querySelectorAll(selector),
+  addEventListener() {{}},
+  removeEventListener() {{}},
+}};
+globalThis.localStorage = {{
+  getItem: (key) => store.has(key) ? store.get(key) : null,
+  setItem: (key, value) => store.set(key, String(value)),
+  removeItem: (key) => store.delete(key),
+}};
+globalThis.location = {{ href: "https://codex.test/thread/thread-12345678", pathname: "/thread/thread-12345678", search: "", hash: "" }};
+window.location = globalThis.location;
+globalThis.navigator = {{ userAgent: "node-test" }};
+globalThis.performance = {{ getEntriesByType: () => [] }};
+
+require(scriptPath);
+const api = window.__codexPlusServiceTierTest;
+api.setBackendStatus({{ status: "ok", message: "ok" }});
+api.setModelCatalog({{ status: "ok", model: "gpt-5.5", default_model: "gpt-5.5", models: ["gpt-5.5"] }});
+api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
+api.setServiceTierState({{ status: "ok", serviceTier: null, fastTierValue: "priority", controlMode: "global-fast", defaultMode: "fast", threadMode: "inherit", effectiveMode: "fast" }});
+api.installBadge();
+
+const supportedBadges = document.querySelectorAll('[data-codex-service-tier-badge="true"]');
+const supportedChildren = rightGroup.children.map((child) => child.textContent || child.getAttribute("aria-label") || child.tagName);
+rightGroup.textContent = "deepseek-v4-pro";
+rightGroup.children[1].textContent = "deepseek-v4-pro";
+api.setModelCatalog({{ status: "ok", model: "deepseek-v4-pro", default_model: "deepseek-v4-pro", models: ["deepseek-v4-pro"] }});
+api.installBadge();
+const unsupportedBadges = document.querySelectorAll('[data-codex-service-tier-badge="true"]');
+const unsupportedChildren = rightGroup.children.map((child) => child.textContent || child.getAttribute("aria-label") || child.tagName);
+rightGroup.textContent = "5.5 Extra High";
+rightGroup.children[0].textContent = "5.5 Extra High";
+api.setModelCatalog({{ status: "ok", model: "gpt-5.5", default_model: "gpt-5.5", models: ["gpt-5.5"] }});
+api.installBadge();
+const restoredBadges = document.querySelectorAll('[data-codex-service-tier-badge="true"]');
+rightGroup.textContent = "5.4-mini";
+rightGroup.children[1].textContent = "5.4-mini";
+api.setModelCatalog({{ status: "ok", model: "gpt-5.4-mini", default_model: "gpt-5.4-mini", models: ["gpt-5.4-mini"] }});
+api.installBadge();
+const unsupportedMiniBadges = document.querySelectorAll('[data-codex-service-tier-badge="true"]');
+const unsupportedMiniChildren = rightGroup.children.map((child) => child.textContent || child.getAttribute("aria-label") || child.tagName);
+rightGroup.textContent = "5.4-MiniExtra High";
+rightGroup.children[0].textContent = "5.4-MiniExtra High";
+api.setModelCatalog({{ status: "ok", model: "gpt-5.4-mini", default_model: "gpt-5.4-mini", models: ["gpt-5.4-mini"] }});
+api.installBadge();
+const unsupportedCompactMiniBadges = document.querySelectorAll('[data-codex-service-tier-badge="true"]');
+const unsupportedCompactMiniChildren = rightGroup.children.map((child) => child.textContent || child.getAttribute("aria-label") || child.tagName);
+rightGroup.textContent = "5.5Extra High";
+rightGroup.children[0].textContent = "5.5Extra High";
+api.setModelCatalog({{ status: "ok", model: "gpt-5.5", default_model: "gpt-5.5", models: ["gpt-5.5"] }});
+api.installBadge();
+const restoredCompactBadges = document.querySelectorAll('[data-codex-service-tier-badge="true"]');
+process.stdout.write(JSON.stringify({{
+  badgeCount: supportedBadges.length,
+  badgeText: supportedBadges[0]?.textContent || "",
+  badgeTier: supportedBadges[0]?.dataset.tier || "",
+  rightGroupChildren: supportedChildren,
+  unsupportedBadgeCount: unsupportedBadges.length,
+  unsupportedRightGroupChildren: unsupportedChildren,
+  unsupportedMiniBadgeCount: unsupportedMiniBadges.length,
+  unsupportedMiniRightGroupChildren: unsupportedMiniChildren,
+  unsupportedCompactMiniBadgeCount: unsupportedCompactMiniBadges.length,
+  unsupportedCompactMiniRightGroupChildren: unsupportedCompactMiniChildren,
+  restoredCompactBadgeCount: restoredCompactBadges.length,
+  restoredCompactBadgeText: restoredCompactBadges[0]?.textContent || "",
+  restoredBadgeCount: restoredBadges.length,
+  restoredBadgeText: restoredBadges[0]?.textContent || "",
+}}));
+"#,
+        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+            .expect("script path should serialize")
+    )
+    .expect("harness should be written");
+    drop(harness);
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should run service-tier badge harness");
+    assert!(
+        output.status.success(),
+        "node harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("harness stdout should be JSON")
+}
+
+fn run_service_tier_dispatcher_harness() -> serde_json::Value {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("renderer-inject.js");
+    let assets_dir = temp.path().join("assets");
+    let vscode_api_path = assets_dir.join("vscode-api-test.js");
+    let setting_storage_path = assets_dir.join("setting-storage-test.js");
+    let package_path = assets_dir.join("package.json");
+    let harness_path = temp.path().join("service-tier-dispatcher-harness.cjs");
+    std::fs::write(&script_path, assets::injection_script(57321))
+        .expect("injection script should be written");
+    std::fs::create_dir_all(&assets_dir).expect("assets dir should be created");
+    std::fs::write(&package_path, r#"{"type":"module"}"#).expect("package should be written");
+    std::fs::write(
+        &vscode_api_path,
+        r#"
+export const f = {
+  messages: [],
+  dispatchMessage(type, payload) {
+    this.messages.push({ type, payload });
+  },
+};
+"#,
+    )
+    .expect("vscode-api module should be written");
+    std::fs::write(
+        &setting_storage_path,
+        r#"
+export async function n(setting) { return setting.default; }
+export async function s() {}
+"#,
+    )
+    .expect("setting-storage module should be written");
+
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    write!(
+        harness,
+        r#"
+(async () => {{
+const {{ pathToFileURL }} = require("url");
+const scriptPath = {script_path};
+const vscodeApiUrl = pathToFileURL({vscode_api_path}).href;
+const settingStorageUrl = pathToFileURL({setting_storage_path}).href;
+const store = new Map();
+store.set("codexPlusSettings", JSON.stringify({{ serviceTierControls: true }}));
+function node(text = "") {{
+  return {{
+    appendChild() {{}},
+    prepend() {{}},
+    remove() {{}},
+    setAttribute() {{}},
+    removeAttribute() {{}},
+    addEventListener() {{}},
+    querySelector() {{ return null; }},
+    querySelectorAll() {{ return []; }},
+    closest() {{ return null; }},
+    classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
+    dataset: {{}},
+    style: {{}},
+    children: [],
+    isConnected: true,
+    textContent: text,
+    innerHTML: "",
+  }};
+}}
+globalThis.window = globalThis;
+window.__CODEX_PLUS_TEST_SERVICE_TIER__ = true;
+globalThis.document = {{
+  scripts: [],
+  documentElement: node(),
+  body: node(),
+  createElement: () => node(),
+  querySelector: () => null,
+  querySelectorAll: (selector) => selector === "link[href]"
+    ? [{{ href: vscodeApiUrl }}, {{ href: settingStorageUrl }}]
+    : [],
+  addEventListener() {{}},
+  removeEventListener() {{}},
+}};
+globalThis.localStorage = {{
+  getItem: (key) => store.has(key) ? store.get(key) : null,
+  setItem: (key, value) => store.set(key, String(value)),
+  removeItem: (key) => store.delete(key),
+}};
+globalThis.location = {{ href: "https://codex.test/thread/thread-12345678", pathname: "/thread/thread-12345678", search: "", hash: "" }};
+window.location = globalThis.location;
+globalThis.navigator = {{ userAgent: "node-test" }};
+globalThis.performance = {{ getEntriesByType: () => [] }};
+require(scriptPath);
+const api = window.__codexPlusServiceTierTest;
+api.setBackendStatus({{ status: "ok", message: "ok" }});
+api.setServiceTierState({{ status: "ok", serviceTier: null, fastTierValue: "priority" }});
+api.setModelCatalog({{ status: "ok", model: "gpt-5.5", default_model: "gpt-5.5", models: ["gpt-5.5"] }});
+api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
+const vscodeApi = await import(vscodeApiUrl);
+const installed = await api.installDispatcherPatch();
+vscodeApi.f.dispatchMessage("start-conversation", {{
+  threadId: "thread-12345678",
+  model: "gpt-5.5",
+}});
+const startConversation = vscodeApi.f.messages.at(-1);
+vscodeApi.f.dispatchMessage("turn/start", {{
+  threadId: "thread-12345678",
+  model: "gpt-5.5",
+}});
+const turnStart = vscodeApi.f.messages.at(-1);
+process.stdout.write(JSON.stringify({{
+  installed,
+  startConversation,
+  turnStart,
+}}));
+}})().catch((error) => {{
+  console.error(error);
+  process.exit(1);
+}});
+"#,
+        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+            .expect("script path should serialize"),
+        vscode_api_path = serde_json::to_string(&vscode_api_path.to_string_lossy().to_string())
+            .expect("vscode api path should serialize"),
+        setting_storage_path =
+            serde_json::to_string(&setting_storage_path.to_string_lossy().to_string())
+                .expect("setting storage path should serialize"),
+    )
+    .expect("harness should be written");
+    drop(harness);
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should run service-tier dispatcher harness");
     assert!(
         output.status.success(),
         "node harness failed\nstdout:\n{}\nstderr:\n{}",
