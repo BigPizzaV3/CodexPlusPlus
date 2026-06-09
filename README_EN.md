@@ -36,6 +36,16 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 ## Sponsors
 
 <p align="center">
+  <a href="https://jojocode.com/">
+    <img src="docs/images/sponsor-jojocode.svg" alt="JOJO Code" width="180">
+  </a>
+</p>
+<p align="center">
+  <a href="https://jojocode.com/"><strong>JOJO Code | Official Codex++ Relay</strong></a><br>
+  The official Codex++ relay service, focused on stable access and cost-effective pricing. JOJO Code supports GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2, and more for daily development, team collaboration, and long-running project workflows.
+</p>
+
+<p align="center">
   <a href="mailto:1727532@qq.com">Want to be shown below?</a>
 </p>
 <table>
@@ -49,7 +59,7 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
         <img src="docs/images/sponsor-jojocode.svg" alt="JOJO Code" width="150">
       </a>
     </td>
-    <td><a href="https://jojocode.com/"><strong>JOJO Code | Official Codex++ Relay</strong></a><br>Thanks to JOJO Code for sponsoring this project! JOJO Code is the official Codex++ relay service. It is built for daily development and team collaboration, providing stable Codex API access for quick onboarding, long-term use, and project workflows.</td>
+    <td><a href="https://jojocode.com/"><strong>JOJO Code | Official Codex++ Relay</strong></a><br>Thanks to JOJO Code for sponsoring this project. JOJO Code is the official Codex++ relay service with cost-effective pricing and stable, easy-to-configure Codex API access. It supports GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2, and more for daily development, quick setup, team collaboration, and continuous use.</td>
   </tr>
   <tr>
     <td align="center">
