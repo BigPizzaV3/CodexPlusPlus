@@ -3,6 +3,7 @@ pub mod app_paths;
 pub mod assets;
 pub mod bridge;
 pub mod ccs_import;
+pub mod config_coordinator;
 pub mod cdp;
 pub mod cli_wrapper;
 pub mod diagnostic_log;

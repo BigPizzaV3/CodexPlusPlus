@@ -171,6 +171,30 @@ pub fn write_linked_profiles_to_db(
     Ok(written)
 }
 
+pub fn current_codex_provider_from_db(path: &Path) -> anyhow::Result<Option<CcsProviderImport>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("failed to open provider database {}", path.display()))?;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, settings_config
+         FROM providers
+         WHERE app_type = 'codex' AND is_current = 1
+         ORDER BY COALESCE(sort_index, 999999), created_at ASC
+         LIMIT 1",
+    )?;
+    let mut rows = stmt.query([])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let source_id: String = row.get(0)?;
+    let name: String = row.get(1)?;
+    let settings_config: String = row.get(2)?;
+    let config = serde_json::from_str::<Value>(&settings_config).unwrap_or_default();
+    Ok(import_from_ccs_value(&source_id, &name, &config))
+}
+
 pub fn list_codex_providers_from_db(path: &Path) -> anyhow::Result<Vec<CcsProviderImport>> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -236,7 +260,7 @@ pub fn relay_profile_from_ccs(
     }
 }
 
-fn apply_ccs_provider_to_profile(profile: &mut RelayProfile, provider: &CcsProviderImport) {
+pub fn apply_ccs_provider_to_profile(profile: &mut RelayProfile, provider: &CcsProviderImport) {
     profile.linked_ccs_provider_id = provider.source_id.clone();
     profile.name = provider.name.clone();
     profile.base_url = provider.base_url.clone();
@@ -269,7 +293,7 @@ fn profile_to_ccs_settings_config(profile: &RelayProfile) -> anyhow::Result<Valu
     }))
 }
 
-fn import_from_ccs_value(source_id: &str, name: &str, config: &Value) -> Option<CcsProviderImport> {
+pub fn import_from_ccs_value(source_id: &str, name: &str, config: &Value) -> Option<CcsProviderImport> {
     let base_url = extract_base_url(config).unwrap_or_default();
     let api_key = extract_api_key(config).unwrap_or_default();
     let protocol = extract_protocol(config);
@@ -734,6 +758,35 @@ base_url = "https://toml.example/v1"
         assert_eq!(name, "After");
         assert_eq!(settings_config["auth"]["OPENAI_API_KEY"], "sk-after");
         assert_eq!(settings_config["config"], "model_provider = \"custom\"\n");
+    }
+
+    #[test]
+    fn current_codex_provider_from_db_returns_active_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join(format!("{}-{}.db", "cc", "switch"));
+        create_ccs_db(&db);
+        insert_provider(&db, "old", "Old", json!({ "config": "old" }), 0);
+        insert_provider(
+            &db,
+            "new",
+            "New",
+            json!({
+                "auth": { "OPENAI_API_KEY": "sk-new" },
+                "config": "model_provider = \"new\"\n"
+            }),
+            1,
+        );
+        Connection::open(&db)
+            .unwrap()
+            .execute(
+                "UPDATE providers SET is_current = 1 WHERE id = 'new' AND app_type = 'codex'",
+                [],
+            )
+            .unwrap();
+
+        let current = current_codex_provider_from_db(&db).unwrap().unwrap();
+        assert_eq!(current.source_id, "new");
+        assert_eq!(current.name, "New");
     }
 
     #[test]

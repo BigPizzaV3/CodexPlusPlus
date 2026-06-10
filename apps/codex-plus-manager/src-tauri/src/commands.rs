@@ -402,6 +402,16 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
 }
 
 #[tauri::command]
+pub fn get_config_coordination_status() -> CommandResult<codex_plus_core::config_coordinator::CoordinationStatus> {
+    let settings =
+        settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default());
+    ok(
+        "已读取配置协调状态。",
+        codex_plus_core::config_coordinator::coordination_status(&settings),
+    )
+}
+
+#[tauri::command]
 pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
     let mut settings = normalize_settings_before_save(settings);
     if settings.ccs_link_enabled {
@@ -1761,6 +1771,12 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     }
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
+    if let Some(result) = try_apply_linked_ccs_provider(&settings, &relay) {
+        return result;
+    }
+    if let Some(result) = guard_live_write_or_fail(&settings, false) {
+        return result;
+    }
     if relay_has_complete_files(&relay) {
         return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
             &home,
@@ -1865,6 +1881,12 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
         );
     }
     let relay = settings.active_relay_profile();
+    if let Some(result) = try_apply_linked_ccs_provider(&settings, &relay) {
+        return result;
+    }
+    if let Some(result) = guard_live_write_or_fail(&settings, false) {
+        return result;
+    }
     log_relay_apply_request("manager.apply_pure_api_injection", &settings, &relay);
     if relay_has_complete_files(&relay) {
         return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
@@ -1960,6 +1982,12 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
         settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default());
     let relay = settings.active_relay_profile();
     log_manager_event("manager.clear_relay_injection.start", json!({}));
+    if let Some(result) = try_apply_linked_ccs_provider(&settings, &relay) {
+        return result;
+    }
+    if let Some(result) = guard_live_write_or_fail(&settings, false) {
+        return result;
+    }
     let auth_contents = (relay.relay_mode == codex_plus_core::settings::RelayMode::Official
         && !relay.official_mix_api_key
         && !relay.auth_contents.trim().is_empty())
@@ -1995,6 +2023,64 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
             )
         }
     }
+}
+
+fn try_apply_linked_ccs_provider(
+    settings: &BackendSettings,
+    relay: &codex_plus_core::settings::RelayProfile,
+) -> Option<CommandResult<RelayPayload>> {
+    if !settings.ccs_link_enabled {
+        return None;
+    }
+    if codex_plus_core::config_coordinator::effective_ownership(settings)
+        != codex_plus_core::settings::ConfigOwnership::CcSwitch
+    {
+        return None;
+    }
+    let source_id = relay.linked_ccs_provider_id.trim();
+    if source_id.is_empty() {
+        return None;
+    }
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    match codex_plus_core::config_coordinator::apply_linked_ccs_provider_to_home(
+        source_id,
+        &relay_combined_common_config(settings),
+    ) {
+        Ok(result) => {
+            let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+            log_relay_apply_result(
+                "manager.apply_relay_injection.ccswitch_coordinated",
+                relay,
+                &status,
+                result.backup_path.as_ref(),
+                None,
+            );
+            Some(ok(
+                "已通过 cc-switch 联动应用当前供应商配置，避免与 CC Switch 发生覆盖冲突。",
+                relay_payload(status, result.backup_path),
+            ))
+        }
+        Err(error) => {
+            let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+            Some(failed(
+                &format!("通过 cc-switch 联动应用供应商失败：{error}"),
+                relay_payload(status, None),
+            ))
+        }
+    }
+}
+
+fn guard_live_write_or_fail(
+    settings: &BackendSettings,
+    force: bool,
+) -> Option<CommandResult<RelayPayload>> {
+    let decision = codex_plus_core::config_coordinator::evaluate_live_write(settings, force);
+    if decision.allowed {
+        return None;
+    }
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+    Some(failed(&decision.message, relay_payload(status, None)))
 }
 
 fn relay_has_complete_files(relay: &codex_plus_core::settings::RelayProfile) -> bool {

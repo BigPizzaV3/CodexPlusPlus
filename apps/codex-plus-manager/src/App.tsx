@@ -100,6 +100,7 @@ type BackendSettings = {
   providerSyncLastSelectedProvider: string;
   relayProfilesEnabled: boolean;
   ccsLinkEnabled: boolean;
+  configOwnership: ConfigOwnership;
   enhancementsEnabled: boolean;
   codexAppPluginEntryUnlock: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
@@ -135,6 +136,7 @@ type BackendSettings = {
 
 type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
 type LaunchMode = "patch" | "relay";
+type ConfigOwnership = "auto" | "codexPlusPlus" | "ccSwitch";
 
 type RelayProfile = {
   id: string;
@@ -234,6 +236,20 @@ type RelayFilesResult = CommandResult<{
   configContents: string;
   authContents: string;
 }>;
+
+type CoordinationStatus = {
+  ccswitchDetected: boolean;
+  configuredOwnership: ConfigOwnership;
+  effectiveOwnership: ConfigOwnership;
+  lastWriter: string | null;
+  conflictDetected: boolean;
+  conflictMessage: string;
+  ccswitchCurrentProviderId: string | null;
+  ccswitchCurrentProviderName: string | null;
+  liveModelProvider: string;
+  canWriteLiveConfig: boolean;
+  guidance: string;
+};
 
 type LocalSession = {
   id: string;
@@ -508,6 +524,7 @@ const defaultSettings: BackendSettings = {
   providerSyncLastSelectedProvider: "",
   relayProfilesEnabled: true,
   ccsLinkEnabled: false,
+  configOwnership: "auto",
   enhancementsEnabled: true,
   codexAppPluginEntryUnlock: true,
   codexAppPluginMarketplaceUnlock: true,
@@ -1507,6 +1524,10 @@ export function App() {
       },
       refreshRelay,
       refreshRelayFiles,
+      refreshCoordinationStatus: async () => {
+        const result = await run(() => call<CommandResult<CoordinationStatus>>("get_config_coordination_status"));
+        return result?.payload ?? null;
+      },
       refreshLiveContextEntries,
       syncLiveContextEntries,
       importCcsProviders,
@@ -1721,6 +1742,7 @@ type Actions = {
   setLaunchMode: (launchMode: LaunchMode) => Promise<void>;
   refreshRelay: () => Promise<void>;
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
+  refreshCoordinationStatus: () => Promise<CoordinationStatus | null>;
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   importCcsProviders: () => Promise<void>;
@@ -1935,9 +1957,31 @@ function RelayScreen({
             />
             <span>
               <strong>联动 cc-switch</strong>
-              <small>开启后读取 cc-switch Codex 供应商并保存时回写；同时使用多个管理工具可能导致 config.toml / auth.json 被反复覆盖。</small>
+              <small>开启后读取 cc-switch Codex 供应商并保存时回写；建议配合“配置所有权”避免与 CC Switch 互相覆盖。</small>
             </span>
           </label>
+          <label className="switch-row relay-ownership-row">
+            <span>
+              <strong>配置所有权</strong>
+              <small>决定由谁写入 ~/.codex/config.toml 与 auth.json。auto 在开启联动且检测到 CC Switch 时交由 CC Switch 管理。</small>
+            </span>
+            <select
+              value={normalized.configOwnership}
+              disabled={!normalized.relayProfilesEnabled}
+              onChange={(event) => {
+                const next = {
+                  ...normalized,
+                  configOwnership: event.currentTarget.value as ConfigOwnership,
+                };
+                void saveRelaySettings(next);
+              }}
+            >
+              <option value="auto">自动（推荐）</option>
+              <option value="ccSwitch">CC Switch 管理</option>
+              <option value="codexPlusPlus">Codex++ 管理</option>
+            </select>
+          </label>
+          <CoordinationStatusBanner form={normalized} actions={actions} />
           <div className="relay-add-row">
             <Button
               variant="secondary"
@@ -4463,6 +4507,46 @@ function contextSelectionForAllEntries(settings: BackendSettings): RelayContextS
   };
 }
 
+function normalizeConfigOwnership(value: ConfigOwnership | undefined): ConfigOwnership {
+  if (value === "codexPlusPlus" || value === "ccSwitch" || value === "auto") return value;
+  return "auto";
+}
+
+function configOwnershipLabel(value: ConfigOwnership): string {
+  if (value === "codexPlusPlus") return "Codex++";
+  if (value === "ccSwitch") return "CC Switch";
+  return "自动";
+}
+
+function CoordinationStatusBanner({
+  form,
+  actions,
+}: {
+  form: BackendSettings;
+  actions: Actions;
+}) {
+  const [status, setStatus] = useState<CoordinationStatus | null>(null);
+  useEffect(() => {
+    void actions.refreshCoordinationStatus().then(setStatus);
+  }, [actions, form.ccsLinkEnabled, form.configOwnership, form.relayProfilesEnabled, form.activeRelayId]);
+  if (!status) return null;
+  const tone = status.conflictDetected ? "failed" : status.effectiveOwnership === "ccSwitch" ? "success" : "info";
+  return (
+    <div className={`relay-coordination-banner relay-coordination-${tone}`}>
+      <strong>配置协调状态</strong>
+      <p>{status.guidance}</p>
+      {status.ccswitchDetected ? (
+        <small>
+          有效所有权：{configOwnershipLabel(status.effectiveOwnership)}；live model_provider：{status.liveModelProvider || "（空）"}
+          {status.ccswitchCurrentProviderName ? `；CC Switch 当前：${status.ccswitchCurrentProviderName}` : ""}
+          {status.lastWriter ? `；上次写入方：${status.lastWriter}` : ""}
+        </small>
+      ) : null}
+      {status.conflictDetected ? <small>{status.conflictMessage}</small> : null}
+    </div>
+  );
+}
+
 function relayProfileSourceLabel(profile: RelayProfile) {
   return profile.linkedCcsProviderId ? "cc-switch 联动" : "本地";
 }
@@ -4470,6 +4554,9 @@ function relayProfileSourceLabel(profile: RelayProfile) {
 function relayProfileEditorStatus(profile: RelayProfile, form: BackendSettings, isNew: boolean) {
   if (isNew) return "新建供应商需要先保存到列表";
   if (!form.relayProfilesEnabled) return "供应商配置总开关已关闭；当前只保存配置，不写入 Codex live 文件";
+  if (profile.linkedCcsProviderId && form.ccsLinkEnabled && form.configOwnership !== "codexPlusPlus") {
+    return "联动 cc-switch；切换时从 cc-switch 数据库应用配置，避免覆盖冲突";
+  }
   if (profile.linkedCcsProviderId && form.ccsLinkEnabled) return "联动 cc-switch；保存后会回写外部供应商数据库";
   if (profile.linkedCcsProviderId) return "联动 cc-switch；当前未开启保存回写";
   return profile.id === form.activeRelayId ? "当前正在使用" : "编辑后保存列表，再切换模式时会使用新配置";
@@ -4578,6 +4665,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ...settings,
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     ccsLinkEnabled: settings.ccsLinkEnabled === true,
+    configOwnership: normalizeConfigOwnership(settings.configOwnership),
     relayCommonConfigContents,
     relayContextConfigContents,
     relayProfiles: profiles,

@@ -823,6 +823,10 @@ fn write_codex_live_atomic(
         }
     }
 
+    if config_text.is_some() || auth_bytes.is_some() {
+        let _ = crate::config_coordinator::record_write_marker("codexplusplus", home);
+    }
+
     Ok(backup_path)
 }
 
@@ -1980,7 +1984,7 @@ mod tests {
     }
 }
 
-fn root_key_string(contents: &str, key: &str) -> Option<String> {
+pub fn root_key_string(contents: &str, key: &str) -> Option<String> {
     root_key_value(contents, key).map(unquote_toml_string)
 }
 
