@@ -5240,6 +5240,18 @@ function formatTime(value: number) {
   return new Date(value).toLocaleString("zh-CN");
 }
 
+function formatDuration(startedAtMs: number): string {
+  if (!startedAtMs) return "-";
+  const elapsed = Date.now() - startedAtMs;
+  if (elapsed < 0) return formatTime(startedAtMs);
+  const mins = Math.floor(elapsed / 60000);
+  if (mins < 1) return "刚刚启动";
+  if (mins < 60) return `已运行 ${mins} 分钟`;
+  const hours = Math.floor(mins / 60);
+  const remainMins = mins % 60;
+  return `已运行 ${hours} 小时 ${remainMins} 分钟`;
+}
+
 function stringifyError(error: unknown) {
   if (error instanceof Error) return error.message;
   return String(error);
