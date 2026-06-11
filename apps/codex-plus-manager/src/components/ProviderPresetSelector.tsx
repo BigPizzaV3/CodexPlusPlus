@@ -33,7 +33,7 @@ const categoryLabels: Record<string, string> = {
   third_party: "第三方",
 };
 
-export function usePresetPatch(preset: ProviderPreset): PresetPatch {
+export function createPresetPatch(preset: ProviderPreset): PresetPatch {
   return {
     name: preset.name,
     baseUrl: preset.baseUrl,
@@ -43,7 +43,7 @@ export function usePresetPatch(preset: ProviderPreset): PresetPatch {
     testModel: preset.model,
     modelList: preset.modelList?.join("\n") ?? "",
     relayMode: preset.category === "official" ? "official" : "pureApi",
-    officialMixApiKey: preset.category === "official" ? false : false,
+    officialMixApiKey: false,
   };
 }
 
@@ -60,6 +60,7 @@ export function ProviderPresetSelector({
     <div className="preset-selector">
       <button
         className="preset-toggle"
+        aria-expanded={!collapsed}
         onClick={() => setCollapsed((c) => !c)}
         type="button"
       >
@@ -68,18 +69,18 @@ export function ProviderPresetSelector({
       </button>
 
       {!collapsed && (
-        <div className="preset-grid">
+        <div className="preset-grid" role="region" aria-label="供应商预设列表">
           {categories.map((cat) => (
             <div className="preset-category" key={cat}>
-              <div className="preset-category-label">
+              <h3 className="preset-category-label">
                 {categoryLabels[cat] || cat}
-              </div>
+              </h3>
               <div className="preset-category-items">
                 {PRESETS.filter((p) => p.category === cat).map((preset) => (
                   <button
                     className="preset-item"
                     key={preset.id}
-                    onClick={() => onSelect(usePresetPatch(preset))}
+                    onClick={() => onSelect(createPresetPatch(preset))}
                     title={`${preset.websiteUrl ?? ""}\n${preset.baseUrl}`}
                     type="button"
                   >

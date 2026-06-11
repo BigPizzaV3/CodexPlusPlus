@@ -2232,21 +2232,32 @@ body {
   justify-content: space-between;
   width: 100%;
   padding: 12px 16px;
-  background: var(--surface-secondary);
-  border: 1px dashed var(--border);
+  min-height: 44px;
+  background: hsl(var(--muted));
+  border: 1px dashed hsl(var(--border));
   border-radius: 8px;
   cursor: pointer;
   font-size: 14px;
-  transition: background 0.15s;
+  color: hsl(var(--foreground));
+  transition: background 0.15s var(--motion-ease), border-color 0.15s var(--motion-ease);
 }
 
 .preset-toggle:hover {
-  background: var(--surface-tertiary);
+  background: hsl(var(--accent));
+}
+
+.preset-toggle:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.preset-toggle:active {
+  transform: scale(0.98);
 }
 
 .preset-toggle small {
   font-size: 12px;
-  color: var(--text-tertiary);
+  color: hsl(var(--muted-foreground));
 }
 
 .preset-grid {
@@ -2267,7 +2278,7 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--text-tertiary);
+  color: hsl(var(--muted-foreground));
   padding: 0 4px;
 }
 
@@ -2281,24 +2292,34 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
-  background: var(--surface-secondary);
-  border: 1px solid var(--border);
+  padding: 8px 14px;
+  min-height: 44px;
+  background: hsl(var(--muted));
+  border: 1px solid hsl(var(--border));
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
-  transition: all 0.15s;
+  color: hsl(var(--foreground));
+  transition: all 0.15s var(--motion-ease);
   text-align: left;
 }
 
 .preset-item:hover {
-  background: var(--accent-bg);
-  border-color: var(--accent);
+  background: hsl(var(--accent));
+  border-color: hsl(var(--ring));
+}
+
+.preset-item:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.preset-item:active {
+  transform: scale(0.97);
 }
 
 .preset-item-name {
   font-weight: 600;
-  color: var(--text-primary);
 }
 
 .preset-item-protocol {
@@ -2306,13 +2327,13 @@ body {
   font-weight: 500;
   padding: 1px 6px;
   border-radius: 4px;
-  background: var(--surface-tertiary);
-  color: var(--text-tertiary);
+  background: hsl(var(--background));
+  color: hsl(var(--muted-foreground));
 }
 
 .preset-item-model {
   font-size: 11px;
-  color: var(--text-tertiary);
+  color: hsl(var(--muted-foreground));
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
