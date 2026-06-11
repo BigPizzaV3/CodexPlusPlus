@@ -251,6 +251,8 @@ type CoordinationStatus = {
   guidance: string;
 };
 
+type CoordinationStatusResult = CommandResult<CoordinationStatus>;
+
 type LocalSession = {
   id: string;
   title: string;
@@ -1525,8 +1527,8 @@ export function App() {
       refreshRelay,
       refreshRelayFiles,
       refreshCoordinationStatus: async () => {
-        const result = await run(() => call<CommandResult<CoordinationStatus>>("get_config_coordination_status"));
-        return result?.payload ?? null;
+        const result = await run(() => call<CoordinationStatusResult>("get_config_coordination_status"));
+        return result?.status === "ok" ? result : null;
       },
       refreshLiveContextEntries,
       syncLiveContextEntries,
