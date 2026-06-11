@@ -49,6 +49,8 @@ import {
   Wrench,
   type LucideIcon,
 } from "lucide-react";
+import { ProviderPresetSelector } from "@/components/ProviderPresetSelector";
+import type { PresetPatch } from "@/components/ProviderPresetSelector";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
@@ -3098,6 +3100,13 @@ function RelayProfileEditor({
           </Button>
         )}
       </div>
+      {isNew ? (
+        <ProviderPresetSelector
+          onSelect={(patch: PresetPatch) => {
+            updateDraft(patch as unknown as Partial<RelayProfile>);
+          }}
+        />
+      ) : null}
       <div className="relay-fields">
         <Field className="relay-field-name" label="名称">
           <Input
