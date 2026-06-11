@@ -9,6 +9,7 @@ use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
 use codex_plus_core::settings::{BackendSettings, RelayProfile, SettingsStore};
 use codex_plus_core::status::{LaunchStatus, StatusStore};
 use codex_plus_core::user_scripts::UserScriptManager;
+use codex_plus_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -61,6 +62,19 @@ pub struct SettingsPayload {
 pub struct LocalSessionsPayload {
     pub db_path: String,
     pub sessions: Vec<codex_plus_data::LocalSession>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZedRemoteProjectsPayload {
+    pub projects: Vec<ZedRemoteProject>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZedRemoteOpenPayload {
+    pub url: String,
+    pub strategy: ZedOpenStrategy,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -521,6 +535,79 @@ pub fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
 }
 
 #[tauri::command]
+pub fn list_zed_remote_projects() -> CommandResult<ZedRemoteProjectsPayload> {
+    let result = codex_plus_core::zed_remote::list_zed_remote_projects_response(&json!({}));
+    if result.get("status").and_then(Value::as_str) == Some("ok") {
+        let projects = serde_json::from_value::<Vec<ZedRemoteProject>>(
+            result
+                .get("projects")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(Vec::new())),
+        )
+        .unwrap_or_default();
+        return ok(
+            &format!("已读取 {} 个 Zed 远程项目。", projects.len()),
+            ZedRemoteProjectsPayload { projects },
+        );
+    }
+    failed(
+        result
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("读取 Zed 远程项目失败。"),
+        ZedRemoteProjectsPayload {
+            projects: Vec::new(),
+        },
+    )
+}
+
+#[tauri::command]
+pub fn open_zed_remote(payload: Value) -> CommandResult<ZedRemoteOpenPayload> {
+    let result = codex_plus_core::zed_remote::open_zed_remote(&payload);
+    let strategy = result
+        .get("strategy")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<ZedOpenStrategy>(value).ok())
+        .unwrap_or_default();
+    let url = result
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if result.get("status").and_then(Value::as_str) == Some("ok") {
+        return ok(
+            "已在 Zed Remote 打开项目。",
+            ZedRemoteOpenPayload { url, strategy },
+        );
+    }
+    failed(
+        result
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("无法在 Zed Remote 打开项目。"),
+        ZedRemoteOpenPayload { url, strategy },
+    )
+}
+
+#[tauri::command]
+pub fn forget_zed_remote_project(id: String) -> CommandResult<ZedRemoteProjectsPayload> {
+    let result =
+        codex_plus_core::zed_remote::forget_zed_remote_project_response(&json!({ "id": id }));
+    if result.get("status").and_then(Value::as_str) != Some("ok") {
+        return failed(
+            result
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("移除 Zed 远程项目失败。"),
+            ZedRemoteProjectsPayload {
+                projects: Vec::new(),
+            },
+        );
+    }
+    list_zed_remote_projects()
+}
+
+#[tauri::command]
 pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult<DeleteResult> {
     let session_id = request.session_id.trim();
     if session_id.is_empty() {
@@ -620,7 +707,29 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
             }
         }
     }
+    settings.provider_sync_saved_providers =
+        normalize_provider_sync_provider_list(settings.provider_sync_saved_providers);
+    settings.provider_sync_manual_providers =
+        normalize_provider_sync_provider_list(settings.provider_sync_manual_providers);
+    settings.provider_sync_last_selected_provider =
+        settings.provider_sync_last_selected_provider.trim().to_string();
     settings
+}
+
+fn normalize_provider_sync_provider_list(values: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
+            continue;
+        }
+        if seen.insert(trimmed.to_string()) {
+            result.push(trimmed.to_string());
+        }
+    }
+    result.sort();
+    result
 }
 
 fn settings_with_live_ccs_profiles(mut settings: BackendSettings) -> BackendSettings {
@@ -819,35 +928,145 @@ fn ensure_text_newline(value: &str) -> String {
 }
 
 #[tauri::command]
-pub async fn sync_providers_now() -> CommandResult<Value> {
-    let result = tauri::async_runtime::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
-        .await
-        .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"));
+pub async fn load_provider_sync_targets() -> CommandResult<Value> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        codex_plus_data::load_provider_sync_targets(None)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("provider target discovery task failed: {error}"));
     match result {
-        Ok(sync) => ok(
-            &format!(
-                "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。",
-                sync.changed_session_files,
-                sync.sqlite_rows_updated,
-                sync.skipped_locked_rollout_files.len()
-            ),
-            json!({
-                "syncStatus": sync.status,
-                "targetProvider": sync.target_provider,
-                "changedSessionFiles": sync.changed_session_files,
-                "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files,
-                "sqliteRowsUpdated": sync.sqlite_rows_updated,
-                "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
-                "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
-                "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
-                "updatedWorkspaceRoots": sync.updated_workspace_roots,
-                "encryptedContentWarning": sync.encrypted_content_warning,
-                "backupDir": sync.backup_dir,
-                "syncMessage": sync.message,
-            }),
-        ),
+        Ok(mut targets) => {
+            let manual = settings
+                .provider_sync_manual_providers
+                .iter()
+                .chain(settings.provider_sync_saved_providers.iter())
+                .filter_map(|value| {
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                })
+                .collect::<Vec<_>>();
+            merge_manual_provider_sync_targets(&mut targets, &manual, &settings);
+            ok(
+                "Provider 同步目标已加载。",
+                serde_json::to_value(targets).unwrap_or_else(|_| json!({})),
+            )
+        }
+        Err(error) => failed(&format!("Provider 同步目标加载失败：{error}"), json!({})),
+    }
+}
+
+fn merge_manual_provider_sync_targets(
+    targets: &mut codex_plus_data::ProviderSyncTargetList,
+    manual: &[String],
+    settings: &BackendSettings,
+) {
+    for id in manual {
+        if let Some(existing) = targets.targets.iter_mut().find(|target| target.id == *id) {
+            if !existing
+                .sources
+                .contains(&codex_plus_data::ProviderSyncTargetSource::Manual)
+            {
+                existing
+                    .sources
+                    .push(codex_plus_data::ProviderSyncTargetSource::Manual);
+                existing.sources.sort();
+            }
+            existing.is_manual = settings.provider_sync_manual_providers.contains(id);
+            existing.is_saved = settings.provider_sync_saved_providers.contains(id);
+        } else {
+            targets
+                .targets
+                .push(codex_plus_data::ProviderSyncTargetOption {
+                    id: id.clone(),
+                    sources: vec![codex_plus_data::ProviderSyncTargetSource::Manual],
+                    is_current_provider: *id == targets.current_provider,
+                    is_manual: settings.provider_sync_manual_providers.contains(id),
+                    is_saved: settings.provider_sync_saved_providers.contains(id),
+                });
+        }
+    }
+    targets.targets.sort_by(|left, right| {
+        right
+            .is_current_provider
+            .cmp(&left.is_current_provider)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
+#[tauri::command]
+pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResult<Value> {
+    let target_provider = target_provider
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let target_for_settings = target_provider.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_data::run_provider_sync_with_target(None, target_provider.as_deref())
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"));
+    match result {
+        Ok(sync) => {
+            if is_success_sync_status(&sync.status) {
+                persist_provider_sync_selection(
+                    target_for_settings.as_deref().unwrap_or(&sync.target_provider),
+                );
+            }
+            ok(
+                &format!(
+                    "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。",
+                    sync.changed_session_files,
+                    sync.sqlite_rows_updated,
+                    sync.skipped_locked_rollout_files.len()
+                ),
+                json!({
+                    "syncStatus": sync.status,
+                    "targetProvider": sync.target_provider,
+                    "changedSessionFiles": sync.changed_session_files,
+                    "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files,
+                    "sqliteRowsUpdated": sync.sqlite_rows_updated,
+                    "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
+                    "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
+                    "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
+                    "updatedWorkspaceRoots": sync.updated_workspace_roots,
+                    "encryptedContentWarning": sync.encrypted_content_warning,
+                    "backupDir": sync.backup_dir,
+                    "syncMessage": sync.message,
+                }),
+            )
+        }
         Err(error) => failed(&format!("供应商同步失败：{error}"), json!({})),
     }
+}
+
+fn is_success_sync_status(status: &codex_plus_data::ProviderSyncStatus) -> bool {
+    matches!(status, codex_plus_data::ProviderSyncStatus::Synced)
+}
+
+fn persist_provider_sync_selection(provider: &str) {
+    let trimmed = provider.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let store = SettingsStore::default();
+    let mut settings = store.load().unwrap_or_default();
+    settings.provider_sync_last_selected_provider = trimmed.to_string();
+    if !settings
+        .provider_sync_saved_providers
+        .iter()
+        .any(|item| item == trimmed)
+    {
+        settings
+            .provider_sync_saved_providers
+            .push(trimmed.to_string());
+    }
+    settings.provider_sync_saved_providers =
+        normalize_provider_sync_provider_list(settings.provider_sync_saved_providers);
+    let _ = store.save(&settings);
 }
 
 #[tauri::command]
@@ -1484,12 +1703,20 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
     };
     let settings =
         settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default());
-    let test_model = if profile.test_model.trim().is_empty() {
-        settings.relay_test_model.trim()
+    let test_model: String = if !profile.test_model.trim().is_empty() {
+        // 1. 使用者在該供應商明確填的測試模型
+        profile.test_model.trim().to_string()
     } else {
-        profile.test_model.trim()
+        // 2. 該供應商自己 config.toml 裡的 model（避免串味）
+        let from_profile = codex_plus_core::relay_config::relay_profile_model(&profile);
+        if from_profile.trim().is_empty() {
+            // 3. 最後才用全域預設
+            settings.relay_test_model.trim().to_string()
+        } else {
+            from_profile
+        }
     };
-    match codex_plus_core::relay_config::test_relay_profile(&profile, test_model).await {
+    match codex_plus_core::relay_config::test_relay_profile(&profile, &test_model).await {
         Ok(result) => {
             let status = if result.http_status < 400 {
                 "ok"

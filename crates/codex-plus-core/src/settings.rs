@@ -7,6 +7,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use toml_edit::{DocumentMut, Item};
 
+use crate::zed_remote::ZedOpenStrategy;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LaunchMode {
@@ -181,6 +183,12 @@ pub struct BackendSettings {
     pub codex_extra_args: Vec<String>,
     #[serde(rename = "providerSyncEnabled", default)]
     pub provider_sync_enabled: bool,
+    #[serde(rename = "providerSyncSavedProviders", default)]
+    pub provider_sync_saved_providers: Vec<String>,
+    #[serde(rename = "providerSyncManualProviders", default)]
+    pub provider_sync_manual_providers: Vec<String>,
+    #[serde(rename = "providerSyncLastSelectedProvider", default)]
+    pub provider_sync_last_selected_provider: String,
     #[serde(rename = "relayProfilesEnabled", default = "default_true")]
     pub relay_profiles_enabled: bool,
     #[serde(rename = "ccsLinkEnabled", default)]
@@ -189,6 +197,8 @@ pub struct BackendSettings {
     pub enhancements_enabled: bool,
     #[serde(rename = "codexAppPluginEntryUnlock", default = "default_true")]
     pub codex_app_plugin_entry_unlock: bool,
+    #[serde(rename = "codexAppPluginMarketplaceUnlock", default = "default_true")]
+    pub codex_app_plugin_marketplace_unlock: bool,
     #[serde(rename = "codexAppForcePluginInstall", default = "default_true")]
     pub codex_app_force_plugin_install: bool,
     #[serde(rename = "codexAppModelWhitelistUnlock", default = "default_true")]
@@ -207,6 +217,12 @@ pub struct BackendSettings {
     pub codex_app_thread_scroll_restore: bool,
     #[serde(rename = "codexAppZedRemoteOpen", default = "default_true")]
     pub codex_app_zed_remote_open: bool,
+    #[serde(rename = "zedRemoteOpenStrategy", default)]
+    pub zed_remote_open_strategy: ZedOpenStrategy,
+    #[serde(rename = "zedRemoteProjectRegistryEnabled", default = "default_true")]
+    pub zed_remote_project_registry_enabled: bool,
+    #[serde(rename = "zedRemoteSyncToZedSettings", default)]
+    pub zed_remote_sync_to_zed_settings: bool,
     #[serde(rename = "codexAppUpstreamWorktreeCreate", default = "default_true")]
     pub codex_app_upstream_worktree_create: bool,
     #[serde(rename = "codexAppNativeMenuPlacement", default = "default_true")]
@@ -255,10 +271,14 @@ impl Default for BackendSettings {
             codex_app_path: String::new(),
             codex_extra_args: Vec::new(),
             provider_sync_enabled: false,
+            provider_sync_saved_providers: Vec::new(),
+            provider_sync_manual_providers: Vec::new(),
+            provider_sync_last_selected_provider: String::new(),
             relay_profiles_enabled: true,
             ccs_link_enabled: false,
             enhancements_enabled: true,
             codex_app_plugin_entry_unlock: true,
+            codex_app_plugin_marketplace_unlock: true,
             codex_app_force_plugin_install: true,
             codex_app_model_whitelist_unlock: true,
             codex_app_session_delete: true,
@@ -268,6 +288,9 @@ impl Default for BackendSettings {
             codex_app_conversation_view: false,
             codex_app_thread_scroll_restore: true,
             codex_app_zed_remote_open: true,
+            zed_remote_open_strategy: ZedOpenStrategy::AddToFocusedWorkspace,
+            zed_remote_project_registry_enabled: true,
+            zed_remote_sync_to_zed_settings: false,
             codex_app_upstream_worktree_create: true,
             codex_app_native_menu_placement: true,
             codex_app_service_tier_controls: false,
@@ -574,6 +597,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         target.insert("enhancementsEnabled".to_string(), Value::Bool(value));
     }
     merge_bool_setting(target, source, "codexAppPluginEntryUnlock");
+    merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
     merge_bool_setting(target, source, "codexAppForcePluginInstall");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
     merge_bool_setting(target, source, "codexAppSessionDelete");
@@ -583,6 +607,13 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppConversationView");
     merge_bool_setting(target, source, "codexAppThreadScrollRestore");
     merge_bool_setting(target, source, "codexAppZedRemoteOpen");
+    if let Some(value) = source.get("zedRemoteOpenStrategy") {
+        if serde_json::from_value::<ZedOpenStrategy>(value.clone()).is_ok() {
+            target.insert("zedRemoteOpenStrategy".to_string(), value.clone());
+        }
+    }
+    merge_bool_setting(target, source, "zedRemoteProjectRegistryEnabled");
+    merge_bool_setting(target, source, "zedRemoteSyncToZedSettings");
     merge_bool_setting(target, source, "codexAppUpstreamWorktreeCreate");
     merge_bool_setting(target, source, "codexAppNativeMenuPlacement");
     merge_bool_setting(target, source, "codexAppServiceTierControls");
@@ -902,9 +933,18 @@ mod tests {
         assert!(settings.relay_profiles_enabled);
         assert!(!settings.ccs_link_enabled);
         assert!(settings.enhancements_enabled);
+        assert!(settings.codex_app_plugin_entry_unlock);
+        assert!(settings.codex_app_plugin_marketplace_unlock);
+        assert!(settings.codex_app_force_plugin_install);
         assert!(!settings.codex_goals_enabled);
         assert!(settings.codex_app_path.is_empty());
         assert!(settings.codex_extra_args.is_empty());
+        assert_eq!(
+            settings.zed_remote_open_strategy,
+            ZedOpenStrategy::AddToFocusedWorkspace
+        );
+        assert!(settings.zed_remote_project_registry_enabled);
+        assert!(!settings.zed_remote_sync_to_zed_settings);
         assert_eq!(settings.launch_mode, LaunchMode::Patch);
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.relay_api_key.is_empty());
@@ -930,6 +970,34 @@ mod tests {
         assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.codex_extra_args.is_empty());
+    }
+
+    #[test]
+    fn settings_deserialize_keeps_plugin_unlock_switches_independent() {
+        let settings: BackendSettings = serde_json::from_str(
+            r#"{
+                "codexAppPluginEntryUnlock": false,
+                "codexAppPluginMarketplaceUnlock": true,
+                "codexAppForcePluginInstall": false
+            }"#,
+        )
+        .unwrap();
+
+        assert!(!settings.codex_app_plugin_entry_unlock);
+        assert!(settings.codex_app_plugin_marketplace_unlock);
+        assert!(!settings.codex_app_force_plugin_install);
+
+        let legacy_settings: BackendSettings = serde_json::from_str(
+            r#"{
+                "codexAppPluginEntryUnlock": false,
+                "codexAppForcePluginInstall": false
+            }"#,
+        )
+        .unwrap();
+
+        assert!(!legacy_settings.codex_app_plugin_entry_unlock);
+        assert!(legacy_settings.codex_app_plugin_marketplace_unlock);
+        assert!(!legacy_settings.codex_app_force_plugin_install);
     }
 
     #[test]

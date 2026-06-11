@@ -49,16 +49,27 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn acquire_single_instance_guard(debug_port: u16) -> anyhow::Result<Option<std::net::TcpListener>> {
+fn acquire_single_instance_guard(
+    debug_port: u16,
+) -> anyhow::Result<Option<codex_plus_core::ports::LoopbackPortGuard>> {
     acquire_single_instance_guard_with_retry(debug_port, true)
 }
 
 fn acquire_single_instance_guard_with_retry(
     debug_port: u16,
     allow_stale_recovery: bool,
-) -> anyhow::Result<Option<std::net::TcpListener>> {
+) -> anyhow::Result<Option<codex_plus_core::ports::LoopbackPortGuard>> {
     match try_acquire_single_instance_guard() {
-        Ok(listener) => Ok(Some(listener)),
+        Ok(guard) => {
+            if let Some(fallback_lock_path) = guard.fallback_path() {
+                log_launcher_guard_fallback(fallback_lock_path);
+            }
+            Ok(Some(guard))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            log_launcher_already_running(debug_port);
+            Ok(None)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
             log_launcher_already_running(debug_port);
             if allow_stale_recovery && should_recover_stale_launcher(debug_port) {
@@ -79,8 +90,21 @@ fn acquire_single_instance_guard_with_retry(
     }
 }
 
-fn try_acquire_single_instance_guard() -> std::io::Result<std::net::TcpListener> {
-    codex_plus_core::ports::acquire_loopback_port_guard(codex_plus_core::ports::LAUNCHER_GUARD_PORT)
+fn try_acquire_single_instance_guard() -> std::io::Result<codex_plus_core::ports::LoopbackPortGuard>
+{
+    codex_plus_core::ports::acquire_resilient_loopback_port_guard(
+        codex_plus_core::ports::LAUNCHER_GUARD_PORT,
+    )
+}
+
+fn log_launcher_guard_fallback(fallback_lock_path: &Path) {
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "launcher.guard_fallback",
+        json!({
+            "requested_guard_port": codex_plus_core::ports::LAUNCHER_GUARD_PORT,
+            "fallback_lock_path": fallback_lock_path
+        }),
+    );
 }
 
 fn should_recover_stale_launcher(debug_port: u16) -> bool {
@@ -101,12 +125,15 @@ fn should_recover_stale_launcher(debug_port: u16) -> bool {
 }
 
 async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {
-    let hooks = DefaultLaunchHooks::default();
+    let hooks = LauncherHooks::default();
     let settings = hooks.load_settings().await?;
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
     let launch_result = hooks
         .launch_codex(&app_dir, options.debug_port, &settings.codex_extra_args)
         .await;
+    if settings.enhancements_enabled {
+        hooks.start_helper(options.helper_port).await?;
+    }
     let process_ids = codex_plus_core::watcher::find_codex_processes();
     let mut activated = false;
     #[cfg(windows)]
@@ -118,13 +145,30 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             }
         }
     }
+    let injection_ready = if settings.enhancements_enabled {
+        hooks
+            .ensure_injection(options.debug_port, options.helper_port, &app_dir)
+            .await
+    } else {
+        false
+    };
+    if injection_ready {
+        hooks
+            .start_bridge_watchdog(options.debug_port, options.helper_port)
+            .await?;
+        hooks.write_status("running").await;
+    } else if settings.enhancements_enabled {
+        hooks.write_status("running_degraded").await;
+    }
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "launcher.activate_existing_codex",
         json!({
             "app_dir": app_dir.to_string_lossy(),
             "debug_port": options.debug_port,
+            "helper_port": options.helper_port,
             "process_ids": process_ids,
             "activated": activated,
+            "injection_ready": injection_ready,
             "launch_ok": launch_result.is_ok(),
             "launch_error": launch_result.as_ref().err().map(|error| error.to_string())
         }),
@@ -254,11 +298,16 @@ impl LaunchHooks for LauncherHooks {
             .await
     }
 
-    async fn bridge_context(&self, debug_port: u16) -> anyhow::Result<Option<BridgeContext>> {
+    async fn bridge_context(
+        &self,
+        debug_port: u16,
+        app_dir: &Path,
+    ) -> anyhow::Result<Option<BridgeContext>> {
         self.runtime.set_debug_port(debug_port);
-        Ok(Some(BridgeContext::core_with_data(
+        Ok(Some(BridgeContext::core_with_data_and_app_dir(
             self.runtime.clone(),
             self.data.clone(),
+            app_dir.to_path_buf(),
         )))
     }
 
@@ -514,6 +563,18 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         Ok(codex_plus_core::zed_remote::open_zed_remote(&payload))
     }
 
+    async fn list_zed_remote_projects(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(codex_plus_core::zed_remote::list_zed_remote_projects_response(&payload))
+    }
+
+    async fn remember_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(codex_plus_core::zed_remote::remember_zed_remote_project_response(&payload))
+    }
+
+    async fn forget_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value> {
+        Ok(codex_plus_core::zed_remote::forget_zed_remote_project_response(&payload))
+    }
+
     async fn upstream_worktree_status(&self) -> anyhow::Result<Value> {
         Ok(codex_plus_core::upstream_worktree::status_response())
     }
@@ -704,6 +765,21 @@ mod tests {
         assert!(source.contains("acquire_single_instance_guard(options.debug_port)?"));
         assert!(source.contains("LAUNCHER_GUARD_PORT"));
         assert!(source.contains("launcher.already_running"));
+    }
+
+    #[test]
+    fn existing_instance_path_starts_helper_and_ensures_injection() {
+        let source = include_str!("main.rs").replace("\r\n", "\n");
+
+        assert!(source.contains(
+            "async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {\n    let hooks = LauncherHooks::default();"
+        ));
+        assert!(source.contains("hooks.start_helper(options.helper_port).await?"));
+        assert!(
+            source
+                .contains("hooks.ensure_injection(options.debug_port, options.helper_port).await")
+        );
+        assert!(source.contains("injection_ready"));
     }
 
     #[test]

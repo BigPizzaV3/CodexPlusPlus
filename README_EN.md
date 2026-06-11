@@ -36,6 +36,16 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 ## Sponsors
 
 <p align="center">
+  <a href="https://jojocode.com/">
+    <img src="docs/images/sponsor-jojocode.svg" alt="JOJO Code" width="180">
+  </a>
+</p>
+<p align="center">
+  <a href="https://jojocode.com/"><strong>JOJO Code | Official Codex++ Relay</strong></a><br>
+  The official Codex++ relay service, focused on stable access and cost-effective pricing. JOJO Code supports GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2, and more for daily development, team collaboration, and long-running project workflows.
+</p>
+
+<p align="center">
   <a href="mailto:1727532@qq.com">Want to be shown below?</a>
 </p>
 <table>
@@ -49,7 +59,7 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
         <img src="docs/images/sponsor-jojocode.svg" alt="JOJO Code" width="150">
       </a>
     </td>
-    <td><a href="https://jojocode.com/"><strong>JOJO Code | Official Codex++ Relay</strong></a><br>Thanks to JOJO Code for sponsoring this project! JOJO Code is the official Codex++ relay service. It is built for daily development and team collaboration, providing stable Codex API access for quick onboarding, long-term use, and project workflows.</td>
+    <td><a href="https://jojocode.com/"><strong>JOJO Code | Official Codex++ Relay</strong></a><br>Thanks to JOJO Code for sponsoring this project. JOJO Code is the official Codex++ relay service with cost-effective pricing and stable, easy-to-configure Codex API access. It supports GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2, and more for daily development, quick setup, team collaboration, and continuous use.</td>
   </tr>
   <tr>
     <td align="center">
@@ -128,6 +138,21 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 ## Relay Injection
 
 Relay injection is for users who are already logged in with an official ChatGPT account in Codex/ChatGPT and want model requests to go through a custom compatible API.
+
+The boundary of this hybrid mode is:
+
+- The official ChatGPT/Codex login state still owns Codex App account features and the plugin entry.
+- The relay profile only controls the Base URL, key, and model names used for model requests.
+- The compatible API provider is not tied to any specific vendor; it only needs to match the selected upstream protocol and Codex configuration.
+- Clearing API mode should return Codex to the official login mode so the official account and plugins keep working.
+
+Before applying relay injection, run a minimal preflight:
+
+1. Make sure Codex has detected the ChatGPT login state and the plugin entry is available.
+2. Confirm the custom Base URL is reachable and supports the selected upstream protocol, such as a Responses-compatible endpoint.
+3. Test the target key with the smallest useful auth probe, such as a model-list request or a short message request.
+4. Only record whether the key exists and whether auth passed. Do not paste real keys into logs, screenshots, or issues.
+5. Make sure `~/.codex/config.toml` has a backup so clearing API mode can safely roll back.
 
 In the manager's Relay Injection page:
 
