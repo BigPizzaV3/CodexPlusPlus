@@ -2061,6 +2061,7 @@ mod tests {
         let artifacts = crate::computer_use_guard::GuardArtifacts {
             notify_exe: Some(PathBuf::from("codex-computer-use.exe")),
             marketplace_path: Some(PathBuf::from("openai-bundled")),
+            sky_package_json: None,
         };
 
         assert!(!should_stop_post_launch_computer_use_guard(2, &artifacts));
@@ -2072,10 +2073,12 @@ mod tests {
         let missing_notify = crate::computer_use_guard::GuardArtifacts {
             notify_exe: None,
             marketplace_path: Some(PathBuf::from("openai-bundled")),
+            sky_package_json: None,
         };
         let missing_marketplace = crate::computer_use_guard::GuardArtifacts {
             notify_exe: Some(PathBuf::from("codex-computer-use.exe")),
             marketplace_path: None,
+            sky_package_json: None,
         };
 
         assert!(!should_stop_post_launch_computer_use_guard(3, &missing_notify));

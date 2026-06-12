@@ -13,6 +13,12 @@ const COMPUTER_USE_PLUGINS: &[&str] = &[
     "computer-use@openai-bundled",
 ];
 const COMPUTER_USE_EXE: &str = "codex-computer-use.exe";
+const COMPUTER_USE_CLIENT_SCRIPT: &str = "computer-use-client.mjs";
+const SKY_INTERNAL_COMPUTER_USE_CLIENT_EXPORT: &str =
+    "./dist/project/cua/sky_js/src/targets/windows/internal/computer_use_client_base.js";
+const SKY_INTERNAL_COMPUTER_USE_CLIENT_IMPORT: &str =
+    "@oai/sky/dist/project/cua/sky_js/src/targets/windows/internal/computer_use_client_base.js";
+const SKY_PACKAGE_EXPORTS_BACKUP: &str = "package.json.bak-codexpp-runtime-exports";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GuardResult {
@@ -24,13 +30,17 @@ pub(crate) struct GuardResult {
 pub(crate) struct GuardArtifacts {
     pub notify_exe: Option<PathBuf>,
     pub marketplace_path: Option<PathBuf>,
+    pub sky_package_json: Option<PathBuf>,
 }
 
 pub(crate) fn resolve_computer_use_guard_artifacts(home: &Path) -> anyhow::Result<GuardArtifacts> {
     #[cfg(windows)]
     {
+        let notify_exe = find_computer_use_notify_exe(home);
         Ok(GuardArtifacts {
-            notify_exe: find_computer_use_notify_exe(home),
+            sky_package_json: find_sky_package_json_for_notify_exe(notify_exe.as_deref())
+                .or_else(find_latest_sky_package_json),
+            notify_exe,
             marketplace_path: ensure_openai_bundled_marketplace(home)?,
         })
     }
@@ -40,6 +50,7 @@ pub(crate) fn resolve_computer_use_guard_artifacts(home: &Path) -> anyhow::Resul
         Ok(GuardArtifacts {
             notify_exe: None,
             marketplace_path: None,
+            sky_package_json: None,
         })
     }
 }
@@ -89,9 +100,101 @@ fn ensure_computer_use_config_with_artifacts_windows(
     if changed {
         crate::settings::atomic_write(&config_path, updated.as_bytes())?;
     }
+    let runtime_compat = ensure_computer_use_runtime_exports_compat_windows(
+        home,
+        artifacts.sky_package_json.as_deref(),
+    )?;
     Ok(GuardResult {
-        changed,
+        changed: changed || runtime_compat.changed,
         notify_exe: artifacts.notify_exe.clone(),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeCompatResult {
+    pub changed: bool,
+    pub package_json: Option<PathBuf>,
+    pub backup_path: Option<PathBuf>,
+}
+
+#[cfg(not(windows))]
+pub(crate) fn ensure_computer_use_runtime_exports_compat(
+    home: &Path,
+) -> anyhow::Result<RuntimeCompatResult> {
+    let _ = home;
+    Ok(RuntimeCompatResult {
+        changed: false,
+        package_json: None,
+        backup_path: None,
+    })
+}
+
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn ensure_computer_use_runtime_exports_compat(
+    home: &Path,
+) -> anyhow::Result<RuntimeCompatResult> {
+    ensure_computer_use_runtime_exports_compat_windows(
+        home,
+        find_latest_sky_package_json().as_deref(),
+    )
+}
+
+#[cfg(windows)]
+fn ensure_computer_use_runtime_exports_compat_windows(
+    home: &Path,
+    sky_package_json: Option<&Path>,
+) -> anyhow::Result<RuntimeCompatResult> {
+    if !computer_use_client_needs_sky_internal_export(home)? {
+        return Ok(RuntimeCompatResult {
+            changed: false,
+            package_json: sky_package_json.map(Path::to_path_buf),
+            backup_path: None,
+        });
+    }
+    let Some(package_json) = sky_package_json else {
+        return Ok(RuntimeCompatResult {
+            changed: false,
+            package_json: None,
+            backup_path: None,
+        });
+    };
+    if !sky_internal_computer_use_client_file_exists(package_json) {
+        return Ok(RuntimeCompatResult {
+            changed: false,
+            package_json: Some(package_json.to_path_buf()),
+            backup_path: None,
+        });
+    }
+
+    let existing = std::fs::read_to_string(package_json)
+        .with_context(|| format!("failed to read {}", package_json.display()))?;
+    let Some(updated) = add_sky_internal_computer_use_export(&existing)? else {
+        return Ok(RuntimeCompatResult {
+            changed: false,
+            package_json: Some(package_json.to_path_buf()),
+            backup_path: None,
+        });
+    };
+
+    let backup_path = package_json
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("invalid @oai/sky package.json path"))?
+        .join(SKY_PACKAGE_EXPORTS_BACKUP);
+    if !backup_path.exists() {
+        std::fs::copy(package_json, &backup_path).with_context(|| {
+            format!(
+                "failed to back up {} to {}",
+                package_json.display(),
+                backup_path.display()
+            )
+        })?;
+    }
+    atomic_write_runtime_file(package_json, updated.as_bytes())?;
+    Ok(RuntimeCompatResult {
+        changed: true,
+        package_json: Some(package_json.to_path_buf()),
+        backup_path: Some(backup_path),
     })
 }
 
@@ -210,6 +313,141 @@ fn modified_millis(path: &Path) -> u128 {
         .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| duration.as_millis())
         .unwrap_or(0)
+}
+
+#[cfg(windows)]
+fn computer_use_client_needs_sky_internal_export(home: &Path) -> anyhow::Result<bool> {
+    let mut candidates = Vec::new();
+    collect_named_files(
+        &home
+            .join("plugins")
+            .join("cache")
+            .join("openai-bundled")
+            .join("computer-use"),
+        COMPUTER_USE_CLIENT_SCRIPT,
+        8,
+        &mut candidates,
+    );
+    candidates.sort_by(|left, right| {
+        modified_millis(right)
+            .cmp(&modified_millis(left))
+            .then_with(|| left.cmp(right))
+    });
+    for candidate in candidates {
+        let contents = std::fs::read_to_string(&candidate)
+            .with_context(|| format!("failed to read {}", candidate.display()))?;
+        if contents.contains(SKY_INTERNAL_COMPUTER_USE_CLIENT_IMPORT) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(windows)]
+fn find_sky_package_json_for_notify_exe(notify_exe: Option<&Path>) -> Option<PathBuf> {
+    let notify_exe = notify_exe?;
+    for ancestor in notify_exe.ancestors() {
+        if ancestor
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("sky"))
+            && ancestor
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("@oai"))
+        {
+            let package_json = ancestor.join("package.json");
+            if package_json.is_file() {
+                return Some(package_json);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn find_latest_sky_package_json() -> Option<PathBuf> {
+    let local_app_data = std::env::var_os("LOCALAPPDATA")?;
+    let runtimes = PathBuf::from(local_app_data)
+        .join("OpenAI")
+        .join("Codex")
+        .join("runtimes")
+        .join("cua_node");
+    let Ok(entries) = std::fs::read_dir(runtimes) else {
+        return None;
+    };
+    let mut candidates: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| {
+            entry
+                .path()
+                .join("bin")
+                .join("node_modules")
+                .join("@oai")
+                .join("sky")
+                .join("package.json")
+        })
+        .filter(|path| path.is_file())
+        .collect();
+    candidates.sort_by(|left, right| {
+        modified_millis(right)
+            .cmp(&modified_millis(left))
+            .then_with(|| left.cmp(right))
+    });
+    candidates.into_iter().next()
+}
+
+#[cfg(windows)]
+fn sky_internal_computer_use_client_file_exists(package_json: &Path) -> bool {
+    let Some(package_root) = package_json.parent() else {
+        return false;
+    };
+    package_root
+        .join(SKY_INTERNAL_COMPUTER_USE_CLIENT_EXPORT.trim_start_matches("./"))
+        .is_file()
+}
+
+fn add_sky_internal_computer_use_export(contents: &str) -> anyhow::Result<Option<String>> {
+    let mut package: serde_json::Value =
+        serde_json::from_str(contents).with_context(|| "@oai/sky package.json parse failed")?;
+    let Some(exports) = package
+        .get_mut("exports")
+        .and_then(|value| value.as_object_mut())
+    else {
+        return Ok(None);
+    };
+    if exports.contains_key(SKY_INTERNAL_COMPUTER_USE_CLIENT_EXPORT) {
+        return Ok(None);
+    }
+    exports.insert(
+        SKY_INTERNAL_COMPUTER_USE_CLIENT_EXPORT.to_string(),
+        serde_json::Value::String(SKY_INTERNAL_COMPUTER_USE_CLIENT_EXPORT.to_string()),
+    );
+    let mut updated = serde_json::to_string_pretty(&package)?;
+    updated.push('\n');
+    Ok(Some(updated))
+}
+
+#[cfg(windows)]
+fn atomic_write_runtime_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("invalid runtime file path"))?;
+    let temp = parent.join(format!(
+        ".{}.codexpp-tmp",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("package.json")
+    ));
+    std::fs::write(&temp, bytes).with_context(|| format!("failed to write {}", temp.display()))?;
+    match std::fs::rename(&temp, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(error).with_context(|| format!("failed to replace {}", path.display()))
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -595,6 +833,198 @@ mod tests {
             parsed["marketplaces"]["openai-bundled"]["source"].as_str(),
             Some(r"\\?\C:\Users\me\.codex\.tmp\bundled-marketplaces\openai-bundled")
         );
+    }
+
+    #[test]
+    fn add_sky_internal_computer_use_export_adds_exact_subpath() {
+        let updated = add_sky_internal_computer_use_export(
+            r#"{
+  "name": "@oai/sky",
+  "exports": {
+    ".": "./dist/project/cua/sky_js/src/index.js"
+  }
+}"#,
+        )
+        .unwrap()
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&updated).unwrap();
+
+        assert_eq!(
+            parsed["exports"][SKY_INTERNAL_COMPUTER_USE_CLIENT_EXPORT].as_str(),
+            Some(SKY_INTERNAL_COMPUTER_USE_CLIENT_EXPORT)
+        );
+        assert!(updated.ends_with('\n'));
+    }
+
+    #[test]
+    fn add_sky_internal_computer_use_export_is_idempotent() {
+        let updated = add_sky_internal_computer_use_export(&format!(
+            r#"{{
+  "name": "@oai/sky",
+  "exports": {{
+    ".": "./dist/project/cua/sky_js/src/index.js",
+    "{SKY_INTERNAL_COMPUTER_USE_CLIENT_EXPORT}": "{SKY_INTERNAL_COMPUTER_USE_CLIENT_EXPORT}"
+  }}
+}}"#
+        ))
+        .unwrap();
+
+        assert!(updated.is_none());
+    }
+
+    #[test]
+    fn add_sky_internal_computer_use_export_ignores_non_object_exports() {
+        let updated =
+            add_sky_internal_computer_use_export(r#"{ "name": "@oai/sky", "exports": "." }"#)
+                .unwrap();
+
+        assert!(updated.is_none());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn runtime_exports_compat_is_noop_off_windows() {
+        let temp = tempfile::tempdir().unwrap();
+        let result = ensure_computer_use_runtime_exports_compat(temp.path()).unwrap();
+
+        assert!(!result.changed);
+        assert!(result.package_json.is_none());
+        assert!(result.backup_path.is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_exports_compat_adds_missing_exact_export() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        let script = home
+            .join("plugins")
+            .join("cache")
+            .join("openai-bundled")
+            .join("computer-use")
+            .join("26.608.12217")
+            .join("scripts")
+            .join(COMPUTER_USE_CLIENT_SCRIPT);
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(
+            &script,
+            format!("import {{ x }} from \"{SKY_INTERNAL_COMPUTER_USE_CLIENT_IMPORT}\";\n"),
+        )
+        .unwrap();
+
+        let package_json = temp.path().join("@oai").join("sky").join("package.json");
+        let internal_file = package_json
+            .parent()
+            .unwrap()
+            .join(SKY_INTERNAL_COMPUTER_USE_CLIENT_EXPORT.trim_start_matches("./"));
+        std::fs::create_dir_all(internal_file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &internal_file,
+            "export class WindowsComputerUseClientBase {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &package_json,
+            r#"{
+  "name": "@oai/sky",
+  "exports": {
+    ".": "./dist/project/cua/sky_js/src/index.js"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let result =
+            ensure_computer_use_runtime_exports_compat_windows(&home, Some(&package_json)).unwrap();
+
+        assert!(result.changed);
+        assert_eq!(result.package_json.as_deref(), Some(package_json.as_path()));
+        assert!(result.backup_path.as_deref().unwrap().is_file());
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&package_json).unwrap()).unwrap();
+        assert_eq!(
+            parsed["exports"][SKY_INTERNAL_COMPUTER_USE_CLIENT_EXPORT].as_str(),
+            Some(SKY_INTERNAL_COMPUTER_USE_CLIENT_EXPORT)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_exports_compat_skips_when_internal_file_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        let script = home
+            .join("plugins")
+            .join("cache")
+            .join("openai-bundled")
+            .join("computer-use")
+            .join("26.608.12217")
+            .join("scripts")
+            .join(COMPUTER_USE_CLIENT_SCRIPT);
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(
+            &script,
+            format!("import {{ x }} from \"{SKY_INTERNAL_COMPUTER_USE_CLIENT_IMPORT}\";\n"),
+        )
+        .unwrap();
+        let package_json = temp.path().join("@oai").join("sky").join("package.json");
+        std::fs::create_dir_all(package_json.parent().unwrap()).unwrap();
+        std::fs::write(
+            &package_json,
+            r#"{ "name": "@oai/sky", "exports": { ".": "./index.js" } }"#,
+        )
+        .unwrap();
+
+        let result =
+            ensure_computer_use_runtime_exports_compat_windows(&home, Some(&package_json)).unwrap();
+
+        assert!(!result.changed);
+        assert!(
+            !package_json
+                .parent()
+                .unwrap()
+                .join(SKY_PACKAGE_EXPORTS_BACKUP)
+                .exists()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_exports_compat_skips_when_plugin_script_no_longer_needs_patch() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        let script = home
+            .join("plugins")
+            .join("cache")
+            .join("openai-bundled")
+            .join("computer-use")
+            .join("26.608.12217")
+            .join("scripts")
+            .join(COMPUTER_USE_CLIENT_SCRIPT);
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "import { sky } from \"@oai/sky\";\n").unwrap();
+        let package_json = temp.path().join("@oai").join("sky").join("package.json");
+        let internal_file = package_json
+            .parent()
+            .unwrap()
+            .join(SKY_INTERNAL_COMPUTER_USE_CLIENT_EXPORT.trim_start_matches("./"));
+        std::fs::create_dir_all(internal_file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &internal_file,
+            "export class WindowsComputerUseClientBase {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &package_json,
+            r#"{ "name": "@oai/sky", "exports": { ".": "./index.js" } }"#,
+        )
+        .unwrap();
+
+        let result =
+            ensure_computer_use_runtime_exports_compat_windows(&home, Some(&package_json)).unwrap();
+
+        assert!(!result.changed);
     }
 
     #[cfg(windows)]
