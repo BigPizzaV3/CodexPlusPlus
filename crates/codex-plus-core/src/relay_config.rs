@@ -482,6 +482,37 @@ pub async fn test_relay_profile(
         .send()
         .await?;
     let http_status = response.status().as_u16();
+
+    // 如果 404 且 base_url 末尾没有 /v1，尝试自动补 /v1 后再发一次。
+    // 许多上游（中转站、自建代理）暴露的路径以 /v1/ 开头，
+    // 用户容易遗漏这个前缀，导致 /responses 或 /chat/completions 404。
+    if http_status == 404 && !base_url.ends_with("/v1") {
+        let v1_url = format!("{base_url}/v1");
+        let v1_endpoint = match profile.protocol {
+            RelayProtocol::Responses => format!("{v1_url}/responses"),
+            RelayProtocol::ChatCompletions => format!("{v1_url}/chat/completions"),
+        };
+        let v1_response = client
+            .post(&v1_endpoint)
+            .bearer_auth(api_key)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+        let v1_status = v1_response.status().as_u16();
+        if v1_status < 400 {
+            let response_text = v1_response.text().await.unwrap_or_default();
+            return Ok(RelayProfileTestResult {
+                http_status: v1_status,
+                endpoint: v1_endpoint,
+                response_preview: format!(
+                    "（Base URL 建议加上 /v1 前缀）{}",
+                    response_text.chars().take(280).collect::<String>()
+                ),
+            });
+        }
+    }
+
     let response_text = response.text().await.unwrap_or_default();
     Ok(RelayProfileTestResult {
         http_status,
