@@ -384,6 +384,80 @@ body {
   letter-spacing: 0;
 }
 
+.jojocode-overview {
+  border-color: hsl(172 66% 42% / 0.38);
+  background:
+    linear-gradient(135deg, hsl(172 38% 13% / 0.78), hsl(var(--card)) 58%),
+    hsl(var(--card));
+}
+
+.light .jojocode-overview {
+  background:
+    linear-gradient(135deg, hsl(172 75% 93% / 0.9), hsl(var(--card)) 58%),
+    hsl(var(--card));
+}
+
+.jojocode-overview-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+}
+
+.jojocode-overview-main {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.jojocode-overview-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid hsl(172 66% 46% / 0.38);
+  border-radius: 8px;
+  background: hsl(172 66% 32% / 0.22);
+  color: hsl(172 66% 58%);
+}
+
+.jojocode-overview h2 {
+  margin: 2px 0 4px;
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.jojocode-overview p {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.5;
+}
+
+.jojocode-overview-side {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+
+.jojocode-model-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 390px;
+}
+
+.jojocode-model-tags span {
+  border: 1px solid hsl(172 66% 46% / 0.28);
+  border-radius: 999px;
+  background: hsl(var(--background) / 0.5);
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  line-height: 1;
+  padding: 6px 8px;
+}
+
 .fill {
   min-height: calc(100vh - 188px);
 }
@@ -1392,6 +1466,19 @@ body {
   margin-bottom: 0;
 }
 
+.switch-row.relay-ownership-row {
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+  align-items: center;
+}
+
+.relay-ownership-row > span {
+  min-width: 0;
+}
+
+.relay-ownership-select {
+  width: 100%;
+}
+
 .zed-remote-settings {
   display: grid;
   grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
@@ -2169,6 +2256,7 @@ body {
   .mode-grid.three,
   .relay-grid,
   .zed-remote-settings,
+  .relay-ownership-row,
   .hero-layout {
     grid-template-columns: 1fr;
   }
@@ -2221,7 +2309,6 @@ body {
   }
 }
 
-/* ── 供应商预设选择器 ── */
 .preset-selector {
   margin-bottom: 16px;
 }
@@ -2445,14 +2532,11 @@ body {
 }
 
 .dark .preset-search-input:focus {
-  border-color: #7A9DFF;
   background: #1F2126;
+  border-color: #7A9DFF;
 }
 
-.dark .preset-search-input::placeholder {
-  color: #6B7280;
-}
-
+.dark .preset-search-input::placeholder,
 .dark .preset-search-icon {
   color: #6B7280;
 }
@@ -2482,10 +2566,7 @@ body {
   background: #36383F;
 }
 
-.dark .preset-btn-model {
-  color: #6B7280;
-}
-
+.dark .preset-btn-model,
 .dark .preset-empty {
   color: #6B7280;
 }
@@ -2499,4 +2580,3 @@ body {
   background: #7A9DFF;
   color: #FFF;
 }
-

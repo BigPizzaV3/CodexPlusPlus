@@ -163,6 +163,16 @@ export const PRESETS: ProviderPreset[] = [
 
   // ── 聚合/中转 ──
   {
+    id: "jojocode",
+    name: "JOJO Code",
+    websiteUrl: "https://jojocode.com/",
+    apiKeyUrl: "https://jojocode.com/",
+    category: "aggregator",
+    baseUrl: "https://jojocode.com/v1",
+    protocol: "responses",
+    model: "gpt-5.5",
+  },
+  {
     id: "siliconflow",
     name: "SiliconFlow",
     websiteUrl: "https://siliconflow.cn",
