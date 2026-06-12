@@ -139,16 +139,23 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
     }
     let result = async {
         let process_ids = codex_plus_core::watcher::find_codex_processes();
-        let mut activated = false;
-        #[cfg(windows)]
-        {
-            for process_id in &process_ids {
-                if codex_plus_core::windows_activate_process_window(*process_id) {
-                    activated = true;
-                    break;
+        let activated = {
+            #[cfg(windows)]
+            {
+                let mut activated = false;
+                for process_id in &process_ids {
+                    if codex_plus_core::windows_activate_process_window(*process_id) {
+                        activated = true;
+                        break;
+                    }
                 }
+                activated
             }
-        }
+            #[cfg(not(windows))]
+            {
+                false
+            }
+        };
         let injection_ready = if settings.enhancements_enabled {
             hooks
                 .ensure_injection(options.debug_port, options.helper_port, &app_dir)
