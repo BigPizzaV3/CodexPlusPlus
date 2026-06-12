@@ -18,14 +18,41 @@ pub(crate) struct GuardResult {
     pub notify_exe: Option<PathBuf>,
 }
 
-pub(crate) fn ensure_computer_use_config(home: &Path) -> anyhow::Result<GuardResult> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GuardArtifacts {
+    pub notify_exe: Option<PathBuf>,
+    pub marketplace_path: Option<PathBuf>,
+}
+
+pub(crate) fn resolve_computer_use_guard_artifacts(home: &Path) -> anyhow::Result<GuardArtifacts> {
     #[cfg(windows)]
     {
-        ensure_computer_use_config_windows(home)
+        Ok(GuardArtifacts {
+            notify_exe: find_computer_use_notify_exe(home),
+            marketplace_path: ensure_openai_bundled_marketplace(home)?,
+        })
     }
     #[cfg(not(windows))]
     {
         let _ = home;
+        Ok(GuardArtifacts {
+            notify_exe: None,
+            marketplace_path: None,
+        })
+    }
+}
+
+pub(crate) fn ensure_computer_use_config_with_artifacts(
+    home: &Path,
+    artifacts: &GuardArtifacts,
+) -> anyhow::Result<GuardResult> {
+    #[cfg(windows)]
+    {
+        ensure_computer_use_config_with_artifacts_windows(home, artifacts)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (home, artifacts);
         Ok(GuardResult {
             changed: false,
             notify_exe: None,
@@ -34,7 +61,10 @@ pub(crate) fn ensure_computer_use_config(home: &Path) -> anyhow::Result<GuardRes
 }
 
 #[cfg(windows)]
-fn ensure_computer_use_config_windows(home: &Path) -> anyhow::Result<GuardResult> {
+fn ensure_computer_use_config_with_artifacts_windows(
+    home: &Path,
+    artifacts: &GuardArtifacts,
+) -> anyhow::Result<GuardResult> {
     let config_path = home.join("config.toml");
     let existing = match std::fs::read(&config_path) {
         Ok(bytes) => String::from_utf8(bytes)
@@ -44,16 +74,14 @@ fn ensure_computer_use_config_windows(home: &Path) -> anyhow::Result<GuardResult
             return Err(error).with_context(|| format!("failed to read {}", config_path.display()));
         }
     };
-    let marketplace_path = ensure_openai_bundled_marketplace(home)?;
-    let notify_exe = find_computer_use_notify_exe(home);
-    let updated = if let Some(marketplace_path) = marketplace_path.as_deref() {
+    let updated = if let Some(marketplace_path) = artifacts.marketplace_path.as_deref() {
         guard_config_text_with_marketplace(
             &existing,
-            notify_exe.as_deref(),
+            artifacts.notify_exe.as_deref(),
             Some(marketplace_path),
         )?
     } else {
-        guard_config_text(&existing, notify_exe.as_deref())?
+        guard_config_text(&existing, artifacts.notify_exe.as_deref())?
     };
     let changed = updated.as_bytes() != existing.as_bytes();
     if changed {
@@ -61,7 +89,7 @@ fn ensure_computer_use_config_windows(home: &Path) -> anyhow::Result<GuardResult
     }
     Ok(GuardResult {
         changed,
-        notify_exe,
+        notify_exe: artifacts.notify_exe.clone(),
     })
 }
 

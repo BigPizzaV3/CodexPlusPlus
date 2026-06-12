@@ -132,49 +132,58 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
     let launch_result = hooks
         .launch_codex(&app_dir, options.debug_port, &settings.codex_extra_args)
         .await;
+    let mut helper_started = false;
     if settings.enhancements_enabled {
         hooks.start_helper(options.helper_port).await?;
+        helper_started = true;
     }
-    let process_ids = codex_plus_core::watcher::find_codex_processes();
-    let mut activated = false;
-    #[cfg(windows)]
-    {
-        for process_id in &process_ids {
-            if codex_plus_core::windows_activate_process_window(*process_id) {
-                activated = true;
-                break;
+    let result = async {
+        let process_ids = codex_plus_core::watcher::find_codex_processes();
+        let mut activated = false;
+        #[cfg(windows)]
+        {
+            for process_id in &process_ids {
+                if codex_plus_core::windows_activate_process_window(*process_id) {
+                    activated = true;
+                    break;
+                }
             }
         }
+        let injection_ready = if settings.enhancements_enabled {
+            hooks
+                .ensure_injection(options.debug_port, options.helper_port, &app_dir)
+                .await
+        } else {
+            false
+        };
+        if injection_ready {
+            hooks
+                .start_bridge_watchdog(options.debug_port, options.helper_port)
+                .await?;
+            hooks.write_status("running").await;
+        } else if settings.enhancements_enabled {
+            hooks.write_status("running_degraded").await;
+        }
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.activate_existing_codex",
+            json!({
+                "app_dir": app_dir.to_string_lossy(),
+                "debug_port": options.debug_port,
+                "helper_port": options.helper_port,
+                "process_ids": process_ids,
+                "activated": activated,
+                "injection_ready": injection_ready,
+                "launch_ok": launch_result.is_ok(),
+                "launch_error": launch_result.as_ref().err().map(|error| error.to_string())
+            }),
+        );
+        launch_result.map(|_| ())
     }
-    let injection_ready = if settings.enhancements_enabled {
-        hooks
-            .ensure_injection(options.debug_port, options.helper_port, &app_dir)
-            .await
-    } else {
-        false
-    };
-    if injection_ready {
-        hooks
-            .start_bridge_watchdog(options.debug_port, options.helper_port)
-            .await?;
-        hooks.write_status("running").await;
-    } else if settings.enhancements_enabled {
-        hooks.write_status("running_degraded").await;
+    .await;
+    if helper_started {
+        hooks.shutdown_helper(options.helper_port).await;
     }
-    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-        "launcher.activate_existing_codex",
-        json!({
-            "app_dir": app_dir.to_string_lossy(),
-            "debug_port": options.debug_port,
-            "helper_port": options.helper_port,
-            "process_ids": process_ids,
-            "activated": activated,
-            "injection_ready": injection_ready,
-            "launch_ok": launch_result.is_ok(),
-            "launch_error": launch_result.as_ref().err().map(|error| error.to_string())
-        }),
-    );
-    launch_result.map(|_| ())
+    result
 }
 
 fn log_launcher_already_running(debug_port: u16) {
@@ -791,6 +800,7 @@ mod tests {
         ));
         assert!(source.contains("hooks.ensure_computer_use_config(&settings).await?"));
         assert!(source.contains("hooks.start_helper(options.helper_port).await?"));
+        assert!(source.contains("hooks.shutdown_helper(options.helper_port).await"));
         assert!(
             source
                 .contains("hooks.ensure_injection(options.debug_port, options.helper_port).await")

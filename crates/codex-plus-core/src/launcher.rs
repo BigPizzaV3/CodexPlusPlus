@@ -209,6 +209,7 @@ pub struct DefaultLaunchHooks {
     helper: Mutex<Option<HelperRuntime>>,
     bridge_watchdog: Mutex<Option<BridgeWatchdogRuntime>>,
     computer_use_guard_watchdog: Mutex<Option<ComputerUseGuardWatchdogRuntime>>,
+    computer_use_guard_artifacts: Mutex<Option<crate::computer_use_guard::GuardArtifacts>>,
 }
 
 struct HelperRuntime {
@@ -439,7 +440,9 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     async fn ensure_computer_use_config(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         let home = crate::relay_config::default_codex_home_dir();
-        crate::computer_use_guard::ensure_computer_use_config(&home)?;
+        let artifacts = crate::computer_use_guard::resolve_computer_use_guard_artifacts(&home)?;
+        crate::computer_use_guard::ensure_computer_use_config_with_artifacts(&home, &artifacts)?;
+        *self.computer_use_guard_artifacts.lock().await = Some(artifacts);
         Ok(())
     }
 
@@ -628,9 +631,10 @@ impl LaunchHooks for DefaultLaunchHooks {
         #[cfg(windows)]
         {
             let home = crate::relay_config::default_codex_home_dir();
+            let artifacts = self.computer_use_guard_artifacts.lock().await.clone();
             let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
             let task = tokio::spawn(async move {
-                run_post_launch_computer_use_guard(home, &mut shutdown_rx).await;
+                run_post_launch_computer_use_guard(home, artifacts, &mut shutdown_rx).await;
             });
             if let Some(runtime) = self
                 .computer_use_guard_watchdog
@@ -1317,6 +1321,15 @@ fn cdp_target_fingerprints(targets: &[crate::cdp::CdpTarget]) -> HashSet<String>
     targets.iter().map(cdp_target_fingerprint).collect()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CdpTargetReadiness {
+    Ready,
+    NotPage,
+    MissingWebsocket,
+    NotCodexContext,
+    Preexisting,
+}
+
 async fn cdp_json_ready_once(
     client: &reqwest::Client,
     debug_port: u16,
@@ -1326,8 +1339,23 @@ async fn cdp_json_ready_once(
         return false;
     };
     targets.iter().any(|target| {
-        is_codex_cdp_target(target)
-            && !preexisting_targets.contains(&cdp_target_fingerprint(target))
+        let readiness = cdp_target_readiness(target, preexisting_targets);
+        let accepted = readiness == CdpTargetReadiness::Ready;
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "launcher.cdp_readiness_target",
+            serde_json::json!({
+                "debug_port": debug_port,
+                "target_id": target.id,
+                "target_type": target.target_type,
+                "title": target.title,
+                "url": target.url,
+                "has_websocket": target.web_socket_debugger_url.as_deref().is_some_and(|url| !url.is_empty()),
+                "fingerprint": cdp_target_fingerprint(target),
+                "readiness": format!("{readiness:?}"),
+                "accepted": accepted
+            }),
+        );
+        accepted
     })
 }
 
@@ -1361,18 +1389,31 @@ fn cdp_target_fingerprint(target: &crate::cdp::CdpTarget) -> String {
 }
 
 fn is_codex_cdp_target(target: &crate::cdp::CdpTarget) -> bool {
+    cdp_target_readiness(target, &HashSet::new()) == CdpTargetReadiness::Ready
+}
+
+fn cdp_target_readiness(
+    target: &crate::cdp::CdpTarget,
+    preexisting_targets: &HashSet<String>,
+) -> CdpTargetReadiness {
     if target.target_type != "page" {
-        return false;
+        return CdpTargetReadiness::NotPage;
     }
     if !target
         .web_socket_debugger_url
         .as_deref()
         .is_some_and(|url| !url.is_empty())
     {
-        return false;
+        return CdpTargetReadiness::MissingWebsocket;
+    }
+    if preexisting_targets.contains(&cdp_target_fingerprint(target)) {
+        return CdpTargetReadiness::Preexisting;
     }
     let haystack = format!("{} {}", target.title, target.url).to_lowercase();
-    haystack.contains("codex")
+    if !haystack.contains("codex") {
+        return CdpTargetReadiness::NotCodexContext;
+    }
+    CdpTargetReadiness::Ready
 }
 
 async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
@@ -1584,6 +1625,7 @@ async fn is_macos_app_running(app_dir: &Path) -> bool {
 #[cfg(windows)]
 async fn run_post_launch_computer_use_guard(
     home: PathBuf,
+    mut artifacts: Option<crate::computer_use_guard::GuardArtifacts>,
     shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
 ) {
     let mut previous_delay = 0_u64;
@@ -1601,7 +1643,29 @@ async fn run_post_launch_computer_use_guard(
             }
         }
         let attempt = index + 1;
-        match crate::computer_use_guard::ensure_computer_use_config(&home) {
+        let resolved_artifacts = match artifacts.take() {
+            Some(artifacts) => artifacts,
+            None => match crate::computer_use_guard::resolve_computer_use_guard_artifacts(&home) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "computer_use_guard.post_launch_failed",
+                        serde_json::json!({
+                            "attempt": attempt,
+                            "delay_seconds": delay,
+                            "phase": "resolve_artifacts",
+                            "message": error.to_string()
+                        }),
+                    );
+                    continue;
+                }
+            },
+        };
+        artifacts = Some(resolved_artifacts.clone());
+        match crate::computer_use_guard::ensure_computer_use_config_with_artifacts(
+            &home,
+            &resolved_artifacts,
+        ) {
             Ok(result) => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "computer_use_guard.post_launch_ok",
@@ -1867,6 +1931,61 @@ mod tests {
             "https://codex.local/",
             None,
         )));
+    }
+
+    #[test]
+    fn cdp_readiness_rejects_preexisting_codex_target() {
+        let target = cdp_target(
+            "target-1",
+            "page",
+            "Codex",
+            "https://codex.local/",
+            Some("ws://127.0.0.1:9229/devtools/page/target-1"),
+        );
+        let mut preexisting = HashSet::new();
+        preexisting.insert(cdp_target_fingerprint(&target));
+
+        assert_eq!(
+            cdp_target_readiness(&target, &preexisting),
+            CdpTargetReadiness::Preexisting
+        );
+    }
+
+    #[test]
+    fn cdp_readiness_reports_rejection_reasons() {
+        assert_eq!(
+            cdp_target_readiness(
+                &cdp_target(
+                    "target-1",
+                    "worker",
+                    "Codex Worker",
+                    "https://codex.local/",
+                    Some("ws://127.0.0.1:9229/devtools/page/target-1"),
+                ),
+                &HashSet::new(),
+            ),
+            CdpTargetReadiness::NotPage
+        );
+        assert_eq!(
+            cdp_target_readiness(
+                &cdp_target("target-2", "page", "Other App", "https://example.test/", None),
+                &HashSet::new(),
+            ),
+            CdpTargetReadiness::MissingWebsocket
+        );
+        assert_eq!(
+            cdp_target_readiness(
+                &cdp_target(
+                    "target-3",
+                    "page",
+                    "Other App",
+                    "https://example.test/",
+                    Some("ws://127.0.0.1:9229/devtools/page/target-3"),
+                ),
+                &HashSet::new(),
+            ),
+            CdpTargetReadiness::NotCodexContext
+        );
     }
 
     #[test]
