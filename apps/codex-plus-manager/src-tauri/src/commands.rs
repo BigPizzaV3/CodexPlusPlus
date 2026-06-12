@@ -1616,6 +1616,17 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
 }
 
 #[tauri::command]
+pub fn get_config_coordination_status()
+-> CommandResult<codex_plus_core::config_coordinator::CoordinationStatus> {
+    let settings =
+        settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default());
+    ok(
+        "已读取配置协调状态。",
+        codex_plus_core::config_coordinator::coordination_status(&settings),
+    )
+}
+
+#[tauri::command]
 pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
     let mut settings = normalize_settings_before_save(settings);
     #[cfg(not(test))]

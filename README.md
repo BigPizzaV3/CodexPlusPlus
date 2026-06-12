@@ -39,6 +39,17 @@ Codex++ 是面向 Codex App 的外部增强启动器和管理工具。它不修�
 当前极义版先只交付 macOS。macOS DMG 会安装 `/Applications/极义codex.app` 和 `/Applications/极义codex 管理工具.app`，不会覆盖 `/Applications/Codex.app`；包内客户端固定为 `/Applications/极义codex.app/Contents/Resources/JiyiCodexClient.app`，主入口缺少该客户端时会直接报错，不会兜底打开原版 Codex。内置客户端会移除原版 `codex://` URL Scheme 和 Sparkle 更新身份，并强制使用极义专用浏览器用户数据目录和隔离环境变量，避免抢占原版 Codex 的登录回调、更新链路、Electron 会话状态或通用 OpenAI/百炼/APIMart 运行环境。
 
 ## 赞助商
+
+<p align="center">
+  <a href="https://jojocode.com/">
+    <img src="docs/images/sponsor-jojocode.svg" alt="JOJO Code" height="110">
+  </a>
+</p>
+<p align="center">
+  <a href="https://jojocode.com/"><strong>JOJO Code｜Codex++ 官方中转站</strong></a><br>
+  Codex++ 官方中转站，主打稳定接入和划算价格，支持 GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力，适合日常开发、团队协作和长期项目工作流。
+</p>
+
 <a href="mailto:1727532@qq.com">想显示在下方？</a>
 <p align="center">
 </p>
@@ -53,7 +64,7 @@ Codex++ 是面向 Codex App 的外部增强启动器和管理工具。它不修�
         <img src="docs/images/sponsor-jojocode.svg" alt="JOJO Code" height="80">
       </a>
     </td>
-    <td><a href="https://jojocode.com/"><strong>JOJO Code｜Codex++ 官方中转站</strong></a><br>感谢 JOJO Code 赞助了本项目！JOJO Code 是 Codex++ 官方中转站，面向日常开发和团队协作场景，提供稳定可用的 Codex API 接入体验，适合快速接入、长期使用和项目级工作流。</td>
+    <td><a href="https://jojocode.com/"><strong>JOJO Code｜Codex++ 官方中转站</strong></a><br>感谢 JOJO Code 赞助本项目。JOJO Code 是 Codex++ 官方中转站，提供价格划算、稳定易接入的 Codex API 中转服务，支持 GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力，适合日常开发、快速配置、团队协作和长期使用。</td>
   </tr>
   <tr>
     <td align="center">
@@ -149,7 +160,7 @@ Codex++ 是面向 Codex App 的外部增强启动器和管理工具。它不修�
         <img src="docs/images/sponsor-unity2.png" alt="Unity2.ai" height="80">
       </a>
     </td>
-    <td><a href="https://unity2.ai/register?source=codexplusplus"><strong>Unity2.ai</strong></a><br>感谢 Unity2.ai 赞助了本项目！Unity2.ai 是面向个人开发者、团队和企业的高性能 AI 模型 API 中转平台，一个 API Key 可适配 Claude Code、Codex、OpenAI 模型、IDE 插件和 Agent 工作流等场景。支持高并发调用、余额计费、组合订阅、企业开票和专属对接。通过<a href="https://unity2.ai/register?source=codexplusplus">此链接注册</a>可领取 $2 余额，加入官方群再送 $10 余额，最高可领 $12 免费额度。</td>
+    <td><a href="https://unity2.ai/register?source=codexplusplus"><strong>Unity2.ai</strong></a><br>感谢 Unity2.ai 赞助了本项目！Unity2.ai 是面向个人开发者、团队和企业的高性能 AI 模型 API 中转平台，长期服务国内头部企业，日均承载超 300 亿 token 调用，支持 5000 RPM 级高并发。支持余额计费、首充赠额、组合订阅、企业开票和专属对接。通过<a href="https://unity2.ai/register?source=codexplusplus">此链接注册</a>可领取 $2 余额，加入官方群再送 $10 余额，最高可领 $12 免费额度。</td>
   </tr>
 </table>
 

@@ -498,6 +498,37 @@ pub async fn test_relay_profile(
         .send()
         .await?;
     let http_status = response.status().as_u16();
+
+    // 如果 404 且 base_url 末尾没有 /v1，尝试自动补 /v1 后再发一次。
+    // 许多上游（中转站、自建代理）暴露的路径以 /v1/ 开头，
+    // 用户容易遗漏这个前缀，导致 /responses 或 /chat/completions 404。
+    if http_status == 404 && !base_url.ends_with("/v1") {
+        let v1_url = format!("{base_url}/v1");
+        let v1_endpoint = match profile.protocol {
+            RelayProtocol::Responses => format!("{v1_url}/responses"),
+            RelayProtocol::ChatCompletions => format!("{v1_url}/chat/completions"),
+        };
+        let v1_response = client
+            .post(&v1_endpoint)
+            .bearer_auth(api_key)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+        let v1_status = v1_response.status().as_u16();
+        if v1_status < 400 {
+            let response_text = v1_response.text().await.unwrap_or_default();
+            return Ok(RelayProfileTestResult {
+                http_status: v1_status,
+                endpoint: v1_endpoint,
+                response_preview: format!(
+                    "（Base URL 建议加上 /v1 前缀）{}",
+                    response_text.chars().take(280).collect::<String>()
+                ),
+            });
+        }
+    }
+
     let response_text = response.text().await.unwrap_or_default();
     Ok(RelayProfileTestResult {
         http_status,
@@ -837,6 +868,10 @@ fn write_codex_live_atomic(
             let _ = restore_optional_file(&config_path, old_config.as_deref());
             return Err(error.context("写入 config.toml 失败"));
         }
+    }
+
+    if config_text.is_some() || auth_bytes.is_some() {
+        let _ = crate::config_coordinator::record_write_marker("codexplusplus", home);
     }
 
     Ok(backup_path)
@@ -1460,7 +1495,9 @@ fn codex_auth_api_key(auth_contents: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn relay_profile_model(profile: &RelayProfile) -> String {
+/// 解析 profile 實際使用的模型：優先取 config.toml 裡的 `model =`，
+/// 否則退回 profile.model 欄位。供應商測試用它做回退，避免串到別家供應商的模型名。
+pub fn relay_profile_model(profile: &RelayProfile) -> String {
     root_key_string(&profile.config_contents, "model")
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| {
@@ -1981,9 +2018,37 @@ mod tests {
         assert!(profile.config_contents.contains("[model_providers.ai]"));
         assert!(!profile.config_contents.contains("[model_providers.custom]"));
     }
+
+    #[test]
+    fn relay_profile_model_prefers_config_then_field_then_empty() {
+        // 1. 供應商測試的回退第一級：config.toml 的 model = 優先
+        let from_config = RelayProfile {
+            config_contents: "model = \"deepseek-v4-flash\"\nmodel_provider = \"custom\"\n"
+                .to_string(),
+            model: "should-not-be-used".to_string(),
+            ..RelayProfile::default()
+        };
+        assert_eq!(relay_profile_model(&from_config), "deepseek-v4-flash");
+
+        // 2. config 沒寫 model 時退回 profile.model 欄位
+        let from_field = RelayProfile {
+            config_contents: "model_provider = \"custom\"\n".to_string(),
+            model: "deepseek-v4-pro".to_string(),
+            ..RelayProfile::default()
+        };
+        assert_eq!(relay_profile_model(&from_field), "deepseek-v4-pro");
+
+        // 3. 兩者皆空 → 空字串；呼叫端據此才回退到全域 relayTestModel
+        let empty = RelayProfile {
+            config_contents: String::new(),
+            model: String::new(),
+            ..RelayProfile::default()
+        };
+        assert!(relay_profile_model(&empty).trim().is_empty());
+    }
 }
 
-fn root_key_string(contents: &str, key: &str) -> Option<String> {
+pub fn root_key_string(contents: &str, key: &str) -> Option<String> {
     root_key_value(contents, key).map(unquote_toml_string)
 }
 
