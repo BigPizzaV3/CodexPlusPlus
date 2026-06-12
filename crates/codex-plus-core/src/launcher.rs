@@ -18,6 +18,8 @@ use crate::status::{LaunchStatus, StatusStore};
 
 #[cfg(windows)]
 const POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS: &[u64] = &[0, 5, 15, 30, 60, 120, 180, 240, 300];
+#[cfg_attr(not(windows), allow(dead_code))]
+const POST_LAUNCH_COMPUTER_USE_GUARD_STABLE_ATTEMPTS: usize = 3;
 const PACKAGED_CDP_READY_ATTEMPTS: usize = 10;
 const PACKAGED_CDP_READY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -283,7 +285,7 @@ where
             } else {
                 let degraded = launch_status(
                     "running_degraded",
-                    "Codex 已启动，Codex++ 增强仍在等待页面就绪。",
+                    "Codex launched; Codex++ enhancements are still waiting for the page bridge.",
                     debug_port,
                     helper_port,
                     &app_dir,
@@ -1483,7 +1485,7 @@ pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> boo
 
 async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
     let targets = crate::cdp::list_targets(debug_port).await?;
-    let target = crate::cdp::pick_page_target(&targets)?;
+    let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
         .web_socket_debugger_url
         .as_deref()
@@ -1508,7 +1510,7 @@ fn runtime_evaluate_result_is_true(result: &Value) -> bool {
 
 async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
     let targets = crate::cdp::list_targets(debug_port).await?;
-    let target = crate::cdp::pick_page_target(&targets)?;
+    let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
         .web_socket_debugger_url
         .as_deref()
@@ -1622,6 +1624,20 @@ async fn is_macos_app_running(app_dir: &Path) -> bool {
             .eq_ignore_ascii_case("true")
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+fn post_launch_guard_artifacts_ready(artifacts: &crate::computer_use_guard::GuardArtifacts) -> bool {
+    artifacts.notify_exe.is_some() && artifacts.marketplace_path.is_some()
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn should_stop_post_launch_computer_use_guard(
+    stable_unchanged_attempts: usize,
+    artifacts: &crate::computer_use_guard::GuardArtifacts,
+) -> bool {
+    stable_unchanged_attempts >= POST_LAUNCH_COMPUTER_USE_GUARD_STABLE_ATTEMPTS
+        && post_launch_guard_artifacts_ready(artifacts)
+}
+
 #[cfg(windows)]
 async fn run_post_launch_computer_use_guard(
     home: PathBuf,
@@ -1629,6 +1645,7 @@ async fn run_post_launch_computer_use_guard(
     shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
 ) {
     let mut previous_delay = 0_u64;
+    let mut stable_unchanged_attempts = 0_usize;
     for (index, delay) in POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS
         .iter()
         .copied()
@@ -1648,6 +1665,7 @@ async fn run_post_launch_computer_use_guard(
             None => match crate::computer_use_guard::resolve_computer_use_guard_artifacts(&home) {
                 Ok(resolved) => resolved,
                 Err(error) => {
+                    stable_unchanged_attempts = 0;
                     let _ = crate::diagnostic_log::append_diagnostic_log(
                         "computer_use_guard.post_launch_failed",
                         serde_json::json!({
@@ -1667,19 +1685,40 @@ async fn run_post_launch_computer_use_guard(
             &resolved_artifacts,
         ) {
             Ok(result) => {
+                if !result.changed && post_launch_guard_artifacts_ready(&resolved_artifacts) {
+                    stable_unchanged_attempts += 1;
+                } else {
+                    stable_unchanged_attempts = 0;
+                }
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "computer_use_guard.post_launch_ok",
                     serde_json::json!({
                         "attempt": attempt,
                         "delay_seconds": delay,
                         "changed": result.changed,
+                        "stable_unchanged_attempts": stable_unchanged_attempts,
                         "notify_exe": result
                             .notify_exe
                             .map(|path| path.to_string_lossy().to_string())
                     }),
                 );
+                if should_stop_post_launch_computer_use_guard(
+                    stable_unchanged_attempts,
+                    &resolved_artifacts,
+                ) {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "computer_use_guard.post_launch_stable_stop",
+                        serde_json::json!({
+                            "attempt": attempt,
+                            "delay_seconds": delay,
+                            "stable_unchanged_attempts": stable_unchanged_attempts
+                        }),
+                    );
+                    return;
+                }
             }
             Err(error) => {
+                stable_unchanged_attempts = 0;
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "computer_use_guard.post_launch_failed",
                     serde_json::json!({
@@ -2015,5 +2054,31 @@ mod tests {
             cdp_target_fingerprint(&target),
             "ws://127.0.0.1:9229/devtools/page/target-1"
         );
+    }
+
+    #[test]
+    fn post_launch_guard_stops_after_stable_ready_artifacts() {
+        let artifacts = crate::computer_use_guard::GuardArtifacts {
+            notify_exe: Some(PathBuf::from("codex-computer-use.exe")),
+            marketplace_path: Some(PathBuf::from("openai-bundled")),
+        };
+
+        assert!(!should_stop_post_launch_computer_use_guard(2, &artifacts));
+        assert!(should_stop_post_launch_computer_use_guard(3, &artifacts));
+    }
+
+    #[test]
+    fn post_launch_guard_keeps_retrying_until_artifacts_are_ready() {
+        let missing_notify = crate::computer_use_guard::GuardArtifacts {
+            notify_exe: None,
+            marketplace_path: Some(PathBuf::from("openai-bundled")),
+        };
+        let missing_marketplace = crate::computer_use_guard::GuardArtifacts {
+            notify_exe: Some(PathBuf::from("codex-computer-use.exe")),
+            marketplace_path: None,
+        };
+
+        assert!(!should_stop_post_launch_computer_use_guard(3, &missing_notify));
+        assert!(!should_stop_post_launch_computer_use_guard(3, &missing_marketplace));
     }
 }

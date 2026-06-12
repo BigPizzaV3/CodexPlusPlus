@@ -129,14 +129,8 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
     let settings = hooks.load_settings().await?;
     hooks.ensure_computer_use_config(&settings).await?;
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
-    let launch_result = hooks
-        .launch_codex(&app_dir, options.debug_port, &settings.codex_extra_args)
-        .await;
     let mut helper_started = false;
-    if settings.enhancements_enabled {
-        hooks.start_helper(options.helper_port).await?;
-        helper_started = true;
-    }
+
     let result = async {
         let process_ids = codex_plus_core::watcher::find_codex_processes();
         let activated = {
@@ -156,19 +150,60 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
                 false
             }
         };
-        let injection_ready = if settings.enhancements_enabled {
-            hooks
+        let cdp_listening_before_launch = codex_plus_core::watcher::cdp_listening(options.debug_port);
+        if settings.enhancements_enabled {
+            hooks.start_helper(options.helper_port).await?;
+            helper_started = true;
+        }
+        let mut injection_ready = false;
+        if settings.enhancements_enabled && cdp_listening_before_launch {
+            injection_ready = hooks
                 .ensure_injection(options.debug_port, options.helper_port, &app_dir)
+                .await;
+        }
+
+        let should_launch = existing_instance_should_launch(cdp_listening_before_launch, injection_ready);
+        let mut launch_ok = None;
+        let mut launch_error = None;
+        if should_launch {
+            match hooks
+                .launch_codex(&app_dir, options.debug_port, &settings.codex_extra_args)
                 .await
-        } else {
-            false
-        };
-        if injection_ready {
-            hooks
-                .start_bridge_watchdog(options.debug_port, options.helper_port)
-                .await?;
+            {
+                Ok(_) => {
+                    launch_ok = Some(true);
+                    if settings.enhancements_enabled {
+                        injection_ready = hooks
+                            .ensure_injection(options.debug_port, options.helper_port, &app_dir)
+                            .await;
+                    }
+                }
+                Err(error) => {
+                    launch_ok = Some(false);
+                    launch_error = Some(error.to_string());
+                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "launcher.activate_existing_codex",
+                        json!({
+                            "app_dir": app_dir.to_string_lossy(),
+                            "debug_port": options.debug_port,
+                            "helper_port": options.helper_port,
+                            "process_ids": process_ids,
+                            "activated": activated,
+                            "cdp_listening_before_launch": cdp_listening_before_launch,
+                            "injection_ready": injection_ready,
+                            "launch_attempted": should_launch,
+                            "launch_ok": launch_ok,
+                            "launch_error": launch_error
+                        }),
+                    );
+                    return Err(error);
+                }
+            }
+        }
+
+        if injection_ready || !settings.enhancements_enabled {
             hooks.write_status("running").await;
-        } else if settings.enhancements_enabled {
+        } else {
             hooks.write_status("running_degraded").await;
         }
         let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
@@ -179,18 +214,24 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
                 "helper_port": options.helper_port,
                 "process_ids": process_ids,
                 "activated": activated,
+                "cdp_listening_before_launch": cdp_listening_before_launch,
                 "injection_ready": injection_ready,
-                "launch_ok": launch_result.is_ok(),
-                "launch_error": launch_result.as_ref().err().map(|error| error.to_string())
+                "launch_attempted": should_launch,
+                "launch_ok": launch_ok,
+                "launch_error": launch_error
             }),
         );
-        launch_result.map(|_| ())
+        Ok(())
     }
     .await;
     if helper_started {
         hooks.shutdown_helper(options.helper_port).await;
     }
     result
+}
+
+fn existing_instance_should_launch(cdp_listening: bool, injection_ready: bool) -> bool {
+    !cdp_listening && !injection_ready
 }
 
 fn log_launcher_already_running(debug_port: u16) {
@@ -655,7 +696,7 @@ async fn try_inject_with_context(
     runtime: Arc<LauncherRuntimeService>,
 ) -> anyhow::Result<()> {
     let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
-    let target = codex_plus_core::cdp::pick_page_target(&targets)?;
+    let target = codex_plus_core::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
         .web_socket_debugger_url
         .as_deref()
@@ -799,20 +840,11 @@ mod tests {
     }
 
     #[test]
-    fn existing_instance_path_starts_helper_and_ensures_injection() {
-        let source = include_str!("main.rs").replace("\r\n", "\n");
-
-        assert!(source.contains(
-            "async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {\n    let hooks = LauncherHooks::default();"
-        ));
-        assert!(source.contains("hooks.ensure_computer_use_config(&settings).await?"));
-        assert!(source.contains("hooks.start_helper(options.helper_port).await?"));
-        assert!(source.contains("hooks.shutdown_helper(options.helper_port).await"));
-        assert!(
-            source
-                .contains("hooks.ensure_injection(options.debug_port, options.helper_port).await")
-        );
-        assert!(source.contains("injection_ready"));
+    fn existing_instance_launches_only_when_cdp_is_unavailable() {
+        assert!(existing_instance_should_launch(false, false));
+        assert!(!existing_instance_should_launch(true, false));
+        assert!(!existing_instance_should_launch(true, true));
+        assert!(!existing_instance_should_launch(false, true));
     }
 
     #[test]
