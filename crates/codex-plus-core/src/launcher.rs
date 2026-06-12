@@ -380,6 +380,30 @@ impl LaunchHooks for DefaultLaunchHooks {
         if !settings.relay_profiles_enabled {
             return Ok(());
         }
+        if crate::config_coordinator::effective_ownership(settings)
+            == crate::settings::ConfigOwnership::CcSwitch
+        {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.apply_active_relay_profile.skipped",
+                serde_json::json!({
+                    "reason": "ccswitch_ownership",
+                    "activeRelayId": settings.active_relay_id
+                }),
+            );
+            return Ok(());
+        }
+        let write_decision = crate::config_coordinator::evaluate_live_write(settings, false);
+        if !write_decision.allowed {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.apply_active_relay_profile.skipped",
+                serde_json::json!({
+                    "reason": "write_guard",
+                    "message": write_decision.message,
+                    "activeRelayId": settings.active_relay_id
+                }),
+            );
+            return Ok(());
+        }
         let profile = settings.active_relay_profile();
         let home = crate::relay_config::default_codex_home_dir();
         let common_config = crate::relay_config::normalize_config_text(
