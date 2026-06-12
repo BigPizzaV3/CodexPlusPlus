@@ -588,6 +588,7 @@ export function App() {
     debugPort: "9229",
     helperPort: "57321",
   });
+  const prevLaunchStatusRef = useRef<string | null>(null);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   const [providerSyncProgress, setProviderSyncProgress] = useState<ProviderSyncProgress>({
     active: false,
@@ -617,6 +618,13 @@ export function App() {
   const refreshOverview = async (silent = false) => {
     const result = await run(() => call<OverviewResult>("load_overview"));
     if (result) {
+      // 崩溃检测：进程从运行状态变为停止/失败 → 弹出通知
+      const prev = prevLaunchStatusRef.current;
+      const current = result.latest_launch?.status;
+      if (prev && prev === "running" && current && (current === "stopped" || current === "failed" || current === "crashed")) {
+        showNotice("Codex 意外停止", `进程状态：${current}。是否要重新启动？`, "failed");
+      }
+      prevLaunchStatusRef.current = current ?? null;
       setOverview(result);
       if (!silent) showResultNotice("概览已检查", result, { silentSuccess: true });
     }
