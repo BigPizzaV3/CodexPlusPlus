@@ -1625,8 +1625,12 @@ async fn is_macos_app_running(app_dir: &Path) -> bool {
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
-fn post_launch_guard_artifacts_ready(artifacts: &crate::computer_use_guard::GuardArtifacts) -> bool {
-    artifacts.notify_exe.is_some() && artifacts.marketplace_path.is_some()
+fn post_launch_guard_artifacts_ready(
+    artifacts: &crate::computer_use_guard::GuardArtifacts,
+) -> bool {
+    artifacts.notify_exe.is_some()
+        && artifacts.marketplace_path.is_some()
+        && (!artifacts.runtime_exports_needed || artifacts.sky_package_json.is_some())
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -1679,13 +1683,14 @@ async fn run_post_launch_computer_use_guard(
                 }
             },
         };
-        artifacts = Some(resolved_artifacts.clone());
+        let artifacts_ready = post_launch_guard_artifacts_ready(&resolved_artifacts);
+        artifacts = artifacts_ready.then_some(resolved_artifacts.clone());
         match crate::computer_use_guard::ensure_computer_use_config_with_artifacts(
             &home,
             &resolved_artifacts,
         ) {
             Ok(result) => {
-                if !result.changed && post_launch_guard_artifacts_ready(&resolved_artifacts) {
+                if !result.changed && artifacts_ready {
                     stable_unchanged_attempts += 1;
                 } else {
                     stable_unchanged_attempts = 0;
@@ -2062,6 +2067,7 @@ mod tests {
             notify_exe: Some(PathBuf::from("codex-computer-use.exe")),
             marketplace_path: Some(PathBuf::from("openai-bundled")),
             sky_package_json: None,
+            runtime_exports_needed: false,
         };
 
         assert!(!should_stop_post_launch_computer_use_guard(2, &artifacts));
@@ -2074,14 +2080,32 @@ mod tests {
             notify_exe: None,
             marketplace_path: Some(PathBuf::from("openai-bundled")),
             sky_package_json: None,
+            runtime_exports_needed: false,
         };
         let missing_marketplace = crate::computer_use_guard::GuardArtifacts {
             notify_exe: Some(PathBuf::from("codex-computer-use.exe")),
             marketplace_path: None,
             sky_package_json: None,
+            runtime_exports_needed: false,
+        };
+        let missing_runtime_package = crate::computer_use_guard::GuardArtifacts {
+            notify_exe: Some(PathBuf::from("codex-computer-use.exe")),
+            marketplace_path: Some(PathBuf::from("openai-bundled")),
+            sky_package_json: None,
+            runtime_exports_needed: true,
         };
 
-        assert!(!should_stop_post_launch_computer_use_guard(3, &missing_notify));
-        assert!(!should_stop_post_launch_computer_use_guard(3, &missing_marketplace));
+        assert!(!should_stop_post_launch_computer_use_guard(
+            3,
+            &missing_notify
+        ));
+        assert!(!should_stop_post_launch_computer_use_guard(
+            3,
+            &missing_marketplace
+        ));
+        assert!(!should_stop_post_launch_computer_use_guard(
+            3,
+            &missing_runtime_package
+        ));
     }
 }

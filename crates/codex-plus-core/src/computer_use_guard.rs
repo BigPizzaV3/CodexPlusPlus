@@ -31,17 +31,20 @@ pub(crate) struct GuardArtifacts {
     pub notify_exe: Option<PathBuf>,
     pub marketplace_path: Option<PathBuf>,
     pub sky_package_json: Option<PathBuf>,
+    pub runtime_exports_needed: bool,
 }
 
 pub(crate) fn resolve_computer_use_guard_artifacts(home: &Path) -> anyhow::Result<GuardArtifacts> {
     #[cfg(windows)]
     {
         let notify_exe = find_computer_use_notify_exe(home);
+        let runtime_exports_needed = computer_use_client_needs_sky_internal_export(home)?;
         Ok(GuardArtifacts {
             sky_package_json: find_sky_package_json_for_notify_exe(notify_exe.as_deref())
                 .or_else(find_latest_sky_package_json),
             notify_exe,
             marketplace_path: ensure_openai_bundled_marketplace(home)?,
+            runtime_exports_needed,
         })
     }
     #[cfg(not(windows))]
@@ -51,6 +54,7 @@ pub(crate) fn resolve_computer_use_guard_artifacts(home: &Path) -> anyhow::Resul
             notify_exe: None,
             marketplace_path: None,
             sky_package_json: None,
+            runtime_exports_needed: false,
         })
     }
 }
