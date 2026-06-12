@@ -58,11 +58,21 @@ async fn query_targets_url(client: &reqwest::Client, url: &str) -> anyhow::Resul
 }
 
 pub fn pick_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
-    let mut first_page = None;
-    for target in targets
+    let mut pages: Vec<&CdpTarget> = targets
         .iter()
         .filter(|target| is_injectable_page_target(target))
+        .collect();
+    pages.sort_by_key(|target| target_is_avatar_overlay(target));
+
+    if let Some(target) = pages
+        .iter()
+        .find(|target| target.url == "app://-/index.html")
     {
+        return Ok((*target).clone());
+    }
+
+    let mut first_page = None;
+    for target in pages {
         first_page.get_or_insert(target);
         if is_codex_page_target(target) {
             return Ok(target.clone());
@@ -103,4 +113,8 @@ pub fn is_codex_page_target(target: &CdpTarget) -> bool {
     }
     let haystack = format!("{} {}", target.title, target.url).to_lowercase();
     haystack.contains("codex")
+}
+
+fn target_is_avatar_overlay(target: &CdpTarget) -> bool {
+    target.url.contains("initialRoute=%2Favatar-overlay") || target.url.contains("/avatar-overlay")
 }

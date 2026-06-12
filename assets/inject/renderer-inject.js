@@ -173,13 +173,14 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "14";
+  const codexDeleteStyleVersion = "38";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
-  const codexDeleteVersion = "7";
+  const codexPlusBackendHeartbeatVersion = "4";
+  const codexDeleteVersion = "8";
   const codexExportVersion = "1";
   const codexProjectMoveVersion = "1";
-  const codexActionGroupVersion = "5";
+  const codexActionGroupVersion = "6";
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationViewVersion = "1";
@@ -349,6 +350,581 @@
   const headerContextButtonClass = "border-token-border user-select-none no-drag cursor-interaction flex items-center gap-1 border whitespace-nowrap focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 rounded-lg border-token-border text-token-button-tertiary-foreground bg-token-bg-fog enabled:hover:bg-token-list-hover-background data-[state=open]:bg-token-list-hover-background border h-token-button-composer px-2 py-0 text-base leading-[18px]";
   const headerIconTextButtonClass = "border-token-border no-drag cursor-interaction flex items-center gap-1 border whitespace-nowrap select-none focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 rounded-lg text-token-text-tertiary enabled:hover:bg-token-list-hover-background data-[state=open]:bg-token-list-hover-background border-transparent h-token-button-composer px-2 py-0 text-base leading-[18px]";
 
+  function isCodexOverlayWindow() {
+    return location.href.includes("initialRoute=%2Favatar-overlay") ||
+      location.pathname.includes("/avatar-overlay") ||
+      document.documentElement.classList.contains("compact-window");
+  }
+
+  function cleanupCodexOverlayWindowArtifacts() {
+    document.querySelectorAll(`#${codexPlusMenuId}, [data-codex-plus-menu="true"], #${styleId}`).forEach((node) => node.remove());
+  }
+
+  if (isCodexOverlayWindow()) {
+    cleanupCodexOverlayWindowArtifacts();
+    return;
+  }
+
+  try {
+    localStorage.removeItem("codexPlusLanguage");
+  } catch (_) {}
+
+  const codexPlusMessages = {
+    en: {
+      close: "Close",
+      relaunchNotNeeded: "Not needed",
+      backendChecking: "Checking backend...",
+      backendConnected: "connected",
+      backendDisconnected: "Not connected",
+      backendTimeout: "Backend check timed out",
+      backendRepairing: "Repairing backend...",
+      backendRepairFailed: "Backend repair failed",
+      backendIndicatorChecking: "Checking backend",
+      backendIndicatorDisconnected: "Not connected",
+      bridgeUnavailable: "Bridge unavailable. Please restart the launcher.",
+      managerOpened: "Manager opened",
+      managerOpenFailed: "Failed to open manager",
+      userScriptLoaded: "Loaded",
+      userScriptFailed: "Failed",
+      userScriptDisabled: "Disabled",
+      userScriptNotLoaded: "Not loaded",
+      userScriptLoading: "Loading",
+      userScriptUnknown: "Unknown",
+      userScriptDirs: "Built-in: {builtin}  User: {user}",
+      userScriptDirMissing: "Not found",
+      userScriptEmpty: "No user scripts found.",
+      userScriptBuiltin: "Built-in",
+      userScriptUser: "User",
+      visitHost: "Visit {host}",
+      adsLoading: "Recommendations are loading...",
+      adsEmpty: "No recommendations yet.",
+      sponsorAdsTitle: "Sponsor recommendations",
+      sponsorAdsEmpty: "No sponsor recommendations yet.",
+      normalAdsTitle: "General recommendations",
+      normalAdsEmpty: "No general recommendations yet.",
+      tabHome: "Home",
+      tabUserScripts: "User Scripts",
+      tabSponsor: "Recommendations",
+      tabSupport: "Support",
+      backendTitle: "Backend connection",
+      backendDescription: "Checks launcher backend status every 5 seconds. If disconnected, Codex++ can try to repair the backend.",
+      backendRepair: "Repair backend",
+      enhancementsTitle: "Page enhancements",
+      enhancementsDescription: "When off, delete, export, move, Timeline, plugin enhancements, and menu positioning are disabled.",
+      marketplaceTitle: "Unlock plugin marketplace",
+      marketplaceRelayDescription: "Not needed in compatibility mode. Your ChatGPT login keeps the official plugin marketplace available.",
+      marketplacePatchDescription: "In API Key mode, expands plugin marketplace requests to show as many plugins as possible.",
+      pluginEntryTitle: "Force plugin entry",
+      pluginEntryRelayDescription: "Not needed in compatibility mode. The official login state keeps the plugin entry available.",
+      pluginEntryPatchDescription: "Restores the 1.1.9 entry unlock behavior to force the plugin entry visible and enabled.",
+      forcePluginInstallTitle: "Force install special plugins",
+      forcePluginInstallRelayDescription: "Not needed in compatibility mode. Plugin install entry points are left unchanged.",
+      forcePluginInstallPatchDescription: "Removes front-end install blocking caused by App unavailable states.",
+      modelWhitelistTitle: "Unlock model allowlist",
+      modelWhitelistDescription: "Fetches models from the relay /v1/models endpoint in environment variables and Codex config.toml, then adds them to the model selector.",
+      fastButtonTitle: "Fast button",
+      fastButtonDescription: "Shows the service tier switch. Fast only supports {models}; other models are sent as Standard.",
+      serviceTierTitle: "Service tier",
+      serviceTierDescription: "Inherit uses config.toml service tier. Global mode applies to all threads. Custom mode allows per-thread overrides.",
+      serviceTierInherit: "Inherit",
+      serviceTierGlobalStandard: "Global Standard",
+      serviceTierGlobalFast: "Global Fast",
+      serviceTierCustom: "Custom",
+      serviceTierThreadOverride: "Current thread override",
+      serviceTierThreadInheritTitle: "Do not override this thread; inherit config.toml",
+      serviceTierThreadStandardTitle: "Use Standard for this thread only and switch to Custom mode",
+      serviceTierThreadFastTitle: "Use Fast for this thread only and switch to Custom mode",
+      sessionDeleteTitle: "Session delete",
+      sessionDeleteDescription: "Shows a delete button on hovered sessions and supports undo.",
+      markdownExportTitle: "Markdown export",
+      markdownExportDescription: "Shows an export button on sessions and exports timestamped Markdown using the local rollout.",
+      pasteFixTitle: "Paste fix",
+      pasteFixDescription: "Keeps only plain text when pasting from rich text sources such as Word into the Codex composer, preventing accidental image or file attachments. Restart Codex to apply.",
+      projectMoveTitle: "Move sessions between projects",
+      projectMoveDescription: "Shows a move button on hovered sessions. Move a session to Chats or another local project.",
+      timelineTitle: "Conversation Timeline",
+      timelineDescription: "Shows a question timeline beside the conversation. Hover for summaries, click to jump.",
+      threadIdBadgeTitle: "Session ID badge",
+      threadIdBadgeDescription: "Shows a short ID and UUIDv7 creation time before sidebar session titles to make historical sessions easier to identify.",
+      conversationViewTitle: "Centered conversation width",
+      conversationViewDescription: "Limits the main conversation and composer to a fixed maximum width for easier reading on large screens.",
+      threadScrollTitle: "Restore scroll when switching threads",
+      threadScrollDescription: "Restores each thread to the last read position instead of always jumping to the bottom.",
+      zedRemoteTitle: "Zed Remote open",
+      zedRemoteDescription: "Open supported remote SSH file references in Zed without patching Codex.app.",
+      upstreamWorktreeTitle: "Upstream worktree",
+      upstreamWorktreeDescription: "Create a Git worktree from a fresh upstream branch, equivalent to git worktree add -b branch path upstream/base.",
+      upstreamWorktreeDialogLabel: "Create upstream worktree",
+      upstreamWorktreeDialogTitle: "Create from upstream",
+      upstreamWorktreeDialogDescription: "Equivalent to git worktree add -b branch path upstream/base. Fetches the remote branch first.",
+      upstreamRepoPathLabel: "Repository path",
+      upstreamBranchNameLabel: "New branch name",
+      upstreamWorktreePathLabel: "Worktree path",
+      upstreamRemoteLabel: "Remote",
+      upstreamBaseBranchLabel: "Base branch",
+      upstreamDefaultsHint: "Enter a repository path to read the remote and current branch automatically.",
+      upstreamReadDefaults: "Read defaults",
+      upstreamDefaultsReading: "Reading repository defaults...",
+      upstreamDefaultsFailed: "Failed to read repository defaults",
+      upstreamDefaultsReady: "Worktree will be created from {remote}/{baseBranch}.",
+      upstreamCreateMissingFields: "Repository path, branch name, worktree path, remote, and base branch are required.",
+      upstreamCreating: "Fetching and creating worktree...",
+      upstreamCreatedMessage: "Created from {sourceRef}: {worktreePath}",
+      upstreamCreatedToast: "Created upstream worktree: {branchName}",
+      upstreamCreatedNativeToast: "Created worktree from {sourceRef}",
+      upstreamCreateFailed: "Failed to create upstream worktree",
+      upstreamNativeFormUnknown: "Cannot safely read the native Codex worktree form. Use the Codex++ menu instead.",
+      upstreamBranchInUse: "This branch is already used by another worktree: {path}",
+      upstreamBranchWillCreate: "New worktree will be created from {label}",
+      create: "Create",
+      providerSyncTitle: "Historical session repair",
+      providerSyncDescription: "After switching official login, hybrid API, or pure API modes, makes old conversations visible in the current mode again.",
+      pageModeTitle: "Page enhancement mode",
+      pageModeRelayDescription: "Compatibility mode keeps session delete, export, project move, Timeline, and user scripts, while disabling plugin-entry enhancements.",
+      pageModePatchDescription: "Full mode loads all page capabilities, including plugin entry, forced install, and project path moving.",
+      openManager: "Open manager",
+      nativeMenuTitle: "Native menu bar position",
+      nativeMenuDescription: "Insert the Codex++ menu into the native top menu bar. Enabled by default; can be turned off if page re-renders conflict.",
+      devtoolsTitle: "Open DevTools",
+      devtoolsDescription: "Open DevTools for the current Codex page to inspect user script errors.",
+      openDevtools: "Open DevTools",
+      aboutTitle: "About Codex++",
+      aboutDescription: "Codex++ is an enhancement menu injected by an external launcher. It does not modify the original Codex App installation.",
+      discordTitle: "Discord community",
+      discordDescription: "Join Discord for updates, issue feedback, and usage discussions.",
+      openDiscord: "Open Discord",
+      telegramTitle: "Telegram channel",
+      telegramDescription: "Join Telegram for updates and usage discussions.",
+      openTelegram: "Open Telegram",
+      issueTitle: "Report an issue",
+      issueDescription: "Open GitHub Issues to report bugs or suggestions.",
+      openIssue: "Report issue",
+      userScriptsTitle: "User Scripts",
+      userScriptsDescription: "Enable user scripts. Codex++ automatically loads .js files from the built-in directory and user config directory.",
+      userScriptsWarning: "After disabling, reload the page or restart Codex++ to fully remove effects from scripts that already ran.",
+      userScriptsReadingDirs: "Reading script directories...",
+      userScriptsReading: "Reading user scripts...",
+      reloadUserScripts: "Reload user scripts",
+      sponsorDescription: "Recommendations include sponsor recommendations and general recommendations. Sponsor recommendations come from partners supporting Codex++ maintenance. General recommendations highlight services and information useful to Codex users.",
+      supportDescription: "If Codex++ has helped you, you can buy me a coffee or send a small tip to support continued maintenance.",
+      alipay: "Alipay",
+      wechat: "WeChat",
+      alipayQrAlt: "Alipay tip QR code",
+      wechatQrAlt: "WeChat tip QR code",
+      serviceTierDisabled: "Disabled",
+      serviceTierReading: "Reading...",
+      serviceTierReadFailed: "Read failed",
+      serviceTierNotRead: "Not read",
+      serviceTierGlobalFastOn: "Fast is on",
+      serviceTierGlobalDefault: "Default service tier",
+      serviceTierCurrentValue: "Current: {value}",
+      serviceTierInheritStatus: "Inherit config.toml: {mode}",
+      serviceTierCustomDefault: "Custom: default {mode}",
+      serviceTierCustomThread: "Custom: current thread {mode}",
+      serviceTierBackendDisconnectedToast: "Backend is not connected; service tier cannot be changed",
+      serviceTierToast: "Service tier: {mode}",
+      serviceTierModeInherit: "Inherit config.toml",
+      serviceTierModeGlobalStandard: "Global Standard",
+      serviceTierModeGlobalFast: "Global Fast",
+      serviceTierModeCustom: "Custom",
+      serviceTierThreadTargetCurrent: "Current thread",
+      serviceTierThreadTargetDraft: "New thread draft",
+      serviceTierThreadToast: "{target} service tier: {mode}",
+      serviceTierLoadingTitle: "Service tier: checking backend connection",
+      serviceTierFailedTitle: "Service tier: backend is not connected, cannot switch",
+      serviceTierReadingTitle: "Service tier: reading",
+      serviceTierReadFailedTitle: "Service tier: read failed",
+      serviceTierBadgeTitlePrefix: "Service tier: {scope}",
+      serviceTierStandardHelp: "Standard: uses standard processing and does not set priority on requests.",
+      serviceTierFastHelp: "Fast: only supports {models}; uses service_tier=\"priority\" for supported models. Official docs say latency is lower and more consistent, with higher pricing. Rate limits are shared with Standard, and traffic spikes may fall back to Standard.",
+      serviceTierUnsupportedBadge: "unsupported",
+      serviceTierUnsupportedSuffix: "{message}; current requests will be sent as Standard.",
+      serviceTierFastUnsupported: "Fast only supports {models}; {modelText}",
+      serviceTierFastUnsupportedModel: "current model {model} is not supported",
+      serviceTierFastUnsupportedUnknown: "current model was not read",
+      serviceTierFastTitle: "Fast: use service_tier=\"priority\"",
+      serviceTierThreadInheritDynamicTitle: "Do not override this thread; inherit custom default {mode}",
+      upstreamWorktreeDisabled: "Upstream worktree enhancement is disabled",
+      cancel: "Cancel",
+      delete: "Delete",
+      deleteSessionDialogLabel: "Delete session",
+      deleteSessionTitle: "Delete session",
+      deleteSessionMessage: "Delete \"{title}\"?",
+      deleteSuccess: "Deleted",
+      deleteFailed: "Delete failed",
+      exportSuccess: "Exported",
+      exportFailed: "Export failed",
+      exportCancelled: "Export cancelled",
+      exportArchivedMissingId: "Export failed: archived session ID was not found",
+      moveLabel: "Move",
+      movingLabel: "Moving",
+      moveToChatsSuccess: "Moved to Chats: \"{title}\"",
+      moveToProjectSuccess: "Moved to \"{project}\": \"{title}\"",
+      moveFailed: "Move failed: {message}",
+      sidebarMoreActions: "More actions",
+      sidebarDelete: "Delete",
+      sidebarExport: "Export",
+      sidebarMove: "Move",
+    },
+    zh: {
+      close: "关闭",
+      relaunchNotNeeded: "无需开启",
+      backendChecking: "正在检查后端…",
+      backendConnected: "已连接",
+      backendDisconnected: "未连接",
+      backendTimeout: "后端检查超时",
+      backendRepairing: "正在修复后端…",
+      backendRepairFailed: "后端修复失败",
+      backendIndicatorChecking: "正在检查后端",
+      backendIndicatorDisconnected: "未连接",
+      bridgeUnavailable: "桥接不可用，请重启启动器",
+      managerOpened: "管理工具已打开",
+      managerOpenFailed: "打开管理工具失败",
+      userScriptLoaded: "已加载",
+      userScriptFailed: "失败",
+      userScriptDisabled: "已禁用",
+      userScriptNotLoaded: "未加载",
+      userScriptLoading: "加载中",
+      userScriptUnknown: "未知",
+      userScriptDirs: "内置：{builtin}  用户：{user}",
+      userScriptDirMissing: "未找到",
+      userScriptEmpty: "未发现用户脚本。",
+      userScriptBuiltin: "内置",
+      userScriptUser: "用户",
+      visitHost: "访问 {host}",
+      adsLoading: "推荐内容加载中…",
+      adsEmpty: "暂无推荐内容。",
+      sponsorAdsTitle: "赞助商推荐",
+      sponsorAdsEmpty: "暂无赞助商推荐。",
+      normalAdsTitle: "普通推荐",
+      normalAdsEmpty: "暂无普通推荐。",
+      tabHome: "主页",
+      tabUserScripts: "用户脚本",
+      tabSponsor: "推荐内容",
+      tabSupport: "请作者喝咖啡",
+      backendTitle: "后端连接",
+      backendDescription: "每 5 秒检查一次 launcher 后端状态；断开时可尝试修复后端运行。",
+      backendRepair: "修复后端运行",
+      enhancementsTitle: "页面功能增强",
+      enhancementsDescription: "关闭后停用删除、导出、移动、Timeline、插件相关和菜单位置增强。",
+      marketplaceTitle: "插件市场解锁",
+      marketplaceRelayDescription: "兼容增强模式下无需开启；ChatGPT 登录态会保留官方插件市场。",
+      marketplacePatchDescription: "API Key 模式下扩展插件市场请求，尽量显示完整插件列表。",
+      pluginEntryTitle: "强制解锁入口",
+      pluginEntryRelayDescription: "兼容增强模式下无需开启；官方登录态会保留插件入口。",
+      pluginEntryPatchDescription: "恢复 1.1.9 的入口解锁方式，强制显示并启用插件入口。",
+      forcePluginInstallTitle: "特殊插件强制安装",
+      forcePluginInstallRelayDescription: "兼容增强模式下无需开启；不会改插件安装入口。",
+      forcePluginInstallPatchDescription: "解除 App unavailable / 应用不可用导致的前端安装禁用。",
+      modelWhitelistTitle: "模型白名单解锁",
+      modelWhitelistDescription: "从环境变量和 Codex config.toml 中的中转站 /v1/models 拉取模型，并补进模型选择列表。",
+      fastButtonTitle: "Fast 按钮",
+      fastButtonDescription: "显示服务模式切换按钮；Fast 仅支持 {models}，其他模型按 Standard 发送。",
+      serviceTierTitle: "服务模式",
+      serviceTierDescription: "继承使用 config.toml 的 service tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。",
+      serviceTierInherit: "继承",
+      serviceTierGlobalStandard: "全局 Standard",
+      serviceTierGlobalFast: "全局 Fast",
+      serviceTierCustom: "自定义",
+      serviceTierThreadOverride: "当前 thread 覆盖",
+      serviceTierThreadInheritTitle: "当前 thread 不单独覆盖，继承 config.toml",
+      serviceTierThreadStandardTitle: "仅当前 thread 使用 Standard，并切到自定义模式",
+      serviceTierThreadFastTitle: "仅当前 thread 使用 Fast，并切到自定义模式",
+      sessionDeleteTitle: "会话删除",
+      sessionDeleteDescription: "在会话列表悬停显示删除按钮，并支持撤销。",
+      markdownExportTitle: "Markdown 导出",
+      markdownExportDescription: "在会话列表显示导出按钮，按本地 rollout 导出带时间戳的 Markdown。",
+      pasteFixTitle: "粘贴修复",
+      pasteFixDescription: "从 Word 等富文本来源粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。",
+      projectMoveTitle: "会话项目移动",
+      projectMoveDescription: "在会话列表悬停显示移动按钮，可移动到普通对话或其他本地项目。",
+      timelineTitle: "对话 Timeline",
+      timelineDescription: "在对话右侧显示用户提问时间线，悬停查看摘要，点击跳转。",
+      threadIdBadgeTitle: "会话 ID 标识",
+      threadIdBadgeDescription: "在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。",
+      conversationViewTitle: "对话居中宽度",
+      conversationViewDescription: "开启后把主对话和输入框限制到固定最大宽度，适合大屏阅读。",
+      threadScrollTitle: "切换对话保留位置",
+      threadScrollDescription: "开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。",
+      zedRemoteTitle: "Zed Remote 打开",
+      zedRemoteDescription: "不修改 Codex.app，直接用 Zed 打开支持的远程 SSH 文件引用。",
+      upstreamWorktreeTitle: "上游 Worktree",
+      upstreamWorktreeDescription: "基于最新上游分支创建 Git worktree，等价于 git worktree add -b branch path upstream/base。",
+      upstreamWorktreeDialogLabel: "创建上游 worktree",
+      upstreamWorktreeDialogTitle: "从上游创建",
+      upstreamWorktreeDialogDescription: "等价于 git worktree add -b branch path upstream/base。创建前会先 fetch 远端分支。",
+      upstreamRepoPathLabel: "仓库路径",
+      upstreamBranchNameLabel: "新分支名",
+      upstreamWorktreePathLabel: "Worktree 路径",
+      upstreamRemoteLabel: "Remote",
+      upstreamBaseBranchLabel: "Base branch",
+      upstreamDefaultsHint: "填写仓库路径后会自动读取 remote 和当前分支。",
+      upstreamReadDefaults: "读取默认值",
+      upstreamDefaultsReading: "正在读取仓库默认值…",
+      upstreamDefaultsFailed: "读取仓库默认值失败",
+      upstreamDefaultsReady: "将从 {remote}/{baseBranch} 创建 worktree。",
+      upstreamCreateMissingFields: "仓库路径、分支名、worktree 路径、remote 和 base branch 都必须填写。",
+      upstreamCreating: "正在 fetch 并创建 worktree…",
+      upstreamCreatedMessage: "已从 {sourceRef} 创建：{worktreePath}",
+      upstreamCreatedToast: "已创建 upstream worktree：{branchName}",
+      upstreamCreatedNativeToast: "已从 {sourceRef} 创建 worktree",
+      upstreamCreateFailed: "创建 upstream worktree 失败",
+      upstreamNativeFormUnknown: "无法安全识别 Codex 原生 worktree 表单，请使用 Codex++ 菜单创建。",
+      upstreamBranchInUse: "该分支已在另一个 worktree 使用：{path}",
+      upstreamBranchWillCreate: "将从 {label} 创建新 worktree",
+      create: "创建",
+      providerSyncTitle: "历史会话修复",
+      providerSyncDescription: "切换官方登录、混合 API 或纯 API 后，让旧对话重新显示在当前模式下。",
+      pageModeTitle: "页面增强模式",
+      pageModeRelayDescription: "兼容增强：保留会话删除、导出、项目移动、Timeline 和用户脚本，仅关闭插件入口相关增强。",
+      pageModePatchDescription: "完整增强：加载插件入口、强制安装、项目路径移动等全部页面能力。",
+      openManager: "打开管理工具",
+      nativeMenuTitle: "原生菜单栏位置",
+      nativeMenuDescription: "把 Codex++ 菜单插入顶部原生菜单栏；默认开启；如页面重渲染冲突可关闭。",
+      devtoolsTitle: "打开 DevTools",
+      devtoolsDescription: "打开当前 Codex 页面开发者工具，方便查看用户脚本报错。",
+      openDevtools: "打开 DevTools",
+      aboutTitle: "关于 Codex++",
+      aboutDescription: "Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。",
+      discordTitle: "Discord 社区",
+      discordDescription: "加入 Discord 获取更新消息、反馈问题或交流使用体验。",
+      openDiscord: "打开 Discord",
+      telegramTitle: "Telegram 频道",
+      telegramDescription: "加入 Telegram 获取更新消息和交流使用体验。",
+      openTelegram: "打开 Telegram",
+      issueTitle: "提出问题",
+      issueDescription: "打开 GitHub Issues 反馈问题或建议。",
+      openIssue: "提出问题",
+      userScriptsTitle: "用户脚本",
+      userScriptsDescription: "启用用户脚本：自动加载内置目录和用户配置目录中的 .js 文件。",
+      userScriptsWarning: "禁用后需重载页面或重启 Codex++ 才能完全移除已执行效果。",
+      userScriptsReadingDirs: "正在读取脚本目录…",
+      userScriptsReading: "正在读取用户脚本…",
+      reloadUserScripts: "重新加载用户脚本",
+      sponsorDescription: "推荐内容分为赞助商推荐和普通推荐。赞助商推荐来自支持 Codex++ 继续维护的合作方；普通推荐用于展示适合 Codex 用户的服务与信息。",
+      supportDescription: "如果 Codex++ 帮到了你，可以请我喝杯咖啡，或者随手赞赏支持一下继续维护。",
+      alipay: "支付宝",
+      wechat: "微信",
+      alipayQrAlt: "支付宝赞赏码",
+      wechatQrAlt: "微信赞赏码",
+      serviceTierDisabled: "未启用",
+      serviceTierReading: "正在读取…",
+      serviceTierReadFailed: "读取失败",
+      serviceTierNotRead: "未读取",
+      serviceTierGlobalFastOn: "Fast 已开启",
+      serviceTierGlobalDefault: "默认服务模式",
+      serviceTierCurrentValue: "当前：{value}",
+      serviceTierInheritStatus: "继承 config.toml：{mode}",
+      serviceTierCustomDefault: "自定义：默认 {mode}",
+      serviceTierCustomThread: "自定义：当前 thread {mode}",
+      serviceTierBackendDisconnectedToast: "后端未连接，无法切换服务模式",
+      serviceTierToast: "服务模式：{mode}",
+      serviceTierModeInherit: "继承 config.toml",
+      serviceTierModeGlobalStandard: "全局 Standard",
+      serviceTierModeGlobalFast: "全局 Fast",
+      serviceTierModeCustom: "自定义",
+      serviceTierThreadTargetCurrent: "当前 thread",
+      serviceTierThreadTargetDraft: "新 thread 草稿",
+      serviceTierThreadToast: "{target}服务模式：{mode}",
+      serviceTierLoadingTitle: "服务模式：正在检查后端连接",
+      serviceTierFailedTitle: "服务模式：后端未连接，无法切换",
+      serviceTierReadingTitle: "服务模式：正在读取",
+      serviceTierReadFailedTitle: "服务模式：读取失败",
+      serviceTierBadgeTitlePrefix: "服务模式：{scope}",
+      serviceTierStandardHelp: "Standard：使用标准处理；不在请求上设置 priority。",
+      serviceTierFastHelp: "Fast：仅支持 {models}；对支持模型使用 service_tier=\"priority\"，官方说明其延迟更低且更一致，但会按更高价格计费；rate limit 与 Standard 共享，流量快速上涨时可能回落到 Standard。",
+      serviceTierUnsupportedBadge: "不支持",
+      serviceTierUnsupportedSuffix: "{message}；当前请求会按 Standard 发送。",
+      serviceTierFastUnsupported: "Fast 仅支持 {models}，{modelText}",
+      serviceTierFastUnsupportedModel: "当前模型 {model} 不支持",
+      serviceTierFastUnsupportedUnknown: "当前模型未读取",
+      serviceTierFastTitle: "Fast：使用 service_tier=\"priority\"",
+      serviceTierThreadInheritDynamicTitle: "当前 thread 不单独覆盖，继承自定义默认 {mode}",
+      upstreamWorktreeDisabled: "上游 worktree 增强已关闭",
+      cancel: "取消",
+      delete: "删除",
+      deleteSessionDialogLabel: "删除会话",
+      deleteSessionTitle: "删除会话",
+      deleteSessionMessage: "删除“{title}”？",
+      deleteSuccess: "删除成功",
+      deleteFailed: "删除失败",
+      exportSuccess: "导出成功",
+      exportFailed: "导出失败",
+      exportCancelled: "导出已取消",
+      exportArchivedMissingId: "导出失败：未找到归档会话 ID",
+      moveLabel: "移动",
+      movingLabel: "移动中",
+      moveToChatsSuccess: "已移动到普通对话：“{title}”",
+      moveToProjectSuccess: "已移动到“{project}”：“{title}”",
+      moveFailed: "移动失败：{message}",
+      sidebarMoreActions: "更多操作",
+      sidebarDelete: "删除",
+      sidebarExport: "导出",
+      sidebarMove: "移动",
+    },
+  };
+
+  const codexPlusLanguageStorageKeyPattern = /language|locale|lng|i18n/i;
+  let codexPlusLanguageCache = { at: 0, value: "" };
+
+  function codexPlusLanguageCodeFromValue(value, depth = 0) {
+    if (value == null || depth > 4) return "";
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (!normalized) return "";
+      if (/^(zh|zh[-_](cn|hans|hant|tw|hk)|cn|chinese|中文|简体中文|繁體中文)$/.test(normalized)) return "zh";
+      if (/^(en|en[-_](us|gb)|english)$/.test(normalized)) return "en";
+      if (/^zh[-_]/.test(normalized)) return "zh";
+      if (/^en[-_]/.test(normalized)) return "en";
+      const sample = normalized.slice(0, 4096);
+      if (/"(?:language|locale|lng|i18nextlng)"\s*:\s*"(zh|zh[-_][^"]*)"/i.test(sample)) return "zh";
+      if (/"(?:language|locale|lng|i18nextlng)"\s*:\s*"(en|en[-_][^"]*)"/i.test(sample)) return "en";
+      if ((sample.startsWith("{") && sample.endsWith("}")) || (sample.startsWith("[") && sample.endsWith("]"))) {
+        try {
+          return codexPlusLanguageCodeFromValue(JSON.parse(value), depth + 1);
+        } catch (_) {}
+      }
+      return "";
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const language = codexPlusLanguageCodeFromValue(item, depth + 1);
+        if (language) return language;
+      }
+      return "";
+    }
+    if (typeof value === "object") {
+      for (const [key, nested] of Object.entries(value)) {
+        const keyMatches = codexPlusLanguageStorageKeyPattern.test(String(key));
+        const language = keyMatches
+          ? codexPlusLanguageCodeFromValue(nested, depth + 1)
+          : (depth < 2 ? codexPlusLanguageCodeFromValue(nested, depth + 1) : "");
+        if (language) return language;
+      }
+    }
+    return "";
+  }
+
+  function codexPlusRuntimeLanguageHint() {
+    const candidates = [
+      window.i18next?.language,
+      window.i18n?.language,
+      window.__i18n?.language,
+      window.__locale,
+      window.__NEXT_DATA__?.locale,
+      window.__NEXT_DATA__?.props?.pageProps?.locale,
+    ];
+    for (const candidate of candidates) {
+      const language = codexPlusLanguageCodeFromValue(candidate);
+      if (language) return language;
+    }
+    return "";
+  }
+
+  function codexPlusStoredLanguageHint() {
+    for (const storage of [window.localStorage, window.sessionStorage]) {
+      if (!storage) continue;
+      try {
+        for (let index = 0; index < storage.length; index += 1) {
+          const key = storage.key(index) || "";
+          const value = storage.getItem(key) || "";
+          if (!codexPlusLanguageStorageKeyPattern.test(key) && !codexPlusLanguageStorageKeyPattern.test(value.slice(0, 1024))) continue;
+          const language = codexPlusLanguageCodeFromValue(value) || codexPlusLanguageCodeFromValue(key);
+          if (language) return language;
+        }
+      } catch (_) {}
+    }
+    return "";
+  }
+
+  function codexPlusOwnsLanguageNode(element) {
+    return !!element?.closest?.(`#${codexPlusMenuId}, .codex-plus-modal-overlay, .codex-delete-confirm-overlay, .${projectMoveOverlayClass}, .${moreMenuClass}, .${actionTooltipClass}, .${timelineClass}, .codex-conversation-timeline, .${codexServiceTierBadgeClass}, .${zedRemoteButtonClass}, .${zedRemoteToastClass}, .codex-delete-toast`);
+  }
+
+  function codexPlusNativeTextLanguageHint() {
+    const body = document.body;
+    if (!body || typeof document.createTreeWalker !== "function") return "";
+    const showText = window.NodeFilter?.SHOW_TEXT || 4;
+    const accept = window.NodeFilter?.FILTER_ACCEPT || 1;
+    const reject = window.NodeFilter?.FILTER_REJECT || 2;
+    const walker = document.createTreeWalker(body, showText, {
+      acceptNode(node) {
+        const element = node.parentElement;
+        if (!element || codexPlusOwnsLanguageNode(element)) return reject;
+        const tag = element.tagName;
+        if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT") return reject;
+        const text = String(node.nodeValue || "").trim();
+        if (!text) return reject;
+        try {
+          const style = window.getComputedStyle?.(element);
+          if (style && (style.display === "none" || style.visibility === "hidden")) return reject;
+        } catch (_) {}
+        return accept;
+      },
+    });
+    let text = "";
+    let node = walker.nextNode();
+    while (node && text.length < 12000) {
+      text += ` ${node.nodeValue || ""}`;
+      node = walker.nextNode();
+    }
+    body.querySelectorAll?.("[aria-label], [title], [placeholder]").forEach((element) => {
+      if (text.length >= 12000 || codexPlusOwnsLanguageNode(element)) return;
+      for (const attribute of ["aria-label", "title", "placeholder"]) {
+        const value = element.getAttribute?.(attribute);
+        if (value) text += ` ${value}`;
+      }
+    });
+    const normalized = text.replace(/\s+/g, " ").trim();
+    if (!normalized) return "";
+    const zhNeedles = ["默认权限", "权限", "外观", "设置", "语言", "新建对话", "已归档对话", "取消归档"];
+    const enNeedles = ["Default permissions", "Permissions", "Appearance", "Settings", "Language", "New chat", "Archived conversations", "Unarchive"];
+    let zhScore = 0;
+    let enScore = 0;
+    for (const needle of zhNeedles) if (normalized.includes(needle)) zhScore += needle.length > 3 ? 2 : 1;
+    for (const needle of enNeedles) if (new RegExp(`\\b${needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(normalized)) enScore += needle.length > 8 ? 2 : 1;
+    if (zhScore > enScore) return "zh";
+    if (enScore > zhScore) return "en";
+    return "";
+  }
+
+  function detectCodexPlusLanguage() {
+    const rootLang = String(document.documentElement.lang || "").trim().toLowerCase();
+    return codexPlusRuntimeLanguageHint()
+      || codexPlusNativeTextLanguageHint()
+      || codexPlusStoredLanguageHint()
+      || (rootLang.startsWith("zh") ? "zh" : "")
+      || "en";
+  }
+
+  function codexPlusLanguage() {
+    try {
+      const now = Date.now();
+      if (codexPlusLanguageCache.value && now - codexPlusLanguageCache.at < 500) return codexPlusLanguageCache.value;
+      const language = detectCodexPlusLanguage();
+      codexPlusLanguageCache = { at: now, value: language };
+      return language;
+    } catch (_) {
+      return "en";
+    }
+  }
+
+  function codexPlusText(key, vars = {}) {
+    const table = codexPlusMessages[codexPlusLanguage()] || codexPlusMessages.en;
+    const fallback = codexPlusMessages.en[key] || key;
+    return String(table[key] || fallback).replace(/\{([a-zA-Z0-9_]+)\}/g, (_, name) => {
+      return Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : "";
+    });
+  }
+
+  function t(key, vars = {}) {
+    return codexPlusText(key, vars);
+  }
+
+  function codexPlusEscapedText(key, vars = {}) {
+    return escapeHtml(t(key, vars));
+  }
+
   function installStyle() {
     const existingStyle = document.getElementById(styleId);
     if (existingStyle?.dataset.codexDeleteStyleVersion === codexDeleteStyleVersion) return;
@@ -357,6 +933,72 @@
     style.id = styleId;
     style.dataset.codexDeleteStyleVersion = codexDeleteStyleVersion;
     style.textContent = `
+      :root {
+        --codex-plus-font-sans: var(--font-sans, var(--font-sans-default, var(--vscode-font-family, var(--default-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif))));
+        --codex-plus-font-mono: var(--font-mono, var(--font-mono-default, var(--vscode-editor-font-family, var(--default-mono-font-family, ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace))));
+        --codex-plus-font-size: var(--vscode-font-size, var(--text-base, 14px));
+        --codex-plus-font-size-xs: calc(var(--codex-plus-font-size) - 3px);
+        --codex-plus-font-size-sm: calc(var(--codex-plus-font-size) - 2px);
+        --codex-plus-font-size-md: var(--codex-plus-font-size);
+        --codex-plus-font-size-lg: calc(var(--codex-plus-font-size) + 4px);
+        --codex-plus-modal-overlay-bg: var(--color-background-scrim, var(--color-token-modal-backdrop, var(--color-simple-scrim, rgba(0, 0, 0, .42))));
+        --codex-plus-modal-bg: var(--color-background-elevated-primary-opaque, var(--color-background-elevated-primary, var(--color-token-menu-background, var(--vscode-menu-background, Canvas))));
+        --codex-plus-modal-fg: var(--color-text-foreground, var(--color-token-foreground, var(--vscode-foreground, CanvasText)));
+        --codex-plus-modal-border: var(--color-border, var(--color-token-menu-border, var(--vscode-menu-border, color-mix(in srgb, currentColor 12%, transparent))));
+        --codex-plus-modal-shadow: var(--shadow-2xl, 0 16px 32px -8px color-mix(in srgb, CanvasText 18%, transparent));
+        --codex-plus-radius-control: var(--radius-md, 7px);
+        --codex-plus-radius-card: var(--radius-lg, 12px);
+        --codex-plus-radius-modal: var(--radius-2xl, 18px);
+        --codex-plus-muted: var(--color-text-foreground-tertiary, var(--color-token-description-foreground, var(--vscode-descriptionForeground, color-mix(in srgb, var(--codex-plus-modal-fg) 58%, transparent))));
+        --codex-plus-row-border: var(--color-border, var(--color-token-border, var(--vscode-widget-border, color-mix(in srgb, var(--codex-plus-modal-fg) 10%, transparent))));
+        --codex-plus-control-border: var(--color-token-button-border, var(--color-border, var(--vscode-button-border, var(--codex-plus-row-border))));
+        --codex-plus-control-bg: var(--color-background-button-secondary, var(--color-token-button-secondary-background, var(--vscode-button-secondaryBackground, ButtonFace)));
+        --codex-plus-control-hover-bg: var(--color-background-button-secondary-hover, var(--color-token-button-secondary-hover-background, var(--vscode-button-secondaryHoverBackground, color-mix(in srgb, var(--codex-plus-modal-fg) 8%, var(--codex-plus-control-bg)))));
+        --codex-plus-control-fg: var(--color-text-button-secondary, var(--color-token-button-secondary-foreground, var(--vscode-button-secondaryForeground, ButtonText)));
+        --codex-plus-select-bg: var(--color-token-dropdown-background, var(--color-background-elevated-primary-opaque, var(--codex-plus-modal-bg)));
+        --codex-plus-select-hover-bg: var(--color-token-list-hover-background, var(--codex-plus-control-hover-bg));
+        --codex-plus-select-active-bg: var(--color-token-list-active-selection-background, var(--color-background-tertiary, var(--codex-plus-select-hover-bg)));
+        --codex-plus-select-active-fg: var(--color-token-list-active-selection-foreground, var(--codex-plus-modal-fg));
+        --codex-plus-focus-border: var(--color-token-focus-border, var(--color-border-focus, var(--vscode-focusBorder, var(--codex-plus-accent))));
+        --codex-plus-checkbox-bg: var(--color-token-checkbox-background, var(--codex-plus-select-bg));
+        --codex-plus-checkbox-border: var(--color-token-checkbox-border, var(--codex-plus-control-border));
+        --codex-plus-primary-bg: var(--color-background-button-primary, var(--color-token-button-background, var(--vscode-button-background, var(--color-token-primary, var(--color-text-accent, Highlight)))));
+        --codex-plus-primary-fg: var(--color-text-button-primary, var(--color-token-button-foreground, var(--vscode-button-foreground, HighlightText)));
+        --codex-plus-input-bg: var(--color-token-input-background, var(--vscode-input-background, var(--color-background-control, var(--codex-plus-modal-bg))));
+        --codex-plus-input-fg: var(--color-token-input-foreground, var(--vscode-input-foreground, var(--codex-plus-modal-fg)));
+        --codex-plus-input-border: var(--color-token-input-border, var(--vscode-input-border, var(--codex-plus-control-border)));
+        --codex-plus-toggle-bg: var(--color-token-checkbox-background, var(--color-background-button-secondary, var(--color-token-button-secondary-background, var(--vscode-button-secondaryBackground, var(--codex-plus-row-border)))));
+        --codex-plus-toggle-border: var(--color-token-checkbox-border, var(--codex-plus-control-border));
+        --codex-plus-toggle-knob-bg: var(--color-background-elevated-primary-opaque, var(--color-background-surface, var(--codex-plus-modal-bg)));
+        --codex-plus-toggle-knob-border: var(--color-token-checkbox-border, color-mix(in srgb, var(--codex-plus-modal-fg) 10%, transparent));
+        --codex-plus-toggle-active-bg: var(--color-token-primary, var(--color-text-accent, var(--codex-plus-primary-bg)));
+        --codex-plus-toggle-active-border: var(--color-token-primary, var(--color-text-accent, var(--codex-plus-primary-bg)));
+        --codex-plus-toggle-active-knob-bg: var(--color-token-button-foreground, #fff);
+        --codex-plus-toggle-active-knob-border: var(--color-token-button-foreground, #fff);
+        --codex-plus-toggle-muted-bg: var(--color-background-button-secondary, var(--color-token-button-secondary-background, var(--codex-plus-control-bg)));
+        --codex-plus-toggle-muted-fg: var(--color-text-button-secondary, var(--color-token-button-secondary-foreground, var(--codex-plus-control-fg)));
+        --codex-plus-tab-fg: var(--color-text-foreground-secondary, var(--color-token-text-secondary, var(--vscode-foreground, var(--codex-plus-modal-fg))));
+        --codex-plus-scrollbar-thumb: var(--color-token-scrollbar-slider-background, color-mix(in srgb, var(--codex-plus-modal-fg) 18%, transparent));
+        --codex-plus-scrollbar-thumb-hover: var(--color-token-scrollbar-slider-hover-background, color-mix(in srgb, var(--codex-plus-modal-fg) 26%, transparent));
+        --codex-plus-card-bg: var(--color-background-elevated-secondary-opaque, var(--color-background-elevated-secondary, var(--color-token-menu-background, var(--vscode-menu-background, var(--codex-plus-modal-bg)))));
+        --codex-plus-success: var(--color-text-success, var(--color-token-git-decoration-added-resource-foreground, var(--vscode-testing-coveredGutterBackground, var(--codex-plus-modal-fg))));
+        --codex-plus-error: var(--color-text-error, var(--color-token-error-foreground, var(--vscode-errorForeground, var(--codex-plus-modal-fg))));
+        --codex-plus-warning: var(--color-text-warning, var(--color-token-editor-warning-foreground, var(--vscode-editorWarning-foreground, var(--codex-plus-modal-fg))));
+        --codex-plus-accent: var(--color-text-accent, var(--color-token-primary, var(--vscode-textLink-foreground, var(--codex-plus-primary-bg))));
+        --codex-plus-accent-bg: var(--color-background-accent, var(--vscode-inputOption-activeBackground, var(--color-background-button-secondary, var(--codex-plus-control-bg))));
+        --codex-plus-secondary: var(--color-text-foreground-secondary, var(--color-token-text-secondary, var(--vscode-foreground, var(--codex-plus-modal-fg))));
+        --codex-plus-danger-bg: var(--color-background-button-danger, var(--color-background-danger-active, var(--color-background-status-error, var(--vscode-inputValidation-errorBackground, color-mix(in srgb, var(--codex-plus-error) 16%, var(--codex-plus-modal-bg))))));
+        --codex-plus-danger-fg: var(--color-text-button-danger, var(--color-text-on-danger, var(--vscode-button-foreground, var(--codex-plus-primary-fg))));
+        --codex-plus-danger-border: var(--color-border-danger, var(--vscode-inputValidation-errorBorder, color-mix(in srgb, var(--codex-plus-error) 42%, var(--codex-plus-modal-border))));
+        --codex-plus-ad-card-bg: var(--color-background-elevated-secondary-opaque, var(--color-background-elevated-secondary, var(--color-token-diff-surface, var(--codex-plus-card-bg))));
+        --codex-plus-ad-card-border: var(--codex-plus-row-border);
+        --codex-plus-ad-card-shadow: var(--shadow-lg, var(--codex-plus-modal-shadow));
+        --codex-plus-ad-chip-bg: var(--codex-plus-control-bg);
+        --codex-plus-ad-chip-border: var(--codex-plus-control-border);
+        --codex-plus-ad-chip-fg: var(--codex-plus-control-fg);
+        --codex-plus-ad-empty-border: var(--codex-plus-row-border);
+        --codex-plus-ad-empty-fg: var(--codex-plus-muted);
+      }
       .${actionGroupClass} {
         position: absolute;
         right: var(--codex-session-actions-right, 28px);
@@ -367,20 +1009,21 @@
         pointer-events: none;
         display: inline-flex;
         align-items: center;
-        gap: 6px;
+        gap: 4px;
         background: transparent;
       }
       .${actionButtonClass} {
-        width: 26px;
-        height: 26px;
+        width: 20px;
+        height: 20px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        border: 0;
-        border-radius: 6px;
+        border: 1px solid transparent;
+        border-radius: 999px;
         background: transparent;
-        color: #d1d5db;
-        font: 14px/1 system-ui, sans-serif;
+        color: var(--color-text-foreground, var(--color-token-foreground, var(--codex-plus-modal-fg)));
+        font: 430 var(--codex-plus-font-size-sm)/1 var(--codex-plus-font-sans);
+        opacity: .5;
         padding: 0;
         cursor: default;
         text-align: center;
@@ -392,20 +1035,30 @@
       }
       .${actionButtonClass}:hover,
       .${actionButtonClass}:focus-visible {
-        background: #363839;
-        color: #f4f4f5;
+        background: transparent;
+        color: var(--color-text-foreground, var(--color-token-foreground, var(--codex-plus-modal-fg)));
+        opacity: 1;
         outline: none;
+      }
+      .${moreButtonClass}[aria-expanded="true"],
+      [data-codex-delete-row="true"].codex-session-more-open .${moreButtonClass} {
+        color: var(--color-text-foreground, var(--color-token-foreground, var(--codex-plus-modal-fg)));
+        opacity: 1;
       }
       .${moreMenuClass} {
         position: fixed;
         z-index: 2147483201;
-        min-width: 104px;
-        border: 1px solid rgba(255,255,255,.1);
-        border-radius: 10px;
-        background: #242628;
-        color: #f4f4f5;
-        box-shadow: 0 14px 40px rgba(0,0,0,.28);
-        padding: 5px;
+        min-width: 140px;
+        border: 0;
+        border-radius: var(--radius-xl, 15px);
+        background: var(--color-token-dropdown-background, var(--codex-plus-modal-bg));
+        color: var(--color-token-foreground, var(--codex-plus-modal-fg));
+        box-shadow:
+          0 0 0 .5px var(--color-token-border, var(--color-border, color-mix(in srgb, var(--codex-plus-modal-fg) 8%, transparent))),
+          0 8px 16px -4px color-mix(in srgb, CanvasText 12%, transparent);
+        display: flex;
+        flex-direction: column;
+        padding: 4px;
       }
       .${moreMenuClass}[hidden] { display: none !important; }
       .${moreMenuClass}.codex-session-more-menu-open-up {
@@ -414,25 +1067,30 @@
       .codex-session-more-menu-item {
         width: 100%;
         border: 0;
-        border-radius: 7px;
+        border-radius: 12.5px;
         background: transparent;
         color: inherit;
         cursor: default;
         display: flex;
         align-items: center;
         gap: 8px;
-        font: 13px/18px system-ui, sans-serif;
-        padding: 6px 8px;
+        font: 430 var(--codex-plus-font-size-sm)/18.5714px var(--codex-plus-font-sans);
+        min-height: 28.5703px;
+        padding: 5px 8px;
         text-align: left;
       }
       .codex-session-more-menu-item:hover,
       .codex-session-more-menu-item:focus-visible {
-        background: #363839;
+        background: var(--color-token-list-hover-background, var(--codex-plus-control-hover-bg));
         outline: none;
       }
       .codex-session-more-menu-icon {
         width: 16px;
-        text-align: center;
+        height: 16px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
       }
       .${threadIdBadgeClass} {
         flex: 0 0 auto;
@@ -542,13 +1200,13 @@
         position: fixed;
         z-index: 2147483201;
         max-width: min(220px, calc(100vw - 32px));
-        border: 1px solid rgba(255,255,255,.1);
-        border-radius: 12px;
-        background: #242628;
-        color: #f4f4f5;
-        font: 14px/20px system-ui, sans-serif;
-        padding: 9px 12px;
-        box-shadow: 0 14px 40px rgba(0,0,0,.28);
+        border: 1px solid var(--color-token-border, var(--color-border, var(--codex-plus-row-border)));
+        border-radius: var(--radius-lg, 12px);
+        background: var(--color-token-dropdown-background, var(--codex-plus-modal-bg));
+        color: var(--color-token-foreground, var(--codex-plus-modal-fg));
+        font: 430 var(--codex-plus-font-size-sm)/18px var(--codex-plus-font-sans);
+        padding: 4px 8px;
+        box-shadow: none;
         pointer-events: none;
         white-space: nowrap;
       }
@@ -556,39 +1214,40 @@
         position: fixed;
         inset: 0;
         z-index: 2147483200;
-        background: rgba(15,23,42,.28);
+        background: var(--codex-plus-modal-overlay-bg);
       }
       .codex-project-move-panel {
         position: fixed;
         width: min(360px, calc(100vw - 32px));
         max-height: min(520px, calc(100vh - 32px));
         overflow: hidden;
-        border: 1px solid rgba(15,23,42,.14);
-        border-radius: 10px;
-        background: #ffffff;
-        color: #111827;
-        font: 13px system-ui, sans-serif;
-        box-shadow: 0 18px 60px rgba(15,23,42,.25);
+        border: 1px solid var(--codex-plus-modal-border);
+        border-radius: var(--codex-plus-radius-card);
+        background: var(--codex-plus-modal-bg);
+        color: var(--codex-plus-modal-fg);
+        font: var(--codex-plus-font-size-sm)/1.35 var(--codex-plus-font-sans);
+        box-shadow: var(--codex-plus-modal-shadow);
       }
-      .codex-project-move-header { border-bottom: 1px solid #e5e7eb; padding: 10px 12px; }
-      .codex-project-move-title { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-project-move-header { border-bottom: 1px solid var(--codex-plus-row-border); padding: 10px 12px; }
+      .codex-project-move-title { font-weight: var(--font-weight-semibold, 600); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .codex-project-move-list { max-height: min(440px, calc(100vh - 110px)); overflow-y: auto; padding: 6px; }
       .codex-project-move-item {
         display: block;
         width: 100%;
         border: 0;
-        border-radius: 7px;
+        border-radius: var(--codex-plus-radius-control);
         background: transparent;
-        color: #111827;
+        color: var(--codex-plus-modal-fg);
+        font: inherit;
         padding: 8px 9px;
         text-align: left;
         cursor: pointer;
       }
       .codex-project-move-item:hover,
-      .codex-project-move-item:focus-visible { background: #f3f4f6; outline: none; }
+      .codex-project-move-item:focus-visible { background: var(--codex-plus-control-hover-bg); outline: none; }
       .codex-project-move-item-title { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-project-move-item-path { margin-top: 2px; color: #6b7280; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-project-move-empty { padding: 18px 12px; color: #6b7280; text-align: center; }
+      .codex-project-move-item-path { margin-top: 2px; color: var(--codex-plus-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-project-move-empty { padding: 18px 12px; color: var(--codex-plus-muted); text-align: center; }
       .codex-project-move-hidden { display: none !important; }
       [data-codex-project-move-injected-list="true"] { display: flex; flex-direction: column; }
       .codex-archive-delete-all {
@@ -629,20 +1288,25 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        background: rgba(15,23,42,.28);
+        background: var(--codex-plus-modal-overlay-bg);
+      }
+      .codex-delete-confirm-overlay.${upstreamWorktreeDialogClass} {
+        z-index: 2147483647;
       }
       .codex-delete-confirm-content {
         width: min(420px, calc(100vw - 48px));
-        border: 1px solid rgba(15,23,42,.12);
-        border-radius: 12px;
-        background: #ffffff;
-        color: #111827;
-        font: 14px system-ui, sans-serif;
-        box-shadow: 0 24px 80px rgba(15,23,42,.22);
+        border: 1px solid var(--codex-plus-modal-border);
+        border-radius: var(--codex-plus-radius-card);
+        background: var(--codex-plus-modal-bg);
+        color: var(--codex-plus-modal-fg);
+        font-family: var(--codex-plus-font-sans);
+        font-size: var(--codex-plus-font-size-md);
+        line-height: 1.4;
+        box-shadow: var(--codex-plus-modal-shadow);
         padding: 18px;
       }
-      .codex-delete-confirm-title { font-size: 16px; font-weight: 650; }
-      .codex-delete-confirm-message { margin-top: 8px; color: #4b5563; line-height: 1.45; }
+      .codex-delete-confirm-title { font-size: calc(var(--codex-plus-font-size-md) + 2px); font-weight: var(--font-weight-semibold, 600); }
+      .codex-delete-confirm-message { margin-top: 8px; color: var(--codex-plus-muted); line-height: 1.45; }
       .codex-delete-confirm-actions {
         display: flex;
         justify-content: flex-end;
@@ -650,140 +1314,20 @@
         margin-top: 18px;
       }
       .codex-delete-confirm-actions button {
-        border: 1px solid #d1d5db;
-        border-radius: 7px;
+        border: 1px solid var(--codex-plus-control-border);
+        border-radius: var(--codex-plus-radius-control);
         padding: 6px 12px;
-        background: #ffffff;
-        color: #111827;
-        font: 13px system-ui, sans-serif;
+        background: var(--codex-plus-control-bg);
+        color: var(--codex-plus-control-fg);
+        font: var(--codex-plus-font-size-sm) var(--codex-plus-font-sans);
         cursor: pointer;
       }
+      .codex-delete-confirm-actions button:hover,
+      .codex-delete-confirm-actions button:focus-visible { background: var(--codex-plus-control-hover-bg); outline: none; }
       .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
-        border-color: #ef4444;
-        background: #dc2626;
-        color: #ffffff;
-      }
-      /* Dark theme overrides for delete-confirm and project-move dialogs.
-         Triggered either by Codex applying a "dark" class / data-theme="dark"
-         on its document root, or by the OS-level prefers-color-scheme hint.
-         Palette matches the existing Codex++ dark modal (.codex-plus-modal-content). */
-      html.dark .codex-delete-confirm-overlay,
-      html[data-theme="dark"] .codex-delete-confirm-overlay,
-      :root[data-theme="dark"] .codex-delete-confirm-overlay {
-        background: rgba(0,0,0,.55);
-      }
-      html.dark .codex-delete-confirm-content,
-      html[data-theme="dark"] .codex-delete-confirm-content,
-      :root[data-theme="dark"] .codex-delete-confirm-content {
-        border-color: rgba(255,255,255,.12);
-        background: #2b2b2b;
-        color: #f3f4f6;
-        box-shadow: 0 24px 80px rgba(0,0,0,.55);
-      }
-      html.dark .codex-delete-confirm-message,
-      html[data-theme="dark"] .codex-delete-confirm-message,
-      :root[data-theme="dark"] .codex-delete-confirm-message {
-        color: #d1d5db;
-      }
-      html.dark .codex-delete-confirm-actions button,
-      html[data-theme="dark"] .codex-delete-confirm-actions button,
-      :root[data-theme="dark"] .codex-delete-confirm-actions button {
-        border-color: rgba(255,255,255,.18);
-        background: #3f3f46;
-        color: #f3f4f6;
-      }
-      html.dark .codex-delete-confirm-actions [data-codex-delete-confirm="true"],
-      html[data-theme="dark"] .codex-delete-confirm-actions [data-codex-delete-confirm="true"],
-      :root[data-theme="dark"] .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
-        border-color: #ef4444;
-        background: #dc2626;
-        color: #ffffff;
-      }
-      html.dark .${projectMoveOverlayClass},
-      html[data-theme="dark"] .${projectMoveOverlayClass},
-      :root[data-theme="dark"] .${projectMoveOverlayClass} {
-        background: rgba(0,0,0,.55);
-      }
-      html.dark .codex-project-move-panel,
-      html[data-theme="dark"] .codex-project-move-panel,
-      :root[data-theme="dark"] .codex-project-move-panel {
-        border-color: rgba(255,255,255,.12);
-        background: #2b2b2b;
-        color: #f3f4f6;
-        box-shadow: 0 18px 60px rgba(0,0,0,.55);
-      }
-      html.dark .codex-project-move-header,
-      html[data-theme="dark"] .codex-project-move-header,
-      :root[data-theme="dark"] .codex-project-move-header {
-        border-bottom-color: rgba(255,255,255,.1);
-      }
-      html.dark .codex-project-move-item,
-      html[data-theme="dark"] .codex-project-move-item,
-      :root[data-theme="dark"] .codex-project-move-item {
-        color: #f3f4f6;
-      }
-      html.dark .codex-project-move-item:hover,
-      html.dark .codex-project-move-item:focus-visible,
-      html[data-theme="dark"] .codex-project-move-item:hover,
-      html[data-theme="dark"] .codex-project-move-item:focus-visible,
-      :root[data-theme="dark"] .codex-project-move-item:hover,
-      :root[data-theme="dark"] .codex-project-move-item:focus-visible {
-        background: rgba(255,255,255,.08);
-      }
-      html.dark .codex-project-move-item-path,
-      html[data-theme="dark"] .codex-project-move-item-path,
-      :root[data-theme="dark"] .codex-project-move-item-path,
-      html.dark .codex-project-move-empty,
-      html[data-theme="dark"] .codex-project-move-empty,
-      :root[data-theme="dark"] .codex-project-move-empty {
-        color: #9ca3af;
-      }
-      @media (prefers-color-scheme: dark) {
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-overlay {
-          background: rgba(0,0,0,.55);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-content {
-          border-color: rgba(255,255,255,.12);
-          background: #2b2b2b;
-          color: #f3f4f6;
-          box-shadow: 0 24px 80px rgba(0,0,0,.55);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-message {
-          color: #d1d5db;
-        }
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-actions button {
-          border-color: rgba(255,255,255,.18);
-          background: #3f3f46;
-          color: #f3f4f6;
-        }
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
-          border-color: #ef4444;
-          background: #dc2626;
-          color: #ffffff;
-        }
-        html:not(.light):not([data-theme="light"]) .${projectMoveOverlayClass} {
-          background: rgba(0,0,0,.55);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-panel {
-          border-color: rgba(255,255,255,.12);
-          background: #2b2b2b;
-          color: #f3f4f6;
-          box-shadow: 0 18px 60px rgba(0,0,0,.55);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-header {
-          border-bottom-color: rgba(255,255,255,.1);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-item {
-          color: #f3f4f6;
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-item:hover,
-        html:not(.light):not([data-theme="light"]) .codex-project-move-item:focus-visible {
-          background: rgba(255,255,255,.08);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-item-path,
-        html:not(.light):not([data-theme="light"]) .codex-project-move-empty {
-          color: #9ca3af;
-        }
+        border-color: var(--codex-plus-danger-border);
+        background: var(--codex-plus-danger-bg);
+        color: var(--codex-plus-danger-fg);
       }
       #${codexPlusMenuId}.${codexPlusMenuFloatingClass} {
         position: fixed;
@@ -792,8 +1336,8 @@
         left: auto;
         z-index: 2147483645;
         height: var(--codex-plus-menu-height, 30px);
-        color: #d1d5db;
-        font: 13px system-ui, sans-serif;
+        color: var(--codex-plus-secondary);
+        font: var(--codex-plus-font-size-sm)/1 var(--codex-plus-font-sans);
         text-align: right;
         display: inline-flex;
         align-items: center;
@@ -806,14 +1350,19 @@
         align-items: center;
         height: 100%;
         flex: 0 0 auto;
+        min-width: max-content;
         pointer-events: auto;
         -webkit-app-region: no-drag;
+      }
+      #${codexPlusMenuId}[data-codex-plus-native-menu="true"] {
+        margin-inline: 2px;
       }
       .codex-plus-trigger {
         display: inline-flex;
         align-items: center;
         justify-content: center;
         gap: 4px;
+        box-sizing: border-box;
         border: 0;
         background: transparent;
         color: inherit;
@@ -825,6 +1374,36 @@
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
+      .codex-plus-trigger:hover,
+      .codex-plus-trigger:focus-visible { outline: none; }
+      .codex-plus-native-trigger {
+        aspect-ratio: auto !important;
+        border: 1px solid var(--color-token-button-border, var(--color-token-border, var(--color-border, transparent))) !important;
+        background: transparent !important;
+        flex: 0 0 auto !important;
+        gap: 8px !important;
+        width: max-content !important;
+        min-width: max-content !important;
+        min-inline-size: max-content !important;
+        max-width: none !important;
+        overflow: visible !important;
+        padding: 0 12px 0 11px !important;
+        white-space: nowrap !important;
+      }
+      .codex-plus-native-trigger:hover,
+      .codex-plus-native-trigger:focus-visible {
+        background: var(--color-token-list-hover-background, var(--color-background-button-secondary-hover, transparent)) !important;
+      }
+      .codex-plus-native-trigger [data-codex-backend-indicator],
+      .codex-plus-native-trigger [data-codex-plus-trigger-label] {
+        flex: 0 0 auto;
+      }
+      .codex-plus-native-trigger [data-codex-plus-trigger-label] {
+        min-width: max-content;
+        overflow: visible;
+        text-overflow: clip;
+        white-space: nowrap;
+      }
       .codex-plus-modal-overlay {
         position: fixed;
         inset: 0;
@@ -832,7 +1411,7 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        background: rgba(0,0,0,.45);
+        background: var(--codex-plus-modal-overlay-bg);
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
@@ -842,12 +1421,14 @@
         display: flex;
         flex-direction: column;
         overflow: hidden;
-        border: 1px solid rgba(255,255,255,.12);
-        border-radius: 18px;
-        background: #2b2b2b;
-        color: #f3f4f6;
-        font: 14px system-ui, sans-serif;
-        box-shadow: 0 24px 80px rgba(0,0,0,.45);
+        border: 1px solid var(--codex-plus-modal-border);
+        border-radius: var(--codex-plus-radius-modal);
+        background: var(--codex-plus-modal-bg);
+        color: var(--codex-plus-modal-fg);
+        font-family: var(--codex-plus-font-sans);
+        font-size: var(--codex-plus-font-size-md);
+        line-height: 1.4;
+        box-shadow: var(--codex-plus-modal-shadow);
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
@@ -856,23 +1437,49 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
+        gap: 12px;
         padding: 16px 20px 8px;
         flex: 0 0 auto;
         -webkit-app-region: no-drag;
       }
-      .codex-plus-modal-title { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 650; }
-      .codex-plus-backend-indicator { width: 9px; height: 9px; border-radius: 999px; background: #a1a1aa; display: inline-block; }
-      .codex-plus-backend-indicator[data-status="ok"] { background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,.75); }
-      .codex-plus-backend-indicator[data-status="failed"] { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,.75); }
-      .codex-plus-backend-indicator[data-status="checking"] { background: #fbbf24; }
+      .codex-plus-modal-header-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        flex: 0 0 auto;
+      }
+      .codex-plus-modal-title { display: flex; align-items: center; gap: 8px; font-size: var(--codex-plus-font-size-lg); font-weight: var(--font-weight-semibold, 600); }
+      .codex-plus-backend-indicator { width: 9px; height: 9px; border-radius: 999px; background: var(--codex-plus-muted); display: inline-block; }
+      .codex-plus-backend-indicator[data-status="ok"] { background: var(--codex-plus-success); box-shadow: 0 0 8px color-mix(in srgb, var(--codex-plus-success) 75%, transparent); }
+      .codex-plus-backend-indicator[data-status="failed"] { background: var(--codex-plus-error); box-shadow: 0 0 8px color-mix(in srgb, var(--codex-plus-error) 75%, transparent); }
+      .codex-plus-backend-indicator[data-status="checking"] { background: var(--codex-plus-warning); }
+      .codex-plus-width-input:focus-visible,
+      .codex-plus-form-field input:focus-visible {
+        border-color: var(--codex-plus-focus-border);
+        box-shadow: 0 0 0 1px var(--codex-plus-focus-border);
+        outline: none;
+      }
       .codex-plus-modal-close {
-        border: 0;
+        width: 28px;
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid transparent;
+        border-radius: var(--codex-plus-radius-control);
         background: transparent;
-        color: #d1d5db;
-        font-size: 20px;
+        color: var(--codex-plus-tab-fg);
+        font: var(--font-weight-normal, 400) calc(var(--codex-plus-font-size-md) + 6px)/1 var(--codex-plus-font-sans);
+        padding: 0;
         cursor: pointer;
         pointer-events: auto;
         -webkit-app-region: no-drag;
+      }
+      .codex-plus-modal-close:hover,
+      .codex-plus-modal-close:focus-visible {
+        background: var(--codex-plus-select-hover-bg);
+        border-color: var(--codex-plus-input-border);
+        outline: none;
       }
       .codex-plus-modal-body {
         flex: 1 1 auto;
@@ -882,44 +1489,49 @@
         scrollbar-gutter: stable;
         padding: 4px 20px 16px;
         scrollbar-width: thin;
-        scrollbar-color: rgba(255,255,255,.28) transparent;
+        scrollbar-color: var(--codex-plus-scrollbar-thumb) transparent;
       }
       .codex-plus-modal-body::-webkit-scrollbar { width: 10px; }
       .codex-plus-modal-body::-webkit-scrollbar-track { background: transparent; }
       .codex-plus-modal-body::-webkit-scrollbar-thumb {
         border: 2px solid transparent;
         border-radius: 999px;
-        background: rgba(255,255,255,.28);
+        background: var(--codex-plus-scrollbar-thumb);
         background-clip: padding-box;
       }
-      .codex-plus-modal-body::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.38); background-clip: padding-box; }
+      .codex-plus-modal-body::-webkit-scrollbar-thumb:hover { background: var(--codex-plus-scrollbar-thumb-hover); background-clip: padding-box; }
       .codex-plus-row {
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
         gap: 12px;
         padding: 10px 0;
-        border-top: 1px solid rgba(255,255,255,.1);
+        border-top: 1px solid var(--codex-plus-row-border);
       }
       .codex-plus-row:first-child { border-top: 0; }
       .codex-plus-row-title { font-weight: 550; line-height: 1.35; }
-      .codex-plus-row-description { margin-top: 2px; color: #a1a1aa; font-size: 12px; line-height: 1.4; }
-      .codex-plus-model-compat-warning { margin-top: 6px; color: #fbbf24; font-size: 12px; line-height: 1.45; }
+      .codex-plus-row-description { margin-top: 2px; color: var(--codex-plus-muted); font-size: var(--codex-plus-font-size-sm); line-height: 1.4; }
+      .codex-plus-model-compat-warning { margin-top: 6px; color: var(--codex-plus-warning); font-size: var(--codex-plus-font-size-sm); line-height: 1.45; }
       .codex-plus-toggle {
         width: 42px;
         height: 24px;
-        border: 0;
+        box-sizing: border-box;
+        border: 1px solid var(--codex-plus-toggle-border);
         border-radius: 999px;
-        background: #52525b;
+        background: var(--codex-plus-toggle-bg);
         padding: 2px;
+        cursor: pointer;
+        transition: background-color .12s ease, border-color .12s ease;
       }
       .codex-plus-toggle span {
         display: block;
-        width: 20px;
-        height: 20px;
+        width: 18px;
+        height: 18px;
+        box-sizing: border-box;
+        border: 1px solid var(--codex-plus-toggle-knob-border);
         border-radius: 999px;
-        background: white;
-        transition: transform .12s ease;
+        background: var(--codex-plus-toggle-knob-bg);
+        transition: transform .12s ease, background-color .12s ease, border-color .12s ease;
       }
       .codex-plus-toggle,
       .codex-plus-action-button,
@@ -928,34 +1540,51 @@
         flex-shrink: 0;
         align-self: center;
       }
-      .codex-plus-toggle[data-enabled="true"] { background: #10a37f; }
-      .codex-plus-toggle[data-enabled="true"] span { transform: translateX(18px); }
-      .codex-plus-toggle[data-relay-unneeded="true"] { width: 72px; cursor: default; background: rgba(16,163,127,.16); color: #6ee7b7; }
+      .codex-plus-toggle[data-enabled="true"] { border-color: var(--codex-plus-toggle-active-border); background: var(--codex-plus-toggle-active-bg); }
+      .codex-plus-toggle[data-enabled="true"] span { transform: translateX(18px); border-color: var(--codex-plus-toggle-active-knob-border); background: var(--codex-plus-toggle-active-knob-bg); }
+      .codex-plus-toggle[data-relay-unneeded="true"] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: auto;
+        min-width: 92px;
+        height: 26px;
+        border-color: var(--codex-plus-control-border);
+        border-radius: var(--codex-plus-radius-control);
+        background: var(--codex-plus-toggle-muted-bg);
+        color: var(--codex-plus-toggle-muted-fg);
+        cursor: default;
+        padding: 0 10px;
+        white-space: nowrap;
+      }
       .codex-plus-toggle[data-relay-unneeded="true"] span { display: none; }
-      .codex-plus-toggle[data-relay-unneeded="true"]::after { content: "无需开启"; font-size: 12px; font-weight: 650; line-height: 1; }
+      .codex-plus-toggle[data-relay-unneeded="true"]::after { content: attr(data-codex-plus-unneeded-label); font-size: var(--codex-plus-font-size-sm); font-weight: var(--font-weight-normal, 400); line-height: 1; white-space: nowrap; }
       .codex-plus-width-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 176px; align-self: center; }
       .codex-plus-width-input {
         width: 78px;
         height: 26px;
         box-sizing: border-box;
-        border: 1px solid rgba(255,255,255,.18);
-        border-radius: 7px;
-        background: rgba(255,255,255,.08);
-        color: #f3f4f6;
-        font: 12px system-ui, sans-serif;
+        border: 1px solid var(--codex-plus-input-border);
+        border-radius: var(--codex-plus-radius-control);
+        background: var(--codex-plus-input-bg);
+        color: var(--codex-plus-input-fg);
+        font: var(--codex-plus-font-size-sm) var(--codex-plus-font-sans);
         padding: 0 8px;
       }
       .codex-plus-width-input:disabled { opacity: .55; cursor: not-allowed; }
       .codex-plus-service-tier-control { display: grid; gap: 6px; min-width: 316px; justify-items: end; align-self: center; }
-      .codex-plus-service-tier-status { color: #a1a1aa; font-size: 12px; line-height: 1.3; text-align: right; }
-      .codex-plus-service-tier-status[data-status="ok"] { color: #34d399; }
-      .codex-plus-service-tier-status[data-status="failed"] { color: #f87171; }
-      .codex-plus-service-tier-status[data-status="unsupported"] { color: #fbbf24; }
+      .codex-plus-service-tier-status { color: var(--codex-plus-muted); font-size: var(--codex-plus-font-size-sm); line-height: 1.3; text-align: right; }
+      .codex-plus-service-tier-status[data-status="ok"] { color: var(--codex-plus-success); }
+      .codex-plus-service-tier-status[data-status="failed"] { color: var(--codex-plus-error); }
+      .codex-plus-service-tier-status[data-status="unsupported"] { color: var(--codex-plus-warning); }
       .codex-plus-service-tier-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
       .codex-plus-service-tier-thread-actions { opacity: .88; align-items: center; }
-      .codex-plus-service-tier-thread-label { color: #a1a1aa; font: 12px/1.2 system-ui, sans-serif; white-space: nowrap; }
-      .codex-plus-service-tier-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 5px 8px; white-space: nowrap; }
-      .codex-plus-service-tier-button[data-active="true"] { border-color: #10a37f; background: rgba(16,163,127,.22); color: #6ee7b7; }
+      .codex-plus-service-tier-thread-label { color: var(--codex-plus-muted); font: var(--codex-plus-font-size-sm)/1.2 var(--codex-plus-font-sans); white-space: nowrap; }
+      .codex-plus-service-tier-button { border: 1px solid var(--codex-plus-input-border); border-radius: var(--codex-plus-radius-control); background: var(--codex-plus-select-bg); color: var(--codex-plus-control-fg); font: var(--codex-plus-font-size-sm) var(--codex-plus-font-sans); padding: 5px 8px; white-space: nowrap; }
+      .codex-plus-service-tier-button:hover,
+      .codex-plus-service-tier-button:focus-visible { background: var(--codex-plus-select-hover-bg); outline: none; }
+      .codex-plus-service-tier-button:focus-visible { border-color: var(--codex-plus-focus-border); box-shadow: 0 0 0 1px var(--codex-plus-focus-border); }
+      .codex-plus-service-tier-button[data-active="true"] { border-color: var(--codex-plus-input-border); background: var(--codex-plus-select-active-bg); color: var(--codex-plus-select-active-fg); font-weight: var(--font-weight-semibold, 600); }
       .codex-plus-service-tier-button:disabled { opacity: .55; cursor: not-allowed; }
       .${codexServiceTierBadgeClass} {
         display: inline-flex;
@@ -965,28 +1594,35 @@
         height: 24px;
         min-width: 54px;
         box-sizing: border-box;
-        border: 1px solid rgba(148,163,184,.28);
+        border: 1px solid var(--codex-plus-control-border);
         border-radius: 999px;
-        background: rgba(148,163,184,.12);
-        color: #d4d4d8;
-        font: 600 12px/1 system-ui, sans-serif;
+        background: var(--codex-plus-control-bg);
+        color: var(--codex-plus-control-fg);
+        font: var(--font-weight-semibold, 600) var(--codex-plus-font-size-sm)/1 var(--codex-plus-font-sans);
         padding: 0 8px;
         white-space: nowrap;
         cursor: pointer;
       }
-      .${codexServiceTierBadgeClass}:hover { border-color: rgba(16,163,127,.44); background: rgba(16,163,127,.13); }
-      .${codexServiceTierBadgeClass}[data-tier="fast"] { border-color: rgba(16,163,127,.55); background: rgba(16,163,127,.18); color: #6ee7b7; }
-      .${codexServiceTierBadgeClass}[data-tier="loading"] { color: #a1a1aa; }
-      .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: rgba(248,113,113,.42); background: rgba(248,113,113,.12); color: #fca5a5; }
-      .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: rgba(251,191,36,.48); background: rgba(251,191,36,.13); color: #fbbf24; }
+      .${codexServiceTierBadgeClass}:hover { background: var(--codex-plus-control-hover-bg); }
+      .${codexServiceTierBadgeClass}[data-tier="fast"] { border-color: var(--codex-plus-primary-bg); background: var(--codex-plus-primary-bg); color: var(--codex-plus-primary-fg); }
+      .${codexServiceTierBadgeClass}[data-tier="loading"] { color: var(--codex-plus-muted); }
+      .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: var(--codex-plus-danger-border); background: var(--codex-plus-danger-bg); color: var(--codex-plus-danger-fg); }
+      .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: var(--codex-plus-warning); color: var(--codex-plus-warning); }
       .${codexServiceTierBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .78; }
-      .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
-      .codex-plus-tabs { display: flex; gap: 8px; padding: 0 20px 6px; flex: 0 0 auto; }
-      .codex-plus-tab-button { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: transparent; color: #d1d5db; font: 12px system-ui, sans-serif; padding: 5px 10px; }
-      .codex-plus-tab-button[data-active="true"] { background: #10a37f; color: white; border-color: #10a37f; }
+      .codex-plus-about { color: var(--codex-plus-muted); line-height: 1.5; }
+      .codex-plus-tabs { display: flex; gap: 6px; padding: 0 20px 6px; flex: 0 0 auto; }
+      .codex-plus-tab-button { border: 1px solid var(--codex-plus-input-border); border-radius: var(--codex-plus-radius-control); background: var(--codex-plus-select-bg); color: var(--codex-plus-tab-fg); font: var(--codex-plus-font-size-sm) var(--codex-plus-font-sans); padding: 5px 10px; }
+      .codex-plus-tab-button:hover,
+      .codex-plus-tab-button:focus-visible { background: var(--codex-plus-select-hover-bg); outline: none; }
+      .codex-plus-tab-button:focus-visible { border-color: var(--codex-plus-focus-border); box-shadow: 0 0 0 1px var(--codex-plus-focus-border); }
+      .codex-plus-tab-button[data-active="true"] { background: var(--codex-plus-select-active-bg); color: var(--codex-plus-select-active-fg); border-color: var(--codex-plus-input-border); font-weight: var(--font-weight-semibold, 600); }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,
-      .codex-plus-issue-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
+      .codex-plus-issue-button { box-sizing: border-box; border: 1px solid var(--codex-plus-control-border); border-radius: var(--codex-plus-radius-control); background: var(--codex-plus-control-bg); color: var(--codex-plus-control-fg); cursor: pointer; font: var(--codex-plus-font-size-sm) var(--codex-plus-font-sans); line-height: 1.2; padding: 6px 8px; white-space: nowrap; }
+      .codex-plus-action-button:hover,
+      .codex-plus-action-button:focus-visible,
+      .codex-plus-issue-button:hover,
+      .codex-plus-issue-button:focus-visible { border-color: var(--codex-plus-control-border); background: var(--codex-plus-control-hover-bg); outline: none; }
       .codex-plus-worktree-actions {
         display: inline-flex;
         align-items: center;
@@ -996,60 +1632,65 @@
         display: grid;
         gap: 4px;
         margin-top: 10px;
-        color: #d4d4d8;
-        font: 12px system-ui, sans-serif;
+        color: var(--codex-plus-modal-fg);
+        font: var(--codex-plus-font-size-sm) var(--codex-plus-font-sans);
         text-align: left;
       }
       .codex-plus-form-field input {
-        width: min(520px, 72vw);
-        border: 1px solid rgba(255,255,255,.18);
-        border-radius: 8px;
-        background: #18181b;
-        color: #f4f4f5;
+        width: min(520px, 100%);
+        box-sizing: border-box;
+        border: 1px solid var(--codex-plus-input-border);
+        border-radius: var(--codex-plus-radius-control);
+        background: var(--codex-plus-input-bg);
+        color: var(--codex-plus-input-fg);
         padding: 8px 10px;
-        font: 13px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font: var(--codex-plus-font-size-sm) var(--codex-plus-font-mono);
       }
       .codex-plus-form-message {
         min-height: 18px;
         margin-top: 10px;
-        color: #a1a1aa;
-        font: 12px system-ui, sans-serif;
+        color: var(--codex-plus-muted);
+        font: var(--codex-plus-font-size-sm) var(--codex-plus-font-sans);
         text-align: left;
       }
-      .codex-plus-form-message[data-status="ok"] { color: #34d399; }
-      .codex-plus-form-message[data-status="failed"] { color: #f87171; }
-      .codex-plus-form-message[data-status="loading"] { color: #fbbf24; }
+      .codex-plus-form-message[data-status="ok"] { color: var(--codex-plus-success); }
+      .codex-plus-form-message[data-status="failed"] { color: var(--codex-plus-error); }
+      .codex-plus-form-message[data-status="loading"] { color: var(--codex-plus-warning); }
       .codex-plus-backend-status { display: grid; gap: 4px; min-width: 132px; justify-items: end; }
-      .codex-plus-backend-label { color: #a1a1aa; font-size: 12px; }
-      .codex-plus-backend-label[data-status="ok"] { color: #34d399; }
-      .codex-plus-backend-label[data-status="failed"] { color: #f87171; }
-      .codex-plus-backend-repair { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
+      .codex-plus-backend-label { color: var(--codex-plus-muted); font-size: var(--codex-plus-font-size-sm); }
+      .codex-plus-backend-label[data-status="ok"] { color: var(--codex-plus-success); }
+      .codex-plus-backend-label[data-status="failed"] { color: var(--codex-plus-error); }
+      .codex-plus-backend-repair { border: 1px solid var(--codex-plus-control-border); border-radius: var(--codex-plus-radius-control); background: var(--codex-plus-control-bg); color: var(--codex-plus-control-fg); font: var(--codex-plus-font-size-sm) var(--codex-plus-font-sans); padding: 6px 8px; }
+      .codex-plus-backend-repair:hover,
+      .codex-plus-backend-repair:focus-visible { background: var(--codex-plus-control-hover-bg); outline: none; }
       .codex-plus-backend-repair[hidden] { display: none; }
-      .codex-plus-user-script-warning { margin-top: 4px; color: #fbbf24; font-size: 12px; }
-      .codex-plus-user-script-dirs { margin-top: 6px; color: #a1a1aa; font-size: 11px; line-height: 1.4; word-break: break-all; }
+      .codex-plus-user-script-warning { margin-top: 4px; color: var(--codex-plus-warning); font-size: var(--codex-plus-font-size-sm); }
+      .codex-plus-user-script-dirs { margin-top: 6px; color: var(--codex-plus-muted); font-size: var(--codex-plus-font-size-xs); line-height: 1.4; word-break: break-all; }
       .codex-plus-user-script-list { margin-top: 8px; display: grid; gap: 6px; }
-      .codex-plus-user-script-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; padding: 6px 8px; }
-      .codex-plus-user-script-name { font-size: 12px; }
-      .codex-plus-user-script-meta { margin-top: 2px; color: #a1a1aa; font-size: 11px; }
-      .codex-plus-user-script-error { margin-top: 2px; color: #f87171; font-size: 11px; word-break: break-all; }
+      .codex-plus-user-script-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--codex-plus-row-border); border-radius: var(--codex-plus-radius-control); padding: 6px 8px; }
+      .codex-plus-user-script-name { font-size: var(--codex-plus-font-size-sm); }
+      .codex-plus-user-script-meta { margin-top: 2px; color: var(--codex-plus-muted); font-size: var(--codex-plus-font-size-xs); }
+      .codex-plus-user-script-error { margin-top: 2px; color: var(--codex-plus-error); font-size: var(--codex-plus-font-size-xs); word-break: break-all; }
       .codex-plus-user-script-actions { display: grid; justify-items: end; gap: 8px; min-width: 120px; }
-      .codex-plus-user-script-reload { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
-      .codex-plus-sponsor-text { color: #d1d5db; font-size: 13px; line-height: 1.55; margin: 4px 0 12px; }
+      .codex-plus-user-script-reload { border: 1px solid var(--codex-plus-control-border); border-radius: var(--codex-plus-radius-control); background: var(--codex-plus-control-bg); color: var(--codex-plus-control-fg); font: var(--codex-plus-font-size-sm) var(--codex-plus-font-sans); padding: 6px 8px; }
+      .codex-plus-user-script-reload:hover,
+      .codex-plus-user-script-reload:focus-visible { background: var(--codex-plus-control-hover-bg); outline: none; }
+      .codex-plus-sponsor-text { color: var(--codex-plus-secondary); font-size: var(--codex-plus-font-size-md); line-height: 1.55; margin: 4px 0 12px; }
       .codex-plus-ad-section { display: grid; gap: 10px; margin-top: 12px; }
       .codex-plus-ad-section:first-of-type { margin-top: 0; }
-      .codex-plus-ad-section-title { color: #f8fafc; font-size: 15px; margin: 0; }
+      .codex-plus-ad-section-title { color: var(--codex-plus-modal-fg); font-size: calc(var(--codex-plus-font-size-md) + 1px); margin: 0; }
       .codex-plus-ad-list { display: grid; gap: 14px; }
-      .codex-plus-ad-card { border: 1px solid rgba(96,165,250,.26); border-radius: 16px; background: linear-gradient(135deg, rgba(37,99,235,.18), rgba(255,255,255,.05)); box-shadow: 0 14px 36px rgba(0,0,0,.22); }
+      .codex-plus-ad-card { border: 1px solid var(--codex-plus-ad-card-border); border-radius: var(--codex-plus-radius-card); background: var(--codex-plus-ad-card-bg); box-shadow: var(--codex-plus-ad-card-shadow); }
       .codex-plus-ad-content { padding: 14px; }
-      .codex-plus-ad-title { margin: 0; color: #f8fafc; font-size: 17px; line-height: 1.35; }
-      .codex-plus-ad-description { margin: 6px 0 10px; color: #dbeafe; font-size: 13px; line-height: 1.55; }
+      .codex-plus-ad-title { margin: 0; color: var(--codex-plus-modal-fg); font-size: calc(var(--codex-plus-font-size-md) + 3px); line-height: 1.35; }
+      .codex-plus-ad-description { margin: 6px 0 10px; color: var(--codex-plus-secondary); font-size: var(--codex-plus-font-size-md); line-height: 1.55; }
       .codex-plus-ad-highlights { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
-      .codex-plus-ad-highlights span { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(255,255,255,.08); color: #f3f4f6; font-size: 12px; padding: 4px 8px; }
-      .codex-plus-ad-link { display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; background: #2563eb; color: #ffffff; font-size: 13px; font-weight: 650; text-decoration: none; padding: 8px 12px; }
-      .codex-plus-ad-empty { border: 1px dashed rgba(255,255,255,.16); border-radius: 12px; color: #9ca3af; font-size: 13px; padding: 12px; text-align: center; }
+      .codex-plus-ad-highlights span { border: 1px solid var(--codex-plus-ad-chip-border); border-radius: 999px; background: var(--codex-plus-ad-chip-bg); color: var(--codex-plus-ad-chip-fg); font-size: var(--codex-plus-font-size-sm); padding: 4px 8px; }
+      .codex-plus-ad-link { display: inline-flex; align-items: center; justify-content: center; border-radius: var(--codex-plus-radius-control); background: var(--codex-plus-primary-bg); color: var(--codex-plus-primary-fg); font-size: var(--codex-plus-font-size-md); font-weight: var(--font-weight-semibold, 600); text-decoration: none; padding: 8px 12px; }
+      .codex-plus-ad-empty { border: 1px dashed var(--codex-plus-ad-empty-border); border-radius: var(--codex-plus-radius-card); color: var(--codex-plus-ad-empty-fg); font-size: var(--codex-plus-font-size-md); padding: 12px; text-align: center; }
       .codex-plus-sponsor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-      .codex-plus-sponsor-card { border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 10px; background: rgba(255,255,255,.04); text-align: center; }
-      .codex-plus-sponsor-card-title { color: #f3f4f6; font-size: 13px; margin-bottom: 8px; }
+      .codex-plus-sponsor-card { border: 1px solid var(--codex-plus-row-border); border-radius: var(--codex-plus-radius-card); padding: 10px; background: var(--codex-plus-card-bg); text-align: center; }
+      .codex-plus-sponsor-card-title { color: var(--codex-plus-modal-fg); font-size: var(--codex-plus-font-size-md); margin-bottom: 8px; }
       .codex-plus-sponsor-qr { display: block; width: 100%; max-width: 340px; border-radius: 8px; margin: 0 auto; background: white; }
     `;
     document.documentElement.appendChild(style);
@@ -1266,7 +1907,7 @@
   let codexServiceTierState = {
     status: "loading",
     serviceTier: null,
-    message: "正在读取…",
+    message: t("serviceTierReading"),
     fastTierValue: "priority",
     controlMode: "inherit",
     defaultMode: "inherit",
@@ -1374,8 +2015,10 @@
   }
 
   function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
-    const modelText = modelName ? `当前模型 ${modelName} 不支持` : "当前模型未读取";
-    return `Fast 仅支持 ${codexServiceTierFastModelListLabel()}，${modelText}`;
+    const modelText = modelName
+      ? t("serviceTierFastUnsupportedModel", { model: modelName })
+      : t("serviceTierFastUnsupportedUnknown");
+    return t("serviceTierFastUnsupported", { models: codexServiceTierFastModelListLabel(), modelText });
   }
 
   function codexServiceTierMaybeLoadModelCatalog(force = false) {
@@ -1444,9 +2087,9 @@
   }
 
   function serviceTierGlobalStatusMessage(serviceTier) {
-    if (isFastServiceTierValue(serviceTier)) return "Fast 已开启";
-    if (!serviceTier) return "默认服务模式";
-    return `当前：${serviceTier}`;
+    if (isFastServiceTierValue(serviceTier)) return t("serviceTierGlobalFastOn");
+    if (!serviceTier) return t("serviceTierGlobalDefault");
+    return t("serviceTierCurrentValue", { value: serviceTier });
   }
 
   function serviceTierStatusMessage(
@@ -1455,13 +2098,13 @@
     effectiveMode = codexServiceTierState.effectiveMode || "standard",
     defaultMode = codexServiceTierState.defaultMode || "inherit"
   ) {
-    if (codexServiceTierState.status === "loading") return "正在读取…";
-    if (codexServiceTierState.status === "failed") return "读取失败";
-    if (controlMode === "inherit") return `继承 config.toml：${effectiveMode}`;
-    if (controlMode === "global-standard") return "全局 Standard";
-    if (controlMode === "global-fast") return "全局 Fast";
-    if (threadMode === "inherit") return `自定义：默认 ${defaultMode}`;
-    return `自定义：当前 thread ${threadMode}`;
+    if (codexServiceTierState.status === "loading") return t("serviceTierReading");
+    if (codexServiceTierState.status === "failed") return t("serviceTierReadFailed");
+    if (controlMode === "inherit") return t("serviceTierInheritStatus", { mode: effectiveMode });
+    if (controlMode === "global-standard") return t("serviceTierGlobalStandard");
+    if (controlMode === "global-fast") return t("serviceTierGlobalFast");
+    if (threadMode === "inherit") return t("serviceTierCustomDefault", { mode: defaultMode });
+    return t("serviceTierCustomThread", { mode: threadMode });
   }
 
   function readThreadServiceTierState() {
@@ -1579,7 +2222,7 @@
 
   function setCodexServiceTierControlMode(mode) {
     if (codexPlusBackendStatus.status !== "ok") {
-      showToast("后端未连接，无法切换服务模式", null);
+      showToast(t("serviceTierBackendDisconnectedToast"), null);
       refreshCodexServiceTierControls();
       return;
     }
@@ -1605,12 +2248,12 @@
     writeThreadServiceTierState(state);
     refreshCodexServiceTierControls();
     const labels = {
-      inherit: "继承 config.toml",
-      "global-standard": "全局 Standard",
-      "global-fast": "全局 Fast",
-      custom: "自定义",
+      inherit: t("serviceTierModeInherit"),
+      "global-standard": t("serviceTierModeGlobalStandard"),
+      "global-fast": t("serviceTierModeGlobalFast"),
+      custom: t("serviceTierModeCustom"),
     };
-    showToast(`服务模式：${labels[normalizedMode] || normalizedMode}`, null);
+    showToast(t("serviceTierToast", { mode: labels[normalizedMode] || normalizedMode }), null);
   }
 
   function syncCodexServiceTierEffectiveState() {
@@ -1621,7 +2264,7 @@
         threadMode: "inherit",
         effectiveServiceTier: codexServiceTierState.serviceTier || null,
         effectiveMode: codexServiceTierEffectiveMode(codexServiceTierState.serviceTier),
-        message: "未启用",
+        message: t("serviceTierDisabled"),
       };
       return;
     }
@@ -1653,22 +2296,26 @@
   }
 
   function codexServiceTierBadgeState() {
-    if (codexPlusBackendStatus.status === "checking") return { tier: "loading", label: "...", disabled: true, title: "服务模式：正在检查后端连接" };
-    if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
-    if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
-    if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
+    if (codexPlusBackendStatus.status === "checking") return { tier: "loading", label: "...", disabled: true, title: t("serviceTierLoadingTitle") };
+    if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: t("backendDisconnected"), disabled: true, title: t("serviceTierFailedTitle") };
+    if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: t("serviceTierReadingTitle") };
+    if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: t("serviceTierReadFailedTitle") };
     const fastAvailability = codexServiceTierFastAvailability();
     const effectiveMode = codexServiceTierState.effectiveMode || "standard";
     const scope = codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode !== "inherit"
-      ? `当前 thread：${codexServiceTierState.threadMode}`
+      ? t("serviceTierCustomThread", { mode: codexServiceTierState.threadMode })
       : serviceTierStatusMessage(codexServiceTierState.controlMode, codexServiceTierState.threadMode, effectiveMode, codexServiceTierState.defaultMode);
     const title = [
-      `服务模式：${scope}`,
-      "Standard：使用标准处理；不在请求上设置 priority。",
-      `Fast：仅支持 ${codexServiceTierFastModelListLabel()}；对支持模型使用 service_tier=\"priority\"，官方说明其延迟更低且更一致，但会按更高价格计费；rate limit 与 Standard 共享，流量快速上涨时可能回落到 Standard。`,
+      t("serviceTierBadgeTitlePrefix", { scope }),
+      t("serviceTierStandardHelp"),
+      t("serviceTierFastHelp", { models: codexServiceTierFastModelListLabel() }),
     ].join("\n");
     if (effectiveMode === "fast" && !fastAvailability.supported) {
-      return { tier: "unsupported", label: "不支持", title: `${title}\n${codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)}；当前请求会按 Standard 发送。` };
+      return {
+        tier: "unsupported",
+        label: t("serviceTierUnsupportedBadge"),
+        title: `${title}\n${t("serviceTierUnsupportedSuffix", { message: codexServiceTierFastUnsupportedMessage(fastAvailability.modelName) })}`,
+      };
     }
     if (effectiveMode === "fast") return { tier: "fast", label: "fast", title };
     return { tier: "standard", label: "standard", title };
@@ -1694,7 +2341,7 @@
     const fastAvailability = codexServiceTierFastAvailability();
     const fastDisabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading" || !fastAvailability.supported;
     const fastTitle = fastAvailability.supported
-      ? "Fast：使用 service_tier=\"priority\""
+      ? t("serviceTierFastTitle")
       : codexServiceTierFastUnsupportedMessage(fastAvailability.modelName);
     const fastUnsupportedActive = codexServiceTierState.effectiveMode === "fast" && !fastAvailability.supported;
     document.querySelectorAll("[data-codex-service-tier-controls]").forEach((node) => {
@@ -1703,8 +2350,8 @@
     document.querySelectorAll("[data-codex-service-tier-status]").forEach((node) => {
       node.dataset.status = fastUnsupportedActive ? "unsupported" : (featureEnabled && backendConnected ? (codexServiceTierState.status || "loading") : (backendChecking ? "loading" : "failed"));
       node.textContent = featureEnabled
-        ? (backendConnected ? (codexServiceTierState.message || "未读取") : (backendChecking ? "正在检查后端…" : "未连接"))
-        : "未启用";
+        ? (backendConnected ? (codexServiceTierState.message || t("serviceTierNotRead")) : (backendChecking ? t("backendChecking") : t("backendDisconnected")))
+        : t("serviceTierDisabled");
     });
     document.querySelectorAll("[data-codex-service-tier-inherit]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
@@ -1726,7 +2373,7 @@
     document.querySelectorAll("[data-codex-service-tier-thread-inherit]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit");
-      button.title = `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`;
+      button.title = t("serviceTierThreadInheritDynamicTitle", { mode: codexServiceTierState.defaultMode || "inherit" });
     });
     document.querySelectorAll("[data-codex-service-tier-thread-standard]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
@@ -1742,11 +2389,11 @@
 
   async function loadCodexServiceTierState() {
     if (!codexPlusSettings().serviceTierControls) {
-      codexServiceTierState = { ...codexServiceTierState, status: "idle", message: "未启用" };
+      codexServiceTierState = { ...codexServiceTierState, status: "idle", message: t("serviceTierDisabled") };
       refreshCodexServiceTierControls();
       return;
     }
-    codexServiceTierState = { ...codexServiceTierState, status: "loading", message: "正在读取…" };
+    codexServiceTierState = { ...codexServiceTierState, status: "loading", message: t("serviceTierReading") };
     refreshCodexServiceTierControls();
     try {
       const serviceTier = await getCodexServiceTierSetting();
@@ -1760,7 +2407,7 @@
       codexServiceTierState = {
         ...codexServiceTierState,
         status: "failed",
-        message: "读取失败",
+        message: t("serviceTierReadFailed"),
       };
       sendCodexPlusDiagnostic("service_tier_read_failed", {
         errorName: error?.name || "",
@@ -1773,7 +2420,7 @@
 
   function setCodexThreadServiceTierMode(mode) {
     if (codexPlusBackendStatus.status !== "ok") {
-      showToast("后端未连接，无法切换服务模式", null);
+      showToast(t("serviceTierBackendDisconnectedToast"), null);
       refreshCodexServiceTierControls();
       return;
     }
@@ -1790,13 +2437,13 @@
     const threadId = validThreadScrollSessionKey(currentSessionRef().session_id);
     setCodexThreadServiceTierOverride(threadId, normalizedMode);
     refreshCodexServiceTierControls();
-    const target = threadId ? "当前 thread" : "新 thread 草稿";
-    showToast(`${target}服务模式：${normalizedMode === "inherit" ? "继承" : normalizedMode}`, null);
+    const target = threadId ? t("serviceTierThreadTargetCurrent") : t("serviceTierThreadTargetDraft");
+    showToast(t("serviceTierThreadToast", { target, mode: normalizedMode === "inherit" ? t("serviceTierInherit") : normalizedMode }), null);
   }
 
   function toggleCodexServiceTierFromBadge() {
     if (codexPlusBackendStatus.status !== "ok") {
-      showToast("后端未连接，无法切换服务模式", null);
+      showToast(t("serviceTierBackendDisconnectedToast"), null);
       refreshCodexServiceTierControls();
       return;
     }
@@ -2017,7 +2664,10 @@
   }
 
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
-  let codexPlusBackendStatus = { status: "checking", message: "正在检查后端…" };
+  let codexPlusBackendStatus = window.__codexPlusBackendStatusCache || { status: "checking" };
+  let codexPlusLastOkBackendStatus = window.__codexPlusLastOkBackendStatusCache || (codexPlusBackendStatus?.status === "ok" ? codexPlusBackendStatus : null);
+  let codexPlusBackendFailureCount = window.__codexPlusBackendFailureCount || 0;
+  let codexPlusBackendLastOkAt = window.__codexPlusBackendLastOkAt || (codexPlusLastOkBackendStatus ? Date.now() : 0);
   let codexPlusBackendCheckSeq = 0;
 
   function setCodexPlusTriggerLabel(trigger) {
@@ -2043,8 +2693,14 @@
     return indicator;
   }
 
+  function setCodexPlusTriggerStatus(trigger) {
+    const indicator = ensureCodexPlusTriggerIndicator(trigger);
+    if (indicator) indicator.dataset.status = backendStatusForDisplay().status || "checking";
+  }
+
   function renderBackendStatus() {
-    const status = codexPlusBackendStatus.status || "failed";
+    const statusPayload = backendStatusForDisplay();
+    const status = statusPayload.status || "failed";
     if (codexPlusBackendStatus.version) {
       codexPlusVersion = codexPlusBackendStatus.version;
       document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
@@ -2055,29 +2711,59 @@
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
       label.dataset.status = status;
-      label.textContent = codexPlusBackendStatus.message || (status === "ok" ? "后端已连接" : "未连接");
+      label.textContent = backendStatusText(statusPayload);
     }
     document.querySelectorAll("[data-codex-backend-indicator]").forEach((indicator) => {
       indicator.dataset.status = status;
-      indicator.title = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "未连接";
+      indicator.title = status === "ok" ? t("backendConnected") : status === "checking" ? t("backendIndicatorChecking") : t("backendIndicatorDisconnected");
     });
     const repair = document.querySelector("[data-codex-backend-repair]");
     if (repair) repair.hidden = status === "ok" || status === "checking";
     refreshCodexServiceTierControls();
   }
 
-  function withBackendTimeout(request) {
-    return Promise.race([
-      request,
-      new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "后端检查超时", timeout: true }), 2000)),
-    ]);
+  function backendStatusText(statusPayload = codexPlusBackendStatus) {
+    const status = statusPayload?.status || "failed";
+    if (status === "ok") return t("backendConnected");
+    if (status === "checking") return statusPayload?.repairing ? t("backendRepairing") : t("backendChecking");
+    if (statusPayload?.timeout) return t("backendTimeout");
+    if (statusPayload?.repairFailed) return t("backendRepairFailed");
+    return t("backendDisconnected");
+  }
+
+  function backendStatusForDisplay() {
+    if (codexPlusBackendStatus?.status === "ok") return codexPlusBackendStatus;
+    const withinGrace = codexPlusBackendFailureCount > 0 && codexPlusBackendFailureCount < 2 && codexPlusBackendLastOkAt && Date.now() - codexPlusBackendLastOkAt <= 12_000;
+    if (withinGrace && codexPlusLastOkBackendStatus) return codexPlusLastOkBackendStatus;
+    return codexPlusBackendStatus || { status: "checking" };
+  }
+
+  function setBackendStatusForHeartbeat(nextStatus) {
+    if (nextStatus?.status === "ok") {
+      codexPlusBackendStatus = nextStatus;
+      codexPlusLastOkBackendStatus = nextStatus;
+      codexPlusBackendFailureCount = 0;
+      codexPlusBackendLastOkAt = Date.now();
+      window.__codexPlusBackendStatusCache = nextStatus;
+      window.__codexPlusLastOkBackendStatusCache = nextStatus;
+      window.__codexPlusBackendFailureCount = 0;
+      window.__codexPlusBackendLastOkAt = codexPlusBackendLastOkAt;
+      return;
+    }
+    codexPlusBackendFailureCount += 1;
+    window.__codexPlusBackendFailureCount = codexPlusBackendFailureCount;
+    const staleOk = !codexPlusBackendLastOkAt || Date.now() - codexPlusBackendLastOkAt > 12_000;
+    if (!codexPlusLastOkBackendStatus || codexPlusBackendFailureCount >= 2 || staleOk) {
+      codexPlusBackendStatus = nextStatus || { status: "failed" };
+      window.__codexPlusBackendStatusCache = codexPlusBackendStatus;
+    }
   }
 
   async function checkBackendStatus() {
     const seq = ++codexPlusBackendCheckSeq;
-    const nextStatus = await withBackendTimeout(postJson("/backend/status", {}));
+    const nextStatus = await postJson("/backend/status", {});
     if (seq !== codexPlusBackendCheckSeq) return;
-    codexPlusBackendStatus = nextStatus;
+    setBackendStatusForHeartbeat(nextStatus);
     if (nextStatus?.status !== "ok") {
       sendCodexPlusDiagnostic("backend_check_failed", {
         status: nextStatus?.status || "unknown",
@@ -2089,12 +2775,22 @@
   }
 
   async function repairBackend() {
-    codexPlusBackendStatus = { status: "checking", message: "正在修复后端…" };
+    codexPlusBackendStatus = { status: "checking", repairing: true };
     renderBackendStatus();
     try {
       codexPlusBackendStatus = await postJson("/backend/repair", {});
+      if (codexPlusBackendStatus?.status === "ok") {
+        codexPlusLastOkBackendStatus = codexPlusBackendStatus;
+        codexPlusBackendFailureCount = 0;
+        codexPlusBackendLastOkAt = Date.now();
+        window.__codexPlusLastOkBackendStatusCache = codexPlusBackendStatus;
+        window.__codexPlusBackendFailureCount = 0;
+        window.__codexPlusBackendLastOkAt = codexPlusBackendLastOkAt;
+      }
+      window.__codexPlusBackendStatusCache = codexPlusBackendStatus;
     } catch (error) {
-      codexPlusBackendStatus = { status: "failed", message: "后端修复失败" };
+      codexPlusBackendStatus = { status: "failed", repairFailed: true };
+      window.__codexPlusBackendStatusCache = codexPlusBackendStatus;
     }
     renderBackendStatus();
   }
@@ -2102,38 +2798,54 @@
   async function openManagerFromCodex() {
     const result = await postJson("/manager/open", {});
     if (result.status === "ok") {
-      showToast("管理工具已打开", null);
+      showToast(t("managerOpened"), null);
     } else {
-      showToast(result.message || "打开管理工具失败", null);
+      showToast(result.message || t("managerOpenFailed"), null);
     }
   }
 
   function scheduleBackendHeartbeat() {
+    if (window.__codexPlusBackendHeartbeat && window.__codexPlusBackendHeartbeatVersion !== codexPlusBackendHeartbeatVersion) {
+      clearInterval(window.__codexPlusBackendHeartbeat);
+      window.__codexPlusBackendHeartbeat = null;
+    }
     if (window.__codexPlusBackendHeartbeat) return;
+    window.__codexPlusBackendHeartbeatVersion = codexPlusBackendHeartbeatVersion;
     window.__codexPlusBackendHeartbeat = setInterval(checkBackendStatus, 5000);
     checkBackendStatus();
   }
 
   function userScriptStatusLabel(status) {
-    return { loaded: "已加载", failed: "失败", disabled: "已禁用", not_loaded: "未加载", loading: "加载中" }[status] || status || "未知";
+    return {
+      loaded: t("userScriptLoaded"),
+      failed: t("userScriptFailed"),
+      disabled: t("userScriptDisabled"),
+      not_loaded: t("userScriptNotLoaded"),
+      loading: t("userScriptLoading"),
+    }[status] || status || t("userScriptUnknown");
   }
 
   function renderUserScripts() {
     const enabledToggle = document.querySelector("[data-codex-user-scripts-enabled]");
     if (enabledToggle) enabledToggle.dataset.enabled = String(!!codexPlusUserScripts.enabled);
     const dirs = document.querySelector("[data-codex-user-script-dirs]");
-    if (dirs) dirs.textContent = `内置：${codexPlusUserScripts.builtin_dir || "未找到"}  用户：${codexPlusUserScripts.user_dir || "未找到"}`;
+    if (dirs) {
+      dirs.textContent = t("userScriptDirs", {
+        builtin: codexPlusUserScripts.builtin_dir || t("userScriptDirMissing"),
+        user: codexPlusUserScripts.user_dir || t("userScriptDirMissing"),
+      });
+    }
     const list = document.querySelector("[data-codex-user-script-list]");
     if (!list) return;
     if (!codexPlusUserScripts.scripts?.length) {
-      list.textContent = "未发现用户脚本。";
+      list.textContent = t("userScriptEmpty");
       return;
     }
     list.innerHTML = codexPlusUserScripts.scripts.map((script) => `
       <div class="codex-plus-user-script-item">
         <div>
           <div class="codex-plus-user-script-name">${escapeHtml(script.name || script.key)}</div>
-          <div class="codex-plus-user-script-meta">${script.source === "builtin" ? "内置" : "用户"} · ${userScriptStatusLabel(script.status)}</div>
+          <div class="codex-plus-user-script-meta">${script.source === "builtin" ? codexPlusEscapedText("userScriptBuiltin") : codexPlusEscapedText("userScriptUser")} · ${escapeHtml(userScriptStatusLabel(script.status))}</div>
           ${script.error ? `<div class="codex-plus-user-script-error">${escapeHtml(script.error)}</div>` : ""}
         </div>
         <button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(script.key)}" data-enabled="${String(!!script.enabled)}"><span></span></button>
@@ -2185,23 +2897,23 @@
           <div class="codex-plus-ad-highlights">
             ${ad.highlights.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
           </div>
-          <a class="codex-plus-ad-link" href="${escapeHtml(ad.url)}" target="_blank" rel="noreferrer">访问 ${escapeHtml(new URL(ad.url).hostname)}</a>
+          <a class="codex-plus-ad-link" href="${escapeHtml(ad.url)}" target="_blank" rel="noreferrer">${codexPlusEscapedText("visitHost", { host: new URL(ad.url).hostname })}</a>
         </div>
       </article>
     `).join("");
   }
 
   function renderCodexPlusAds() {
-    if (!codexPlusAdsLoaded) return `<div class="codex-plus-ad-empty">推荐内容加载中…</div>`;
-    if (!codexPlusAds.length) return `<div class="codex-plus-ad-empty">暂无推荐内容。</div>`;
+    if (!codexPlusAdsLoaded) return `<div class="codex-plus-ad-empty">${codexPlusEscapedText("adsLoading")}</div>`;
+    if (!codexPlusAds.length) return `<div class="codex-plus-ad-empty">${codexPlusEscapedText("adsEmpty")}</div>`;
     return `
       <section class="codex-plus-ad-section">
-        <h3 class="codex-plus-ad-section-title">赞助商推荐</h3>
-        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("sponsor", "暂无赞助商推荐。")}</div>
+        <h3 class="codex-plus-ad-section-title">${codexPlusEscapedText("sponsorAdsTitle")}</h3>
+        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("sponsor", t("sponsorAdsEmpty"))}</div>
       </section>
       <section class="codex-plus-ad-section">
-        <h3 class="codex-plus-ad-section-title">普通推荐</h3>
-        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("normal", "暂无普通推荐。")}</div>
+        <h3 class="codex-plus-ad-section-title">${codexPlusEscapedText("normalAdsTitle")}</h3>
+        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("normal", t("normalAdsEmpty"))}</div>
       </section>
     `;
   }
@@ -2262,174 +2974,191 @@
   }
 
   function openCodexPlusModal() {
+    const previousTab = document.querySelector(".codex-plus-modal-content")?.dataset.codexPlusActiveTab || "home";
     document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
     document.querySelectorAll('[data-codex-plus-dialog="true"]').forEach((node) => node.remove());
+    const backendDisplayStatus = backendStatusForDisplay();
+    const backendDisplayStatusName = backendDisplayStatus.status || "failed";
+    const relayMode = codexPlusBackendSettings.launchMode === "relay";
+    const relayUnneededAttrs = relayMode
+      ? `disabled data-relay-unneeded="true" data-codex-plus-unneeded-label="${codexPlusEscapedText("relaunchNotNeeded")}"`
+      : "";
     const overlay = document.createElement("div");
     overlay.className = "codex-plus-modal-overlay";
     overlay.innerHTML = `
       <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="Codex++">
         <div class="codex-plus-modal-header">
-          <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span data-codex-plus-version="true">Codex++ ${codexPlusVersion}</span></div>
-          <button type="button" class="codex-plus-modal-close" aria-label="关闭">×</button>
+          <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="${escapeHtml(backendDisplayStatusName)}"></span><span data-codex-plus-version="true">Codex++ ${codexPlusVersion}</span></div>
+          <div class="codex-plus-modal-header-actions">
+            <button type="button" class="codex-plus-modal-close" aria-label="${codexPlusEscapedText("close")}">×</button>
+          </div>
         </div>
         <div class="codex-plus-tabs" role="tablist" aria-label="Codex++">
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">主页</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="false">用户脚本</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="sponsor" data-active="false">推荐内容</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="support" data-active="false">请作者喝咖啡</button>
+          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">${codexPlusEscapedText("tabHome")}</button>
+          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="false">${codexPlusEscapedText("tabUserScripts")}</button>
+          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="sponsor" data-active="false">${codexPlusEscapedText("tabSponsor")}</button>
+          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="support" data-active="false">${codexPlusEscapedText("tabSupport")}</button>
         </div>
         <div class="codex-plus-modal-body">
           <div class="codex-plus-panel" data-codex-plus-panel="home">
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">后端连接</div><div class="codex-plus-row-description">每 5 秒检查一次 launcher 后端状态；断开时可尝试修复后端运行。</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("backendTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("backendDescription")}</div></div>
               <div class="codex-plus-backend-status">
-                <div class="codex-plus-backend-label" data-codex-backend-status="true" data-status="checking">正在检查后端…</div>
-                <button type="button" class="codex-plus-backend-repair" data-codex-backend-repair="true" hidden>修复后端运行</button>
+                <div class="codex-plus-backend-label" data-codex-backend-status="true" data-status="${escapeHtml(backendDisplayStatusName)}">${escapeHtml(backendStatusText(backendDisplayStatus))}</div>
+                <button type="button" class="codex-plus-backend-repair" data-codex-backend-repair="true" ${backendDisplayStatusName === "ok" || backendDisplayStatusName === "checking" ? "hidden" : ""}>${codexPlusEscapedText("backendRepair")}</button>
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Codex增强</div><div class="codex-plus-row-description">关闭后停用删除、导出、移动、插件相关和菜单位置增强。</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("enhancementsTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("enhancementsDescription")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="enhancementsEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">插件市场解锁</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强模式下无需开启；ChatGPT 登录态会保留官方插件市场。" : "API Key 模式下扩展插件市场请求，尽量显示完整插件列表。"}</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginMarketplaceUnlock" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("marketplaceTitle")}</div><div class="codex-plus-row-description">${relayMode ? codexPlusEscapedText("marketplaceRelayDescription") : codexPlusEscapedText("marketplacePatchDescription")}</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginMarketplaceUnlock" ${relayUnneededAttrs}><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">特殊插件强制安装</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强模式下无需开启；不会改插件安装入口。" : "解除 App unavailable / 应用不可用导致的前端安装禁用。"}</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="forcePluginInstall" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("pluginEntryTitle")}</div><div class="codex-plus-row-description">${relayMode ? codexPlusEscapedText("pluginEntryRelayDescription") : codexPlusEscapedText("pluginEntryPatchDescription")}</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginEntryUnlock" ${relayUnneededAttrs}><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">模型白名单解锁</div><div class="codex-plus-row-description">从环境变量和 Codex config.toml 中的中转站 /v1/models 拉取模型，并补进模型选择列表。</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("forcePluginInstallTitle")}</div><div class="codex-plus-row-description">${relayMode ? codexPlusEscapedText("forcePluginInstallRelayDescription") : codexPlusEscapedText("forcePluginInstallPatchDescription")}</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="forcePluginInstall" ${relayUnneededAttrs}><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("modelWhitelistTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("modelWhitelistDescription")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("fastButtonTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("fastButtonDescription", { models: codexServiceTierFastModelListLabel() })}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
             </div>
             <div class="codex-plus-row" data-codex-service-tier-controls="true">
-              <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承使用 config.toml 的 service tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("serviceTierTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("serviceTierDescription")}</div></div>
               <div class="codex-plus-service-tier-control">
-                <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">正在读取…</div>
+                <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">${codexPlusEscapedText("serviceTierReading")}</div>
                 <div class="codex-plus-service-tier-actions">
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">继承</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">全局 Standard</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">全局 Fast</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-custom="true">自定义</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">${codexPlusEscapedText("serviceTierInherit")}</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">${codexPlusEscapedText("serviceTierGlobalStandard")}</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">${codexPlusEscapedText("serviceTierGlobalFast")}</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-custom="true">${codexPlusEscapedText("serviceTierCustom")}</button>
                 </div>
                 <div class="codex-plus-service-tier-actions codex-plus-service-tier-thread-actions">
-                  <span class="codex-plus-service-tier-thread-label">当前 thread 覆盖</span>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="当前 thread 不单独覆盖，继承 config.toml">继承</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="仅当前 thread 使用 Standard，并切到自定义模式">Standard</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="仅当前 thread 使用 Fast，并切到自定义模式">Fast</button>
+                  <span class="codex-plus-service-tier-thread-label">${codexPlusEscapedText("serviceTierThreadOverride")}</span>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="${codexPlusEscapedText("serviceTierThreadInheritTitle")}">${codexPlusEscapedText("serviceTierInherit")}</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="${codexPlusEscapedText("serviceTierThreadStandardTitle")}">Standard</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="${codexPlusEscapedText("serviceTierThreadFastTitle")}">Fast</button>
                 </div>
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示删除按钮，并支持撤销。</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("sessionDeleteTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("sessionDeleteDescription")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionDelete"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Markdown 导出</div><div class="codex-plus-row-description">在会话列表显示导出按钮，按本地 rollout 导出带时间戳的 Markdown。</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("markdownExportTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("markdownExportDescription")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="markdownExport"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">粘贴修复</div><div class="codex-plus-row-description">从 Word 等富文本来源粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("pasteFixTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("pasteFixDescription")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pasteFix"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">会话项目移动</div><div class="codex-plus-row-description">在会话列表悬停显示移动按钮，可移动到普通对话或其他本地项目。</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("projectMoveTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("projectMoveDescription")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="projectMove"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">会话 ID 标识</div><div class="codex-plus-row-description">在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("timelineTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("timelineDescription")}</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationTimeline"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("threadIdBadgeTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("threadIdBadgeDescription")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadIdBadge"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">对话居中宽度</div><div class="codex-plus-row-description">开启后把主对话和输入框限制到固定最大宽度，适合大屏阅读。</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("conversationViewTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("conversationViewDescription")}</div></div>
               <div class="codex-plus-width-control">
                 <input class="codex-plus-width-input" data-codex-plus-conversation-view-width="true" min="${conversationViewMinWidth}" max="${conversationViewMaxAllowedWidth}" step="10" type="number" value="${conversationViewWidth()}">
                 <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationView"><span></span></button>
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">切换对话保留位置</div><div class="codex-plus-row-description">开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("threadScrollTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("threadScrollDescription")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Zed Remote open</div><div class="codex-plus-row-description">Open supported remote SSH file references in Zed without patching Codex.app.</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("zedRemoteTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("zedRemoteDescription")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="zedRemoteOpen"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Upstream worktree</div><div class="codex-plus-row-description">Create a Git worktree from a fresh upstream branch, equivalent to git worktree add -b branch path upstream/base.</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("upstreamWorktreeTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("upstreamWorktreeDescription")}</div></div>
               <div class="codex-plus-worktree-actions">
-                <button type="button" class="codex-plus-action-button" data-codex-upstream-worktree-open="true">创建</button>
+                <button type="button" class="codex-plus-action-button" data-codex-upstream-worktree-open="true">${codexPlusEscapedText("create")}</button>
                 <button type="button" class="codex-plus-toggle" data-codex-plus-setting="upstreamWorktreeCreate"><span></span></button>
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">历史会话修复</div><div class="codex-plus-row-description">切换官方登录、混合 API 或纯 API 后，让旧对话重新显示在当前模式下。</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("providerSyncTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("providerSyncDescription")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">页面增强模式</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强：保留会话删除、导出、项目移动和用户脚本，仅关闭插件市场相关增强。" : "完整增强：加载插件市场、强制安装、项目路径移动等全部页面能力。"}</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("pageModeTitle")}</div><div class="codex-plus-row-description">${relayMode ? codexPlusEscapedText("pageModeRelayDescription") : codexPlusEscapedText("pageModePatchDescription")}</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">${codexPlusEscapedText("openManager")}</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">原生菜单栏位置</div><div class="codex-plus-row-description">把 Codex++ 菜单插入顶部原生菜单栏；默认关闭以避免页面重渲染冲突。</div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("nativeMenuTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("nativeMenuDescription")}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="nativeMenuPlacement"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户脚本报错。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("devtoolsTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("devtoolsDescription")}</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">${codexPlusEscapedText("openDevtools")}</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a><br>Telegram: <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noreferrer">https://t.me/CodexPlusPlus</a></div></div>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("aboutTitle")}</div><div class="codex-plus-about">${codexPlusEscapedText("aboutDescription")}<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a><br>Telegram: <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noreferrer">https://t.me/CodexPlusPlus</a></div></div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Discord 社区</div><div class="codex-plus-row-description">加入 Discord 获取更新消息、反馈问题或交流使用体验。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-plus-discord="true">打开 Discord</button>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("discordTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("discordDescription")}</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-plus-discord="true">${codexPlusEscapedText("openDiscord")}</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Telegram 频道</div><div class="codex-plus-row-description">加入 Telegram 获取更新消息和交流使用体验。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-plus-telegram="true">打开 Telegram</button>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("telegramTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("telegramDescription")}</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-plus-telegram="true">${codexPlusEscapedText("openTelegram")}</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
-              <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">提出问题</button>
+              <div><div class="codex-plus-row-title">${codexPlusEscapedText("issueTitle")}</div><div class="codex-plus-row-description">${codexPlusEscapedText("issueDescription")}</div></div>
+              <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">${codexPlusEscapedText("openIssue")}</button>
             </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="userScripts" hidden>
             <div class="codex-plus-row" data-codex-user-scripts-section="true">
               <div>
-                <div class="codex-plus-row-title">用户脚本</div>
-                <div class="codex-plus-row-description">启用用户脚本：自动加载内置目录和用户配置目录中的 .js 文件。</div>
-                <div class="codex-plus-user-script-warning">禁用后需重载页面或重启 Codex++ 才能完全移除已执行效果。</div>
-                <div class="codex-plus-user-script-dirs" data-codex-user-script-dirs="true">正在读取脚本目录…</div>
-                <div class="codex-plus-user-script-list" data-codex-user-script-list="true">正在读取用户脚本…</div>
+                <div class="codex-plus-row-title">${codexPlusEscapedText("userScriptsTitle")}</div>
+                <div class="codex-plus-row-description">${codexPlusEscapedText("userScriptsDescription")}</div>
+                <div class="codex-plus-user-script-warning">${codexPlusEscapedText("userScriptsWarning")}</div>
+                <div class="codex-plus-user-script-dirs" data-codex-user-script-dirs="true">${codexPlusEscapedText("userScriptsReadingDirs")}</div>
+                <div class="codex-plus-user-script-list" data-codex-user-script-list="true">${codexPlusEscapedText("userScriptsReading")}</div>
               </div>
               <div class="codex-plus-user-script-actions">
                 <button type="button" class="codex-plus-toggle" data-codex-user-scripts-enabled="true"><span></span></button>
-                <button type="button" class="codex-plus-user-script-reload" data-codex-user-scripts-reload="true">重新加载用户脚本</button>
+                <button type="button" class="codex-plus-user-script-reload" data-codex-user-scripts-reload="true">${codexPlusEscapedText("reloadUserScripts")}</button>
               </div>
             </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="sponsor" hidden>
-            <div class="codex-plus-sponsor-text">推荐内容分为赞助商推荐和普通推荐。赞助商推荐来自支持 Codex++ 继续维护的合作方；普通推荐用于展示适合 Codex 用户的服务与信息。</div>
+            <div class="codex-plus-sponsor-text">${codexPlusEscapedText("sponsorDescription")}</div>
             <div class="codex-plus-ad-remote">
               ${renderCodexPlusAds()}
             </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="support" hidden>
-            <div class="codex-plus-sponsor-text">如果 Codex++ 帮到了你，可以请我喝杯咖啡，或者随手赞赏支持一下继续维护。</div>
+            <div class="codex-plus-sponsor-text">${codexPlusEscapedText("supportDescription")}</div>
             <div class="codex-plus-sponsor-grid">
               <div class="codex-plus-sponsor-card">
-                <div class="codex-plus-sponsor-card-title">支付宝</div>
-                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.alipay || `${helperBase}/assets/sponsor-alipay.jpg`}" alt="支付宝赞赏码">
+                <div class="codex-plus-sponsor-card-title">${codexPlusEscapedText("alipay")}</div>
+                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.alipay || `${helperBase}/assets/sponsor-alipay.jpg`}" alt="${codexPlusEscapedText("alipayQrAlt")}">
               </div>
               <div class="codex-plus-sponsor-card">
-                <div class="codex-plus-sponsor-card-title">微信</div>
-                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.wechat || `${helperBase}/assets/sponsor-wechat.jpg`}" alt="微信赞赏码">
+                <div class="codex-plus-sponsor-card-title">${codexPlusEscapedText("wechat")}</div>
+                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.wechat || `${helperBase}/assets/sponsor-wechat.jpg`}" alt="${codexPlusEscapedText("wechatQrAlt")}">
               </div>
             </div>
           </div>
@@ -2537,7 +3266,7 @@
       }
       if (target?.closest("[data-codex-upstream-worktree-open]")) {
         if (!codexPlusSettings().upstreamWorktreeCreate) {
-          showToast("Upstream worktree enhancement is disabled", null);
+          showToast(t("upstreamWorktreeDisabled"), null);
           return;
         }
         openUpstreamWorktreeDialog();
@@ -2559,7 +3288,7 @@
     }, true);
     document.body.appendChild(overlay);
     if (!codexPlusAdsLoaded) fetchCodexPlusAds();
-    selectCodexPlusTab("home");
+    selectCodexPlusTab(previousTab);
     renderCodexPlusMenu();
     refreshCodexPlusBackendToggles();
     renderBackendStatus();
@@ -2619,7 +3348,7 @@
 
   function normalizeCodexPlusTriggerClassName(className) {
     const classes = String(className || "").split(/\s+/).filter(Boolean);
-    const incompatibleNativeGroupClasses = new Set(["gap-0", "rounded-l-none", "border-l-0", "pl-0.5", "pr-1.5"]);
+    const incompatibleNativeGroupClasses = new Set(["gap-0", "rounded-l-none", "border-l-0", "pl-0.5", "pr-1.5", "aspect-square", "!px-0", "px-0"]);
     const hasIncompatibleNativeGroupClass = classes.some((name) => incompatibleNativeGroupClasses.has(name));
     const normalized = classes.filter((name) => !incompatibleNativeGroupClasses.has(name));
     if (hasIncompatibleNativeGroupClass) {
@@ -2630,18 +3359,19 @@
     return normalized.join(" ");
   }
 
-  function configureCodexPlusTrigger(menu, trigger, nativeButtonClass) {
+  function configureCodexPlusTrigger(menu, trigger, nativeButtonClass, nativeMenuPlacement = false) {
     if (!trigger) return;
-    if (nativeButtonClass) trigger.className = normalizeCodexPlusTriggerClassName(nativeButtonClass);
-    if (!trigger.querySelector(".codex-plus-backend-indicator")) {
-      const indicator = document.createElement("span");
-      indicator.className = "codex-plus-backend-indicator";
-      indicator.dataset.codexBackendIndicator = "true";
-      indicator.dataset.status = codexPlusBackendStatus.status || "checking";
-      trigger.prepend(indicator);
+    trigger.className = nativeButtonClass ? normalizeCodexPlusTriggerClassName(nativeButtonClass) : "codex-plus-trigger";
+    if (nativeMenuPlacement) {
+      trigger.classList.add("codex-plus-native-trigger");
+      if (menu) menu.dataset.codexPlusNativeMenu = "true";
+    } else {
+      trigger.classList.remove("codex-plus-native-trigger");
+      if (menu) delete menu.dataset.codexPlusNativeMenu;
     }
-    if (trigger.dataset.codexPlusTriggerInstalled === "5") return;
-    trigger.dataset.codexPlusTriggerInstalled = "5";
+    setCodexPlusTriggerStatus(trigger);
+    if (trigger.dataset.codexPlusTriggerInstalled === "8") return;
+    trigger.dataset.codexPlusTriggerInstalled = "8";
     trigger.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -2710,17 +3440,17 @@
     const existing = document.getElementById(codexPlusMenuId);
     removeDuplicateCodexPlusMenus(existing);
     let insertionPoint = findNativeMenuInsertionPoint();
-    if (existing && existing.dataset.codexPlusMenuVersion !== "6") {
+    if (existing && existing.dataset.codexPlusMenuVersion !== "10") {
       existing.remove();
       insertionPoint = findNativeMenuInsertionPoint();
     } else if (existing && insertionPoint && existing.parentElement === insertionPoint.parent) {
-      configureCodexPlusTrigger(existing, existing.querySelector("button"), insertionPoint.nativeButtonClass);
+      configureCodexPlusTrigger(existing, existing.querySelector("button"), insertionPoint.nativeButtonClass, true);
       const safeBefore = insertionPoint.before?.parentElement === insertionPoint.parent ? insertionPoint.before : null;
       if (existing.nextSibling !== safeBefore) insertionPoint.parent.insertBefore(existing, safeBefore);
       removeDuplicateCodexPlusMenus(existing);
       return;
     } else if (existing && insertionPoint) {
-      configureCodexPlusTrigger(existing, existing.querySelector("button"), insertionPoint.nativeButtonClass);
+      configureCodexPlusTrigger(existing, existing.querySelector("button"), insertionPoint.nativeButtonClass, true);
       existing.className = "";
       const safeBefore = insertionPoint.before?.parentElement === insertionPoint.parent ? insertionPoint.before : null;
       insertionPoint.parent.insertBefore(existing, safeBefore);
@@ -2737,14 +3467,12 @@
     const menu = document.createElement("div");
     menu.id = codexPlusMenuId;
     menu.dataset.codexPlusMenu = "true";
-    menu.dataset.codexPlusMenuVersion = "6";
+    menu.dataset.codexPlusMenuVersion = "10";
     const trigger = document.createElement("button");
     trigger.type = "button";
-    const indicator = ensureCodexPlusTriggerIndicator(trigger);
-    if (indicator) indicator.dataset.status = codexPlusBackendStatus.status || "checking";
+    setCodexPlusTriggerStatus(trigger);
     setCodexPlusTriggerLabel(trigger);
-    const nativeButtonClass = insertionPoint?.nativeButtonClass || headerIconTextButtonClass;
-    configureCodexPlusTrigger(menu, trigger, nativeButtonClass);
+    configureCodexPlusTrigger(menu, trigger, insertionPoint?.nativeButtonClass || "", !!insertionPoint);
     menu.appendChild(trigger);
     if (insertionPoint) {
       menu.className = "";
@@ -2756,6 +3484,37 @@
       updateFloatingCodexPlusMenuPosition(menu);
     }
     removeDuplicateCodexPlusMenus(menu);
+  }
+
+  function nodeMatchesCodexHeaderMenu(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const selector = `${selectors.appHeader}, ${selectors.nativeMenuBar}, #${codexPlusMenuId}, [data-codex-plus-menu="true"]`;
+    return !!node.matches?.(selector) ||
+      !!node.closest?.(selector) ||
+      !!node.querySelector?.(selector);
+  }
+
+  function shouldRepairCodexPlusMenu(mutations) {
+    if (isCodexOverlayWindow()) return false;
+    if (!mutations) return true;
+    if (!document.getElementById(codexPlusMenuId) && document.querySelector(selectors.appHeader)) return true;
+    return mutations.some((mutation) => {
+      if (nodeMatchesCodexHeaderMenu(mutation.target)) return true;
+      return [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)].some(nodeMatchesCodexHeaderMenu);
+    });
+  }
+
+  function repairCodexPlusMenuNow(mutations) {
+    if (!shouldRepairCodexPlusMenu(mutations)) return;
+    if (window.__codexPlusMenuRepairing) return;
+    window.__codexPlusMenuRepairing = true;
+    try {
+      installStyle();
+      installCodexPlusMenu();
+      renderBackendStatus();
+    } finally {
+      window.__codexPlusMenuRepairing = false;
+    }
   }
 
   function patchPluginMarketplaceRequestParams(method, params) {
@@ -4371,16 +5130,16 @@
           });
           return await response.json();
         } catch (error) {
-          return { status: "failed", message: "未连接" };
+          return { status: "failed", message: t("backendDisconnected") };
         }
       }
       sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
-      return { status: "failed", message: "桥接不可用，请重启启动器" };
+      return { status: "failed", message: t("bridgeUnavailable") };
     }
     function bridgeWithBackendTimeout(path, payload) {
       return Promise.race([
         window.__codexSessionDeleteBridge(path, payload),
-        new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "后端检查超时", timeout: true }), 2000)),
+        new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: t("backendTimeout"), timeout: true }), 2000)),
       ]);
     }
     async function fetchBackendStatusFromHelper(path, payload) {
@@ -4392,7 +5151,7 @@
         });
         return await response.json();
       } catch (error) {
-        return { status: "failed", message: "未连接" };
+        return { status: "failed", message: t("backendDisconnected") };
       }
     }
     try {
@@ -6291,7 +7050,7 @@
       const worktreePath = usedBranches.get(branchMenuItemLabel(item));
       if (!worktreePath) continue;
       item.setAttribute(branchWorktreePathAttribute, worktreePath);
-      item.setAttribute("title", `该分支已在另一个 worktree 使用：${worktreePath}`);
+      item.setAttribute("title", t("upstreamBranchInUse", { path: worktreePath }));
     }
   }
 
@@ -6456,7 +7215,7 @@
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation?.();
-      showToast(`该分支已在另一个 worktree 使用：${usedWorktreePath}`, null);
+      showToast(t("upstreamBranchInUse", { path: usedWorktreePath }), null);
     }
   }
 
@@ -6535,7 +7294,7 @@
       prepareUpstreamBranchSelection(selection);
       syncUpstreamBranchTriggerLabel();
       syncUpstreamBranchMenuSelection(option.closest?.('[role="menu"], [data-radix-menu-content], [cmdk-list]'));
-      showToast(`将从 ${upstreamBranchOptionLabel(option) || "upstream/main"} 创建新 worktree`, null);
+      showToast(t("upstreamBranchWillCreate", { label: upstreamBranchOptionLabel(option) || "upstream/main" }), null);
     }, true);
     let upstreamBranchInjectTimer = null;
     const schedule = () => {
@@ -6702,7 +7461,7 @@
     if (!trigger) return false;
     const payload = upstreamWorktreePayloadFromSelection(trigger) || upstreamWorktreeNativePayloadFromElement(trigger);
     if (!payload) {
-      showToast("无法安全识别 Codex 原生 worktree 表单，请使用 Codex++ 菜单创建。", null);
+      showToast(t("upstreamNativeFormUnknown"), null);
       return false;
     }
     event.preventDefault();
@@ -6712,12 +7471,12 @@
       if (result?.status === "ok") {
         writeUpstreamBranchSelection(null);
         syncUpstreamBranchTriggerLabel();
-        showToast(`已从 ${result.sourceRef} 创建 worktree`, null);
+        showToast(t("upstreamCreatedNativeToast", { sourceRef: result.sourceRef || "" }), null);
       } else {
-        showToast(result?.message || "创建 upstream worktree 失败", null);
+        showToast(result?.message || t("upstreamCreateFailed"), null);
       }
     } catch (error) {
-      showToast(error?.message || "创建 upstream worktree 失败", null);
+      showToast(error?.message || t("upstreamCreateFailed"), null);
     }
     return true;
   }
@@ -6742,43 +7501,43 @@
   async function loadUpstreamWorktreeDefaults(dialog) {
     const repoPath = upstreamWorktreeField(dialog, "repoPath")?.value?.trim() || "";
     if (!repoPath) {
-      setUpstreamWorktreeMessage(dialog, "填写仓库路径后会自动读取 remote 和当前分支。", "idle");
+      setUpstreamWorktreeMessage(dialog, t("upstreamDefaultsHint"), "idle");
       return;
     }
-    setUpstreamWorktreeMessage(dialog, "正在读取仓库默认值…", "loading");
+    setUpstreamWorktreeMessage(dialog, t("upstreamDefaultsReading"), "loading");
     try {
       const result = await postJson("/upstream-worktree/defaults", { repoPath });
       if (result?.status !== "ok") {
-        setUpstreamWorktreeMessage(dialog, result?.message || "读取仓库默认值失败", "failed");
+        setUpstreamWorktreeMessage(dialog, result?.message || t("upstreamDefaultsFailed"), "failed");
         return;
       }
       const remote = upstreamWorktreeField(dialog, "remote");
       const baseBranch = upstreamWorktreeField(dialog, "baseBranch");
       if (remote && !remote.value) remote.value = result.defaultRemote || "upstream";
       if (baseBranch && (!baseBranch.value || baseBranch.value === "main")) baseBranch.value = result.defaultBaseBranch || "main";
-      setUpstreamWorktreeMessage(dialog, `将从 ${remote?.value || "upstream"}/${baseBranch?.value || "main"} 创建 worktree。`, "ok");
+      setUpstreamWorktreeMessage(dialog, t("upstreamDefaultsReady", { remote: remote?.value || "upstream", baseBranch: baseBranch?.value || "main" }), "ok");
     } catch (error) {
-      setUpstreamWorktreeMessage(dialog, error?.message || "读取仓库默认值失败", "failed");
+      setUpstreamWorktreeMessage(dialog, error?.message || t("upstreamDefaultsFailed"), "failed");
     }
   }
 
   async function submitUpstreamWorktree(dialog) {
     const payload = upstreamWorktreePayload(dialog);
     if (!payload.repoPath || !payload.branchName || !payload.worktreePath || !payload.remote || !payload.baseBranch) {
-      setUpstreamWorktreeMessage(dialog, "仓库路径、分支名、worktree 路径、remote 和 base branch 都必须填写。", "failed");
+      setUpstreamWorktreeMessage(dialog, t("upstreamCreateMissingFields"), "failed");
       return;
     }
-    setUpstreamWorktreeMessage(dialog, "正在 fetch 并创建 worktree…", "loading");
+    setUpstreamWorktreeMessage(dialog, t("upstreamCreating"), "loading");
     try {
       const result = await postJson("/upstream-worktree/create", payload);
       if (result?.status === "ok") {
-        setUpstreamWorktreeMessage(dialog, `已从 ${result.sourceRef} 创建：${result.worktreePath}`, "ok");
-        showToast(`已创建 upstream worktree：${result.branchName}`, null);
+        setUpstreamWorktreeMessage(dialog, t("upstreamCreatedMessage", { sourceRef: result.sourceRef || "", worktreePath: result.worktreePath || "" }), "ok");
+        showToast(t("upstreamCreatedToast", { branchName: result.branchName || "" }), null);
       } else {
-        setUpstreamWorktreeMessage(dialog, result?.message || "创建 upstream worktree 失败", "failed");
+        setUpstreamWorktreeMessage(dialog, result?.message || t("upstreamCreateFailed"), "failed");
       }
     } catch (error) {
-      setUpstreamWorktreeMessage(dialog, error?.message || "创建 upstream worktree 失败", "failed");
+      setUpstreamWorktreeMessage(dialog, error?.message || t("upstreamCreateFailed"), "failed");
     }
   }
 
@@ -6787,19 +7546,19 @@
     const overlay = document.createElement("div");
     overlay.className = `codex-delete-confirm-overlay ${upstreamWorktreeDialogClass}`;
     overlay.innerHTML = `
-      <div class="codex-delete-confirm-content" role="dialog" aria-modal="true" aria-label="Create upstream worktree">
-        <div class="codex-delete-confirm-title">Create from upstream</div>
-        <div class="codex-delete-confirm-message">等价于 git worktree add -b branch path upstream/base。创建前会先 fetch 远端分支。</div>
-        <label class="codex-plus-form-field">仓库路径<input data-codex-upstream-worktree-field="repoPath" type="text" placeholder="/path/to/repo"></label>
-        <label class="codex-plus-form-field">新分支名<input data-codex-upstream-worktree-field="branchName" type="text" placeholder="feature/my-task"></label>
-        <label class="codex-plus-form-field">Worktree 路径<input data-codex-upstream-worktree-field="worktreePath" type="text" placeholder="/path/to/worktrees/my-task"></label>
-        <label class="codex-plus-form-field">Remote<input data-codex-upstream-worktree-field="remote" type="text" value="upstream"></label>
-        <label class="codex-plus-form-field">Base branch<input data-codex-upstream-worktree-field="baseBranch" type="text" value="main"></label>
-        <div class="codex-plus-form-message" data-codex-upstream-worktree-message>填写仓库路径后会自动读取 remote 和当前分支。</div>
+      <div class="codex-delete-confirm-content" role="dialog" aria-modal="true" aria-label="${codexPlusEscapedText("upstreamWorktreeDialogLabel")}">
+        <div class="codex-delete-confirm-title">${codexPlusEscapedText("upstreamWorktreeDialogTitle")}</div>
+        <div class="codex-delete-confirm-message">${codexPlusEscapedText("upstreamWorktreeDialogDescription")}</div>
+        <label class="codex-plus-form-field">${codexPlusEscapedText("upstreamRepoPathLabel")}<input data-codex-upstream-worktree-field="repoPath" type="text" placeholder="/path/to/repo"></label>
+        <label class="codex-plus-form-field">${codexPlusEscapedText("upstreamBranchNameLabel")}<input data-codex-upstream-worktree-field="branchName" type="text" placeholder="feature/my-task"></label>
+        <label class="codex-plus-form-field">${codexPlusEscapedText("upstreamWorktreePathLabel")}<input data-codex-upstream-worktree-field="worktreePath" type="text" placeholder="/path/to/worktrees/my-task"></label>
+        <label class="codex-plus-form-field">${codexPlusEscapedText("upstreamRemoteLabel")}<input data-codex-upstream-worktree-field="remote" type="text" value="upstream"></label>
+        <label class="codex-plus-form-field">${codexPlusEscapedText("upstreamBaseBranchLabel")}<input data-codex-upstream-worktree-field="baseBranch" type="text" value="main"></label>
+        <div class="codex-plus-form-message" data-codex-upstream-worktree-message>${codexPlusEscapedText("upstreamDefaultsHint")}</div>
         <div class="codex-delete-confirm-actions">
-          <button type="button" data-codex-upstream-worktree-cancel="true">取消</button>
-          <button type="button" data-codex-upstream-worktree-defaults="true">读取默认值</button>
-          <button type="button" data-codex-upstream-worktree-submit="true">Create from upstream</button>
+          <button type="button" data-codex-upstream-worktree-cancel="true">${codexPlusEscapedText("cancel")}</button>
+          <button type="button" data-codex-upstream-worktree-defaults="true">${codexPlusEscapedText("upstreamReadDefaults")}</button>
+          <button type="button" data-codex-upstream-worktree-submit="true">${codexPlusEscapedText("upstreamWorktreeDialogTitle")}</button>
         </div>
       </div>
     `;
@@ -6837,12 +7596,12 @@
       const overlay = document.createElement("div");
       overlay.className = "codex-delete-confirm-overlay";
       overlay.innerHTML = `
-        <div class="codex-delete-confirm-content" role="dialog" aria-modal="true" aria-label="删除会话">
-          <div class="codex-delete-confirm-title">删除会话</div>
-          <div class="codex-delete-confirm-message">删除“${escapeHtml(title)}”？</div>
+        <div class="codex-delete-confirm-content" role="dialog" aria-modal="true" aria-label="${codexPlusEscapedText("deleteSessionDialogLabel")}">
+          <div class="codex-delete-confirm-title">${codexPlusEscapedText("deleteSessionTitle")}</div>
+          <div class="codex-delete-confirm-message">${codexPlusEscapedText("deleteSessionMessage", { title })}</div>
           <div class="codex-delete-confirm-actions">
-            <button type="button" data-codex-delete-cancel="true">取消</button>
-            <button type="button" data-codex-delete-confirm="true">删除</button>
+            <button type="button" data-codex-delete-cancel="true">${codexPlusEscapedText("cancel")}</button>
+            <button type="button" data-codex-delete-confirm="true">${codexPlusEscapedText("delete")}</button>
           </div>
         </div>
       `;
@@ -6928,9 +7687,9 @@
       const result = await postJson("/delete", ref);
       if (result.status === "server_deleted" || result.status === "local_deleted") {
         removeDeletedRow(row, button, ref);
-        showToast(result.message || "删除成功", result.undo_token);
+        showToast(result.message || t("deleteSuccess"), result.undo_token);
       } else {
-        showToast(result.message || "删除失败", null);
+        showToast(result.message || t("deleteFailed"), null);
       }
     });
   }
@@ -6940,13 +7699,13 @@
     if (result.status === "exported" && result.filename && typeof result.markdown === "string") {
       const saveResult = await saveMarkdown(result.filename, result.markdown);
       if (saveResult?.status === "cancelled") {
-        showToast(saveResult.message || "导出已取消", null);
+        showToast(saveResult.message || t("exportCancelled"), null);
       } else {
-        showToast(result.message || "导出成功", null);
+        showToast(result.message || t("exportSuccess"), null);
       }
       return;
     }
-    showToast(result.message || "导出失败", null);
+    showToast(result.message || t("exportFailed"), null);
   }
 
   function sortStateFromMoveResult(result, ref, row) {
@@ -6957,7 +7716,7 @@
   function finishProjectMove(row, button, ref, target, message) {
     releaseDeleteFocus(row, button);
     button.disabled = false;
-    button.textContent = "移动";
+    button.textContent = t("moveLabel");
     saveProjectMoveProjection(ref, target, target.sortMs || rowSortMs(row, ref, target));
     if (target.kind === "projectless") moveRowToChats(row, target);
     refreshAfterProjectMove();
@@ -6966,19 +7725,19 @@
 
   async function applyProjectMove(row, button, ref, target) {
     button.disabled = true;
-    button.textContent = "移动中";
+    button.textContent = t("movingLabel");
     try {
       if (target.kind === "projectless") {
         const result = await moveSessionToProjectless(ref);
-        finishProjectMove(row, button, ref, { ...target, ...sortStateFromMoveResult(result, ref, row) }, `已移动到普通对话：“${ref.title || ref.session_id}”`);
+        finishProjectMove(row, button, ref, { ...target, ...sortStateFromMoveResult(result, ref, row) }, t("moveToChatsSuccess", { title: ref.title || ref.session_id }));
       } else {
         const result = await moveSessionToProject(ref, target);
-        finishProjectMove(row, button, ref, { ...target, ...sortStateFromMoveResult(result, ref, row) }, `已移动到“${target.label}”：“${ref.title || ref.session_id}”`);
+        finishProjectMove(row, button, ref, { ...target, ...sortStateFromMoveResult(result, ref, row) }, t("moveToProjectSuccess", { project: target.label, title: ref.title || ref.session_id }));
       }
     } catch (error) {
       button.disabled = false;
-      button.textContent = "移动";
-      showToast(`移动失败：${error?.message || error}`, null);
+      button.textContent = t("moveLabel");
+      showToast(t("moveFailed", { message: error?.message || error }), null);
     }
   }
 
@@ -7210,7 +7969,7 @@
 
   function positionSessionMoreMenu(button, menu) {
     const rect = button.getBoundingClientRect();
-    const menuWidth = Math.max(104, menu.getBoundingClientRect().width || 104);
+    const menuWidth = Math.max(140, menu.getBoundingClientRect().width || 140);
     const left = Math.min(window.innerWidth - menuWidth - 8, Math.max(8, rect.right - menuWidth));
     menu.style.left = `${left}px`;
     menu.style.top = `${Math.max(8, rect.bottom + 4)}px`;
@@ -7220,7 +7979,8 @@
     const item = document.createElement("button");
     item.type = "button";
     item.className = "codex-session-more-menu-item";
-    item.innerHTML = `<span class="codex-session-more-menu-icon">${icon}</span><span>${label}</span>`;
+    item.setAttribute("role", "menuitem");
+    item.innerHTML = `<span class="codex-session-more-menu-icon">${icon}</span><span>${escapeHtml(label)}</span>`;
     item.addEventListener("click", onActivate, true);
     return item;
   }
@@ -7240,10 +8000,11 @@
       window.innerWidth - tooltipRect.width - 8,
       Math.max(8, buttonRect.left + buttonRect.width / 2 - tooltipRect.width / 2),
     );
-    const top = Math.min(
-      window.innerHeight - tooltipRect.height - 8,
-      buttonRect.bottom + gap,
-    );
+    const preferredTop = buttonRect.top - tooltipRect.height - gap;
+    const fallbackTop = buttonRect.bottom + gap;
+    const top = preferredTop >= 8
+      ? preferredTop
+      : Math.min(window.innerHeight - tooltipRect.height - 8, fallbackTop);
     tooltip.style.left = `${left}px`;
     tooltip.style.top = `${Math.max(8, top)}px`;
   }
@@ -7263,14 +8024,40 @@
     button.textContent = icon;
   }
 
+  function moreIconSvg() {
+    return `
+      <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="5" cy="10" r="1.35" fill="currentColor"></circle>
+        <circle cx="10" cy="10" r="1.35" fill="currentColor"></circle>
+        <circle cx="15" cy="10" r="1.35" fill="currentColor"></circle>
+      </svg>
+    `;
+  }
+
   function trashIconSvg() {
     return `
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M3 6h18"></path>
-        <path d="M8 6V4h8v2"></path>
-        <path d="M19 6l-1 14H6L5 6"></path>
-        <path d="M10 11v5"></path>
-        <path d="M14 11v5"></path>
+      <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M7.25 3.5C7.25 3.08579 7.58579 2.75 8 2.75H12C12.4142 2.75 12.75 3.08579 12.75 3.5V4.25H16.25C16.6642 4.25 17 4.58579 17 5C17 5.41421 16.6642 5.75 16.25 5.75H15.556L14.875 15.284C14.7828 16.5746 13.7088 17.575 12.4149 17.575H7.58508C6.29116 17.575 5.2172 16.5746 5.12501 15.284L4.44401 5.75H3.75C3.33579 5.75 3 5.41421 3 5C3 4.58579 3.33579 4.25 3.75 4.25H7.25V3.5ZM8.75 4.25H11.25V4.25H8.75ZM5.948 5.75L6.62119 15.1772C6.65734 15.6833 7.07854 16.075 7.58508 16.075H12.4149C12.9215 16.075 13.3427 15.6833 13.3788 15.1772L14.052 5.75H5.948Z" fill="currentColor"></path>
+        <path d="M8.5 8.25C8.91421 8.25 9.25 8.58579 9.25 9V13.25C9.25 13.6642 8.91421 14 8.5 14C8.08579 14 7.75 13.6642 7.75 13.25V9C7.75 8.58579 8.08579 8.25 8.5 8.25Z" fill="currentColor"></path>
+        <path d="M11.5 8.25C11.9142 8.25 12.25 8.58579 12.25 9V13.25C12.25 13.6642 11.9142 14 11.5 14C11.0858 14 10.75 13.6642 10.75 13.25V9C10.75 8.58579 11.0858 8.25 11.5 8.25Z" fill="currentColor"></path>
+      </svg>
+    `;
+  }
+
+  function exportIconSvg() {
+    return `
+      <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true" focusable="false" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M9.25 3.75C9.25 3.33579 9.58579 3 10 3C10.4142 3 10.75 3.33579 10.75 3.75V10.1893L12.4697 8.46967C12.7626 8.17678 13.2374 8.17678 13.5303 8.46967C13.8232 8.76256 13.8232 9.23744 13.5303 9.53033L10.5303 12.5303C10.2374 12.8232 9.76256 12.8232 9.46967 12.5303L6.46967 9.53033C6.17678 9.23744 6.17678 8.76256 6.46967 8.46967C6.76256 8.17678 7.23744 8.17678 7.53033 8.46967L9.25 10.1893V3.75Z" fill="currentColor"></path>
+        <path d="M4.75 12.75C5.16421 12.75 5.5 13.0858 5.5 13.5V14.25C5.5 14.3881 5.61193 14.5 5.75 14.5H14.25C14.3881 14.5 14.5 14.3881 14.5 14.25V13.5C14.5 13.0858 14.8358 12.75 15.25 12.75C15.6642 12.75 16 13.0858 16 13.5V14.25C16 15.2165 15.2165 16 14.25 16H5.75C4.7835 16 4 15.2165 4 14.25V13.5C4 13.0858 4.33579 12.75 4.75 12.75Z" fill="currentColor"></path>
+      </svg>
+    `;
+  }
+
+  function moveIconSvg() {
+    return `
+      <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true" focusable="false" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M11.25 4.75C11.25 4.33579 11.5858 4 12 4H15.25C15.6642 4 16 4.33579 16 4.75V8C16 8.41421 15.6642 8.75 15.25 8.75C14.8358 8.75 14.5 8.41421 14.5 8V6.56066L9.53033 11.5303C9.23744 11.8232 8.76256 11.8232 8.46967 11.5303C8.17678 11.2374 8.17678 10.7626 8.46967 10.4697L13.4393 5.5H12C11.5858 5.5 11.25 5.16421 11.25 4.75Z" fill="currentColor"></path>
+        <path d="M5.75 5.5C5.61193 5.5 5.5 5.61193 5.5 5.75V14.25C5.5 14.3881 5.61193 14.5 5.75 14.5H14.25C14.3881 14.5 14.5 14.3881 14.5 14.25V11.75C14.5 11.3358 14.8358 11 15.25 11C15.6642 11 16 11.3358 16 11.75V14.25C16 15.2165 15.2165 16 14.25 16H5.75C4.7835 16 4 15.2165 4 14.25V5.75C4 4.7835 4.7835 4 5.75 4H8.25C8.66421 4 9 4.33579 9 4.75C9 5.16421 8.66421 5.5 8.25 5.5H5.75Z" fill="currentColor"></path>
       </svg>
     `;
   }
@@ -7323,20 +8110,20 @@
       moreButton.className = `${actionButtonClass} ${moreButtonClass}`;
       moreButton.setAttribute("aria-haspopup", "menu");
       moreButton.setAttribute("aria-expanded", "false");
-      configureActionButton(moreButton, "更多操作", "…");
+      configureSvgActionButton(moreButton, t("sidebarMoreActions"), moreIconSvg());
       const moreMenu = document.createElement("div");
       moreMenu.className = moreMenuClass;
       moreMenu.setAttribute("role", "menu");
       moreMenu.hidden = true;
       if (settings.markdownExport) {
-        moreMenu.appendChild(createSessionMoreMenuItem("导出", "⇩", (event) => {
+        moreMenu.appendChild(createSessionMoreMenuItem(t("sidebarExport"), exportIconSvg(), (event) => {
           stopActionButtonEvent(row, moreButton, event);
           closeSessionMoreMenus();
           exportMarkdown(ref);
         }));
       }
       if (settings.projectMove) {
-        moreMenu.appendChild(createSessionMoreMenuItem("移动", "↗", (event) => {
+        moreMenu.appendChild(createSessionMoreMenuItem(t("sidebarMove"), moveIconSvg(), (event) => {
           stopActionButtonEvent(row, moreButton, event);
           closeSessionMoreMenus();
           openProjectMoveMenuForRow(row, moreButton, ref, event);
@@ -7363,7 +8150,7 @@
       deleteButton.type = "button";
       deleteButton.className = `${actionButtonClass} ${buttonClass}`;
       deleteButton.dataset.codexDeleteVersion = codexDeleteVersion;
-      configureSvgActionButton(deleteButton, "删除", trashIconSvg());
+      configureSvgActionButton(deleteButton, t("sidebarDelete"), trashIconSvg());
       const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, ref, event);
       installActionButtonEvents(row, deleteButton, openDeleteConfirm);
       group.appendChild(deleteButton);
@@ -7468,7 +8255,7 @@
         stopArchivedButtonEvent(event);
         const ref = await resolveArchivedThread(row);
         if (!ref.session_id) {
-          showToast("导出失败：未找到归档会话 ID", null);
+          showToast(t("exportArchivedMissingId"), null);
           return;
         }
         await exportMarkdown(ref);
@@ -8673,6 +9460,7 @@
 
   function scheduleScan(mutations) {
     window.__codexSessionDeleteLastMutations = mutations;
+    repairCodexPlusMenuNow(mutations);
     scheduleZedRemoteMenuRefresh(mutations);
     schedulePluginAutoExpand();
     if (!shouldScheduleScan(mutations)) return;

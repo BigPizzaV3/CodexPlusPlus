@@ -1,4 +1,6 @@
+use std::io::{Read, Write};
 use std::net::SocketAddr;
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -593,11 +595,26 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
         let bind_host = helper_bind_host();
-        let listener = tokio::net::TcpListener::bind((bind_host.as_str(), helper_port))
-            .await
-            .with_context(|| {
-                format!("failed to bind helper runtime on {bind_host}:{helper_port}")
-            })?;
+        let listener = match tokio::net::TcpListener::bind((bind_host.as_str(), helper_port)).await
+        {
+            Ok(listener) => listener,
+            Err(error) if helper_status_ok(helper_port).await => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "helper.reuse_existing",
+                    serde_json::json!({
+                        "helper_port": helper_port,
+                        "bind_host": bind_host,
+                        "message": error.to_string()
+                    }),
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to bind helper runtime on {bind_host}:{helper_port}")
+                });
+            }
+        };
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "helper.listening",
             serde_json::json!({
@@ -832,6 +849,17 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     async fn wait_for_codex_exit(&self, launch: &CodexLaunch) -> anyhow::Result<()> {
         match launch {
+            CodexLaunch::Process {
+                wait_strategy: ProcessWaitStrategy::ExternalWaitCommand,
+                command,
+                ..
+            } => {
+                if let Some(app_dir) = macos_app_dir_from_open_command(command) {
+                    wait_for_macos_app_exit(&app_dir).await?;
+                } else if let Some(mut child) = self.child.lock().await.take() {
+                    let _ = child.wait().await;
+                }
+            }
             CodexLaunch::Process { .. } => {
                 if let Some(mut child) = self.child.lock().await.take() {
                     let _ = child.wait().await;
@@ -3436,6 +3464,39 @@ mod computer_use_tests {
     }
 }
 
+async fn helper_status_ok(helper_port: u16) -> bool {
+    tokio::task::spawn_blocking(move || helper_status_ok_blocking(helper_port))
+        .await
+        .unwrap_or(false)
+}
+
+fn helper_status_ok_blocking(helper_port: u16) -> bool {
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", helper_port)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(750)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(750)));
+    let request = concat!(
+        "POST /backend/status HTTP/1.1\r\n",
+        "Host: 127.0.0.1\r\n",
+        "Content-Type: application/json\r\n",
+        "Content-Length: 2\r\n",
+        "Connection: close\r\n",
+        "\r\n",
+        "{}"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return false;
+    }
+    response.starts_with("HTTP/1.1 200")
+        && response.contains(r#""status":"ok""#)
+        && response.contains(r#""transport":"http-helper""#)
+}
+
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> anyhow::Result<Vec<u8>> {
     let mut buffer = Vec::new();
     let mut chunk = vec![0_u8; 4096];
@@ -3802,6 +3863,13 @@ async fn run_macos_cleanup_command(
 fn macos_app_dir_from_open_command(command: &[String]) -> Option<PathBuf> {
     let app_index = command.iter().position(|part| part == "-a")?;
     command.get(app_index + 1).map(PathBuf::from)
+}
+
+async fn wait_for_macos_app_exit(app_dir: &Path) -> anyhow::Result<()> {
+    while is_macos_app_running(app_dir).await {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    Ok(())
 }
 
 async fn is_macos_app_running(app_dir: &Path) -> bool {
