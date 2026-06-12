@@ -1,0 +1,15 @@
+[package]
+name = "jiyi-managed-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "jiyi-managed-proxy"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+codex-plus-core = { path = "../../crates/codex-plus-core" }
+tokio.workspace = true

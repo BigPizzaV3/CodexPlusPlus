@@ -198,6 +198,59 @@
         background: #363839;
         outline: none;
       }
+      .jiyi-native-auth-shield {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483000;
+        display: grid;
+        place-items: center;
+        background: #0b0d10;
+        color: #f4f4f5;
+        font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      }
+      .jiyi-native-auth-panel {
+        width: min(440px, calc(100vw - 48px));
+        border: 1px solid rgba(255,255,255,.12);
+        border-radius: 10px;
+        background: #111418;
+        box-shadow: 0 24px 80px rgba(0,0,0,.34);
+        padding: 28px;
+      }
+      .jiyi-native-auth-mark {
+        width: 44px;
+        height: 44px;
+        display: inline-grid;
+        place-items: center;
+        border-radius: 8px;
+        background: #f4f4f5;
+        color: #111418;
+        font-weight: 800;
+        margin-bottom: 18px;
+      }
+      .jiyi-native-auth-title {
+        font-size: 26px;
+        font-weight: 750;
+        margin: 0 0 8px;
+      }
+      .jiyi-native-auth-copy {
+        margin: 0;
+        color: #a1a1aa;
+      }
+      .jiyi-native-auth-status {
+        margin-top: 18px;
+        color: #5eead4;
+        font-weight: 650;
+      }
+      .jiyi-native-auth-shield [data-jiyi-native-auth-open-manager] {
+        margin-top: 18px;
+        border: 1px solid rgba(255,255,255,.14);
+        border-radius: 8px;
+        background: #f4f4f5;
+        color: #111418;
+        padding: 8px 12px;
+        font: inherit;
+        font-weight: 700;
+      }
       .codex-session-more-menu-icon {
         width: 16px;
         text-align: center;
@@ -1090,7 +1143,7 @@
   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
   const codexServiceTierFallbackFastValue = "priority";
   const codexServiceTierModulePromises = new Map();
-  const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5"]);
+  const codexServiceTierSupportedFastModels = new Set(["qwen3.7-plus"]);
   const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
   const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
 
@@ -1838,7 +1891,7 @@
       label.dataset.codexPlusTriggerLabel = "true";
       trigger.appendChild(label);
     }
-    label.textContent = `Codex++ ${codexPlusVersion}`;
+    label.textContent = `极义codex ${codexPlusVersion}`;
   }
 
   function ensureCodexPlusTriggerIndicator(trigger) {
@@ -2070,12 +2123,12 @@
     const overlay = document.createElement("div");
     overlay.className = "codex-plus-modal-overlay";
     overlay.innerHTML = `
-      <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="Codex++">
+      <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="极义codex">
         <div class="codex-plus-modal-header">
-          <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span data-codex-plus-version="true">Codex++ ${codexPlusVersion}</span></div>
+          <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span data-codex-plus-version="true">极义codex ${codexPlusVersion}</span></div>
           <button type="button" class="codex-plus-modal-close" aria-label="关闭">×</button>
         </div>
-        <div class="codex-plus-tabs" role="tablist" aria-label="Codex++">
+        <div class="codex-plus-tabs" role="tablist" aria-label="极义codex">
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">主页</button>
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="false">用户脚本</button>
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="sponsor" data-active="false">推荐内容</button>
@@ -2095,7 +2148,7 @@
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="enhancementsEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">插件市场解锁</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强模式下无需开启；ChatGPT 登录态会保留官方插件市场。" : "API Key 模式下扩展插件市场请求，尽量显示完整插件列表。"}</div></div>
+              <div><div class="codex-plus-row-title">插件市场解锁</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强模式下无需开启；插件入口按当前极义配置保留。" : "API Key 模式下扩展插件市场请求，尽量显示完整插件列表。"}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginMarketplaceUnlock" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
             </div>
             <div class="codex-plus-row">
@@ -2171,7 +2224,7 @@
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">历史会话修复</div><div class="codex-plus-row-description">切换官方登录、混合 API 或纯 API 后，让旧对话重新显示在当前模式下。</div></div>
+              <div><div class="codex-plus-row-title">历史会话修复</div><div class="codex-plus-row-description">切换供应商或纯 API 配置后，让旧对话重新显示在当前模式下。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
@@ -2179,7 +2232,7 @@
               <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">原生菜单栏位置</div><div class="codex-plus-row-description">把 Codex++ 菜单插入顶部原生菜单栏；默认关闭以避免页面重渲染冲突。</div></div>
+              <div><div class="codex-plus-row-title">原生菜单栏位置</div><div class="codex-plus-row-description">把极义codex 菜单插入顶部原生菜单栏；默认关闭以避免页面重渲染冲突。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="nativeMenuPlacement"><span></span></button>
             </div>
             <div class="codex-plus-row">
@@ -2187,7 +2240,7 @@
               <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a><br>Telegram: <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noreferrer">https://t.me/CodexPlusPlus</a></div></div>
+              <div><div class="codex-plus-row-title">关于极义codex</div><div class="codex-plus-about">极义codex 通过独立 launcher 注入增强菜单，不修改内置客户端原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a><br>Telegram: <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noreferrer">https://t.me/CodexPlusPlus</a></div></div>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">Discord 社区</div><div class="codex-plus-row-description">加入 Discord 获取更新消息、反馈问题或交流使用体验。</div></div>
@@ -2207,7 +2260,7 @@
               <div>
                 <div class="codex-plus-row-title">用户脚本</div>
                 <div class="codex-plus-row-description">启用用户脚本：自动加载内置目录和用户配置目录中的 .js 文件。</div>
-                <div class="codex-plus-user-script-warning">禁用后需重载页面或重启 Codex++ 才能完全移除已执行效果。</div>
+                <div class="codex-plus-user-script-warning">禁用后需重载页面或重启极义codex 才能完全移除已执行效果。</div>
                 <div class="codex-plus-user-script-dirs" data-codex-user-script-dirs="true">正在读取脚本目录…</div>
                 <div class="codex-plus-user-script-list" data-codex-user-script-list="true">正在读取用户脚本…</div>
               </div>
@@ -2218,13 +2271,13 @@
             </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="sponsor" hidden>
-            <div class="codex-plus-sponsor-text">推荐内容分为赞助商推荐和普通推荐。赞助商推荐来自支持 Codex++ 继续维护的合作方；普通推荐用于展示适合 Codex 用户的服务与信息。</div>
+            <div class="codex-plus-sponsor-text">推荐内容分为赞助商推荐和普通推荐。赞助商推荐来自支持极义codex 继续维护的合作方；普通推荐用于展示适合 Codex 用户的服务与信息。</div>
             <div class="codex-plus-ad-remote">
               ${renderCodexPlusAds()}
             </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="support" hidden>
-            <div class="codex-plus-sponsor-text">如果 Codex++ 帮到了你，可以请我喝杯咖啡，或者随手赞赏支持一下继续维护。</div>
+            <div class="codex-plus-sponsor-text">如果极义codex 帮到了你，可以请我喝杯咖啡，或者随手赞赏支持一下继续维护。</div>
             <div class="codex-plus-sponsor-grid">
               <div class="codex-plus-sponsor-card">
                 <div class="codex-plus-sponsor-card-title">支付宝</div>
@@ -2392,7 +2445,8 @@
       if (node !== keep) node.remove();
     });
     Array.from(document.querySelectorAll("button")).forEach((button) => {
-      if ((button.textContent || "").trim() === `Codex++ ${codexPlusVersion}` && !button.closest(`#${codexPlusMenuId}`)) {
+      const text = (button.textContent || "").trim();
+      if ((text === `极义codex ${codexPlusVersion}` || text === `Codex++ ${codexPlusVersion}`) && !button.closest(`#${codexPlusMenuId}`)) {
         button.remove();
       }
     });
@@ -2547,9 +2601,9 @@
   }
 
   function displayNameForPluginMarketplaceName(name, fallback) {
-    if (name === "openai-bundled" || name === "codex-plus-openai-bundled") return "OpenAI插件1(Codex++)";
-    if (name === "openai-curated" || name === "codex-plus-openai-curated") return "OpenAI插件2(Codex++)";
-    if (name === "openai-primary-runtime" || name === "codex-plus-openai-primary-runtime") return "OpenAI插件3(Codex++)";
+    if (name === "openai-bundled" || name === "codex-plus-openai-bundled") return "极义内置插件1";
+    if (name === "openai-curated" || name === "codex-plus-openai-curated") return "极义内置插件2";
+    if (name === "openai-primary-runtime" || name === "codex-plus-openai-primary-runtime") return "极义内置插件3";
     return fallback;
   }
 
@@ -5869,7 +5923,7 @@
     if (!trigger) return false;
     const payload = upstreamWorktreePayloadFromSelection(trigger) || upstreamWorktreeNativePayloadFromElement(trigger);
     if (!payload) {
-      showToast("无法安全识别 Codex 原生 worktree 表单，请使用 Codex++ 菜单创建。", null);
+      showToast("无法安全识别 Codex 原生 worktree 表单，请使用极义codex 菜单创建。", null);
       return false;
     }
     event.preventDefault();
@@ -7308,8 +7362,53 @@
     scheduleConversationViewAlign();
   }
 
+  function jiyiNativeAuthText() {
+    return (document.body?.innerText || document.body?.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
+  function isJiyiNativeAuthBlockedScreen() {
+    const text = jiyiNativeAuthText();
+    if (!text) return false;
+    const hasCodexWelcome = /Welcome to Codex|Continue with ChatGPT|Included with all ChatGPT plans|Sign in another way|Sign up/i.test(text);
+    const hasChatGptLogin = /ChatGPT|OpenAI/.test(text) && /Continue|Sign in|Sign up|登录/.test(text);
+    return hasCodexWelcome || hasChatGptLogin;
+  }
+
+  function installJiyiNativeAuthShield() {
+    const existing = document.querySelector("[data-jiyi-native-auth-shield]");
+    if (!isJiyiNativeAuthBlockedScreen()) {
+      existing?.remove();
+      document.documentElement?.classList?.remove("jiyi-native-auth-blocked");
+      return;
+    }
+    document.documentElement?.classList?.add("jiyi-native-auth-blocked");
+    if (existing) return;
+    const shield = document.createElement("section");
+    shield.className = "jiyi-native-auth-shield";
+    shield.dataset.jiyiNativeAuthShield = "true";
+    shield.innerHTML = `
+      <div class="jiyi-native-auth-panel">
+        <div class="jiyi-native-auth-mark">极义</div>
+        <h1 class="jiyi-native-auth-title">极义codex</h1>
+        <p class="jiyi-native-auth-copy">当前客户端已由极义手机号账号接管，不使用 ChatGPT 账号体系。</p>
+        <p class="jiyi-native-auth-status">正在使用极义模型供应配置进入工作台。</p>
+        <button type="button" data-jiyi-native-auth-open-manager>打开管理工具</button>
+      </div>
+    `;
+    shield.querySelector("[data-jiyi-native-auth-open-manager]")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openManagerFromCodex().catch(() => {});
+    });
+    document.body?.appendChild(shield);
+    sendCodexPlusDiagnostic("jiyi_native_auth_shield_shown", {
+      location: window.location?.href || "",
+    });
+  }
+
   function scanLightweight() {
     installStyle();
+    installJiyiNativeAuthShield();
     installCodexServiceTierDispatcherPatch();
     installCodexPlusMenu();
     scheduleBackendHeartbeat();

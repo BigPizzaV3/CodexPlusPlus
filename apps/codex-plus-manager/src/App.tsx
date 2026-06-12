@@ -20,8 +20,11 @@ import {
   ArrowLeft,
   Bell,
   CheckCircle2,
+  ClipboardList,
+  Code2,
   CircleArrowUp,
   Copy,
+  Database,
   Download,
   Edit3,
   GripVertical,
@@ -33,6 +36,7 @@ import {
   Link2,
   MessageCircle,
   FileCode2,
+  FileText,
   Moon,
   Network,
   Power,
@@ -44,6 +48,7 @@ import {
   Settings,
   ShieldCheck,
   Sun,
+  Table2,
   TestTube,
   Trash2,
   Wrench,
@@ -122,6 +127,13 @@ type BackendSettings = {
   launchMode: LaunchMode;
   relayBaseUrl: string;
   relayApiKey: string;
+  jiyiLocalProxyEnabled: boolean;
+  jiyiLocalUsageMeterEnabled: boolean;
+  jiyiDailyTokenLimit: number;
+  jiyiIdentitySyncEndpoint: string;
+  jiyiIdentitySyncApiKey: string;
+  jiyiManagedProxyEnabled: boolean;
+  jiyiManagedProxyEndpoint: string;
   relayProfiles: RelayProfile[];
   relayCommonConfigContents: string;
   relayContextConfigContents: string;
@@ -225,7 +237,104 @@ type RelayResult = CommandResult<{
   configured: boolean;
   requiresOpenaiAuth: boolean;
   hasBearerToken: boolean;
+  apiKeyConfigured: boolean;
+  apiKeySource: string;
   backupPath: string | null;
+}>;
+
+type SmsConfigState = {
+  configured: boolean;
+  dryRun: boolean;
+  region: string;
+  secretIdSet: boolean;
+  secretKeySet: boolean;
+  secretIdSource: string;
+  secretKeySource: string;
+  appIdSet: boolean;
+  signNameSet: boolean;
+  templateIdSet: boolean;
+  ttlMinutes: number;
+  templateParamMode: string;
+};
+
+type SmsProviderSettings = {
+  region: string;
+  appId: string;
+  signName: string;
+  templateId: string;
+  ttlMinutes: number;
+  templateParamMode: string;
+  dryRun: boolean;
+};
+
+type SmsProviderForm = SmsProviderSettings & {
+  secretId: string;
+  secretKey: string;
+};
+
+type SmsProviderSettingsResult = CommandResult<{
+  settingsPath: string;
+  settings: SmsProviderSettings;
+  smsConfig: SmsConfigState;
+  secretIdRef: string;
+  secretKeyRef: string;
+}>;
+
+type LocalEntitlementState = {
+  userId: string | null;
+  planId: string;
+  planName: string;
+  dailyTokenLimit: number;
+  source: string;
+  updatedAtMs: number | null;
+};
+
+type LocalAuthResult = CommandResult<{
+  authenticated: boolean;
+  userId: string | null;
+  phone: string | null;
+  phoneMasked: string | null;
+  loginAtMs: number | null;
+  expiresAtMs: number | null;
+  deviceId: string | null;
+  sessionTtlHours: number;
+  sessionExpired: boolean;
+  dbPath: string;
+  smsConfig: SmsConfigState;
+  entitlement: LocalEntitlementState;
+}>;
+
+type LocalUsageResult = CommandResult<{
+  enabled: boolean;
+  dailyTokenLimit: number;
+  subjectId: string | null;
+  planId: string | null;
+  limitSource: string;
+  day: string;
+  usedTokens: number;
+  requestCount: number;
+  remainingTokens: number | null;
+  dbPath: string;
+}>;
+
+type SmsCodeResult = CommandResult<{
+  phone: string;
+  phoneMasked: string;
+  expiresAtMs: number;
+  dryRun: boolean;
+  devCode: string | null;
+  requestId: string | null;
+}>;
+
+type LocalLoginResult = CommandResult<{
+  userId: string;
+  phone: string;
+  phoneMasked: string;
+  loginAtMs: number;
+  expiresAtMs: number;
+  deviceId: string;
+  sessionTtlHours: number;
+  entitlement: LocalEntitlementState;
 }>;
 
 type RelayFilesResult = CommandResult<{
@@ -369,6 +478,212 @@ type DiagnosticsResult = CommandResult<{
   report: string;
 }>;
 
+type LocalIdentityExportResult = CommandResult<{
+  reportPath: string;
+  userCount: number;
+  deviceCount: number;
+  entitlementCount: number;
+  usageSummaryCount: number;
+}>;
+
+type IdentitySyncRequestResult = CommandResult<{
+  syncRequestPath: string;
+  reportPath: string;
+  endpoint: string;
+  authorization: string;
+  userCount: number;
+  deviceCount: number;
+  entitlementCount: number;
+  usageSummaryCount: number;
+}>;
+
+type IdentitySyncPostResult = CommandResult<{
+  syncRequestPath: string;
+  reportPath: string;
+  responseAuditPath: string;
+  endpoint: string;
+  httpStatus: number;
+  responsePreview: string;
+  userCount: number;
+  deviceCount: number;
+  entitlementCount: number;
+  usageSummaryCount: number;
+  backendSessionTokenRef: string | null;
+  backendSessionConfigured: boolean;
+}>;
+
+type LocalBackendState = {
+  dbPath: string;
+  initialized: boolean;
+  batchCount: number;
+  userCount: number;
+  blockedUserCount: number;
+  deviceCount: number;
+  teamCount: number;
+  teamMemberCount: number;
+  entitlementCount: number;
+  billingRenewalCount: number;
+  billingPaymentEventCount: number;
+  usageSummaryCount: number;
+  auditEventCount: number;
+  sessionCount: number;
+  activeSessionCount: number;
+  revokedSessionCount: number;
+  lastSyncedAtMs: number | null;
+  lastAuditEventAtMs: number | null;
+  lastBillingRenewalAtMs: number | null;
+  lastBillingPaymentEventAtMs: number | null;
+  lastUserAccessUpdatedAtMs: number | null;
+  lastSessionIssuedAtMs: number | null;
+  lastSessionRevokedAtMs: number | null;
+};
+
+type LocalBackendStateResult = CommandResult<LocalBackendState>;
+
+type AdminUserOverview = {
+  userId: string;
+  phoneMasked: string;
+  accessStatus: string;
+  accessReason: string | null;
+  planId: string | null;
+  planName: string | null;
+  dailyTokenLimit: number | null;
+  deviceCount: number;
+  sessionCount: number;
+  activeSessionCount: number;
+  revokedSessionCount: number;
+  todayRequestCount: number;
+  todayUsedTokens: number;
+  todayRemainingTokens: number | null;
+  lastLoginAtMs: number;
+  lastSyncedAtMs: number;
+  lastUsageAtMs: number | null;
+  lastSessionIssuedAtMs: number | null;
+  lastSessionSeenAtMs: number | null;
+};
+
+type AdminTeamOverview = {
+  teamId: string;
+  teamName: string;
+  planId: string;
+  planName: string;
+  dailyTokenLimit: number;
+  memberCount: number;
+  activeMemberCount: number;
+  blockedMemberCount: number;
+  todayRequestCount: number;
+  todayUsedTokens: number;
+  todayRemainingTokens: number | null;
+  createdAtMs: number;
+  updatedAtMs: number;
+  lastMemberUpdatedAtMs: number | null;
+};
+
+type AdminBillingRenewal = {
+  renewalId: string;
+  subjectType: string;
+  subjectId: string;
+  planId: string;
+  planName: string;
+  dailyTokenLimit: number;
+  previousPlanId: string | null;
+  previousDailyTokenLimit: number | null;
+  amountCents: number;
+  currency: string;
+  paymentChannel: string;
+  externalOrderId: string | null;
+  status: string;
+  reason: string | null;
+  actorType: string;
+  actorId: string | null;
+  createdAtMs: number;
+};
+
+type AdminAuditEvent = {
+  eventId: string;
+  eventType: string;
+  actorType: string;
+  actorId: string | null;
+  subjectUserId: string | null;
+  subjectDeviceId: string | null;
+  reason: string | null;
+  metadata: unknown;
+  createdAtMs: number;
+};
+
+type AdminConsoleResult = CommandResult<{
+  state: LocalBackendState;
+  users: {
+    day: string;
+    users: AdminUserOverview[];
+  };
+  teams: {
+    day: string;
+    teams: AdminTeamOverview[];
+  };
+  renewals: {
+    renewals: AdminBillingRenewal[];
+  };
+  auditEvents: AdminAuditEvent[];
+}>;
+
+type LocalBackendApplyResult = CommandResult<{
+  receipt: {
+    backendDbPath: string;
+    batchId: string;
+    receivedAtMs: number;
+    usersUpserted: number;
+    devicesUpserted: number;
+    teamsUpserted: number;
+    teamMembersUpserted: number;
+    entitlementsUpserted: number;
+    usageSummariesUpserted: number;
+    sessionsIssued: number;
+    activeSession: {
+      userId: string;
+      deviceId: string;
+      issuedAtMs: number;
+      expiresAtMs: number;
+    } | null;
+    totalUserCount: number;
+    totalDeviceCount: number;
+    totalTeamCount: number;
+    totalTeamMemberCount: number;
+    totalEntitlementCount: number;
+    totalUsageSummaryCount: number;
+    totalSessionCount: number;
+  };
+  state: LocalBackendState;
+  backendSessionTokenRef: string | null;
+  backendSessionConfigured: boolean;
+}>;
+
+type ManagedProxyRuntimeResult = CommandResult<{
+  running: boolean;
+  pid: number | null;
+  endpoint: string;
+  listenAddr: string;
+  binaryPath: string;
+  pidPath: string;
+  logPath: string;
+  healthChecked: boolean;
+  healthHttpStatus: number | null;
+  healthStatus: string;
+  upstreamBaseUrl: string;
+  backendDbPath: string;
+  upstreamKeyConfigured: boolean;
+  identitySyncKeyConfigured: boolean;
+  adminKeyConfigured: boolean;
+  userReadKeyConfigured: boolean;
+  billingKeyConfigured: boolean;
+  paymentWebhookKeyConfigured: boolean;
+  paymentWebhookSignatureConfigured: boolean;
+  paymentWebhookAlipaySignatureConfigured: boolean;
+  paymentWebhookWechatpaySignatureConfigured: boolean;
+  accessKeyConfigured: boolean;
+  auditKeyConfigured: boolean;
+}>;
+
 type WatcherResult = CommandResult<{
   enabled: boolean;
   disabled_flag: string;
@@ -388,6 +703,31 @@ type UpdateResult = CommandResult<{
   updateAvailable?: boolean;
   installedPath?: string;
   progress?: number;
+}>;
+
+type ReleaseReadinessItem = {
+  id: string;
+  label: string;
+  status: Status;
+  message: string;
+  path: string | null;
+};
+
+type ReleaseReadinessResult = CommandResult<{
+  ready: boolean;
+  failures: number;
+  warnings: number;
+  checkedAtMs: number;
+  items: ReleaseReadinessItem[];
+}>;
+
+type OfficialIsolationRepairResult = CommandResult<{
+  officialHome: string;
+  appSupportPaths: string[];
+  backupDir: string | null;
+  scannedFiles: string[];
+  repairedFiles: string[];
+  remainingContaminatedFiles: string[];
 }>;
 
 type AdItem = {
@@ -480,13 +820,22 @@ function syncMarketInstalledState(current: ScriptMarketResult | null, userScript
 
 type StartupResult = CommandResult<{
   showUpdate: boolean;
+  appMode: AppMode;
 }>;
 
-type Route = "overview" | "relay" | "sessions" | "context" | "enhance" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
+type AppMode = "main" | "manager";
+type Route = "overview" | "admin" | "relay" | "sessions" | "context" | "enhance" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
+const PRODUCT_NAME = "极义codex";
+const BAILIAN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+const APIMART_FALLBACK_BASE_URL = "https://apimart.ai/";
+const QWEN_DEFAULT_MODEL = "qwen3.7-plus";
+const DEFAULT_RELAY_PROVIDER_NAME = "阿里百炼默认";
+
 const routes: Array<{ id: Route; label: string; icon: LucideIcon }> = [
-  { id: "overview", label: "概览", icon: LayoutDashboard },
+  { id: "overview", label: "工作台", icon: LayoutDashboard },
+  { id: "admin", label: "总后台", icon: ShieldCheck },
   { id: "relay", label: "供应商配置", icon: KeyRound },
   { id: "sessions", label: "会话管理", icon: MessageCircle },
   { id: "context", label: "工具与插件", icon: Network },
@@ -497,6 +846,107 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon }> = [
   { id: "maintenance", label: "安装维护", icon: Wrench },
   { id: "about", label: "关于", icon: Info },
   { id: "settings", label: "设置", icon: Settings },
+];
+
+const scenarioWorkflows: Array<{
+  title: string;
+  summary: string;
+  deliverable: string;
+  steps: string[];
+  icon: LucideIcon;
+  route: Route;
+}> = [
+  {
+    title: "AI Native 项目办公室",
+    summary: "建立工作区、上下文和边界，先让 Agent 看懂项目再开工。",
+    deliverable: "项目结构说明、风险边界和下一步任务清单",
+    steps: ["选工作区", "读取资料", "确认边界", "沉淀 README"],
+    icon: ClipboardList,
+    route: "settings",
+  },
+  {
+    title: "聊天记录整理",
+    summary: "把微信、飞书或会议文本整理成摘要、待办和责任人。",
+    deliverable: "结构化总结、待办列表和跟进建议",
+    steps: ["导入文本", "识别主题", "提取待办", "生成复盘"],
+    icon: MessageCircle,
+    route: "userScripts",
+  },
+  {
+    title: "PPT / 汇报稿",
+    summary: "从主题或资料夹生成汇报大纲、页面结构和逐页文案。",
+    deliverable: "PPT 大纲、页面脚本和素材清单",
+    steps: ["确认受众", "梳理材料", "生成大纲", "输出逐页稿"],
+    icon: FileText,
+    route: "context",
+  },
+  {
+    title: "表格清洗与分析",
+    summary: "处理 CSV / Excel，输出清洗建议、统计摘要和结果文件。",
+    deliverable: "清洗结果、指标摘要和可导出表格",
+    steps: ["读取表格", "识别字段", "清洗数据", "输出摘要"],
+    icon: Table2,
+    route: "userScripts",
+  },
+  {
+    title: "开发任务最小闭环",
+    summary: "按读项目、提方案、小改动、跑测试、写总结推进开发。",
+    deliverable: "可验证代码改动、测试结果和变更说明",
+    steps: ["读代码", "定方案", "改文件", "跑验证"],
+    icon: Code2,
+    route: "sessions",
+  },
+];
+
+const presetCapabilities: Array<{
+  name: string;
+  type: "插件" | "Skill" | "用户脚本";
+  summary: string;
+  route: Route;
+  icon: LucideIcon;
+}> = [
+  {
+    name: "Browser / Playwright",
+    type: "插件",
+    summary: "本地网页打开、截图、端到端验收和前端回归检查。",
+    route: "context",
+    icon: LayoutDashboard,
+  },
+  {
+    name: "GitHub",
+    type: "插件",
+    summary: "仓库、Issue、PR、CI 和发布协作。",
+    route: "context",
+    icon: Code2,
+  },
+  {
+    name: "飞书工作流",
+    type: "Skill",
+    summary: "文档、表格、会议纪要、任务和即时消息整理。",
+    route: "context",
+    icon: ClipboardList,
+  },
+  {
+    name: "Documents / Presentations / Spreadsheets",
+    type: "Skill",
+    summary: "Word、PPT、表格类办公交付物生成与编辑。",
+    route: "context",
+    icon: FileText,
+  },
+  {
+    name: "用户脚本市场",
+    type: "用户脚本",
+    summary: "按需安装页面增强、快捷操作和团队私有脚本。",
+    route: "userScripts",
+    icon: FileCode2,
+  },
+  {
+    name: "会话管理与导出",
+    type: "用户脚本",
+    summary: "删除、导出、迁移、整理本地 Codex 会话。",
+    route: "sessions",
+    icon: MessageCircle,
+  },
 ];
 
 const defaultSettings: BackendSettings = {
@@ -528,22 +978,37 @@ const defaultSettings: BackendSettings = {
   codexAppServiceTierControls: false,
   codexGoalsEnabled: false,
   launchMode: "patch",
-  relayBaseUrl: "",
+  relayBaseUrl: BAILIAN_BASE_URL,
   relayApiKey: "",
+  jiyiLocalProxyEnabled: true,
+  jiyiLocalUsageMeterEnabled: true,
+  jiyiDailyTokenLimit: 0,
+  jiyiIdentitySyncEndpoint: "",
+  jiyiIdentitySyncApiKey: "",
+  jiyiManagedProxyEnabled: false,
+  jiyiManagedProxyEndpoint: "",
   relayProfiles: [
     {
       id: "default",
       linkedCcsProviderId: "",
-      name: "默认中转",
-      model: "",
-      baseUrl: "",
-      upstreamBaseUrl: "",
+      name: DEFAULT_RELAY_PROVIDER_NAME,
+      model: QWEN_DEFAULT_MODEL,
+      baseUrl: BAILIAN_BASE_URL,
+      upstreamBaseUrl: BAILIAN_BASE_URL,
       apiKey: "",
-      protocol: "responses",
-      relayMode: "official",
+      protocol: "chatCompletions",
+      relayMode: "pureApi",
       officialMixApiKey: false,
       testModel: "",
-      configContents: "",
+      configContents: `model = "${QWEN_DEFAULT_MODEL}"
+model_provider = "bailian"
+
+[model_providers.bailian]
+name = "阿里百炼"
+wire_api = "chat"
+requires_openai_auth = true
+base_url = "${BAILIAN_BASE_URL}"
+`,
       authContents: "",
       useCommonConfig: true,
       contextSelection: emptyContextSelection(),
@@ -557,18 +1022,596 @@ const defaultSettings: BackendSettings = {
   relayCommonConfigContents: "",
   relayContextConfigContents: "",
   activeRelayId: "default",
-  relayTestModel: "gpt-5.4-mini",
+  relayTestModel: QWEN_DEFAULT_MODEL,
   cliWrapperEnabled: false,
   cliWrapperBaseUrl: "",
   cliWrapperApiKey: "",
   cliWrapperApiKeyEnv: "CUSTOM_OPENAI_API_KEY",
 };
 
+function hasTauriRuntime() {
+  return typeof window !== "undefined" && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+}
+
+function previewCommandResult<T>(command: string, args?: Record<string, unknown>): T {
+  const base = { status: "ok", message: "本地预览数据。" };
+  const overview = {
+    ...base,
+    codex_app: { status: "not_checked", path: null },
+    codex_version: null,
+    silent_shortcut: { status: "not_checked", path: null },
+    management_shortcut: { status: "not_checked", path: null },
+    latest_launch: null,
+    current_version: "1.2.4",
+    update_status: "not_checked",
+    settings_path: "~/.codex-session-delete/settings.json",
+    logs_path: "~/.codex-session-delete/codex-plus.log",
+  };
+  const localAuth = {
+    ...base,
+    authenticated: false,
+    userId: null,
+    phone: null,
+    phoneMasked: null,
+    loginAtMs: null,
+    expiresAtMs: null,
+    deviceId: null,
+    sessionTtlHours: 24 * 30,
+    sessionExpired: false,
+    dbPath: "~/.codex-session-delete/jiyi-codex-local.sqlite",
+    entitlement: {
+      userId: null,
+      planId: "local_trial",
+      planName: "本地试用",
+      dailyTokenLimit: 0,
+      source: "preview",
+      updatedAtMs: null,
+    },
+    smsConfig: {
+      configured: false,
+      dryRun: true,
+      region: "ap-guangzhou",
+      secretIdSet: false,
+      secretKeySet: false,
+      secretIdSource: "missing",
+      secretKeySource: "missing",
+      appIdSet: false,
+      signNameSet: false,
+      templateIdSet: false,
+      ttlMinutes: 10,
+      templateParamMode: "code_ttl",
+    },
+  };
+  const smsProviderSettings = {
+    ...base,
+    settingsPath: "~/.codex-session-delete/sms-provider.json",
+    settings: {
+      region: "ap-guangzhou",
+      appId: "",
+      signName: "",
+      templateId: "",
+      ttlMinutes: 10,
+      templateParamMode: "code_ttl",
+      dryRun: true,
+    },
+    smsConfig: localAuth.smsConfig,
+    secretIdRef: "jiyi-keychain:tencent-sms:secret-id",
+    secretKeyRef: "jiyi-keychain:tencent-sms:secret-key",
+  };
+  const localUsage = {
+    ...base,
+    enabled: true,
+    dailyTokenLimit: 0,
+    subjectId: null,
+    planId: null,
+    limitSource: "unlimited",
+    day: "preview",
+    usedTokens: 0,
+    requestCount: 0,
+    remainingTokens: null,
+    dbPath: "~/.codex-session-delete/jiyi-codex-local.sqlite",
+  };
+  const managedProxyRuntime = {
+    ...base,
+    message: "本地预览托管代理正在运行。",
+    running: true,
+    pid: 57421,
+    endpoint: "http://127.0.0.1:57421",
+    listenAddr: "127.0.0.1:57421",
+    binaryPath: "/Applications/极义codex.app/Contents/MacOS/jiyi-managed-proxy",
+    pidPath: "~/.codex-session-delete/jiyi-managed-proxy.pid",
+    logPath: "~/.codex-session-delete/jiyi-managed-proxy.log",
+    healthChecked: true,
+    healthHttpStatus: 200,
+    healthStatus: "ok",
+    upstreamBaseUrl: BAILIAN_BASE_URL,
+    backendDbPath: "~/.codex-session-delete/jiyi-codex-local-backend.sqlite",
+    upstreamKeyConfigured: true,
+    identitySyncKeyConfigured: false,
+    adminKeyConfigured: false,
+    userReadKeyConfigured: false,
+    billingKeyConfigured: false,
+    paymentWebhookKeyConfigured: false,
+    paymentWebhookSignatureConfigured: false,
+    paymentWebhookAlipaySignatureConfigured: false,
+    paymentWebhookWechatpaySignatureConfigured: false,
+    accessKeyConfigured: false,
+    auditKeyConfigured: false,
+  };
+  const relayStatus = {
+    ...base,
+    authenticated: false,
+    authSource: "preview",
+    accountLabel: null,
+    configPath: "~/.codex/config.toml",
+    configured: false,
+    requiresOpenaiAuth: true,
+    hasBearerToken: false,
+    backupPath: null,
+  };
+  const emptyContextEntries = { mcpServers: [], skills: [], plugins: [] };
+  const adminConsole = {
+    ...base,
+    message: "本地预览总后台数据已读取。",
+    state: {
+      dbPath: "~/.codex-session-delete/jiyi-codex-local-backend.sqlite",
+      initialized: true,
+      batchCount: 1,
+      userCount: 1,
+      blockedUserCount: 0,
+      deviceCount: 1,
+      teamCount: 1,
+      teamMemberCount: 1,
+      entitlementCount: 1,
+      billingRenewalCount: 1,
+      billingPaymentEventCount: 1,
+      usageSummaryCount: 1,
+      auditEventCount: 2,
+      sessionCount: 1,
+      activeSessionCount: 1,
+      revokedSessionCount: 0,
+      lastSyncedAtMs: Date.now(),
+      lastAuditEventAtMs: Date.now(),
+      lastBillingRenewalAtMs: Date.now(),
+      lastBillingPaymentEventAtMs: Date.now(),
+      lastUserAccessUpdatedAtMs: null,
+      lastSessionIssuedAtMs: Date.now(),
+      lastSessionRevokedAtMs: null,
+    },
+    users: {
+      day: "preview",
+      users: [
+        {
+          userId: "preview-user",
+          phoneMasked: "+86 138****5678",
+          accessStatus: "active",
+          accessReason: null,
+          planId: "local_trial",
+          planName: "本地试用",
+          dailyTokenLimit: 100000,
+          deviceCount: 1,
+          sessionCount: 1,
+          activeSessionCount: 1,
+          revokedSessionCount: 0,
+          todayRequestCount: 12,
+          todayUsedTokens: 26800,
+          todayRemainingTokens: 73200,
+          lastLoginAtMs: Date.now(),
+          lastSyncedAtMs: Date.now(),
+          lastUsageAtMs: Date.now(),
+          lastSessionIssuedAtMs: Date.now(),
+          lastSessionSeenAtMs: Date.now(),
+        },
+      ],
+    },
+    teams: {
+      day: "preview",
+      teams: [
+        {
+          teamId: "jiyi-default-team",
+          teamName: "极义默认团队",
+          planId: "team_local_trial",
+          planName: "团队本地试用",
+          dailyTokenLimit: 500000,
+          memberCount: 1,
+          activeMemberCount: 1,
+          blockedMemberCount: 0,
+          todayRequestCount: 12,
+          todayUsedTokens: 26800,
+          todayRemainingTokens: 473200,
+          createdAtMs: Date.now(),
+          updatedAtMs: Date.now(),
+          lastMemberUpdatedAtMs: Date.now(),
+        },
+      ],
+    },
+    renewals: {
+      renewals: [
+        {
+          renewalId: "preview-renewal",
+          subjectType: "user",
+          subjectId: "preview-user",
+          planId: "local_trial",
+          planName: "本地试用",
+          dailyTokenLimit: 100000,
+          previousPlanId: null,
+          previousDailyTokenLimit: null,
+          amountCents: 9900,
+          currency: "CNY",
+          paymentChannel: "manual",
+          externalOrderId: "preview-order",
+          status: "paid",
+          reason: "预览续费",
+          actorType: "manager_admin_console",
+          actorId: null,
+          createdAtMs: Date.now(),
+        },
+      ],
+    },
+    auditEvents: [
+      {
+        eventId: "preview-audit",
+        eventType: "user_entitlement_updated",
+        actorType: "manager_admin_console",
+        actorId: null,
+        subjectUserId: "preview-user",
+        subjectDeviceId: null,
+        reason: "预览",
+        metadata: { planId: "local_trial" },
+        createdAtMs: Date.now(),
+      },
+    ],
+  };
+  switch (command) {
+    case "startup_options":
+      return { ...base, showUpdate: false, appMode: initialAppMode() } as T;
+    case "load_overview":
+      return overview as T;
+    case "load_local_auth_state":
+      return localAuth as T;
+    case "load_sms_provider_settings":
+      return smsProviderSettings as T;
+    case "save_sms_provider_settings": {
+      const request = args?.request as Partial<SmsProviderForm> | undefined;
+      const configured = Boolean(
+        (request?.secretId || smsProviderSettings.smsConfig.secretIdSet) &&
+          (request?.secretKey || smsProviderSettings.smsConfig.secretKeySet) &&
+          request?.appId &&
+          request?.signName &&
+          request?.templateId,
+      );
+      return {
+        ...smsProviderSettings,
+        message: "本地预览短信配置已保存。",
+        settings: {
+          region: request?.region || "ap-guangzhou",
+          appId: request?.appId || "",
+          signName: request?.signName || "",
+          templateId: request?.templateId || "",
+          ttlMinutes: Number(request?.ttlMinutes || 10),
+          templateParamMode: request?.templateParamMode || "code_ttl",
+          dryRun: request?.dryRun ?? true,
+        },
+        smsConfig: {
+          ...smsProviderSettings.smsConfig,
+          configured,
+          dryRun: request?.dryRun ?? true,
+          secretIdSet: Boolean(request?.secretId) || smsProviderSettings.smsConfig.secretIdSet,
+          secretKeySet: Boolean(request?.secretKey) || smsProviderSettings.smsConfig.secretKeySet,
+          appIdSet: Boolean(request?.appId),
+          signNameSet: Boolean(request?.signName),
+          templateIdSet: Boolean(request?.templateId),
+          ttlMinutes: Number(request?.ttlMinutes || 10),
+          templateParamMode: request?.templateParamMode || "code_ttl",
+        },
+      } as T;
+    }
+    case "load_local_usage_state":
+      return localUsage as T;
+    case "launch_embedded_codex":
+      return {
+        ...base,
+        status: "accepted",
+        message: "预览模式已模拟进入 Codex 使用界面。",
+        appPath: "/Applications/极义codex.app/Contents/Resources/JiyiCodexClient.app",
+        debugPort: 9229,
+        helperPort: 57321,
+      } as T;
+    case "request_local_sms_code":
+      return {
+        ...base,
+        message: "验证码已在本地预览模式生成。",
+        phone: String((args?.request as { phone?: string } | undefined)?.phone ?? ""),
+        phoneMasked: "+86 138****5678",
+        expiresAtMs: Date.now() + 10 * 60 * 1000,
+        dryRun: true,
+        devCode: "123456",
+        requestId: "preview",
+      } as T;
+    case "login_with_local_sms_code":
+      return {
+        ...base,
+        message: "本地预览登录已模拟。",
+        userId: "preview-user",
+        phone: String((args?.request as { phone?: string } | undefined)?.phone ?? ""),
+        phoneMasked: "+86 138****5678",
+        loginAtMs: Date.now(),
+        expiresAtMs: Date.now() + 30 * 24 * 60 * 60 * 1000,
+        deviceId: "jiyi-device-preview",
+        sessionTtlHours: 24 * 30,
+        entitlement: {
+          userId: "preview-user",
+          planId: "local_trial",
+          planName: "本地试用",
+          dailyTokenLimit: 0,
+          source: "preview",
+          updatedAtMs: Date.now(),
+        },
+      } as T;
+    case "update_local_entitlement": {
+      const request = args?.request as { planId?: string; planName?: string; dailyTokenLimit?: number } | undefined;
+      return {
+        ...localAuth,
+        message: "本地预览套餐已更新。",
+        authenticated: true,
+        userId: "preview-user",
+        phone: "+8613812345678",
+        phoneMasked: "+86 138****5678",
+        loginAtMs: Date.now(),
+        expiresAtMs: Date.now() + 30 * 24 * 60 * 60 * 1000,
+        deviceId: "jiyi-device-preview",
+        entitlement: {
+          userId: "preview-user",
+          planId: request?.planId || "local_trial",
+          planName: request?.planName || "本地试用",
+          dailyTokenLimit: request?.dailyTokenLimit ?? 0,
+          source: "preview",
+          updatedAtMs: Date.now(),
+        },
+      } as T;
+    }
+    case "export_local_identity_report":
+      return {
+        ...base,
+        message: "本地预览账号迁移报告已导出。",
+        reportPath: "~/.codex-session-delete/reports/jiyi-local-identity-report-preview.json",
+        userCount: 1,
+        deviceCount: 1,
+        entitlementCount: 1,
+        usageSummaryCount: 0,
+        backendSessionTokenRef: "jiyi-keychain:local-backend-session:active",
+        backendSessionConfigured: true,
+      } as T;
+    case "prepare_identity_sync_request":
+      return {
+        ...base,
+        message: "本地预览服务端同步请求包已生成。",
+        syncRequestPath: "~/.codex-session-delete/reports/jiyi-identity-sync-request-preview.json",
+        reportPath: "~/.codex-session-delete/reports/jiyi-local-identity-report-preview.json",
+        endpoint: defaultSettings.jiyiIdentitySyncEndpoint || "https://api.example.com/jiyi/codex/identity/sync",
+        authorization: "not_configured",
+        userCount: 1,
+        deviceCount: 1,
+        entitlementCount: 1,
+        usageSummaryCount: 0,
+      } as T;
+    case "sync_identity_to_service":
+      return {
+        ...base,
+        message: "本地预览账号数据已同步到服务端。",
+        syncRequestPath: "~/.codex-session-delete/reports/jiyi-identity-sync-request-preview.json",
+        reportPath: "~/.codex-session-delete/reports/jiyi-local-identity-report-preview.json",
+        responseAuditPath: "~/.codex-session-delete/reports/jiyi-identity-sync-response-preview.json",
+        endpoint: defaultSettings.jiyiIdentitySyncEndpoint || "https://api.example.com/jiyi/codex/identity/sync",
+        httpStatus: 200,
+        responsePreview: "{\"ok\":true}",
+        userCount: 1,
+        deviceCount: 1,
+        entitlementCount: 1,
+        usageSummaryCount: 0,
+      } as T;
+    case "load_local_backend_state":
+      return {
+        ...base,
+        message: "本地预览账号服务端状态已读取。",
+        dbPath: "~/.codex-session-delete/jiyi-codex-local-backend.sqlite",
+        initialized: true,
+        batchCount: 1,
+        userCount: 1,
+        blockedUserCount: 0,
+        deviceCount: 1,
+        teamCount: 1,
+        teamMemberCount: 1,
+        entitlementCount: 1,
+        billingRenewalCount: 1,
+        billingPaymentEventCount: 1,
+        usageSummaryCount: 0,
+        auditEventCount: 1,
+        sessionCount: 1,
+        activeSessionCount: 1,
+        revokedSessionCount: 0,
+        lastSyncedAtMs: Date.now(),
+        lastAuditEventAtMs: Date.now(),
+        lastBillingRenewalAtMs: Date.now(),
+        lastBillingPaymentEventAtMs: Date.now(),
+        lastUserAccessUpdatedAtMs: null,
+        lastSessionIssuedAtMs: Date.now(),
+        lastSessionRevokedAtMs: null,
+      } as T;
+    case "load_admin_console":
+    case "admin_console_set_user_access":
+    case "admin_console_update_user_entitlement":
+    case "admin_console_update_team_entitlement":
+    case "admin_console_record_billing_renewal":
+    case "admin_console_reconcile_billing":
+      return adminConsole as T;
+    case "apply_identity_sync_locally":
+      return {
+        ...base,
+        message: "本地预览账号数据已同步到本地后端。",
+        receipt: {
+          backendDbPath: "~/.codex-session-delete/jiyi-codex-local-backend.sqlite",
+          batchId: "preview-batch",
+          receivedAtMs: Date.now(),
+          usersUpserted: 1,
+          devicesUpserted: 1,
+          teamsUpserted: 1,
+          teamMembersUpserted: 1,
+          entitlementsUpserted: 1,
+          usageSummariesUpserted: 0,
+          sessionsIssued: 1,
+          activeSession: {
+            userId: "preview-user",
+            deviceId: "jiyi-device-preview",
+            issuedAtMs: Date.now(),
+            expiresAtMs: Date.now() + 30 * 24 * 60 * 60 * 1000,
+          },
+          totalUserCount: 1,
+          totalDeviceCount: 1,
+          totalTeamCount: 1,
+          totalTeamMemberCount: 1,
+          totalEntitlementCount: 1,
+          totalUsageSummaryCount: 0,
+          totalSessionCount: 1,
+        },
+        state: {
+          dbPath: "~/.codex-session-delete/jiyi-codex-local-backend.sqlite",
+          initialized: true,
+          batchCount: 1,
+          userCount: 1,
+          blockedUserCount: 0,
+          deviceCount: 1,
+          teamCount: 1,
+          teamMemberCount: 1,
+          entitlementCount: 1,
+          billingRenewalCount: 1,
+          billingPaymentEventCount: 1,
+          usageSummaryCount: 0,
+          auditEventCount: 1,
+          sessionCount: 1,
+          activeSessionCount: 1,
+          revokedSessionCount: 0,
+          lastSyncedAtMs: Date.now(),
+          lastAuditEventAtMs: Date.now(),
+          lastBillingRenewalAtMs: Date.now(),
+          lastBillingPaymentEventAtMs: Date.now(),
+          lastUserAccessUpdatedAtMs: null,
+          lastSessionIssuedAtMs: Date.now(),
+          lastSessionRevokedAtMs: null,
+        },
+        backendSessionTokenRef: "jiyi-keychain:local-backend-session:active",
+        backendSessionConfigured: true,
+      } as T;
+    case "logout_local_auth":
+      return localAuth as T;
+    case "reset_local_auth_state":
+      return localAuth as T;
+    case "load_settings":
+    case "save_settings":
+    case "reset_settings":
+    case "repair_backend":
+      return { ...base, settings: defaultSettings, settings_path: "~/.codex-session-delete/settings.json", user_scripts: { enabled: true, scripts: [] } } as T;
+    case "repair_official_codex_isolation":
+      return {
+        ...base,
+        message: "原版 Codex 未检测到极义写入痕迹。",
+        officialHome: "~/.codex",
+        appSupportPaths: ["~/Library/Application Support/Codex"],
+        backupDir: null,
+        scannedFiles: ["~/.codex/config.toml", "~/.codex/auth.json"],
+        repairedFiles: [],
+        remainingContaminatedFiles: [],
+      } as T;
+    case "managed_proxy_status":
+    case "start_managed_proxy":
+      return managedProxyRuntime as T;
+    case "stop_managed_proxy":
+      return {
+        ...managedProxyRuntime,
+        message: "本地预览托管代理已停止。",
+        running: false,
+        pid: null,
+        healthHttpStatus: null,
+        healthStatus: "unreachable",
+      } as T;
+    case "relay_status":
+    case "apply_relay_injection":
+    case "apply_pure_api_injection":
+    case "clear_relay_injection":
+      return relayStatus as T;
+    case "read_relay_files":
+      return {
+        ...base,
+        configPath: "~/.codex/config.toml",
+        authPath: "~/.codex/auth.json",
+        configContents: defaultSettings.relayProfiles[0]?.configContents ?? "",
+        authContents: "",
+      } as T;
+    case "load_provider_sync_targets":
+      return { ...base, currentProvider: "bailian", targets: [] } as T;
+    case "refresh_script_market":
+      return { ...base, market: { status: "ok", message: "预览模式", indexUrl: "", updatedAt: "", scripts: [] }, user_scripts: { enabled: true, scripts: [] } } as T;
+    case "read_live_context_entries":
+      return { ...base, entries: emptyContextEntries } as T;
+    case "list_context_entries":
+      return { ...base, settings: defaultSettings, entries: emptyContextEntries } as T;
+    case "list_local_sessions":
+      return { ...base, dbPath: "~/.codex/state_5.sqlite", sessions: [] } as T;
+    case "list_zed_remote_projects":
+      return { ...base, projects: [] } as T;
+    case "load_ads":
+      return { ...base, version: 0, ads: [] } as T;
+    case "load_watcher_state":
+      return { ...base, enabled: false, disabled_flag: "~/.codex-session-delete/watcher.disabled" } as T;
+    case "check_update":
+      return { ...base, currentVersion: "1.2.4", latestVersion: null, updateAvailable: false } as T;
+    case "release_readiness":
+      return {
+        ...base,
+        status: "warning",
+        message: "发布前检查存在 2 个风险项。",
+        ready: false,
+        failures: 0,
+        warnings: 2,
+        checkedAtMs: Date.now(),
+        items: [
+          {
+            id: "official_codex_isolation",
+            label: "原版 Codex 配置隔离",
+            status: "ok",
+            message: "原版 ~/.codex 未检测到极义写入痕迹。",
+            path: "~/.codex",
+          },
+          {
+            id: "developer_id_signature",
+            label: "Developer ID 签名",
+            status: "warning",
+            message: "预览环境未检测到 Developer ID 签名。",
+            path: "/Applications/极义codex.app",
+          },
+        ],
+      } as T;
+    case "read_latest_logs":
+      return { ...base, path: "~/.codex-session-delete/codex-plus.log", text: "本地预览暂无日志。", lines: 0 } as T;
+    case "copy_diagnostics":
+      return { ...base, report: "本地预览诊断报告。" } as T;
+    default:
+      return { ...base } as T;
+  }
+}
+
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
+  const [appMode, setAppMode] = useState<AppMode>(() => initialAppMode());
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
   const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
   const [overview, setOverview] = useState<OverviewResult | null>(null);
+  const [localAuth, setLocalAuth] = useState<LocalAuthResult | null>(null);
+  const [smsProvider, setSmsProvider] = useState<SmsProviderSettingsResult | null>(null);
+  const [localUsage, setLocalUsage] = useState<LocalUsageResult | null>(null);
+  const [localBackend, setLocalBackend] = useState<LocalBackendStateResult | null>(null);
+  const [managedProxy, setManagedProxy] = useState<ManagedProxyRuntimeResult | null>(null);
+  const [adminConsole, setAdminConsole] = useState<AdminConsoleResult | null>(null);
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [relay, setRelay] = useState<RelayResult | null>(null);
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
@@ -579,12 +1622,59 @@ export function App() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
   const [watcher, setWatcher] = useState<WatcherResult | null>(null);
   const [update, setUpdate] = useState<UpdateResult | null>(null);
+  const [releaseReadiness, setReleaseReadiness] = useState<ReleaseReadinessResult | null>(null);
   const [ads, setAds] = useState<AdsResult | null>(null);
   const [scriptMarket, setScriptMarket] = useState<ScriptMarketResult | null>(null);
   const [launchForm, setLaunchForm] = useState({
     appPath: "",
     debugPort: "9229",
     helperPort: "57321",
+  });
+  const [loginForm, setLoginForm] = useState({
+    phone: "",
+    code: "",
+  });
+  const [entitlementForm, setEntitlementForm] = useState({
+    planId: "local_trial",
+    planName: "本地试用",
+    dailyTokenLimit: "0",
+  });
+  const [smsProviderForm, setSmsProviderForm] = useState<SmsProviderForm>({
+    region: "ap-guangzhou",
+    appId: "",
+    signName: "",
+    templateId: "",
+    ttlMinutes: 10,
+    templateParamMode: "code_ttl",
+    dryRun: true,
+    secretId: "",
+    secretKey: "",
+  });
+  const [adminUserForm, setAdminUserForm] = useState({
+    userId: "",
+    planId: "jiyi_pro",
+    planName: "极义 Pro",
+    dailyTokenLimit: "500000",
+    reason: "",
+  });
+  const [adminTeamForm, setAdminTeamForm] = useState({
+    teamId: "jiyi-default-team",
+    planId: "team_pro",
+    planName: "团队 Pro",
+    dailyTokenLimit: "2000000",
+    reason: "",
+  });
+  const [adminRenewalForm, setAdminRenewalForm] = useState({
+    subjectType: "user",
+    subjectId: "",
+    planId: "jiyi_pro",
+    planName: "极义 Pro",
+    dailyTokenLimit: "500000",
+    amountCents: "9900",
+    currency: "CNY",
+    paymentChannel: "manual",
+    externalOrderId: "",
+    reason: "",
   });
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   const [providerSyncProgress, setProviderSyncProgress] = useState<ProviderSyncProgress>({
@@ -596,8 +1686,14 @@ export function App() {
   const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
+  const [mainEntryState, setMainEntryState] = useState<{ status: Status; message: string; appPath?: string | null }>({
+    status: "not_checked",
+    message: "完成手机号验证码登录后，手动进入 Codex 使用界面。",
+    appPath: null,
+  });
 
-  const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
+  const call = <T,>(command: string, args?: Record<string, unknown>) =>
+    hasTauriRuntime() ? invoke<T>(command, args) : Promise.resolve(previewCommandResult<T>(command, args));
 
   const logDiagnostic = (event: string, detail: Record<string, unknown> = {}) => {
     void invoke("write_diagnostic_event", { event, detail }).catch(() => {});
@@ -617,6 +1713,380 @@ export function App() {
     if (result) {
       setOverview(result);
       if (!silent) showResultNotice("概览已检查", result, { silentSuccess: true });
+    }
+  };
+
+  const refreshLocalAuth = async (silent = false) => {
+    const result = await run(() => call<LocalAuthResult>("load_local_auth_state"));
+    if (result) {
+      setLocalAuth(result);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("本地账号", result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const refreshSmsProviderSettings = async (silent = false) => {
+    const result = await run(() => call<SmsProviderSettingsResult>("load_sms_provider_settings"));
+    if (result) {
+      setSmsProvider(result);
+      setSmsProviderForm({
+        ...result.settings,
+        secretId: "",
+        secretKey: "",
+      });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("腾讯云短信", result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const refreshLocalUsage = async (silent = false) => {
+    const result = await run(() => call<LocalUsageResult>("load_local_usage_state"));
+    if (result) {
+      setLocalUsage(result);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("本地用量", result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const saveSmsProviderSettings = async () => {
+    const result = await run(() =>
+      call<SmsProviderSettingsResult>("save_sms_provider_settings", {
+        request: {
+          ...smsProviderForm,
+          ttlMinutes: numberOrDefault(String(smsProviderForm.ttlMinutes), 10),
+        },
+      }),
+    );
+    if (result) {
+      setSmsProvider(result);
+      setSmsProviderForm({
+        ...result.settings,
+        secretId: "",
+        secretKey: "",
+      });
+      showNotice("腾讯云短信", result.message, result.status);
+      await refreshLocalAuth(true);
+    }
+  };
+
+  const refreshLocalBackendState = async (silent = false) => {
+    const result = await run(() => call<LocalBackendStateResult>("load_local_backend_state"));
+    if (result) {
+      setLocalBackend(result);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("本地账号服务端", result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const refreshManagedProxy = async (silent = false) => {
+    const result = await run(() => call<ManagedProxyRuntimeResult>("managed_proxy_status"));
+    if (result) {
+      setManagedProxy(result);
+      if (!silent || result.status === "failed") showResultNotice("本地托管代理", result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const refreshAdminConsole = async (silent = false) => {
+    const result = await run(() =>
+      call<AdminConsoleResult>("load_admin_console", {
+        request: {
+          limit: 50,
+          eventType: "",
+          actorType: "",
+          subjectUserId: "",
+        },
+      }),
+    );
+    if (result) {
+      setAdminConsole(result);
+      setLocalBackend({ status: result.status, message: result.message, ...result.state });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("总后台", result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const applyAdminConsoleResult = async (title: string, result: AdminConsoleResult | null) => {
+    if (!result) return;
+    setAdminConsole(result);
+    setLocalBackend({ status: result.status, message: result.message, ...result.state });
+    showNotice(title, result.message, result.status);
+  };
+
+  const updateAdminUserEntitlement = async () => {
+    const userId = adminUserForm.userId.trim();
+    if (!userId) {
+      showNotice("总后台", "请先选择或填写用户 ID。", "failed");
+      return;
+    }
+    const result = await run(() =>
+      call<AdminConsoleResult>("admin_console_update_user_entitlement", {
+        request: {
+          userId,
+          planId: adminUserForm.planId.trim(),
+          planName: adminUserForm.planName.trim(),
+          dailyTokenLimit: numberOrDefault(adminUserForm.dailyTokenLimit, 0),
+          reason: adminUserForm.reason.trim(),
+        },
+      }),
+    );
+    await applyAdminConsoleResult("用户套餐", result);
+  };
+
+  const updateAdminTeamEntitlement = async () => {
+    const teamId = adminTeamForm.teamId.trim();
+    if (!teamId) {
+      showNotice("总后台", "请先选择或填写团队 ID。", "failed");
+      return;
+    }
+    const result = await run(() =>
+      call<AdminConsoleResult>("admin_console_update_team_entitlement", {
+        request: {
+          teamId,
+          planId: adminTeamForm.planId.trim(),
+          planName: adminTeamForm.planName.trim(),
+          dailyTokenLimit: numberOrDefault(adminTeamForm.dailyTokenLimit, 0),
+          reason: adminTeamForm.reason.trim(),
+        },
+      }),
+    );
+    await applyAdminConsoleResult("团队套餐", result);
+  };
+
+  const setAdminUserAccess = async (userId: string, status: "active" | "blocked") => {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId) {
+      showNotice("总后台", "请先选择用户。", "failed");
+      return;
+    }
+    const result = await run(() =>
+      call<AdminConsoleResult>("admin_console_set_user_access", {
+        request: {
+          userId: normalizedUserId,
+          status,
+          reason: adminUserForm.reason.trim() || (status === "blocked" ? "总后台封禁" : ""),
+        },
+      }),
+    );
+    await applyAdminConsoleResult(status === "blocked" ? "封禁用户" : "解封用户", result);
+  };
+
+  const recordAdminBillingRenewal = async () => {
+    const subjectId = adminRenewalForm.subjectId.trim();
+    if (!subjectId) {
+      showNotice("总后台", "请先填写续费主体 ID。", "failed");
+      return;
+    }
+    const result = await run(() =>
+      call<AdminConsoleResult>("admin_console_record_billing_renewal", {
+        request: {
+          subjectType: adminRenewalForm.subjectType,
+          subjectId,
+          planId: adminRenewalForm.planId.trim(),
+          planName: adminRenewalForm.planName.trim(),
+          dailyTokenLimit: numberOrDefault(adminRenewalForm.dailyTokenLimit, 0),
+          amountCents: numberOrDefault(adminRenewalForm.amountCents, 0),
+          currency: adminRenewalForm.currency.trim() || "CNY",
+          paymentChannel: adminRenewalForm.paymentChannel.trim() || "manual",
+          externalOrderId: adminRenewalForm.externalOrderId.trim(),
+          reason: adminRenewalForm.reason.trim(),
+        },
+      }),
+    );
+    await applyAdminConsoleResult("续费落账", result);
+  };
+
+  const reconcileAdminBilling = async () => {
+    const result = await run(() => call<AdminConsoleResult>("admin_console_reconcile_billing"));
+    await applyAdminConsoleResult("支付对账", result);
+  };
+
+  const startManagedProxy = async () => {
+    const result = await run(() => call<ManagedProxyRuntimeResult>("start_managed_proxy"));
+    if (result) {
+      setManagedProxy(result);
+      showNotice("本地托管代理", result.message, result.status);
+      await refreshSettings(true);
+    }
+  };
+
+  const stopManagedProxy = async () => {
+    const result = await run(() => call<ManagedProxyRuntimeResult>("stop_managed_proxy"));
+    if (result) {
+      setManagedProxy(result);
+      showNotice("本地托管代理", result.message, result.status);
+    }
+  };
+
+  const requestLocalSmsCode = async () => {
+    const phone = loginForm.phone.trim();
+    if (!phone) {
+      showNotice("手机号登录", "请先填写手机号。", "failed");
+      return;
+    }
+    const result = await run(() => call<SmsCodeResult>("request_local_sms_code", { request: { phone } }));
+    if (result) {
+      const devCodeText = result.devCode ? ` 本地验证码：${result.devCode}` : "";
+      if (result.devCode) {
+        setLoginForm((current) => ({ ...current, phone: result.phone || current.phone, code: result.devCode || current.code }));
+      }
+      showNotice("验证码", `${result.message}${devCodeText}`, result.status);
+      await refreshLocalAuth(true);
+    }
+  };
+
+  const enterCodex = async () => {
+    setMainEntryState({
+      status: "not_checked",
+      message: "正在进入 Codex 使用界面…",
+      appPath: null,
+    });
+    const result = await run(() =>
+      call<CommandResult<{ appPath: string | null; debugPort: number; helperPort: number }>>("launch_embedded_codex", {
+        request: {
+          appPath: "",
+          debugPort: numberOrDefault(launchForm.debugPort, 9229),
+          helperPort: numberOrDefault(launchForm.helperPort, 57321),
+        },
+      }),
+    );
+    if (result) {
+      setMainEntryState({
+        status: result.status,
+        message: result.message,
+        appPath: result.appPath,
+      });
+      showNotice("极义codex", result.message, result.status);
+    }
+    return result;
+  };
+
+  const loginWithLocalSmsCode = async () => {
+    const phone = loginForm.phone.trim();
+    const code = loginForm.code.trim();
+    if (!phone || !code) {
+      showNotice("手机号登录", "请填写手机号和验证码。", "failed");
+      return;
+    }
+    const result = await run(() => call<LocalLoginResult>("login_with_local_sms_code", { request: { phone, code } }));
+    if (result) {
+      showNotice("手机号登录", result.message, result.status);
+      setLoginForm((current) => ({ ...current, code: "" }));
+      const auth = await refreshLocalAuth(true);
+      if (appMode === "main" && isSuccessStatus(result.status) && auth?.authenticated) {
+        setMainEntryState({
+          status: "accepted",
+          message: "手机号已验证，请点击进入 Codex。",
+          appPath: null,
+        });
+      }
+    }
+  };
+
+  const logoutLocalAuth = async () => {
+    const result = await run(() => call<LocalAuthResult>("logout_local_auth"));
+    if (result) {
+      setLocalAuth(result);
+      showNotice("本地账号", result.message, result.status);
+    }
+  };
+
+  const resetLocalAuthState = async () => {
+    const result = await run(() => call<LocalAuthResult>("reset_local_auth_state"));
+    if (result) {
+      setLocalAuth(result);
+      setLoginForm({ phone: "", code: "" });
+      showNotice("本地账号", result.message, result.status);
+      await refreshLocalUsage(true);
+      await refreshLocalBackendState(true);
+    }
+  };
+
+  const updateLocalEntitlement = async () => {
+    if (!localAuth?.authenticated) {
+      showNotice("本地套餐", "请先完成手机号验证码登录。", "failed");
+      return;
+    }
+    const planId = entitlementForm.planId.trim();
+    const planName = entitlementForm.planName.trim();
+    const dailyTokenLimit = numberOrDefault(entitlementForm.dailyTokenLimit, 0);
+    const result = await run(() =>
+      call<LocalAuthResult>("update_local_entitlement", {
+        request: {
+          planId,
+          planName,
+          dailyTokenLimit,
+        },
+      }),
+    );
+    if (result) {
+      setLocalAuth(result);
+      showNotice("本地套餐", result.message, result.status);
+      await refreshLocalUsage(true);
+    }
+  };
+
+  const exportLocalIdentityReport = async () => {
+    const result = await run(() => call<LocalIdentityExportResult>("export_local_identity_report"));
+    if (result) {
+      showNotice(
+        "账号迁移报告",
+        `${result.message} 用户 ${result.userCount} 个，设备 ${result.deviceCount} 个，套餐 ${result.entitlementCount} 个，用量分组 ${result.usageSummaryCount} 个。路径：${result.reportPath}`,
+        result.status,
+      );
+    }
+  };
+
+  const saveIdentitySyncSettings = async () => {
+    const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
+    if (settingsResult) {
+      setSettings(settingsResult);
+      setSettingsForm(normalizeSettings(settingsResult.settings));
+      if (!isSuccessStatus(settingsResult.status)) {
+        showResultNotice("保存服务端同步配置", settingsResult);
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const prepareIdentitySyncRequest = async () => {
+    if (!(await saveIdentitySyncSettings())) return;
+    const result = await run(() => call<IdentitySyncRequestResult>("prepare_identity_sync_request"));
+    if (result) {
+      showNotice(
+        "服务端同步请求包",
+        `${result.message} Endpoint：${result.endpoint || "未配置"}，授权：${result.authorization}。路径：${result.syncRequestPath}`,
+        result.status,
+      );
+    }
+  };
+
+  const syncIdentityToService = async () => {
+    if (!(await saveIdentitySyncSettings())) return;
+    const result = await run(() => call<IdentitySyncPostResult>("sync_identity_to_service"));
+    if (result) {
+      showNotice(
+        "服务端同步",
+        `${result.message} HTTP ${result.httpStatus || "-"}。${result.backendSessionConfigured ? "服务端 token 已写入极义 Keychain。" : "服务端未返回可用 token。"}响应审计：${result.responseAuditPath || "未生成"}`,
+        result.status,
+      );
+    }
+  };
+
+  const applyIdentitySyncLocally = async () => {
+    const result = await run(() => call<LocalBackendApplyResult>("apply_identity_sync_locally"));
+    if (result) {
+      setLocalBackend({
+        status: result.status,
+        message: result.message,
+        ...result.state,
+      });
+      showNotice(
+        "本地账号服务端",
+        `${result.message} 用户 ${result.receipt.usersUpserted} 个，设备 ${result.receipt.devicesUpserted} 个，团队 ${result.receipt.teamsUpserted} 个，团队成员 ${result.receipt.teamMembersUpserted} 个，套餐 ${result.receipt.entitlementsUpserted} 个，用量分组 ${result.receipt.usageSummariesUpserted} 个，服务端 session ${result.receipt.sessionsIssued} 个。${result.backendSessionConfigured ? "Token 已写入极义 Keychain。" : "当前无有效登录态，未签发服务端 token。"}`,
+        result.status,
+      );
     }
   };
 
@@ -797,7 +2267,12 @@ export function App() {
 
   const navigate = async (next: Route) => {
     setRoute(next);
-    if (next === "overview") await refreshOverview(true);
+    if (next === "overview") {
+      await refreshOverview(true);
+      await refreshLocalAuth(true);
+      await refreshSmsProviderSettings(true);
+      await refreshRelay(true);
+    }
     if (next === "relay") {
       await refreshSettings(true);
       await refreshRelay(true);
@@ -817,7 +2292,10 @@ export function App() {
       await refreshRelayFiles(true);
       await refreshLiveContextEntries(true);
     }
-    if (next === "settings") await refreshSettings(true);
+    if (next === "settings") {
+      await refreshSettings(true);
+      await refreshSmsProviderSettings(true);
+    }
     if (next === "userScripts") {
       await refreshSettings(true);
       await refreshScriptMarket(true);
@@ -845,7 +2323,7 @@ export function App() {
   const restart = async () => {
     const result = await launchCommand("restart_codex_plus");
     if (result) {
-      showNotice("重启 Codex++", result.message, result.status);
+      showNotice(`重启 ${PRODUCT_NAME}`, result.message, result.status);
       await refreshOverview(true);
     }
   };
@@ -869,6 +2347,22 @@ export function App() {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
       showNotice("后端修复", result.message, result.status);
+    }
+  };
+
+  const repairOfficialIsolation = async () => {
+    const result = await run(() => call<OfficialIsolationRepairResult>("repair_official_codex_isolation"));
+    if (result) {
+      const repaired = result.repairedFiles.length;
+      const remaining = result.remainingContaminatedFiles.length;
+      const suffix =
+        remaining > 0
+          ? "请退出原版 Codex 后再执行一次。"
+          : repaired > 0 && result.backupDir
+            ? `备份已写入 ${result.backupDir}。`
+            : "";
+      showNotice("原版隔离修复", [result.message, suffix].filter(Boolean).join(" "), result.status);
+      await checkReleaseReadiness();
     }
   };
 
@@ -915,6 +2409,14 @@ export function App() {
       if (!silent || result.updateAvailable) {
         showNotice("GitHub Release 检查", result.message, result.status);
       }
+    }
+  };
+
+  const checkReleaseReadiness = async () => {
+    const result = await run(() => call<ReleaseReadinessResult>("release_readiness"));
+    if (result) {
+      setReleaseReadiness(result);
+      showNotice("发布前检查", result.message, result.status);
     }
   };
 
@@ -1080,7 +2582,7 @@ export function App() {
     if (result) {
       setRelay(result);
       await refreshRelayFiles(true);
-      if (!silent || !isSuccessStatus(result.status)) showNotice("官方混入 API Key", result.message, result.status);
+      if (!silent || !isSuccessStatus(result.status)) showNotice("极义纯 API", result.message, result.status);
     }
     return !!result && isSuccessStatus(result.status) && result.configured;
   };
@@ -1123,7 +2625,7 @@ export function App() {
     if (result) {
       setRelay(result);
       await refreshRelayFiles(true);
-      if (!silent || !isSuccessStatus(result.status)) showNotice("官方登录模式", result.message, result.status);
+      if (!silent || !isSuccessStatus(result.status)) showNotice("极义原生账号", result.message, result.status);
     }
     return !!result && isSuccessStatus(result.status) && !result.configured;
   };
@@ -1197,10 +2699,7 @@ export function App() {
   };
 
   const switchOfficialMode = async () => {
-    const switched = await clearRelayInjection(true);
-    if (!switched) return;
-    const result = await saveLaunchMode("relay", true);
-    if (result) showNotice("官方登录模式", "已切回官方登录；页面增强已设为兼容增强。", result.status);
+    showNotice("极义原生账号", "极义codex 已禁用官方登录模式，请使用阿里百炼 / 极义中转纯 API。", "failed");
   };
 
   const switchPureApiMode = async () => {
@@ -1400,6 +2899,9 @@ export function App() {
   useEffect(() => {
     void (async () => {
       const startup = await run(() => call<StartupResult>("startup_options"));
+      if (startup?.appMode) {
+        setAppMode(startup.appMode === "main" ? "main" : "manager");
+      }
       if (startup?.showUpdate) {
         setRoute("about");
         void checkUpdate(false);
@@ -1407,11 +2909,31 @@ export function App() {
         void checkUpdate(true);
       }
       await refreshOverview(true);
+      await refreshLocalAuth(true);
+      await refreshSmsProviderSettings(true);
+      await refreshLocalUsage(true);
+      await refreshLocalBackendState(true);
+      await refreshManagedProxy(true);
+      await refreshAdminConsole(true);
       await refreshSettings(true);
       await refreshRelay(true);
       await refreshProviderSyncTargets(true);
     })();
   }, []);
+
+  useEffect(() => {
+    const entitlement = localAuth?.entitlement;
+    if (!entitlement) return;
+    setEntitlementForm({
+      planId: entitlement.planId || "local_trial",
+      planName: entitlement.planName || "本地试用",
+      dailyTokenLimit: String(Math.max(0, entitlement.dailyTokenLimit || 0)),
+    });
+  }, [
+    localAuth?.entitlement?.planId,
+    localAuth?.entitlement?.planName,
+    localAuth?.entitlement?.dailyTokenLimit,
+  ]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -1434,14 +2956,18 @@ export function App() {
 
   const actions = useMemo(
     () => ({
+      navigateTo: (next: Route) => navigate(next),
       refreshCurrent: () => navigate(route),
       launch,
       restart,
+      enterCodex,
       repairBackend,
+      repairOfficialIsolation,
       installEntrypoints,
       uninstallEntrypoints,
       repairShortcuts,
       checkUpdate,
+      checkReleaseReadiness,
       performUpdate,
       saveSettings,
       saveSettingsValue,
@@ -1456,7 +2982,7 @@ export function App() {
               : {
                   directory: false,
                   multiple: false,
-                  title: "选择 Codex.exe 或 Codex.app",
+                  title: "选择 JiyiCodexClient.app 或 Codex.exe",
                   filters: [{ name: "Codex 应用", extensions: ["exe", "app"] }],
                 },
           );
@@ -1496,6 +3022,29 @@ export function App() {
           showNotice("Codex 应用路径", "应用路径已保存，之后启动会自动复用。", result.status);
         }
       },
+      refreshLocalAuth,
+      refreshSmsProviderSettings,
+      saveSmsProviderSettings,
+      refreshLocalUsage,
+      requestLocalSmsCode,
+      loginWithLocalSmsCode,
+      updateLocalEntitlement,
+      exportLocalIdentityReport,
+      prepareIdentitySyncRequest,
+      syncIdentityToService,
+      refreshLocalBackendState,
+      refreshManagedProxy,
+      refreshAdminConsole,
+      updateAdminUserEntitlement,
+      updateAdminTeamEntitlement,
+      setAdminUserAccess,
+      recordAdminBillingRenewal,
+      reconcileAdminBilling,
+      startManagedProxy,
+      stopManagedProxy,
+      applyIdentitySyncLocally,
+      logoutLocalAuth,
+      resetLocalAuthState,
       syncProvidersNow,
       refreshProviderSyncTargets,
       setProviderSyncTarget: (provider: string) => {
@@ -1551,18 +3100,33 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget],
+    [appMode, route, launchForm, loginForm, entitlementForm, smsProviderForm, adminUserForm, adminTeamForm, adminRenewalForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget],
   );
   const hasUpdate = update?.updateAvailable === true;
+
+  if (appMode === "main") {
+    return (
+      <MainEntryScreen
+        actions={actions}
+        launchState={mainEntryState}
+        localAuth={localAuth}
+        loginForm={loginForm}
+        notice={notice}
+        onCloseNotice={() => setNotice(null)}
+        onLoginFormChange={setLoginForm}
+        theme={theme}
+      />
+    );
+  }
 
   return (
     <div className={`shell ${theme}`}>
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">C++</div>
+          <div className="brand-mark">极义</div>
           <div className="brand-copy">
             <div className="brand-title-row">
-              <div className="brand-title">Codex++</div>
+              <div className="brand-title">{PRODUCT_NAME}</div>
               {hasUpdate ? (
                 <button
                   className="update-dot"
@@ -1577,7 +3141,7 @@ export function App() {
                 </button>
               ) : null}
             </div>
-            <div className="brand-subtitle">管理控制台</div>
+            <div className="brand-subtitle">AI Native 工作台</div>
           </div>
         </div>
         <nav className="nav">
@@ -1615,9 +3179,9 @@ export function App() {
             >
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
-            <Button onClick={() => void actions.restart()} title="重启 Codex++" variant="outline">
+            <Button onClick={() => void actions.restart()} title={`重启 ${PRODUCT_NAME}`} variant="outline">
               <Rocket className="h-4 w-4" />
-              重启 Codex++
+              重启 {PRODUCT_NAME}
             </Button>
             <Button onClick={() => void actions.refreshCurrent()} size="icon" title="刷新当前页面" variant="outline">
               <RefreshCw className="h-4 w-4" />
@@ -1628,6 +3192,28 @@ export function App() {
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
+              localAuth={localAuth}
+              localUsage={localUsage}
+              relay={relay}
+              settings={settingsForm}
+              loginForm={loginForm}
+              entitlementForm={entitlementForm}
+              onLoginFormChange={setLoginForm}
+              onEntitlementFormChange={setEntitlementForm}
+              actions={actions}
+            />
+          ) : null}
+          {route === "admin" ? (
+            <AdminConsoleScreen
+              console={adminConsole}
+              localBackend={localBackend}
+              managedProxy={managedProxy}
+              userForm={adminUserForm}
+              teamForm={adminTeamForm}
+              renewalForm={adminRenewalForm}
+              onUserFormChange={setAdminUserForm}
+              onTeamFormChange={setAdminTeamForm}
+              onRenewalFormChange={setAdminRenewalForm}
               actions={actions}
             />
           ) : null}
@@ -1674,6 +3260,7 @@ export function App() {
               overview={overview}
               watcher={watcher}
               settings={settings}
+              releaseReadiness={releaseReadiness}
               launchForm={launchForm}
               onLaunchFormChange={setLaunchForm}
               removeOwnedData={removeOwnedData}
@@ -1683,7 +3270,18 @@ export function App() {
           ) : null}
           {route === "about" ? <AboutScreen overview={overview} update={update} logs={logs} diagnostics={diagnostics} actions={actions} /> : null}
           {route === "settings" ? (
-            <SettingsScreen settings={settings} theme={theme} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
+            <SettingsScreen
+              settings={settings}
+              theme={theme}
+              form={settingsForm}
+              smsProvider={smsProvider}
+              smsProviderForm={smsProviderForm}
+              localBackend={localBackend}
+              managedProxy={managedProxy}
+              onFormChange={setSettingsForm}
+              onSmsProviderFormChange={setSmsProviderForm}
+              actions={actions}
+            />
           ) : null}
         </section>
       </main>
@@ -1699,14 +3297,18 @@ export function App() {
 }
 
 type Actions = {
+  navigateTo: (next: Route) => Promise<void>;
   refreshCurrent: () => Promise<void>;
   launch: () => Promise<void>;
   restart: () => Promise<void>;
+  enterCodex: () => Promise<CommandResult<{ appPath: string | null; debugPort: number; helperPort: number }> | null>;
   repairBackend: () => Promise<void>;
+  repairOfficialIsolation: () => Promise<void>;
   installEntrypoints: () => Promise<void>;
   uninstallEntrypoints: () => Promise<void>;
   repairShortcuts: () => Promise<void>;
   checkUpdate: () => Promise<void>;
+  checkReleaseReadiness: () => Promise<void>;
   performUpdate: () => Promise<void>;
   saveSettings: () => Promise<void>;
   saveSettingsValue: (settings: BackendSettings, silent?: boolean, preserveLinkedProfiles?: boolean) => Promise<void>;
@@ -1715,6 +3317,29 @@ type Actions = {
   chooseCodexAppPath: (mode: "folder" | "file") => Promise<void>;
   clearCodexAppPath: () => Promise<void>;
   saveManualCodexAppPath: () => Promise<void>;
+  refreshLocalAuth: (silent?: boolean) => Promise<LocalAuthResult | null>;
+  refreshSmsProviderSettings: (silent?: boolean) => Promise<SmsProviderSettingsResult | null>;
+  saveSmsProviderSettings: () => Promise<void>;
+  refreshLocalUsage: (silent?: boolean) => Promise<LocalUsageResult | null>;
+  requestLocalSmsCode: () => Promise<void>;
+  loginWithLocalSmsCode: () => Promise<void>;
+  updateLocalEntitlement: () => Promise<void>;
+  exportLocalIdentityReport: () => Promise<void>;
+  prepareIdentitySyncRequest: () => Promise<void>;
+  syncIdentityToService: () => Promise<void>;
+  refreshLocalBackendState: (silent?: boolean) => Promise<LocalBackendStateResult | null>;
+  refreshManagedProxy: (silent?: boolean) => Promise<ManagedProxyRuntimeResult | null>;
+  refreshAdminConsole: (silent?: boolean) => Promise<AdminConsoleResult | null>;
+  updateAdminUserEntitlement: () => Promise<void>;
+  updateAdminTeamEntitlement: () => Promise<void>;
+  setAdminUserAccess: (userId: string, status: "active" | "blocked") => Promise<void>;
+  recordAdminBillingRenewal: () => Promise<void>;
+  reconcileAdminBilling: () => Promise<void>;
+  startManagedProxy: () => Promise<void>;
+  stopManagedProxy: () => Promise<void>;
+  applyIdentitySyncLocally: () => Promise<void>;
+  logoutLocalAuth: () => Promise<void>;
+  resetLocalAuthState: () => Promise<void>;
   syncProvidersNow: () => Promise<void>;
   refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
   setProviderSyncTarget: (provider: string) => void;
@@ -1766,16 +3391,395 @@ type Actions = {
   checkHealth: () => Promise<void>;
 };
 
+function MainEntryScreen({
+  actions,
+  launchState,
+  localAuth,
+  loginForm,
+  notice,
+  onCloseNotice,
+  onLoginFormChange,
+  theme,
+}: {
+  actions: Actions;
+  launchState: { status: Status; message: string; appPath?: string | null };
+  localAuth: LocalAuthResult | null;
+  loginForm: { phone: string; code: string };
+  notice: { title: string; message: string; status?: Status } | null;
+  onCloseNotice: () => void;
+  onLoginFormChange: (value: { phone: string; code: string }) => void;
+  theme: Theme;
+}) {
+  const smsConfig = localAuth?.smsConfig;
+  const entitlement = localAuth?.entitlement;
+  const authenticated = localAuth?.authenticated === true;
+  return (
+    <div className={`main-entry ${theme}`}>
+      <main className="main-entry-card">
+        <div className="main-entry-brand">
+          <div className="brand-mark">极义</div>
+          <div>
+            <h1>极义codex</h1>
+            <p>{authenticated ? "本地账号已登录" : "手机号验证码登录"}</p>
+          </div>
+        </div>
+
+        <div className="main-entry-status">
+          <Metric label="短信模式" value={smsConfig ? (smsConfig.dryRun ? "本地干跑" : "腾讯云") : "等待读取"} />
+          <Metric label="短信区域" value={smsConfig?.region ?? "ap-guangzhou"} />
+          <Metric label="短信密钥" value={formatSmsSecretSource(smsConfig)} />
+          <Metric label="有效期" value={`${smsConfig?.ttlMinutes ?? 10} 分钟`} />
+          <Metric label="会话" value={`${localAuth?.sessionTtlHours ?? 24 * 30} 小时`} />
+          <Metric label="套餐" value={entitlement?.planName ?? "本地试用"} />
+          <Metric label="套餐额度" value={formatDailyLimit(entitlement?.dailyTokenLimit ?? 0)} />
+        </div>
+
+        {authenticated ? (
+          <div className="main-entry-authenticated">
+            <div>
+              <strong>{localAuth.phoneMasked}</strong>
+              <span>
+                {localAuth.expiresAtMs ? `会话有效至 ${formatTime(localAuth.expiresAtMs)}` : launchState.message}
+              </span>
+            </div>
+            <Toolbar>
+                <Button onClick={() => void actions.enterCodex()}>
+                  <Rocket className="h-4 w-4" />
+                  进入 Codex
+                </Button>
+                <Button onClick={() => void actions.resetLocalAuthState()} variant="outline">
+                  重置登录态
+                </Button>
+                <Button onClick={() => void actions.logoutLocalAuth()} variant="outline">
+                  退出登录
+                </Button>
+              </Toolbar>
+            {launchState.appPath ? <code>{launchState.appPath}</code> : null}
+          </div>
+        ) : (
+          <div className="main-entry-login">
+            <Field label="手机号">
+              <Input
+                inputMode="tel"
+                onChange={(event) => onLoginFormChange({ ...loginForm, phone: event.currentTarget.value })}
+                placeholder="13812345678"
+                value={loginForm.phone}
+              />
+            </Field>
+            <Field label="验证码">
+              <Input
+                inputMode="numeric"
+                maxLength={6}
+                onChange={(event) => onLoginFormChange({ ...loginForm, code: event.currentTarget.value })}
+                placeholder="6 位数字"
+                value={loginForm.code}
+              />
+            </Field>
+            <Toolbar>
+              <Button onClick={() => void actions.requestLocalSmsCode()} variant="secondary">
+                获取验证码
+              </Button>
+              <Button onClick={() => void actions.loginWithLocalSmsCode()}>
+                <KeyRound className="h-4 w-4" />
+                登录
+              </Button>
+            </Toolbar>
+          </div>
+        )}
+      </main>
+      {notice ? <NoticeDialog notice={notice} onClose={onCloseNotice} /> : null}
+    </div>
+  );
+}
+
 function OverviewScreen({
   overview,
+  localAuth,
+  localUsage,
+  relay,
+  settings,
+  loginForm,
+  entitlementForm,
+  onLoginFormChange,
+  onEntitlementFormChange,
   actions,
 }: {
   overview: OverviewResult | null;
+  localAuth: LocalAuthResult | null;
+  localUsage: LocalUsageResult | null;
+  relay: RelayResult | null;
+  settings: BackendSettings;
+  loginForm: { phone: string; code: string };
+  entitlementForm: { planId: string; planName: string; dailyTokenLimit: string };
+  onLoginFormChange: (value: { phone: string; code: string }) => void;
+  onEntitlementFormChange: (value: { planId: string; planName: string; dailyTokenLimit: string }) => void;
   actions: Actions;
 }) {
   const health = healthItems(overview);
+  const activeProfile =
+    settings.relayProfiles.find((profile) => profile.id === settings.activeRelayId) ||
+    settings.relayProfiles[0] ||
+    null;
+  const defaultProviderEndpoint = [
+    activeProfile?.upstreamBaseUrl,
+    activeProfile?.baseUrl,
+    settings.relayBaseUrl,
+    BAILIAN_BASE_URL,
+    APIMART_FALLBACK_BASE_URL,
+  ]
+    .map((value) => (value || "").trim())
+    .find((value) => Boolean(value)) || BAILIAN_BASE_URL;
+  const defaultProviderModel = activeProfile?.model || activeProfile?.testModel || settings.relayTestModel || QWEN_DEFAULT_MODEL;
+  const apiKeyReady = Boolean(
+    relay?.apiKeyConfigured ||
+      activeProfile?.apiKey ||
+      activeProfile?.authContents ||
+      settings.relayApiKey ||
+      relay?.hasBearerToken,
+  );
+  const smsConfig = localAuth?.smsConfig;
+  const entitlement = localAuth?.entitlement;
   return (
     <>
+      <Panel>
+        <CardHead
+          title="本地账号"
+          detail={localAuth?.authenticated ? `已登录：${localAuth.phoneMasked ?? ""}` : "手机号验证码登录；本地部署默认支持干跑验收"}
+        />
+        <CardContent>
+          <div className="account-grid">
+            <div className="account-status-block">
+              <div className="account-status-head">
+                <span className="scenario-icon">
+                  <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                </span>
+                <div>
+                  <strong>{localAuth?.authenticated ? "本地账号已登录" : "本地账号未登录"}</strong>
+                  <span>
+                    {localAuth?.authenticated
+                      ? `登录时间：${formatTime(localAuth.loginAtMs ?? 0)}；有效至：${formatTime(localAuth.expiresAtMs ?? 0)}`
+                      : localAuth?.sessionExpired
+                        ? "本地会话已过期，请重新手机号验证。"
+                        : "用于后续本地授权、设备和团队配置承接。"}
+                  </span>
+                </div>
+              </div>
+              <div className="account-meta-grid">
+                <Metric label="短信模式" value={smsConfig ? (smsConfig.dryRun ? "本地干跑" : "腾讯云") : "等待读取"} />
+                <Metric label="短信区域" value={smsConfig?.region ?? "ap-guangzhou"} />
+                <Metric label="短信密钥" value={formatSmsSecretSource(smsConfig)} />
+                <Metric label="有效期" value={`${smsConfig?.ttlMinutes ?? 10} 分钟`} />
+                <Metric label="会话有效期" value={`${localAuth?.sessionTtlHours ?? 24 * 30} 小时`} />
+                <Metric label="本地套餐" value={entitlement?.planName ?? "本地试用"} />
+                <Metric label="套餐额度" value={formatDailyLimit(entitlement?.dailyTokenLimit ?? 0)} />
+              </div>
+              <code>{localAuth?.dbPath ?? "等待读取本地账号数据库"}</code>
+            </div>
+            {localAuth?.authenticated ? (
+              <div className="account-login-block">
+                <div>
+                  <strong>{localAuth.phoneMasked}</strong>
+                  <span>
+                    当前设备：{localAuth.deviceId ? localAuth.deviceId.slice(0, 24) : "等待读取"}
+                  </span>
+                </div>
+                <Toolbar>
+                  <Button onClick={() => void actions.refreshLocalAuth()} variant="secondary">
+                    <RefreshCw className="h-4 w-4" />
+                    刷新
+                  </Button>
+                  <Button onClick={() => void actions.exportLocalIdentityReport()} variant="outline">
+                    <Download className="h-4 w-4" />
+                    导出账号报告
+                  </Button>
+                  <Button onClick={() => void actions.resetLocalAuthState()} variant="outline">
+                    重置登录态
+                  </Button>
+                  <Button onClick={() => void actions.logoutLocalAuth()} variant="outline">
+                    退出登录
+                  </Button>
+                </Toolbar>
+                <div className="entitlement-editor">
+                  <div className="inline-fields entitlement-fields">
+                    <Field label="套餐 ID">
+                      <Input
+                        onChange={(event) => onEntitlementFormChange({ ...entitlementForm, planId: event.currentTarget.value })}
+                        placeholder="local_trial"
+                        value={entitlementForm.planId}
+                      />
+                    </Field>
+                    <Field label="套餐名称">
+                      <Input
+                        onChange={(event) => onEntitlementFormChange({ ...entitlementForm, planName: event.currentTarget.value })}
+                        placeholder="本地试用"
+                        value={entitlementForm.planName}
+                      />
+                    </Field>
+                    <Field label="每日额度">
+                      <Input
+                        inputMode="numeric"
+                        min={0}
+                        onChange={(event) =>
+                          onEntitlementFormChange({ ...entitlementForm, dailyTokenLimit: event.currentTarget.value })
+                        }
+                        placeholder="0"
+                        step={1000}
+                        type="number"
+                        value={entitlementForm.dailyTokenLimit}
+                      />
+                    </Field>
+                  </div>
+                  <Toolbar>
+                    <Button onClick={() => void actions.updateLocalEntitlement()} variant="secondary">
+                      <Save className="h-4 w-4" />
+                      保存套餐
+                    </Button>
+                    <Button onClick={() => void actions.refreshLocalUsage()} variant="outline">
+                      <RefreshCw className="h-4 w-4" />
+                      刷新用量
+                    </Button>
+                  </Toolbar>
+                </div>
+              </div>
+            ) : (
+              <div className="account-login-block">
+                <div className="inline-fields">
+                  <Field label="手机号">
+                    <Input
+                      inputMode="tel"
+                      onChange={(event) => onLoginFormChange({ ...loginForm, phone: event.currentTarget.value })}
+                      placeholder="13812345678"
+                      value={loginForm.phone}
+                    />
+                  </Field>
+                  <Field label="验证码">
+                    <Input
+                      inputMode="numeric"
+                      maxLength={6}
+                      onChange={(event) => onLoginFormChange({ ...loginForm, code: event.currentTarget.value })}
+                      placeholder="6 位数字"
+                      value={loginForm.code}
+                    />
+                  </Field>
+                </div>
+                <Toolbar>
+                  <Button onClick={() => void actions.requestLocalSmsCode()} variant="secondary">
+                    获取验证码
+                  </Button>
+                  <Button onClick={() => void actions.loginWithLocalSmsCode()}>
+                    <KeyRound className="h-4 w-4" />
+                    登录
+                  </Button>
+                </Toolbar>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Panel>
+      <div className="overview-two-col">
+        <Panel>
+          <CardHead title="阿里百炼默认供应商" detail="默认走千问兼容接口，APIMart 保留为备选" />
+          <CardContent>
+            <div className="provider-ready">
+              <div>
+                <strong>{activeProfile?.name ?? DEFAULT_RELAY_PROVIDER_NAME}</strong>
+                <span>{defaultProviderModel}</span>
+              </div>
+              <Badge status={apiKeyReady ? "ok" : "not_checked"} />
+            </div>
+            <div className="provider-kv">
+              <span>Endpoint</span>
+              <code>{defaultProviderEndpoint}</code>
+              <span>Key</span>
+              <strong>{apiKeyReady ? formatRelayApiKeySource(relay?.apiKeySource) : "待填写"}</strong>
+              <span>模式</span>
+              <strong>{activeProfile?.relayMode === "pureApi" ? "纯 API" : relayModeLabel(activeProfile?.relayMode ?? "pureApi")}</strong>
+              <span>今日请求</span>
+              <strong>{localUsage ? `${formatCompactNumber(localUsage.requestCount)} 次` : "等待读取"}</strong>
+              <span>今日用量</span>
+              <strong>{localUsage ? `约 ${formatCompactNumber(localUsage.usedTokens)} tokens` : "等待读取"}</strong>
+              <span>每日额度</span>
+              <strong>
+                {localUsage?.dailyTokenLimit
+                  ? `${formatCompactNumber(localUsage.usedTokens)} / ${formatCompactNumber(localUsage.dailyTokenLimit)}`
+                  : "只记账"}
+              </strong>
+              <span>额度来源</span>
+              <strong>{usageLimitSourceLabel(localUsage?.limitSource ?? entitlement?.source ?? "unlimited")}</strong>
+            </div>
+            <Toolbar>
+              <Button onClick={() => void actions.navigateTo("relay")} variant="secondary">
+                <KeyRound className="h-4 w-4" />
+                打开供应商配置
+              </Button>
+              <Button onClick={() => void actions.refreshLocalUsage()} variant="outline">
+                <RefreshCw className="h-4 w-4" />
+                刷新用量
+              </Button>
+              <Button onClick={() => void actions.navigateTo("about")} variant="outline">
+                查看日志
+              </Button>
+            </Toolbar>
+          </CardContent>
+        </Panel>
+        <Panel>
+          <CardHead title="预置能力清单" detail="默认推荐的插件、Skill 和用户脚本入口" />
+          <CardContent>
+            <div className="capability-list">
+              {presetCapabilities.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button className="capability-row" key={item.name} onClick={() => void actions.navigateTo(item.route)} type="button">
+                    <span className="scenario-icon">
+                      <Icon className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                    <span>
+                      <strong>{item.name}</strong>
+                      <small>{item.summary}</small>
+                    </span>
+                    <Badge status={item.type} />
+                  </button>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Panel>
+      </div>
+      <Panel>
+        <CardHead title="AI Native 场景工作台" detail="选择一个真实任务，按最小闭环推进到可验收结果" />
+        <CardContent>
+          <div className="scenario-grid">
+            {scenarioWorkflows.map((scenario) => {
+              const Icon = scenario.icon;
+              return (
+                <div className="scenario-card" key={scenario.title}>
+                  <div className="scenario-card-head">
+                    <span className="scenario-icon">
+                      <Icon className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                    <div>
+                      <strong>{scenario.title}</strong>
+                      <span>{scenario.summary}</span>
+                    </div>
+                  </div>
+                  <div className="scenario-deliverable">
+                    <small>交付物</small>
+                    <span>{scenario.deliverable}</span>
+                  </div>
+                  <div className="scenario-steps">
+                    {scenario.steps.map((step) => (
+                      <span key={step}>{step}</span>
+                    ))}
+                  </div>
+                  <Button onClick={() => void actions.navigateTo(scenario.route)} size="sm" variant="secondary">
+                    进入配置
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Panel>
       <Panel>
         <CardHead title="健康检查" detail="概览只展示关键问题，具体配置在对应页面处理" />
         <CardContent>
@@ -1821,12 +3825,425 @@ function OverviewScreen({
           <Toolbar>
             <Button onClick={() => void actions.launch()}>
               <Rocket className="h-4 w-4" />
-              启动 Codex++
+              启动 {PRODUCT_NAME}
             </Button>
             <Button variant="secondary" onClick={() => void actions.goLogs()}>
               打开关于
             </Button>
           </Toolbar>
+        </CardContent>
+      </Panel>
+    </>
+  );
+}
+
+function AdminConsoleScreen({
+  console: adminConsole,
+  localBackend,
+  managedProxy,
+  userForm,
+  teamForm,
+  renewalForm,
+  onUserFormChange,
+  onTeamFormChange,
+  onRenewalFormChange,
+  actions,
+}: {
+  console: AdminConsoleResult | null;
+  localBackend: LocalBackendStateResult | null;
+  managedProxy: ManagedProxyRuntimeResult | null;
+  userForm: { userId: string; planId: string; planName: string; dailyTokenLimit: string; reason: string };
+  teamForm: { teamId: string; planId: string; planName: string; dailyTokenLimit: string; reason: string };
+  renewalForm: {
+    subjectType: string;
+    subjectId: string;
+    planId: string;
+    planName: string;
+    dailyTokenLimit: string;
+    amountCents: string;
+    currency: string;
+    paymentChannel: string;
+    externalOrderId: string;
+    reason: string;
+  };
+  onUserFormChange: (value: { userId: string; planId: string; planName: string; dailyTokenLimit: string; reason: string }) => void;
+  onTeamFormChange: (value: { teamId: string; planId: string; planName: string; dailyTokenLimit: string; reason: string }) => void;
+  onRenewalFormChange: (value: {
+    subjectType: string;
+    subjectId: string;
+    planId: string;
+    planName: string;
+    dailyTokenLimit: string;
+    amountCents: string;
+    currency: string;
+    paymentChannel: string;
+    externalOrderId: string;
+    reason: string;
+  }) => void;
+  actions: Actions;
+}) {
+  const state = adminConsole?.state ?? localBackend;
+  const users = adminConsole?.users.users ?? [];
+  const teams = adminConsole?.teams.teams ?? [];
+  const renewals = adminConsole?.renewals.renewals ?? [];
+  const auditEvents = adminConsole?.auditEvents ?? [];
+  const selectedUser = users.find((user) => user.userId === userForm.userId) ?? null;
+  const selectedTeam = teams.find((team) => team.teamId === teamForm.teamId) ?? null;
+  const selectUser = (user: AdminUserOverview) => {
+    onUserFormChange({
+      userId: user.userId,
+      planId: user.planId ?? "jiyi_pro",
+      planName: user.planName ?? "极义 Pro",
+      dailyTokenLimit: String(user.dailyTokenLimit ?? 500000),
+      reason: userForm.reason,
+    });
+    onRenewalFormChange({
+      ...renewalForm,
+      subjectType: "user",
+      subjectId: user.userId,
+      planId: user.planId ?? renewalForm.planId,
+      planName: user.planName ?? renewalForm.planName,
+      dailyTokenLimit: String(user.dailyTokenLimit ?? numberOrDefault(renewalForm.dailyTokenLimit, 500000)),
+    });
+  };
+  const selectTeam = (team: AdminTeamOverview) => {
+    onTeamFormChange({
+      teamId: team.teamId,
+      planId: team.planId || "team_pro",
+      planName: team.planName || "团队 Pro",
+      dailyTokenLimit: String(team.dailyTokenLimit || 2000000),
+      reason: teamForm.reason,
+    });
+    onRenewalFormChange({
+      ...renewalForm,
+      subjectType: "team",
+      subjectId: team.teamId,
+      planId: team.planId || renewalForm.planId,
+      planName: team.planName || renewalForm.planName,
+      dailyTokenLimit: String(team.dailyTokenLimit || numberOrDefault(renewalForm.dailyTokenLimit, 2000000)),
+    });
+  };
+
+  return (
+    <>
+      <Panel className="admin-hero">
+        <CardHead title="运营总览" detail={state?.dbPath ?? "本地后端库未读取"} />
+        <CardContent>
+          <div className="admin-summary">
+            <Metric label="用户" value={String(state?.userCount ?? 0)} />
+            <Metric label="封禁" value={String(state?.blockedUserCount ?? 0)} />
+            <Metric label="团队" value={String(state?.teamCount ?? 0)} />
+            <Metric label="今日用户样本" value={String(users.length)} />
+            <Metric label="续费记录" value={String(state?.billingRenewalCount ?? 0)} />
+            <Metric label="支付事件" value={String(state?.billingPaymentEventCount ?? 0)} />
+            <Metric label="审计事件" value={String(state?.auditEventCount ?? 0)} />
+            <Metric label="有效 session" value={String(state?.activeSessionCount ?? 0)} />
+            <Metric label="托管代理" value={managedProxy?.running ? "运行中" : "未运行"} />
+            <Metric label="管理 Key" value={managedProxy?.adminKeyConfigured ? "已配置" : "未配置"} />
+            <Metric label="计费 Key" value={managedProxy?.billingKeyConfigured ? "已配置" : "未配置"} />
+            <Metric label="风控 Key" value={managedProxy?.accessKeyConfigured ? "已配置" : "未配置"} />
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.refreshAdminConsole()}>
+              <RefreshCw className="h-4 w-4" />
+              刷新总后台
+            </Button>
+            <Button variant="secondary" onClick={() => void actions.applyIdentitySyncLocally()}>
+              <Database className="h-4 w-4" />
+              同步本地账号
+            </Button>
+            <Button variant="secondary" onClick={() => void actions.startManagedProxy()}>
+              <Power className="h-4 w-4" />
+              启动托管代理
+            </Button>
+            <Button variant="outline" onClick={() => void actions.reconcileAdminBilling()}>
+              支付重对账
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+
+      <div className="admin-layout">
+        <Panel>
+          <CardHead title="用户运营" detail={`当前日：${adminConsole?.users.day || "未读取"}`} />
+          <CardContent>
+            <div className="admin-table admin-user-table">
+              <div className="admin-table-head">
+                <span>用户</span>
+                <span>状态</span>
+                <span>套餐</span>
+                <span>今日用量</span>
+                <span>Session</span>
+                <span>操作</span>
+              </div>
+              {users.length ? (
+                users.map((user) => (
+                  <div className="admin-table-row" key={user.userId}>
+                    <span>
+                      <strong>{user.phoneMasked || user.userId}</strong>
+                      <small>{shortId(user.userId)}</small>
+                    </span>
+                    <span>
+                      <Badge status={user.accessStatus === "blocked" ? "failed" : "ok"} />
+                      {user.accessReason ? <small>{user.accessReason}</small> : null}
+                    </span>
+                    <span>
+                      <strong>{user.planName ?? "未配置"}</strong>
+                      <small>{formatDailyLimit(user.dailyTokenLimit ?? 0)}</small>
+                    </span>
+                    <span>
+                      <strong>{formatCompactNumber(user.todayUsedTokens)}</strong>
+                      <small>{formatRemaining(user.todayRemainingTokens)}</small>
+                    </span>
+                    <span>
+                      <strong>{user.activeSessionCount}/{user.sessionCount}</strong>
+                      <small>{formatTime(user.lastSyncedAtMs)}</small>
+                    </span>
+                    <span className="admin-row-actions">
+                      <Button size="sm" variant="secondary" onClick={() => selectUser(user)}>选择</Button>
+                      {user.accessStatus === "blocked" ? (
+                        <Button size="sm" variant="outline" onClick={() => void actions.setAdminUserAccess(user.userId, "active")}>解封</Button>
+                      ) : (
+                        <Button size="sm" variant="outline" onClick={() => void actions.setAdminUserAccess(user.userId, "blocked")}>封禁</Button>
+                      )}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="empty">暂无用户。先在工作台完成手机号登录，再同步到本地后端。</div>
+              )}
+            </div>
+          </CardContent>
+        </Panel>
+
+        <Panel>
+          <CardHead title="用户套餐调整" detail={selectedUser ? selectedUser.phoneMasked : "选择用户后可直接编辑"} />
+          <CardContent>
+            <div className="form-row">
+              <Field label="用户 ID">
+                <Input value={userForm.userId} onChange={(event) => onUserFormChange({ ...userForm, userId: event.currentTarget.value })} />
+              </Field>
+              <Field label="套餐 ID">
+                <Input value={userForm.planId} onChange={(event) => onUserFormChange({ ...userForm, planId: event.currentTarget.value })} />
+              </Field>
+            </div>
+            <div className="form-row">
+              <Field label="套餐名称">
+                <Input value={userForm.planName} onChange={(event) => onUserFormChange({ ...userForm, planName: event.currentTarget.value })} />
+              </Field>
+              <Field label="每日额度">
+                <Input type="number" min={0} value={userForm.dailyTokenLimit} onChange={(event) => onUserFormChange({ ...userForm, dailyTokenLimit: event.currentTarget.value })} />
+              </Field>
+            </div>
+            <Field label="操作原因">
+              <Input value={userForm.reason} onChange={(event) => onUserFormChange({ ...userForm, reason: event.currentTarget.value })} placeholder="例如 客服补偿 / 升级套餐" />
+            </Field>
+            <Toolbar>
+              <Button onClick={() => void actions.updateAdminUserEntitlement()}>
+                <Save className="h-4 w-4" />
+                保存用户套餐
+              </Button>
+              <Button variant="secondary" onClick={() => void actions.setAdminUserAccess(userForm.userId, "blocked")}>封禁</Button>
+              <Button variant="outline" onClick={() => void actions.setAdminUserAccess(userForm.userId, "active")}>解封</Button>
+            </Toolbar>
+          </CardContent>
+        </Panel>
+      </div>
+
+      <div className="admin-layout">
+        <Panel>
+          <CardHead title="团队运营" detail={`当前日：${adminConsole?.teams.day || "未读取"}`} />
+          <CardContent>
+            <div className="admin-table admin-team-table">
+              <div className="admin-table-head">
+                <span>团队</span>
+                <span>成员</span>
+                <span>套餐</span>
+                <span>今日用量</span>
+                <span>更新时间</span>
+                <span>操作</span>
+              </div>
+              {teams.length ? (
+                teams.map((team) => (
+                  <div className="admin-table-row" key={team.teamId}>
+                    <span>
+                      <strong>{team.teamName}</strong>
+                      <small>{team.teamId}</small>
+                    </span>
+                    <span>
+                      <strong>{team.activeMemberCount}/{team.memberCount}</strong>
+                      <small>封禁 {team.blockedMemberCount}</small>
+                    </span>
+                    <span>
+                      <strong>{team.planName}</strong>
+                      <small>{formatDailyLimit(team.dailyTokenLimit)}</small>
+                    </span>
+                    <span>
+                      <strong>{formatCompactNumber(team.todayUsedTokens)}</strong>
+                      <small>{formatRemaining(team.todayRemainingTokens)}</small>
+                    </span>
+                    <span>{formatTime(team.updatedAtMs)}</span>
+                    <span className="admin-row-actions">
+                      <Button size="sm" variant="secondary" onClick={() => selectTeam(team)}>选择</Button>
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="empty">暂无团队。同步本地账号后会自动生成默认团队。</div>
+              )}
+            </div>
+          </CardContent>
+        </Panel>
+
+        <Panel>
+          <CardHead title="团队套餐调整" detail={selectedTeam ? selectedTeam.teamName : "选择团队后可直接编辑"} />
+          <CardContent>
+            <div className="form-row">
+              <Field label="团队 ID">
+                <Input value={teamForm.teamId} onChange={(event) => onTeamFormChange({ ...teamForm, teamId: event.currentTarget.value })} />
+              </Field>
+              <Field label="套餐 ID">
+                <Input value={teamForm.planId} onChange={(event) => onTeamFormChange({ ...teamForm, planId: event.currentTarget.value })} />
+              </Field>
+            </div>
+            <div className="form-row">
+              <Field label="套餐名称">
+                <Input value={teamForm.planName} onChange={(event) => onTeamFormChange({ ...teamForm, planName: event.currentTarget.value })} />
+              </Field>
+              <Field label="每日额度">
+                <Input type="number" min={0} value={teamForm.dailyTokenLimit} onChange={(event) => onTeamFormChange({ ...teamForm, dailyTokenLimit: event.currentTarget.value })} />
+              </Field>
+            </div>
+            <Field label="操作原因">
+              <Input value={teamForm.reason} onChange={(event) => onTeamFormChange({ ...teamForm, reason: event.currentTarget.value })} placeholder="例如 团队升级 / 续费补录" />
+            </Field>
+            <Toolbar>
+              <Button onClick={() => void actions.updateAdminTeamEntitlement()}>
+                <Save className="h-4 w-4" />
+                保存团队套餐
+              </Button>
+            </Toolbar>
+          </CardContent>
+        </Panel>
+      </div>
+
+      <div className="admin-layout">
+        <Panel>
+          <CardHead title="续费与落账" detail="支持手工续费、企业转账和支付凭证补录" />
+          <CardContent>
+            <div className="form-row">
+              <Field label="主体类型">
+                <select className="select-input" value={renewalForm.subjectType} onChange={(event) => onRenewalFormChange({ ...renewalForm, subjectType: event.currentTarget.value })}>
+                  <option value="user">用户</option>
+                  <option value="team">团队</option>
+                </select>
+              </Field>
+              <Field label="主体 ID">
+                <Input value={renewalForm.subjectId} onChange={(event) => onRenewalFormChange({ ...renewalForm, subjectId: event.currentTarget.value })} />
+              </Field>
+            </div>
+            <div className="form-row">
+              <Field label="套餐 ID">
+                <Input value={renewalForm.planId} onChange={(event) => onRenewalFormChange({ ...renewalForm, planId: event.currentTarget.value })} />
+              </Field>
+              <Field label="套餐名称">
+                <Input value={renewalForm.planName} onChange={(event) => onRenewalFormChange({ ...renewalForm, planName: event.currentTarget.value })} />
+              </Field>
+            </div>
+            <div className="form-row">
+              <Field label="每日额度">
+                <Input type="number" min={0} value={renewalForm.dailyTokenLimit} onChange={(event) => onRenewalFormChange({ ...renewalForm, dailyTokenLimit: event.currentTarget.value })} />
+              </Field>
+              <Field label="金额（分）">
+                <Input type="number" min={0} value={renewalForm.amountCents} onChange={(event) => onRenewalFormChange({ ...renewalForm, amountCents: event.currentTarget.value })} />
+              </Field>
+            </div>
+            <div className="form-row">
+              <Field label="币种">
+                <Input value={renewalForm.currency} onChange={(event) => onRenewalFormChange({ ...renewalForm, currency: event.currentTarget.value })} />
+              </Field>
+              <Field label="支付渠道">
+                <Input value={renewalForm.paymentChannel} onChange={(event) => onRenewalFormChange({ ...renewalForm, paymentChannel: event.currentTarget.value })} placeholder="manual / alipay / wechatpay" />
+              </Field>
+            </div>
+            <div className="form-row">
+              <Field label="外部订单号">
+                <Input value={renewalForm.externalOrderId} onChange={(event) => onRenewalFormChange({ ...renewalForm, externalOrderId: event.currentTarget.value })} />
+              </Field>
+              <Field label="备注">
+                <Input value={renewalForm.reason} onChange={(event) => onRenewalFormChange({ ...renewalForm, reason: event.currentTarget.value })} />
+              </Field>
+            </div>
+            <Toolbar>
+              <Button onClick={() => void actions.recordAdminBillingRenewal()}>记录续费</Button>
+              <Button variant="secondary" onClick={() => void actions.reconcileAdminBilling()}>支付重对账</Button>
+            </Toolbar>
+          </CardContent>
+        </Panel>
+
+        <Panel>
+          <CardHead title="最近续费" detail={`${renewals.length} 条`} />
+          <CardContent>
+            <div className="admin-table admin-renewal-table">
+              <div className="admin-table-head">
+                <span>主体</span>
+                <span>套餐</span>
+                <span>金额</span>
+                <span>渠道</span>
+                <span>时间</span>
+              </div>
+              {renewals.length ? (
+                renewals.slice(0, 8).map((renewal) => (
+                  <div className="admin-table-row" key={renewal.renewalId}>
+                    <span>
+                      <strong>{renewal.subjectType}</strong>
+                      <small>{shortId(renewal.subjectId)}</small>
+                    </span>
+                    <span>
+                      <strong>{renewal.planName}</strong>
+                      <small>{formatDailyLimit(renewal.dailyTokenLimit)}</small>
+                    </span>
+                    <span>{formatMoneyCents(renewal.amountCents, renewal.currency)}</span>
+                    <span>{renewal.paymentChannel}</span>
+                    <span>{formatTime(renewal.createdAtMs)}</span>
+                  </div>
+                ))
+              ) : (
+                <div className="empty">暂无续费记录。</div>
+              )}
+            </div>
+          </CardContent>
+        </Panel>
+      </div>
+
+      <Panel>
+        <CardHead title="审计事件" detail={`${auditEvents.length} 条最近记录`} />
+        <CardContent>
+          <div className="admin-table admin-audit-table">
+            <div className="admin-table-head">
+              <span>事件</span>
+              <span>操作者</span>
+              <span>用户</span>
+              <span>原因</span>
+              <span>时间</span>
+            </div>
+            {auditEvents.length ? (
+              auditEvents.slice(0, 12).map((event) => (
+                <div className="admin-table-row" key={event.eventId}>
+                  <span>
+                    <strong>{event.eventType}</strong>
+                    <small>{shortId(event.eventId)}</small>
+                  </span>
+                  <span>{event.actorType}</span>
+                  <span>{event.subjectUserId ? shortId(event.subjectUserId) : "-"}</span>
+                  <span>{event.reason || auditMetadataSummary(event.metadata)}</span>
+                  <span>{formatTime(event.createdAtMs)}</span>
+                </div>
+              ))
+            ) : (
+              <div className="empty">暂无审计事件。</div>
+            )}
+          </div>
         </CardContent>
       </Panel>
     </>
@@ -1920,6 +4337,52 @@ function RelayScreen({
               <small>关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。</small>
             </span>
           </label>
+          <label className="switch-row relay-local-proxy-switch">
+            <input
+              checked={normalized.jiyiLocalProxyEnabled}
+              onChange={(event) => {
+                const next = { ...normalized, jiyiLocalProxyEnabled: event.currentTarget.checked };
+                void saveRelaySettings(next);
+              }}
+              type="checkbox"
+            />
+            <span>
+              <strong>极义本地请求代理</strong>
+              <small>开启后内置 Codex 只写 127.0.0.1 和占位 token，真实 Key 留在极义设置或环境变量中。</small>
+            </span>
+          </label>
+          <label className="switch-row relay-usage-meter-switch">
+            <input
+              checked={normalized.jiyiLocalUsageMeterEnabled}
+              onChange={(event) => {
+                const next = { ...normalized, jiyiLocalUsageMeterEnabled: event.currentTarget.checked };
+                void saveRelaySettings(next);
+              }}
+              type="checkbox"
+            />
+            <span>
+              <strong>本地用量记账</strong>
+              <small>记录 helper 转发的请求数和 token 估算值；每日额度为 0 时只记账不拦截。</small>
+            </span>
+          </label>
+          <Field className="relay-field-quota" label="每日 token 上限">
+            <Input
+              min={0}
+              type="number"
+              value={String(normalized.jiyiDailyTokenLimit || 0)}
+              onChange={(event) => {
+                const value = Number.parseInt(event.currentTarget.value, 10);
+                const next = { ...normalized, jiyiDailyTokenLimit: Number.isFinite(value) ? Math.max(0, value) : 0 };
+                onFormChange(next);
+              }}
+              onBlur={(event) => {
+                const value = Number.parseInt(event.currentTarget.value, 10);
+                const next = { ...normalized, jiyiDailyTokenLimit: Number.isFinite(value) ? Math.max(0, value) : 0 };
+                void saveRelaySettings(next);
+              }}
+              placeholder="0 表示不限制"
+            />
+          </Field>
           <label className="switch-row relay-link-switch">
             <input
               checked={normalized.ccsLinkEnabled}
@@ -1987,7 +4450,7 @@ function EnhanceScreen({
               type="checkbox"
             />
             <span>
-              <strong>启用 Codex++ 页面增强</strong>
+              <strong>启用 {PRODUCT_NAME} 页面增强</strong>
               <small>关闭后会停用删除、导出、项目移动、Timeline、插件相关和菜单位置增强。</small>
             </span>
           </label>
@@ -2003,7 +4466,7 @@ function EnhanceScreen({
             <FeatureToggle title="强制解锁入口" detail="恢复 1.1.9 的入口解锁方式，强制显示并启用插件入口。" checked={form.codexAppPluginEntryUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginEntryUnlock", value)} />
             <FeatureToggle title="特殊插件强制安装" detail="解除 App unavailable / 应用不可用导致的前端安装禁用。" checked={form.codexAppForcePluginInstall} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppForcePluginInstall", value)} />
             <FeatureToggle title="模型白名单解锁" detail="从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。" checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
-            <FeatureToggle title="Fast 按钮" detail="显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。" checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
+            <FeatureToggle title="Fast 按钮" detail="显示服务模式切换按钮；部分模型支持 service_tier 时显示 Fast，其余按 Standard 发送。" checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
             <FeatureToggle title="会话删除" detail="在会话列表悬停显示删除按钮，并支持撤销。" checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
             <FeatureToggle title="Markdown 导出" detail="在会话列表显示导出按钮，导出带时间戳的 Markdown。" checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
             <FeatureToggle title="会话项目移动" detail="把会话移动到普通对话或其他本地项目。" checked={form.codexAppProjectMove} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppProjectMove", value)} />
@@ -2011,10 +4474,10 @@ function EnhanceScreen({
             <FeatureToggle title="对话居中宽度" detail="把主对话和输入框限制到固定最大宽度，适合大屏阅读。" checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
             <FeatureToggle title="切换对话保留位置" detail="切换 thread 时恢复上一次浏览位置。" checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
             <FeatureToggle title="Zed Remote open" detail="远程 SSH 文件引用可直接用 Zed Remote Development 打开。" checked={form.codexAppZedRemoteOpen} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppZedRemoteOpen", value)} />
-            <FeatureToggle title="Zed 项目记录" detail="维护 Codex++ 自己的远程项目最近列表。" checked={form.zedRemoteProjectRegistryEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteProjectRegistryEnabled", value)} />
+            <FeatureToggle title="Zed 项目记录" detail={`${PRODUCT_NAME} 会维护自己的远程项目最近列表。`} checked={form.zedRemoteProjectRegistryEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteProjectRegistryEnabled", value)} />
             <FeatureToggle title="同步 Zed settings" detail="高级选项，默认关闭；当前实现不主动改写 Zed settings。" checked={form.zedRemoteSyncToZedSettings} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteSyncToZedSettings", value)} />
             <FeatureToggle title="Upstream worktree" detail="从最新 upstream 分支创建 Git worktree。" checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
-            <FeatureToggle title="原生菜单栏位置" detail="把 Codex++ 菜单插入 Codex 顶部原生菜单栏。" checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
+            <FeatureToggle title="原生菜单栏位置" detail={`把 ${PRODUCT_NAME} 菜单插入 Codex 顶部原生菜单栏。`} checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
           </div>
           <div className="zed-remote-settings">
             <Field label="Zed 默认打开策略">
@@ -2033,7 +4496,7 @@ function EnhanceScreen({
           </div>
           <div className="hint-line">
             <Info className="h-4 w-4" />
-            <span>如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁、强制解锁入口和特殊插件强制安装。</span>
+            <span>保守增强会减少对 Codex 页面结构的改动；完整增强会开启插件入口、强制安装和会话工具。</span>
           </div>
           <Toolbar>
             <Button onClick={() => void actions.saveSettings()}>保存增强设置</Button>
@@ -2072,7 +4535,7 @@ function ZedRemoteScreen({
   return (
     <>
       <Panel>
-        <CardHead title="Zed 远程项目" detail={`${allProjects.length} 个 Codex++ 可识别项目，默认策略：${zedStrategyLabel(form.zedRemoteOpenStrategy)}`} />
+        <CardHead title="Zed 远程项目" detail={`${allProjects.length} 个 ${PRODUCT_NAME} 可识别项目，默认策略：${zedStrategyLabel(form.zedRemoteOpenStrategy)}`} />
         <CardContent>
           <div className="metric-list">
             <Metric label="Current" value={String(currentProjects.length)} />
@@ -2100,7 +4563,7 @@ function ZedRemoteScreen({
               />
               <span>
                 <strong>记录最近打开</strong>
-                <small>保存到 Codex++ state，不改写 Zed settings。</small>
+                <small>保存到 {PRODUCT_NAME} state，不改写 Zed settings。</small>
               </span>
             </label>
           </div>
@@ -2330,7 +4793,7 @@ function SessionsScreen({
             />
             <span>
               <strong>启动前自动修复历史会话</strong>
-              <small>开启后，通过 Codex++ 启动 Codex 前自动整理一次旧对话的归属标记。</small>
+              <small>开启后，通过 {PRODUCT_NAME} 启动 Codex 前自动整理一次旧对话的归属标记。</small>
             </span>
           </label>
           <Toolbar>
@@ -2412,6 +4875,7 @@ function MaintenanceScreen({
   overview,
   watcher,
   settings,
+  releaseReadiness,
   launchForm,
   onLaunchFormChange,
   removeOwnedData,
@@ -2421,6 +4885,7 @@ function MaintenanceScreen({
   overview: OverviewResult | null;
   watcher: WatcherResult | null;
   settings: SettingsResult | null;
+  releaseReadiness: ReleaseReadinessResult | null;
   launchForm: { appPath: string; debugPort: string; helperPort: string };
   onLaunchFormChange: (next: { appPath: string; debugPort: string; helperPort: string }) => void;
   removeOwnedData: boolean;
@@ -2428,6 +4893,13 @@ function MaintenanceScreen({
   actions: Actions;
 }) {
   const savedCodexAppPath = settings?.settings.codexAppPath ?? "";
+  const readinessStatus = !releaseReadiness
+    ? "not_checked"
+    : releaseReadiness.failures > 0
+      ? "failed"
+      : releaseReadiness.warnings > 0
+        ? "warning"
+        : "ok";
   return (
     <>
       <Panel>
@@ -2443,6 +4915,39 @@ function MaintenanceScreen({
             <Button onClick={() => void actions.checkHealth()}>检查</Button>
             <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>修复快捷方式</Button>
             <Button variant="secondary" onClick={() => void actions.repairBackend()}>修复后端</Button>
+            <Button variant="secondary" onClick={() => void actions.repairOfficialIsolation()}>修复原版隔离</Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title="发布前检查" detail="检查 DMG、签名、bundle id、原版 Codex 隔离和 Key 分发风险" />
+        <CardContent>
+          <div className="metric-list release-readiness-summary">
+            <Metric label="发布状态" value={statusLabel(readinessStatus)} />
+            <Metric label="失败项" value={String(releaseReadiness?.failures ?? 0)} />
+            <Metric label="风险项" value={String(releaseReadiness?.warnings ?? 0)} />
+            <Metric label="检查时间" value={releaseReadiness?.checkedAtMs ? formatTime(releaseReadiness.checkedAtMs) : "尚未检查"} />
+          </div>
+          <div className="status-table release-readiness-table">
+            {releaseReadiness?.items.length ? (
+              releaseReadiness.items.map((item) => <ReleaseReadinessRow item={item} key={item.id} />)
+            ) : (
+              <ReleaseReadinessRow
+                item={{
+                  id: "not_checked",
+                  label: "发布前检查",
+                  status: "not_checked",
+                  message: "点击按钮后检查极义codex是否仍会影响原版 Codex，以及安装包是否为完整客户端。",
+                  path: null,
+                }}
+              />
+            )}
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.checkReleaseReadiness()}>
+              <ShieldCheck className="h-4 w-4" />
+              运行发布前检查
+            </Button>
           </Toolbar>
         </CardContent>
       </Panel>
@@ -2451,7 +4956,7 @@ function MaintenanceScreen({
         <CardContent>
           <label className="check-row">
             <input checked={removeOwnedData} onChange={(event) => onRemoveOwnedDataChange(event.currentTarget.checked)} type="checkbox" />
-            <span>卸载时移除 Codex++ 托管数据</span>
+            <span>卸载时移除 {PRODUCT_NAME} 托管数据</span>
           </label>
           <Toolbar>
             <Button onClick={() => void actions.installEntrypoints()}>安装入口</Button>
@@ -2461,7 +4966,7 @@ function MaintenanceScreen({
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="自动接管" detail="Watcher 用于保持 Codex++ 接管状态" />
+        <CardHead title="自动接管" detail={`Watcher 用于保持 ${PRODUCT_NAME} 接管状态`} />
         <CardContent>
           <Toolbar>
             <Button variant="secondary" onClick={() => void actions.installWatcher()}>安装 watcher</Button>
@@ -2481,7 +4986,7 @@ function MaintenanceScreen({
           <Field label="保存的应用路径">
             <Input
               value={settings?.settings.codexAppPath ?? ""}
-              placeholder="选择 Codex.exe、Codex.app、app 目录或解包目录"
+              placeholder="选择 JiyiCodexClient.app、Codex.exe、app 目录或解包目录"
               readOnly
             />
           </Field>
@@ -2517,7 +5022,7 @@ function MaintenanceScreen({
             </Field>
           </div>
           <Toolbar>
-            <Button onClick={() => void actions.launch()}>启动 Codex++</Button>
+            <Button onClick={() => void actions.launch()}>启动 {PRODUCT_NAME}</Button>
             <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
               保存为默认路径
             </Button>
@@ -2544,10 +5049,10 @@ function AboutScreen({
   return (
     <>
       <Panel>
-        <CardHead title="关于 Codex++" detail="本地 Codex 增强、管理工具和安装包维护" />
+        <CardHead title={`关于 ${PRODUCT_NAME}`} detail="本地 Codex 增强、管理工具和安装包维护" />
         <CardContent>
           <div className="metric-list">
-            <Metric label="Codex++ 版本" value={overview?.current_version ?? update?.currentVersion ?? "-"} />
+            <Metric label={`${PRODUCT_NAME} 版本`} value={overview?.current_version ?? update?.currentVersion ?? "-"} />
             <Metric label="Codex 版本" value={overview?.codex_version ?? "未检测到"} />
             <Metric label="项目地址" value="github.com/BigPizzaV3/CodexPlusPlus" />
           </div>
@@ -2597,13 +5102,23 @@ function SettingsScreen({
   settings,
   theme,
   form,
+  smsProvider,
+  smsProviderForm,
+  localBackend,
+  managedProxy,
   onFormChange,
+  onSmsProviderFormChange,
   actions,
 }: {
   settings: SettingsResult | null;
   theme: Theme;
   form: BackendSettings;
+  smsProvider: SmsProviderSettingsResult | null;
+  smsProviderForm: SmsProviderForm;
+  localBackend: LocalBackendStateResult | null;
+  managedProxy: ManagedProxyRuntimeResult | null;
   onFormChange: (value: BackendSettings) => void;
+  onSmsProviderFormChange: (value: SmsProviderForm) => void;
   actions: Actions;
 }) {
   return (
@@ -2618,13 +5133,13 @@ function SettingsScreen({
             </div>
             <Button variant="secondary" onClick={actions.toggleTheme}>切换主题</Button>
           </div>
-          <Field label="供应商测试模型">
-            <Input
-              value={form.relayTestModel}
-              onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
-              placeholder="例如 gpt-5.4-mini"
-            />
-          </Field>
+            <Field label="供应商测试模型">
+              <Input
+                value={form.relayTestModel}
+                onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
+                placeholder="例如 qwen3.7-plus"
+              />
+            </Field>
           <label className="check-row">
             <input
               checked={form.cliWrapperEnabled}
@@ -2658,6 +5173,254 @@ function SettingsScreen({
             <Button onClick={() => void actions.saveSettings()}>保存设置</Button>
             <Button variant="secondary" onClick={() => void actions.resetSettings()}>
               重置设置
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title="腾讯云短信" detail={smsProvider?.settingsPath ?? "极义本地短信配置"} />
+        <CardContent>
+          <div className="metric-list">
+            <Metric label="状态" value={smsProvider?.smsConfig.configured ? "参数完整" : "参数未完整"} />
+            <Metric label="发送模式" value={smsProvider?.smsConfig.dryRun ? "本地干跑" : "腾讯云"} />
+            <Metric label="密钥来源" value={formatSmsSecretSource(smsProvider?.smsConfig)} />
+            <Metric label="SecretId" value={smsProvider?.smsConfig.secretIdSet ? "已配置" : "未配置"} />
+            <Metric label="SecretKey" value={smsProvider?.smsConfig.secretKeySet ? "已配置" : "未配置"} />
+            <Metric label="参数顺序" value={smsProvider?.settings.templateParamMode ?? "code_ttl"} />
+          </div>
+          <div className="form-row">
+            <Field label="短信区域">
+              <Input
+                value={smsProviderForm.region}
+                onChange={(event) => onSmsProviderFormChange({ ...smsProviderForm, region: event.currentTarget.value })}
+                placeholder="ap-guangzhou"
+              />
+            </Field>
+            <Field label="SmsSdkAppId">
+              <Input
+                value={smsProviderForm.appId}
+                onChange={(event) => onSmsProviderFormChange({ ...smsProviderForm, appId: event.currentTarget.value })}
+                placeholder="腾讯云短信应用 ID"
+              />
+            </Field>
+          </div>
+          <div className="form-row">
+            <Field label="短信签名">
+              <Input
+                value={smsProviderForm.signName}
+                onChange={(event) => onSmsProviderFormChange({ ...smsProviderForm, signName: event.currentTarget.value })}
+                placeholder="签名内容"
+              />
+            </Field>
+            <Field label="模板 ID">
+              <Input
+                value={smsProviderForm.templateId}
+                onChange={(event) => onSmsProviderFormChange({ ...smsProviderForm, templateId: event.currentTarget.value })}
+                placeholder="TemplateId"
+              />
+            </Field>
+          </div>
+          <div className="form-row">
+            <Field label="验证码有效期">
+              <Input
+                min={1}
+                max={60}
+                type="number"
+                value={String(smsProviderForm.ttlMinutes)}
+                onChange={(event) =>
+                  onSmsProviderFormChange({ ...smsProviderForm, ttlMinutes: numberOrDefault(event.currentTarget.value, 10) })
+                }
+              />
+            </Field>
+            <Field label="模板参数">
+              <select
+                className="select-input"
+                value={smsProviderForm.templateParamMode}
+                onChange={(event) => onSmsProviderFormChange({ ...smsProviderForm, templateParamMode: event.currentTarget.value })}
+              >
+                <option value="code_ttl">验证码 + 有效期</option>
+                <option value="code">仅验证码</option>
+                <option value="ttl_code">有效期 + 验证码</option>
+              </select>
+            </Field>
+          </div>
+          <div className="form-row">
+            <Field label="SecretId">
+              <Input
+                type="password"
+                value={smsProviderForm.secretId}
+                onChange={(event) => onSmsProviderFormChange({ ...smsProviderForm, secretId: event.currentTarget.value })}
+                placeholder={smsProvider?.smsConfig.secretIdSet ? smsProvider.secretIdRef : "保存后写入极义钥匙串"}
+              />
+            </Field>
+            <Field label="SecretKey">
+              <Input
+                type="password"
+                value={smsProviderForm.secretKey}
+                onChange={(event) => onSmsProviderFormChange({ ...smsProviderForm, secretKey: event.currentTarget.value })}
+                placeholder={smsProvider?.smsConfig.secretKeySet ? smsProvider.secretKeyRef : "保存后写入极义钥匙串"}
+              />
+            </Field>
+          </div>
+          <label className="check-row">
+            <input
+              checked={smsProviderForm.dryRun}
+              onChange={(event) => onSmsProviderFormChange({ ...smsProviderForm, dryRun: event.currentTarget.checked })}
+              type="checkbox"
+            />
+            <span>保持本地干跑模式</span>
+          </label>
+          <p className="field-hint">
+            SecretId 和 SecretKey 只写入极义 macOS 钥匙串；留空保存会保留已有密钥。关闭干跑且参数完整后才会发送真实短信。
+          </p>
+          <Toolbar>
+            <Button onClick={() => void actions.saveSmsProviderSettings()}>
+              <Save className="h-4 w-4" />
+              保存短信配置
+            </Button>
+            <Button variant="secondary" onClick={() => void actions.refreshSmsProviderSettings()}>
+              <RefreshCw className="h-4 w-4" />
+              刷新短信配置
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title="极义账号服务端" detail="国产账号体系预留接口；不使用 ChatGPT 登录态。" />
+        <CardContent>
+          <div className="metric-list">
+            <Metric label="本地后端库" value={localBackend?.initialized ? "已初始化" : "未读取"} />
+            <Metric label="同步批次" value={String(localBackend?.batchCount ?? 0)} />
+            <Metric label="承接用户" value={String(localBackend?.userCount ?? 0)} />
+            <Metric label="封禁用户" value={String(localBackend?.blockedUserCount ?? 0)} />
+            <Metric label="承接团队" value={String(localBackend?.teamCount ?? 0)} />
+            <Metric label="团队成员" value={String(localBackend?.teamMemberCount ?? 0)} />
+            <Metric label="续费记录" value={String(localBackend?.billingRenewalCount ?? 0)} />
+            <Metric label="支付事件" value={String(localBackend?.billingPaymentEventCount ?? 0)} />
+            <Metric label="审计事件" value={String(localBackend?.auditEventCount ?? 0)} />
+            <Metric label="服务端 session" value={String(localBackend?.sessionCount ?? 0)} />
+            <Metric label="有效 session" value={String(localBackend?.activeSessionCount ?? 0)} />
+            <Metric label="已吊销 session" value={String(localBackend?.revokedSessionCount ?? 0)} />
+            <Metric label="最后同步" value={localBackend?.lastSyncedAtMs ? formatTime(localBackend.lastSyncedAtMs) : "尚未同步"} />
+            <Metric label="最近审计" value={localBackend?.lastAuditEventAtMs ? formatTime(localBackend.lastAuditEventAtMs) : "尚未记录"} />
+            <Metric label="最近续费" value={localBackend?.lastBillingRenewalAtMs ? formatTime(localBackend.lastBillingRenewalAtMs) : "尚未记录"} />
+            <Metric
+              label="最近支付回调"
+              value={localBackend?.lastBillingPaymentEventAtMs ? formatTime(localBackend.lastBillingPaymentEventAtMs) : "尚未记录"}
+            />
+            <Metric
+              label="最近访问控制"
+              value={localBackend?.lastUserAccessUpdatedAtMs ? formatTime(localBackend.lastUserAccessUpdatedAtMs) : "尚未变更"}
+            />
+            <Metric label="最近签发" value={localBackend?.lastSessionIssuedAtMs ? formatTime(localBackend.lastSessionIssuedAtMs) : "尚未签发"} />
+            <Metric label="最近吊销" value={localBackend?.lastSessionRevokedAtMs ? formatTime(localBackend.lastSessionRevokedAtMs) : "尚未吊销"} />
+          </div>
+          <Field label="本地后端数据库">
+            <code>{localBackend?.dbPath ?? "等待读取本地账号服务端库"}</code>
+          </Field>
+          <Field label="同步 Endpoint">
+            <Input
+              value={form.jiyiIdentitySyncEndpoint}
+              onChange={(event) => onFormChange({ ...form, jiyiIdentitySyncEndpoint: event.currentTarget.value })}
+              placeholder="https://api.example.com/jiyi/codex/identity/sync"
+            />
+          </Field>
+          <Field label="同步 API Key">
+            <Input
+              type="password"
+              value={form.jiyiIdentitySyncApiKey}
+              onChange={(event) => onFormChange({ ...form, jiyiIdentitySyncApiKey: event.currentTarget.value })}
+              placeholder={form.jiyiIdentitySyncApiKey.startsWith("jiyi-keychain:") ? "已保存到极义钥匙串" : ""}
+            />
+          </Field>
+          <p className="field-hint">
+            请求体只包含脱敏手机号、设备、本地套餐和用量摘要；同步 API Key 会写入极义自己的 macOS 钥匙串。
+          </p>
+          <label className="check-row">
+            <input
+              checked={form.jiyiManagedProxyEnabled}
+              onChange={(event) => onFormChange({ ...form, jiyiManagedProxyEnabled: event.currentTarget.checked })}
+              type="checkbox"
+            />
+            <span>启用极义托管代理</span>
+          </label>
+          <Field label="托管代理 Endpoint">
+            <Input
+              value={form.jiyiManagedProxyEndpoint}
+              onChange={(event) => onFormChange({ ...form, jiyiManagedProxyEndpoint: event.currentTarget.value })}
+              placeholder="https://api.example.com/v1"
+            />
+          </Field>
+          <p className="field-hint">
+            开启后，内置 Codex 仍只连接本机代理；本机 helper 使用极义后端 session token 转发到托管代理，不把百炼或中转站主 key 写进客户端配置。
+          </p>
+          <div className="metric-list">
+            <Metric label="本地托管代理" value={managedProxy?.running ? "运行中" : "未运行"} />
+            <Metric label="PID" value={managedProxy?.pid ? String(managedProxy.pid) : "-"} />
+            <Metric
+              label="健康检查"
+              value={
+                managedProxy?.healthHttpStatus
+                  ? `${managedProxy.healthStatus} / HTTP ${managedProxy.healthHttpStatus}`
+                  : managedProxy?.healthStatus ?? "未检查"
+              }
+            />
+            <Metric label="监听地址" value={managedProxy?.listenAddr ?? "127.0.0.1:57421"} />
+            <Metric label="上游 Key" value={managedProxy?.upstreamKeyConfigured ? "已配置" : "未配置"} />
+            <Metric label="同步 Key" value={managedProxy?.identitySyncKeyConfigured ? "已配置" : "未配置"} />
+            <Metric label="管理 Key" value={managedProxy?.adminKeyConfigured ? "已配置" : "未配置"} />
+            <Metric label="用户只读 Key" value={managedProxy?.userReadKeyConfigured ? "已配置" : "未配置"} />
+            <Metric label="计费 Key" value={managedProxy?.billingKeyConfigured ? "已配置" : "未配置"} />
+            <Metric label="支付回调 Key" value={managedProxy?.paymentWebhookKeyConfigured ? "已配置" : "未配置"} />
+            <Metric label="通用支付验签" value={managedProxy?.paymentWebhookSignatureConfigured ? "已配置" : "未配置"} />
+            <Metric label="支付宝验签" value={managedProxy?.paymentWebhookAlipaySignatureConfigured ? "已配置" : "未配置"} />
+            <Metric label="微信验签" value={managedProxy?.paymentWebhookWechatpaySignatureConfigured ? "已配置" : "未配置"} />
+            <Metric label="风控 Key" value={managedProxy?.accessKeyConfigured ? "已配置" : "未配置"} />
+            <Metric label="审计 Key" value={managedProxy?.auditKeyConfigured ? "已配置" : "未配置"} />
+          </div>
+          <Field label="本地托管代理 Endpoint">
+            <code>{managedProxy?.endpoint ?? "http://127.0.0.1:57421"}</code>
+          </Field>
+          <Field label="本地托管代理上游">
+            <code>{managedProxy?.upstreamBaseUrl ?? APIMART_FALLBACK_BASE_URL}</code>
+          </Field>
+          <Field label="托管代理后端库">
+            <code>{managedProxy?.backendDbPath ?? "~/.codex-session-delete/jiyi-codex-local-backend.sqlite"}</code>
+          </Field>
+          <Field label="本地托管代理日志">
+            <code>{managedProxy?.logPath ?? "~/.codex-session-delete/jiyi-managed-proxy.log"}</code>
+          </Field>
+          <Toolbar>
+            <Button onClick={() => void actions.applyIdentitySyncLocally()}>
+              <Database className="h-4 w-4" />
+              同步到本地后端
+            </Button>
+            <Button onClick={() => void actions.syncIdentityToService()}>
+              <Network className="h-4 w-4" />
+              同步到服务端
+            </Button>
+            <Button variant="secondary" onClick={() => void actions.refreshLocalBackendState()}>
+              <RefreshCw className="h-4 w-4" />
+              刷新本地后端
+            </Button>
+            <Button variant="secondary" onClick={() => void actions.refreshManagedProxy()}>
+              <RefreshCw className="h-4 w-4" />
+              检查托管代理
+            </Button>
+            <Button onClick={() => void actions.startManagedProxy()}>
+              <Power className="h-4 w-4" />
+              启动本地托管代理
+            </Button>
+            <Button variant="secondary" onClick={() => void actions.stopManagedProxy()}>
+              <PowerOff className="h-4 w-4" />
+              停止本地托管代理
+            </Button>
+            <Button onClick={() => void actions.prepareIdentitySyncRequest()}>
+              <FileText className="h-4 w-4" />
+              生成同步请求包
+            </Button>
+            <Button variant="secondary" onClick={() => void actions.saveSettings()}>
+              保存设置
             </Button>
           </Toolbar>
         </CardContent>
@@ -3075,7 +5838,7 @@ function RelayProfileEditor({
   onSwitch: () => void;
   actions: Actions;
 }) {
-  const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
+  const showApiFields = true;
   const [showAdvanced, setShowAdvanced] = useState(false);
   const updateDraft = (patch: Partial<RelayProfile>) => {
     onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
@@ -3108,23 +5871,27 @@ function RelayProfileEditor({
         <Field className="relay-field-mode" label="接入模式">
           <select
             className="field-select"
-            value={profile.relayMode}
+            value={profile.relayMode === "pureApi" ? "pureApi" : profile.relayMode}
             onChange={(event) => {
               const relayMode = event.currentTarget.value as RelayMode;
-              updateDraft(relayMode === "official" ? { relayMode, officialMixApiKey: false } : { relayMode });
+              updateDraft({ relayMode, officialMixApiKey: false });
             }}
           >
-            <option value="official">官方登录</option>
-            <option value="pureApi">纯 API</option>
+            <option value="pureApi">极义 / 百炼纯 API</option>
+            {profile.relayMode !== "pureApi" ? (
+              <option disabled value={profile.relayMode}>
+                历史官方模式（已禁用）
+              </option>
+            ) : null}
           </select>
         </Field>
-        <Field className="relay-field-config-model" label="配置模型">
-          <Input
-            value={profile.model}
-            onChange={(event) => updateDraft({ model: event.currentTarget.value })}
-            placeholder="写入 config.toml 的 model 字段，例如 gpt-5"
-          />
-        </Field>
+            <Field className="relay-field-config-model" label="配置模型">
+              <Input
+                value={profile.model}
+                onChange={(event) => updateDraft({ model: event.currentTarget.value })}
+                placeholder="写入 config.toml 的 model 字段，例如 qwen3.7-plus"
+              />
+            </Field>
         <Field className="relay-field-goals" label="Codex 目标">
           <label className="inline-check">
             <input
@@ -3178,17 +5945,11 @@ function RelayProfileEditor({
             </Field>
           </div>
         ) : null}
-        {profile.relayMode === "official" ? (
-          <Field className="relay-field-official-key" label="API Key">
-            <label className="inline-check">
-              <input
-                checked={profile.officialMixApiKey}
-                onChange={(event) => updateDraft({ officialMixApiKey: event.currentTarget.checked })}
-                type="checkbox"
-              />
-              <span>混入 API KEY</span>
-            </label>
-          </Field>
+        {profile.relayMode !== "pureApi" ? (
+          <div className="hint-line relay-protocol-hint">
+            <ShieldCheck className="h-4 w-4" />
+            <span>极义codex 不使用 ChatGPT 官方账号体系；请把此供应商改为纯 API 后再保存或切换。</span>
+          </div>
         ) : null}
         {showApiFields ? (
           <div className="relay-api-fields">
@@ -3263,7 +6024,7 @@ function RelayProfileEditor({
       {showApiFields && profile.protocol === "chatCompletions" ? (
         <div className="hint-line relay-protocol-hint">
           <MessageCircle className="h-4 w-4" />
-          <span>此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 Codex++ 启动 Codex。</span>
+          <span>此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 {PRODUCT_NAME} 启动 Codex。</span>
         </div>
       ) : null}
       <div className="hint-line relay-protocol-hint">
@@ -3621,7 +6382,7 @@ function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions
         type="button"
       >
         <strong>兼容增强</strong>
-        <span>适合官方登录或官方混入 API Key；保留会话删除、导出、项目移动、Timeline 和用户脚本，关闭插件入口相关增强。</span>
+        <span>适合先稳定验证极义纯 API；保留会话删除、导出、项目移动、Timeline 和用户脚本，关闭插件入口相关增强。</span>
       </button>
       <button
         className={`mode-option ${launchMode === "patch" ? "active" : ""}`}
@@ -3759,6 +6520,17 @@ function StatusRow({ title, status = "unknown", path }: { title: string; status?
   );
 }
 
+function ReleaseReadinessRow({ item }: { item: ReleaseReadinessItem }) {
+  return (
+    <div className="status-row release-row">
+      <span>{item.label}</span>
+      <Badge status={item.status} />
+      <small className="release-message">{item.message}</small>
+      <code>{item.path || "未记录路径"}</code>
+    </div>
+  );
+}
+
 function Badge({ status }: { status: string }) {
   return <UiBadge className={statusClass(status)} variant="secondary">{statusLabel(status)}</UiBadge>;
 }
@@ -3850,6 +6622,7 @@ function routeTitle(route: Route) {
 function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
     overview: "检查问题、启动与快速修复",
+    admin: "用户、团队、续费、风控和审计集中管理",
     relay: "管理 API 供应商、协议、Key 与配置文件",
     sessions: "查看、删除和修复 Codex 本地会话",
     context: "独立管理 MCP、Skills、Plugins",
@@ -4488,6 +7261,7 @@ function statusLabel(status: string) {
     ok: "正常",
     running: "运行中",
     failed: "失败",
+    warning: "风险",
     archived: "已归档",
     accepted: "已受理",
     not_checked: "未检查",
@@ -4520,7 +7294,7 @@ function healthItems(overview: OverviewResult | null) {
       title: "静默启动入口",
       status: overview?.silent_shortcut.status ?? "not_checked",
       ok: overview?.silent_shortcut.status === "installed",
-      detail: overview?.silent_shortcut.path || "缺少 Codex++ 静默启动快捷方式时可在安装维护页修复。",
+      detail: overview?.silent_shortcut.path || `缺少 ${PRODUCT_NAME} 静默启动快捷方式时可在安装维护页修复。`,
     },
     {
       title: "管理工具入口",
@@ -4550,15 +7324,15 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
           {
             id: settings.activeRelayId || "default",
             linkedCcsProviderId: "",
-            name: "默认中转",
-            model: "",
+            name: DEFAULT_RELAY_PROVIDER_NAME,
+            model: QWEN_DEFAULT_MODEL,
             baseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
             upstreamBaseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
             apiKey: settings.relayApiKey || "",
-            protocol: "responses" as RelayProtocol,
-            relayMode: "official" as RelayMode,
+            protocol: "chatCompletions" as RelayProtocol,
+            relayMode: "pureApi" as RelayMode,
             officialMixApiKey: false,
-            testModel: "",
+            testModel: QWEN_DEFAULT_MODEL,
             configContents: "",
             authContents: "",
             useCommonConfig: true,
@@ -4635,7 +7409,7 @@ function relayProtocolLabel(protocol: RelayProtocol): string {
 
 function normalizeRelayMode(mode: RelayMode | undefined): RelayMode {
   if (mode === "pureApi") return mode;
-  return "official";
+  return "pureApi";
 }
 
 function normalizeContextSelection(
@@ -4657,72 +7431,52 @@ function normalizeContextSelection(
 }
 
 function relayModeLabel(mode: RelayMode): string {
-  if (mode === "pureApi") return "纯 API";
-  return "官方登录";
+  if (mode === "pureApi") return "极义纯 API";
+  if (mode === "mixedApi") return "历史混合 API（已禁用）";
+  return "历史官方模式（已禁用）";
 }
 
 function relayProfileConfigBrief(profile: RelayProfile): string {
-  if (profile.relayMode === "official") return profile.officialMixApiKey ? "混入 API Key" : "不写 API 文件";
+  if (profile.relayMode !== "pureApi") return "已禁用";
   return profile.baseUrl || "未填写 URL";
 }
 
 function relayProfileModeHelp(profile: RelayProfile): string {
-  if (profile.relayMode === "official") {
-    if (profile.officialMixApiKey) {
-      return "此供应商会保留官方登录模式，并把请求混入当前 API Key；页面增强仍使用兼容模式。";
-    }
-    return "此供应商会切回官方登录模式，使用 ChatGPT 官方账号，不写入 API Key。";
-  }
   if (profile.relayMode === "pureApi") {
-    return "此供应商会同时写入 config.toml 和 auth.json；API Key 也会注入到 provider bearer token。";
+    return "此供应商会写入极义/百炼纯 API 配置；启动 Codex 前不会要求官方账号登录。";
   }
-  return "此供应商会保留官方登录模式，并把请求混入当前 API Key；页面增强仍使用兼容模式。";
+  return "极义codex 已禁用官方登录和混合 API 模式；请切换为纯 API。";
 }
 
 function relayProfileReadinessText(profile: RelayProfile, relay: RelayResult | null): string {
-  if (profile.relayMode === "official") {
-    if (profile.officialMixApiKey) {
-      const hasApiFields = profile.baseUrl.trim() && profile.apiKey.trim();
-      if (!relay?.authenticated && !hasApiFields) return "当前未登录官方账号，也未配置混入 API 的 Base URL / Key。";
-      if (!relay?.authenticated) return "当前未登录官方账号；官方登录混入 API Key 需要先登录官方账号。";
-      if (!hasApiFields) return "当前还没有填写混入 API 的 Base URL / Key。";
-      return `官方登录已就绪：${relay.accountLabel || "已登录"}，会混入当前 API Key。`;
-    }
-    return relay?.authenticated
-      ? `官方账号已登录：${relay.accountLabel || relay.authSource || "已检测"}。`
-      : "当前未登录官方账号；切到官方登录模式后仍需要先在 Codex/ChatGPT 登录。";
+  if (profile.relayMode !== "pureApi") {
+    return "当前供应商仍是历史官方/混合模式，极义版不会切换到官方账号体系。";
   }
   const hasFiles = profile.configContents.trim() && profile.authContents.trim();
   if (!hasFiles) return "当前供应商还没有完整 config.toml / API Key 存档。";
   if (relay && !relay.configured) return "纯 API 配置未完整写入：请检查此供应商是否有 OPENAI_API_KEY，且 config.toml 是否包含 model_provider / provider / base_url。";
-  return "纯 API 就绪：会同时写入 config.toml 和 auth.json。";
+  return "极义纯 API 就绪：会同时写入 config.toml 和 auth.json。";
 }
 
 function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injection" | "apply_relay_injection" | "apply_pure_api_injection" {
-  if (profile.relayMode === "pureApi") return "apply_pure_api_injection";
-  if (profile.relayMode === "official" && !profile.officialMixApiKey) return "clear_relay_injection";
-  if (profile.configContents.trim()) return "apply_relay_injection";
-  return profile.officialMixApiKey ? "apply_relay_injection" : "clear_relay_injection";
+  return "apply_pure_api_injection";
 }
 
 function relayProfileModeSwitchedText(profile: RelayProfile): string {
-  if (profile.relayMode === "pureApi") return "已按此供应商切换到纯 API；页面增强已设为完整增强。";
-  if (profile.officialMixApiKey) return "已按此供应商使用官方登录，并混入 API Key；页面增强已设为兼容增强。";
-  return "已按此供应商切回官方登录；页面增强已设为兼容增强。";
+  if (profile.relayMode === "pureApi") return "已按此供应商切换到极义纯 API；页面增强已设为完整增强。";
+  return "极义codex 已拒绝切换到历史官方/混合模式。";
 }
 
 function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
-  if (profile.relayMode === "official") {
-    return {
-      ...profile,
-      configContents: profile.officialMixApiKey ? buildRelayConfigToml(profile, { includeBearerToken: true }) : "",
-      authContents: profile.authContents || "",
-    };
-  }
-  return {
+  const pureApiProfile = {
     ...profile,
-    configContents: buildRelayConfigToml(profile, { includeBearerToken: false }),
-    authContents: buildRelayAuthJson(profile),
+    relayMode: "pureApi" as RelayMode,
+    officialMixApiKey: false,
+  };
+  return {
+    ...pureApiProfile,
+    configContents: buildRelayConfigToml(pureApiProfile, { includeBearerToken: false }),
+    authContents: buildRelayAuthJson(pureApiProfile),
   };
 }
 
@@ -5055,23 +7809,13 @@ function removeTomlSectionKey(contents: string, sectionName: string, key: string
 }
 
 function relayProfileSwitchValidation(profile: RelayProfile): string | null {
-  if (profile.relayMode === "official" && !profile.officialMixApiKey) return null;
+  if (profile.relayMode !== "pureApi") {
+    return `供应商「${profile.name || profile.id}」仍是历史官方/混合模式。极义codex 不使用官方账号体系，请先改为“极义 / 百炼纯 API”。`;
+  }
   if (!profile.configContents.trim()) {
     return `供应商「${profile.name || profile.id}」缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。请先在该供应商详情里保存 config.toml。`;
   }
-  if (profile.relayMode !== "official" || !authJsonHasOpenAiApiKey(profile.authContents)) return null;
-  return "官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。";
-}
-
-function authJsonHasOpenAiApiKey(contents: string): boolean {
-  const trimmed = contents.trim();
-  if (!trimmed) return false;
-  try {
-    const value = JSON.parse(trimmed);
-    return !!value && typeof value === "object" && typeof value.OPENAI_API_KEY === "string" && value.OPENAI_API_KEY.trim().length > 0;
-  } catch {
-    return /"OPENAI_API_KEY"\s*:/.test(trimmed);
-  }
+  return null;
 }
 
 function tomlString(value: string): string {
@@ -5132,8 +7876,8 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     baseUrl: defaultSettings.relayBaseUrl,
     upstreamBaseUrl: defaultSettings.relayBaseUrl,
     apiKey: "",
-    protocol: "responses" as RelayProtocol,
-    relayMode: "official" as RelayMode,
+    protocol: "chatCompletions" as RelayProtocol,
+    relayMode: "pureApi" as RelayMode,
     officialMixApiKey: false,
     testModel: "",
     configContents: "",
@@ -5240,6 +7984,79 @@ function formatTime(value: number) {
   return new Date(value).toLocaleString("zh-CN");
 }
 
+function formatCompactNumber(value: number) {
+  return new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 }).format(value || 0);
+}
+
+function formatDailyLimit(value: number) {
+  return value > 0 ? `${formatCompactNumber(value)} tokens / 天` : "未限额";
+}
+
+function formatRemaining(value: number | null) {
+  return value == null ? "未限额" : `剩余 ${formatCompactNumber(value)}`;
+}
+
+function formatMoneyCents(value: number, currency: string) {
+  const normalizedCurrency = (currency || "CNY").trim().toUpperCase();
+  return `${normalizedCurrency} ${(value / 100).toFixed(2)}`;
+}
+
+function shortId(value: string) {
+  if (!value) return "-";
+  return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value;
+}
+
+function auditMetadataSummary(value: unknown) {
+  if (!value || typeof value !== "object") return "-";
+  const text = JSON.stringify(value);
+  return text.length > 80 ? `${text.slice(0, 77)}...` : text;
+}
+
+function formatSmsSecretSource(config?: SmsConfigState) {
+  if (!config) return "等待读取";
+  if (!config.secretIdSet || !config.secretKeySet) return "未配置";
+  const sources = new Set([config.secretIdSource, config.secretKeySource]);
+  if (sources.has("default_keychain")) return "极义钥匙串";
+  if (sources.has("env_keychain_ref")) return "环境变量引用钥匙串";
+  if (sources.has("env_plaintext")) return "环境变量";
+  return "已配置";
+}
+
+function formatRelayApiKeySource(source?: string) {
+  switch (source) {
+    case "relay_profile_keychain":
+    case "settings_keychain":
+      return "极义钥匙串";
+    case "env_jiyi_codex_api_key":
+    case "env_dashscope_api_key":
+    case "env_bailian_api_key":
+    case "env_aliyun_bailian_api_key":
+    case "env_qwen_api_key":
+      return "百炼环境变量";
+    case "downloads_default_api_key_file":
+      return "下载目录百炼 Key";
+    case "api_key_file_env":
+      return "指定 Key 文件";
+    case "env_apimart_api_key":
+      return "APIMart 备选";
+    case "env_custom_openai_api_key":
+      return "自定义环境变量";
+    case "relay_profile":
+    case "settings":
+      return "本机设置";
+    default:
+      return "已配置";
+  }
+}
+
+function usageLimitSourceLabel(source: string) {
+  if (source === "local_entitlement") return "本地套餐";
+  if (source === "settings") return "全局设置";
+  if (source === "unlimited") return "未限额";
+  if (source === "preview") return "预览";
+  return source || "未限额";
+}
+
 function stringifyError(error: unknown) {
   if (error instanceof Error) return error.message;
   return String(error);
@@ -5248,6 +8065,13 @@ function stringifyError(error: unknown) {
 function loadInitialTheme(): Theme {
   if (typeof window === "undefined") return "dark";
   return window.localStorage.getItem("codex-plus-theme") === "light" ? "light" : "dark";
+}
+
+function initialAppMode(): AppMode {
+  if (typeof window === "undefined") return "manager";
+  const params = new URLSearchParams(window.location.search);
+  const mode = params.get("mode")?.trim().toLowerCase();
+  return mode === "main" || mode === "app" ? "main" : "manager";
 }
 
 function loadInitialRoute(): Route {

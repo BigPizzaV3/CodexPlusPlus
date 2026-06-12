@@ -1,10 +1,22 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::settings::{RelayProfile, SettingsStore};
+use crate::settings::{
+    JIYI_DEFAULT_RELAY_BASE_URL, JIYI_DEFAULT_RELAY_BASE_URL_FALLBACK,
+    JIYI_DEFAULT_RELAY_PROVIDER_NAME, RelayProfile, SettingsStore,
+};
 use serde_json::{Value, json};
 
 const BASE_URL_ENV_KEYS: &[&str] = &[
+    "JIYI_CODEX_BASE_URL",
+    "DASHSCOPE_BASE_URL",
+    "DASHSCOPE_API_BASE_URL",
+    "DASHSCOPE_API_BASE",
+    "BAILIAN_BASE_URL",
+    "BAILIAN_API_BASE_URL",
+    "ALIYUN_BAILIAN_BASE_URL",
+    "QWEN_BASE_URL",
+    "APIMART_BASE_URL",
     "CODEX_PLUS_OPENAI_BASE_URL",
     "CODEX_PLUS_BASE_URL",
     "OPENAI_BASE_URL",
@@ -13,10 +25,26 @@ const BASE_URL_ENV_KEYS: &[&str] = &[
     "OPENAI_API_URL",
 ];
 const API_KEY_ENV_KEYS: &[&str] = &[
+    "JIYI_CODEX_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "BAILIAN_API_KEY",
+    "ALIYUN_BAILIAN_API_KEY",
+    "QWEN_API_KEY",
     "CODEX_PLUS_OPENAI_API_KEY",
     "CODEX_PLUS_API_KEY",
     "OPENAI_API_KEY",
+    "APIMART_API_KEY",
+    "CUSTOM_OPENAI_API_KEY",
 ];
+const BAILIAN_API_KEY_ENV_KEYS: &[&str] = &[
+    "JIYI_CODEX_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "BAILIAN_API_KEY",
+    "ALIYUN_BAILIAN_API_KEY",
+    "QWEN_API_KEY",
+];
+const FALLBACK_API_KEY_ENV_KEYS: &[&str] = &["APIMART_API_KEY", "CUSTOM_OPENAI_API_KEY"];
+const DEFAULT_MODEL_CATALOG_USER_AGENT: &str = "JiyiCodex/1.0";
 
 #[derive(Debug, Clone)]
 struct ModelSource {
@@ -43,7 +71,7 @@ pub async fn read_codex_model_catalog() -> Value {
         }
     }
     let env = std::env::vars().collect::<HashMap<_, _>>();
-    let client = match crate::http_client::proxied_client("CodexPlusPlus/1.0") {
+    let client = match crate::http_client::proxied_client(DEFAULT_MODEL_CATALOG_USER_AGENT) {
         Ok(client) => client,
         Err(error) => {
             return json!({
@@ -148,9 +176,19 @@ pub async fn read_codex_model_catalog_from_home(
         });
     }
 
-    let mut sources = model_sources_from_environment(env, &auth_api_key);
+    let config_source = if error.is_none() {
+        model_source_from_config(&config, &effective, env, &auth_api_key)
+    } else {
+        None
+    };
+    let has_catalog_source = !string_value(effective.get("model_catalog_json")).is_empty();
+    let mut sources = model_sources_from_environment(
+        env,
+        &auth_api_key,
+        config_source.is_none() && !has_catalog_source,
+    );
     if error.is_none() {
-        if let Some(source) = model_source_from_config(&config, &effective, env, &auth_api_key) {
+        if let Some(source) = config_source {
             if sources
                 .iter()
                 .all(|existing| trim_url(&existing.base_url) != trim_url(&source.base_url))
@@ -354,23 +392,73 @@ fn provider_config_for_model_provider(
 fn model_sources_from_environment(
     env: &HashMap<String, String>,
     auth_api_key: &str,
+    include_default_fallback: bool,
 ) -> Vec<ModelSource> {
     let base_url = first_env_value(env, BASE_URL_ENV_KEYS);
-    if base_url.is_empty() {
+    let api_key = first_env_value(env, API_KEY_ENV_KEYS);
+    if !base_url.is_empty() {
+        return vec![ModelSource {
+            source_id: "env:openai-compatible".to_string(),
+            source_type: "environment".to_string(),
+            name: "Environment".to_string(),
+            base_url,
+            api_key: if api_key.is_empty() {
+                auth_api_key.to_string()
+            } else {
+                api_key
+            },
+        }];
+    }
+
+    if !include_default_fallback {
         return Vec::new();
     }
-    let api_key = first_env_value(env, API_KEY_ENV_KEYS);
-    vec![ModelSource {
-        source_id: "env:openai-compatible".to_string(),
-        source_type: "environment".to_string(),
-        name: "Environment".to_string(),
-        base_url,
-        api_key: if api_key.is_empty() {
-            auth_api_key.to_string()
-        } else {
-            api_key
-        },
-    }]
+
+    let bailian_key = first_env_value(env, BAILIAN_API_KEY_ENV_KEYS);
+    if !bailian_key.is_empty() {
+        return vec![default_bailian_model_source(
+            "env:bailian-compatible",
+            "environment",
+            bailian_key,
+        )];
+    }
+
+    if let Some((file_key, _source)) =
+        crate::protocol_proxy::fallback_api_key_from_downloads_file_with_source()
+    {
+        return vec![default_bailian_model_source(
+            "file:bailian-compatible",
+            "api_key_file",
+            file_key,
+        )];
+    }
+
+    let fallback_key = first_env_value(env, FALLBACK_API_KEY_ENV_KEYS);
+    if !fallback_key.is_empty() {
+        return vec![ModelSource {
+            source_id: "env:apimart-compatible".to_string(),
+            source_type: "environment".to_string(),
+            name: "APIMart 备选".to_string(),
+            base_url: JIYI_DEFAULT_RELAY_BASE_URL_FALLBACK.to_string(),
+            api_key: fallback_key,
+        }];
+    }
+
+    Vec::new()
+}
+
+fn default_bailian_model_source(
+    source_id: &str,
+    source_type: &str,
+    api_key: String,
+) -> ModelSource {
+    ModelSource {
+        source_id: source_id.to_string(),
+        source_type: source_type.to_string(),
+        name: JIYI_DEFAULT_RELAY_PROVIDER_NAME.to_string(),
+        base_url: JIYI_DEFAULT_RELAY_BASE_URL.to_string(),
+        api_key,
+    }
 }
 
 fn model_source_from_config(
@@ -627,7 +715,7 @@ fn models_from_config_model_catalog_json(
                 Some(json!({
                     "id": "config:model_catalog_json",
                     "type": "model_catalog_json",
-                    "name": "Codex model catalog",
+                    "name": "极义模型目录",
                     "path": safe_path,
                     "status": "failed",
                     "message": error.to_string(),
@@ -645,7 +733,7 @@ fn models_from_config_model_catalog_json(
                 Some(json!({
                     "id": "config:model_catalog_json",
                     "type": "model_catalog_json",
-                    "name": "Codex model catalog",
+                    "name": "极义模型目录",
                     "path": safe_path,
                     "status": "failed",
                     "message": error.to_string(),
@@ -662,7 +750,7 @@ fn models_from_config_model_catalog_json(
         Some(json!({
             "id": "config:model_catalog_json",
             "type": "model_catalog_json",
-            "name": "Codex model catalog",
+            "name": "极义模型目录",
             "path": safe_path,
             "status": "ok",
             "models": count,
@@ -780,4 +868,38 @@ fn unquote_toml_string(value: &str) -> String {
         })
         .unwrap_or(value)
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_sources_default_to_bailian_when_qwen_key_exists_without_base_url() {
+        let env = HashMap::from([("QWEN_API_KEY".to_string(), "qwen-test-key".to_string())]);
+
+        let sources = model_sources_from_environment(&env, "", true);
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].source_id, "env:bailian-compatible");
+        assert_eq!(sources[0].source_type, "environment");
+        assert_eq!(sources[0].name, JIYI_DEFAULT_RELAY_PROVIDER_NAME);
+        assert_eq!(sources[0].base_url, JIYI_DEFAULT_RELAY_BASE_URL);
+        assert_eq!(sources[0].api_key, "qwen-test-key");
+    }
+
+    #[test]
+    fn model_sources_mark_file_sources_without_global_env_mutation() {
+        let source =
+            default_bailian_model_source("test", "api_key_file", "bailian-file-key".to_string());
+        assert_eq!(source.source_type, "api_key_file");
+        assert_eq!(source.base_url, JIYI_DEFAULT_RELAY_BASE_URL);
+        assert_eq!(source.api_key, "bailian-file-key");
+    }
+
+    #[test]
+    fn model_sources_skip_downloads_fallback_when_config_source_exists() {
+        let sources = model_sources_from_environment(&HashMap::new(), "", false);
+        assert!(sources.is_empty());
+    }
 }

@@ -152,7 +152,14 @@ pub(crate) fn source_request_from_payload(
 }
 
 pub(crate) fn git_output(args: Vec<OsString>) -> Result<GitOutput, std::io::Error> {
-    let output = Command::new("git").args(args).output()?;
+    let output = Command::new("git")
+        .args(args)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .output()?;
     Ok(GitOutput {
         status_success: output.status.success(),
         stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
@@ -202,7 +209,17 @@ pub(crate) fn repo_root(repo_path: &Path) -> UpstreamWorktreeResult<PathBuf> {
 }
 
 pub(crate) fn current_branch(repo_root: &Path) -> String {
-    git_in_repo(repo_root, &["branch", "--show-current"])
+    let branch = git_in_repo(repo_root, &["branch", "--show-current"])
+        .ok()
+        .filter(|output| output.status_success)
+        .map(|output| output.stdout)
+        .filter(|branch| !branch.is_empty())
+        .unwrap_or_default();
+    if !branch.is_empty() {
+        return branch;
+    }
+
+    git_in_repo(repo_root, &["symbolic-ref", "--short", "HEAD"])
         .ok()
         .filter(|output| output.status_success)
         .map(|output| output.stdout)

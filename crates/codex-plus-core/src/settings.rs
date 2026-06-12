@@ -9,6 +9,11 @@ use toml_edit::{DocumentMut, Item};
 
 use crate::zed_remote::ZedOpenStrategy;
 
+pub const JIYI_DEFAULT_RELAY_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+pub const JIYI_DEFAULT_RELAY_BASE_URL_FALLBACK: &str = "https://apimart.ai/";
+pub const JIYI_DEFAULT_MODEL: &str = "qwen3.7-plus";
+pub const JIYI_DEFAULT_RELAY_PROVIDER_NAME: &str = "阿里百炼默认";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LaunchMode {
@@ -51,7 +56,11 @@ pub struct RelayProfile {
     pub base_url: String,
     #[serde(rename = "upstreamBaseUrl", default)]
     pub upstream_base_url: String,
-    #[serde(default, skip_serializing, deserialize_with = "deserialize_profile_api_key")]
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "deserialize_profile_api_key"
+    )]
     pub api_key: String,
     #[serde(default)]
     pub protocol: RelayProtocol,
@@ -92,13 +101,13 @@ impl Default for RelayProfile {
         Self {
             id: "default".to_string(),
             linked_ccs_provider_id: String::new(),
-            name: "默认中转".to_string(),
-            model: String::new(),
+            name: JIYI_DEFAULT_RELAY_PROVIDER_NAME.to_string(),
+            model: JIYI_DEFAULT_MODEL.to_string(),
             base_url: default_relay_base_url(),
-            upstream_base_url: String::new(),
+            upstream_base_url: default_relay_base_url(),
             api_key: String::new(),
-            protocol: RelayProtocol::Responses,
-            relay_mode: RelayMode::Official,
+            protocol: RelayProtocol::ChatCompletions,
+            relay_mode: RelayMode::PureApi,
             official_mix_api_key: false,
             test_model: String::new(),
             config_contents: String::new(),
@@ -135,8 +144,8 @@ pub enum RelayProtocol {
 #[serde(rename_all = "camelCase")]
 pub enum RelayMode {
     Official,
-    #[default]
     MixedApi,
+    #[default]
     PureApi,
 }
 
@@ -202,6 +211,20 @@ pub struct BackendSettings {
     pub relay_base_url: String,
     #[serde(rename = "relayApiKey", default)]
     pub relay_api_key: String,
+    #[serde(rename = "jiyiLocalProxyEnabled", default = "default_true")]
+    pub jiyi_local_proxy_enabled: bool,
+    #[serde(rename = "jiyiLocalUsageMeterEnabled", default = "default_true")]
+    pub jiyi_local_usage_meter_enabled: bool,
+    #[serde(rename = "jiyiDailyTokenLimit", default)]
+    pub jiyi_daily_token_limit: i64,
+    #[serde(rename = "jiyiIdentitySyncEndpoint", default)]
+    pub jiyi_identity_sync_endpoint: String,
+    #[serde(rename = "jiyiIdentitySyncApiKey", default)]
+    pub jiyi_identity_sync_api_key: String,
+    #[serde(rename = "jiyiManagedProxyEnabled", default)]
+    pub jiyi_managed_proxy_enabled: bool,
+    #[serde(rename = "jiyiManagedProxyEndpoint", default)]
+    pub jiyi_managed_proxy_endpoint: String,
     #[serde(rename = "relayProfiles", default = "default_relay_profiles")]
     pub relay_profiles: Vec<RelayProfile>,
     #[serde(rename = "relayCommonConfigContents", default)]
@@ -259,6 +282,13 @@ impl Default for BackendSettings {
             launch_mode: LaunchMode::Patch,
             relay_base_url: default_relay_base_url(),
             relay_api_key: String::new(),
+            jiyi_local_proxy_enabled: true,
+            jiyi_local_usage_meter_enabled: true,
+            jiyi_daily_token_limit: 0,
+            jiyi_identity_sync_endpoint: String::new(),
+            jiyi_identity_sync_api_key: String::new(),
+            jiyi_managed_proxy_enabled: false,
+            jiyi_managed_proxy_endpoint: String::new(),
             relay_profiles: default_relay_profiles(),
             relay_common_config_contents: String::new(),
             relay_context_config_contents: String::new(),
@@ -282,8 +312,8 @@ impl BackendSettings {
             return RelayProfile {
                 id: default_active_relay_id(),
                 linked_ccs_provider_id: String::new(),
-                name: "默认中转".to_string(),
-                model: String::new(),
+                name: JIYI_DEFAULT_RELAY_PROVIDER_NAME.to_string(),
+                model: JIYI_DEFAULT_MODEL.to_string(),
                 base_url: if self.relay_base_url.is_empty() {
                     default_relay_base_url()
                 } else {
@@ -295,9 +325,9 @@ impl BackendSettings {
                     self.relay_base_url.clone()
                 },
                 api_key: self.relay_api_key.clone(),
-                protocol: RelayProtocol::Responses,
-                relay_mode: RelayMode::MixedApi,
-                official_mix_api_key: true,
+                protocol: RelayProtocol::ChatCompletions,
+                relay_mode: RelayMode::PureApi,
+                official_mix_api_key: false,
                 test_model: String::new(),
                 config_contents: String::new(),
                 auth_contents: String::new(),
@@ -327,8 +357,8 @@ impl BackendSettings {
                 self.active_relay_id.clone()
             },
             linked_ccs_provider_id: String::new(),
-            name: "默认中转".to_string(),
-            model: String::new(),
+            name: JIYI_DEFAULT_RELAY_PROVIDER_NAME.to_string(),
+            model: JIYI_DEFAULT_MODEL.to_string(),
             base_url: if self.relay_base_url.is_empty() {
                 default_relay_base_url()
             } else {
@@ -340,8 +370,8 @@ impl BackendSettings {
                 self.relay_base_url.clone()
             },
             api_key: self.relay_api_key.clone(),
-            protocol: RelayProtocol::Responses,
-            relay_mode: RelayMode::Official,
+            protocol: RelayProtocol::ChatCompletions,
+            relay_mode: RelayMode::PureApi,
             official_mix_api_key: false,
             test_model: String::new(),
             config_contents: String::new(),
@@ -367,7 +397,7 @@ pub fn default_true() -> bool {
 }
 
 pub fn default_relay_base_url() -> String {
-    String::new()
+    JIYI_DEFAULT_RELAY_BASE_URL.to_string()
 }
 
 pub fn default_active_relay_id() -> String {
@@ -375,7 +405,7 @@ pub fn default_active_relay_id() -> String {
 }
 
 pub fn default_relay_test_model() -> String {
-    "gpt-5.4-mini".to_string()
+    JIYI_DEFAULT_MODEL.to_string()
 }
 
 pub fn default_relay_profiles() -> Vec<RelayProfile> {
@@ -555,6 +585,29 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     if let Some(value) = source.get("relayApiKey").and_then(Value::as_str) {
         target.insert("relayApiKey".to_string(), Value::String(value.to_string()));
+    }
+    merge_bool_setting(target, source, "jiyiLocalProxyEnabled");
+    merge_bool_setting(target, source, "jiyiLocalUsageMeterEnabled");
+    if let Some(value) = source.get("jiyiDailyTokenLimit").and_then(Value::as_i64) {
+        target.insert(
+            "jiyiDailyTokenLimit".to_string(),
+            Value::Number(value.max(0).into()),
+        );
+    }
+    if let Some(value) = source
+        .get("jiyiIdentitySyncEndpoint")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "jiyiIdentitySyncEndpoint".to_string(),
+            Value::String(value.trim().to_string()),
+        );
+    }
+    if let Some(value) = source.get("jiyiIdentitySyncApiKey").and_then(Value::as_str) {
+        target.insert(
+            "jiyiIdentitySyncApiKey".to_string(),
+            Value::String(value.to_string()),
+        );
     }
     if let Some(value) = source.get("relayProfiles").and_then(Value::as_array) {
         let mut profiles = serde_json::from_value::<Vec<RelayProfile>>(Value::Array(value.clone()))
@@ -858,7 +911,19 @@ mod tests {
         assert_eq!(settings.launch_mode, LaunchMode::Patch);
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.relay_api_key.is_empty());
-        assert_eq!(settings.relay_profiles[0].relay_mode, RelayMode::Official);
+        assert!(settings.jiyi_local_proxy_enabled);
+        assert!(settings.jiyi_local_usage_meter_enabled);
+        assert_eq!(settings.jiyi_daily_token_limit, 0);
+        assert_eq!(
+            settings.relay_profiles[0].name,
+            JIYI_DEFAULT_RELAY_PROVIDER_NAME
+        );
+        assert_eq!(settings.relay_profiles[0].model, JIYI_DEFAULT_MODEL);
+        assert_eq!(
+            settings.relay_profiles[0].protocol,
+            RelayProtocol::ChatCompletions
+        );
+        assert_eq!(settings.relay_profiles[0].relay_mode, RelayMode::PureApi);
         assert!(settings.relay_common_config_contents.is_empty());
         assert_eq!(settings.relay_test_model, default_relay_test_model());
         assert!(!settings.cli_wrapper_enabled);
@@ -1137,22 +1202,28 @@ experimental_bearer_token = "sk-mix"
         assert!(profile.official_mix_api_key);
         assert_eq!(profile.api_key, "sk-mix");
         assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
-        assert!(profile
-            .config_contents
-            .contains(r#"experimental_bearer_token = "sk-mix""#));
+        assert!(
+            profile
+                .config_contents
+                .contains(r#"experimental_bearer_token = "sk-mix""#)
+        );
 
         let saved: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
                 .unwrap();
         assert!(saved["relayProfiles"][0].get("apiKey").is_none());
-        assert!(!saved["relayProfiles"][0]["authContents"]
-            .as_str()
-            .unwrap()
-            .contains("OPENAI_API_KEY"));
-        assert!(saved["relayProfiles"][0]["configContents"]
-            .as_str()
-            .unwrap()
-            .contains(r#"experimental_bearer_token = "sk-mix""#));
+        assert!(
+            !saved["relayProfiles"][0]["authContents"]
+                .as_str()
+                .unwrap()
+                .contains("OPENAI_API_KEY")
+        );
+        assert!(
+            saved["relayProfiles"][0]["configContents"]
+                .as_str()
+                .unwrap()
+                .contains(r#"experimental_bearer_token = "sk-mix""#)
+        );
     }
 
     #[test]
@@ -1201,11 +1272,11 @@ experimental_bearer_token = "sk-existing"
         let profile = &updated.relay_profiles[0];
         assert_eq!(profile.api_key, "sk-existing");
         assert!(!profile.config_contents.contains("sk-other"));
-        assert!(profile
-            .config_contents
-            .contains(r#"[model_providers.custom]
+        assert!(profile.config_contents.contains(
+            r#"[model_providers.custom]
 base_url = "https://relay.example/v1"
-experimental_bearer_token = "sk-existing""#));
+experimental_bearer_token = "sk-existing""#
+        ));
     }
 
     #[test]
@@ -1231,9 +1302,11 @@ experimental_bearer_token = "sk-existing""#));
 
         let profile = &updated.relay_profiles[0];
         assert_eq!(profile.api_key, "sk-new");
-        assert!(profile
-            .config_contents
-            .contains(r#"experimental_bearer_token = "sk-new""#));
+        assert!(
+            profile
+                .config_contents
+                .contains(r#"experimental_bearer_token = "sk-new""#)
+        );
         assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
     }
 
@@ -1260,9 +1333,11 @@ experimental_bearer_token = "sk-existing""#));
         assert_eq!(profile.relay_mode, RelayMode::Official);
         assert!(profile.official_mix_api_key);
         assert_eq!(profile.api_key, "22222222222222222222222222222222222");
-        assert!(profile
-            .config_contents
-            .contains(r#"experimental_bearer_token = "22222222222222222222222222222222222""#));
+        assert!(
+            profile
+                .config_contents
+                .contains(r#"experimental_bearer_token = "22222222222222222222222222222222222""#)
+        );
         assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
     }
 
@@ -1509,11 +1584,12 @@ experimental_bearer_token = "sk-existing""#));
         let active = settings.active_relay_profile();
 
         assert_eq!(active.id, "default");
-        assert_eq!(active.name, "默认中转");
+        assert_eq!(active.name, JIYI_DEFAULT_RELAY_PROVIDER_NAME);
         assert_eq!(active.base_url, "https://legacy.example/v1");
         assert_eq!(active.api_key, "sk-legacy");
-        assert_eq!(active.relay_mode, RelayMode::MixedApi);
-        assert!(active.official_mix_api_key);
+        assert_eq!(active.protocol, RelayProtocol::ChatCompletions);
+        assert_eq!(active.relay_mode, RelayMode::PureApi);
+        assert!(!active.official_mix_api_key);
     }
 
     #[test]

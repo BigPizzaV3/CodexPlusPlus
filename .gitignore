@@ -1,6 +1,7 @@
 __pycache__/
 .venv/
 venv/
+node_modules/
 .worktrees/
 *.egg-info/
 build/

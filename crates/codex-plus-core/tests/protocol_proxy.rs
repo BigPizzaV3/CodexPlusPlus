@@ -1,10 +1,11 @@
 use codex_plus_core::protocol_proxy::{
     ChatSseToResponsesConverter, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
-    chat_sse_to_responses_sse_with_request, is_chat_completions_proxy_path, is_models_proxy_path,
-    is_responses_proxy_path, models_url, responses_error_from_upstream,
-    responses_to_chat_completions,
+    chat_sse_to_responses_sse_with_request, effective_relay_target_with_session_token,
+    is_chat_completions_proxy_path, is_models_proxy_path, is_responses_proxy_path, models_url,
+    resolved_relay_api_key, responses_error_from_upstream, responses_to_chat_completions,
 };
+use codex_plus_core::settings::{BackendSettings, RelayProfile};
 use serde_json::json;
 
 #[test]
@@ -119,6 +120,54 @@ fn proxy_route_matchers_accept_ccswitch_codex_aliases() {
     for path in ["/models", "/v1/models", "/v1/v1/models", "/codex/v1/models"] {
         assert!(is_models_proxy_path(path), "{path}");
     }
+}
+
+#[test]
+fn resolved_relay_api_key_does_not_return_unresolved_keychain_ref() {
+    let settings = BackendSettings {
+        relay_api_key: "sk-fallback".to_string(),
+        ..BackendSettings::default()
+    };
+    let relay = RelayProfile {
+        api_key: codex_plus_core::secret_store::keychain_ref("relay-profile:missing"),
+        ..RelayProfile::default()
+    };
+
+    assert_eq!(resolved_relay_api_key(&settings, &relay), "sk-fallback");
+}
+
+#[test]
+fn managed_proxy_target_uses_backend_session_token() {
+    let settings = BackendSettings {
+        jiyi_managed_proxy_enabled: true,
+        jiyi_managed_proxy_endpoint: "https://proxy.jiyi.example/v1".to_string(),
+        relay_api_key: "sk-apimart-main".to_string(),
+        ..BackendSettings::default()
+    };
+
+    let target =
+        effective_relay_target_with_session_token(&settings, "jiyi-session-token").unwrap();
+
+    assert!(target.managed_proxy);
+    assert_eq!(target.relay.base_url, "https://proxy.jiyi.example/v1");
+    assert_eq!(target.api_key, "jiyi-session-token");
+    assert_ne!(target.api_key, "sk-apimart-main");
+}
+
+#[test]
+fn managed_proxy_target_requires_endpoint_and_session() {
+    let missing_endpoint = BackendSettings {
+        jiyi_managed_proxy_enabled: true,
+        ..BackendSettings::default()
+    };
+    assert!(effective_relay_target_with_session_token(&missing_endpoint, "token").is_err());
+
+    let missing_session = BackendSettings {
+        jiyi_managed_proxy_enabled: true,
+        jiyi_managed_proxy_endpoint: "https://proxy.jiyi.example/v1".to_string(),
+        ..BackendSettings::default()
+    };
+    assert!(effective_relay_target_with_session_token(&missing_session, "").is_err());
 }
 
 #[test]

@@ -24,7 +24,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwind-merge": "^2.5.5",
-    "typescript": "^5.8.0",
+    "typescript": "5.8.3",
     "vite": "^6.0.0"
   },
   "devDependencies": {

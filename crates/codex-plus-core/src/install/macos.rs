@@ -2,34 +2,31 @@
 use std::fs;
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::{
-    InstallOptions, MANAGER_BINARY, MANAGER_NAME, MacosAppBundle, SILENT_BINARY, SILENT_NAME,
-    install_root_or_default, option_or_current_exe,
+    InstallOptions, MANAGER_BINARY, MANAGER_NAME, MacosAppBundle, SILENT_NAME,
+    install_root_or_default,
 };
 
 pub fn build_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBundle {
     let install_root = install_root_or_default(options);
     let display_name = if manager { MANAGER_NAME } else { SILENT_NAME };
     let executable_name = if manager {
-        "CodexPlusPlusManager"
+        "JiyiCodexManager"
     } else {
-        "CodexPlusPlus"
+        "JiyiCodex"
     };
-    let binary = if manager {
-        MANAGER_BINARY
+    let binary = MANAGER_BINARY;
+    let target = if manager {
+        option_or_current_exe_direct(&options.manager_path)
     } else {
-        SILENT_BINARY
+        options
+            .manager_path
+            .clone()
+            .or_else(|| options.launcher_path.clone())
+            .unwrap_or_else(current_exe_or_dot)
     };
-    let target = option_or_current_exe(
-        if manager {
-            &options.manager_path
-        } else {
-            &options.launcher_path
-        },
-        binary,
-    );
     let (target, binary_source, binary_target_name) =
         if is_bundle_executable_target(&target, executable_name) {
             let sidecar = target
@@ -48,6 +45,14 @@ pub fn build_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBund
         binary_source,
         binary_target_name,
     }
+}
+
+fn option_or_current_exe_direct(value: &Option<PathBuf>) -> PathBuf {
+    value.clone().unwrap_or_else(current_exe_or_dot)
+}
+
+fn current_exe_or_dot() -> PathBuf {
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn is_bundle_executable_target(target: &Path, executable_name: &str) -> bool {
@@ -141,7 +146,7 @@ fn executable_name_from_plist(plist: &str) -> String {
         .nth(1)
         .and_then(|tail| tail.split("<string>").nth(1))
         .and_then(|tail| tail.split("</string>").next())
-        .unwrap_or("CodexPlusPlus")
+        .unwrap_or("JiyiCodex")
         .to_string()
 }
 
@@ -157,7 +162,7 @@ fn info_plist(display_name: &str, executable_name: &str, identifier_suffix: &str
   <key>CFBundleDisplayName</key>
   <string>{display_name}</string>
   <key>CFBundleIdentifier</key>
-  <string>com.bigpizzav3.codexplusplus{identifier_suffix}</string>
+  <string>com.jiyi.codex{identifier_suffix}</string>
   <key>CFBundleVersion</key>
   <string>{version}</string>
   <key>CFBundleShortVersionString</key>

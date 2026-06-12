@@ -1,0 +1,25 @@
+[Unit]
+Description=Jiyi Codex managed proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jiyi-codex
+Group=jiyi-codex
+EnvironmentFile=/etc/jiyi-codex/jiyi-managed-proxy.env
+ExecStart=/usr/local/bin/jiyi-managed-proxy
+Restart=on-failure
+RestartSec=3
+WorkingDirectory=/var/lib/jiyi-codex
+StateDirectory=jiyi-codex
+RuntimeDirectory=jiyi-codex
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/jiyi-codex
+
+[Install]
+WantedBy=multi-user.target
+

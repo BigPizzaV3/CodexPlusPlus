@@ -1,6 +1,6 @@
 use codex_plus_data::{
-    load_provider_sync_targets, run_provider_sync, run_provider_sync_with_target,
-    ProviderSyncStatus, ProviderSyncTargetSource,
+    ProviderSyncStatus, ProviderSyncTargetSource, load_provider_sync_targets, run_provider_sync,
+    run_provider_sync_with_target,
 };
 use rusqlite::Connection;
 use serde_json::json;
@@ -340,10 +340,12 @@ fn provider_sync_backup_metadata_contains_reference_fields_and_managed_marker() 
     assert_eq!(metadata["changedSessionFiles"], 1);
     assert_eq!(metadata["managedBy"], "Codex++ provider sync");
     assert!(metadata["createdAt"].as_str().unwrap().contains('T'));
-    assert!(metadata["dbFiles"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("state_5.sqlite")));
+    assert!(
+        metadata["dbFiles"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("state_5.sqlite"))
+    );
 }
 
 #[test]

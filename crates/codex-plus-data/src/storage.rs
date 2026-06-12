@@ -5,9 +5,9 @@ use rusqlite::{Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
+use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -363,11 +363,13 @@ impl SQLiteStorageAdapter {
                 }));
             }
             let thread_id = normalize_codex_thread_id(&session.session_id);
-            let rollout_path: Option<String> = db.query_row(
-                "SELECT rollout_path FROM threads WHERE id = ?1",
-                [&thread_id],
-                |row| row.get(0),
-            ).optional()?;
+            let rollout_path: Option<String> = db
+                .query_row(
+                    "SELECT rollout_path FROM threads WHERE id = ?1",
+                    [&thread_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
             let Some(rollout_path) = rollout_path.filter(|path| !path.trim().is_empty()) else {
                 return Ok(json!({
                     "status": "failed",
@@ -604,10 +606,7 @@ fn local_deleted(session_id: &str, token: &str, backup_path: &Path) -> DeleteRes
     }
 }
 
-fn read_rollout_usage_history(
-    rollout_path: &Path,
-    thread_id: &str,
-) -> anyhow::Result<Vec<Value>> {
+fn read_rollout_usage_history(rollout_path: &Path, thread_id: &str) -> anyhow::Result<Vec<Value>> {
     let file = File::open(rollout_path)?;
     let reader = BufReader::new(file);
     let mut current_turn_id = String::new();
@@ -622,7 +621,11 @@ fn read_rollout_usage_history(
             Ok(value) => value,
             Err(_) => continue,
         };
-        match value.get("type").and_then(Value::as_str).unwrap_or_default() {
+        match value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
             "turn_context" => {
                 current_turn_id = value
                     .get("payload")
@@ -633,7 +636,11 @@ fn read_rollout_usage_history(
             }
             "event_msg" => {
                 let payload = match value.get("payload") {
-                    Some(payload) if payload.get("type").and_then(Value::as_str) == Some("token_count") => payload,
+                    Some(payload)
+                        if payload.get("type").and_then(Value::as_str) == Some("token_count") =>
+                    {
+                        payload
+                    }
                     _ => continue,
                 };
                 let info = match payload.get("info") {
@@ -658,7 +665,8 @@ fn read_rollout_usage_history(
                     .and_then(|usage| usage.get("total_tokens"))
                     .and_then(Value::as_i64)
                     .unwrap_or_else(|| {
-                        total.and_then(|usage| usage.get("total_tokens"))
+                        total
+                            .and_then(|usage| usage.get("total_tokens"))
                             .and_then(Value::as_i64)
                             .unwrap_or(0)
                     });
@@ -670,7 +678,8 @@ fn read_rollout_usage_history(
                     .and_then(|usage| usage.get("total_tokens"))
                     .and_then(Value::as_i64)
                     .unwrap_or(total_tokens);
-                if input_tokens <= 0 && output_tokens <= 0 && total_tokens <= 0 && context_used <= 0 {
+                if input_tokens <= 0 && output_tokens <= 0 && total_tokens <= 0 && context_used <= 0
+                {
                     continue;
                 }
                 history.push(json!({

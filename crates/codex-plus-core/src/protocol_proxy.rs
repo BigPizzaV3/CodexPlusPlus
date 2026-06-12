@@ -2,12 +2,15 @@
 //!
 //! Codex Chat 与 Responses 协议之间的转换实现。
 
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use crate::settings::{RelayProtocol, SettingsStore};
+use crate::settings::{
+    BackendSettings, JIYI_DEFAULT_RELAY_BASE_URL, JIYI_DEFAULT_RELAY_BASE_URL_FALLBACK, RelayMode,
+    RelayProfile, RelayProtocol, SettingsStore,
+};
 
 pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 57321;
 const THINK_OPEN_TAG: &str = "<think>";
@@ -28,6 +31,292 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
     "user",
 ];
 const ERROR_BODY_PREVIEW_LIMIT: usize = 1024;
+const DEFAULT_API_KEY_FILE_ENV: &str = "JIYI_CODEX_API_KEY_FILE";
+const DEFAULT_API_KEY_FILE_NAME_PREFIX: &str = "默认业务空间-apiKey-";
+const DEFAULT_API_KEY_FILE_NAME_SUFFIX_DIGITS: &[u8] = b"5562800";
+
+fn default_api_key_file_name_stem() -> String {
+    let mut value = String::from(DEFAULT_API_KEY_FILE_NAME_PREFIX);
+    value.extend(
+        DEFAULT_API_KEY_FILE_NAME_SUFFIX_DIGITS
+            .iter()
+            .map(|digit| char::from(*digit)),
+    );
+    value
+}
+
+fn relay_base_url_candidates(relay: &RelayProfile) -> Vec<String> {
+    let mut urls: Vec<String> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+
+    let add = |value: &str, urls: &mut Vec<String>, seen: &mut BTreeSet<String>| {
+        let trimmed = value.trim().trim_end_matches('/');
+        if trimmed.is_empty() {
+            return;
+        }
+        if seen.insert(trimmed.to_string()) {
+            urls.push(trimmed.to_string());
+        }
+    };
+
+    let base_url = relay.base_url.trim();
+    let upstream_base_url = relay.upstream_base_url.trim();
+
+    add(base_url, &mut urls, &mut seen);
+    add(upstream_base_url, &mut urls, &mut seen);
+
+    let uses_default_relay_family = relay_base_url_is_default_family(base_url)
+        || relay_base_url_is_default_family(upstream_base_url);
+    if uses_default_relay_family || urls.is_empty() {
+        add(JIYI_DEFAULT_RELAY_BASE_URL, &mut urls, &mut seen);
+        add(JIYI_DEFAULT_RELAY_BASE_URL_FALLBACK, &mut urls, &mut seen);
+    }
+
+    if urls.is_empty() {
+        add(JIYI_DEFAULT_RELAY_BASE_URL, &mut urls, &mut seen);
+        add(JIYI_DEFAULT_RELAY_BASE_URL_FALLBACK, &mut urls, &mut seen);
+    }
+
+    urls
+}
+
+fn relay_base_url_is_default_family(value: &str) -> bool {
+    let value = value.to_lowercase();
+    value.contains("dashscope.aliyuncs.com")
+        || value.contains("bailian")
+        || value.contains("aliyuncs.com/compatible-mode")
+        || value.contains("apimart.ai")
+}
+
+fn should_retry_upstream_status(status: u16) -> bool {
+    status >= 500
+}
+
+pub fn resolved_relay_api_key(settings: &BackendSettings, relay: &RelayProfile) -> String {
+    resolved_relay_api_key_details(settings, relay).api_key
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayApiKeyResolution {
+    pub api_key: String,
+    pub source: String,
+}
+
+impl RelayApiKeyResolution {
+    pub fn configured(&self) -> bool {
+        !self.api_key.trim().is_empty()
+    }
+}
+
+pub fn resolved_relay_api_key_details(
+    settings: &BackendSettings,
+    relay: &RelayProfile,
+) -> RelayApiKeyResolution {
+    let relay_api_key = crate::secret_store::resolve_secret_value(&relay.api_key);
+    let settings_relay_api_key = crate::secret_store::resolve_secret_value(&settings.relay_api_key);
+    let env_jiyi_key = std::env::var("JIYI_CODEX_API_KEY").unwrap_or_default();
+    let env_dashscope_key = std::env::var("DASHSCOPE_API_KEY").unwrap_or_default();
+    let env_bailian_key = std::env::var("BAILIAN_API_KEY").unwrap_or_default();
+    let env_aliyun_bailian_key = std::env::var("ALIYUN_BAILIAN_API_KEY").unwrap_or_default();
+    let env_qwen_key = std::env::var("QWEN_API_KEY").unwrap_or_default();
+    let env_apimart_key = std::env::var("APIMART_API_KEY").unwrap_or_default();
+    let env_custom_key = std::env::var("CUSTOM_OPENAI_API_KEY").unwrap_or_default();
+    let file_api_key = fallback_api_key_from_downloads_file_with_source();
+    let relay_api_key_source = if crate::secret_store::is_keychain_ref(&relay.api_key) {
+        "relay_profile_keychain"
+    } else {
+        "relay_profile"
+    };
+    let settings_relay_api_key_source =
+        if crate::secret_store::is_keychain_ref(&settings.relay_api_key) {
+            "settings_keychain"
+        } else {
+            "settings"
+        };
+    let candidates = [
+        (relay_api_key_source, relay_api_key.as_str()),
+        (
+            settings_relay_api_key_source,
+            settings_relay_api_key.as_str(),
+        ),
+        ("env_jiyi_codex_api_key", env_jiyi_key.as_str()),
+        ("env_dashscope_api_key", env_dashscope_key.as_str()),
+        ("env_bailian_api_key", env_bailian_key.as_str()),
+        (
+            "env_aliyun_bailian_api_key",
+            env_aliyun_bailian_key.as_str(),
+        ),
+        ("env_qwen_api_key", env_qwen_key.as_str()),
+    ];
+    if let Some((source, api_key)) = first_non_empty_with_source(&candidates) {
+        return RelayApiKeyResolution { api_key, source };
+    }
+    if let Some((api_key, source)) = file_api_key {
+        return RelayApiKeyResolution { api_key, source };
+    }
+    if let Some((source, api_key)) = first_non_empty_with_source(&[
+        ("env_apimart_api_key", env_apimart_key.as_str()),
+        ("env_custom_openai_api_key", env_custom_key.as_str()),
+    ]) {
+        return RelayApiKeyResolution { api_key, source };
+    }
+    RelayApiKeyResolution {
+        api_key: String::new(),
+        source: "missing".to_string(),
+    }
+}
+
+pub(crate) fn fallback_api_key_from_downloads_file_with_source() -> Option<(String, String)> {
+    let Some(path) = fallback_api_key_file_path() else {
+        return None;
+    };
+    let contents = std::fs::read_to_string(&path).unwrap_or_default();
+    let api_key = parse_csv_api_key(&contents)?;
+    let source = if std::env::var(DEFAULT_API_KEY_FILE_ENV)
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        "api_key_file_env"
+    } else {
+        "downloads_default_api_key_file"
+    };
+    Some((api_key, source.to_string()))
+}
+
+fn fallback_api_key_file_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var(DEFAULT_API_KEY_FILE_ENV) {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+    let downloads = PathBuf::from(std::env::var("HOME").ok()?);
+    let downloads = downloads.join("Downloads");
+    let default_file_name_stem = default_api_key_file_name_stem();
+    let exact_csv = downloads.join(format!("{default_file_name_stem}.csv"));
+    if exact_csv.is_file() {
+        return Some(exact_csv);
+    }
+    let exact_plain = downloads.join(&default_file_name_stem);
+    if exact_plain.is_file() {
+        return Some(exact_plain);
+    }
+    let mut matches: Vec<PathBuf> = std::fs::read_dir(downloads)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let is_file = path.is_file();
+            if !is_file {
+                return None;
+            }
+            let name = path.file_name()?.to_string_lossy();
+            if name.starts_with(default_file_name_stem.as_str()) {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+    matches.sort();
+    matches.into_iter().next()
+}
+
+fn parse_csv_api_key(contents: &str) -> Option<String> {
+    for line in contents.lines() {
+        let mut it = line.splitn(2, ',');
+        let key = it
+            .next()
+            .map(str::trim_start)
+            .map(|value| value.trim_start_matches('\u{feff}').trim());
+        let Some(key) = key else {
+            continue;
+        };
+        if key != "apiKey" {
+            continue;
+        }
+        let value = it.next().map(str::trim).unwrap_or_default();
+        let value = value.trim_matches('"').trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+
+    for line in contents.lines() {
+        let line = line
+            .trim()
+            .trim_start_matches('\u{feff}')
+            .trim_matches('"')
+            .trim();
+        if line.is_empty() || line.contains(',') {
+            continue;
+        }
+        if line.starts_with("sk-") || line.len() > 20 {
+            return Some(line.to_string());
+        }
+    }
+
+    None
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveRelayTarget {
+    pub relay: RelayProfile,
+    pub api_key: String,
+    pub managed_proxy: bool,
+}
+
+pub fn effective_relay_target(settings: &BackendSettings) -> anyhow::Result<EffectiveRelayTarget> {
+    let session_token = crate::secret_store::resolve_local_backend_session_token();
+    effective_relay_target_with_session_token(settings, &session_token)
+}
+
+pub fn effective_relay_target_with_session_token(
+    settings: &BackendSettings,
+    session_token: &str,
+) -> anyhow::Result<EffectiveRelayTarget> {
+    let mut relay = settings.active_relay_profile();
+    if settings.jiyi_managed_proxy_enabled {
+        let endpoint = settings.jiyi_managed_proxy_endpoint.trim();
+        if endpoint.is_empty() {
+            anyhow::bail!("极义托管代理 Endpoint 不能为空。");
+        }
+        if !endpoint.starts_with("https://") && !endpoint.starts_with("http://") {
+            anyhow::bail!("极义托管代理 Endpoint 必须是 http:// 或 https:// URL。");
+        }
+        let session_token = session_token.trim();
+        if session_token.is_empty() {
+            anyhow::bail!("缺少极义后端 session token，请先完成手机号登录并同步到本地后端。");
+        }
+        relay.base_url = endpoint.to_string();
+        relay.upstream_base_url = endpoint.to_string();
+        relay.api_key = session_token.to_string();
+        relay.protocol = RelayProtocol::Responses;
+        relay.relay_mode = RelayMode::PureApi;
+        relay.official_mix_api_key = false;
+        return Ok(EffectiveRelayTarget {
+            relay,
+            api_key: session_token.to_string(),
+            managed_proxy: true,
+        });
+    }
+
+    let api_key = resolved_relay_api_key(settings, &relay);
+    Ok(EffectiveRelayTarget {
+        relay,
+        api_key,
+        managed_proxy: false,
+    })
+}
+
+fn first_non_empty_with_source(values: &[(&str, &str)]) -> Option<(String, String)> {
+    values
+        .iter()
+        .map(|(source, value)| (*source, value.trim()))
+        .find(|(_, value)| !value.is_empty())
+        .map(|(source, value)| (source.to_string(), value.to_string()))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChatReasoningStyle {
@@ -276,10 +565,17 @@ pub struct ProxyHttpResponse {
     pub body: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpstreamResponseKind {
+    Responses,
+    ChatCompletions,
+}
+
 pub struct UpstreamProxyResponse {
     pub status_code: u16,
     pub content_type: String,
     pub is_stream: bool,
+    pub response_kind: UpstreamResponseKind,
     pub response: reqwest::Response,
 }
 
@@ -425,94 +721,161 @@ pub fn is_models_proxy_path(path: &str) -> bool {
 
 pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
-    let relay = settings.active_relay_profile();
-    if relay.protocol != RelayProtocol::ChatCompletions {
-        anyhow::bail!("当前中转未启用 Chat Completions 协议代理");
-    }
-    if relay.base_url.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Base URL 不能为空");
-    }
-    if relay.api_key.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Key 不能为空");
-    }
-
+    let target = effective_relay_target(&settings)?;
+    let relay = target.relay;
+    let api_key = target.api_key;
     let request_json: Value = serde_json::from_str(body)?;
     let is_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let chat_request = responses_to_chat_completions(request_json.clone())?;
-    let client = crate::http_client::proxied_client(&relay.user_agent)?;
-    let upstream = client
-        .post(chat_completions_url(&relay.base_url))
-        .bearer_auth(relay.api_key.trim())
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .json(&chat_request)
-        .send()
-        .await?;
-    let status_code = upstream.status().as_u16();
-    let content_type = upstream
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .to_string();
 
-    Ok(UpstreamProxyResponse {
-        status_code,
-        is_stream: is_stream || content_type.contains("text/event-stream"),
-        content_type,
-        response: upstream,
-    })
+    let base_urls = relay_base_url_candidates(&relay);
+    if base_urls.is_empty() {
+        anyhow::bail!("上游 Base URL 不能为空");
+    }
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        anyhow::bail!("上游 Key 不能为空");
+    }
+
+    let client = crate::http_client::proxied_client(&relay.user_agent)?;
+    let is_chat_completions = relay.protocol == RelayProtocol::ChatCompletions;
+    let chat_request = if is_chat_completions {
+        Some(responses_to_chat_completions(request_json.clone())?)
+    } else {
+        None
+    };
+
+    for (idx, base_url) in base_urls.iter().enumerate() {
+        let upstream = if is_chat_completions {
+            client
+                .post(chat_completions_url(base_url))
+                .bearer_auth(api_key)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .json(chat_request.as_ref().expect("chat_request should exist"))
+                .send()
+                .await
+        } else {
+            client
+                .post(responses_url(base_url))
+                .bearer_auth(api_key)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.to_string())
+                .send()
+                .await
+        };
+
+        match upstream {
+            Ok(response) => {
+                let status_code = response.status().as_u16();
+                if should_retry_upstream_status(status_code) && idx + 1 < base_urls.len() {
+                    continue;
+                }
+                let content_type = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+
+                return Ok(UpstreamProxyResponse {
+                    status_code,
+                    is_stream: is_stream || content_type.contains("text/event-stream"),
+                    response_kind: if is_chat_completions {
+                        UpstreamResponseKind::ChatCompletions
+                    } else {
+                        UpstreamResponseKind::Responses
+                    },
+                    content_type,
+                    response,
+                });
+            }
+            Err(error) => {
+                if idx + 1 < base_urls.len() {
+                    continue;
+                }
+                return Err(error.into());
+            }
+        }
+    }
+
+    unreachable!("有候选上游时应返回或报错")
 }
 
 pub async fn open_models_proxy_request() -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
-    let relay = settings.active_relay_profile();
-    if relay.protocol != RelayProtocol::ChatCompletions {
-        anyhow::bail!("当前中转未启用 Chat Completions 协议代理");
+    let target = effective_relay_target(&settings)?;
+    let relay = target.relay;
+    let api_key = target.api_key;
+    let base_urls = relay_base_url_candidates(&relay);
+    if base_urls.is_empty() {
+        anyhow::bail!("上游 Base URL 不能为空");
     }
-    if relay.base_url.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Base URL 不能为空");
-    }
-    if relay.api_key.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Key 不能为空");
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        anyhow::bail!("上游 Key 不能为空");
     }
 
     let client = crate::http_client::proxied_client(&relay.user_agent)?;
-    let upstream = client
-        .get(models_url(&relay.base_url))
-        .bearer_auth(relay.api_key.trim())
-        .send()
-        .await?;
-    let status_code = upstream.status().as_u16();
-    let content_type = upstream
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("application/json; charset=utf-8")
-        .to_string();
+    for (idx, base_url) in base_urls.iter().enumerate() {
+        let upstream = client
+            .get(models_url(base_url))
+            .bearer_auth(api_key)
+            .send()
+            .await;
+        match upstream {
+            Ok(response) => {
+                let status_code = response.status().as_u16();
+                if should_retry_upstream_status(status_code) && idx + 1 < base_urls.len() {
+                    continue;
+                }
+                let content_type = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("application/json; charset=utf-8")
+                    .to_string();
 
-    Ok(UpstreamProxyResponse {
-        status_code,
-        is_stream: false,
-        content_type,
-        response: upstream,
-    })
+                return Ok(UpstreamProxyResponse {
+                    status_code,
+                    is_stream: false,
+                    response_kind: match relay.protocol {
+                        RelayProtocol::Responses => UpstreamResponseKind::Responses,
+                        RelayProtocol::ChatCompletions => UpstreamResponseKind::ChatCompletions,
+                    },
+                    content_type,
+                    response,
+                });
+            }
+            Err(error) => {
+                if idx + 1 < base_urls.len() {
+                    continue;
+                }
+                return Err(error.into());
+            }
+        }
+    }
+
+    unreachable!("有候选上游时应返回或报错")
 }
 
 pub async fn open_chat_completions_proxy_request(
     body: &str,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
-    let relay = settings.active_relay_profile();
+    let target = effective_relay_target(&settings)?;
+    let relay = target.relay;
+    let api_key = target.api_key;
     if relay.protocol != RelayProtocol::ChatCompletions {
         anyhow::bail!("当前中转未启用 Chat Completions 协议代理");
     }
-    if relay.base_url.trim().is_empty() {
+    let base_urls = relay_base_url_candidates(&relay);
+    if base_urls.is_empty() {
         anyhow::bail!("Chat Completions 上游 Base URL 不能为空");
     }
-    if relay.api_key.trim().is_empty() {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
         anyhow::bail!("Chat Completions 上游 Key 不能为空");
     }
 
@@ -521,27 +884,46 @@ pub async fn open_chat_completions_proxy_request(
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let upstream = reqwest::Client::new()
-        .post(chat_completions_url(&relay.base_url))
-        .bearer_auth(relay.api_key.trim())
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .json(&request_json)
-        .send()
-        .await?;
-    let status_code = upstream.status().as_u16();
-    let content_type = upstream
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .to_string();
+    let client = crate::http_client::proxied_client(&relay.user_agent)?;
+    for (idx, base_url) in base_urls.iter().enumerate() {
+        let upstream = client
+            .post(chat_completions_url(base_url))
+            .bearer_auth(api_key)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&request_json)
+            .send()
+            .await;
+        match upstream {
+            Ok(response) => {
+                let status_code = response.status().as_u16();
+                if should_retry_upstream_status(status_code) && idx + 1 < base_urls.len() {
+                    continue;
+                }
+                let content_type = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
 
-    Ok(UpstreamProxyResponse {
-        status_code,
-        is_stream: is_stream || content_type.contains("text/event-stream"),
-        content_type,
-        response: upstream,
-    })
+                return Ok(UpstreamProxyResponse {
+                    status_code,
+                    is_stream: is_stream || content_type.contains("text/event-stream"),
+                    response_kind: UpstreamResponseKind::ChatCompletions,
+                    content_type,
+                    response,
+                });
+            }
+            Err(error) => {
+                if idx + 1 < base_urls.len() {
+                    continue;
+                }
+                return Err(error.into());
+            }
+        }
+    }
+
+    unreachable!("有候选上游时应返回或报错")
 }
 
 pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyHttpResponse> {
@@ -550,7 +932,20 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
     let status_code = upstream.status_code;
     let upstream_content_type = upstream.content_type.clone();
     let is_stream = upstream.is_stream;
+    let response_kind = upstream.response_kind;
     let upstream_body = upstream.response.bytes().await?;
+
+    if response_kind == UpstreamResponseKind::Responses {
+        return Ok(ProxyHttpResponse {
+            status: http_status_line(status_code),
+            content_type: if upstream_content_type.trim().is_empty() {
+                "application/json; charset=utf-8".to_string()
+            } else {
+                upstream_content_type
+            },
+            body: upstream_body.to_vec(),
+        });
+    }
 
     if !(200..300).contains(&status_code) {
         let error =
@@ -593,6 +988,36 @@ pub fn chat_completions_url(base_url: &str) -> String {
         format!("{base}/chat/completions")
     } else {
         format!("{base}/v1/chat/completions")
+    };
+    while url.contains("/v1/v1") {
+        url = url.replace("/v1/v1", "/v1");
+    }
+    url
+}
+
+pub fn responses_url(base_url: &str) -> String {
+    let skip_version_prefix = base_url.trim().ends_with('#');
+    let mut base = base_url
+        .trim()
+        .trim_end_matches('#')
+        .trim_end_matches('/')
+        .to_string();
+    let lower = base.to_ascii_lowercase();
+    if lower.ends_with("/responses") {
+        return base;
+    }
+    if lower.ends_with("/chat/completions") {
+        base.truncate(base.len() - "/chat/completions".len());
+    } else if lower.ends_with("/models") {
+        base.truncate(base.len() - "/models".len());
+    }
+    let origin_only = base
+        .split_once("://")
+        .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
+    let mut url = if skip_version_prefix || has_version_suffix(&base) || !origin_only {
+        format!("{base}/responses")
+    } else {
+        format!("{base}/v1/responses")
     };
     while url.contains("/v1/v1") {
         url = url.replace("/v1/v1", "/v1");
@@ -3646,4 +4071,304 @@ fn is_openai_o_series(model: &str) -> bool {
             .as_bytes()
             .get(1)
             .is_some_and(|byte| byte.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::{BackendSettings, RelayProfile};
+    use std::env;
+    use std::fs;
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn parse_csv_api_key_reads_api_key_row() {
+        let input = "name,value\napiKey,sk-abcdef\nstatus,ok\n";
+        assert_eq!(parse_csv_api_key(input), Some("sk-abcdef".to_string()));
+    }
+
+    #[test]
+    fn parse_plain_text_api_key() {
+        let input = "sk-plain-key-1234567890";
+        assert_eq!(
+            parse_csv_api_key(input),
+            Some("sk-plain-key-1234567890".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_csv_api_key_with_bom_and_quotes() {
+        let input = "\u{feff}apiKey,\"sk-qwen-key\"\n";
+        assert_eq!(parse_csv_api_key(input), Some("sk-qwen-key".to_string()));
+    }
+
+    #[test]
+    fn resolved_relay_api_key_falls_back_to_downloads_csv_file() {
+        let _env_guard = ENV_MUTEX.lock().expect("env mutex");
+        let previous_keys = [
+            ("JIYI_CODEX_API_KEY", env::var("JIYI_CODEX_API_KEY").ok()),
+            ("DASHSCOPE_API_KEY", env::var("DASHSCOPE_API_KEY").ok()),
+            ("BAILIAN_API_KEY", env::var("BAILIAN_API_KEY").ok()),
+            (
+                "ALIYUN_BAILIAN_API_KEY",
+                env::var("ALIYUN_BAILIAN_API_KEY").ok(),
+            ),
+            ("QWEN_API_KEY", env::var("QWEN_API_KEY").ok()),
+            ("APIMART_API_KEY", env::var("APIMART_API_KEY").ok()),
+            (
+                "CUSTOM_OPENAI_API_KEY",
+                env::var("CUSTOM_OPENAI_API_KEY").ok(),
+            ),
+            (
+                "JIYI_CODEX_API_KEY_FILE",
+                env::var("JIYI_CODEX_API_KEY_FILE").ok(),
+            ),
+        ];
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = env::temp_dir().join(format!("jiyi-csv-key-{}.csv", timestamp));
+        fs::write(&path, "apiKey,sk-fallback-csv\n").expect("写入临时 API key 文件失败");
+
+        let keys = [
+            "JIYI_CODEX_API_KEY",
+            "DASHSCOPE_API_KEY",
+            "BAILIAN_API_KEY",
+            "ALIYUN_BAILIAN_API_KEY",
+            "QWEN_API_KEY",
+            "APIMART_API_KEY",
+            "CUSTOM_OPENAI_API_KEY",
+            "JIYI_CODEX_API_KEY_FILE",
+        ];
+        for key in keys {
+            unsafe {
+                env::remove_var(key);
+            }
+        }
+        unsafe {
+            env::set_var("JIYI_CODEX_API_KEY_FILE", &path);
+        }
+
+        let relay = RelayProfile {
+            api_key: String::new(),
+            ..RelayProfile::default()
+        };
+        let settings = BackendSettings::default();
+
+        let resolved = resolved_relay_api_key(&settings, &relay);
+        assert_eq!(resolved, "sk-fallback-csv");
+        let details = resolved_relay_api_key_details(&settings, &relay);
+        assert_eq!(details.api_key, "sk-fallback-csv");
+        assert_eq!(details.source, "api_key_file_env");
+        assert!(details.configured());
+
+        for (key, value) in &previous_keys {
+            if let Some(value) = value {
+                unsafe {
+                    env::set_var(key, value);
+                }
+            } else {
+                unsafe {
+                    env::remove_var(key);
+                }
+            }
+        }
+        fs::remove_file(path).expect("清理临时 API key 文件失败");
+    }
+
+    #[test]
+    fn resolved_relay_api_key_falls_back_to_downloads_default_path() {
+        let _env_guard = ENV_MUTEX.lock().expect("env mutex");
+        let previous_keys = [
+            ("JIYI_CODEX_API_KEY", env::var("JIYI_CODEX_API_KEY").ok()),
+            ("DASHSCOPE_API_KEY", env::var("DASHSCOPE_API_KEY").ok()),
+            ("BAILIAN_API_KEY", env::var("BAILIAN_API_KEY").ok()),
+            (
+                "ALIYUN_BAILIAN_API_KEY",
+                env::var("ALIYUN_BAILIAN_API_KEY").ok(),
+            ),
+            ("QWEN_API_KEY", env::var("QWEN_API_KEY").ok()),
+            ("APIMART_API_KEY", env::var("APIMART_API_KEY").ok()),
+            (
+                "CUSTOM_OPENAI_API_KEY",
+                env::var("CUSTOM_OPENAI_API_KEY").ok(),
+            ),
+            (
+                "JIYI_CODEX_API_KEY_FILE",
+                env::var("JIYI_CODEX_API_KEY_FILE").ok(),
+            ),
+            ("HOME", env::var("HOME").ok()),
+        ];
+
+        let temp_home = env::temp_dir().join(format!(
+            "jiyi-home-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_home.join("Downloads")).expect("创建临时 Downloads 目录失败");
+        let path = temp_home
+            .join("Downloads")
+            .join(format!("{}.csv", default_api_key_file_name_stem()));
+        fs::write(&path, "apiKey,sk-home-fallback\n").expect("写入默认下载目录 API key 文件失败");
+
+        for (key, _) in &previous_keys {
+            unsafe {
+                env::remove_var(key);
+            }
+        }
+        unsafe {
+            env::set_var("HOME", temp_home.to_string_lossy().as_ref());
+        }
+
+        let relay = RelayProfile {
+            api_key: String::new(),
+            ..RelayProfile::default()
+        };
+        let settings = BackendSettings::default();
+
+        let resolved = resolved_relay_api_key(&settings, &relay);
+        assert_eq!(resolved, "sk-home-fallback");
+        let details = resolved_relay_api_key_details(&settings, &relay);
+        assert_eq!(details.api_key, "sk-home-fallback");
+        assert_eq!(details.source, "downloads_default_api_key_file");
+        assert!(details.configured());
+
+        for (key, value) in &previous_keys {
+            if let Some(value) = value {
+                unsafe {
+                    env::set_var(key, value);
+                }
+            } else {
+                unsafe {
+                    env::remove_var(key);
+                }
+            }
+        }
+        fs::remove_file(path).expect("清理临时 API key 文件失败");
+        fs::remove_dir_all(temp_home).expect("清理临时 HOME 目录失败");
+    }
+
+    #[test]
+    fn resolved_relay_api_key_falls_back_to_downloads_default_name_without_extension() {
+        let _env_guard = ENV_MUTEX.lock().expect("env mutex");
+        let previous_keys = [
+            ("JIYI_CODEX_API_KEY", env::var("JIYI_CODEX_API_KEY").ok()),
+            ("DASHSCOPE_API_KEY", env::var("DASHSCOPE_API_KEY").ok()),
+            ("BAILIAN_API_KEY", env::var("BAILIAN_API_KEY").ok()),
+            (
+                "ALIYUN_BAILIAN_API_KEY",
+                env::var("ALIYUN_BAILIAN_API_KEY").ok(),
+            ),
+            ("QWEN_API_KEY", env::var("QWEN_API_KEY").ok()),
+            ("APIMART_API_KEY", env::var("APIMART_API_KEY").ok()),
+            (
+                "CUSTOM_OPENAI_API_KEY",
+                env::var("CUSTOM_OPENAI_API_KEY").ok(),
+            ),
+            (
+                "JIYI_CODEX_API_KEY_FILE",
+                env::var("JIYI_CODEX_API_KEY_FILE").ok(),
+            ),
+            ("HOME", env::var("HOME").ok()),
+        ];
+
+        let temp_home = env::temp_dir().join(format!(
+            "jiyi-home-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_home.join("Downloads")).expect("创建临时 Downloads 目录失败");
+        let path = temp_home
+            .join("Downloads")
+            .join(default_api_key_file_name_stem());
+        fs::write(&path, "apiKey,sk-home-fallback-noext\n")
+            .expect("写入默认下载目录 API key 文件失败");
+
+        for (key, _) in &previous_keys {
+            unsafe {
+                env::remove_var(key);
+            }
+        }
+        unsafe {
+            env::set_var("HOME", temp_home.to_string_lossy().as_ref());
+        }
+
+        let relay = RelayProfile {
+            api_key: String::new(),
+            ..RelayProfile::default()
+        };
+        let settings = BackendSettings::default();
+
+        let resolved = resolved_relay_api_key(&settings, &relay);
+        assert_eq!(resolved, "sk-home-fallback-noext");
+
+        for (key, value) in &previous_keys {
+            if let Some(value) = value {
+                unsafe {
+                    env::set_var(key, value);
+                }
+            } else {
+                unsafe {
+                    env::remove_var(key);
+                }
+            }
+        }
+        fs::remove_file(path).expect("清理临时 API key 文件失败");
+        fs::remove_dir_all(temp_home).expect("清理临时 HOME 目录失败");
+    }
+
+    #[test]
+    fn relay_base_url_candidates_includes_apimart_fallback_when_using_default_bailian() {
+        let relay = RelayProfile {
+            base_url: JIYI_DEFAULT_RELAY_BASE_URL.to_string(),
+            upstream_base_url: String::new(),
+            ..RelayProfile::default()
+        };
+
+        let candidates = relay_base_url_candidates(&relay);
+
+        assert_eq!(
+            candidates.first().map(String::as_str),
+            Some(JIYI_DEFAULT_RELAY_BASE_URL)
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|value| value == JIYI_DEFAULT_RELAY_BASE_URL_FALLBACK.trim_end_matches('/'))
+        );
+    }
+
+    #[test]
+    fn relay_base_url_candidates_keeps_custom_base_and_skips_apimart_fallback() {
+        let relay = RelayProfile {
+            base_url: "https://custom.provider.example/v1".to_string(),
+            upstream_base_url: String::new(),
+            ..RelayProfile::default()
+        };
+
+        let candidates = relay_base_url_candidates(&relay);
+
+        assert_eq!(candidates, vec!["https://custom.provider.example/v1"])
+    }
+
+    #[test]
+    fn infer_chat_reasoning_style_prefers_qwen_as_enable_thinking() {
+        assert_eq!(
+            infer_chat_reasoning_style("qwen3.7-plus"),
+            ChatReasoningStyle::EnableThinking
+        );
+        assert_eq!(
+            infer_chat_reasoning_style("qwen-turbo"),
+            ChatReasoningStyle::EnableThinking
+        );
+    }
 }

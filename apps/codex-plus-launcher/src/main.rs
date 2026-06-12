@@ -135,7 +135,10 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
         hooks.start_helper(options.helper_port).await?;
     }
     let process_ids = codex_plus_core::watcher::find_codex_processes();
+    #[cfg(windows)]
     let mut activated = false;
+    #[cfg(not(windows))]
+    let activated = false;
     #[cfg(windows)]
     {
         for process_id in &process_ids {
@@ -655,11 +658,7 @@ async fn try_inject_with_context(
 }
 
 fn default_codex_db_path() -> PathBuf {
-    directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".codex")
-        .join("state_5.sqlite")
+    codex_plus_core::relay_config::default_codex_home_dir().join("state_5.sqlite")
 }
 
 fn open_url(url: &str) -> anyhow::Result<()> {

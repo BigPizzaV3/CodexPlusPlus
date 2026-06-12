@@ -11,6 +11,7 @@ use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol};
 const RELAY_PROVIDER: &str = "custom";
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
 const CHAT_UPSTREAM_BASE_URL_KEY: &str = "codex_plus_chat_base_url";
+pub const JIYI_LOCAL_PROXY_PLACEHOLDER_KEY: &str = "jiyi-local-proxy";
 const RESERVED_MODEL_PROVIDER_IDS: &[&str] = &[
     "amazon-bedrock",
     "openai",
@@ -85,9 +86,11 @@ pub struct CodexContextEntries {
 }
 
 pub fn default_codex_home_dir() -> PathBuf {
-    directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().join(".codex"))
-        .unwrap_or_else(|| PathBuf::from(".codex"))
+    crate::paths::default_jiyi_codex_home_dir()
+}
+
+pub fn official_codex_home_dir() -> PathBuf {
+    crate::paths::default_official_codex_home_dir()
 }
 
 pub fn default_relay_status() -> RelayStatus {
@@ -181,7 +184,7 @@ pub fn chatgpt_auth_status_from_home(home: &Path) -> ChatGptAuthStatus {
             authenticated: true,
             source: auth_path.to_string_lossy().to_string(),
             account_label,
-            message: "已通过 auth.json 和 config.toml 检测到 ChatGPT 登录。".to_string(),
+            message: "已通过 auth.json 和 config.toml 检测到官方账号凭据。".to_string(),
         };
     }
 
@@ -189,7 +192,7 @@ pub fn chatgpt_auth_status_from_home(home: &Path) -> ChatGptAuthStatus {
         authenticated: false,
         source: String::new(),
         account_label: None,
-        message: "未检测到 ChatGPT 登录账号。".to_string(),
+        message: "未检测到官方账号凭据。".to_string(),
     }
 }
 
@@ -283,6 +286,19 @@ pub fn apply_pure_api_config_to_home(
         bearer_token,
         RelayProtocol::Responses,
         crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+    )
+}
+
+pub fn apply_local_proxy_config_to_home(
+    home: &Path,
+    proxy_port: u16,
+) -> anyhow::Result<RelayApplyResult> {
+    apply_pure_api_config_to_home_with_protocol(
+        home,
+        &crate::protocol_proxy::local_responses_proxy_base_url(proxy_port),
+        JIYI_LOCAL_PROXY_PLACEHOLDER_KEY,
+        RelayProtocol::Responses,
+        proxy_port,
     )
 }
 
@@ -463,7 +479,7 @@ pub async fn test_relay_profile(
         anyhow::bail!("API Key 不能为空");
     }
 
-    let client = crate::http_client::proxied_client("CodexPlusPlus/RelayTest")?;
+    let client = crate::http_client::proxied_client("JiyiCodex/RelayTest")?;
     let endpoint = match profile.protocol {
         RelayProtocol::Responses => format!("{base_url}/responses"),
         RelayProtocol::ChatCompletions => format!("{base_url}/chat/completions"),
@@ -582,10 +598,10 @@ pub fn backfill_relay_profile_from_home(
 ) -> anyhow::Result<()> {
     profile.config_contents = read_optional_text(&home.join("config.toml"))?;
     profile.auth_contents = read_optional_text(&home.join("auth.json"))?;
-    if profile.model.trim().is_empty() {
-        if let Some(model) = root_key_string(&profile.config_contents, "model") {
-            profile.model = model;
-        }
+    if let Some(model) =
+        root_key_string(&profile.config_contents, "model").filter(|model| !model.trim().is_empty())
+    {
+        profile.model = model;
     }
     Ok(())
 }
@@ -608,10 +624,10 @@ pub fn backfill_relay_profile_from_home_with_common(
     profile.auth_contents = read_optional_text(&home.join("auth.json"))?;
     restore_profile_auth_from_live_config(profile, &template_auth)?;
     sync_profile_mode_from_backfilled_live(profile);
-    if profile.model.trim().is_empty() {
-        if let Some(model) = root_key_string(&live_config, "model") {
-            profile.model = model;
-        }
+    if let Some(model) =
+        root_key_string(&live_config, "model").filter(|model| !model.trim().is_empty())
+    {
+        profile.model = model;
     }
     Ok(())
 }
@@ -1447,18 +1463,29 @@ fn codex_auth_api_key(auth_contents: &str) -> Option<String> {
 fn relay_profile_model(profile: &RelayProfile) -> String {
     root_key_string(&profile.config_contents, "model")
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| profile.model.trim().to_string())
+        .unwrap_or_else(|| {
+            let model = profile.model.trim();
+            if model.is_empty() {
+                if profile.model_list.trim().is_empty() {
+                    crate::settings::JIYI_DEFAULT_MODEL.to_string()
+                } else {
+                    String::new()
+                }
+            } else {
+                model.to_string()
+            }
+        })
 }
 
 fn relay_profile_base_url(profile: &RelayProfile) -> String {
     if profile.protocol == RelayProtocol::ChatCompletions {
-        if !profile.upstream_base_url.trim().is_empty() {
-            return profile.upstream_base_url.trim().to_string();
-        }
         if let Some(value) = root_key_string(&profile.config_contents, CHAT_UPSTREAM_BASE_URL_KEY)
             .filter(|value| !value.trim().is_empty())
         {
             return value;
+        }
+        if !profile.upstream_base_url.trim().is_empty() {
+            return profile.upstream_base_url.trim().to_string();
         }
         if !profile.base_url.trim().is_empty() {
             return profile.base_url.trim().to_string();
@@ -1573,8 +1600,14 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
     }
     let source_base_url = relay_profile_base_url(profile);
     let source_api_key = relay_profile_api_key(profile);
+    let explicit_model = profile.model.trim();
+    let has_custom_pure_api_fields = !source_api_key.trim().is_empty()
+        || (!explicit_model.is_empty() && explicit_model != crate::settings::JIYI_DEFAULT_MODEL)
+        || (!source_base_url.trim().is_empty()
+            && source_base_url.trim() != crate::settings::default_relay_base_url())
+        || profile.protocol != RelayProtocol::Responses;
     if !profile.config_contents.trim().is_empty()
-        || profile.relay_mode == crate::settings::RelayMode::PureApi
+        || (profile.relay_mode == crate::settings::RelayMode::PureApi && has_custom_pure_api_fields)
         || profile.official_mix_api_key
     {
         profile.config_contents = complete_relay_profile_config(profile)?;

@@ -1,4 +1,5 @@
 use codex_plus_core::relay_config::{
+    JIYI_LOCAL_PROXY_PLACEHOLDER_KEY, apply_local_proxy_config_to_home,
     apply_pure_api_config_to_home, apply_relay_config_file_to_home, apply_relay_config_to_home,
     apply_relay_files_to_home, apply_relay_files_to_home_with_common,
     apply_relay_profile_files_to_home_with_context, apply_relay_profile_to_home_with_switch_rules,
@@ -359,6 +360,23 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
     assert!(config.contains("requires_openai_auth = true"));
     assert!(config.contains(r#"base_url = "http://192.168.188.245:3001/v1""#));
     assert!(config.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
+}
+
+#[test]
+fn apply_local_proxy_config_uses_loopback_and_placeholder_key() {
+    let temp = tempfile::tempdir().unwrap();
+    let real_key = "sk-real-key-must-not-leak";
+
+    let result = apply_local_proxy_config_to_home(temp.path(), 57321).unwrap();
+
+    let auth = std::fs::read_to_string(temp.path().join("auth.json")).unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(result.configured);
+    assert!(auth.contains(JIYI_LOCAL_PROXY_PLACEHOLDER_KEY));
+    assert!(config.contains("http://127.0.0.1:57321/v1"));
+    assert!(config.contains(JIYI_LOCAL_PROXY_PLACEHOLDER_KEY));
+    assert!(!auth.contains(real_key));
+    assert!(!config.contains(real_key));
 }
 
 #[test]
@@ -1929,7 +1947,8 @@ requires_openai_auth = true
 experimental_bearer_token = "22222222222222222222222222222222222"
 "#
         .to_string(),
-        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#.to_string(),
+        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#
+            .to_string(),
         ..RelayProfile::default()
     };
     let mut common = String::new();
@@ -1940,9 +1959,11 @@ experimental_bearer_token = "22222222222222222222222222222222222"
     assert_eq!(profile.relay_mode, RelayMode::Official);
     assert!(profile.official_mix_api_key);
     assert_eq!(profile.api_key, "333333333333333333333");
-    assert!(profile
-        .config_contents
-        .contains(r#"experimental_bearer_token = "333333333333333333333""#));
+    assert!(
+        profile
+            .config_contents
+            .contains(r#"experimental_bearer_token = "333333333333333333333""#)
+    );
     assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
 }
 

@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use codex_plus_core::app_paths::{
     build_codex_executable, codex_app_version, find_latest_codex_app_dir,
-    find_latest_codex_app_dir_from_roots, find_macos_codex_app, normalize_codex_app_path,
-    packaged_app_user_model_id, resolve_codex_app_dir_with_saved, user_data_candidates_from,
+    find_latest_codex_app_dir_from_roots, find_macos_codex_app, is_jiyi_macos_codex_client,
+    normalize_codex_app_path, packaged_app_user_model_id, resolve_codex_app_dir_with_saved,
+    resolve_jiyi_codex_client_app_dir_with_saved, user_data_candidates_from,
 };
 use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
@@ -125,6 +126,18 @@ fn app_paths_find_macos_codex_app_prefers_first_search_root_and_known_names() {
 }
 
 #[test]
+fn app_paths_find_macos_codex_app_prefers_jiyi_codex_within_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Applications");
+    let jiyi_app = root.join("极义codex.app");
+    let codex_app = root.join("Codex.app");
+    std::fs::create_dir_all(&jiyi_app).unwrap();
+    std::fs::create_dir_all(&codex_app).unwrap();
+
+    assert_eq!(find_macos_codex_app(&[root]).unwrap(), jiyi_app);
+}
+
+#[test]
 fn app_paths_build_macos_bundle_executable() {
     let app = PathBuf::from("/Applications/OpenAI Codex.app");
 
@@ -161,6 +174,128 @@ fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
     assert_eq!(
         resolve_codex_app_dir_with_saved(None, Some(&app.to_string_lossy())).as_deref(),
         Some(app.as_path())
+    );
+}
+
+#[test]
+fn app_paths_jiyi_client_resolver_rejects_official_macos_codex() {
+    let temp = tempfile::tempdir().unwrap();
+    let official = temp.path().join("Codex.app");
+    let official_contents = official.join("Contents");
+    std::fs::create_dir_all(official_contents.join("MacOS")).unwrap();
+    std::fs::write(official_contents.join("MacOS").join("Codex"), "").unwrap();
+    std::fs::write(
+        official_contents.join("Info.plist"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.openai.codex</string>
+</dict>
+</plist>
+"#,
+    )
+    .unwrap();
+
+    assert!(!is_jiyi_macos_codex_client(&official));
+    assert!(
+        resolve_jiyi_codex_client_app_dir_with_saved(Some(&official), None)
+            .as_deref()
+            .is_none()
+    );
+}
+
+#[test]
+fn app_paths_jiyi_client_resolver_rejects_legacy_codex_named_bundle() {
+    let temp = tempfile::tempdir().unwrap();
+    let legacy = temp.path().join("Codex.app");
+    let contents = legacy.join("Contents");
+    std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+    std::fs::write(contents.join("MacOS").join("Codex"), "").unwrap();
+    std::fs::write(
+        contents.join("Info.plist"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.jiyi.codex.client</string>
+</dict>
+</plist>
+"#,
+    )
+    .unwrap();
+
+    assert!(!is_jiyi_macos_codex_client(&legacy));
+    assert!(
+        resolve_jiyi_codex_client_app_dir_with_saved(Some(&legacy), None)
+            .as_deref()
+            .is_none()
+    );
+}
+
+#[test]
+fn app_paths_jiyi_client_resolver_accepts_isolated_client_bundle() {
+    let temp = tempfile::tempdir().unwrap();
+    let client = temp.path().join("JiyiCodexClient.app");
+    let contents = client.join("Contents");
+    std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+    std::fs::write(contents.join("MacOS").join("Codex"), "").unwrap();
+    std::fs::write(
+        contents.join("Info.plist"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.jiyi.codex.client</string>
+</dict>
+</plist>
+"#,
+    )
+    .unwrap();
+
+    assert!(is_jiyi_macos_codex_client(&client));
+    assert_eq!(
+        resolve_jiyi_codex_client_app_dir_with_saved(Some(&client), None).as_deref(),
+        Some(client.as_path())
+    );
+}
+
+#[test]
+fn app_paths_jiyi_client_resolver_rejects_client_with_official_url_scheme() {
+    let temp = tempfile::tempdir().unwrap();
+    let client = temp.path().join("JiyiCodexClient.app");
+    let contents = client.join("Contents");
+    std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+    std::fs::write(contents.join("MacOS").join("Codex"), "").unwrap();
+    std::fs::write(
+        contents.join("Info.plist"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.jiyi.codex.client</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>Codex</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>codex</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>
+"#,
+    )
+    .unwrap();
+
+    assert!(!is_jiyi_macos_codex_client(&client));
+    assert!(
+        resolve_jiyi_codex_client_app_dir_with_saved(Some(&client), None)
+            .as_deref()
+            .is_none()
     );
 }
 
@@ -295,7 +430,25 @@ fn launcher_macos_open_command_waits_for_app_exit() {
 
     assert_eq!(command[0], "open");
     assert!(command.contains(&"-W".to_string()));
-    assert!(command.contains(&"-a".to_string()));
+    assert!(command.contains(&"/Applications/Codex.app".to_string()));
+    assert!(!command.contains(&"-a".to_string()));
+    assert!(command.contains(&"--env".to_string()));
+    assert!(command.iter().any(|part| {
+        part.starts_with("CODEX_HOME=") && part.ends_with(".codex-session-delete/codex-home")
+    }));
+    assert!(
+        command.iter().any(|part| {
+            part.starts_with("HOME=") && part.ends_with(".codex-session-delete/home")
+        })
+    );
+    assert!(command.iter().any(|part| {
+        part.starts_with("--user-data-dir=")
+            && part.ends_with(".codex-session-delete/codex-client-user-data")
+    }));
+    assert!(command.contains(&"OPENAI_API_KEY=".to_string()));
+    assert!(command.contains(&"OPENAI_BASE_URL=".to_string()));
+    assert!(command.contains(&"APIMART_API_KEY=".to_string()));
+    assert!(command.contains(&"JIYI_CODEX_API_KEY=".to_string()));
     assert!(command.contains(&"--args".to_string()));
     assert!(command.contains(&"--remote-debugging-port=9229".to_string()));
 }
@@ -312,6 +465,10 @@ fn launcher_macos_open_command_appends_extra_codex_arguments_after_args() {
     assert_eq!(
         &command[args_index + 1..],
         &[
+            format!(
+                "--user-data-dir={}",
+                codex_plus_core::paths::default_jiyi_browser_user_data_dir().to_string_lossy()
+            ),
             "--remote-debugging-port=9229".to_string(),
             "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
             "--force_high_performance_gpu".to_string(),
@@ -363,6 +520,124 @@ async fn default_helper_serves_backend_status_over_http() {
     let repair_payload: serde_json::Value = repair_response.json().await.unwrap();
     assert_eq!(repair_payload["status"], "ok");
     assert_eq!(repair_payload["transport"], "http-helper");
+
+    hooks.shutdown_helper(port).await;
+}
+
+#[tokio::test]
+async fn default_helper_serves_local_backend_account_api() {
+    let hooks = DefaultLaunchHooks::default();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    hooks.start_helper(port).await.unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let health_response = client
+        .get(format!("http://127.0.0.1:{port}/jiyi/v1/health"))
+        .send()
+        .await
+        .unwrap();
+    assert!(health_response.status().is_success());
+    let health_payload: serde_json::Value = health_response.json().await.unwrap();
+    assert_eq!(health_payload["status"], "ok");
+    assert_eq!(health_payload["transport"], "http-helper");
+    assert!(
+        health_payload["backend"]["initialized"]
+            .as_bool()
+            .unwrap_or(false)
+    );
+
+    let verify_response = client
+        .post(format!("http://127.0.0.1:{port}/jiyi/v1/sessions/verify"))
+        .json(&serde_json::json!({ "accessToken": "jiyi-local-invalid" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(verify_response.status().is_success());
+    let verify_payload: serde_json::Value = verify_response.json().await.unwrap();
+    assert_eq!(verify_payload["authenticated"], false);
+    assert_eq!(verify_payload["reason"], "invalid_or_expired_token");
+
+    let revoke_get_response = client
+        .get(format!("http://127.0.0.1:{port}/jiyi/v1/sessions/revoke"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        revoke_get_response.status(),
+        reqwest::StatusCode::METHOD_NOT_ALLOWED
+    );
+
+    let revoke_post_response = client
+        .post(format!("http://127.0.0.1:{port}/jiyi/v1/sessions/revoke"))
+        .json(&serde_json::json!({ "accessToken": "jiyi-local-invalid" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        revoke_post_response.status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    let revoke_payload: serde_json::Value = revoke_post_response.json().await.unwrap();
+    assert_eq!(revoke_payload["authenticated"], false);
+    assert_eq!(revoke_payload["reason"], "invalid_or_expired_token");
+
+    let me_response = client
+        .get(format!("http://127.0.0.1:{port}/jiyi/v1/me"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me_response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let me_payload: serde_json::Value = me_response.json().await.unwrap();
+    assert_eq!(me_payload["authenticated"], false);
+
+    let quota_response = client
+        .get(format!("http://127.0.0.1:{port}/jiyi/v1/quota/today"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(quota_response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let quota_payload: serde_json::Value = quota_response.json().await.unwrap();
+    assert_eq!(quota_payload["authenticated"], false);
+
+    let usage_get_response = client
+        .get(format!("http://127.0.0.1:{port}/jiyi/v1/usage/record"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        usage_get_response.status(),
+        reqwest::StatusCode::METHOD_NOT_ALLOWED
+    );
+
+    let usage_post_response = client
+        .post(format!("http://127.0.0.1:{port}/jiyi/v1/usage/record"))
+        .json(&serde_json::json!({
+            "accessToken": "jiyi-local-invalid",
+            "method": "POST",
+            "path": "/v1/responses",
+            "upstreamProtocol": "responses",
+            "statusCode": 200,
+            "requestBytes": 120,
+            "responseBytes": 240,
+            "tokenUsage": {
+                "inputTokens": 15,
+                "outputTokens": 25,
+                "totalTokens": 40
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        usage_post_response.status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    let usage_payload: serde_json::Value = usage_post_response.json().await.unwrap();
+    assert_eq!(usage_payload["authenticated"], false);
+    assert_eq!(usage_payload["reason"], "invalid_or_expired_token");
 
     hooks.shutdown_helper(port).await;
 }
@@ -794,6 +1069,55 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             user_agent: String::new(),
         }],
         active_relay_id: "relay-chat".to_string(),
+        ..BackendSettings::default()
+    };
+    let hooks = FakeHooks::new(events.clone()).with_settings(settings);
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 58000,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+
+    let before_stop = events.lock().unwrap().clone();
+    assert!(before_stop.contains(&"select-helper:58000".to_string()));
+    assert!(before_stop.contains(&"start-helper:57321".to_string()));
+    assert!(!before_stop.contains(&"inject:9229:57321".to_string()));
+
+    handle.wait_for_codex_exit().await.unwrap();
+
+    let after_stop = events.lock().unwrap().clone();
+    assert!(after_stop.contains(&"wait-codex".to_string()));
+    assert!(after_stop.contains(&"shutdown-helper:57321".to_string()));
+}
+
+#[tokio::test]
+async fn launch_starts_helper_when_jiyi_responses_local_proxy_is_enabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let settings = BackendSettings {
+        enhancements_enabled: false,
+        jiyi_local_proxy_enabled: true,
+        relay_profiles: vec![RelayProfile {
+            id: "relay-responses".to_string(),
+            name: "Responses".to_string(),
+            base_url: "https://api.apimart.ai/v1".to_string(),
+            upstream_base_url: "https://api.apimart.ai/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            protocol: RelayProtocol::Responses,
+            relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+            ..RelayProfile::default()
+        }],
+        active_relay_id: "relay-responses".to_string(),
         ..BackendSettings::default()
     };
     let hooks = FakeHooks::new(events.clone()).with_settings(settings);

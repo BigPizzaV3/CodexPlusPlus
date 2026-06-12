@@ -18,20 +18,25 @@
 
 Codex++ 是面向 Codex App 的外部增强启动器和管理工具。它不修改 Codex App 原始安装文件，而是通过外部 launcher 启动 Codex，并使用 Chromium DevTools Protocol 注入增强脚本。
 
+## 极义codex 二开状态
+
+当前工作树已经进入“极义codex”国产版短期方案：macOS 主入口先进行本地手机号验证码登录，验证后仍停留在极义账号门禁页，由用户手动点击进入内置完整 Codex 客户端，模型请求默认由阿里百炼千问兼容接口 / 极义中转纯 API 和极义本地请求代理接管，APIMart 保留为备选，不要求用户使用 ChatGPT 账号。
+
+已完成能力、验收命令和后续待办见：[极义codex 国产版开发状态](docs/极义codex_国产版开发状态.md)。
+
 ## 快速使用
 
 从 [GitHub Releases](https://github.com/BigPizzaV3/CodexPlusPlus/releases) 下载最新版安装包：
 
-- Windows：`CodexPlusPlus-*-windows-x64-setup.exe`
-- macOS Intel：`CodexPlusPlus-*-macos-x64.dmg`
-- macOS Apple Silicon：`CodexPlusPlus-*-macos-arm64.dmg`
+- macOS Intel：`JiyiCodex-*-macos-x64.dmg`
+- macOS Apple Silicon：`JiyiCodex-*-macos-arm64.dmg`
 
 安装后会有两个入口：
 
-- `Codex++`：静默启动入口，不显示管理界面，只负责启动 Codex 并注入增强功能。
-- `Codex++ 管理工具`：Tauri 控制面板，用于启动、检查、修复、更新、配置中转注入、管理增强功能和用户脚本。
+- `极义codex`：国产版主入口，先手机号验证码登录，验证后点击“进入 Codex”才启动内置 Codex 使用界面。
+- `极义codex 管理工具`：配置、维护、日志和供应商管理入口。
 
-Windows 安装包会创建桌面和开始菜单快捷方式。macOS DMG 会安装 `/Applications/Codex++.app` 和 `/Applications/Codex++ 管理工具.app`。
+当前极义版先只交付 macOS。macOS DMG 会安装 `/Applications/极义codex.app` 和 `/Applications/极义codex 管理工具.app`，不会覆盖 `/Applications/Codex.app`；包内客户端固定为 `/Applications/极义codex.app/Contents/Resources/JiyiCodexClient.app`，主入口缺少该客户端时会直接报错，不会兜底打开原版 Codex。内置客户端会移除原版 `codex://` URL Scheme 和 Sparkle 更新身份，并强制使用极义专用浏览器用户数据目录和隔离环境变量，避免抢占原版 Codex 的登录回调、更新链路、Electron 会话状态或通用 OpenAI/百炼/APIMart 运行环境。
 
 ## 赞助商
 <a href="mailto:1727532@qq.com">想显示在下方？</a>
@@ -170,7 +175,7 @@ Telegram 频道：<https://t.me/CodexPlusPlus>
 - Rust 后端和静默 launcher，启动时不依赖额外运行时。
 - Tauri + React 管理工具，支持深色/浅色切换。
 - 外部 CDP 注入，不改 `app.asar`，不向 Codex 安装目录写入 DLL。
-- 中转注入模式：支持多个中转配置，写入 `CodexPlusPlus` provider，并可切回官方 ChatGPT 登录态。
+- 极义纯 API 模式：支持多个中转配置，默认阿里百炼千问兼容接口，APIMart 保留为备选，写入 Codex 兼容 provider，不切回官方 ChatGPT 登录态。
 - 传统增强模式：插件入口解锁、特殊插件强制安装、会话删除、Markdown 导出、项目移动、Timeline 等。
 - 用户脚本独立管理，可在启动时注入自定义脚本。
 - Provider 同步：启动前同步本地会话 metadata，切换供应商后旧会话仍可见。
@@ -199,46 +204,122 @@ Codex++ 启动后会解锁插件入口，并在会话列表悬停时显示删除
 ![Codex++ 后端状态指示灯](docs/images/backend-status-indicator.png)
 ![Codex++ 设置面板](docs/images/settings-panel.png)
 
-## 中转注入
+## 极义纯 API 接入
 
-中转注入适合已经在 Codex/ChatGPT 中完成官方账号登录，同时希望把模型请求转到自定义兼容 API 的场景。
+极义codex V1 不使用 ChatGPT 官方账号体系。用户登录由本地手机号验证码门禁负责，模型请求由阿里百炼千问兼容接口或后续极义中转接管，APIMart 保留为备选。
 
-这种混合模式的边界是：
+接入边界：
 
-- 官方 ChatGPT/Codex 登录态继续负责 Codex App 的账号能力和插件入口。
-- 中转配置只接管模型请求使用的 Base URL、Key 和模型名称。
-- 兼容 API 供应商不需要固定为某一家；只要上游协议和 Codex 配置匹配即可。
-- 清除 API 模式后应能回到官方登录态，继续使用官方账号和插件。
+- 极义本地账号负责进入主应用和后续用户体系承接。
+- 本地账号 session 默认 30 天有效，并记录本机设备标识；过期后需要重新手机号验证。
+- 手机号登录后会写入本地用户、设备绑定和套餐额度模型，管理工具首页可编辑当前用户套餐和每日 token 额度，用于承接后续服务端用户体系。
+- 管理工具设置页可保存腾讯云短信生产配置；`SmsSdkAppId`、签名、模板 ID、有效期和模板参数顺序写入 `~/.codex-session-delete/sms-provider.json`，`SecretId` 和 `SecretKey` 写入极义自己的 macOS 钥匙串默认账号 `jiyi-keychain:tencent-sms:secret-id` / `jiyi-keychain:tencent-sms:secret-key`。
+- 短信默认保持本地干跑；关闭干跑且腾讯云参数完整后，验证码接口才会通过腾讯云 `SendSms` 真实发送，并要求 `SendStatusSet` 全部返回 `Ok` 后才落本地验证码。
+- 阿里百炼 / 极义中转负责模型 Base URL、Key 和模型名称，APIMart 可作为备用供应商。
+- 主入口不会因为已有本地登录态自动启动内置 Codex；用户点击“进入 Codex”时才会强制检查纯 API 配置，并默认通过极义本地请求代理转发模型请求。
+- 本地 helper 会按当前用户记录今日请求数和 token 用量，可设置每日 token 上限；当前用户有本地套餐额度时优先使用套餐额度，超过上限时本机直接返回 `429 jiyi_quota_exceeded`。
+- 管理工具首页可导出本地账号迁移报告，路径为 `~/.codex-session-delete/reports/jiyi-local-identity-report-*.json`；报告只包含脱敏手机号和稳定哈希，不导出明文手机号。
+- 管理工具设置页可把脱敏账号、设备、套餐和用量摘要同步到本地账号服务端库，路径为 `~/.codex-session-delete/jiyi-codex-local-backend.sqlite`，用于本地部署阶段验证国产账号体系的服务端承接模型；同步时会创建极义默认团队并写入团队成员关系，为后续组织套餐和团队额度迁移预留数据结构；有效登录态会签发极义本地后端 session token，服务端库只保存 token hash，明文 token 写入极义自己的 macOS 钥匙串；服务端库已包含用户访问控制表，封禁用户会立即吊销该用户未过期 session，并阻止后续同步再次签发 session。
+- 本地 helper 暴露极义账号后端 API：`GET /jiyi/v1/health`、`POST /jiyi/v1/sessions/verify`、`POST /jiyi/v1/sessions/revoke`、`GET /jiyi/v1/me`、`GET /jiyi/v1/quota/today`、`POST /jiyi/v1/usage/record`。API 使用 `Authorization: Bearer <token>` 或请求体 `accessToken` 做 session 校验，只返回脱敏手机号、设备、套餐和服务端额度快照，不返回明文手机号或明文 token；本地账号退出时会吊销后端 session 并清理 `jiyi-keychain:local-backend-session:active`；模型请求成功记入本地用量库后，也会在存在后端 session token 时实时增量写入本地后端额度摘要。
+- 管理工具设置页可生成服务端同步请求包，也可直接向配置的极义服务端 Endpoint 发起同步；请求包路径为 `~/.codex-session-delete/reports/jiyi-identity-sync-request-*.json`，响应审计路径为 `~/.codex-session-delete/reports/jiyi-identity-sync-response-*.json`；同步 API Key 保存到极义自己的 macOS 钥匙串，请求包和响应审计不落明文 Key。
+- 管理工具设置页可启用“极义托管代理”：内置 Codex 仍只连接本机 `127.0.0.1`，本地 helper 使用 `jiyi-keychain:local-backend-session:active` 转发到托管代理 Endpoint，不把百炼或中转站主 Key 写入客户端配置。
+- 本地部署阶段提供 `jiyi-managed-proxy` 托管代理服务：默认监听 `127.0.0.1:57421`，从环境变量读取上游百炼 / 中转站 Key，只接受极义后端 session token，并把 Responses 用量写回本地后端额度摘要；后端库默认使用 `~/.codex-session-delete/jiyi-codex-local-backend.sqlite`，也可通过 `JIYI_MANAGED_PROXY_DB_PATH` 显式指定，健康检查会返回实际 `backendDbPath`；托管代理还提供 `GET /jiyi/v1/admin/users` 用户运营查询、`GET /jiyi/v1/admin/teams` 团队运营查询、`POST /jiyi/v1/admin/users/entitlement` 用户套餐/额度调整、`POST /jiyi/v1/admin/teams/entitlement` 团队套餐/额度调整、`GET /jiyi/v1/admin/billing/renewals` 续费记录查询、`POST /jiyi/v1/admin/billing/renewals` 手工续费/支付凭证落账、`POST /jiyi/v1/billing/payment-webhook` 支付网关回调承接、`POST /jiyi/v1/admin/billing/reconcile` 支付事件自动对账、`POST /jiyi/v1/admin/users/block` 和 `POST /jiyi/v1/admin/users/unblock` 管理接口。`JIYI_MANAGED_PROXY_ADMIN_API_KEY` 是全量管理 Key；`JIYI_MANAGED_PROXY_USER_READ_API_KEY` 只能查用户和团队，`JIYI_MANAGED_PROXY_BILLING_API_KEY` 只能调用户或团队套餐额度、记录续费和触发对账，`JIYI_MANAGED_PROXY_PAYMENT_WEBHOOK_API_KEY` 只给支付网关回调使用，`JIYI_MANAGED_PROXY_PAYMENT_WEBHOOK_SIGNATURE_SECRET` 配置后会强制校验 `X-Jiyi-Payment-Timestamp` 和 `X-Jiyi-Payment-Signature` 的 HMAC-SHA256 签名；配置 `JIYI_MANAGED_PROXY_ALIPAY_PUBLIC_KEY` / `_PATH` 或 `JIYI_MANAGED_PROXY_WECHATPAY_PUBLIC_KEY` / `_PATH` 后，匹配支付宝或微信支付的回调会在落账前强制执行官方 RSA-SHA256 验签；`JIYI_MANAGED_PROXY_ACCESS_API_KEY` 只能封禁/解封，`JIYI_MANAGED_PROXY_AUDIT_API_KEY` 只能查审计；`GET /jiyi/v1/admin/audit/events` 支持 `eventType`、`actorType`、`subjectUserId` 和 `limit` 过滤。用户套餐调整、续费落账和 paid 支付回调会立即影响后续 quota，团队套餐调整和团队续费会记录审计并返回团队剩余额度快照，封禁后 `/v1/models` 和 `/v1/responses` 会在转发上游前拒绝该用户；DMG 会把该二进制作为主应用和管理工具的 sidecar 一起打包。
+- 管理工具设置页可以直接检查、启动和停止本地 `jiyi-managed-proxy`。启动后会把托管代理 Endpoint 设置为 `http://127.0.0.1:57421`，进程 PID 和日志写入 `~/.codex-session-delete/jiyi-managed-proxy.pid` / `~/.codex-session-delete/jiyi-managed-proxy.log`；状态区展示托管代理后端库路径、上游 Key、同步 Key、管理 Key、用户只读 Key、计费 Key、支付回调 Key、通用支付验签、支付宝验签、微信验签、风控 Key 和审计 Key 配置状态；停止前会校验 PID 对应命令行，避免影响原版 Codex。
+- 如果缺少 API Key，会阻止启动，不回退到 ChatGPT 登录。
+- 真实 Key 不应写入文档、截图或 issue。
 
-应用中转注入前建议先做一次最小检查：
+使用流程：
 
-1. 先确认 Codex 已检测到 ChatGPT 登录状态，插件入口可用。
-2. 确认自定义 Base URL 可访问，并且支持所选上游协议（例如 Responses 兼容接口）。
-3. 用目标 Key 做一次最小认证测试，例如模型列表或很短的消息请求。
-4. 只记录 Key 是否存在和认证结果，不要把真实 Key 写入日志、截图或 issue。
-5. 确认 `~/.codex/config.toml` 已有备份，便于清除 API 模式后回滚。
+1. 打开 `极义codex`，完成手机号验证码登录。
+2. 在 `极义codex 管理工具` 里确认阿里百炼 / 极义中转 Base URL、API Key、模型名称；公开版可改为启用极义托管代理 Endpoint。
+3. 保存供应商配置，并使用“极义纯 API”模式。
+4. 回到 `极义codex`，点击“进入 Codex”进入使用界面。
 
-在管理工具的“中转注入”页面：
+本地托管代理可这样启动：
 
-1. 确认已经检测到 ChatGPT 登录状态。
-2. 添加一个或多个中转配置，填写 Base URL 和 Key。
-3. 选择当前配置并应用中转注入。
-4. 启动 `Codex++`。
-
-Codex++ 会在 `~/.codex/config.toml` 中写入类似配置：
-
-```toml
-model_provider = "CodexPlusPlus"
-
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
-wire_api = "responses"
-requires_openai_auth = true
-base_url = "https://example.com/v1"
-experimental_bearer_token = "sk-..."
+```bash
+mkdir -p "$HOME/.codex-session-delete/bin"
+cp /Applications/极义codex.app/Contents/MacOS/jiyi-managed-proxy \
+  "$HOME/.codex-session-delete/bin/jiyi-managed-proxy"
+chmod 755 "$HOME/.codex-session-delete/bin/jiyi-managed-proxy"
+JIYI_MANAGED_PROXY_UPSTREAM_API_KEY="你的服务端上游 key" \
+JIYI_MANAGED_PROXY_UPSTREAM_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1" \
+JIYI_MANAGED_PROXY_SYNC_API_KEY="你的极义账号同步 key" \
+JIYI_MANAGED_PROXY_ADMIN_API_KEY="你的极义管理 key" \
+JIYI_MANAGED_PROXY_USER_READ_API_KEY="你的极义用户只读 key" \
+JIYI_MANAGED_PROXY_BILLING_API_KEY="你的极义计费 key" \
+JIYI_MANAGED_PROXY_PAYMENT_WEBHOOK_API_KEY="你的极义支付回调 key" \
+JIYI_MANAGED_PROXY_PAYMENT_WEBHOOK_SIGNATURE_SECRET="你的极义支付回调验签密钥" \
+JIYI_MANAGED_PROXY_ALIPAY_PUBLIC_KEY_PATH="/path/to/alipay-public.pem" \
+JIYI_MANAGED_PROXY_WECHATPAY_PUBLIC_KEY_PATH="/path/to/wechatpay-public.pem" \
+JIYI_MANAGED_PROXY_ACCESS_API_KEY="你的极义风控 key" \
+JIYI_MANAGED_PROXY_AUDIT_API_KEY="你的极义审计只读 key" \
+JIYI_MANAGED_PROXY_DB_PATH="$HOME/.codex-session-delete/jiyi-codex-local-backend.sqlite" \
+"$HOME/.codex-session-delete/bin/jiyi-managed-proxy"
 ```
 
-如果需要回到官方登录态，在“中转注入”页面点击清除 API 模式即可移除 `OPENAI_API_KEY` 相关配置并切回官方 ChatGPT 登录模式。
+更推荐在 `极义codex 管理工具 -> 设置 -> 极义账号服务端` 中点击“启动本地托管代理”，由管理工具读取当前供应商配置、写入本机 Endpoint 并完成健康检查。
+
+如果要把本地托管代理作为 macOS 常驻服务运行，可以安装 LaunchAgent：
+
+```bash
+bash /Applications/极义codex.app/Contents/Resources/server/macos/install-managed-proxy-launchd.sh
+```
+
+首次安装会创建 `~/.codex-session-delete/jiyi-managed-proxy.env`，把 `JIYI_MANAGED_PROXY_UPSTREAM_API_KEY`、`JIYI_MANAGED_PROXY_SYNC_API_KEY`、全量管理 Key、支付回调 Key、支付回调 HMAC 验签密钥、支付宝/微信支付官方公钥路径或对应角色 Key 填入后重新 kickstart 服务即可。卸载脚本在同一目录：
+
+```bash
+bash /Applications/极义codex.app/Contents/Resources/server/macos/uninstall-managed-proxy-launchd.sh
+```
+
+更完整的本地服务部署说明见 `docs/极义codex_本地服务部署.md`。
+
+远端托管代理部署也已经提供模板。单机 Linux 服务器可以用 systemd：
+
+```bash
+cargo build --release -p jiyi-managed-proxy
+sudo scripts/server/linux/install-managed-proxy-systemd.sh target/release/jiyi-managed-proxy
+```
+
+容器环境可以用：
+
+```bash
+docker build -f apps/jiyi-managed-proxy/Dockerfile -t jiyi-managed-proxy:1.2.4 .
+```
+
+systemd 和 Docker 模板都要求通过服务端环境变量提供 `JIYI_MANAGED_PROXY_UPSTREAM_API_KEY`、`JIYI_MANAGED_PROXY_SYNC_API_KEY`、全量管理 Key、支付回调 Key、支付回调验签密钥、支付宝/微信支付官方公钥或对应角色 Key，不会把上游 Key 写入客户端。远端部署细节见 `docs/极义codex_远端托管代理部署.md`。
+
+本机验收安装建议使用脚本，不要手工拖拽覆盖：
+
+```bash
+scripts/installer/macos/install-local-dmg.sh dist/macos/JiyiCodex-1.2.4-macos-arm64.dmg
+```
+
+极义codex 会在自己的隔离 Codex Home 中写入类似配置：
+
+```text
+~/.codex-session-delete/codex-home/config.toml
+```
+
+```toml
+model = "qwen3.7-plus"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "http://127.0.0.1:57321/v1"
+experimental_bearer_token = "jiyi-local-proxy"
+```
+
+同时会在 `~/.codex-session-delete/codex-home/auth.json` 中写入 `OPENAI_API_KEY` 兼容字段，值为 `jiyi-local-proxy` 占位 token。真实百炼 / 极义中转 Key 保存在 macOS 钥匙串、环境变量或下载目录默认百炼 Key 文件中，极义 settings 只保留 `jiyi-keychain:` 引用，由本地 helper 代理 `/responses` 和 `/models` 请求；管理工具首页只展示“极义钥匙串 / 百炼环境变量 / 下载目录百炼 Key / APIMart 备选”等来源枚举，不展示路径或 Key 明文；启用托管代理时，helper 改用极义后端 session token 调用托管代理，不读取百炼或中转站主 Key；这里的字段名是 Codex 客户端兼容要求，不代表用户需要 ChatGPT 账号。
+
+原版 Codex 的 `~/.codex/config.toml` 和 `~/.codex/auth.json` 不作为极义运行目录使用；极义主壳和内置客户端启动时会守护原版配置，避免极义路径、百炼或 APIMart 配置写回原版 Codex。污染判断识别极义路径、百炼/APIMart、`jiyi-local-proxy`、`jiyi-keychain:` 和 `qwen3.7-plus` 等极义痕迹，不会因为原版用户自己配置了 `OPENAI_API_KEY` 就回滚原版配置。极义主入口只启动包内/运行时的 `JiyiCodexClient.app`，不再使用 `/Applications/Codex.app` 或旧的 `Contents/Resources/Codex.app` 作为兜底；运行时会拒绝仍声明 `codex://` 的客户端，并通过 `--user-data-dir=~/.codex-session-delete/codex-client-user-data` 隔离 Electron/Chromium 用户数据，同时清空通用 `OPENAI_*`、`DASHSCOPE_API_KEY`、`BAILIAN_API_KEY`、`QWEN_API_KEY`、`APIMART_API_KEY`、`CUSTOM_OPENAI_API_KEY` 和 `JIYI_CODEX_API_KEY` 环境变量。管理工具“安装维护”页提供“修复原版隔离”，会备份后清理原版 `~/.codex` 与原版 Codex App Support 中的极义/百炼/APIMart 残留状态，不改 `/Applications/Codex.app` 本体。
+
+管理工具的“安装维护”页提供“发布前检查”，会检查完整 DMG、bundle id、签名、托管代理 sidecar、主入口无原版兜底、内置客户端 URL Scheme 隔离、内置客户端浏览器数据隔离、内置客户端环境变量隔离、原版 `~/.codex` 与原版 Codex App Support 隔离、本地账号、腾讯云短信生产配置、本地用户套餐模型、本地用量记账、本地账号服务端库、极义账号服务端同步、极义托管代理、托管代理全量管理 Key、用户只读 Key、计费 Key、风控 Key、审计 Key、极义 Codex Home Key 隔离和 Key 分发风险。
+
+本地账号后端会记录身份同步、session 吊销、用量写入、套餐/额度调整、封禁和解封等服务端审计事件；`jiyi-managed-proxy` 提供 `GET /jiyi/v1/admin/audit/events?limit=50` 管理接口，接受全量管理 Key 或审计只读 Key 鉴权。用户只读 Key 不能改套餐或封禁，计费 Key 不能查用户或封禁，风控 Key 不能查用户或调套餐，审计 Key 不能访问用户列表、套餐调整、封禁或解封接口。审计查询支持 `eventType`、`actorType` 和 `subjectUserId` 过滤；审计事件只保存 actor、subject、原因、脱敏 metadata 和时间，不保存明文 session token、同步 Key、管理 Key、角色 Key、审计 Key 或上游 Key；管理工具工作台会展示审计事件数量和最近审计时间。macOS 本地启动托管代理时，极义会把包内 sidecar 复制到 `~/.codex-session-delete/bin/jiyi-managed-proxy` 后执行，避免直接从大型 App bundle 内运行 ad-hoc sidecar 被系统拒绝；这仍然只使用极义状态目录，不写原版 Codex。
 
 ## 增强功能
 
@@ -257,18 +338,28 @@ https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json
 
 请求时会自动追加 `?v=时间戳` 绕开 CDN 旧缓存。推荐内容加载慢不会影响后端连接状态。
 
-## 自动更新与安装包
+## 安装包
 
-Codex++ 通过 GitHub Release 发布安装包。Windows 会生成 NSIS 安装程序，macOS 会生成 Intel x64 和 Apple Silicon arm64 两个 DMG。
+极义codex 通过 GitHub Release 发布安装包。macOS 会生成 Intel x64 和 Apple Silicon arm64 两个 DMG。
 
-管理工具的“关于”页可以检查并启动更新。静默启动器发现新版本时会拉起管理工具并进入更新提示。
+管理工具的“关于”页可以检查更新；“安装维护”页可以运行发布前检查。
+
+当前 1.2.4 macOS 发布说明已放在飞书在线文档：
+
+```text
+https://bchje44bsl.feishu.cn/docx/GIxYdIdbSokkIexO3oGcLyGinZg
+```
 
 ## 数据位置
 
-- Codex 配置：`~/.codex/config.toml`
-- Codex 登录状态：`~/.codex/auth.json`
+- 原版 Codex 配置：`~/.codex/config.toml`
+- 原版 Codex 登录状态：`~/.codex/auth.json`
 - Codex 本地数据库：`~/.codex/state_5.sqlite`
-- Codex++ 状态与日志：`~/.codex-session-delete/`
+- 极义codex 状态与日志：`~/.codex-session-delete/`
+- 极义内置 Codex Home：`~/.codex-session-delete/codex-home`
+- 极义内置客户端浏览器数据：`~/.codex-session-delete/codex-client-user-data`
+- 极义手机号登录和本地用量库：`~/.codex-session-delete/jiyi-codex-local.sqlite`
+- 极义旧版本备份归档：`~/.codex-session-delete/app-backups.noindex/`
 - Provider 同步备份：`~/.codex/backups_state/provider-sync`
 
 ## 常见问题
@@ -285,7 +376,7 @@ Codex++ 通过 GitHub Release 发布安装包。Windows 会生成 NSIS 安装程
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:57321/backend/status -Body "{}" -ContentType "application/json"
 ```
 
-如果接口正常，但插件仍显示超时，通常是 Codex 页面里的 CDP bridge 或脚本缓存问题。重启 Codex++，或在管理工具里查看日志中的 `renderer.script_loaded`、`bridge.request`、`bridge.response`。
+如果接口正常，但插件仍显示超时，通常是 Codex 页面里的 CDP bridge 或脚本缓存问题。重启极义codex，或在管理工具里查看日志中的 `renderer.script_loaded`、`bridge.request`、`bridge.response`。
 
 ### Upstream worktree 和 Codex 原生创建有什么区别
 
@@ -301,16 +392,29 @@ git worktree add -b <new-branch> <worktree-path> upstream/<base-branch>
 
 当前安装包未签名/未公证时，macOS Gatekeeper 可能拦截，出现“已损坏，无法打开”的提示：
 
-![macOS 提示 Codex++ 管理工具已损坏](docs/images/macos-damaged-warning.png)
+![macOS 提示管理工具已损坏](docs/images/macos-damaged-warning.png)
 
 如果遇到该提示，可以在终端执行下面两条命令，解除苹果系统的安全隔离限制：
 
 ```bash
-sudo xattr -rd com.apple.quarantine /Applications/Codex++\ 管理工具.app
-sudo xattr -rd com.apple.quarantine /Applications/Codex++.app
+sudo xattr -rd com.apple.quarantine /Applications/极义codex\ 管理工具.app
+sudo xattr -rd com.apple.quarantine /Applications/极义codex.app
 ```
 
-执行后重新打开 `Codex++` 或 `Codex++ 管理工具` 即可。
+执行后重新打开 `极义codex` 或 `极义codex 管理工具` 即可。
+
+正式对外分发时，不应让用户手动解除隔离。打包脚本支持 Developer ID 和 Apple 公证环境变量；未配置时仍生成本机 ad-hoc 验收包，配置后会启用 Hardened Runtime、签名 DMG、提交 notarytool 并 staple：
+
+```bash
+JIYI_CODESIGN_IDENTITY="Developer ID Application: 极义团队名称 (TEAMID)" \
+JIYI_NOTARIZE=1 \
+APPLE_ID="apple-id@example.com" \
+APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
+APPLE_TEAM_ID="TEAMID" \
+bash scripts/installer/macos/package-dmg.sh 1.2.4 arm64
+```
+
+也可以使用 App Store Connect API Key：`ASC_KEY_ID`、`ASC_ISSUER_ID`、`ASC_KEY_PATH`。
 
 ### macOS Intel 能用吗
 

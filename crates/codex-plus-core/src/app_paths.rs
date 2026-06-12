@@ -118,6 +118,26 @@ pub fn resolve_codex_app_dir_with_saved(
     resolve_codex_app_dir(None)
 }
 
+pub fn resolve_jiyi_codex_client_app_dir_with_saved(
+    app_dir: Option<&Path>,
+    saved_app_path: Option<&str>,
+) -> Option<PathBuf> {
+    if let Some(app_dir) = app_dir {
+        return normalize_codex_app_path(app_dir).filter(|path| is_jiyi_macos_codex_client(path));
+    }
+    if let Some(saved) = saved_app_path
+        .map(str::trim)
+        .filter(|saved| !saved.is_empty())
+    {
+        if let Some(path) = normalize_codex_app_path(Path::new(saved))
+            .filter(|path| is_jiyi_macos_codex_client(path))
+        {
+            return Some(path);
+        }
+    }
+    find_macos_jiyi_codex_client_app_default()
+}
+
 pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
     if path.as_os_str().is_empty() {
         return None;
@@ -252,10 +272,86 @@ fn macos_app_candidates(root: &Path) -> Vec<PathBuf> {
     if root.extension() == Some(OsStr::new("app")) {
         return vec![root.to_path_buf()];
     }
-    ["Codex.app", "OpenAI Codex.app", "OpenAI.Codex.app"]
+    [
+        "极义codex.app",
+        "Codex.app",
+        "OpenAI Codex.app",
+        "OpenAI.Codex.app",
+    ]
+    .into_iter()
+    .map(|name| root.join(name))
+    .collect()
+}
+
+pub fn find_macos_jiyi_codex_client_app_default() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let mut candidates = Vec::new();
+    if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        candidates.push(
+            home.join("Library")
+                .join("Application Support")
+                .join("极义codex.noindex")
+                .join("embedded-client")
+                .join("JiyiCodexClient.app"),
+        );
+        candidates.push(
+            home.join("Applications")
+                .join("极义codex.app")
+                .join("Contents")
+                .join("Resources")
+                .join("JiyiCodexClient.app"),
+        );
+    }
+    candidates.push(
+        PathBuf::from("/Applications")
+            .join("极义codex.app")
+            .join("Contents")
+            .join("Resources")
+            .join("JiyiCodexClient.app"),
+    );
+    candidates
         .into_iter()
-        .map(|name| root.join(name))
-        .collect()
+        .find(|path| path.is_dir() && is_jiyi_macos_codex_client(path))
+}
+
+pub fn is_jiyi_macos_codex_client(path: &Path) -> bool {
+    if !cfg!(target_os = "macos") {
+        return true;
+    }
+    if path.extension() != Some(OsStr::new("app")) {
+        return false;
+    }
+    if path.file_name().and_then(OsStr::to_str) != Some("JiyiCodexClient.app") {
+        return false;
+    }
+    let executable = path.join("Contents").join("MacOS").join("Codex");
+    if !executable.is_file() {
+        return false;
+    }
+    macos_bundle_identifier(path).as_deref() == Some("com.jiyi.codex.client")
+        && !macos_bundle_claims_url_scheme(path, "codex")
+}
+
+fn macos_bundle_identifier(app_dir: &Path) -> Option<String> {
+    let plist = std::fs::read_to_string(app_dir.join("Contents").join("Info.plist")).ok()?;
+    plist_string_value(&plist, "CFBundleIdentifier")
+}
+
+fn macos_bundle_claims_url_scheme(app_dir: &Path, scheme: &str) -> bool {
+    let plist = match std::fs::read_to_string(app_dir.join("Contents").join("Info.plist")) {
+        Ok(plist) => plist,
+        Err(_) => return false,
+    };
+    let Some((_, after_key)) = plist.split_once("<key>CFBundleURLTypes</key>") else {
+        return false;
+    };
+    let scheme_marker = format!("<string>{scheme}</string>");
+    after_key
+        .split("</array>")
+        .next()
+        .is_some_and(|section| section.contains(&scheme_marker))
 }
 
 fn version_tuple(path: &Path) -> Option<Vec<u32>> {

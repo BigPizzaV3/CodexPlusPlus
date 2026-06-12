@@ -26,8 +26,9 @@ fn manager_uses_single_instance_guard_before_starting_tauri() {
     let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
         .expect("read manager lib.rs");
 
-    assert!(lib_rs.contains("acquire_single_instance_guard()"));
+    assert!(lib_rs.contains("acquire_single_instance_guard(app_mode)"));
     assert!(lib_rs.contains("MANAGER_GUARD_PORT"));
+    assert!(lib_rs.contains("MANAGER_GUARD_PORT.saturating_sub(1)"));
     assert!(lib_rs.contains("manager.already_running"));
 }
 
@@ -86,6 +87,18 @@ fn manager_launch_button_spawns_silent_launcher_binary() {
 }
 
 #[test]
+fn main_entry_does_not_auto_launch_codex_after_local_auth() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+
+    assert!(app_tsx.contains("手机号已验证，请点击进入 Codex。"));
+    assert!(!app_tsx.contains("mainAutoLaunchRef"));
+    assert!(!app_tsx.contains("await enterCodex();"));
+    assert!(!app_tsx.contains("!localAuth?.authenticated || mainAutoLaunchRef.current"));
+}
+
+#[test]
 fn macos_packager_hides_silent_launcher_but_not_manager() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let packager = manifest_dir
@@ -99,13 +112,143 @@ fn macos_packager_hides_silent_launcher_but_not_manager() {
     assert!(script.contains("<key>LSUIElement</key>"));
     assert!(script.contains("ARCH=\"${2:-$(uname -m)}\""));
     assert!(script.contains("BINARY_DIR=\"${BINARY_DIR:-$ROOT/target/release}\""));
-    assert!(script.contains("CodexPlusPlus-${VERSION}-macos-${ARCH}.dmg"));
+    assert!(script.contains("CODEX_APP_SOURCE=\"${CODEX_APP_SOURCE:-/Applications/Codex.app}\""));
+    assert!(
+        script.contains("CODESIGN_IDENTITY=\"${JIYI_CODESIGN_IDENTITY:-${CODESIGN_IDENTITY:--}}\"")
+    );
+    assert!(script.contains("NOTARIZE=\"${JIYI_NOTARIZE:-0}\""));
+    assert!(
+        script.contains(
+            "codesign --force --timestamp --options runtime --sign \"$CODESIGN_IDENTITY\""
+        )
+    );
+    assert!(script.contains("xcrun notarytool submit \"$DMG\" --wait"));
+    assert!(script.contains("xcrun stapler staple \"$DMG\""));
+    assert!(script.contains("JiyiCodex-${VERSION}-macos-${ARCH}.dmg"));
+    assert!(script.contains("install_silent_launcher \"$STAGE/极义codex.app\""));
+    assert!(script.contains("install_silent_launcher \"$STAGE/极义codex 管理工具.app\""));
+    assert!(script.contains("embed_codex_client \"$STAGE/极义codex.app\""));
+    assert!(script.contains("verify_embedded_codex_client \"$STAGE/极义codex.app\""));
+    assert!(script.contains("install_server_scripts \"$STAGE/极义codex.app\""));
+    assert!(script.contains("install_server_scripts \"$STAGE/极义codex 管理工具.app\""));
+    assert!(script.contains("jiyi-managed-proxy.env.example"));
+    assert!(script.contains("install-managed-proxy-launchd.sh"));
+    assert!(script.contains("install-managed-proxy-systemd.sh"));
+    assert!(script.contains("apps/jiyi-managed-proxy/Dockerfile"));
     assert!(script.contains(
-        "create_app \"Codex++\" \"CodexPlusPlus\" \"$BINARY_DIR/codex-plus-plus\" \"com.bigpizzav3.codexplusplus\" \"true\""
+        "create_app \"极义codex\" \"JiyiCodex\" \"$BINARY_DIR/codex-plus-plus-manager\" \"com.jiyi.codex\" \"false\""
     ));
     assert!(script.contains(
-        "create_app \"Codex++ 管理工具\" \"CodexPlusPlusManager\" \"$BINARY_DIR/codex-plus-plus-manager\" \"com.bigpizzav3.codexplusplus.manager\" \"false\""
+        "create_app \"极义codex 管理工具\" \"JiyiCodexManager\" \"$BINARY_DIR/codex-plus-plus-manager\" \"com.jiyi.codex.manager\" \"false\""
     ));
+}
+
+#[test]
+fn managed_proxy_launchd_scripts_keep_service_isolated() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .unwrap();
+    let install_script = root.join("scripts/server/macos/install-managed-proxy-launchd.sh");
+    let uninstall_script = root.join("scripts/server/macos/uninstall-managed-proxy-launchd.sh");
+    let env_example = root.join("scripts/server/macos/jiyi-managed-proxy.env.example");
+    let install_script = std::fs::read_to_string(install_script).expect("read launchd install");
+    let uninstall_script =
+        std::fs::read_to_string(uninstall_script).expect("read launchd uninstall");
+    let env_example = std::fs::read_to_string(env_example).expect("read managed proxy env");
+
+    assert!(install_script.contains("com.jiyi.codex.managed-proxy"));
+    assert!(install_script.contains("/Applications/极义codex.app"));
+    assert!(install_script.contains("launchctl bootstrap"));
+    assert!(install_script.contains("jiyi-managed-proxy.env"));
+    assert!(install_script.contains("STATE_DIR/bin"));
+    assert!(install_script.contains("RUNTIME_BINARY"));
+    assert!(install_script.contains("jiyi-managed-proxy.out.log"));
+    assert!(uninstall_script.contains("launchctl bootout"));
+    assert!(uninstall_script.contains("RUNTIME_BINARY"));
+    assert!(uninstall_script.contains("--purge-env"));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_LISTEN=\"127.0.0.1:57421\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_UPSTREAM_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_SYNC_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_ADMIN_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_USER_READ_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_BILLING_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_PAYMENT_WEBHOOK_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_PAYMENT_WEBHOOK_SIGNATURE_SECRET=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_ALIPAY_PUBLIC_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_ALIPAY_PUBLIC_KEY_PATH=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_WECHATPAY_PUBLIC_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_WECHATPAY_PUBLIC_KEY_PATH=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_ACCESS_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_AUDIT_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_DB_PATH="));
+    assert!(!env_example.contains("sk-"));
+}
+
+#[test]
+fn managed_proxy_remote_deploy_templates_keep_server_keys_out_of_client() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .unwrap();
+    let install_script =
+        std::fs::read_to_string(root.join("scripts/server/linux/install-managed-proxy-systemd.sh"))
+            .expect("read systemd install");
+    let uninstall_script = std::fs::read_to_string(
+        root.join("scripts/server/linux/uninstall-managed-proxy-systemd.sh"),
+    )
+    .expect("read systemd uninstall");
+    let service =
+        std::fs::read_to_string(root.join("scripts/server/linux/jiyi-managed-proxy.service"))
+            .expect("read systemd service");
+    let env_example =
+        std::fs::read_to_string(root.join("scripts/server/linux/jiyi-managed-proxy.env.example"))
+            .expect("read linux env");
+    let dockerfile = std::fs::read_to_string(root.join("apps/jiyi-managed-proxy/Dockerfile"))
+        .expect("read managed proxy Dockerfile");
+
+    assert!(install_script.contains("systemctl enable"));
+    assert!(install_script.contains("/etc/jiyi-codex"));
+    assert!(install_script.contains("/var/lib/jiyi-codex"));
+    assert!(uninstall_script.contains("systemctl disable --now"));
+    assert!(service.contains("ExecStart=/usr/local/bin/jiyi-managed-proxy"));
+    assert!(service.contains("EnvironmentFile=/etc/jiyi-codex/jiyi-managed-proxy.env"));
+    assert!(service.contains("NoNewPrivileges=true"));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_LISTEN=\"0.0.0.0:8080\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_UPSTREAM_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_SYNC_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_ADMIN_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_USER_READ_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_BILLING_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_PAYMENT_WEBHOOK_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_PAYMENT_WEBHOOK_SIGNATURE_SECRET=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_ALIPAY_PUBLIC_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_ALIPAY_PUBLIC_KEY_PATH=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_WECHATPAY_PUBLIC_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_WECHATPAY_PUBLIC_KEY_PATH=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_ACCESS_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_AUDIT_API_KEY=\"\""));
+    assert!(env_example.contains("JIYI_MANAGED_PROXY_DB_PATH=\"/var/lib/jiyi-codex"));
+    assert!(dockerfile.contains("cargo build --release -p jiyi-managed-proxy"));
+    assert!(dockerfile.contains("JIYI_MANAGED_PROXY_ADMIN_API_KEY"));
+    assert!(dockerfile.contains("JIYI_MANAGED_PROXY_USER_READ_API_KEY"));
+    assert!(dockerfile.contains("JIYI_MANAGED_PROXY_BILLING_API_KEY"));
+    assert!(dockerfile.contains("JIYI_MANAGED_PROXY_PAYMENT_WEBHOOK_API_KEY"));
+    assert!(dockerfile.contains("JIYI_MANAGED_PROXY_PAYMENT_WEBHOOK_SIGNATURE_SECRET"));
+    assert!(dockerfile.contains("JIYI_MANAGED_PROXY_ALIPAY_PUBLIC_KEY"));
+    assert!(dockerfile.contains("JIYI_MANAGED_PROXY_ALIPAY_PUBLIC_KEY_PATH"));
+    assert!(dockerfile.contains("JIYI_MANAGED_PROXY_WECHATPAY_PUBLIC_KEY"));
+    assert!(dockerfile.contains("JIYI_MANAGED_PROXY_WECHATPAY_PUBLIC_KEY_PATH"));
+    assert!(dockerfile.contains("JIYI_MANAGED_PROXY_ACCESS_API_KEY"));
+    assert!(dockerfile.contains("JIYI_MANAGED_PROXY_AUDIT_API_KEY"));
+    assert!(dockerfile.contains("USER jiyi-codex"));
+    assert!(dockerfile.contains("EXPOSE 8080"));
+    assert!(!env_example.contains("sk-"));
+    assert!(!dockerfile.contains("sk-"));
 }
 
 #[test]
@@ -223,8 +366,12 @@ fn manager_window_and_relay_detail_header_stay_usable() {
     assert!(styles.contains("position: sticky"));
     assert!(styles.contains("top: 0"));
     assert!(styles.contains("margin: 0"));
-    assert!(lib_rs.contains(".inner_size(1180.0, 820.0)"));
-    assert!(lib_rs.contains(".min_inner_size(960.0, 720.0)"));
+    assert!(lib_rs.contains(".inner_size(app_mode.initial_width(), app_mode.initial_height())"));
+    assert!(lib_rs.contains(".min_inner_size(app_mode.min_width(), app_mode.min_height())"));
+    assert!(lib_rs.contains("AppMode::Manager => 1180.0"));
+    assert!(lib_rs.contains("AppMode::Manager => 820.0"));
+    assert!(lib_rs.contains("AppMode::Manager => 960.0"));
+    assert!(lib_rs.contains("AppMode::Manager => 720.0"));
     assert!(tauri_conf.contains("\"width\": 1180"));
     assert!(tauri_conf.contains("\"height\": 820"));
     assert!(tauri_conf.contains("\"minWidth\": 960"));

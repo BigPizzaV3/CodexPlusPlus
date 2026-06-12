@@ -185,8 +185,10 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
 
     assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"10\""));
     assert!(script.contains("if (name === \"openai-bundled\") return \"\""));
-    assert!(!script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\""));
-    assert!(script.contains("if (name === \"openai-bundled\" || name === \"codex-plus-openai-bundled\") return \"OpenAI插件1(Codex++)\""));
+    assert!(
+        !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
+    );
+    assert!(script.contains("if (name === \"openai-bundled\" || name === \"codex-plus-openai-bundled\") return \"极义内置插件1\""));
 }
 
 #[test]
@@ -211,9 +213,13 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("Array.prototype.filter"));
     assert!(script.contains("codexPluginBuildFlavorFilterPatch"));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
-    assert!(script.contains("codexPluginOfficialMarketplaceName(plugin?.marketplaceName) && !callback(plugin)"));
+    assert!(script.contains(
+        "codexPluginOfficialMarketplaceName(plugin?.marketplaceName) && !callback(plugin)"
+    ));
     assert!(script.contains("isCodexPluginMarketplaceHiddenFilter"));
-    assert!(script.contains("codexPluginOfficialMarketplaceName(marketplace?.name) && !callback(marketplace)"));
+    assert!(script.contains(
+        "codexPluginOfficialMarketplaceName(marketplace?.name) && !callback(marketplace)"
+    ));
     assert!(script.contains("plugin_marketplace_hidden_filter_bypassed"));
     assert!(script.contains("method === \"list-plugins\""));
     assert!(script.contains("delete next.marketplaceKinds"));
@@ -221,13 +227,20 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("pluginMarketplaceAliasForName"));
     assert!(script.contains("marketplace.name = alias"));
     assert!(script.contains("restorePluginMarketplaceName"));
-    assert!(script.contains("next.remoteMarketplaceName = restorePluginMarketplaceName(next.remoteMarketplaceName)"));
+    assert!(script.contains(
+        "next.remoteMarketplaceName = restorePluginMarketplaceName(next.remoteMarketplaceName)"
+    ));
     assert!(script.contains("if (name === \"openai-bundled\") return \"\""));
-    assert!(script.contains("if (name === \"openai-curated\") return \"codex-plus-openai-curated\""));
-    assert!(script.contains("if (name === \"openai-primary-runtime\") return \"codex-plus-openai-primary-runtime\""));
-    assert!(script.contains("OpenAI插件1(Codex++)"));
-    assert!(script.contains("OpenAI插件2(Codex++)"));
-    assert!(script.contains("OpenAI插件3(Codex++)"));
+    assert!(
+        script.contains("if (name === \"openai-curated\") return \"codex-plus-openai-curated\"")
+    );
+    assert!(script.contains(
+        "if (name === \"openai-primary-runtime\") return \"codex-plus-openai-primary-runtime\""
+    ));
+    assert!(script.contains("极义内置插件1"));
+    assert!(script.contains("极义内置插件2"));
+    assert!(script.contains("极义内置插件3"));
+    assert!(!script.contains("OpenAI插件1(Codex++)"));
     assert!(script.contains("method === \"install-plugin\""));
     assert!(script.contains("plugin_marketplace_response_expanded"));
     assert!(script.contains("plugin_build_flavor_filter_bypassed"));
@@ -381,8 +394,7 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("setCodexThreadServiceTierMode"));
     assert!(script.contains("codexServiceTierRequestOverride"));
     assert!(script.contains("codexServiceTierSupportedFastModels"));
-    assert!(script.contains("\"gpt-5.4\""));
-    assert!(script.contains("\"gpt-5.5\""));
+    assert!(script.contains("\"qwen3.7-plus\""));
     assert!(script.contains("codexServiceTierFastSupportedForModel"));
     assert!(script.contains("codexServiceTierModelForRequest"));
     assert!(script.contains("codexServiceTierMaybeLoadModelCatalog"));
@@ -458,7 +470,7 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
 
     assert_eq!(cases["turnWithoutModel"]["serviceTier"], "priority");
-    assert_eq!(cases["turnWithoutModelDiagnosticModel"], "gpt-5.4");
+    assert_eq!(cases["turnWithoutModelDiagnosticModel"], "qwen3.7-plus");
 
     assert_eq!(
         cases["customInheritUnsupported"]["serviceTier"],
@@ -529,18 +541,18 @@ globalThis.performance = {{ getEntriesByType: () => [] }};
 require(scriptPath);
 const api = window.__codexPlusServiceTierTest;
 api.setServiceTierState({{ serviceTier: "priority", fastTierValue: "priority" }});
-api.setModelCatalog({{ status: "ok", model: "gpt-5.4", default_model: "gpt-5.4", models: ["gpt-5.4", "gpt-5.5"] }});
+api.setModelCatalog({{ status: "ok", model: "qwen3.7-plus", default_model: "qwen3.7-plus", models: ["qwen3.7-plus", "qwen2.5-72b"] }});
 
 api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
 const supportedFast = api.applyServiceTierOverride("turn/start", {{
   threadId: "thread-12345678",
-  model: "gpt-5.4",
+  model: "qwen3.7-plus",
   service_tier: null,
 }}, "conv-should-not-be-model");
 
 const unsupportedModel = api.applyServiceTierOverride("turn/start", {{
   threadId: "thread-12345678",
-  model: "gpt-4.1",
+  model: "qwen2.5-72b",
   service_tier: "priority",
 }}, "conv-should-not-be-model");
 
@@ -550,7 +562,7 @@ const turnWithoutModel = api.applyServiceTierOverride("turn/start", {{
 }}, "conversation-should-not-be-model");
 const turnWithoutModelDiagnosticModel = api.diagnostics().at(-1)?.detail?.model;
 
-api.setModelCatalog({{ status: "ok", model: "gpt-4.1", default_model: "gpt-4.1", models: ["gpt-4.1"] }});
+api.setModelCatalog({{ status: "ok", model: "qwen2.5-72b", default_model: "qwen2.5-72b", models: ["qwen2.5-72b"] }});
 api.setThreadState({{ mode: "custom", defaultMode: "inherit", entries: {{}}, draft: {{ mode: "inherit", at: Date.now() }} }});
 api.setServiceTierState({{ serviceTier: "priority" }});
 const customInheritUnsupported = api.applyServiceTierOverride("turn/start", {{
@@ -558,12 +570,12 @@ const customInheritUnsupported = api.applyServiceTierOverride("turn/start", {{
   service_tier: "priority",
 }}, "");
 
-api.setModelCatalog({{ status: "ok", model: "gpt-5.5", default_model: "gpt-5.5", models: ["gpt-5.5"] }});
+api.setModelCatalog({{ status: "ok", model: "qwen2.5-72b", default_model: "qwen2.5-72b", models: ["qwen2.5-72b"] }});
 api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
 const startConversation = api.requestOverride({{
   type: "start-conversation",
   threadId: "thread-12345678",
-  model: "gpt-5.5",
+  model: "qwen3.7-plus",
 }});
 
 process.stdout.write(JSON.stringify({{
@@ -696,8 +708,9 @@ fn manager_ui_exposes_pure_api_relay_mode_button() {
     let commands =
         std::fs::read_to_string(repo.join("apps/codex-plus-manager/src-tauri/src/lib.rs")).unwrap();
 
-    assert!(source.contains("官方混入 API Key"));
-    assert!(source.contains("纯 API"));
+    assert!(!source.contains("官方混入 API Key"));
+    assert!(source.contains("极义 / 百炼纯 API"));
+    assert!(source.contains("极义codex 已禁用官方登录模式"));
     assert!(source.contains("apply_pure_api_injection"));
     assert!(commands.contains("commands::apply_pure_api_injection"));
 }

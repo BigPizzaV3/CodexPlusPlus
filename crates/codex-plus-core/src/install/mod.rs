@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 pub mod macos;
 pub mod windows;
 
-pub const SILENT_NAME: &str = "Codex++";
-pub const MANAGER_NAME: &str = "Codex++ 管理工具";
+pub const SILENT_NAME: &str = "极义codex";
+pub const MANAGER_NAME: &str = "极义codex 管理工具";
 pub const SILENT_BINARY: &str = "codex-plus-plus";
 pub const MANAGER_BINARY: &str = "codex-plus-plus-manager";
 
@@ -72,11 +72,11 @@ impl ShortcutState {
 }
 
 pub fn shortcut_names() -> (&'static str, &'static str) {
-    ("Codex++.lnk", "Codex++ 管理工具.lnk")
+    ("极义codex.lnk", "极义codex 管理工具.lnk")
 }
 
 pub fn app_bundle_names() -> (&'static str, &'static str) {
-    ("Codex++.app", "Codex++ 管理工具.app")
+    ("极义codex.app", "极义codex 管理工具.app")
 }
 
 pub fn inspect_entrypoints() -> EntryPointState {
@@ -164,7 +164,7 @@ fn platform_install(options: &InstallOptions) -> anyhow::Result<()> {
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = options;
-        anyhow::bail!("当前平台暂不支持安装 Codex++ 入口")
+        anyhow::bail!("当前平台暂不支持安装极义codex入口")
     }
 }
 
@@ -182,7 +182,7 @@ fn platform_uninstall(options: &InstallOptions) -> anyhow::Result<()> {
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = options;
-        anyhow::bail!("当前平台暂不支持卸载 Codex++ 入口")
+        anyhow::bail!("当前平台暂不支持卸载极义codex入口")
     }
 }
 
@@ -235,12 +235,12 @@ pub fn companion_binary_path_from_exe(exe: &Path, binary: &str) -> PathBuf {
     let dir = exe.parent().unwrap_or_else(|| Path::new("."));
     let suffix = if cfg!(windows) { ".exe" } else { "" };
     if binary == SILENT_BINARY {
-        if let Some(sibling_app_binary) = macos_silent_app_binary_from_exe(exe) {
-            return sibling_app_binary;
-        }
         let same_bundle = dir.join(binary);
         if same_bundle.exists() {
             return same_bundle;
+        }
+        if let Some(sibling_app_binary) = macos_silent_app_binary_from_exe(exe) {
+            return sibling_app_binary;
         }
     }
     dir.join(format!("{binary}{suffix}"))
@@ -252,7 +252,7 @@ fn macos_silent_app_binary_from_exe(exe: &Path) -> Option<PathBuf> {
             .join(format!("{SILENT_NAME}.app"))
             .join("Contents")
             .join("MacOS")
-            .join("CodexPlusPlus")
+            .join("JiyiCodex")
     })
 }
 

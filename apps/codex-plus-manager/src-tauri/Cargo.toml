@@ -19,6 +19,8 @@ async-trait = "0.1"
 codex-plus-core = { path = "../../../crates/codex-plus-core" }
 codex-plus-data = { path = "../../../crates/codex-plus-data" }
 directories.workspace = true
+rusqlite.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = ["custom-protocol"] }

@@ -15,6 +15,27 @@ use tokio::sync::Mutex;
 use crate::settings::{BackendSettings, SettingsStore, normalize_codex_extra_args};
 use crate::status::{LaunchStatus, StatusStore};
 
+const JIYI_SENSITIVE_ENV_KEYS: &[&str] = &[
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE_URL",
+    "OPENAI_API_BASE",
+    "OPENAI_API_URL",
+    "CUSTOM_OPENAI_API_KEY",
+    "CODEX_PLUS_OPENAI_API_KEY",
+    "CODEX_PLUS_API_KEY",
+    "CODEX_PLUS_OPENAI_BASE_URL",
+    "CODEX_PLUS_BASE_URL",
+    "DASHSCOPE_API_KEY",
+    "DASHSCOPE_BASE_URL",
+    "BAILIAN_API_KEY",
+    "BAILIAN_BASE_URL",
+    "ALIYUN_BAILIAN_API_KEY",
+    "QWEN_API_KEY",
+    "APIMART_API_KEY",
+    "JIYI_CODEX_API_KEY",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexLaunch {
     Process {
@@ -247,7 +268,9 @@ where
 
         let mut injection_degraded = false;
         if settings.enhancements_enabled {
-            let injection_ready = hooks.ensure_injection(debug_port, helper_port, &app_dir).await;
+            let injection_ready = hooks
+                .ensure_injection(debug_port, helper_port, &app_dir)
+                .await;
             if injection_ready {
                 keep_launched_on_error = false;
                 hooks.start_bridge_watchdog(debug_port, helper_port).await?;
@@ -310,7 +333,17 @@ where
 }
 
 fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
-    settings.active_relay_profile().protocol == crate::settings::RelayProtocol::ChatCompletions
+    let active = settings.active_relay_profile();
+    if active.protocol == crate::settings::RelayProtocol::ChatCompletions {
+        return true;
+    }
+    settings.jiyi_local_proxy_enabled
+        && settings.relay_profiles_enabled
+        && active.protocol == crate::settings::RelayProtocol::Responses
+        && active.relay_mode == crate::settings::RelayMode::PureApi
+        && !crate::protocol_proxy::resolved_relay_api_key(settings, &active)
+            .trim()
+            .is_empty()
 }
 
 pub trait IntoLaunchHooks {
@@ -351,11 +384,26 @@ impl LaunchHooks for DefaultLaunchHooks {
         app_dir: Option<&Path>,
         settings: &BackendSettings,
     ) -> anyhow::Result<PathBuf> {
-        crate::app_paths::resolve_codex_app_dir_with_saved(
-            app_dir,
-            Some(settings.codex_app_path.as_str()),
-        )
-        .ok_or_else(|| anyhow::anyhow!("Codex App directory not found"))
+        #[cfg(target_os = "macos")]
+        {
+            return crate::app_paths::resolve_jiyi_codex_client_app_dir_with_saved(
+                app_dir,
+                Some(settings.codex_app_path.as_str()),
+            )
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "未找到极义内置 Codex 客户端；为避免影响原版 Codex，不会回退 /Applications/Codex.app"
+                )
+            });
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            crate::app_paths::resolve_codex_app_dir_with_saved(
+                app_dir,
+                Some(settings.codex_app_path.as_str()),
+            )
+            .ok_or_else(|| anyhow::anyhow!("Codex App directory not found"))
+        }
     }
 
     fn select_debug_port(&self, requested: u16) -> u16 {
@@ -448,6 +496,7 @@ impl LaunchHooks for DefaultLaunchHooks {
         debug_port: u16,
         extra_args: &[String],
     ) -> anyhow::Result<CodexLaunch> {
+        let official_config_guard = capture_official_codex_config_guard();
         if cfg!(windows) {
             if let Some(activation) = build_packaged_activation(app_dir, debug_port, extra_args) {
                 let CodexLaunch::PackagedActivation {
@@ -480,7 +529,32 @@ impl LaunchHooks for DefaultLaunchHooks {
             } else {
                 MacosCleanupPolicy::QuitIfNotPreviouslyRunning
             };
-            let command = build_macos_open_command(app_dir, debug_port, extra_args);
+            let codex_home = crate::relay_config::default_codex_home_dir();
+            let unix_home = crate::paths::default_jiyi_unix_home_dir();
+            let browser_user_data_dir = crate::paths::default_jiyi_browser_user_data_dir();
+            std::fs::create_dir_all(&codex_home).with_context(|| {
+                format!(
+                    "failed to create isolated Codex home {}",
+                    codex_home.display()
+                )
+            })?;
+            std::fs::create_dir_all(&unix_home).with_context(|| {
+                format!("failed to create isolated HOME {}", unix_home.display())
+            })?;
+            std::fs::create_dir_all(&browser_user_data_dir).with_context(|| {
+                format!(
+                    "failed to create isolated browser user data dir {}",
+                    browser_user_data_dir.display()
+                )
+            })?;
+            let command = build_macos_open_command_with_isolated_home(
+                app_dir,
+                debug_port,
+                extra_args,
+                &codex_home,
+                &unix_home,
+                &browser_user_data_dir,
+            );
             let executable = command
                 .first()
                 .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
@@ -491,6 +565,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                 .spawn()
                 .context("failed to launch macOS Codex app")?;
             *self.child.lock().await = Some(child);
+            start_official_codex_config_guard(official_config_guard);
             return Ok(CodexLaunch::Process {
                 command,
                 wait_strategy: ProcessWaitStrategy::ExternalWaitCommand,
@@ -502,17 +577,36 @@ impl LaunchHooks for DefaultLaunchHooks {
         let executable = command
             .first()
             .ok_or_else(|| anyhow::anyhow!("Codex command is empty"))?;
+        let codex_home = crate::relay_config::default_codex_home_dir();
+        std::fs::create_dir_all(&codex_home).with_context(|| {
+            format!(
+                "failed to create isolated Codex home {}",
+                codex_home.display()
+            )
+        })?;
+        #[cfg(unix)]
+        let unix_home = {
+            let path = crate::paths::default_jiyi_unix_home_dir();
+            std::fs::create_dir_all(&path)
+                .with_context(|| format!("failed to create isolated HOME {}", path.display()))?;
+            path
+        };
         let mut child_command = Command::new(executable);
         child_command
             .args(&command[1..])
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        #[cfg(unix)]
+        configure_jiyi_child_process_env(&mut child_command, &codex_home, Some(&unix_home));
+        #[cfg(not(unix))]
+        configure_jiyi_child_process_env(&mut child_command, &codex_home, None);
         #[cfg(windows)]
         child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
         let child = child_command
             .spawn()
             .with_context(|| format!("failed to launch Codex executable {executable}"))?;
         *self.child.lock().await = Some(child);
+        start_official_codex_config_guard(official_config_guard);
         Ok(CodexLaunch::Process {
             command,
             wait_strategy: ProcessWaitStrategy::TrackedChild,
@@ -634,6 +728,7 @@ async fn handle_helper_connection(
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or_default();
     let path = parts.next().unwrap_or_default();
+    let path_only = path.split_once('?').map(|(value, _)| value).unwrap_or(path);
     let request_body = http_request_body(&request);
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
 
@@ -670,6 +765,17 @@ async fn handle_helper_connection(
     }
     if crate::protocol_proxy::is_models_proxy_path(path) && matches!(method, "GET" | "OPTIONS") {
         return handle_models_proxy_connection(&mut stream, method, path, remote_addr_text).await;
+    }
+    if is_local_backend_api_path(path_only) && matches!(method, "GET" | "POST" | "OPTIONS") {
+        return handle_local_backend_api_connection(
+            &mut stream,
+            method,
+            path_only,
+            &request,
+            request_body,
+            remote_addr_text,
+        )
+        .await;
     }
 
     let (status, body, content_type, log_event) =
@@ -757,6 +863,358 @@ async fn handle_helper_connection(
     Ok(())
 }
 
+fn is_local_backend_api_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/jiyi/v1/health"
+            | "/jiyi/v1/sessions/verify"
+            | "/jiyi/v1/sessions/revoke"
+            | "/jiyi/v1/me"
+            | "/jiyi/v1/quota/today"
+            | "/jiyi/v1/usage/record"
+    )
+}
+
+async fn handle_local_backend_api_connection(
+    stream: &mut tokio::net::TcpStream,
+    method: &str,
+    path: &str,
+    request: &str,
+    request_body: &str,
+    remote_addr_text: Option<String>,
+) -> anyhow::Result<()> {
+    if method == "OPTIONS" {
+        write_http_response(
+            stream,
+            "204 No Content",
+            "application/json; charset=utf-8",
+            &[],
+        )
+        .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+
+    let store = crate::local_backend::LocalBackendStore::default();
+    let (status, body, log_event) = match path {
+        "/jiyi/v1/health" => match store.state() {
+            Ok(state) => (
+                "200 OK",
+                serde_json::to_vec(&serde_json::json!({
+                    "status": "ok",
+                    "message": "极义本地账号后端已连接",
+                    "version": crate::version::VERSION,
+                    "transport": "http-helper",
+                    "backend": state
+                }))?,
+                "helper.local_backend_health_ok",
+            ),
+            Err(error) => (
+                "500 Internal Server Error",
+                serde_json::to_vec(&serde_json::json!({
+                    "status": "failed",
+                    "message": error.to_string()
+                }))?,
+                "helper.local_backend_health_failed",
+            ),
+        },
+        "/jiyi/v1/sessions/verify" => {
+            let access_token = local_backend_access_token(request, request_body);
+            let verification = store.verify_session_token(&access_token)?;
+            (
+                "200 OK",
+                serde_json::to_vec(&serde_json::json!({
+                    "status": "ok",
+                    "authenticated": verification.authenticated,
+                    "reason": verification.reason,
+                    "subject": verification.subject
+                }))?,
+                if verification.authenticated {
+                    "helper.local_backend_session_verify_ok"
+                } else {
+                    "helper.local_backend_session_verify_rejected"
+                },
+            )
+        }
+        "/jiyi/v1/sessions/revoke" => {
+            if method != "POST" {
+                (
+                    "405 Method Not Allowed",
+                    serde_json::to_vec(&serde_json::json!({
+                        "status": "failed",
+                        "message": "session 吊销必须使用 POST"
+                    }))?,
+                    "helper.local_backend_session_revoke_method_not_allowed",
+                )
+            } else {
+                let access_token = local_backend_access_token(request, request_body);
+                let revocation = store.revoke_session_token(&access_token)?;
+                if revocation.authenticated {
+                    (
+                        "200 OK",
+                        serde_json::to_vec(&serde_json::json!({
+                            "status": "ok",
+                            "authenticated": true,
+                            "subject": revocation.subject,
+                            "revokedAtMs": revocation.revoked_at_ms
+                        }))?,
+                        "helper.local_backend_session_revoke_ok",
+                    )
+                } else {
+                    (
+                        "401 Unauthorized",
+                        serde_json::to_vec(&serde_json::json!({
+                            "status": "failed",
+                            "authenticated": false,
+                            "reason": revocation.reason,
+                            "message": "本地账号服务端 session 无效或已过期"
+                        }))?,
+                        "helper.local_backend_session_revoke_unauthorized",
+                    )
+                }
+            }
+        }
+        "/jiyi/v1/me" => {
+            let access_token = local_backend_access_token(request, request_body);
+            let verification = store.verify_session_token(&access_token)?;
+            if verification.authenticated {
+                (
+                    "200 OK",
+                    serde_json::to_vec(&serde_json::json!({
+                        "status": "ok",
+                        "authenticated": true,
+                        "subject": verification.subject
+                    }))?,
+                    "helper.local_backend_me_ok",
+                )
+            } else {
+                (
+                    "401 Unauthorized",
+                    serde_json::to_vec(&serde_json::json!({
+                        "status": "failed",
+                        "authenticated": false,
+                        "reason": verification.reason,
+                        "message": "本地账号服务端 session 无效或已过期"
+                    }))?,
+                    "helper.local_backend_me_unauthorized",
+                )
+            }
+        }
+        "/jiyi/v1/quota/today" => {
+            let access_token = local_backend_access_token(request, request_body);
+            let snapshot = store.quota_snapshot(&access_token)?;
+            if snapshot.authenticated {
+                (
+                    "200 OK",
+                    serde_json::to_vec(&serde_json::json!({
+                        "status": "ok",
+                        "authenticated": true,
+                        "subject": snapshot.subject,
+                        "quota": snapshot.quota
+                    }))?,
+                    "helper.local_backend_quota_today_ok",
+                )
+            } else {
+                (
+                    "401 Unauthorized",
+                    serde_json::to_vec(&serde_json::json!({
+                        "status": "failed",
+                        "authenticated": false,
+                        "reason": snapshot.reason,
+                        "message": "本地账号服务端 session 无效或已过期"
+                    }))?,
+                    "helper.local_backend_quota_today_unauthorized",
+                )
+            }
+        }
+        "/jiyi/v1/usage/record" => {
+            if method != "POST" {
+                (
+                    "405 Method Not Allowed",
+                    serde_json::to_vec(&serde_json::json!({
+                        "status": "failed",
+                        "message": "服务端用量写入必须使用 POST"
+                    }))?,
+                    "helper.local_backend_usage_record_method_not_allowed",
+                )
+            } else {
+                let access_token = local_backend_access_token(request, request_body);
+                match local_backend_usage_event_from_body(request_body) {
+                    Ok(event) => {
+                        let receipt = store.record_usage_event(&access_token, &event)?;
+                        if receipt.authenticated {
+                            (
+                                "200 OK",
+                                serde_json::to_vec(&serde_json::json!({
+                                    "status": "ok",
+                                    "authenticated": true,
+                                    "subject": receipt.subject,
+                                    "day": receipt.day,
+                                    "recordedTokens": receipt.recorded_tokens,
+                                    "totalUsedTokens": receipt.total_used_tokens,
+                                    "totalRequestCount": receipt.total_request_count
+                                }))?,
+                                "helper.local_backend_usage_record_ok",
+                            )
+                        } else {
+                            (
+                                "401 Unauthorized",
+                                serde_json::to_vec(&serde_json::json!({
+                                    "status": "failed",
+                                    "authenticated": false,
+                                    "reason": receipt.reason,
+                                    "message": "本地账号服务端 session 无效或已过期"
+                                }))?,
+                                "helper.local_backend_usage_record_unauthorized",
+                            )
+                        }
+                    }
+                    Err(error) => (
+                        "400 Bad Request",
+                        serde_json::to_vec(&serde_json::json!({
+                            "status": "failed",
+                            "message": error.to_string()
+                        }))?,
+                        "helper.local_backend_usage_record_bad_request",
+                    ),
+                }
+            }
+        }
+        _ => unreachable!("local backend API path was prefiltered"),
+    };
+
+    write_http_response(stream, status, "application/json; charset=utf-8", &body).await?;
+    log_helper_response(log_event, method, path, status, remote_addr_text);
+    stream.shutdown().await?;
+    Ok(())
+}
+
+fn local_backend_access_token(request: &str, request_body: &str) -> String {
+    let bearer =
+        http_header_value(request, "authorization").and_then(|value| bearer_token(value.as_str()));
+    if let Some(token) = bearer {
+        return token;
+    }
+
+    serde_json::from_str::<serde_json::Value>(request_body)
+        .ok()
+        .and_then(|value| {
+            ["accessToken", "access_token", "token"]
+                .into_iter()
+                .find_map(|key| value.get(key).and_then(serde_json::Value::as_str))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+        })
+        .unwrap_or_default()
+}
+
+fn local_backend_usage_event_from_body(
+    request_body: &str,
+) -> anyhow::Result<crate::local_usage::LocalUsageEvent> {
+    let value = serde_json::from_str::<serde_json::Value>(request_body)?;
+    let method = json_string_field(&value, &["method"]).unwrap_or_else(|| "POST".to_string());
+    let path = json_string_field(&value, &["path"]).unwrap_or_else(|| "/v1/responses".to_string());
+    let upstream_protocol = json_string_field(&value, &["upstreamProtocol", "upstream_protocol"])
+        .unwrap_or_else(|| "responses".to_string());
+    let status_code = json_i64_field(&value, &["statusCode", "status_code"])
+        .unwrap_or(200)
+        .clamp(100, 599) as u16;
+    let request_bytes = json_i64_field(&value, &["requestBytes", "request_bytes"])
+        .unwrap_or(0)
+        .max(0) as usize;
+    let response_bytes = json_i64_field(&value, &["responseBytes", "response_bytes"])
+        .unwrap_or(0)
+        .max(0) as usize;
+    let token_usage = local_backend_token_usage_from_body(&value);
+    if request_bytes == 0 && response_bytes == 0 && token_usage.is_none() {
+        anyhow::bail!("用量写入缺少 requestBytes、responseBytes 或 tokenUsage。");
+    }
+    Ok(crate::local_usage::LocalUsageEvent {
+        method,
+        path,
+        upstream_protocol,
+        status_code,
+        request_bytes,
+        response_bytes,
+        token_usage,
+    })
+}
+
+fn local_backend_token_usage_from_body(
+    value: &serde_json::Value,
+) -> Option<crate::local_usage::TokenUsage> {
+    if let Some(usage) = value.get("usage").filter(|usage| usage.is_object()) {
+        let wrapped = serde_json::json!({ "usage": usage });
+        if let Some(parsed) = crate::local_usage::token_usage_from_value(&wrapped) {
+            return Some(parsed);
+        }
+    }
+    let usage = value
+        .get("tokenUsage")
+        .or_else(|| value.get("token_usage"))
+        .filter(|usage| usage.is_object())?;
+    let input_tokens = json_i64_field(usage, &["inputTokens", "input_tokens", "prompt_tokens"]);
+    let output_tokens = json_i64_field(
+        usage,
+        &["outputTokens", "output_tokens", "completion_tokens"],
+    );
+    let total_tokens = json_i64_field(usage, &["totalTokens", "total_tokens"]).or_else(|| {
+        input_tokens
+            .zip(output_tokens)
+            .map(|(input, output)| input + output)
+    });
+    (input_tokens.is_some() || output_tokens.is_some() || total_tokens.is_some()).then_some(
+        crate::local_usage::TokenUsage {
+            input_tokens,
+            output_tokens,
+            total_tokens,
+        },
+    )
+}
+
+fn json_string_field(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn json_i64_field(value: &serde_json::Value, keys: &[&str]) -> Option<i64> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(serde_json::Value::as_i64)
+            .or_else(|| {
+                value
+                    .get(*key)
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|value| i64::try_from(value).ok())
+            })
+    })
+}
+
+fn http_header_value(request: &str, header_name: &str) -> Option<String> {
+    let expected = header_name.to_ascii_lowercase();
+    request
+        .lines()
+        .skip(1)
+        .take_while(|line| !line.trim().is_empty())
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            (name.trim().eq_ignore_ascii_case(&expected)).then(|| value.trim().to_string())
+        })
+}
+
+fn bearer_token(value: &str) -> Option<String> {
+    let (scheme, token) = value.trim().split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then(|| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+}
+
 async fn handle_models_proxy_connection(
     stream: &mut tokio::net::TcpStream,
     method: &str,
@@ -833,6 +1291,35 @@ async fn handle_protocol_proxy_connection(
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
+    let usage_store = crate::local_usage::LocalUsageStore::default();
+    let usage_policy = crate::local_usage::LocalUsagePolicy::from_settings(
+        &SettingsStore::default().load().unwrap_or_default(),
+    );
+    if let Err(error) = usage_store.preflight_request(usage_policy, request_body.len()) {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "error": {
+                "message": error.to_string(),
+                "type": "jiyi_quota_exceeded"
+            }
+        }))?;
+        write_http_response(
+            stream,
+            "429 Too Many Requests",
+            "application/json; charset=utf-8",
+            &body,
+        )
+        .await?;
+        log_helper_response(
+            "helper.local_quota_exceeded",
+            method,
+            path,
+            "429 Too Many Requests",
+            remote_addr_text,
+        );
+        stream.shutdown().await?;
+        return Ok(());
+    }
+
     let upstream = match crate::protocol_proxy::open_responses_proxy_request(request_body).await {
         Ok(upstream) => upstream,
         Err(error) => {
@@ -859,10 +1346,87 @@ async fn handle_protocol_proxy_connection(
         }
     };
 
+    if upstream.response_kind == crate::protocol_proxy::UpstreamResponseKind::Responses {
+        let status = upstream.status();
+        let status_code = upstream.status_code;
+        let is_success = upstream.is_success();
+        let content_type = if upstream.content_type.trim().is_empty() {
+            "application/json; charset=utf-8".to_string()
+        } else {
+            upstream.content_type.clone()
+        };
+        if upstream.is_stream && is_success {
+            write_http_stream_headers(stream, &status, &content_type).await?;
+            let mut bytes_stream = upstream.response.bytes_stream();
+            let mut response_bytes = 0usize;
+            while let Some(chunk) = bytes_stream.next().await {
+                let bytes = chunk?;
+                response_bytes = response_bytes.saturating_add(bytes.len());
+                stream.write_all(&bytes).await?;
+            }
+            record_local_usage_event(
+                method,
+                path,
+                "responses",
+                status_code,
+                request_body.len(),
+                response_bytes,
+                None,
+            );
+            log_helper_response(
+                "helper.responses_proxy_stream_ok",
+                method,
+                path,
+                &status,
+                remote_addr_text,
+            );
+            stream.shutdown().await?;
+            return Ok(());
+        }
+
+        let body = upstream.response.bytes().await?.to_vec();
+        let token_usage = serde_json::from_slice::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|value| crate::local_usage::token_usage_from_value(&value));
+        record_local_usage_event(
+            method,
+            path,
+            "responses",
+            status_code,
+            request_body.len(),
+            body.len(),
+            token_usage,
+        );
+        write_http_response(stream, &status, &content_type, &body).await?;
+        log_helper_response(
+            if is_success {
+                "helper.responses_proxy_ok"
+            } else {
+                "helper.responses_proxy_upstream_error"
+            },
+            method,
+            path,
+            &status,
+            remote_addr_text,
+        );
+        stream.shutdown().await?;
+        return Ok(());
+    }
+
     if !upstream.is_success() {
         let status = upstream.status();
+        let status_code = upstream.status_code;
         let upstream_content_type = upstream.content_type.clone();
         let upstream_body = upstream.response.bytes().await?.to_vec();
+        record_local_usage_event(
+            method,
+            path,
+            "chatCompletions",
+            status_code,
+            request_body.len(),
+            upstream_body.len(),
+            None,
+        );
         let error = crate::protocol_proxy::responses_error_from_upstream(
             upstream.status_code,
             &upstream_content_type,
@@ -889,10 +1453,12 @@ async fn handle_protocol_proxy_connection(
             .unwrap_or_default();
         let mut bytes_stream = upstream.response.bytes_stream();
         let mut stream_failed = false;
+        let mut response_bytes = 0usize;
 
         while let Some(chunk) = bytes_stream.next().await {
             match chunk {
                 Ok(bytes) => {
+                    response_bytes = response_bytes.saturating_add(bytes.len());
                     let converted = converter.push_bytes(&bytes);
                     if !converted.is_empty() {
                         stream.write_all(&converted).await?;
@@ -918,6 +1484,15 @@ async fn handle_protocol_proxy_connection(
                 stream.write_all(&tail).await?;
             }
         }
+        record_local_usage_event(
+            method,
+            path,
+            "chatCompletions",
+            200,
+            request_body.len(),
+            response_bytes,
+            None,
+        );
         log_helper_response(
             "helper.protocol_proxy_stream_ok",
             method,
@@ -931,12 +1506,22 @@ async fn handle_protocol_proxy_connection(
 
     let upstream_body = upstream.response.bytes().await?;
     let chat_json: serde_json::Value = serde_json::from_slice(&upstream_body)?;
+    let token_usage = crate::local_usage::token_usage_from_value(&chat_json);
     let response_json = if let Some(request_json) = request_json.as_ref() {
         crate::protocol_proxy::chat_completion_to_response_with_request(chat_json, request_json)?
     } else {
         crate::protocol_proxy::chat_completion_to_response(chat_json)?
     };
     let body = serde_json::to_vec(&response_json)?;
+    record_local_usage_event(
+        method,
+        path,
+        "chatCompletions",
+        200,
+        request_body.len(),
+        upstream_body.len(),
+        token_usage,
+    );
     write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body).await?;
     log_helper_response(
         "helper.protocol_proxy_ok",
@@ -1068,6 +1653,84 @@ fn log_helper_response(
             "remote_addr": remote_addr_text
         }),
     );
+}
+
+fn record_local_usage_event(
+    method: &str,
+    path: &str,
+    upstream_protocol: &str,
+    status_code: u16,
+    request_bytes: usize,
+    response_bytes: usize,
+    token_usage: Option<crate::local_usage::TokenUsage>,
+) {
+    let event = crate::local_usage::LocalUsageEvent {
+        method: method.to_string(),
+        path: path.to_string(),
+        upstream_protocol: upstream_protocol.to_string(),
+        status_code,
+        request_bytes,
+        response_bytes,
+        token_usage,
+    };
+    let backend_event = event.clone();
+    if let Err(error) = crate::local_usage::LocalUsageStore::default().record_event(event) {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "helper.local_usage_record_failed",
+            serde_json::json!({
+                "method": method,
+                "path": path,
+                "status_code": status_code,
+                "error": error.to_string()
+            }),
+        );
+    }
+    record_local_backend_usage_event(&backend_event);
+}
+
+fn record_local_backend_usage_event(event: &crate::local_usage::LocalUsageEvent) {
+    let token = crate::secret_store::resolve_local_backend_session_token();
+    if token.trim().is_empty() {
+        return;
+    }
+    match crate::local_backend::LocalBackendStore::default().record_usage_event(&token, event) {
+        Ok(receipt) if receipt.authenticated => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "helper.local_backend_usage_record_ok",
+                serde_json::json!({
+                    "method": event.method,
+                    "path": event.path,
+                    "status_code": event.status_code,
+                    "day": receipt.day,
+                    "recorded_tokens": receipt.recorded_tokens,
+                    "total_used_tokens": receipt.total_used_tokens,
+                    "total_request_count": receipt.total_request_count
+                }),
+            );
+        }
+        Ok(receipt) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "helper.local_backend_usage_record_rejected",
+                serde_json::json!({
+                    "method": event.method,
+                    "path": event.path,
+                    "status_code": event.status_code,
+                    "reason": receipt.reason
+                }),
+            );
+        }
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "helper.local_backend_usage_record_failed",
+                serde_json::json!({
+                    "method": event.method,
+                    "path": event.path,
+                    "status_code": event.status_code,
+                    "error": error.to_string()
+                }),
+            );
+        }
+    }
 }
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> anyhow::Result<Vec<u8>> {
@@ -1289,18 +1952,185 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
     .await
 }
 
+#[derive(Debug, Clone)]
+struct OfficialCodexConfigGuard {
+    config_path: PathBuf,
+    auth_path: PathBuf,
+    config_snapshot: Option<Vec<u8>>,
+    auth_snapshot: Option<Vec<u8>>,
+}
+
+fn capture_official_codex_config_guard() -> OfficialCodexConfigGuard {
+    let home = crate::paths::default_official_codex_home_dir();
+    let config_path = home.join("config.toml");
+    let auth_path = home.join("auth.json");
+    OfficialCodexConfigGuard {
+        config_snapshot: std::fs::read(&config_path).ok(),
+        auth_snapshot: std::fs::read(&auth_path).ok(),
+        config_path,
+        auth_path,
+    }
+}
+
+fn start_official_codex_config_guard(guard: OfficialCodexConfigGuard) {
+    std::thread::spawn(move || {
+        for _ in 0..80 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if let Err(error) = restore_official_codex_config_if_contaminated(&guard) {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "official_codex_config_guard.restore_failed",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
+        }
+    });
+}
+
+pub fn start_official_codex_config_guard_for_startup() {
+    start_official_codex_config_guard(capture_official_codex_config_guard());
+}
+
+fn restore_official_codex_config_if_contaminated(
+    guard: &OfficialCodexConfigGuard,
+) -> anyhow::Result<()> {
+    restore_guarded_file_if_contaminated(&guard.config_path, guard.config_snapshot.as_deref())?;
+    restore_guarded_file_if_contaminated(&guard.auth_path, guard.auth_snapshot.as_deref())?;
+    Ok(())
+}
+
+fn restore_guarded_file_if_contaminated(
+    path: &Path,
+    snapshot: Option<&[u8]>,
+) -> anyhow::Result<()> {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return Ok(());
+    };
+    if !official_codex_config_is_jiyi_contaminated(&contents) {
+        return Ok(());
+    }
+
+    if let Some(snapshot) = snapshot {
+        std::fs::write(path, snapshot)
+            .with_context(|| format!("failed to restore guarded file {}", path.display()))?;
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "official_codex_config_guard.restored",
+            serde_json::json!({ "path": path.to_string_lossy() }),
+        );
+    }
+    Ok(())
+}
+
+fn official_codex_config_is_jiyi_contaminated(contents: &str) -> bool {
+    contents.contains(".codex-session-delete")
+        || contents.contains("JiyiCodex")
+        || contents.contains("Jiyi")
+        || contents.contains("极义codex")
+        || contents.contains("dashscope.aliyuncs.com")
+        || contents.contains("aliyuncs.com/compatible-mode")
+        || contents.contains("DASHSCOPE_API_KEY")
+        || contents.contains("BAILIAN_API_KEY")
+        || contents.contains("ALIYUN_BAILIAN_API_KEY")
+        || contents.contains("QWEN_API_KEY")
+        || contents.contains("apimart.ai")
+        || contents.contains("api.apimart.ai")
+        || contents.contains("qwen3.7-plus")
+        || contents.contains("gpt-5.5")
+        || contents.contains("jiyi-local-proxy")
+        || contents.contains("jiyi-keychain:")
+}
+
+pub fn jiyi_sensitive_environment_keys() -> &'static [&'static str] {
+    JIYI_SENSITIVE_ENV_KEYS
+}
+
+fn jiyi_isolated_environment_pairs(codex_home: &Path, unix_home: &Path) -> Vec<(String, String)> {
+    let config_home = unix_home.join(".config");
+    let data_home = unix_home.join(".local").join("share");
+    let cache_home = unix_home.join(".cache");
+    let mut pairs = vec![
+        (
+            "CODEX_HOME".to_string(),
+            codex_home.to_string_lossy().to_string(),
+        ),
+        ("HOME".to_string(), unix_home.to_string_lossy().to_string()),
+        (
+            "XDG_CONFIG_HOME".to_string(),
+            config_home.to_string_lossy().to_string(),
+        ),
+        (
+            "XDG_DATA_HOME".to_string(),
+            data_home.to_string_lossy().to_string(),
+        ),
+        (
+            "XDG_CACHE_HOME".to_string(),
+            cache_home.to_string_lossy().to_string(),
+        ),
+    ];
+    pairs.extend(
+        jiyi_sensitive_environment_keys()
+            .iter()
+            .map(|key| ((*key).to_string(), String::new())),
+    );
+    pairs
+}
+
+fn configure_jiyi_child_process_env(
+    command: &mut Command,
+    codex_home: &Path,
+    unix_home: Option<&Path>,
+) {
+    command.env("CODEX_HOME", codex_home);
+    if let Some(unix_home) = unix_home {
+        command
+            .env("HOME", unix_home)
+            .env("XDG_CONFIG_HOME", unix_home.join(".config"))
+            .env("XDG_DATA_HOME", unix_home.join(".local").join("share"))
+            .env("XDG_CACHE_HOME", unix_home.join(".cache"));
+    }
+    for key in jiyi_sensitive_environment_keys() {
+        command.env_remove(key);
+    }
+}
+
 pub fn build_macos_open_command(
     app_dir: &Path,
     debug_port: u16,
     extra_args: &[String],
 ) -> Vec<String> {
-    let mut command = vec![
-        "open".to_string(),
-        "-W".to_string(),
-        "-a".to_string(),
+    let codex_home = crate::relay_config::default_codex_home_dir();
+    let unix_home = crate::paths::default_jiyi_unix_home_dir();
+    let browser_user_data_dir = crate::paths::default_jiyi_browser_user_data_dir();
+    build_macos_open_command_with_isolated_home(
+        app_dir,
+        debug_port,
+        extra_args,
+        &codex_home,
+        &unix_home,
+        &browser_user_data_dir,
+    )
+}
+
+pub fn build_macos_open_command_with_isolated_home(
+    app_dir: &Path,
+    debug_port: u16,
+    extra_args: &[String],
+    codex_home: &Path,
+    unix_home: &Path,
+    browser_user_data_dir: &Path,
+) -> Vec<String> {
+    let mut command = vec!["open".to_string(), "-n".to_string(), "-W".to_string()];
+    for (key, value) in jiyi_isolated_environment_pairs(codex_home, unix_home) {
+        command.push("--env".to_string());
+        command.push(format!("{key}={value}"));
+    }
+    command.extend([
         app_dir.to_string_lossy().to_string(),
         "--args".to_string(),
-    ];
+        format!(
+            "--user-data-dir={}",
+            browser_user_data_dir.to_string_lossy()
+        ),
+    ]);
     command.extend(build_codex_arguments(debug_port, extra_args));
     command
 }
@@ -1347,8 +2177,11 @@ async fn run_macos_cleanup_command(
 }
 
 fn macos_app_dir_from_open_command(command: &[String]) -> Option<PathBuf> {
-    let app_index = command.iter().position(|part| part == "-a")?;
-    command.get(app_index + 1).map(PathBuf::from)
+    command
+        .iter()
+        .skip(1)
+        .find(|part| part.ends_with(".app"))
+        .map(PathBuf::from)
 }
 
 async fn is_macos_app_running(app_dir: &Path) -> bool {
@@ -1564,5 +2397,54 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
             CoUninitialize();
         }
         result.map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_open_command_uses_exact_app_path() {
+        let app_dir =
+            Path::new("/Applications/极义codex.app/Contents/Resources/JiyiCodexClient.app");
+        let command = build_macos_open_command(app_dir, 9234, &["--foo".to_string()]);
+
+        assert_eq!(command[0], "open");
+        assert!(command.iter().any(|part| part == "-n"));
+        assert!(command.iter().any(|part| part == "-W"));
+        assert!(!command.iter().any(|part| part == "-a"));
+        assert!(
+            command
+                .iter()
+                .any(|part| part == app_dir.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            macos_app_dir_from_open_command(&command),
+            Some(app_dir.to_path_buf())
+        );
+    }
+
+    #[test]
+    fn official_codex_config_guard_detects_jiyi_contamination() {
+        assert!(official_codex_config_is_jiyi_contaminated(
+            r#"notify = ["/Users/lv/.codex-session-delete/codex-home/computer-use/app"]"#
+        ));
+        assert!(official_codex_config_is_jiyi_contaminated(
+            r#"base_url = "https://api.apimart.ai/v1""#
+        ));
+        assert!(official_codex_config_is_jiyi_contaminated(
+            r#"base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1""#
+        ));
+    }
+
+    #[test]
+    fn official_codex_config_guard_allows_official_config() {
+        assert!(!official_codex_config_is_jiyi_contaminated(
+            r#"notify = ["/Users/lv/.codex/computer-use/app", "turn-ended"]"#
+        ));
+        assert!(!official_codex_config_is_jiyi_contaminated(
+            r#"{"OPENAI_API_KEY":"sk-official-user-key"}"#
+        ));
     }
 }
