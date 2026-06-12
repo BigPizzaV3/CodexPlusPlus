@@ -13,7 +13,9 @@ use codex_plus_core::launcher::{
 };
 #[cfg(windows)]
 use codex_plus_core::launcher::{WindowsProcessControlStrategy, windows_process_control_strategy};
-use codex_plus_core::ports::select_platform_loopback_port_with;
+use codex_plus_core::ports::{
+    select_packaged_codex_debug_port_with, select_platform_loopback_port_with,
+};
 use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol};
 use codex_plus_core::status::StatusStore;
 
@@ -327,6 +329,13 @@ fn ports_windows_falls_back_to_ephemeral_when_requested_is_busy() {
 }
 
 #[test]
+fn ports_windows_packaged_debug_keeps_requested_even_when_busy() {
+    let selected = select_packaged_codex_debug_port_with(9229, true, |_| false, || 43001);
+
+    assert_eq!(selected, 9229);
+}
+
+#[test]
 fn ports_non_windows_keeps_requested_even_when_busy() {
     let selected = select_platform_loopback_port_with(9229, false, |_| false, || 43001);
 
@@ -441,8 +450,11 @@ async fn launch_lifecycle_runs_sync_before_launch_writes_success_and_shutdowns_o
             "select-helper:57321",
             "load-settings",
             "provider-sync",
+            "apply-relay",
+            "computer-use-guard",
             "start-helper:57321",
             "launch:9229",
+            "computer-use-guard-watchdog",
             "inject:9229:57321",
             "status:running",
             "wait-codex",
@@ -525,8 +537,11 @@ async fn launch_lifecycle_keeps_js_injection_in_relay_mode() {
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
+            "apply-relay",
+            "computer-use-guard",
             "start-helper:57321",
             "launch:9229",
+            "computer-use-guard-watchdog",
             "inject:9229:57321",
             "status:running",
             "wait-codex",
@@ -566,7 +581,10 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
+            "apply-relay",
+            "computer-use-guard",
             "launch:9229",
+            "computer-use-guard-watchdog",
             "status:running",
             "wait-codex",
         ]
@@ -574,7 +592,8 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
 }
 
 #[tokio::test]
-async fn launch_lifecycle_does_not_apply_active_relay_profile_before_starting_codex() {
+async fn launch_lifecycle_applies_active_relay_profile_and_computer_use_guard_before_starting_codex()
+ {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -595,9 +614,23 @@ async fn launch_lifecycle_does_not_apply_active_relay_profile_before_starting_co
     .unwrap();
     handle.wait_for_codex_exit().await.unwrap();
 
-    let events = events.lock().unwrap().clone();
-    assert!(!events.contains(&"apply-relay".to_string()));
-    assert!(events.contains(&"launch:9229".to_string()));
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![
+            "select-debug:9229",
+            "select-helper:57321",
+            "load-settings",
+            "apply-relay",
+            "computer-use-guard",
+            "start-helper:57321",
+            "launch:9229",
+            "computer-use-guard-watchdog",
+            "inject:9229:57321",
+            "status:running",
+            "wait-codex",
+            "shutdown-helper:57321",
+        ]
+    );
 }
 
 #[tokio::test]
@@ -627,6 +660,7 @@ async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabl
 
     let events = events.lock().unwrap().clone();
     assert!(!events.contains(&"apply-relay".to_string()));
+    assert!(events.contains(&"computer-use-guard".to_string()));
     assert!(events.contains(&"launch:9229".to_string()));
 }
 
@@ -677,7 +711,8 @@ experimental_bearer_token = "sk-test"
     handle.wait_for_codex_exit().await.unwrap();
 
     let events = events.lock().unwrap().clone();
-    assert!(!events.contains(&"apply-relay".to_string()));
+    assert!(events.contains(&"apply-relay".to_string()));
+    assert!(events.contains(&"computer-use-guard".to_string()));
     assert!(events.contains(&"launch:9229".to_string()));
 }
 
@@ -708,8 +743,11 @@ async fn launch_lifecycle_enters_degraded_mode_and_retries_when_injection_fails(
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
+            "apply-relay",
+            "computer-use-guard",
             "start-helper:57321",
             "launch:9229",
+            "computer-use-guard-watchdog",
             "inject:9229:57321",
             "status:running_degraded",
         ]
@@ -753,6 +791,8 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
+            "apply-relay",
+            "computer-use-guard",
             "start-helper:57321",
             "launch:9229",
             "shutdown-helper:57321",
@@ -860,8 +900,11 @@ async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
+            "apply-relay",
+            "computer-use-guard",
             "start-helper:57321",
             "launch:9229",
+            "computer-use-guard-watchdog",
             "inject:9229:57321",
             "shutdown-helper:57321",
             "terminate-packaged:4242",
@@ -1055,6 +1098,11 @@ impl LaunchHooks for FakeHooks {
         Ok(())
     }
 
+    async fn ensure_computer_use_config(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
+        self.event("computer-use-guard");
+        Ok(())
+    }
+
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
         self.event(format!("start-helper:{helper_port}"));
         Ok(())
@@ -1096,6 +1144,14 @@ impl LaunchHooks for FakeHooks {
         _debug_port: u16,
         _helper_port: u16,
     ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn start_computer_use_guard_watchdog(
+        &self,
+        _settings: &BackendSettings,
+    ) -> anyhow::Result<()> {
+        self.event("computer-use-guard-watchdog");
         Ok(())
     }
 

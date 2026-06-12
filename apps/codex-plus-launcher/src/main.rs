@@ -127,6 +127,7 @@ fn should_recover_stale_launcher(debug_port: u16) -> bool {
 async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {
     let hooks = LauncherHooks::default();
     let settings = hooks.load_settings().await?;
+    hooks.ensure_computer_use_config(&settings).await?;
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
     let launch_result = hooks
         .launch_codex(&app_dir, options.debug_port, &settings.codex_extra_args)
@@ -283,6 +284,13 @@ impl LaunchHooks for LauncherHooks {
         self.core.apply_active_relay_profile(settings).await
     }
 
+    async fn ensure_computer_use_config(
+        &self,
+        settings: &codex_plus_core::settings::BackendSettings,
+    ) -> anyhow::Result<()> {
+        self.core.ensure_computer_use_config(settings).await
+    }
+
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
         self.core.start_helper(helper_port).await
     }
@@ -322,6 +330,13 @@ impl LaunchHooks for LauncherHooks {
 
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         self.core.inject(debug_port, helper_port).await
+    }
+
+    async fn start_computer_use_guard_watchdog(
+        &self,
+        settings: &codex_plus_core::settings::BackendSettings,
+    ) -> anyhow::Result<()> {
+        self.core.start_computer_use_guard_watchdog(settings).await
     }
 
     async fn write_status(&self, status: &str) {
@@ -774,12 +789,24 @@ mod tests {
         assert!(source.contains(
             "async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {\n    let hooks = LauncherHooks::default();"
         ));
+        assert!(source.contains("hooks.ensure_computer_use_config(&settings).await?"));
         assert!(source.contains("hooks.start_helper(options.helper_port).await?"));
         assert!(
             source
                 .contains("hooks.ensure_injection(options.debug_port, options.helper_port).await")
         );
         assert!(source.contains("injection_ready"));
+    }
+
+    #[test]
+    fn launcher_hooks_forward_computer_use_guard_methods() {
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("async fn ensure_computer_use_config"));
+        assert!(source.contains("self.core.ensure_computer_use_config(settings).await"));
+        assert!(source.contains("async fn start_computer_use_guard_watchdog"));
+        assert!(source.contains("self.core"));
+        assert!(source.contains(".start_computer_use_guard_watchdog(settings)"));
     }
 
     #[test]

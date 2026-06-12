@@ -1929,7 +1929,8 @@ requires_openai_auth = true
 experimental_bearer_token = "22222222222222222222222222222222222"
 "#
         .to_string(),
-        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#.to_string(),
+        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#
+            .to_string(),
         ..RelayProfile::default()
     };
     let mut common = String::new();
@@ -1940,9 +1941,11 @@ experimental_bearer_token = "22222222222222222222222222222222222"
     assert_eq!(profile.relay_mode, RelayMode::Official);
     assert!(profile.official_mix_api_key);
     assert_eq!(profile.api_key, "333333333333333333333");
-    assert!(profile
-        .config_contents
-        .contains(r#"experimental_bearer_token = "333333333333333333333""#));
+    assert!(
+        profile
+            .config_contents
+            .contains(r#"experimental_bearer_token = "333333333333333333333""#)
+    );
     assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
 }
 
@@ -2059,6 +2062,56 @@ requires_openai_auth = true
     assert!(config.contains(r#"base_url = "https://max2.jojocode.com/v1""#));
     assert!(!config.contains("experimental_bearer_token"));
     assert!(!config.contains("[model_providers.custom]"));
+}
+
+#[cfg(windows)]
+#[test]
+fn apply_relay_profile_to_home_with_switch_rules_preserves_computer_use_guard_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let helper = temp
+        .path()
+        .join("plugins")
+        .join("cache")
+        .join("openai-bundled")
+        .join("computer-use")
+        .join("26.608.12217")
+        .join("node_modules")
+        .join("@oai")
+        .join("sky")
+        .join("bin")
+        .join("windows")
+        .join("codex-computer-use.exe");
+    std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
+    std::fs::write(&helper, "").unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model_provider = "max_ai"
+model = "gpt-5.4"
+
+[features]
+js_repl = false
+
+[model_providers.max_ai]
+name = "max_ai"
+base_url = "https://max2.jojocode.com/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains("js_repl = true"));
+    assert!(config.contains("[plugins.\"browser@openai-bundled\"]"));
+    assert!(config.contains("[plugins.\"chrome@openai-bundled\"]"));
+    assert!(config.contains("[plugins.\"computer-use@openai-bundled\"]"));
+    assert!(config.contains(r#"notify = ["#));
+    assert!(config.contains("codex-computer-use.exe"));
 }
 
 #[test]
