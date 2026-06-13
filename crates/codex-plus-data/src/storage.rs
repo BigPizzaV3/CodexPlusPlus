@@ -5,9 +5,9 @@ use rusqlite::{Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
+use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -20,6 +20,7 @@ pub struct SQLiteStorageAdapter {
 enum SchemaKind {
     GenericSessions,
     CodexThreads,
+    CodexAutomationRuns,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +33,7 @@ pub struct LocalSession {
     pub archived: bool,
     pub updated_at_ms: Option<i64>,
     pub rollout_path: String,
+    pub db_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +65,9 @@ impl SQLiteStorageAdapter {
             match schema_kind(&db)? {
                 Some(SchemaKind::GenericSessions) => self.delete_generic_session(&mut db, session),
                 Some(SchemaKind::CodexThreads) => self.delete_codex_thread(&mut db, session),
+                Some(SchemaKind::CodexAutomationRuns) => {
+                    self.delete_codex_automation_run(&mut db, session)
+                }
                 None => Ok(failed(
                     &session.session_id,
                     "Unsupported local storage schema".to_string(),
@@ -77,9 +82,14 @@ impl SQLiteStorageAdapter {
             return Ok(Vec::new());
         }
         let db = Connection::open(&self.db_path)?;
-        if schema_kind(&db)? != Some(SchemaKind::CodexThreads) {
-            anyhow::bail!("Unsupported local storage schema");
+        match schema_kind(&db)? {
+            Some(SchemaKind::CodexThreads) => self.list_codex_threads(&db),
+            Some(SchemaKind::CodexAutomationRuns) => self.list_codex_automation_runs(&db),
+            _ => anyhow::bail!("Unsupported local storage schema"),
         }
+    }
+
+    fn list_codex_threads(&self, db: &Connection) -> anyhow::Result<Vec<LocalSession>> {
         let columns = table_columns(&db, "threads")?
             .into_iter()
             .collect::<HashSet<_>>();
@@ -112,6 +122,44 @@ impl SQLiteStorageAdapter {
                 archived: row.get::<_, Option<i64>>(4)?.unwrap_or_default() != 0,
                 updated_at_ms: row.get(5)?,
                 rollout_path: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                db_path: self.db_path.to_string_lossy().to_string(),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    fn list_codex_automation_runs(&self, db: &Connection) -> anyhow::Result<Vec<LocalSession>> {
+        let columns = table_columns(db, "automation_runs")?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let title = optional_column_expression(&columns, "thread_title", "''");
+        let cwd = optional_column_expression(&columns, "source_cwd", "''");
+        let status = optional_column_expression(&columns, "status", "''");
+        let updated_at = optional_column_expression(&columns, "updated_at", "NULL");
+        let created_at = optional_column_expression(&columns, "created_at", "NULL");
+        let sql = format!(
+            "SELECT thread_id, {title}, {cwd}, {status}, {updated_at}, {created_at}
+             FROM automation_runs
+             WHERE COALESCE(thread_id, '') <> ''
+             ORDER BY COALESCE({updated_at}, {created_at}, 0) DESC, thread_id DESC"
+        );
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
+            let updated_at_ms = row
+                .get::<_, Option<i64>>(4)?
+                .or(row.get::<_, Option<i64>>(5)?);
+            Ok(LocalSession {
+                id: row.get(0)?,
+                title: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                cwd: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                model_provider: String::new(),
+                archived: row
+                    .get::<_, Option<String>>(3)?
+                    .map(|status| status.eq_ignore_ascii_case("archived"))
+                    .unwrap_or(false),
+                updated_at_ms,
+                rollout_path: String::new(),
+                db_path: self.db_path.to_string_lossy().to_string(),
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -363,11 +411,13 @@ impl SQLiteStorageAdapter {
                 }));
             }
             let thread_id = normalize_codex_thread_id(&session.session_id);
-            let rollout_path: Option<String> = db.query_row(
-                "SELECT rollout_path FROM threads WHERE id = ?1",
-                [&thread_id],
-                |row| row.get(0),
-            ).optional()?;
+            let rollout_path: Option<String> = db
+                .query_row(
+                    "SELECT rollout_path FROM threads WHERE id = ?1",
+                    [&thread_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
             let Some(rollout_path) = rollout_path.filter(|path| !path.trim().is_empty()) else {
                 return Ok(json!({
                     "status": "failed",
@@ -570,6 +620,59 @@ impl SQLiteStorageAdapter {
         }
         Ok(local_deleted(&thread_id, &token, &backup_path))
     }
+
+    fn delete_codex_automation_run(
+        &self,
+        db: &mut Connection,
+        session: &SessionRef,
+    ) -> anyhow::Result<DeleteResult> {
+        let thread_id = normalize_codex_thread_id(&session.session_id);
+        let mut tables = Map::new();
+        backup_related_rows(
+            db,
+            &mut tables,
+            "automation_runs",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
+        backup_related_rows(
+            db,
+            &mut tables,
+            "inbox_items",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
+        if tables.values().all(|rows| {
+            rows.as_array()
+                .map(|items| items.is_empty())
+                .unwrap_or(true)
+        }) {
+            return Ok(failed(
+                &session.session_id,
+                "Thread not found in local storage".to_string(),
+            ));
+        }
+        let token =
+            self.backup_store
+                .write_backup(&thread_id, &self.db_path, Value::Object(tables))?;
+        let backup_path = self.backup_store.path_for(&token);
+        let delete_result = (|| -> anyhow::Result<()> {
+            let tx = db.transaction()?;
+            delete_related_rows(&tx, "automation_runs", "thread_id = ?1", &[&thread_id])?;
+            delete_related_rows(&tx, "inbox_items", "thread_id = ?1", &[&thread_id])?;
+            tx.commit()?;
+            Ok(())
+        })();
+        if let Err(err) = delete_result {
+            return Ok(failed_with_undo(
+                &thread_id,
+                err.to_string(),
+                &token,
+                Some(&backup_path),
+            ));
+        }
+        Ok(local_deleted(&thread_id, &token, &backup_path))
+    }
 }
 
 fn optional_column_expression<'a>(
@@ -604,10 +707,7 @@ fn local_deleted(session_id: &str, token: &str, backup_path: &Path) -> DeleteRes
     }
 }
 
-fn read_rollout_usage_history(
-    rollout_path: &Path,
-    thread_id: &str,
-) -> anyhow::Result<Vec<Value>> {
+fn read_rollout_usage_history(rollout_path: &Path, thread_id: &str) -> anyhow::Result<Vec<Value>> {
     let file = File::open(rollout_path)?;
     let reader = BufReader::new(file);
     let mut current_turn_id = String::new();
@@ -622,7 +722,11 @@ fn read_rollout_usage_history(
             Ok(value) => value,
             Err(_) => continue,
         };
-        match value.get("type").and_then(Value::as_str).unwrap_or_default() {
+        match value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
             "turn_context" => {
                 current_turn_id = value
                     .get("payload")
@@ -633,7 +737,11 @@ fn read_rollout_usage_history(
             }
             "event_msg" => {
                 let payload = match value.get("payload") {
-                    Some(payload) if payload.get("type").and_then(Value::as_str) == Some("token_count") => payload,
+                    Some(payload)
+                        if payload.get("type").and_then(Value::as_str) == Some("token_count") =>
+                    {
+                        payload
+                    }
                     _ => continue,
                 };
                 let info = match payload.get("info") {
@@ -658,7 +766,8 @@ fn read_rollout_usage_history(
                     .and_then(|usage| usage.get("total_tokens"))
                     .and_then(Value::as_i64)
                     .unwrap_or_else(|| {
-                        total.and_then(|usage| usage.get("total_tokens"))
+                        total
+                            .and_then(|usage| usage.get("total_tokens"))
                             .and_then(Value::as_i64)
                             .unwrap_or(0)
                     });
@@ -670,7 +779,8 @@ fn read_rollout_usage_history(
                     .and_then(|usage| usage.get("total_tokens"))
                     .and_then(Value::as_i64)
                     .unwrap_or(total_tokens);
-                if input_tokens <= 0 && output_tokens <= 0 && total_tokens <= 0 && context_used <= 0 {
+                if input_tokens <= 0 && output_tokens <= 0 && total_tokens <= 0 && context_used <= 0
+                {
                     continue;
                 }
                 history.push(json!({
@@ -730,6 +840,9 @@ fn schema_kind(db: &Connection) -> anyhow::Result<Option<SchemaKind>> {
     if has_table(db, "threads")? && has_columns(db, "threads", &["id", "title", "rollout_path"])? {
         return Ok(Some(SchemaKind::CodexThreads));
     }
+    if has_table(db, "automation_runs")? && has_columns(db, "automation_runs", &["thread_id"])? {
+        return Ok(Some(SchemaKind::CodexAutomationRuns));
+    }
     Ok(None)
 }
 
@@ -784,6 +897,8 @@ fn validate_restore_tables(tables: &Map<String, Value>) -> anyhow::Result<()> {
         "thread_spawn_edges",
         "stage1_outputs",
         "agent_job_items",
+        "automation_runs",
+        "inbox_items",
         "__files",
     ];
     for table in tables.keys() {
@@ -850,6 +965,7 @@ fn restore_conflict_key_columns<'a>(table: &str, row: &'a Map<String, Value>) ->
     let wanted: &[&str] = match table {
         "sessions" | "threads" => &["id"],
         "messages" => &["id"],
+        "automation_runs" | "inbox_items" => &["thread_id"],
         "thread_dynamic_tools" => &["thread_id", "tool_name"],
         "thread_goals" => &["thread_id", "goal"],
         "thread_spawn_edges" => &["parent_thread_id", "child_thread_id"],
