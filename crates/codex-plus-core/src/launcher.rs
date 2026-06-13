@@ -254,7 +254,7 @@ where
             } else {
                 let degraded = launch_status(
                     "running_degraded",
-                    "Codex 已启动，Codex++ 增强仍在等待页面就绪。",
+                    "Codex launched; Codex++ enhancements are still waiting for the page to be ready.",
                     debug_port,
                     helper_port,
                     &app_dir,
@@ -704,7 +704,7 @@ async fn handle_helper_connection(
                 "200 OK".to_string(),
                 serde_json::to_vec(&serde_json::json!({
                     "status": "ok",
-                    "message": "后端已连接",
+                    "message": "Backend connected",
                     "version": crate::version::VERSION,
                     "transport": "http-helper"
                 }))?,
@@ -738,7 +738,7 @@ async fn handle_helper_connection(
                 "200 OK".to_string(),
                 serde_json::to_vec(&serde_json::json!({
                     "status": "ok",
-                    "message": "日志已记录"
+                    "message": "Log recorded"
                 }))?,
                 "application/json; charset=utf-8".to_string(),
                 "helper.diagnostics_log_ok",
@@ -748,7 +748,7 @@ async fn handle_helper_connection(
                 "404 Not Found".to_string(),
                 serde_json::to_vec(&serde_json::json!({
                     "status": "failed",
-                    "message": "未知后端路径"
+                    "message": "Unknown backend path"
                 }))?,
                 "application/json; charset=utf-8".to_string(),
                 "helper.unknown_path",
@@ -1118,7 +1118,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> anyhow::Result
             }
         }
         if buffer.len() > 32 * 1024 * 1024 {
-            anyhow::bail!("HTTP 请求过大");
+            anyhow::bail!("HTTP request is too large");
         }
     }
 

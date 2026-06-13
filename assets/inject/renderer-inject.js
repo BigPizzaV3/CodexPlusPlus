@@ -117,6 +117,17 @@
     pluginSvgPath: 'svg path[d^="M7.94562 14.0277"]',
   };
 
+  function codexDomRoot() {
+    return document.body || document.documentElement || null;
+  }
+
+  function appendToCodexDomRoot(node) {
+    const root = document.head || document.body || document.documentElement;
+    if (!root) return false;
+    root.appendChild(node);
+    return true;
+  }
+
   function installStyle() {
     const existingStyle = document.getElementById(styleId);
     if (existingStyle?.dataset.codexDeleteStyleVersion === codexDeleteStyleVersion) return;
@@ -684,7 +695,7 @@
       .codex-plus-toggle[data-enabled="true"] span { transform: translateX(18px); }
       .codex-plus-toggle[data-relay-unneeded="true"] { width: 72px; cursor: default; background: rgba(16,163,127,.16); color: #6ee7b7; }
       .codex-plus-toggle[data-relay-unneeded="true"] span { display: none; }
-      .codex-plus-toggle[data-relay-unneeded="true"]::after { content: "无需开启"; font-size: 12px; font-weight: 650; line-height: 1; }
+      .codex-plus-toggle[data-relay-unneeded="true"]::after { content: "Not needed"; font-size: 12px; font-weight: 650; line-height: 1; }
       .codex-plus-width-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 176px; align-self: center; }
       .codex-plus-width-input {
         width: 78px;
@@ -878,11 +889,11 @@
         100% { box-shadow: 0 0 0 14px rgba(16, 163, 127, 0); }
       }
     `;
-    document.documentElement.appendChild(style);
+    appendToCodexDomRoot(style);
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, pluginMarketplaceUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
+    return { pluginEntryUnlock: true, pluginMarketplaceUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
   }
 
   const codexPlusBackendSettingMap = {
@@ -934,12 +945,13 @@
       };
     }
     try {
-      const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
+      const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings(), conversationTimeline: false };
       if (relayPatchDisabled) {
         settings.pluginEntryUnlock = false;
         settings.pluginMarketplaceUnlock = false;
         settings.forcePluginInstall = false;
       }
+      settings.conversationTimeline = false;
       return settings;
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
@@ -948,6 +960,7 @@
         settings.pluginMarketplaceUnlock = false;
         settings.forcePluginInstall = false;
       }
+      settings.conversationTimeline = false;
       return settings;
     }
   }
@@ -1076,7 +1089,7 @@
   let codexServiceTierState = {
     status: "loading",
     serviceTier: null,
-    message: "正在读取…",
+    message: "Reading...",
     fastTierValue: "priority",
     controlMode: "inherit",
     defaultMode: "inherit",
@@ -1107,7 +1120,7 @@
     if (!codexServiceTierModulePromises.has(namePart)) {
       const promise = Promise.resolve().then(async () => {
         const url = codexAppAssetUrl(namePart);
-        if (!url) throw new Error(`未找到 Codex App asset: ${namePart}`);
+        if (!url) throw new Error(`Codex App asset not found: ${namePart}`);
         return await import(url);
       }).catch((error) => {
         codexServiceTierModulePromises.delete(namePart);
@@ -1121,7 +1134,7 @@
   async function codexSettingStorageModule() {
     const module = await loadCodexAppModule("setting-storage-");
     if (typeof module.n !== "function" || typeof module.s !== "function") {
-      throw new Error("Codex setting-storage 接口不可用");
+      throw new Error("Codex setting-storage API is unavailable");
     }
     return module;
   }
@@ -1184,8 +1197,8 @@
   }
 
   function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
-    const modelText = modelName ? `当前模型 ${modelName} 不支持` : "当前模型未读取";
-    return `Fast 仅支持 ${codexServiceTierFastModelListLabel()}，${modelText}`;
+    const modelText = modelName ? `Current model ${modelName} is not supported` : "Current model not read";
+    return `Fast only supports ${codexServiceTierFastModelListLabel()}; ${modelText}`;
   }
 
   function codexServiceTierMaybeLoadModelCatalog(force = false) {
@@ -1254,9 +1267,9 @@
   }
 
   function serviceTierGlobalStatusMessage(serviceTier) {
-    if (isFastServiceTierValue(serviceTier)) return "Fast 已开启";
-    if (!serviceTier) return "默认服务模式";
-    return `当前：${serviceTier}`;
+    if (isFastServiceTierValue(serviceTier)) return "Fast enabled";
+    if (!serviceTier) return "Default service mode";
+    return `Current: ${serviceTier}`;
   }
 
   function serviceTierStatusMessage(
@@ -1265,13 +1278,13 @@
     effectiveMode = codexServiceTierState.effectiveMode || "standard",
     defaultMode = codexServiceTierState.defaultMode || "inherit"
   ) {
-    if (codexServiceTierState.status === "loading") return "正在读取…";
-    if (codexServiceTierState.status === "failed") return "读取失败";
-    if (controlMode === "inherit") return `继承 config.toml：${effectiveMode}`;
-    if (controlMode === "global-standard") return "全局 Standard";
-    if (controlMode === "global-fast") return "全局 Fast";
-    if (threadMode === "inherit") return `自定义：默认 ${defaultMode}`;
-    return `自定义：当前 thread ${threadMode}`;
+    if (codexServiceTierState.status === "loading") return "Reading...";
+    if (codexServiceTierState.status === "failed") return "Read failed";
+    if (controlMode === "inherit") return `Inherit config.toml: ${effectiveMode}`;
+    if (controlMode === "global-standard") return "Global Standard";
+    if (controlMode === "global-fast") return "Global Fast";
+    if (threadMode === "inherit") return `Custom: default ${defaultMode}`;
+    return `Custom: current thread ${threadMode}`;
   }
 
   function readThreadServiceTierState() {
@@ -1389,7 +1402,7 @@
 
   function setCodexServiceTierControlMode(mode) {
     if (codexPlusBackendStatus.status !== "ok") {
-      showToast("后端未连接，无法切换服务模式", null);
+      showToast("Backend disconnected; cannot switch service mode", null);
       refreshCodexServiceTierControls();
       return;
     }
@@ -1415,12 +1428,12 @@
     writeThreadServiceTierState(state);
     refreshCodexServiceTierControls();
     const labels = {
-      inherit: "继承 config.toml",
-      "global-standard": "全局 Standard",
-      "global-fast": "全局 Fast",
-      custom: "自定义",
+      inherit: "Inherit config.toml",
+      "global-standard": "Global Standard",
+      "global-fast": "Global Fast",
+      custom: "Custom",
     };
-    showToast(`服务模式：${labels[normalizedMode] || normalizedMode}`, null);
+    showToast(`Service mode: ${labels[normalizedMode] || normalizedMode}`, null);
   }
 
   function syncCodexServiceTierEffectiveState() {
@@ -1431,7 +1444,7 @@
         threadMode: "inherit",
         effectiveServiceTier: codexServiceTierState.serviceTier || null,
         effectiveMode: codexServiceTierEffectiveMode(codexServiceTierState.serviceTier),
-        message: "未启用",
+        message: "Disabled",
       };
       return;
     }
@@ -1463,22 +1476,22 @@
   }
 
   function codexServiceTierBadgeState() {
-    if (codexPlusBackendStatus.status === "checking") return { tier: "loading", label: "...", disabled: true, title: "服务模式：正在检查后端连接" };
-    if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
-    if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
-    if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
+    if (codexPlusBackendStatus.status === "checking") return { tier: "loading", label: "...", disabled: true, title: "Service mode: checking backend connection" };
+    if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "Disconnected", disabled: true, title: "Service mode: backend disconnected; cannot switch" };
+    if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "Service mode: reading" };
+    if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "Service mode: read failed" };
     const fastAvailability = codexServiceTierFastAvailability();
     const effectiveMode = codexServiceTierState.effectiveMode || "standard";
     const scope = codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode !== "inherit"
-      ? `当前 thread：${codexServiceTierState.threadMode}`
+      ? `Current thread: ${codexServiceTierState.threadMode}`
       : serviceTierStatusMessage(codexServiceTierState.controlMode, codexServiceTierState.threadMode, effectiveMode, codexServiceTierState.defaultMode);
     const title = [
-      `服务模式：${scope}`,
-      "Standard：使用标准处理；不在请求上设置 priority。",
-      `Fast：仅支持 ${codexServiceTierFastModelListLabel()}；对支持模型使用 service_tier=\"priority\"，官方说明其延迟更低且更一致，但会按更高价格计费；rate limit 与 Standard 共享，流量快速上涨时可能回落到 Standard。`,
+      `Service mode: ${scope}`,
+      "Standard: uses standard processing and does not set priority on requests.",
+      `Fast: only supports ${codexServiceTierFastModelListLabel()}; for supported models it uses service_tier=\"priority\". Official docs describe lower, more consistent latency, but at higher cost. Rate limits are shared with Standard and may fall back to Standard under rapid traffic growth.`,
     ].join("\n");
     if (effectiveMode === "fast" && !fastAvailability.supported) {
-      return { tier: "unsupported", label: "不支持", title: `${title}\n${codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)}；当前请求会按 Standard 发送。` };
+      return { tier: "unsupported", label: "Unsupported", title: `${title}\n${codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)}; current requests will be sent as Standard.` };
     }
     if (effectiveMode === "fast") return { tier: "fast", label: "fast", title };
     return { tier: "standard", label: "standard", title };
@@ -1504,7 +1517,7 @@
     const fastAvailability = codexServiceTierFastAvailability();
     const fastDisabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading" || !fastAvailability.supported;
     const fastTitle = fastAvailability.supported
-      ? "Fast：使用 service_tier=\"priority\""
+      ? "Fast: use service_tier=\"priority\""
       : codexServiceTierFastUnsupportedMessage(fastAvailability.modelName);
     const fastUnsupportedActive = codexServiceTierState.effectiveMode === "fast" && !fastAvailability.supported;
     document.querySelectorAll("[data-codex-service-tier-controls]").forEach((node) => {
@@ -1513,8 +1526,8 @@
     document.querySelectorAll("[data-codex-service-tier-status]").forEach((node) => {
       node.dataset.status = fastUnsupportedActive ? "unsupported" : (featureEnabled && backendConnected ? (codexServiceTierState.status || "loading") : (backendChecking ? "loading" : "failed"));
       node.textContent = featureEnabled
-        ? (backendConnected ? (codexServiceTierState.message || "未读取") : (backendChecking ? "正在检查后端…" : "未连接"))
-        : "未启用";
+        ? (backendConnected ? (codexServiceTierState.message || "Not read") : (backendChecking ? "Checking backend..." : "Disconnected"))
+        : "Disabled";
     });
     document.querySelectorAll("[data-codex-service-tier-inherit]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
@@ -1536,7 +1549,7 @@
     document.querySelectorAll("[data-codex-service-tier-thread-inherit]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit");
-      button.title = `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`;
+      button.title = `Current thread has no separate override; inheriting custom default ${codexServiceTierState.defaultMode || "inherit"}`;
     });
     document.querySelectorAll("[data-codex-service-tier-thread-standard]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
@@ -1552,11 +1565,11 @@
 
   async function loadCodexServiceTierState() {
     if (!codexPlusSettings().serviceTierControls) {
-      codexServiceTierState = { ...codexServiceTierState, status: "idle", message: "未启用" };
+      codexServiceTierState = { ...codexServiceTierState, status: "idle", message: "Disabled" };
       refreshCodexServiceTierControls();
       return;
     }
-    codexServiceTierState = { ...codexServiceTierState, status: "loading", message: "正在读取…" };
+    codexServiceTierState = { ...codexServiceTierState, status: "loading", message: "Reading..." };
     refreshCodexServiceTierControls();
     try {
       const serviceTier = await getCodexServiceTierSetting();
@@ -1570,7 +1583,7 @@
       codexServiceTierState = {
         ...codexServiceTierState,
         status: "failed",
-        message: "读取失败",
+        message: "Read failed",
       };
       sendCodexPlusDiagnostic("service_tier_read_failed", {
         errorName: error?.name || "",
@@ -1583,7 +1596,7 @@
 
   function setCodexThreadServiceTierMode(mode) {
     if (codexPlusBackendStatus.status !== "ok") {
-      showToast("后端未连接，无法切换服务模式", null);
+      showToast("Backend disconnected; cannot switch service mode", null);
       refreshCodexServiceTierControls();
       return;
     }
@@ -1600,13 +1613,13 @@
     const threadId = validThreadScrollSessionKey(currentSessionRef().session_id);
     setCodexThreadServiceTierOverride(threadId, normalizedMode);
     refreshCodexServiceTierControls();
-    const target = threadId ? "当前 thread" : "新 thread 草稿";
-    showToast(`${target}服务模式：${normalizedMode === "inherit" ? "继承" : normalizedMode}`, null);
+    const target = threadId ? "Current thread" : "New thread draft";
+    showToast(`${target} service mode: ${normalizedMode === "inherit" ? "inherit" : normalizedMode}`, null);
   }
 
   function toggleCodexServiceTierFromBadge() {
     if (codexPlusBackendStatus.status !== "ok") {
-      showToast("后端未连接，无法切换服务模式", null);
+      showToast("Backend disconnected; cannot switch service mode", null);
       refreshCodexServiceTierControls();
       return;
     }
@@ -1827,7 +1840,7 @@
   }
 
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
-  let codexPlusBackendStatus = { status: "checking", message: "正在检查后端…" };
+  let codexPlusBackendStatus = { status: "checking", message: "Checking backend..." };
   let codexPlusBackendCheckSeq = 0;
 
   function setCodexPlusTriggerLabel(trigger) {
@@ -1858,11 +1871,11 @@
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
       label.dataset.status = status;
-      label.textContent = codexPlusBackendStatus.message || (status === "ok" ? "后端已连接" : "未连接");
+      label.textContent = codexPlusBackendStatus.message || (status === "ok" ? "Backend connected" : "Disconnected");
     }
     document.querySelectorAll("[data-codex-backend-indicator]").forEach((indicator) => {
       indicator.dataset.status = status;
-      indicator.title = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "未连接";
+      indicator.title = status === "ok" ? "Backend connected" : status === "checking" ? "Checking backend" : "Disconnected";
     });
     const repair = document.querySelector("[data-codex-backend-repair]");
     if (repair) repair.hidden = status === "ok" || status === "checking";
@@ -1872,7 +1885,7 @@
   function withBackendTimeout(request) {
     return Promise.race([
       request,
-      new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "后端检查超时", timeout: true }), 2000)),
+      new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "Backend check timed out", timeout: true }), 2000)),
     ]);
   }
 
@@ -1892,12 +1905,12 @@
   }
 
   async function repairBackend() {
-    codexPlusBackendStatus = { status: "checking", message: "正在修复后端…" };
+    codexPlusBackendStatus = { status: "checking", message: "Repairing backend..." };
     renderBackendStatus();
     try {
       codexPlusBackendStatus = await postJson("/backend/repair", {});
     } catch (error) {
-      codexPlusBackendStatus = { status: "failed", message: "后端修复失败" };
+      codexPlusBackendStatus = { status: "failed", message: "Backend repair failed" };
     }
     renderBackendStatus();
   }
@@ -1905,9 +1918,9 @@
   async function openManagerFromCodex() {
     const result = await postJson("/manager/open", {});
     if (result.status === "ok") {
-      showToast("管理工具已打开", null);
+      showToast("Manager opened", null);
     } else {
-      showToast(result.message || "打开管理工具失败", null);
+      showToast(result.message || "Failed to open manager", null);
     }
   }
 
@@ -1918,25 +1931,25 @@
   }
 
   function userScriptStatusLabel(status) {
-    return { loaded: "已加载", failed: "失败", disabled: "已禁用", not_loaded: "未加载", loading: "加载中" }[status] || status || "未知";
+    return { loaded: "Loaded", failed: "Failed", disabled: "Disabled", not_loaded: "Not loaded", loading: "Loading" }[status] || status || "Unknown";
   }
 
   function renderUserScripts() {
     const enabledToggle = document.querySelector("[data-codex-user-scripts-enabled]");
     if (enabledToggle) enabledToggle.dataset.enabled = String(!!codexPlusUserScripts.enabled);
     const dirs = document.querySelector("[data-codex-user-script-dirs]");
-    if (dirs) dirs.textContent = `内置：${codexPlusUserScripts.builtin_dir || "未找到"}  用户：${codexPlusUserScripts.user_dir || "未找到"}`;
+    if (dirs) dirs.textContent = `Built-in: ${codexPlusUserScripts.builtin_dir || "Not found"}  User: ${codexPlusUserScripts.user_dir || "Not found"}`;
     const list = document.querySelector("[data-codex-user-script-list]");
     if (!list) return;
     if (!codexPlusUserScripts.scripts?.length) {
-      list.textContent = "未发现用户脚本。";
+      list.textContent = "No user scripts found.";
       return;
     }
     list.innerHTML = codexPlusUserScripts.scripts.map((script) => `
       <div class="codex-plus-user-script-item">
         <div>
           <div class="codex-plus-user-script-name">${escapeHtml(script.name || script.key)}</div>
-          <div class="codex-plus-user-script-meta">${script.source === "builtin" ? "内置" : "用户"} · ${userScriptStatusLabel(script.status)}</div>
+          <div class="codex-plus-user-script-meta">${script.source === "builtin" ? "Built-in" : "User"} · ${userScriptStatusLabel(script.status)}</div>
           ${script.error ? `<div class="codex-plus-user-script-error">${escapeHtml(script.error)}</div>` : ""}
         </div>
         <button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(script.key)}" data-enabled="${String(!!script.enabled)}"><span></span></button>
@@ -1988,23 +2001,23 @@
           <div class="codex-plus-ad-highlights">
             ${ad.highlights.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
           </div>
-          <a class="codex-plus-ad-link" href="${escapeHtml(ad.url)}" target="_blank" rel="noreferrer">访问 ${escapeHtml(new URL(ad.url).hostname)}</a>
+          <a class="codex-plus-ad-link" href="${escapeHtml(ad.url)}" target="_blank" rel="noreferrer">Visit ${escapeHtml(new URL(ad.url).hostname)}</a>
         </div>
       </article>
     `).join("");
   }
 
   function renderCodexPlusAds() {
-    if (!codexPlusAdsLoaded) return `<div class="codex-plus-ad-empty">推荐内容加载中…</div>`;
-    if (!codexPlusAds.length) return `<div class="codex-plus-ad-empty">暂无推荐内容。</div>`;
+    if (!codexPlusAdsLoaded) return `<div class="codex-plus-ad-empty">Loading recommendations...</div>`;
+    if (!codexPlusAds.length) return `<div class="codex-plus-ad-empty">No recommendations available.</div>`;
     return `
       <section class="codex-plus-ad-section">
-        <h3 class="codex-plus-ad-section-title">赞助商推荐</h3>
-        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("sponsor", "暂无赞助商推荐。")}</div>
+        <h3 class="codex-plus-ad-section-title">Sponsored Recommendations</h3>
+        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("sponsor", "No sponsored recommendations.")}</div>
       </section>
       <section class="codex-plus-ad-section">
-        <h3 class="codex-plus-ad-section-title">普通推荐</h3>
-        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("normal", "暂无普通推荐。")}</div>
+        <h3 class="codex-plus-ad-section-title">Recommendations</h3>
+        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("normal", "No recommendations.")}</div>
       </section>
     `;
   }
@@ -2073,90 +2086,90 @@
       <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="Codex++">
         <div class="codex-plus-modal-header">
           <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span data-codex-plus-version="true">Codex++ ${codexPlusVersion}</span></div>
-          <button type="button" class="codex-plus-modal-close" aria-label="关闭">×</button>
+          <button type="button" class="codex-plus-modal-close" aria-label="Close">×</button>
         </div>
         <div class="codex-plus-tabs" role="tablist" aria-label="Codex++">
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">主页</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="false">用户脚本</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="sponsor" data-active="false">推荐内容</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="support" data-active="false">请作者喝咖啡</button>
+          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">Home</button>
+          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="false">User Scripts</button>
+          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="sponsor" data-active="false">Recommendations</button>
+          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="support" data-active="false">Support</button>
         </div>
         <div class="codex-plus-modal-body">
           <div class="codex-plus-panel" data-codex-plus-panel="home">
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">后端连接</div><div class="codex-plus-row-description">每 5 秒检查一次 launcher 后端状态；断开时可尝试修复后端运行。</div></div>
+              <div><div class="codex-plus-row-title">Backend Connection</div><div class="codex-plus-row-description">Checks the launcher backend every 5 seconds; if it disconnects, you can try to repair it.</div></div>
               <div class="codex-plus-backend-status">
-                <div class="codex-plus-backend-label" data-codex-backend-status="true" data-status="checking">正在检查后端…</div>
-                <button type="button" class="codex-plus-backend-repair" data-codex-backend-repair="true" hidden>修复后端运行</button>
+                <div class="codex-plus-backend-label" data-codex-backend-status="true" data-status="checking">Checking backend...</div>
+                <button type="button" class="codex-plus-backend-repair" data-codex-backend-repair="true" hidden>Repair Backend</button>
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">页面功能增强</div><div class="codex-plus-row-description">关闭后停用删除、导出、移动、Timeline、插件相关和菜单位置增强。</div></div>
+              <div><div class="codex-plus-row-title">Page Enhancements</div><div class="codex-plus-row-description">When off, disables delete, export, move, plugin-related features, menu placement, and other page enhancements.</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="enhancementsEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">插件市场解锁</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强模式下无需开启；ChatGPT 登录态会保留官方插件市场。" : "API Key 模式下扩展插件市场请求，尽量显示完整插件列表。"}</div></div>
+              <div><div class="codex-plus-row-title">Plugin Marketplace Unlock</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "Not needed in compatibility enhancement mode; ChatGPT login keeps the official plugin marketplace." : "Extends plugin marketplace requests in API key mode so the full plugin list can be shown."}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginMarketplaceUnlock" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">强制解锁入口</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强模式下无需开启；官方登录态会保留插件入口。" : "恢复 1.1.9 的入口解锁方式，强制显示并启用插件入口。"}</div></div>
+              <div><div class="codex-plus-row-title">Force Entry Unlock</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "Not needed in compatibility enhancement mode; official login keeps the plugin entry." : "Restores the 1.1.9 entry unlock path to force-show and enable the plugin entry."}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginEntryUnlock" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">特殊插件强制安装</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强模式下无需开启；不会改插件安装入口。" : "解除 App unavailable / 应用不可用导致的前端安装禁用。"}</div></div>
+              <div><div class="codex-plus-row-title">Force Plugin Install</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "Not needed in compatibility enhancement mode; plugin install entries are left untouched." : "Enables install buttons blocked by App unavailable states."}</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="forcePluginInstall" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">模型白名单解锁</div><div class="codex-plus-row-description">从环境变量和 Codex config.toml 中的中转站 /v1/models 拉取模型，并补进模型选择列表。</div></div>
+              <div><div class="codex-plus-row-title">Model Whitelist Unlock</div><div class="codex-plus-row-description">Fetches models from relay /v1/models endpoints in environment variables and Codex config.toml, then adds them to the model picker.</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
+              <div><div class="codex-plus-row-title">Fast Button</div><div class="codex-plus-row-description">Shows the service mode switch; Fast only supports ${codexServiceTierFastModelListLabel()}, and other models are sent as Standard.</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
             </div>
             <div class="codex-plus-row" data-codex-service-tier-controls="true">
-              <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承使用 config.toml 的 service tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
+              <div><div class="codex-plus-row-title">Service Mode</div><div class="codex-plus-row-description">Inherit uses config.toml service tier; global modes override all threads; custom allows per-thread overrides.</div></div>
               <div class="codex-plus-service-tier-control">
-                <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">正在读取…</div>
+                <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">Reading...</div>
                 <div class="codex-plus-service-tier-actions">
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">继承</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">全局 Standard</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">全局 Fast</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-custom="true">自定义</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">Inherit</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">Global Standard</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">Global Fast</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-custom="true">Custom</button>
                 </div>
                 <div class="codex-plus-service-tier-actions codex-plus-service-tier-thread-actions">
-                  <span class="codex-plus-service-tier-thread-label">当前 thread 覆盖</span>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="当前 thread 不单独覆盖，继承 config.toml">继承</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="仅当前 thread 使用 Standard，并切到自定义模式">Standard</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="仅当前 thread 使用 Fast，并切到自定义模式">Fast</button>
+                  <span class="codex-plus-service-tier-thread-label">Current thread override</span>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="The current thread has no separate override and inherits config.toml">Inherit</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="Use Standard only for the current thread and switch to custom mode">Standard</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="Use Fast only for the current thread and switch to custom mode">Fast</button>
                 </div>
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示删除按钮，并支持撤销。</div></div>
+              <div><div class="codex-plus-row-title">Session Delete</div><div class="codex-plus-row-description">Shows a delete button on session hover, with undo support.</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionDelete"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Markdown 导出</div><div class="codex-plus-row-description">在会话列表显示导出按钮，按本地 rollout 导出带时间戳的 Markdown。</div></div>
+              <div><div class="codex-plus-row-title">Markdown Export</div><div class="codex-plus-row-description">Shows an export button in the session list and exports timestamped Markdown from local rollouts.</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="markdownExport"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">会话项目移动</div><div class="codex-plus-row-description">在会话列表悬停显示移动按钮，可移动到普通对话或其他本地项目。</div></div>
+              <div><div class="codex-plus-row-title">Project Move</div><div class="codex-plus-row-description">Shows a move button on session hover so sessions can move to Chats or another local project.</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="projectMove"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">对话 Timeline</div><div class="codex-plus-row-description">在对话右侧显示用户提问时间线，悬停查看摘要，点击跳转。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationTimeline"><span></span></button>
+              <div><div class="codex-plus-row-title">Conversation Timeline</div><div class="codex-plus-row-description">Disabled in this patched build to remove the right-side line and circles.</div></div>
+              <button type="button" class="codex-plus-toggle" disabled><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">对话居中宽度</div><div class="codex-plus-row-description">开启后把主对话和输入框限制到固定最大宽度，适合大屏阅读。</div></div>
+              <div><div class="codex-plus-row-title">Centered Conversation Width</div><div class="codex-plus-row-description">Limits the main conversation and input to a fixed max width for large-screen reading.</div></div>
               <div class="codex-plus-width-control">
                 <input class="codex-plus-width-input" data-codex-plus-conversation-view-width="true" min="${conversationViewMinWidth}" max="${conversationViewMaxAllowedWidth}" step="10" type="number" value="${conversationViewWidth()}">
                 <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationView"><span></span></button>
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">切换对话保留位置</div><div class="codex-plus-row-description">开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。</div></div>
+              <div><div class="codex-plus-row-title">Preserve Position When Switching Conversations</div><div class="codex-plus-row-description">Restores the last viewed position when switching threads instead of jumping to the bottom.</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
             </div>
             <div class="codex-plus-row">
@@ -2166,73 +2179,73 @@
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">Upstream worktree</div><div class="codex-plus-row-description">Create a Git worktree from a fresh upstream branch, equivalent to git worktree add -b branch path upstream/base.</div></div>
               <div class="codex-plus-worktree-actions">
-                <button type="button" class="codex-plus-action-button" data-codex-upstream-worktree-open="true">创建</button>
+                <button type="button" class="codex-plus-action-button" data-codex-upstream-worktree-open="true">Create</button>
                 <button type="button" class="codex-plus-toggle" data-codex-plus-setting="upstreamWorktreeCreate"><span></span></button>
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">历史会话修复</div><div class="codex-plus-row-description">切换官方登录、混合 API 或纯 API 后，让旧对话重新显示在当前模式下。</div></div>
+              <div><div class="codex-plus-row-title">Historical Session Repair</div><div class="codex-plus-row-description">Keeps old conversations visible in the current mode after switching official login, mixed API, or pure API modes.</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">页面增强模式</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强：保留会话删除、导出、项目移动、Timeline 和用户脚本，仅关闭插件入口相关增强。" : "完整增强：加载插件入口、强制安装、项目路径移动等全部页面能力。"}</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
+              <div><div class="codex-plus-row-title">Page Enhancement Mode</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "Compatibility enhancement: keeps session delete, export, project move, and user scripts, while disabling plugin-entry enhancements." : "Full enhancement: loads plugin entry, force install, project path move, and the full page feature set."}</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">Open Manager</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">原生菜单栏位置</div><div class="codex-plus-row-description">把 Codex++ 菜单插入顶部原生菜单栏；默认关闭以避免页面重渲染冲突。</div></div>
+              <div><div class="codex-plus-row-title">Native Menu Bar Placement</div><div class="codex-plus-row-description">Insert the Codex++ menu into the top native menu bar; off by default to avoid page re-render conflicts.</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="nativeMenuPlacement"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户脚本报错。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
+              <div><div class="codex-plus-row-title">Open DevTools</div><div class="codex-plus-row-description">Open developer tools for the current Codex page to inspect user script errors.</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">Open DevTools</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a><br>Telegram: <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noreferrer">https://t.me/CodexPlusPlus</a></div></div>
+              <div><div class="codex-plus-row-title">About Codex++</div><div class="codex-plus-about">Codex++ is an enhancement menu injected by an external launcher. It does not modify the original Codex App installation files.<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a><br>Telegram: <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noreferrer">https://t.me/CodexPlusPlus</a></div></div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Discord 社区</div><div class="codex-plus-row-description">加入 Discord 获取更新消息、反馈问题或交流使用体验。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-plus-discord="true">打开 Discord</button>
+              <div><div class="codex-plus-row-title">Discord Community</div><div class="codex-plus-row-description">Join Discord for update news, issue reports, and usage discussion.</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-plus-discord="true">Open Discord</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Telegram 频道</div><div class="codex-plus-row-description">加入 Telegram 获取更新消息和交流使用体验。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-plus-telegram="true">打开 Telegram</button>
+              <div><div class="codex-plus-row-title">Telegram Channel</div><div class="codex-plus-row-description">Join Telegram for update news and usage discussion.</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-plus-telegram="true">Open Telegram</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
-              <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">提出问题</button>
+              <div><div class="codex-plus-row-title">Report Issue</div><div class="codex-plus-row-description">Open GitHub Issues to report problems or suggestions.</div></div>
+              <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">Report Issue</button>
             </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="userScripts" hidden>
             <div class="codex-plus-row" data-codex-user-scripts-section="true">
               <div>
-                <div class="codex-plus-row-title">用户脚本</div>
-                <div class="codex-plus-row-description">启用用户脚本：自动加载内置目录和用户配置目录中的 .js 文件。</div>
-                <div class="codex-plus-user-script-warning">禁用后需重载页面或重启 Codex++ 才能完全移除已执行效果。</div>
-                <div class="codex-plus-user-script-dirs" data-codex-user-script-dirs="true">正在读取脚本目录…</div>
-                <div class="codex-plus-user-script-list" data-codex-user-script-list="true">正在读取用户脚本…</div>
+                <div class="codex-plus-row-title">User Scripts</div>
+                <div class="codex-plus-row-description">Enable user scripts: automatically load .js files from built-in and user config directories.</div>
+                <div class="codex-plus-user-script-warning">After disabling, reload the page or restart Codex++ to fully remove effects from already-run scripts.</div>
+                <div class="codex-plus-user-script-dirs" data-codex-user-script-dirs="true">Reading script directories...</div>
+                <div class="codex-plus-user-script-list" data-codex-user-script-list="true">Reading user scripts...</div>
               </div>
               <div class="codex-plus-user-script-actions">
                 <button type="button" class="codex-plus-toggle" data-codex-user-scripts-enabled="true"><span></span></button>
-                <button type="button" class="codex-plus-user-script-reload" data-codex-user-scripts-reload="true">重新加载用户脚本</button>
+                <button type="button" class="codex-plus-user-script-reload" data-codex-user-scripts-reload="true">Reload User Scripts</button>
               </div>
             </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="sponsor" hidden>
-            <div class="codex-plus-sponsor-text">推荐内容分为赞助商推荐和普通推荐。赞助商推荐来自支持 Codex++ 继续维护的合作方；普通推荐用于展示适合 Codex 用户的服务与信息。</div>
+            <div class="codex-plus-sponsor-text">Recommendations are split between sponsored and regular items. Sponsored recommendations come from partners who support ongoing Codex++ maintenance; regular recommendations show services and information useful to Codex users.</div>
             <div class="codex-plus-ad-remote">
               ${renderCodexPlusAds()}
             </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="support" hidden>
-            <div class="codex-plus-sponsor-text">如果 Codex++ 帮到了你，可以请我喝杯咖啡，或者随手赞赏支持一下继续维护。</div>
+            <div class="codex-plus-sponsor-text">If Codex++ helped you, you can support ongoing maintenance here.</div>
             <div class="codex-plus-sponsor-grid">
               <div class="codex-plus-sponsor-card">
-                <div class="codex-plus-sponsor-card-title">支付宝</div>
-                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.alipay || `${helperBase}/assets/sponsor-alipay.jpg`}" alt="支付宝赞赏码">
+                <div class="codex-plus-sponsor-card-title">Alipay</div>
+                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.alipay || `${helperBase}/assets/sponsor-alipay.jpg`}" alt="Alipay support QR code">
               </div>
               <div class="codex-plus-sponsor-card">
-                <div class="codex-plus-sponsor-card-title">微信</div>
-                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.wechat || `${helperBase}/assets/sponsor-wechat.jpg`}" alt="微信赞赏码">
+                <div class="codex-plus-sponsor-card-title">WeChat</div>
+                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.wechat || `${helperBase}/assets/sponsor-wechat.jpg`}" alt="WeChat support QR code">
               </div>
             </div>
           </div>
@@ -2547,9 +2560,9 @@
   }
 
   function displayNameForPluginMarketplaceName(name, fallback) {
-    if (name === "openai-bundled" || name === "codex-plus-openai-bundled") return "OpenAI插件1(Codex++)";
-    if (name === "openai-curated" || name === "codex-plus-openai-curated") return "OpenAI插件2(Codex++)";
-    if (name === "openai-primary-runtime" || name === "codex-plus-openai-primary-runtime") return "OpenAI插件3(Codex++)";
+    if (name === "openai-bundled" || name === "codex-plus-openai-bundled") return "OpenAI Plugin 1 (Codex++)";
+    if (name === "openai-curated" || name === "codex-plus-openai-curated") return "OpenAI Plugin 2 (Codex++)";
+    if (name === "openai-primary-runtime" || name === "codex-plus-openai-primary-runtime") return "OpenAI Plugin 3 (Codex++)";
     return fallback;
   }
 
@@ -2825,8 +2838,7 @@
       .flatMap((node) => Array.from(node.childNodes))
       .find((node) => node.nodeType === 3 && /^(插件|Plugins)( - 已解锁| - Unlocked)?$/i.test((node.nodeValue || "").trim()));
     if (!labelTextNode) return;
-    const current = (labelTextNode.nodeValue || "").trim();
-    labelTextNode.nodeValue = /^Plugins/i.test(current) ? "Plugins - Unlocked" : "插件 - 已解锁";
+    labelTextNode.nodeValue = "Plugins - Unlocked";
   }
 
   function clearPluginEntryUnlockLabel(button) {
@@ -2834,7 +2846,7 @@
       .flatMap((node) => Array.from(node.childNodes))
       .find((node) => node.nodeType === 3 && /^(插件 - 已解锁|Plugins - Unlocked)$/i.test((node.nodeValue || "").trim()));
     if (!labelTextNode) return;
-    labelTextNode.nodeValue = /^Plugins/i.test((labelTextNode.nodeValue || "").trim()) ? "Plugins" : "插件";
+    labelTextNode.nodeValue = "Plugins";
   }
 
   function enablePluginEntry() {
@@ -2877,7 +2889,7 @@
   }
 
   function isInstallButtonLabel(text) {
-    return /^安装\s*/.test(text) || /^Install\s*/i.test(text) || text === "强制安装";
+    return /^安装\s*/.test(text) || /^Install\s*/i.test(text) || text === "强制安装" || text === "Force install";
   }
 
   function patchReactDisabledProps(element) {
@@ -2943,7 +2955,7 @@
       if (isInstallButtonLabel((node.nodeValue || "").trim())) textNode = node;
     }
     if (textNode) {
-      textNode.nodeValue = "强制安装";
+      textNode.nodeValue = "Force install";
     }
   }
 
@@ -2952,10 +2964,10 @@
     let textNode = null;
     while (!textNode && walker.nextNode()) {
       const node = walker.currentNode;
-      if ((node.nodeValue || "").trim() === "强制安装") textNode = node;
+      if (["强制安装", "Force install"].includes((node.nodeValue || "").trim())) textNode = node;
     }
     if (textNode) {
-      textNode.nodeValue = "安装";
+      textNode.nodeValue = "Install";
     }
   }
 
@@ -3059,7 +3071,7 @@
     const sessionId = codexThreadId || (idMatch && idMatch[1]) || fallbackId;
     const titleNode = row.querySelector(`${selectors.threadTitle}, .truncate.select-none, .truncate.text-base`);
     const rawTitle = (titleNode?.textContent || (titleNode ? "" : (row.textContent || "Untitled session")));
-    const title = (titleNode ? rawTitle : rawTitle.replace(/\s*(导出|删除|移动|移出项目)(\s*(导出|删除|移动|移出项目))*$/g, "")).trim().slice(0, 160);
+    const title = (titleNode ? rawTitle : rawTitle.replace(/\s*(导出|删除|移动|移出项目|Export|Delete|Move|Remove from project)(\s*(导出|删除|移动|移出项目|Export|Delete|Move|Remove from project))*$/gi, "")).trim().slice(0, 160);
     return { session_id: sessionId, title };
   }
 
@@ -3735,16 +3747,16 @@
           });
           return await response.json();
         } catch (error) {
-          return { status: "failed", message: "未连接" };
+          return { status: "failed", message: "Disconnected" };
         }
       }
       sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
-      return { status: "failed", message: "桥接不可用，请重启启动器" };
+      return { status: "failed", message: "Bridge unavailable; please restart the launcher" };
     }
     function bridgeWithBackendTimeout(path, payload) {
       return Promise.race([
         window.__codexSessionDeleteBridge(path, payload),
-        new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "后端检查超时", timeout: true }), 2000)),
+        new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "Backend check timed out", timeout: true }), 2000)),
       ]);
     }
     async function fetchBackendStatusFromHelper(path, payload) {
@@ -3756,7 +3768,7 @@
         });
         return await response.json();
       } catch (error) {
-        return { status: "failed", message: "未连接" };
+        return { status: "failed", message: "Disconnected" };
       }
     }
     try {
@@ -3810,7 +3822,7 @@
 
   function downloadMarkdown(filename, markdown) {
     if (!filename || typeof markdown !== "string") {
-      throw new Error("导出结果不完整");
+      throw new Error("Export result is incomplete");
     }
     const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -3831,7 +3843,7 @@
   async function codexStateApi() {
     codexStateApiPromise = codexStateApiPromise || import("./assets/vscode-api-Dc9pX2Bc.js");
     const api = await codexStateApiPromise;
-    if (typeof api.n !== "function") throw new Error("Codex 状态 API 不可用");
+    if (typeof api.n !== "function") throw new Error("Codex state API is unavailable");
     return api.n;
   }
 
@@ -4346,18 +4358,18 @@
     const timestamp = numericTimestamp(timestampMs);
     if (!timestamp) return "";
     const elapsedSeconds = Math.max(0, Math.floor((nowMs - timestamp) / 1000));
-    if (elapsedSeconds < 60) return "刚刚";
+    if (elapsedSeconds < 60) return "just now";
     const elapsedMinutes = Math.floor(elapsedSeconds / 60);
-    if (elapsedMinutes < 60) return `${elapsedMinutes} 分`;
+    if (elapsedMinutes < 60) return `${elapsedMinutes} min`;
     const elapsedHours = Math.floor(elapsedMinutes / 60);
-    if (elapsedHours < 24) return `${elapsedHours} 小时`;
+    if (elapsedHours < 24) return `${elapsedHours} hr`;
     const elapsedDays = Math.floor(elapsedHours / 24);
-    if (elapsedDays < 7) return `${elapsedDays} 天`;
+    if (elapsedDays < 7) return `${elapsedDays} d`;
     const elapsedWeeks = Math.floor(elapsedDays / 7);
-    if (elapsedWeeks < 5) return `${elapsedWeeks} 周`;
+    if (elapsedWeeks < 5) return `${elapsedWeeks} wk`;
     const elapsedMonths = Math.floor(elapsedDays / 30);
-    if (elapsedMonths < 12) return `${Math.max(1, elapsedMonths)} 月`;
-    return `${Math.floor(elapsedDays / 365)} 年`;
+    if (elapsedMonths < 12) return `${Math.max(1, elapsedMonths)} mo`;
+    return `${Math.floor(elapsedDays / 365)} yr`;
   }
 
   function normalizeWorkspacePath(path) {
@@ -4373,7 +4385,7 @@
 
   function displayProjectName(path) {
     const trimmed = String(path || "").replace(/\/+$/, "");
-    return trimmed.split(/[\\/]+/).filter(Boolean).pop() || trimmed || "未命名项目";
+    return trimmed.split(/[\\/]+/).filter(Boolean).pop() || trimmed || "Unnamed project";
   }
 
   function normalizeProjectLabel(value) {
@@ -4414,7 +4426,7 @@
 
   function projectMoveTargets() {
     return [
-      { kind: "projectless", label: "普通对话", description: "不属于任何项目", path: "", normalizedPath: "" },
+      { kind: "projectless", label: "Chats", description: "Does not belong to any project", path: "", normalizedPath: "" },
       ...nativeProjectTargets().map(serializableProjectTarget),
     ];
   }
@@ -4465,7 +4477,7 @@
           sessionId,
           targetKind,
           targetCwd,
-          targetLabel: String(value.targetLabel || value.label || (targetKind === "projectless" ? "普通对话" : displayProjectName(targetCwd))),
+          targetLabel: String(value.targetLabel || value.label || (targetKind === "projectless" ? "Chats" : displayProjectName(targetCwd))),
           title: String(value.title || ""),
           sortMs: sortMsForSession(sessionId, value.sortMs || value.updatedAtMs || value.updated_at_ms),
           sortMsTrusted: value.sortMsTrusted === true,
@@ -4496,7 +4508,7 @@
       sessionId: id,
       targetKind: target.kind === "projectless" ? "projectless" : "project",
       targetCwd: target.path || "",
-      targetLabel: target.label || (target.kind === "projectless" ? "普通对话" : displayProjectName(target.path)),
+      targetLabel: target.label || (target.kind === "projectless" ? "Chats" : displayProjectName(target.path)),
       title: ref.title || "",
       sortMs: sortMsForSession(ref.session_id, sortMs || target.sortMs),
       sortMsTrusted: target.sortMsTrusted === true,
@@ -5047,7 +5059,7 @@
 
   async function setProjectlessThreadIds(ref, mode) {
     const variants = threadIdVariants(ref.session_id);
-    if (variants.length === 0) throw new Error("未找到会话 ID");
+    if (variants.length === 0) throw new Error("Session ID not found");
     const existingIds = await getCodexGlobalState("projectless-thread-ids").catch(() => []);
     const ids = Array.isArray(existingIds) ? existingIds : [];
     const variantSet = new Set(variants);
@@ -5067,7 +5079,7 @@
   }
 
   async function moveSessionToProjectless(ref) {
-    if (!ref.session_id) throw new Error("未找到会话 ID");
+    if (!ref.session_id) throw new Error("Session ID not found");
     await setProjectlessThreadIds(ref, "add");
     await clearThreadWorkspaceHints(ref);
     const sortKey = await postJson("/thread-sort-key", ref).catch(() => ({}));
@@ -5079,11 +5091,11 @@
   }
 
   async function moveSessionToProject(ref, target) {
-    if (!ref.session_id) throw new Error("未找到会话 ID");
-    if (!target?.path) throw new Error("目标项目路径为空");
-    if (!isNativeProjectTarget(target)) throw new Error("目标项目不在 Codex 项目列表中");
+    if (!ref.session_id) throw new Error("Session ID not found");
+    if (!target?.path) throw new Error("Target project path is empty");
+    if (!isNativeProjectTarget(target)) throw new Error("Target project is not in the Codex project list");
     const result = await postJson("/move-thread-workspace", { ...ref, target_cwd: target.path });
-    if (result.status !== "moved") throw new Error(result.message || "移动项目失败");
+    if (result.status !== "moved") throw new Error(result.message || "Move failed");
     await setProjectlessThreadIds(ref, "remove");
     await clearThreadWorkspaceHints(ref);
     return result;
@@ -5096,10 +5108,10 @@
     toast.textContent = message;
     if (undoToken) {
       const undo = document.createElement("button");
-      undo.textContent = "撤销";
+      undo.textContent = "Undo";
       undo.addEventListener("click", async () => {
         const result = await postJson("/undo", { undo_token: undoToken });
-        toast.textContent = result.message || "撤销完成";
+        toast.textContent = result.message || "Undo complete";
         setTimeout(() => toast.remove(), 5000);
       });
       toast.appendChild(undo);
@@ -5458,7 +5470,7 @@
       const worktreePath = usedBranches.get(branchMenuItemLabel(item));
       if (!worktreePath) continue;
       item.setAttribute(branchWorktreePathAttribute, worktreePath);
-      item.setAttribute("title", `该分支已在另一个 worktree 使用：${worktreePath}`);
+      item.setAttribute("title", `This branch is already used by another worktree: ${worktreePath}`);
     }
   }
 
@@ -5623,7 +5635,7 @@
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation?.();
-      showToast(`该分支已在另一个 worktree 使用：${usedWorktreePath}`, null);
+      showToast(`This branch is already used by another worktree: ${usedWorktreePath}`, null);
     }
   }
 
@@ -5702,7 +5714,7 @@
       prepareUpstreamBranchSelection(selection);
       syncUpstreamBranchTriggerLabel();
       syncUpstreamBranchMenuSelection(option.closest?.('[role="menu"], [data-radix-menu-content], [cmdk-list]'));
-      showToast(`将从 ${upstreamBranchOptionLabel(option) || "upstream/main"} 创建新 worktree`, null);
+      showToast(`Will create a new worktree from ${upstreamBranchOptionLabel(option) || "upstream/main"}`, null);
     }, true);
     let upstreamBranchInjectTimer = null;
     const schedule = () => {
@@ -5711,8 +5723,16 @@
         injectUpstreamBranchOptions().catch((error) => reportDiagnostic("upstream_branch_inject_failed", { error: error?.message || String(error) }));
       }, 80);
     };
-    new MutationObserver(schedule).observe(document.body || document.documentElement, { childList: true, subtree: true });
-    schedule();
+    const installMainScanObserver = () => {
+      const root = codexDomRoot();
+      if (!root) {
+        setTimeout(installMainScanObserver, 80);
+        return;
+      }
+      new MutationObserver(schedule).observe(root, { childList: true, subtree: true });
+      schedule();
+    };
+    installMainScanObserver();
   }
 
   function upstreamQualifiedSourceRef(selection) {
@@ -5869,7 +5889,7 @@
     if (!trigger) return false;
     const payload = upstreamWorktreePayloadFromSelection(trigger) || upstreamWorktreeNativePayloadFromElement(trigger);
     if (!payload) {
-      showToast("无法安全识别 Codex 原生 worktree 表单，请使用 Codex++ 菜单创建。", null);
+      showToast("Could not safely read Codex's native worktree form. Use the Codex++ menu to create it.", null);
       return false;
     }
     event.preventDefault();
@@ -5879,12 +5899,12 @@
       if (result?.status === "ok") {
         writeUpstreamBranchSelection(null);
         syncUpstreamBranchTriggerLabel();
-        showToast(`已从 ${result.sourceRef} 创建 worktree`, null);
+        showToast(`Created worktree from ${result.sourceRef}`, null);
       } else {
-        showToast(result?.message || "创建 upstream worktree 失败", null);
+        showToast(result?.message || "Failed to create upstream worktree", null);
       }
     } catch (error) {
-      showToast(error?.message || "创建 upstream worktree 失败", null);
+      showToast(error?.message || "Failed to create upstream worktree", null);
     }
     return true;
   }
@@ -5909,43 +5929,43 @@
   async function loadUpstreamWorktreeDefaults(dialog) {
     const repoPath = upstreamWorktreeField(dialog, "repoPath")?.value?.trim() || "";
     if (!repoPath) {
-      setUpstreamWorktreeMessage(dialog, "填写仓库路径后会自动读取 remote 和当前分支。", "idle");
+      setUpstreamWorktreeMessage(dialog, "Enter a repository path to read the remote and current branch automatically.", "idle");
       return;
     }
-    setUpstreamWorktreeMessage(dialog, "正在读取仓库默认值…", "loading");
+    setUpstreamWorktreeMessage(dialog, "Reading repository defaults...", "loading");
     try {
       const result = await postJson("/upstream-worktree/defaults", { repoPath });
       if (result?.status !== "ok") {
-        setUpstreamWorktreeMessage(dialog, result?.message || "读取仓库默认值失败", "failed");
+        setUpstreamWorktreeMessage(dialog, result?.message || "Failed to read repository defaults", "failed");
         return;
       }
       const remote = upstreamWorktreeField(dialog, "remote");
       const baseBranch = upstreamWorktreeField(dialog, "baseBranch");
       if (remote && !remote.value) remote.value = result.defaultRemote || "upstream";
       if (baseBranch && (!baseBranch.value || baseBranch.value === "main")) baseBranch.value = result.defaultBaseBranch || "main";
-      setUpstreamWorktreeMessage(dialog, `将从 ${remote?.value || "upstream"}/${baseBranch?.value || "main"} 创建 worktree。`, "ok");
+      setUpstreamWorktreeMessage(dialog, `Will create a worktree from ${remote?.value || "upstream"}/${baseBranch?.value || "main"}.`, "ok");
     } catch (error) {
-      setUpstreamWorktreeMessage(dialog, error?.message || "读取仓库默认值失败", "failed");
+      setUpstreamWorktreeMessage(dialog, error?.message || "Failed to read repository defaults", "failed");
     }
   }
 
   async function submitUpstreamWorktree(dialog) {
     const payload = upstreamWorktreePayload(dialog);
     if (!payload.repoPath || !payload.branchName || !payload.worktreePath || !payload.remote || !payload.baseBranch) {
-      setUpstreamWorktreeMessage(dialog, "仓库路径、分支名、worktree 路径、remote 和 base branch 都必须填写。", "failed");
+      setUpstreamWorktreeMessage(dialog, "Repository path, branch name, worktree path, remote, and base branch are all required.", "failed");
       return;
     }
-    setUpstreamWorktreeMessage(dialog, "正在 fetch 并创建 worktree…", "loading");
+    setUpstreamWorktreeMessage(dialog, "Fetching and creating worktree...", "loading");
     try {
       const result = await postJson("/upstream-worktree/create", payload);
       if (result?.status === "ok") {
-        setUpstreamWorktreeMessage(dialog, `已从 ${result.sourceRef} 创建：${result.worktreePath}`, "ok");
-        showToast(`已创建 upstream worktree：${result.branchName}`, null);
+        setUpstreamWorktreeMessage(dialog, `Created from ${result.sourceRef}: ${result.worktreePath}`, "ok");
+        showToast(`Created upstream worktree: ${result.branchName}`, null);
       } else {
-        setUpstreamWorktreeMessage(dialog, result?.message || "创建 upstream worktree 失败", "failed");
+        setUpstreamWorktreeMessage(dialog, result?.message || "Failed to create upstream worktree", "failed");
       }
     } catch (error) {
-      setUpstreamWorktreeMessage(dialog, error?.message || "创建 upstream worktree 失败", "failed");
+      setUpstreamWorktreeMessage(dialog, error?.message || "Failed to create upstream worktree", "failed");
     }
   }
 
@@ -5956,16 +5976,16 @@
     overlay.innerHTML = `
       <div class="codex-delete-confirm-content" role="dialog" aria-modal="true" aria-label="Create upstream worktree">
         <div class="codex-delete-confirm-title">Create from upstream</div>
-        <div class="codex-delete-confirm-message">等价于 git worktree add -b branch path upstream/base。创建前会先 fetch 远端分支。</div>
-        <label class="codex-plus-form-field">仓库路径<input data-codex-upstream-worktree-field="repoPath" type="text" placeholder="/path/to/repo"></label>
-        <label class="codex-plus-form-field">新分支名<input data-codex-upstream-worktree-field="branchName" type="text" placeholder="feature/my-task"></label>
-        <label class="codex-plus-form-field">Worktree 路径<input data-codex-upstream-worktree-field="worktreePath" type="text" placeholder="/path/to/worktrees/my-task"></label>
+        <div class="codex-delete-confirm-message">Equivalent to git worktree add -b branch path upstream/base. The remote branch is fetched first.</div>
+        <label class="codex-plus-form-field">Repository path<input data-codex-upstream-worktree-field="repoPath" type="text" placeholder="/path/to/repo"></label>
+        <label class="codex-plus-form-field">New branch name<input data-codex-upstream-worktree-field="branchName" type="text" placeholder="feature/my-task"></label>
+        <label class="codex-plus-form-field">Worktree path<input data-codex-upstream-worktree-field="worktreePath" type="text" placeholder="/path/to/worktrees/my-task"></label>
         <label class="codex-plus-form-field">Remote<input data-codex-upstream-worktree-field="remote" type="text" value="upstream"></label>
         <label class="codex-plus-form-field">Base branch<input data-codex-upstream-worktree-field="baseBranch" type="text" value="main"></label>
-        <div class="codex-plus-form-message" data-codex-upstream-worktree-message>填写仓库路径后会自动读取 remote 和当前分支。</div>
+        <div class="codex-plus-form-message" data-codex-upstream-worktree-message>Enter a repository path to read the remote and current branch automatically.</div>
         <div class="codex-delete-confirm-actions">
-          <button type="button" data-codex-upstream-worktree-cancel="true">取消</button>
-          <button type="button" data-codex-upstream-worktree-defaults="true">读取默认值</button>
+          <button type="button" data-codex-upstream-worktree-cancel="true">Cancel</button>
+          <button type="button" data-codex-upstream-worktree-defaults="true">Read defaults</button>
           <button type="button" data-codex-upstream-worktree-submit="true">Create from upstream</button>
         </div>
       </div>
@@ -6004,12 +6024,12 @@
       const overlay = document.createElement("div");
       overlay.className = "codex-delete-confirm-overlay";
       overlay.innerHTML = `
-        <div class="codex-delete-confirm-content" role="dialog" aria-modal="true" aria-label="删除会话">
-          <div class="codex-delete-confirm-title">删除会话</div>
-          <div class="codex-delete-confirm-message">删除“${escapeHtml(title)}”？</div>
+        <div class="codex-delete-confirm-content" role="dialog" aria-modal="true" aria-label="Delete conversation">
+          <div class="codex-delete-confirm-title">Delete Conversation</div>
+          <div class="codex-delete-confirm-message">Delete "${escapeHtml(title)}"?</div>
           <div class="codex-delete-confirm-actions">
-            <button type="button" data-codex-delete-cancel="true">取消</button>
-            <button type="button" data-codex-delete-confirm="true">删除</button>
+            <button type="button" data-codex-delete-cancel="true">Cancel</button>
+            <button type="button" data-codex-delete-confirm="true">Delete</button>
           </div>
         </div>
       `;
@@ -6077,8 +6097,8 @@
         const rect = button.getBoundingClientRect();
         const label = button.getAttribute("aria-label") || "";
         const text = (button.textContent || "").trim();
-        if (button.classList.contains(buttonClass) || button.classList.contains(exportButtonClass) || label === "归档对话" || label === "置顶对话") return false;
-        return text === "确认" || (text.length > 0 && rect.width > 0 && rect.width <= 36 && rect.x > row.getBoundingClientRect().right - 50);
+        if (button.classList.contains(buttonClass) || button.classList.contains(exportButtonClass) || ["归档对话", "Archive conversation", "置顶对话", "Pin conversation"].includes(label)) return false;
+        return ["确认", "Confirm"].includes(text) || (text.length > 0 && rect.width > 0 && rect.width <= 36 && rect.x > row.getBoundingClientRect().right - 50);
       });
       row.classList.toggle("codex-archive-confirm-visible", hasArchiveConfirm);
     });
@@ -6095,9 +6115,9 @@
       const result = await postJson("/delete", ref);
       if (result.status === "server_deleted" || result.status === "local_deleted") {
         removeDeletedRow(row, button, ref);
-        showToast(result.message || "删除成功", result.undo_token);
+        showToast(result.message || "Deleted", result.undo_token);
       } else {
-        showToast(result.message || "删除失败", null);
+        showToast(result.message || "Delete failed", null);
       }
     });
   }
@@ -6106,10 +6126,10 @@
     const result = await postJson("/export-markdown", ref);
     if (result.status === "exported" && result.filename && typeof result.markdown === "string") {
       downloadMarkdown(result.filename, result.markdown);
-      showToast(result.message || "导出成功", null);
+      showToast(result.message || "Exported", null);
       return;
     }
-    showToast(result.message || "导出失败", null);
+    showToast(result.message || "Export failed", null);
   }
 
   function sortStateFromMoveResult(result, ref, row) {
@@ -6120,7 +6140,7 @@
   function finishProjectMove(row, button, ref, target, message) {
     releaseDeleteFocus(row, button);
     button.disabled = false;
-    button.textContent = "移动";
+    button.textContent = "Move";
     saveProjectMoveProjection(ref, target, target.sortMs || rowSortMs(row, ref, target));
     if (target.kind === "projectless") moveRowToChats(row, target);
     refreshAfterProjectMove();
@@ -6129,19 +6149,19 @@
 
   async function applyProjectMove(row, button, ref, target) {
     button.disabled = true;
-    button.textContent = "移动中";
+    button.textContent = "Moving";
     try {
       if (target.kind === "projectless") {
         const result = await moveSessionToProjectless(ref);
-        finishProjectMove(row, button, ref, { ...target, ...sortStateFromMoveResult(result, ref, row) }, `已移动到普通对话：“${ref.title || ref.session_id}”`);
+        finishProjectMove(row, button, ref, { ...target, ...sortStateFromMoveResult(result, ref, row) }, `Moved to Chats: "${ref.title || ref.session_id}"`);
       } else {
         const result = await moveSessionToProject(ref, target);
-        finishProjectMove(row, button, ref, { ...target, ...sortStateFromMoveResult(result, ref, row) }, `已移动到“${target.label}”：“${ref.title || ref.session_id}”`);
+        finishProjectMove(row, button, ref, { ...target, ...sortStateFromMoveResult(result, ref, row) }, `Moved to "${target.label}": "${ref.title || ref.session_id}"`);
       }
     } catch (error) {
       button.disabled = false;
-      button.textContent = "移动";
-      showToast(`移动失败：${error?.message || error}`, null);
+      button.textContent = "Move";
+      showToast(`Move failed: ${error?.message || error}`, null);
     }
   }
 
@@ -6154,11 +6174,11 @@
     const overlay = document.createElement("div");
     overlay.className = projectMoveOverlayClass;
     overlay.innerHTML = `
-      <div class="codex-project-move-panel" role="dialog" aria-modal="true" aria-label="移动对话">
+      <div class="codex-project-move-panel" role="dialog" aria-modal="true" aria-label="Move conversation">
         <div class="codex-project-move-header">
-          <div class="codex-project-move-title">移动“${escapeHtml(ref.title || ref.session_id)}”</div>
+          <div class="codex-project-move-title">Move "${escapeHtml(ref.title || ref.session_id)}"</div>
         </div>
-        <div class="codex-project-move-list"><div class="codex-project-move-empty">加载项目中...</div></div>
+        <div class="codex-project-move-list"><div class="codex-project-move-empty">Loading projects...</div></div>
       </div>
     `;
     const panel = overlay.querySelector(".codex-project-move-panel");
@@ -6183,7 +6203,7 @@
       if (!list) return;
       list.innerHTML = "";
       if (targets.length === 0) {
-        list.innerHTML = `<div class="codex-project-move-empty">没有可用目标</div>`;
+        list.innerHTML = `<div class="codex-project-move-empty">No available targets</div>`;
         return;
       }
       for (const target of targets) {
@@ -6205,7 +6225,7 @@
       list.querySelector("button")?.focus();
     } catch (error) {
       close();
-      showToast(`加载项目失败：${error?.message || error}`, null);
+      showToast(`Failed to load projects: ${error?.message || error}`, null);
     }
   }
 
@@ -6485,20 +6505,20 @@
       moreButton.className = `${actionButtonClass} ${moreButtonClass}`;
       moreButton.setAttribute("aria-haspopup", "menu");
       moreButton.setAttribute("aria-expanded", "false");
-      configureActionButton(moreButton, "更多操作", "…");
+      configureActionButton(moreButton, "More Actions", "…");
       const moreMenu = document.createElement("div");
       moreMenu.className = moreMenuClass;
       moreMenu.setAttribute("role", "menu");
       moreMenu.hidden = true;
       if (settings.markdownExport) {
-        moreMenu.appendChild(createSessionMoreMenuItem("导出", "⇩", (event) => {
+        moreMenu.appendChild(createSessionMoreMenuItem("Export", "⇩", (event) => {
           stopActionButtonEvent(row, moreButton, event);
           closeSessionMoreMenus();
           exportMarkdown(ref);
         }));
       }
       if (settings.projectMove) {
-        moreMenu.appendChild(createSessionMoreMenuItem("移动", "↗", (event) => {
+        moreMenu.appendChild(createSessionMoreMenuItem("Move", "↗", (event) => {
           stopActionButtonEvent(row, moreButton, event);
           closeSessionMoreMenus();
           openProjectMoveMenuForRow(row, moreButton, ref, event);
@@ -6525,7 +6545,7 @@
       deleteButton.type = "button";
       deleteButton.className = `${actionButtonClass} ${buttonClass}`;
       deleteButton.dataset.codexDeleteVersion = codexDeleteVersion;
-      configureSvgActionButton(deleteButton, "删除", trashIconSvg());
+      configureSvgActionButton(deleteButton, "Delete", trashIconSvg());
       const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, ref, event);
       installActionButtonEvents(row, deleteButton, openDeleteConfirm);
       group.appendChild(deleteButton);
@@ -6622,7 +6642,7 @@
       exportButton.type = "button";
       exportButton.className = `codex-archive-delete-all codex-archive-row-button ${exportButtonClass}`;
       exportButton.dataset.codexArchiveRowAction = "export";
-      exportButton.textContent = "导出";
+      exportButton.textContent = "Export";
       ["pointerdown", "mousedown", "mouseup", "touchstart"].forEach((eventName) => {
         exportButton.addEventListener(eventName, stopArchivedButtonEvent, true);
       });
@@ -6630,7 +6650,7 @@
         stopArchivedButtonEvent(event);
         const ref = await resolveArchivedThread(row);
         if (!ref.session_id) {
-          showToast("导出失败：未找到归档会话 ID", null);
+          showToast("Export failed: archived session ID not found", null);
           return;
         }
         await exportMarkdown(ref);
@@ -6796,7 +6816,7 @@
     marker.type = "button";
     marker.className = timelineMarkerClass;
     marker.style.top = `${question.markerTop}%`;
-    marker.setAttribute("aria-label", `跳转到：${truncateTimelineQuestion(question.text)}`);
+    marker.setAttribute("aria-label", `Jump to: ${truncateTimelineQuestion(question.text)}`);
     const tooltip = document.createElement("span");
     tooltip.className = timelineTooltipClass;
     tooltip.id = `codex-conversation-timeline-tooltip-${question.nodeId}`;

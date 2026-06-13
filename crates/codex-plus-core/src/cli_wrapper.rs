@@ -23,7 +23,7 @@ pub fn ensure_cli_wrapper(settings: &BackendSettings) -> anyhow::Result<Option<W
         return Ok(None);
     }
     let real_codex = resolve_real_codex_for_settings(settings).ok_or_else(|| {
-        anyhow::anyhow!("未找到系统 Codex CLI，可先启动一次系统 Codex 或重新安装 Codex")
+        anyhow::anyhow!("System Codex CLI was not found. Start the system Codex once or reinstall Codex.")
     })?;
     let codex_home = cli_home_dir();
     let wrapper_settings = wrapper_settings_for_refresh(settings, &wrapper_dir);
@@ -248,7 +248,7 @@ class CodexWrapper
 
 fn compile_wrapper(source_path: &Path, wrapper_path: &Path) -> anyhow::Result<()> {
     let csc =
-        find_csc().ok_or_else(|| anyhow::anyhow!("未找到 csc.exe，无法编译 Codex++ wrapper"))?;
+        find_csc().ok_or_else(|| anyhow::anyhow!("csc.exe was not found, so the Codex++ wrapper cannot be compiled"))?;
     let output_arg = format!("/out:{}", wrapper_path.display());
     let mut command = Command::new(&csc);
     command

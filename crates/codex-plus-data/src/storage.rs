@@ -252,7 +252,7 @@ impl SQLiteStorageAdapter {
     ) -> serde_json::Value {
         let target = target_cwd.trim();
         if target.is_empty() {
-            return json!({"status": "failed", "session_id": session.session_id, "message": "目标项目路径为空"});
+            return json!({"status": "failed", "session_id": session.session_id, "message": "Target project path is empty"});
         }
         if !self.db_path.exists() {
             return json!({"status": "failed", "session_id": session.session_id, "message": format!("Database not found: {}", self.db_path.to_string_lossy())});
@@ -311,7 +311,7 @@ impl SQLiteStorageAdapter {
             let mut payload = json!({
                 "status": "moved",
                 "session_id": thread_id,
-                "message": "已移动对话",
+                "message": "Conversation moved",
                 "previous_cwd": previous_cwd,
                 "target_cwd": target,
                 "rollout_updated": rollout.0,
@@ -611,7 +611,7 @@ impl SQLiteStorageAdapter {
                 status: DeleteStatus::Failed,
                 session_id: thread_id,
                 message: format!(
-                    "本地数据库已删除，但文件删除失败：{}",
+                    "Local database entry was deleted, but file deletion failed: {}",
                     file_errors.join("; ")
                 ),
                 undo_token: Some(token.clone()),
@@ -701,7 +701,7 @@ fn local_deleted(session_id: &str, token: &str, backup_path: &Path) -> DeleteRes
     DeleteResult {
         status: DeleteStatus::LocalDeleted,
         session_id: session_id.to_string(),
-        message: "已从本地存储删除".to_string(),
+        message: "Deleted from local storage".to_string(),
         undo_token: Some(token.to_string()),
         backup_path: Some(backup_path.to_string_lossy().to_string()),
     }

@@ -285,7 +285,7 @@ fn profile_to_ccs_settings_config(profile: &RelayProfile) -> anyhow::Result<Valu
         json!({})
     } else {
         serde_json::from_str::<Value>(&profile.auth_contents)
-            .with_context(|| format!("{} 的 auth.json JSON 解析失败", profile.name))?
+            .with_context(|| format!("Failed to parse {} auth.json as JSON", profile.name))?
     };
     Ok(json!({
         "auth": auth,

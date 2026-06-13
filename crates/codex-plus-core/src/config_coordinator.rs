@@ -119,20 +119,19 @@ pub fn detect_external_modification(home: &std::path::Path) -> Option<String> {
     let writer = marker.writer.trim();
     if writer == WRITER_CODEX_PLUS_PLUS {
         Some(
-            "检测到 config.toml / auth.json 在 Codex++ 上次写入后被外部修改。\
-             这通常由 CC Switch 切换供应商引起。"
+            "config.toml / auth.json changed after the last Codex++ write.\
+             This is usually caused by CC Switch changing providers."
                 .to_string(),
         )
     } else if writer == WRITER_CC_SWITCH {
         Some(
-            "检测到 live 配置与 CC Switch 上次写入记录不一致。\
-             请先在 CC Switch 中重新启用当前供应商，或刷新 Codex++ 联动状态。"
+            "The live config no longer matches the last CC Switch write marker.\
+             Re-enable the current provider in CC Switch first, or refresh Codex++ linking status."
                 .to_string(),
         )
     } else {
         Some(
-            "检测到 config.toml / auth.json 与 Codex++ 记录不一致，\
-             可能已被其他工具改写。"
+            "config.toml / auth.json no longer matches the Codex++ marker and may have been changed by another tool."
                 .to_string(),
         )
     }
@@ -177,7 +176,7 @@ pub fn evaluate_live_write(settings: &BackendSettings, force: bool) -> LiveConfi
     if !settings.relay_profiles_enabled {
         return LiveConfigWriteDecision {
             allowed: false,
-            message: "供应商配置总开关已关闭，Codex++ 不会写入 config.toml / auth.json。".to_string(),
+            message: "Provider switching is off; Codex++ will not write config.toml / auth.json.".to_string(),
         };
     }
 
@@ -185,8 +184,8 @@ pub fn evaluate_live_write(settings: &BackendSettings, force: bool) -> LiveConfi
     if effective == ConfigOwnership::CcSwitch && !settings.ccs_link_enabled {
         return LiveConfigWriteDecision {
             allowed: false,
-            message: "当前配置所有权为 CC Switch，但未开启联动 cc-switch。\
-                      请开启联动，或将配置所有权改为 Codex++。"
+            message: "Config ownership is currently CC Switch, but cc-switch linking is off.\
+                      Enable linking or change Config Ownership to Codex++."
                 .to_string(),
         };
     }
@@ -194,8 +193,8 @@ pub fn evaluate_live_write(settings: &BackendSettings, force: bool) -> LiveConfi
     if effective == ConfigOwnership::CcSwitch && !force {
         return LiveConfigWriteDecision {
             allowed: false,
-            message: "当前由 CC Switch 管理 Codex 供应商配置。\
-                      Codex++ 不会直接覆盖 live 配置；请通过联动供应商切换，或在 CC Switch 中切换后刷新。"
+            message: "CC Switch currently owns Codex provider config.\
+                      Codex++ will not overwrite live config directly; switch through a linked provider, or switch in CC Switch and refresh."
                 .to_string(),
         };
     }
@@ -208,7 +207,7 @@ pub fn evaluate_live_write(settings: &BackendSettings, force: bool) -> LiveConfi
         return LiveConfigWriteDecision {
             allowed: false,
             message: format!(
-                "{conflict} 若确认由 Codex++ 接管，请先将“配置所有权”设为 Codex++ 并强制切换。"
+                "{conflict} To let Codex++ take over, set Config Ownership to Codex++ first and force the switch."
             ),
         };
     }
@@ -224,7 +223,7 @@ pub fn apply_linked_ccs_provider_to_home(
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
     let provider = current_ccs_codex_provider_by_id(source_id)
-        .with_context(|| format!("未在 cc-switch 中找到 Codex 供应商 {source_id}"))?;
+        .with_context(|| format!("Codex provider {source_id} was not found in cc-switch"))?;
     apply_ccs_provider_import_to_home(&provider, common_config_contents)
 }
 
@@ -232,7 +231,7 @@ pub fn apply_current_ccs_provider_to_home(
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
     let provider = current_ccs_codex_provider()
-        .ok_or_else(|| anyhow::anyhow!("cc-switch 中未找到当前启用的 Codex 供应商"))?;
+        .ok_or_else(|| anyhow::anyhow!("No currently enabled Codex provider was found in cc-switch"))?;
     apply_ccs_provider_import_to_home(&provider, common_config_contents)
 }
 
@@ -308,33 +307,32 @@ fn coordination_guidance(
     live_model_provider: &str,
 ) -> String {
     if !ccswitch_detected {
-        return "未检测到 CC Switch，Codex++ 将独立管理 ~/.codex/config.toml。".to_string();
+        return "CC Switch was not detected; Codex++ will manage ~/.codex/config.toml independently.".to_string();
     }
     if conflict_detected {
-        return "检测到配置冲突：请统一只在一个工具中切换供应商，或明确设置“配置所有权”。".to_string();
+        return "A config conflict was detected: switch providers from only one tool, or set Config Ownership explicitly.".to_string();
     }
     match effective {
         ConfigOwnership::CcSwitch => {
             let provider = current_ccs
                 .as_ref()
                 .map(|value| value.name.as_str())
-                .unwrap_or("未知");
+                .unwrap_or("Unknown");
             format!(
-                "当前由 CC Switch 管理供应商配置。Codex++ 会通过联动读取/回写 cc-switch 数据库，\
-                 不会直接覆盖 live 配置。CC Switch 当前供应商：{provider}；live model_provider：{live_model_provider}。"
+                "CC Switch currently manages provider config. Codex++ reads and writes the cc-switch database through linking,\
+                 and will not directly overwrite live config. Current CC Switch provider: {provider}; live model_provider: {live_model_provider}."
             )
         }
         ConfigOwnership::CodexPlusPlus => {
             if settings.ccs_link_enabled {
-                "已开启 cc-switch 联动，但配置所有权仍为 Codex++。切换供应商时 Codex++ 会写入 live 配置，\
-                 可能覆盖 CC Switch 的选择。"
+                "cc-switch linking is on, but Config Ownership is still Codex++. When switching providers, Codex++ writes live config and may overwrite CC Switch's selection."
                     .to_string()
             } else {
-                "Codex++ 独立管理 live 配置。若同时使用 CC Switch，建议开启联动并设为 auto/ccswitch 所有权。"
+                "Codex++ manages live config independently. If you also use CC Switch, enable linking and set ownership to auto or ccSwitch."
                     .to_string()
             }
         }
-        ConfigOwnership::Auto => "自动模式会根据联动开关和 CC Switch 是否存在选择所有权。".to_string(),
+        ConfigOwnership::Auto => "Auto mode chooses ownership based on the linking toggle and whether CC Switch is present.".to_string(),
     }
 }
 

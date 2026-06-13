@@ -153,7 +153,7 @@ fn table_mut_or_insert<'a>(doc: &'a mut DocumentMut, key: &str) -> anyhow::Resul
     }
     doc.get_mut(key)
         .and_then(Item::as_table_mut)
-        .ok_or_else(|| anyhow::anyhow!("{key} 必须是 TOML table"))
+        .ok_or_else(|| anyhow::anyhow!("{key} must be a TOML table"))
 }
 
 fn table_mut_if_exists<'a>(doc: &'a mut DocumentMut, key: &str) -> Option<&'a mut Table> {
@@ -181,7 +181,7 @@ pub fn chatgpt_auth_status_from_home(home: &Path) -> ChatGptAuthStatus {
             authenticated: true,
             source: auth_path.to_string_lossy().to_string(),
             account_label,
-            message: "已通过 auth.json 和 config.toml 检测到 ChatGPT 登录。".to_string(),
+            message: "Detected ChatGPT login through auth.json and config.toml.".to_string(),
         };
     }
 
@@ -189,7 +189,7 @@ pub fn chatgpt_auth_status_from_home(home: &Path) -> ChatGptAuthStatus {
         authenticated: false,
         source: String::new(),
         account_label: None,
-        message: "未检测到 ChatGPT 登录账号。".to_string(),
+        message: "No ChatGPT login account detected.".to_string(),
     }
 }
 
@@ -251,11 +251,11 @@ pub fn apply_relay_config_to_home_with_protocol(
 ) -> anyhow::Result<RelayApplyResult> {
     let base_url = base_url.trim();
     if base_url.is_empty() {
-        anyhow::bail!("中转 Base URL 不能为空");
+        anyhow::bail!("Relay Base URL cannot be empty");
     }
     let bearer_token = bearer_token.trim();
     if bearer_token.is_empty() {
-        anyhow::bail!("中转 Key 不能为空");
+        anyhow::bail!("Relay key cannot be empty");
     }
     let codex_base_url = codex_base_url_for_protocol(base_url, protocol, proxy_port);
     let updated = upsert_model_provider_config("", &codex_base_url, bearer_token)?;
@@ -292,7 +292,7 @@ pub fn apply_relay_files_to_home(
     auth_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
     if config_contents.trim().is_empty() {
-        anyhow::bail!("config.toml 内容不能为空");
+        anyhow::bail!("config.toml contents cannot be empty");
     }
     std::fs::create_dir_all(home)?;
 
@@ -404,7 +404,7 @@ pub fn apply_relay_config_file_to_home(
     config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
     if config_contents.trim().is_empty() {
-        anyhow::bail!("config.toml 内容不能为空");
+        anyhow::bail!("config.toml contents cannot be empty");
     }
     std::fs::create_dir_all(home)?;
 
@@ -427,11 +427,11 @@ pub fn apply_pure_api_config_to_home_with_protocol(
 ) -> anyhow::Result<RelayApplyResult> {
     let base_url = base_url.trim();
     if base_url.is_empty() {
-        anyhow::bail!("中转 Base URL 不能为空");
+        anyhow::bail!("Relay Base URL cannot be empty");
     }
     let bearer_token = bearer_token.trim();
     if bearer_token.is_empty() {
-        anyhow::bail!("中转 Key 不能为空");
+        anyhow::bail!("Relay key cannot be empty");
     }
     let codex_base_url = codex_base_url_for_protocol(base_url, protocol, proxy_port);
     let updated = upsert_model_provider_config("", &codex_base_url, bearer_token)?;
@@ -455,12 +455,12 @@ pub async fn test_relay_profile(
     let base_url = relay_profile_base_url(profile);
     let base_url = base_url.trim().trim_end_matches('/');
     if base_url.is_empty() {
-        anyhow::bail!("Base URL 不能为空");
+        anyhow::bail!("Base URL cannot be empty");
     }
     let api_key = relay_profile_api_key(profile);
     let api_key = api_key.trim();
     if api_key.is_empty() {
-        anyhow::bail!("API Key 不能为空");
+        anyhow::bail!("API key cannot be empty");
     }
 
     let client = crate::http_client::proxied_client("CodexPlusPlus/RelayTest")?;
@@ -470,7 +470,7 @@ pub async fn test_relay_profile(
     };
     let test_model = model.trim();
     if test_model.is_empty() {
-        anyhow::bail!("测试模型不能为空");
+        anyhow::bail!("Test model cannot be empty");
     }
 
     let payload = relay_profile_test_payload(profile.protocol, test_model);
@@ -483,9 +483,9 @@ pub async fn test_relay_profile(
         .await?;
     let http_status = response.status().as_u16();
 
-    // 如果 404 且 base_url 末尾没有 /v1，尝试自动补 /v1 后再发一次。
-    // 许多上游（中转站、自建代理）暴露的路径以 /v1/ 开头，
-    // 用户容易遗漏这个前缀，导致 /responses 或 /chat/completions 404。
+    // If a base URL without /v1 returns 404, retry once with the /v1 prefix.
+    // Many relays and self-hosted proxies expose paths below /v1/, and users
+    // often miss that prefix when /responses or /chat/completions returns 404.
     if http_status == 404 && !base_url.ends_with("/v1") {
         let v1_url = format!("{base_url}/v1");
         let v1_endpoint = match profile.protocol {
@@ -506,7 +506,7 @@ pub async fn test_relay_profile(
                 http_status: v1_status,
                 endpoint: v1_endpoint,
                 response_preview: format!(
-                    "（Base URL 建议加上 /v1 前缀）{}",
+                    "Base URL likely needs the /v1 prefix. {}",
                     response_text.chars().take(280).collect::<String>()
                 ),
             });
@@ -729,7 +729,7 @@ pub fn upsert_context_entry_in_common_config(
 ) -> anyhow::Result<String> {
     let id = id.trim();
     if id.is_empty() {
-        anyhow::bail!("上下文 id 不能为空");
+        anyhow::bail!("Context id cannot be empty");
     }
     let table_name = context_table_name(kind)?;
     let body_doc = parse_toml_document(toml_body)?;
@@ -739,7 +739,7 @@ pub fn upsert_context_entry_in_common_config(
         doc[table_name] = toml_edit::table();
     }
     if doc[table_name].as_table().is_none() {
-        anyhow::bail!("{table_name} 必须是 TOML 表");
+        anyhow::bail!("{table_name} must be a TOML table");
     }
     doc[table_name][id] = Item::Table(body_doc.as_table().clone());
     Ok(normalize_optional_toml(doc))
@@ -839,7 +839,7 @@ fn write_codex_live_atomic(
 
     if let Some(auth_bytes) = auth_bytes {
         if let Err(error) = crate::settings::atomic_write(&auth_path, auth_bytes) {
-            return Err(error.context("写入 auth.json 失败"));
+            return Err(error.context("Failed to write auth.json"));
         }
         auth_written = true;
     }
@@ -850,7 +850,7 @@ fn write_codex_live_atomic(
                 let _ = restore_optional_file(&auth_path, old_auth.as_deref());
             }
             let _ = restore_optional_file(&config_path, old_config.as_deref());
-            return Err(error.context("写入 config.toml 失败"));
+            return Err(error.context("Failed to write config.toml"));
         }
     }
 
@@ -894,7 +894,7 @@ fn parse_toml_document(contents: &str) -> anyhow::Result<DocumentMut> {
     } else {
         contents
             .parse::<DocumentMut>()
-            .with_context(|| "config.toml TOML 解析失败")
+            .with_context(|| "Failed to parse config.toml as TOML")
     }
 }
 
@@ -1085,7 +1085,7 @@ fn validate_toml_config(config_text: &str, path: &Path) -> anyhow::Result<()> {
     }
     config_text
         .parse::<toml::Table>()
-        .with_context(|| format!("{} 不是有效 TOML", path.display()))?;
+        .with_context(|| format!("{} is not valid TOML", path.display()))?;
     Ok(())
 }
 
@@ -1094,7 +1094,7 @@ fn validate_auth_json(auth_bytes: &[u8], path: &Path) -> anyhow::Result<()> {
         return Ok(());
     }
     serde_json::from_slice::<Value>(auth_bytes)
-        .with_context(|| format!("{} 不是有效 JSON", path.display()))?;
+        .with_context(|| format!("{} is not valid JSON", path.display()))?;
     Ok(())
 }
 
@@ -1105,9 +1105,9 @@ fn parse_optional_positive_u64(value: &str, label: &str) -> anyhow::Result<Optio
     }
     let parsed = trimmed
         .parse::<u64>()
-        .with_context(|| format!("{label}必须是正整数"))?;
+        .with_context(|| format!("{label} must be a positive integer"))?;
     if parsed == 0 {
-        anyhow::bail!("{label}必须大于 0");
+        anyhow::bail!("{label} must be greater than 0");
     }
     Ok(Some(parsed))
 }
@@ -1118,10 +1118,10 @@ fn apply_context_limits_to_config(
     auto_compact_limit: &str,
 ) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(config_text)?;
-    if let Some(value) = parse_optional_positive_u64(context_window, "上下文大小")? {
+    if let Some(value) = parse_optional_positive_u64(context_window, "context window")? {
         doc["model_context_window"] = toml_edit::value(value as i64);
     }
-    if let Some(value) = parse_optional_positive_u64(auto_compact_limit, "压缩上下文大小")? {
+    if let Some(value) = parse_optional_positive_u64(auto_compact_limit, "auto compact context size")? {
         doc["model_auto_compact_token_limit"] = toml_edit::value(value as i64);
     }
     Ok(normalize_optional_toml(doc))
@@ -1312,7 +1312,7 @@ fn context_table_name(kind: &str) -> anyhow::Result<&'static str> {
         "mcp" | "mcpServer" | "mcpServers" => Ok("mcp_servers"),
         "skill" | "skills" => Ok("skills"),
         "plugin" | "plugins" => Ok("plugins"),
-        other => anyhow::bail!("未知上下文类型：{other}"),
+        other => anyhow::bail!("Unknown context type: {other}"),
     }
 }
 
@@ -1428,7 +1428,7 @@ fn restore_profile_auth_from_live_config(
     let mut auth = if template_auth.trim().is_empty() {
         json!({})
     } else {
-        serde_json::from_str::<Value>(template_auth).with_context(|| "auth.json JSON 解析失败")?
+        serde_json::from_str::<Value>(template_auth).with_context(|| "Failed to parse auth.json as JSON")?
     };
     if !auth.is_object() {
         auth = json!({});
@@ -1436,7 +1436,7 @@ fn restore_profile_auth_from_live_config(
     if let Some(auth_object) = auth.as_object_mut() {
         auth_object.insert("OPENAI_API_KEY".to_string(), Value::String(token));
     } else {
-        anyhow::bail!("auth.json 必须是 JSON 对象");
+        anyhow::bail!("auth.json must be a JSON object");
     }
     profile.auth_contents = serde_json::to_string_pretty(&auth)?;
     Ok(())
@@ -1479,8 +1479,9 @@ fn codex_auth_api_key(auth_contents: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-/// 解析 profile 實際使用的模型：優先取 config.toml 裡的 `model =`，
-/// 否則退回 profile.model 欄位。供應商測試用它做回退，避免串到別家供應商的模型名。
+/// Resolve the model actually used by a profile: prefer `model =` from
+/// config.toml, otherwise fall back to profile.model. Provider tests use this
+/// to avoid accidentally borrowing another provider's model name.
 pub fn relay_profile_model(profile: &RelayProfile) -> String {
     root_key_string(&profile.config_contents, "model")
         .filter(|value| !value.trim().is_empty())
@@ -1639,9 +1640,9 @@ fn remove_openai_api_key_from_auth_contents(auth_contents: &str) -> anyhow::Resu
         return Ok(String::new());
     }
     let mut value =
-        serde_json::from_str::<Value>(auth_contents).with_context(|| "auth.json JSON 解析失败")?;
+        serde_json::from_str::<Value>(auth_contents).with_context(|| "Failed to parse auth.json as JSON")?;
     let Some(object) = value.as_object_mut() else {
-        anyhow::bail!("auth.json 必须是 JSON 对象");
+        anyhow::bail!("auth.json must be a JSON object");
     };
     object.remove("OPENAI_API_KEY");
     if object.is_empty() {
@@ -1740,7 +1741,7 @@ fn ensure_provider_table<'a>(
     providers
         .get_mut(provider_id)
         .and_then(Item::as_table_mut)
-        .ok_or_else(|| anyhow::anyhow!("model_providers.{provider_id} 必须是 TOML table"))
+        .ok_or_else(|| anyhow::anyhow!("model_providers.{provider_id} must be a TOML table"))
 }
 
 fn remove_provider_table(doc: &mut DocumentMut, provider_id: &str) {
@@ -1988,7 +1989,7 @@ mod tests {
 
     #[test]
     fn relay_profile_model_prefers_config_then_field_then_empty() {
-        // 1. 供應商測試的回退第一級：config.toml 的 model = 優先
+        // 1. Provider tests first fall back to model = from config.toml.
         let from_config = RelayProfile {
             config_contents: "model = \"deepseek-v4-flash\"\nmodel_provider = \"custom\"\n"
                 .to_string(),
@@ -1997,7 +1998,7 @@ mod tests {
         };
         assert_eq!(relay_profile_model(&from_config), "deepseek-v4-flash");
 
-        // 2. config 沒寫 model 時退回 profile.model 欄位
+        // 2. If config has no model, fall back to profile.model.
         let from_field = RelayProfile {
             config_contents: "model_provider = \"custom\"\n".to_string(),
             model: "deepseek-v4-pro".to_string(),
@@ -2005,7 +2006,7 @@ mod tests {
         };
         assert_eq!(relay_profile_model(&from_field), "deepseek-v4-pro");
 
-        // 3. 兩者皆空 → 空字串；呼叫端據此才回退到全域 relayTestModel
+        // 3. If both are empty, return an empty string so callers can fall back to the global relayTestModel.
         let empty = RelayProfile {
             config_contents: String::new(),
             model: String::new(),

@@ -212,7 +212,7 @@ pub fn stop_codex_processes() {}
 #[cfg(windows)]
 fn create_startup_shortcut(launcher_path: &Path, arguments: &str) -> anyhow::Result<()> {
     let Some(shortcut_path) = startup_shortcut_path() else {
-        anyhow::bail!("无法定位 Windows 启动目录")
+        anyhow::bail!("Could not locate the Windows startup directory")
     };
     crate::windows_integration::create_shortcut(&crate::windows_integration::ShortcutSpec {
         path: shortcut_path,

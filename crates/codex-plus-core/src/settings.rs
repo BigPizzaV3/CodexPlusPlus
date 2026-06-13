@@ -101,7 +101,7 @@ impl Default for RelayProfile {
         Self {
             id: "default".to_string(),
             linked_ccs_provider_id: String::new(),
-            name: "默认中转".to_string(),
+            name: "Default Relay".to_string(),
             model: String::new(),
             base_url: default_relay_base_url(),
             upstream_base_url: String::new(),
@@ -185,7 +185,7 @@ pub struct BackendSettings {
     pub codex_app_markdown_export: bool,
     #[serde(rename = "codexAppProjectMove", default = "default_true")]
     pub codex_app_project_move: bool,
-    #[serde(rename = "codexAppConversationTimeline", default = "default_true")]
+    #[serde(rename = "codexAppConversationTimeline", default)]
     pub codex_app_conversation_timeline: bool,
     #[serde(rename = "codexAppConversationView", default)]
     pub codex_app_conversation_view: bool,
@@ -257,7 +257,7 @@ impl Default for BackendSettings {
             codex_app_session_delete: true,
             codex_app_markdown_export: true,
             codex_app_project_move: true,
-            codex_app_conversation_timeline: true,
+            codex_app_conversation_timeline: false,
             codex_app_conversation_view: false,
             codex_app_thread_scroll_restore: true,
             codex_app_zed_remote_open: true,
@@ -294,7 +294,7 @@ impl BackendSettings {
             return RelayProfile {
                 id: default_active_relay_id(),
                 linked_ccs_provider_id: String::new(),
-                name: "默认中转".to_string(),
+                name: "Default Relay".to_string(),
                 model: String::new(),
                 base_url: if self.relay_base_url.is_empty() {
                     default_relay_base_url()
@@ -339,7 +339,7 @@ impl BackendSettings {
                 self.active_relay_id.clone()
             },
             linked_ccs_provider_id: String::new(),
-            name: "默认中转".to_string(),
+            name: "Default Relay".to_string(),
             model: String::new(),
             base_url: if self.relay_base_url.is_empty() {
                 default_relay_base_url()
@@ -732,7 +732,7 @@ fn parse_toml_document(contents: &str) -> anyhow::Result<DocumentMut> {
     } else {
         contents
             .parse::<DocumentMut>()
-            .with_context(|| "config.toml TOML 解析失败")
+            .with_context(|| "Failed to parse config.toml as TOML")
     }
 }
 
@@ -946,7 +946,7 @@ mod tests {
     #[test]
     fn relay_profile_official_mix_api_key_defaults_to_false() {
         let profile: RelayProfile =
-            serde_json::from_str(r#"{"id":"official","name":"官方","relayMode":"official"}"#)
+            serde_json::from_str(r#"{"id":"official","name":"Official","relayMode":"official"}"#)
                 .unwrap();
 
         assert_eq!(profile.relay_mode, RelayMode::Official);
@@ -974,7 +974,7 @@ mod tests {
         let profile: RelayProfile = serde_json::from_str(
             r#"{
                 "id":"relay-a",
-                "name":"供应商 A",
+                "name":"Provider A",
                 "contextSelection":{
                     "mcpServers":["context7"],
                     "skills":["writer"],
@@ -1006,7 +1006,7 @@ mod tests {
         let profile: RelayProfile = serde_json::from_str(
             r#"{
                 "id":"relay-a",
-                "name":"供应商 A",
+                "name":"Provider A",
                 "model":"gpt-5.4",
                 "baseUrl":"https://relay.example/v1",
                 "apiKey":"sk-test",
@@ -1086,7 +1086,7 @@ base_url = "http://127.0.0.1:57321/v1"
         let settings = BackendSettings {
             relay_profiles: vec![RelayProfile {
                 id: "official".to_string(),
-                name: "官方".to_string(),
+                name: "Official".to_string(),
                 relay_mode: RelayMode::Official,
                 official_mix_api_key: false,
                 model: "gpt-5.5".to_string(),
@@ -1124,7 +1124,7 @@ requires_openai_auth = true
         let settings = BackendSettings {
             relay_profiles: vec![RelayProfile {
                 id: "official-mix".to_string(),
-                name: "官方混入".to_string(),
+                name: "Official Mixed".to_string(),
                 relay_mode: RelayMode::Official,
                 official_mix_api_key: true,
                 model: "gpt-5.5".to_string(),
@@ -1180,7 +1180,7 @@ experimental_bearer_token = "sk-mix"
             .save(&BackendSettings {
                 relay_profiles: vec![RelayProfile {
                     id: "official-mix".to_string(),
-                    name: "官方混入".to_string(),
+                    name: "Official Mixed".to_string(),
                     relay_mode: RelayMode::Official,
                     official_mix_api_key: true,
                     config_contents: r#"model_provider = "custom"
@@ -1205,7 +1205,7 @@ experimental_bearer_token = "sk-existing"
             .update(json!({
                 "relayProfiles": [{
                     "id": "official-mix",
-                    "name": "官方混入",
+                    "name": "Official Mixed",
                     "relayMode": "official",
                     "officialMixApiKey": true,
                     "configContents": "model_provider = \"custom\"\n\n[model_providers.other]\nbase_url = \"https://other.example/v1\"\nexperimental_bearer_token = \"sk-other\"\n\n[model_providers.custom]\nbase_url = \"https://relay.example/v1\"\nexperimental_bearer_token = \"\"\n",
@@ -1234,7 +1234,7 @@ experimental_bearer_token = "sk-existing""#));
             .update(json!({
                 "relayProfiles": [{
                     "id": "official-mix",
-                    "name": "官方混入",
+                    "name": "Official Mixed",
                     "relayMode": "official",
                     "officialMixApiKey": true,
                     "baseUrl": "https://relay.example/v1",
@@ -1263,7 +1263,7 @@ experimental_bearer_token = "sk-existing""#));
             .update(json!({
                 "relayProfiles": [{
                     "id": "official-mix",
-                    "name": "官方混入",
+                    "name": "Official Mixed",
                     "relayMode": "official",
                     "officialMixApiKey": true,
                     "configContents": "model_provider = \"custom\"\n\n[model_providers.custom]\nbase_url = \"https://relay.example/v1\"\nexperimental_bearer_token = \"22222222222222222222222222222222222\"\n",
@@ -1400,13 +1400,13 @@ experimental_bearer_token = "sk-existing""#));
                 "relayProfiles": [
                     {
                         "id": "relay-a",
-                        "name": "中转 A",
+                        "name": "Relay A",
                         "baseUrl": "https://relay-a.example/v1",
                         "apiKey": "sk-a"
                     },
                     {
                         "id": "relay-b",
-                        "name": "中转 B",
+                        "name": "Relay B",
                         "baseUrl": "https://relay-b.example/v1",
                         "apiKey": "sk-b"
                     }
@@ -1419,7 +1419,7 @@ experimental_bearer_token = "sk-existing""#));
         let active = updated.active_relay_profile();
         assert_eq!(updated.relay_profiles.len(), 2);
         assert_eq!(active.id, "relay-b");
-        assert_eq!(active.name, "中转 B");
+        assert_eq!(active.name, "Relay B");
         assert_eq!(updated.relay_test_model, "claude-sonnet-4");
 
         let saved: Value =
@@ -1439,7 +1439,7 @@ experimental_bearer_token = "sk-existing""#));
                 "relayProfiles": [
                     {
                         "id": "relay-a",
-                        "name": "供应商 A",
+                        "name": "Provider A",
                         "model": "gpt-5.4",
                         "baseUrl": "https://relay.example/v1",
                         "apiKey": "sk-a",
@@ -1452,7 +1452,7 @@ experimental_bearer_token = "sk-existing""#));
             .unwrap();
 
         assert_eq!(updated.relay_profiles[0].id, "relay-a");
-        assert_eq!(updated.relay_profiles[0].name, "供应商 A");
+        assert_eq!(updated.relay_profiles[0].name, "Provider A");
 
         let saved: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
@@ -1526,7 +1526,7 @@ experimental_bearer_token = "sk-existing""#));
         let active = settings.active_relay_profile();
 
         assert_eq!(active.id, "default");
-        assert_eq!(active.name, "默认中转");
+        assert_eq!(active.name, "Default Relay");
         assert_eq!(active.base_url, "https://legacy.example/v1");
         assert_eq!(active.api_key, "sk-legacy");
         assert_eq!(active.relay_mode, RelayMode::MixedApi);

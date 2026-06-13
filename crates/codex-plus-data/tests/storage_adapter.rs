@@ -117,7 +117,7 @@ fn delete_local_session_creates_backup_and_undo_restores_rows() {
     let deleted = adapter.delete_local(&session("s1", "First"));
 
     assert_eq!(deleted.status, DeleteStatus::LocalDeleted);
-    assert_eq!(deleted.message, "已从本地存储删除");
+    assert_eq!(deleted.message, "Deleted from local storage");
     let db = Connection::open(&db_path).unwrap();
     assert_eq!(
         db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row

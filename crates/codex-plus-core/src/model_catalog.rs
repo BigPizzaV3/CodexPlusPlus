@@ -526,7 +526,7 @@ pub async fn fetch_relay_profile_model_ids(
         api_key: profile.api_key.trim().to_string(),
     };
     if source.base_url.is_empty() {
-        anyhow::bail!("Base URL 不能为空");
+        anyhow::bail!("Base URL cannot be empty");
     }
     let endpoint = models_endpoint(&source.base_url);
     let client = crate::http_client::proxied_client(&profile.user_agent)?;
@@ -535,7 +535,7 @@ pub async fn fetch_relay_profile_model_ids(
         let message = status
             .get("message")
             .and_then(Value::as_str)
-            .unwrap_or("上游没有返回可用模型");
+            .unwrap_or("Upstream did not return any available models");
         anyhow::bail!("{message}");
     }
     Ok((models, endpoint))

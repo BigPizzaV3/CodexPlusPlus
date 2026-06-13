@@ -1,6 +1,6 @@
-//! Codex Responses API 与 OpenAI Chat Completions 的本地协议转换。
+//! Local protocol conversion between the Codex Responses API and OpenAI Chat Completions.
 //!
-//! Codex Chat 与 Responses 协议之间的转换实现。
+//! Conversion implementation for Codex Chat and Responses protocols.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -427,13 +427,13 @@ pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<Upstream
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
     if relay.protocol != RelayProtocol::ChatCompletions {
-        anyhow::bail!("当前中转未启用 Chat Completions 协议代理");
+        anyhow::bail!("The current provider has not enabled the Chat Completions protocol proxy");
     }
     if relay.base_url.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Base URL 不能为空");
+        anyhow::bail!("Chat Completions upstream Base URL cannot be empty");
     }
     if relay.api_key.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Key 不能为空");
+        anyhow::bail!("Chat Completions upstream key cannot be empty");
     }
 
     let request_json: Value = serde_json::from_str(body)?;
@@ -470,13 +470,13 @@ pub async fn open_models_proxy_request() -> anyhow::Result<UpstreamProxyResponse
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
     if relay.protocol != RelayProtocol::ChatCompletions {
-        anyhow::bail!("当前中转未启用 Chat Completions 协议代理");
+        anyhow::bail!("The current provider has not enabled the Chat Completions protocol proxy");
     }
     if relay.base_url.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Base URL 不能为空");
+        anyhow::bail!("Chat Completions upstream Base URL cannot be empty");
     }
     if relay.api_key.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Key 不能为空");
+        anyhow::bail!("Chat Completions upstream key cannot be empty");
     }
 
     let client = crate::http_client::proxied_client(&relay.user_agent)?;
@@ -507,13 +507,13 @@ pub async fn open_chat_completions_proxy_request(
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
     if relay.protocol != RelayProtocol::ChatCompletions {
-        anyhow::bail!("当前中转未启用 Chat Completions 协议代理");
+        anyhow::bail!("The current provider has not enabled the Chat Completions protocol proxy");
     }
     if relay.base_url.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Base URL 不能为空");
+        anyhow::bail!("Chat Completions upstream Base URL cannot be empty");
     }
     if relay.api_key.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Key 不能为空");
+        anyhow::bail!("Chat Completions upstream key cannot be empty");
     }
 
     let request_json: Value = serde_json::from_str(body)?;

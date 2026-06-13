@@ -18,19 +18,19 @@ impl MarkdownExportService {
 
     pub fn export(&self, session: &SessionRef) -> ExportResult {
         let Some(db_path) = &self.db_path else {
-            return failed(&session.session_id, "未配置本地 Codex 数据库");
+            return failed(&session.session_id, "Local Codex database is not configured");
         };
         if !db_path.exists() {
             return failed(
                 &session.session_id,
-                format!("数据库不存在：{}", db_path.to_string_lossy()),
+                format!("Database does not exist: {}", db_path.to_string_lossy()),
             );
         }
         let thread_id = normalize_session_id(&session.session_id);
         let result = (|| -> anyhow::Result<ExportResult> {
             let db = Connection::open(db_path)?;
             if !supports_codex_threads(&db)? {
-                return Ok(failed(&thread_id, "不支持当前本地存储结构"));
+                return Ok(failed(&thread_id, "Unsupported local storage schema"));
             }
             let row = db.query_row(
                 "SELECT id, title, rollout_path FROM threads WHERE id = ?1",
@@ -46,35 +46,35 @@ impl MarkdownExportService {
             let (_, title, rollout_path) = match row {
                 Ok(row) => row,
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    return Ok(failed(&thread_id, "未找到对应会话"));
+                    return Ok(failed(&thread_id, "Matching conversation was not found"));
                 }
                 Err(err) => return Err(err.into()),
             };
             let title = display_title(title.as_deref().unwrap_or(&session.title));
             let Some(rollout_path) = rollout_path.filter(|path| !path.is_empty()) else {
-                return Ok(failed(&thread_id, "会话缺少 rollout 文件路径"));
+                return Ok(failed(&thread_id, "Conversation is missing its rollout file path"));
             };
             if !Path::new(&rollout_path).is_file() {
                 return Ok(failed(
                     &thread_id,
-                    format!("rollout 文件不存在：{rollout_path}"),
+                    format!("Rollout file does not exist: {rollout_path}"),
                 ));
             }
             let messages = load_messages(Path::new(&rollout_path))?;
             if messages.is_empty() {
-                return Ok(failed(&thread_id, "未找到可导出的用户或助手消息"));
+                return Ok(failed(&thread_id, "No exportable user or assistant messages were found"));
             }
             let filename = build_filename(&title, &thread_id);
             let markdown = render_markdown(&title, &messages);
             Ok(ExportResult {
                 status: ExportStatus::Exported,
                 session_id: thread_id.clone(),
-                message: format!("已导出为 Markdown：{filename}"),
+                message: format!("Exported as Markdown: {filename}"),
                 filename: Some(filename),
                 markdown: Some(markdown),
             })
         })();
-        result.unwrap_or_else(|err| failed(&thread_id, format!("读取 rollout 失败：{err}")))
+        result.unwrap_or_else(|err| failed(&thread_id, format!("Failed to read rollout: {err}")))
     }
 }
 

@@ -437,7 +437,7 @@ impl BridgeRuntimeService for CoreRuntimeService {
     async fn open_manager(&self) -> anyhow::Result<Value> {
         let manager_path = manager_exe_path();
         if !manager_path.exists() {
-            anyhow::bail!("未找到管理工具：{}", manager_path.display());
+            anyhow::bail!("Manager not found: {}", manager_path.display());
         }
         spawn_manager(&manager_path)?;
         Ok(json!({
@@ -455,7 +455,7 @@ impl BridgeRuntimeService for CoreRuntimeService {
                 "version": crate::version::VERSION
             }),
         );
-        Ok(json!({"status": "ok", "message": "后端已连接", "version": crate::version::VERSION}))
+        Ok(json!({"status": "ok", "message": "Backend connected", "version": crate::version::VERSION}))
     }
 
     async fn repair_backend(&self) -> anyhow::Result<Value> {
@@ -614,7 +614,7 @@ fn spawn_manager(manager_path: &Path) -> anyhow::Result<()> {
     command
         .spawn()
         .map(|_| ())
-        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
+        .map_err(|error| anyhow::anyhow!("Failed to start manager: {error}"))
 }
 
 fn settings_payload_value(
@@ -656,7 +656,7 @@ fn diagnostic_log_value(payload: Value) -> anyhow::Result<Value> {
     crate::diagnostic_log::append_diagnostic_log(&format!("renderer.{event}"), payload)?;
     Ok(json!({
         "status": "ok",
-        "message": "日志已记录"
+        "message": "Log recorded"
     }))
 }
 

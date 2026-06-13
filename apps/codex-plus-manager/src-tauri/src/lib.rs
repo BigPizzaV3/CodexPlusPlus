@@ -22,7 +22,7 @@ pub fn run() {
                 "index.html"
             };
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
-                .title("Codex++ 管理工具")
+                .title("Codex++ Manager")
                 .inner_size(1180.0, 820.0)
                 .min_inner_size(960.0, 720.0)
                 .build()?;
@@ -101,7 +101,7 @@ fn install_panic_logger() {
             .downcast_ref::<&str>()
             .map(|message| (*message).to_string())
             .or_else(|| panic_info.payload().downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "非字符串 panic payload".to_string());
+            .unwrap_or_else(|| "non-string panic payload".to_string());
         let location = panic_info.location().map(|location| {
             serde_json::json!({
                 "file": location.file(),
