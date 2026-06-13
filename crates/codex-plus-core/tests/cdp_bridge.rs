@@ -368,6 +368,9 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("Response.prototype.json"));
     assert!(script.contains("available_models"));
     assert!(script.contains("modelWhitelistUnlock"));
+    assert!(script.contains("isWorkspaceChromeNode"));
+    assert!(script.contains("refreshCodexModelWhitelistFromScan"));
+    assert!(!script.contains("querySelectorAll(\"button, [role='menu']"));
 }
 
 #[test]

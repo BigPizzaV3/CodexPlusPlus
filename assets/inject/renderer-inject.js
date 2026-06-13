@@ -4162,9 +4162,43 @@
     return Object.keys(element).filter((key) => key.startsWith("__reactFiber") || key.startsWith("__reactInternalInstance") || key.startsWith("__reactProps"));
   }
 
+  function isWorkspaceChromeNode(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.closest?.('[data-app-action-sidebar-section-heading="Chats"], [data-app-action-sidebar-section-heading="Projects"], [data-app-action-sidebar-thread-id], [data-app-action-sidebar-project-row], [data-app-action-sidebar-project-id]')) {
+      return false;
+    }
+    return !!node.closest?.("main aside");
+  }
+
+  function patchReactModelStateNodes() {
+    const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
+    return [document.body, ...document.querySelectorAll(selector)].filter((node) => node && !isWorkspaceChromeNode(node));
+  }
+
+  function shouldScheduleReactModelStatePatch(mutations) {
+    if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
+    if (!mutations) return false;
+    const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
+    return mutations.some((mutation) => [...mutation.addedNodes].some((node) => {
+      if (node.nodeType !== 1 || isWorkspaceChromeNode(node)) return false;
+      return !!node.matches?.(selector) || !!node.querySelector?.(selector);
+    }));
+  }
+
+  function schedulePatchReactModelState() {
+    if (window.__codexPlusReactModelStatePatchPending) return;
+    window.__codexPlusReactModelStatePatchPending = true;
+    clearTimeout(window.__codexPlusReactModelStatePatchTimer);
+    window.__codexPlusReactModelStatePatchTimer = setTimeout(() => {
+      window.__codexPlusReactModelStatePatchPending = false;
+      window.__codexPlusReactModelStatePatchTimer = null;
+      patchReactModelState();
+    }, 120);
+  }
+
   function patchReactModelState() {
     const visited = new WeakSet();
-    const nodes = [document.body, ...document.querySelectorAll("button, [role='menu'], [role='dialog'], [data-radix-popper-content-wrapper]")].filter(Boolean);
+    const nodes = patchReactModelStateNodes();
     let changed = false;
     for (const node of nodes.slice(0, 220)) {
       for (const key of reactFiberKeys(node)) {
@@ -4290,17 +4324,31 @@
     void patch();
   }
 
-  function patchCodexModelWhitelist() {
+  function ensureCodexModelWhitelistInstalls() {
     if (!codexPlusModelUnlockEnabled()) return;
     installModelJsonResponsePatch();
     patchAppServerModelMessages();
     installAppServerModelRequestPatch();
+  }
+
+  function patchCodexModelWhitelist() {
+    ensureCodexModelWhitelistInstalls();
     if (!codexPlusModelNames().length) {
       loadCodexModelCatalog();
       return;
     }
     patchStatsigModelWhitelist();
     patchReactModelState();
+  }
+
+  function refreshCodexModelWhitelistFromScan(mutations) {
+    ensureCodexModelWhitelistInstalls();
+    if (!codexPlusModelNames().length) {
+      loadCodexModelCatalog();
+      return;
+    }
+    patchStatsigModelWhitelist();
+    if (shouldScheduleReactModelStatePatch(mutations)) schedulePatchReactModelState();
   }
 
   function threadIdVariants(sessionId) {
@@ -7939,7 +7987,7 @@
     refreshConversationView();
     installCodexServiceTierBadge();
     scheduleThreadScrollSync();
-    patchCodexModelWhitelist();
+    refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
   }
 
   function runScanStep(step) {
@@ -8024,6 +8072,7 @@
   }
 
   function scheduleScan(mutations) {
+    window.__codexSessionDeleteLastMutations = mutations;
     scheduleZedRemoteMenuRefresh(mutations);
     if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
