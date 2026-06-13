@@ -4,7 +4,6 @@ import { PRESETS } from "../presets";
 
 export type RelayProfile = {
   id: string;
-  linkedCcsProviderId: string;
   name: string;
   model: string;
   baseUrl: string;

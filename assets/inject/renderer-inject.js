@@ -75,6 +75,7 @@
   const codexThreadScrollListenerVersion = "4";
   const codexThreadScrollUserIntentVersion = "dispatcher:2";
   const codexForcePluginInstallRefreshIntervalMs = 1000;
+  const codexPlusImageOverlayId = "codex-plus-image-overlay";
   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
   clearTimeout(window.__codexProjectMoveProjectionTimer);
@@ -88,6 +89,54 @@
   (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
   window.__codexThreadScrollSyncTimers = [];
   window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+
+  function installCodexPlusImageOverlay() {
+    const config = window.__CODEX_PLUS_IMAGE_OVERLAY__ || {};
+    const existing = document.getElementById(codexPlusImageOverlayId);
+    const source = config.dataUrl || "";
+    if (!config.enabled || !source) {
+      if (window.__codexPlusImageOverlayBlobUrl) {
+        URL.revokeObjectURL(window.__codexPlusImageOverlayBlobUrl);
+        window.__codexPlusImageOverlayBlobUrl = "";
+      }
+      if (existing) existing.remove();
+      return;
+    }
+    const opacity = Math.min(1, Math.max(0.01, Number(config.opacity) || 0.35));
+    const image = existing || document.createElement("img");
+    image.id = codexPlusImageOverlayId;
+    image.src = source;
+    image.alt = "";
+    image.setAttribute("aria-hidden", "true");
+    Object.assign(image.style, {
+      position: "fixed",
+      inset: "0",
+      width: "100vw",
+      height: "100vh",
+      objectFit: "contain",
+      objectPosition: "center center",
+      opacity: String(opacity),
+      pointerEvents: "none",
+      zIndex: "2147483646",
+      userSelect: "none",
+    });
+    if (!existing) document.documentElement.appendChild(image);
+    sendCodexPlusDiagnostic("image_overlay_installed", {
+      opacity,
+      sourceKind: source.startsWith("data:") ? "data-uri" : "unknown",
+    });
+  }
+
+  function scheduleCodexPlusImageOverlay() {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", installCodexPlusImageOverlay, { once: true });
+      return;
+    }
+    installCodexPlusImageOverlay();
+    setTimeout(installCodexPlusImageOverlay, 250);
+  }
+
+  scheduleCodexPlusImageOverlay();
   window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
   window.__codexConversationTimelineNodeCounter = window.__codexConversationTimelineNodeCounter || 0;
   let upstreamBranchDefaultsCache = new Map();

@@ -1,3 +1,4 @@
+use base64::Engine;
 use codex_plus_core::assets;
 use codex_plus_core::bridge::{self, BRIDGE_BINDING_NAME};
 use codex_plus_core::cdp::{CdpTarget, list_targets, pick_page_target};
@@ -47,6 +48,41 @@ fn injection_script_prefixes_helper_url_and_sponsor_images() {
     assert!(script.contains(codex_plus_core::version::VERSION));
     assert!(script.contains("https://discord.gg/y96kX7A76v"));
     assert!(script.contains("data-codex-plus-discord"));
+}
+
+#[test]
+fn injection_script_exposes_image_overlay_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let image_path = temp.path().join("overlay.png");
+    std::fs::write(
+        &image_path,
+        base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+            .unwrap(),
+    )
+    .unwrap();
+    let settings = codex_plus_core::settings::BackendSettings {
+        codex_app_image_overlay_enabled: true,
+        codex_app_image_overlay_path: image_path.to_string_lossy().to_string(),
+        codex_app_image_overlay_opacity: 42,
+        ..Default::default()
+    };
+    let script = assets::injection_script_with_settings(57321, &settings);
+
+    assert!(script.contains("window.__CODEX_PLUS_IMAGE_OVERLAY__"));
+    assert!(script.contains("\"enabled\":true"));
+    assert!(script.contains("\"opacity\":0.42"));
+    assert!(script.contains("\"dataUrl\":\"data:image/png;base64,"));
+    assert!(script.contains("http://127.0.0.1:57321/overlay/image"));
+}
+
+#[test]
+fn injection_script_installs_image_overlay_from_data_uri() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("const source = config.dataUrl || \"\""));
+    assert!(script.contains("image.src = source"));
+    assert!(script.contains("image_overlay_installed"));
 }
 
 #[test]
@@ -185,7 +221,9 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
 
     assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"10\""));
     assert!(script.contains("if (name === \"openai-bundled\") return \"\""));
-    assert!(!script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\""));
+    assert!(
+        !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
+    );
     assert!(script.contains("if (name === \"openai-bundled\" || name === \"codex-plus-openai-bundled\") return \"OpenAI插件1(Codex++)\""));
 }
 
@@ -211,9 +249,13 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("Array.prototype.filter"));
     assert!(script.contains("codexPluginBuildFlavorFilterPatch"));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
-    assert!(script.contains("codexPluginOfficialMarketplaceName(plugin?.marketplaceName) && !callback(plugin)"));
+    assert!(script.contains(
+        "codexPluginOfficialMarketplaceName(plugin?.marketplaceName) && !callback(plugin)"
+    ));
     assert!(script.contains("isCodexPluginMarketplaceHiddenFilter"));
-    assert!(script.contains("codexPluginOfficialMarketplaceName(marketplace?.name) && !callback(marketplace)"));
+    assert!(script.contains(
+        "codexPluginOfficialMarketplaceName(marketplace?.name) && !callback(marketplace)"
+    ));
     assert!(script.contains("plugin_marketplace_hidden_filter_bypassed"));
     assert!(script.contains("method === \"list-plugins\""));
     assert!(script.contains("delete next.marketplaceKinds"));
@@ -221,10 +263,16 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("pluginMarketplaceAliasForName"));
     assert!(script.contains("marketplace.name = alias"));
     assert!(script.contains("restorePluginMarketplaceName"));
-    assert!(script.contains("next.remoteMarketplaceName = restorePluginMarketplaceName(next.remoteMarketplaceName)"));
+    assert!(script.contains(
+        "next.remoteMarketplaceName = restorePluginMarketplaceName(next.remoteMarketplaceName)"
+    ));
     assert!(script.contains("if (name === \"openai-bundled\") return \"\""));
-    assert!(script.contains("if (name === \"openai-curated\") return \"codex-plus-openai-curated\""));
-    assert!(script.contains("if (name === \"openai-primary-runtime\") return \"codex-plus-openai-primary-runtime\""));
+    assert!(
+        script.contains("if (name === \"openai-curated\") return \"codex-plus-openai-curated\"")
+    );
+    assert!(script.contains(
+        "if (name === \"openai-primary-runtime\") return \"codex-plus-openai-primary-runtime\""
+    ));
     assert!(script.contains("OpenAI插件1(Codex++)"));
     assert!(script.contains("OpenAI插件2(Codex++)"));
     assert!(script.contains("OpenAI插件3(Codex++)"));

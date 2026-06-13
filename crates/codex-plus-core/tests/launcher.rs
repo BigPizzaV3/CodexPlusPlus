@@ -772,7 +772,6 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
         enhancements_enabled: false,
         relay_profiles: vec![RelayProfile {
             id: "relay-chat".to_string(),
-            linked_ccs_provider_id: String::new(),
             name: "Chat".to_string(),
             model: String::new(),
             base_url: "https://chat-only.example.test/v1".to_string(),

@@ -247,7 +247,9 @@ where
 
         let mut injection_degraded = false;
         if settings.enhancements_enabled {
-            let injection_ready = hooks.ensure_injection(debug_port, helper_port, &app_dir).await;
+            let injection_ready = hooks
+                .ensure_injection(debug_port, helper_port, &app_dir)
+                .await;
             if injection_ready {
                 keep_launched_on_error = false;
                 hooks.start_bridge_watchdog(debug_port, helper_port).await?;
@@ -367,9 +369,7 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn load_settings(&self) -> anyhow::Result<BackendSettings> {
-        let mut settings = SettingsStore::default().load()?;
-        hydrate_live_ccs_profiles(&mut settings);
-        Ok(settings)
+        SettingsStore::default().load()
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
@@ -378,30 +378,6 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     async fn apply_active_relay_profile(&self, settings: &BackendSettings) -> anyhow::Result<()> {
         if !settings.relay_profiles_enabled {
-            return Ok(());
-        }
-        if crate::config_coordinator::effective_ownership(settings)
-            == crate::settings::ConfigOwnership::CcSwitch
-        {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "launcher.apply_active_relay_profile.skipped",
-                serde_json::json!({
-                    "reason": "ccswitch_ownership",
-                    "activeRelayId": settings.active_relay_id
-                }),
-            );
-            return Ok(());
-        }
-        let write_decision = crate::config_coordinator::evaluate_live_write(settings, false);
-        if !write_decision.allowed {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "launcher.apply_active_relay_profile.skipped",
-                serde_json::json!({
-                    "reason": "write_guard",
-                    "message": write_decision.message,
-                    "activeRelayId": settings.active_relay_id
-                }),
-            );
             return Ok(());
         }
         let profile = settings.active_relay_profile();
@@ -638,16 +614,6 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 }
 
-fn hydrate_live_ccs_profiles(settings: &mut BackendSettings) {
-    if !settings.ccs_link_enabled {
-        return;
-    }
-    settings
-        .relay_profiles
-        .retain(|profile| profile.linked_ccs_provider_id.trim().is_empty());
-    let _ = crate::ccs_import::sync_linked_profiles_from_default_db(&mut settings.relay_profiles);
-}
-
 async fn handle_helper_connection(
     mut stream: tokio::net::TcpStream,
     remote_addr: Option<SocketAddr>,
@@ -657,7 +623,8 @@ async fn handle_helper_connection(
     let request_line = request.lines().next().unwrap_or_default();
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or_default();
-    let path = parts.next().unwrap_or_default();
+    let raw_path = parts.next().unwrap_or_default();
+    let path = raw_path.split('?').next().unwrap_or(raw_path);
     let request_body = http_request_body(&request);
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
 
@@ -743,6 +710,17 @@ async fn handle_helper_connection(
                 "application/json; charset=utf-8".to_string(),
                 "helper.diagnostics_log_ok",
             )
+        } else if path == "/overlay/image" && matches!(method, "GET" | "OPTIONS") {
+            if method == "OPTIONS" {
+                (
+                    "200 OK".to_string(),
+                    Vec::new(),
+                    "application/octet-stream".to_string(),
+                    "helper.overlay_image_options",
+                )
+            } else {
+                overlay_image_response()
+            }
         } else {
             (
                 "404 Not Found".to_string(),
@@ -779,6 +757,57 @@ async fn handle_helper_connection(
     }
     stream.shutdown().await?;
     Ok(())
+}
+
+fn overlay_image_response() -> (String, Vec<u8>, String, &'static str) {
+    let not_found = || {
+        (
+            "404 Not Found".to_string(),
+            serde_json::to_vec(&serde_json::json!({
+                "status": "failed",
+                "message": "图片覆盖层未启用或图片不可用"
+            }))
+            .unwrap_or_default(),
+            "application/json; charset=utf-8".to_string(),
+            "helper.overlay_image_not_found",
+        )
+    };
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    if !settings.codex_app_image_overlay_enabled {
+        return not_found();
+    }
+    let image_path = PathBuf::from(settings.codex_app_image_overlay_path.trim());
+    if image_path.as_os_str().is_empty() || !image_path.is_file() {
+        return not_found();
+    }
+    let Some(content_type) = overlay_image_content_type(&image_path) else {
+        return not_found();
+    };
+    match std::fs::read(&image_path) {
+        Ok(bytes) => (
+            "200 OK".to_string(),
+            bytes,
+            content_type.to_string(),
+            "helper.overlay_image_ok",
+        ),
+        Err(_) => not_found(),
+    }
+}
+
+fn overlay_image_content_type(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => Some("image/png"),
+        Some("jpg") | Some("jpeg") => Some("image/jpeg"),
+        Some("webp") => Some("image/webp"),
+        Some("gif") => Some("image/gif"),
+        Some("bmp") => Some("image/bmp"),
+        _ => None,
+    }
 }
 
 async fn handle_models_proxy_connection(
@@ -1094,6 +1123,29 @@ fn log_helper_response(
     );
 }
 
+#[cfg(test)]
+mod tests {
+    use super::overlay_image_content_type;
+    use std::path::Path;
+
+    #[test]
+    fn overlay_image_content_type_accepts_common_images_only() {
+        assert_eq!(
+            overlay_image_content_type(Path::new("overlay.PNG")),
+            Some("image/png")
+        );
+        assert_eq!(
+            overlay_image_content_type(Path::new("overlay.jpeg")),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            overlay_image_content_type(Path::new("overlay.webp")),
+            Some("image/webp")
+        );
+        assert_eq!(overlay_image_content_type(Path::new("overlay.txt")), None);
+    }
+}
+
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> anyhow::Result<Vec<u8>> {
     let mut buffer = Vec::new();
     let mut chunk = vec![0_u8; 4096];
@@ -1294,7 +1346,8 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         .web_socket_debugger_url
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
-    let script = crate::assets::injection_script(helper_port);
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let script = crate::assets::injection_script_with_settings(helper_port, &settings);
     let ctx = crate::routes::BridgeContext::core(Arc::new(crate::routes::CoreRuntimeService::new(
         debug_port,
         StatusStore::default(),
