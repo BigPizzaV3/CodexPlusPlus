@@ -61,6 +61,7 @@ pub struct SettingsPayload {
 #[serde(rename_all = "camelCase")]
 pub struct LocalSessionsPayload {
     pub db_path: String,
+    pub db_paths: Vec<String>,
     pub sessions: Vec<codex_plus_data::LocalSession>,
 }
 
@@ -83,6 +84,8 @@ pub struct DeleteLocalSessionRequest {
     pub session_id: String,
     #[serde(default)]
     pub title: String,
+    #[serde(default)]
+    pub db_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -402,7 +405,8 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
 }
 
 #[tauri::command]
-pub fn get_config_coordination_status() -> CommandResult<codex_plus_core::config_coordinator::CoordinationStatus> {
+pub fn get_config_coordination_status()
+-> CommandResult<codex_plus_core::config_coordinator::CoordinationStatus> {
     let settings =
         settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default());
     ok(
@@ -524,23 +528,47 @@ pub fn import_ccs_providers() -> CommandResult<SettingsPayload> {
 
 #[tauri::command]
 pub fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
-    let db_path = codex_plus_core::relay_config::default_codex_home_dir().join("state_5.sqlite");
-    let adapter = local_session_adapter(&db_path);
-    match adapter.list_local_sessions() {
-        Ok(sessions) => ok(
-            &format!("已读取 {} 个本地会话。", sessions.len()),
-            LocalSessionsPayload {
-                db_path: db_path.to_string_lossy().to_string(),
-                sessions,
-            },
-        ),
-        Err(error) => failed(
-            &format!("读取本地会话失败：{error}"),
-            LocalSessionsPayload {
-                db_path: db_path.to_string_lossy().to_string(),
-                sessions: Vec::new(),
-            },
-        ),
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+    let mut sessions = Vec::new();
+    let mut errors = Vec::new();
+    for db_path in &db_paths {
+        let adapter = local_session_adapter(db_path);
+        match adapter.list_local_sessions() {
+            Ok(mut items) => sessions.append(&mut items),
+            Err(error) if db_path.exists() => {
+                errors.push(format!("{}: {error}", db_path.to_string_lossy()));
+            }
+            Err(_) => {}
+        }
+    }
+    sessions.sort_by(|left, right| {
+        right
+            .updated_at_ms
+            .cmp(&left.updated_at_ms)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    let payload = LocalSessionsPayload {
+        db_path: db_paths
+            .first()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        db_paths: db_paths
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+        sessions,
+    };
+    if errors.is_empty() {
+        ok(
+            &format!("已读取 {} 个本地会话。", payload.sessions.len()),
+            payload,
+        )
+    } else {
+        failed(
+            &format!("读取部分本地会话失败：{}", errors.join("; ")),
+            payload,
+        )
     }
 }
 
@@ -632,13 +660,36 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
             },
         );
     }
-    let db_path = codex_plus_core::relay_config::default_codex_home_dir().join("state_5.sqlite");
-    let adapter = local_session_adapter(&db_path);
     let session = SessionRef {
         session_id: session_id.to_string(),
         title: request.title,
     };
-    let result = adapter.delete_local(&session);
+    let candidate_paths = request
+        .db_path
+        .as_deref()
+        .map(|path| vec![PathBuf::from(path)])
+        .unwrap_or_else(|| {
+            codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(
+                &codex_plus_core::codex_sqlite::default_codex_home_dir(),
+            )
+        });
+    let mut result = DeleteResult {
+        status: codex_plus_core::models::DeleteStatus::Failed,
+        session_id: session_id.to_string(),
+        message: "Thread not found in local storage".to_string(),
+        undo_token: None,
+        backup_path: None,
+    };
+    for db_path in candidate_paths {
+        let adapter = local_session_adapter(&db_path);
+        result = adapter.delete_local(&session);
+        if matches!(
+            result.status,
+            codex_plus_core::models::DeleteStatus::LocalDeleted
+        ) {
+            break;
+        }
+    }
     let status = if matches!(
         result.status,
         codex_plus_core::models::DeleteStatus::LocalDeleted
@@ -721,8 +772,10 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
         normalize_provider_sync_provider_list(settings.provider_sync_saved_providers);
     settings.provider_sync_manual_providers =
         normalize_provider_sync_provider_list(settings.provider_sync_manual_providers);
-    settings.provider_sync_last_selected_provider =
-        settings.provider_sync_last_selected_provider.trim().to_string();
+    settings.provider_sync_last_selected_provider = settings
+        .provider_sync_last_selected_provider
+        .trim()
+        .to_string();
     settings
 }
 
@@ -910,11 +963,10 @@ fn ensure_text_newline(value: &str) -> String {
 #[tauri::command]
 pub async fn load_provider_sync_targets() -> CommandResult<Value> {
     let settings = SettingsStore::default().load().unwrap_or_default();
-    let result = tauri::async_runtime::spawn_blocking(|| {
-        codex_plus_data::load_provider_sync_targets(None)
-    })
-    .await
-    .map_err(|error| anyhow::anyhow!("provider target discovery task failed: {error}"));
+    let result =
+        tauri::async_runtime::spawn_blocking(|| codex_plus_data::load_provider_sync_targets(None))
+            .await
+            .map_err(|error| anyhow::anyhow!("provider target discovery task failed: {error}"));
     match result {
         Ok(mut targets) => {
             let manual = settings
@@ -993,7 +1045,9 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
         Ok(sync) => {
             if is_success_sync_status(&sync.status) {
                 persist_provider_sync_selection(
-                    target_for_settings.as_deref().unwrap_or(&sync.target_provider),
+                    target_for_settings
+                        .as_deref()
+                        .unwrap_or(&sync.target_provider),
                 );
             }
             ok(

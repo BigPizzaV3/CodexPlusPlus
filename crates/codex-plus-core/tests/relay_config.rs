@@ -1,3 +1,4 @@
+use codex_plus_core::codex_sqlite::codex_session_db_path_from_home;
 use codex_plus_core::relay_config::{
     apply_pure_api_config_to_home, apply_relay_config_file_to_home, apply_relay_config_to_home,
     apply_relay_files_to_home, apply_relay_files_to_home_with_common,
@@ -12,6 +13,61 @@ use codex_plus_core::relay_config::{
     sync_live_config_context_entries, upsert_context_entry_in_common_config,
 };
 use codex_plus_core::settings::{RelayContextSelection, RelayMode, RelayProfile, RelayProtocol};
+
+#[test]
+fn codex_session_db_path_prefers_new_sqlite_directory_threads_db() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let sqlite_dir = home.join("sqlite");
+    std::fs::create_dir(&sqlite_dir).unwrap();
+    std::fs::write(home.join("state_5.sqlite"), b"legacy").unwrap();
+
+    let ignored = rusqlite::Connection::open(sqlite_dir.join("other.db")).unwrap();
+    ignored
+        .execute("CREATE TABLE metadata (id TEXT PRIMARY KEY)", [])
+        .unwrap();
+    drop(ignored);
+
+    let selected_path = sqlite_dir.join("codex-dev.db");
+    let selected = rusqlite::Connection::open(&selected_path).unwrap();
+    selected
+        .execute("CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT)", [])
+        .unwrap();
+    drop(selected);
+
+    assert_eq!(codex_session_db_path_from_home(home), selected_path);
+}
+
+#[test]
+fn codex_session_db_path_accepts_new_automation_runs_schema() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let sqlite_dir = home.join("sqlite");
+    std::fs::create_dir(&sqlite_dir).unwrap();
+
+    let selected_path = sqlite_dir.join("codex-dev.db");
+    let selected = rusqlite::Connection::open(&selected_path).unwrap();
+    selected
+        .execute(
+            "CREATE TABLE automation_runs (thread_id TEXT PRIMARY KEY)",
+            [],
+        )
+        .unwrap();
+    drop(selected);
+
+    assert_eq!(codex_session_db_path_from_home(home), selected_path);
+}
+
+#[test]
+fn codex_session_db_path_falls_back_to_legacy_state_db() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+
+    assert_eq!(
+        codex_session_db_path_from_home(home),
+        home.join("state_5.sqlite")
+    );
+}
 
 #[test]
 fn detects_chatgpt_login_from_auth_json_and_config_provider() {
@@ -1929,7 +1985,8 @@ requires_openai_auth = true
 experimental_bearer_token = "22222222222222222222222222222222222"
 "#
         .to_string(),
-        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#.to_string(),
+        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#
+            .to_string(),
         ..RelayProfile::default()
     };
     let mut common = String::new();
@@ -1940,9 +1997,11 @@ experimental_bearer_token = "22222222222222222222222222222222222"
     assert_eq!(profile.relay_mode, RelayMode::Official);
     assert!(profile.official_mix_api_key);
     assert_eq!(profile.api_key, "333333333333333333333");
-    assert!(profile
-        .config_contents
-        .contains(r#"experimental_bearer_token = "333333333333333333333""#));
+    assert!(
+        profile
+            .config_contents
+            .contains(r#"experimental_bearer_token = "333333333333333333333""#)
+    );
     assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
 }
 

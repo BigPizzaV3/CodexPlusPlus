@@ -263,10 +263,12 @@ type LocalSession = {
   archived: boolean;
   updatedAtMs: number | null;
   rolloutPath: string;
+  dbPath: string;
 };
 
 type LocalSessionsResult = CommandResult<{
   dbPath: string;
+  dbPaths: string[];
   sessions: LocalSession[];
 }>;
 
@@ -773,7 +775,7 @@ export function App() {
     if (!window.confirm(`删除会话“${title}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。`)) return;
     const result = await run(() =>
       call<DeleteLocalSessionResult>("delete_local_session", {
-        request: { sessionId: session.id, title: session.title },
+        request: { sessionId: session.id, title: session.title, dbPath: session.dbPath },
       }),
     );
     if (result) {
@@ -2355,13 +2357,13 @@ function SessionsScreen({
   return (
     <>
       <Panel>
-        <CardHead title="会话管理" detail="读取 Codex 本地 state_5.sqlite，会删除数据库记录和对应 rollout 文件" />
+        <CardHead title="会话管理" detail="读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件" />
         <CardContent>
           <div className="metric-list">
             <Metric label="会话总数" value={`${items.length} 个`} />
             <Metric label="未归档" value={`${activeCount} 个`} />
             <Metric label="已归档" value={`${archivedCount} 个`} />
-            <Metric label="数据库" value={sessions?.dbPath ?? "~/.codex/state_5.sqlite"} />
+            <Metric label="数据库" value={sessions?.dbPath ?? "~/.codex/sqlite/*.db"} />
           </div>
           <div className="form-row">
             <Field label="同步目标">
@@ -2451,7 +2453,7 @@ function SessionsScreen({
               ))}
             </div>
           ) : (
-            <div className="empty">未读取到本地会话，或当前 state_5.sqlite 不存在。</div>
+            <div className="empty">未读取到本地会话，或当前 SQLite 会话库不存在。</div>
           )}
         </CardContent>
       </Panel>

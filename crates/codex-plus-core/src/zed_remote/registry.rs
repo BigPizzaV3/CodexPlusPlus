@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -63,7 +62,7 @@ pub fn list_zed_remote_projects_response(payload: &Value) -> Value {
         state.as_ref(),
         payload,
         Some(&default_zed_remote_project_registry_path()),
-        Some(&codex_sqlite_state_path()),
+        Some(&crate::codex_sqlite::codex_session_db_path()),
     );
     match result {
         Ok(projects) => json!({
@@ -306,12 +305,19 @@ fn collect_sqlite_thread_cwds(
     sqlite_state_path: Option<&Path>,
     projects: &mut Vec<ZedRemoteProject>,
 ) {
-    let path = sqlite_state_path
-        .map(Path::to_path_buf)
-        .unwrap_or_else(codex_sqlite_state_path);
-    let Ok(cwds) = sqlite_thread_cwds(&path) else {
-        return;
-    };
+    let paths = sqlite_state_path
+        .map(|path| vec![path.to_path_buf()])
+        .unwrap_or_else(|| {
+            crate::codex_sqlite::codex_session_db_paths_from_home(
+                &crate::codex_sqlite::default_codex_home_dir(),
+            )
+        });
+    let mut cwds = Vec::new();
+    for path in paths {
+        if let Ok(mut items) = sqlite_thread_cwds(&path) {
+            cwds.append(&mut items);
+        }
+    }
     for cwd in cwds {
         if !cwd.starts_with('/') {
             continue;
@@ -569,19 +575,6 @@ fn host_id_for_remote_path(state: &Value, preferred_host_id: &str, remote_path: 
         })
         .or_else(|| string_value(state.get("selected-remote-host-id")).into_nonempty())
         .unwrap_or_default()
-}
-
-fn codex_sqlite_state_path() -> PathBuf {
-    env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("HOME")
-                .or_else(|| env::var_os("USERPROFILE"))
-                .map(PathBuf::from)
-                .map(|home| home.join(".codex"))
-        })
-        .unwrap_or_else(|| PathBuf::from(".codex"))
-        .join("state_5.sqlite")
 }
 
 fn default_zed_remote_project_registry_path() -> PathBuf {

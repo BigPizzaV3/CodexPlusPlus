@@ -1,6 +1,5 @@
-use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -13,19 +12,6 @@ fn string_value(value: Option<&Value>) -> String {
         Some(Value::Number(value)) => value.to_string(),
         _ => String::new(),
     }
-}
-
-fn codex_sqlite_state_path() -> PathBuf {
-    env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("HOME")
-                .or_else(|| env::var_os("USERPROFILE"))
-                .map(PathBuf::from)
-                .map(|home| home.join(".codex"))
-        })
-        .unwrap_or_else(|| PathBuf::from(".codex"))
-        .join("state_5.sqlite")
 }
 
 fn ordered_remote_projects_from_global_state(state: &Value) -> Vec<Value> {
@@ -103,9 +89,21 @@ pub fn workspace_root_from_sqlite(thread_id: &str, state_path: Option<&Path>) ->
     if thread_id.is_empty() {
         return String::new();
     }
-    let path = state_path
-        .map(Path::to_path_buf)
-        .unwrap_or_else(codex_sqlite_state_path);
+    if let Some(path) = state_path {
+        return workspace_root_from_sqlite_path(path, &thread_id);
+    }
+    for path in crate::codex_sqlite::codex_session_db_paths_from_home(
+        &crate::codex_sqlite::default_codex_home_dir(),
+    ) {
+        let cwd = workspace_root_from_sqlite_path(&path, &thread_id);
+        if !cwd.is_empty() {
+            return cwd;
+        }
+    }
+    String::new()
+}
+
+fn workspace_root_from_sqlite_path(path: &Path, thread_id: &str) -> String {
     if !path.is_file() {
         return String::new();
     }

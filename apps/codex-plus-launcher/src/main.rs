@@ -655,11 +655,7 @@ async fn try_inject_with_context(
 }
 
 fn default_codex_db_path() -> PathBuf {
-    directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".codex")
-        .join("state_5.sqlite")
+    codex_plus_core::codex_sqlite::codex_session_db_path()
 }
 
 fn open_url(url: &str) -> anyhow::Result<()> {
