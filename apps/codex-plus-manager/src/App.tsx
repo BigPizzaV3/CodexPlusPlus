@@ -456,23 +456,23 @@ type ScriptMarketResult = CommandResult<{
 function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>): string {
   const changed = result.changedSessionFiles ?? 0;
   const rows = result.sqliteRowsUpdated ?? 0;
-  const target = result.targetProvider || "当前 provider";
+  const target = result.targetProvider || "current provider";
   const skipped = result.skippedLockedRolloutFiles?.length ?? 0;
-  const skippedText = skipped ? `，跳过 ${skipped} 个占用文件` : "";
-  return `已同步到 ${target}：修复 ${changed} 个会话文件，更新 ${rows} 行索引${skippedText}。`;
+  const skippedText = skipped ? `, skipped ${skipped} locked files` : "";
+  return `Synced to ${target}: repaired ${changed} session files, updated ${rows} index rows${skippedText}.`;
 }
 
 const providerSyncSourceLabels: Record<ProviderSyncTargetSource, string> = {
-  config: "配置",
-  rollout: "会话",
-  sqlite: "索引",
-  manual: "手动",
+  config: "Config",
+  rollout: "Sessions",
+  sqlite: "Index",
+  manual: "Manual",
 };
 
 function providerSyncTargetLabel(target: ProviderSyncTargetOption): string {
   const labels = target.sources.map((source) => providerSyncSourceLabels[source]).filter(Boolean);
-  const current = target.isCurrentProvider ? ["当前"] : [];
-  return [...labels, ...current].join(" / ") || "发现";
+  const current = target.isCurrentProvider ? ["Current"] : [];
+  return [...labels, ...current].join(" / ") || "Discovered";
 }
 
 function syncMarketInstalledState(current: ScriptMarketResult | null, userScripts: UserScriptInventory): ScriptMarketResult | null {
@@ -508,17 +508,17 @@ type Route = "overview" | "relay" | "sessions" | "context" | "enhance" | "zedRem
 type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon }> = [
-  { id: "overview", label: "概览", icon: LayoutDashboard },
-  { id: "relay", label: "供应商配置", icon: KeyRound },
-  { id: "sessions", label: "会话管理", icon: MessageCircle },
-  { id: "context", label: "工具与插件", icon: Network },
-  { id: "enhance", label: "页面增强", icon: Hammer },
-  { id: "zedRemote", label: "Zed 远程项目", icon: ExternalLink },
-  { id: "userScripts", label: "脚本市场", icon: FileCode2 },
-  { id: "recommendations", label: "推荐内容", icon: ExternalLink },
-  { id: "maintenance", label: "安装维护", icon: Wrench },
-  { id: "about", label: "关于", icon: Info },
-  { id: "settings", label: "设置", icon: Settings },
+  { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "relay", label: "Providers", icon: KeyRound },
+  { id: "sessions", label: "Sessions", icon: MessageCircle },
+  { id: "context", label: "Tools & Plugins", icon: Network },
+  { id: "enhance", label: "Page Enhancements", icon: Hammer },
+  { id: "zedRemote", label: "Zed Remote Projects", icon: ExternalLink },
+  { id: "userScripts", label: "Script Market", icon: FileCode2 },
+  { id: "recommendations", label: "Recommendations", icon: ExternalLink },
+  { id: "maintenance", label: "Maintenance", icon: Wrench },
+  { id: "about", label: "About", icon: Info },
+  { id: "settings", label: "Settings", icon: Settings },
 ];
 
 const defaultSettings: BackendSettings = {
@@ -539,7 +539,7 @@ const defaultSettings: BackendSettings = {
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
   codexAppProjectMove: true,
-  codexAppConversationTimeline: true,
+  codexAppConversationTimeline: false,
   codexAppConversationView: false,
   codexAppThreadScrollRestore: true,
   codexAppZedRemoteOpen: true,
@@ -557,7 +557,7 @@ const defaultSettings: BackendSettings = {
     {
       id: "default",
       linkedCcsProviderId: "",
-      name: "默认中转",
+      name: "Default Relay",
       model: "",
       baseUrl: "",
       upstreamBaseUrl: "",
@@ -614,7 +614,7 @@ export function App() {
   const [providerSyncProgress, setProviderSyncProgress] = useState<ProviderSyncProgress>({
     active: false,
     percent: 0,
-    message: "尚未运行历史会话修复。",
+    message: "Historical session repair has not run yet.",
     result: null,
   });
   const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
@@ -631,7 +631,7 @@ export function App() {
     try {
       return await task();
     } catch (error) {
-      showNotice("调用失败", stringifyError(error), "failed");
+      showNotice("Call failed", stringifyError(error), "failed");
       return null;
     }
   };
@@ -639,15 +639,15 @@ export function App() {
   const refreshOverview = async (silent = false) => {
     const result = await run(() => call<OverviewResult>("load_overview"));
     if (result) {
-      // 崩溃检测：进程从运行状态变为停止/失败 → 弹出通知
+      // Crash detection: notify when the process leaves the running state.
       const prev = prevLaunchStatusRef.current;
       const current = result.latest_launch?.status;
       if (prev && prev === "running" && current && (current === "stopped" || current === "failed" || current === "crashed")) {
-        showNotice("Codex 意外停止", `进程状态：${current}。是否要重新启动？`, "failed");
+        showNotice("Codex stopped unexpectedly", `Process status: ${current}. Do you want to restart?`, "failed");
       }
       prevLaunchStatusRef.current = current ?? null;
       setOverview(result);
-      if (!silent) showResultNotice("概览已检查", result, { silentSuccess: true });
+      if (!silent) showResultNotice("Overview checked", result, { silentSuccess: true });
     }
   };
 
@@ -661,7 +661,7 @@ export function App() {
         ...current,
         appPath: current.appPath || result.settings.codexAppPath || "",
       }));
-      if (!silent) showResultNotice("设置已加载", result, { silentSuccess: true });
+      if (!silent) showResultNotice("Settings loaded", result, { silentSuccess: true });
       return normalized;
     }
     return null;
@@ -672,7 +672,7 @@ export function App() {
     if (result) {
       setScriptMarket(result);
       setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice("脚本市场", result, { silentSuccess: true });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("Script Market", result, { silentSuccess: true });
     }
   };
 
@@ -681,7 +681,7 @@ export function App() {
     if (result) {
       setScriptMarket(result);
       setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
-      showResultNotice("脚本市场", result);
+      showResultNotice("Script Market", result);
     }
   };
 
@@ -690,19 +690,19 @@ export function App() {
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice("本地脚本", result);
+      showResultNotice("Local Scripts", result);
     }
   };
 
   const deleteUserScript = async (key: string) => {
     const script = settings?.user_scripts?.scripts?.find((item) => item.key === key);
     const name = script?.name || key;
-    if (!window.confirm(`删除脚本“${name}”？此操作会移除本地脚本文件。`)) return;
+    if (!window.confirm(`Delete script "${name}"? This will remove the local script file.`)) return;
     const result = await run(() => call<SettingsResult>("delete_user_script", { key }));
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice("本地脚本", result);
+      showResultNotice("Local Scripts", result);
     }
   };
 
@@ -710,7 +710,7 @@ export function App() {
     const result = await run(() => call<RelayResult>("relay_status"));
     if (result) {
       setRelay(result);
-      if (!silent) showResultNotice("登录状态", result, { silentSuccess: true });
+      if (!silent) showResultNotice("Login Status", result, { silentSuccess: true });
     }
   };
 
@@ -718,7 +718,7 @@ export function App() {
     const result = await run(() => call<RelayFilesResult>("read_relay_files"));
     if (result) {
       setRelayFiles(result);
-      if (!silent) showResultNotice("配置文件", result, { silentSuccess: true });
+      if (!silent) showResultNotice("Config Files", result, { silentSuccess: true });
     }
     return result;
   };
@@ -727,7 +727,7 @@ export function App() {
     const result = await run(() => call<LocalSessionsResult>("list_local_sessions"));
     if (result) {
       setLocalSessions(result);
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice("会话管理", result, { silentSuccess: true });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("Session Management", result, { silentSuccess: true });
     }
     return result;
   };
@@ -736,7 +736,7 @@ export function App() {
     const result = await run(() => call<ZedRemoteProjectsResult>("list_zed_remote_projects"));
     if (result) {
       setZedRemoteProjects(result);
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice("Zed 远程项目", result, { silentSuccess: true });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("Zed Remote Projects", result, { silentSuccess: true });
     }
     return result;
   };
@@ -757,7 +757,7 @@ export function App() {
       }),
     );
     if (result) {
-      showResultNotice("Zed 远程打开", result);
+      showResultNotice("Zed Remote Open", result);
       await refreshZedRemoteProjects(true);
     }
   };
@@ -766,20 +766,20 @@ export function App() {
     const result = await run(() => call<ZedRemoteProjectsResult>("forget_zed_remote_project", { id: project.id }));
     if (result) {
       setZedRemoteProjects(result);
-      showResultNotice("Zed 远程项目", result);
+      showResultNotice("Zed Remote Projects", result);
     }
   };
 
   const deleteLocalSession = async (session: LocalSession) => {
     const title = session.title || session.id;
-    if (!window.confirm(`删除会话“${title}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。`)) return;
+    if (!window.confirm(`Delete session "${title}"? This will delete the local database record and rollout file, and create a backup.`)) return;
     const result = await run(() =>
       call<DeleteLocalSessionResult>("delete_local_session", {
         request: { sessionId: session.id, title: session.title, dbPath: session.dbPath },
       }),
     );
     if (result) {
-      showResultNotice("会话删除", result);
+      showResultNotice("Session Delete", result);
       await refreshLocalSessions(true);
     }
   };
@@ -788,7 +788,7 @@ export function App() {
     const result = await run(() => call<LiveContextEntriesResult>("read_live_context_entries"));
     if (result) {
       setLiveContextEntries(result.entries);
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice("工具与插件", result, { silentSuccess: true });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("Tools & Plugins", result, { silentSuccess: true });
     }
     return result;
   };
@@ -797,7 +797,7 @@ export function App() {
     const result = await run(() => call<LiveContextEntriesResult>("sync_live_context_entries", { request: { settings: next } }));
     if (result) {
       setLiveContextEntries(result.entries);
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice("工具与插件", result, { silentSuccess: true });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("Tools & Plugins", result, { silentSuccess: true });
     }
     return result;
   };
@@ -806,7 +806,7 @@ export function App() {
     const result = await run(() => call<LogsResult>("read_latest_logs", { request: { lines: 240 } }));
     if (result) {
       setLogs(result);
-      if (!silent) showResultNotice("日志已刷新", result, { silentSuccess: true });
+      if (!silent) showResultNotice("Logs refreshed", result, { silentSuccess: true });
     }
   };
 
@@ -814,7 +814,7 @@ export function App() {
     const result = await run(() => call<DiagnosticsResult>("copy_diagnostics"));
     if (result) {
       setDiagnostics(result);
-      if (!silent) showResultNotice("诊断已生成", result, { silentSuccess: true });
+      if (!silent) showResultNotice("Diagnostics generated", result, { silentSuccess: true });
     }
   };
 
@@ -822,7 +822,7 @@ export function App() {
     const result = await run(() => call<WatcherResult>("load_watcher_state"));
     if (result) {
       setWatcher(result);
-      if (!silent) showResultNotice("Watcher 状态", result, { silentSuccess: true });
+      if (!silent) showResultNotice("Watcher Status", result, { silentSuccess: true });
     }
   };
 
@@ -868,7 +868,7 @@ export function App() {
   const launch = async () => {
     const result = await launchCommand("launch_codex_plus");
     if (result) {
-      showNotice("启动任务", result.message, result.status);
+      showNotice("Launch Task", result.message, result.status);
       await refreshOverview(true);
     }
   };
@@ -876,7 +876,7 @@ export function App() {
   const restart = async () => {
     const result = await launchCommand("restart_codex_plus");
     if (result) {
-      showNotice("重启 Codex++", result.message, result.status);
+      showNotice("Restart Codex++", result.message, result.status);
       await refreshOverview(true);
     }
   };
@@ -899,14 +899,14 @@ export function App() {
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
-      showNotice("后端修复", result.message, result.status);
+      showNotice("Backend Repair", result.message, result.status);
     }
   };
 
   const installEntrypoints = async () => {
     const result = await run(() => call<InstallResult>("install_entrypoints"));
     if (result) {
-      showNotice("入口安装", result.message, result.status);
+      showNotice("Entry Install", result.message, result.status);
       await refreshOverview(true);
     }
   };
@@ -918,7 +918,7 @@ export function App() {
       }),
     );
     if (result) {
-      showNotice("入口卸载", result.message, result.status);
+      showNotice("Entry Uninstall", result.message, result.status);
       await refreshOverview(true);
     }
   };
@@ -926,7 +926,7 @@ export function App() {
   const repairShortcuts = async () => {
     const result = await run(() => call<InstallResult>("repair_shortcuts"));
     if (result) {
-      showNotice("快捷方式修复", result.message, result.status);
+      showNotice("Shortcut Repair", result.message, result.status);
       await refreshOverview(true);
     }
   };
@@ -935,7 +935,7 @@ export function App() {
     const result = await run(() => call<WatcherResult>(command));
     if (result) {
       setWatcher(result);
-      showNotice("Watcher 操作", result.message, result.status);
+      showNotice("Watcher Operation", result.message, result.status);
     }
   };
 
@@ -944,7 +944,7 @@ export function App() {
     if (result) {
       setUpdate(result);
       if (!silent || result.updateAvailable) {
-        showNotice("GitHub Release 检查", result.message, result.status);
+        showNotice("GitHub Release Check", result.message, result.status);
       }
     }
   };
@@ -963,7 +963,7 @@ export function App() {
     const result = await run(() => call<UpdateResult>("perform_update", { release }));
     if (result) {
       setUpdate(result);
-      showNotice("更新安装", result.message, result.status);
+      showNotice("Update Install", result.message, result.status);
     }
   };
 
@@ -973,7 +973,7 @@ export function App() {
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
-      showNotice("设置保存", result.message, result.status);
+      showNotice("Settings Saved", result.message, result.status);
     }
   };
 
@@ -985,7 +985,7 @@ export function App() {
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
-      if (!silent || !isSuccessStatus(result.status)) showNotice("设置保存", result.message, result.status);
+      if (!silent || !isSuccessStatus(result.status)) showNotice("Settings Saved", result.message, result.status);
     }
   };
 
@@ -1002,7 +1002,7 @@ export function App() {
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
-      showResultNotice("联动 cc-switch", result);
+      showResultNotice("cc-switch Link", result);
     }
   };
 
@@ -1011,7 +1011,7 @@ export function App() {
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
-      showNotice("设置重置", result.message, result.status);
+      showNotice("Settings Reset", result.message, result.status);
     }
   };
 
@@ -1019,7 +1019,7 @@ export function App() {
     const result = await run(() => call<AdsResult>("load_ads"));
     if (result) {
       setAds(result);
-      if (!silent) showResultNotice("推荐内容", result, { silentSuccess: true });
+      if (!silent) showResultNotice("Recommendations", result, { silentSuccess: true });
     }
   };
 
@@ -1035,7 +1035,7 @@ export function App() {
         targets[0]?.id ||
         "openai";
       setSelectedProviderSyncTarget((current) => (targets.some((target) => target.id === current) ? current : preferred));
-      if (!silent && !isSuccessStatus(result.status)) showNotice("Provider 同步目标", result.message, result.status);
+      if (!silent && !isSuccessStatus(result.status)) showNotice("Provider Sync Targets", result.message, result.status);
     }
     return result;
   };
@@ -1045,7 +1045,7 @@ export function App() {
     setProviderSyncProgress({
       active: true,
       percent: 12,
-      message: selectedProviderSyncTarget ? `正在同步到 ${selectedProviderSyncTarget}…` : "正在扫描历史会话与索引…",
+      message: selectedProviderSyncTarget ? `Syncing to ${selectedProviderSyncTarget}...` : "Scanning historical sessions and indexes...",
       result: null,
     });
     const progressTimer = window.setInterval(() => {
@@ -1054,7 +1054,7 @@ export function App() {
         return {
           ...current,
           percent: Math.min(88, current.percent + 8),
-          message: current.percent < 40 ? "正在检查会话 provider 标记…" : "正在写入修复与备份…",
+          message: current.percent < 40 ? "Checking session provider markers..." : "Writing repairs and backups...",
         };
       });
     }, 350);
@@ -1081,12 +1081,12 @@ export function App() {
           setSettingsForm(next);
         }
         await refreshProviderSyncTargets(true);
-        showNotice("历史会话修复", result.message, result.status);
+        showNotice("Historical Session Repair", result.message, result.status);
       } else {
         setProviderSyncProgress({
           active: false,
           percent: 100,
-          message: "历史会话修复失败，请查看错误提示后重试。",
+          message: "Historical session repair failed. Review the error and try again.",
           result: null,
         });
       }
@@ -1101,7 +1101,7 @@ export function App() {
       setSettings(settingsResult);
       setSettingsForm(normalizeSettings(settingsResult.settings));
       if (!isSuccessStatus(settingsResult.status)) {
-        showNotice("设置保存", settingsResult.message, settingsResult.status);
+        showNotice("Settings Saved", settingsResult.message, settingsResult.status);
         return false;
       }
     } else {
@@ -1111,7 +1111,7 @@ export function App() {
     if (result) {
       setRelay(result);
       await refreshRelayFiles(true);
-      if (!silent || !isSuccessStatus(result.status)) showNotice("官方混入 API Key", result.message, result.status);
+      if (!silent || !isSuccessStatus(result.status)) showNotice("Official Login with API Key", result.message, result.status);
     }
     return !!result && isSuccessStatus(result.status) && result.configured;
   };
@@ -1123,7 +1123,7 @@ export function App() {
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
-      if (!silent) showNotice("页面增强模式", result.message, result.status);
+      if (!silent) showNotice("Page Enhancement Mode", result.message, result.status);
     }
     return result;
   };
@@ -1134,7 +1134,7 @@ export function App() {
       setSettings(settingsResult);
       setSettingsForm(normalizeSettings(settingsResult.settings));
       if (!isSuccessStatus(settingsResult.status)) {
-        showNotice("设置保存", settingsResult.message, settingsResult.status);
+        showNotice("Settings Saved", settingsResult.message, settingsResult.status);
         return false;
       }
     } else {
@@ -1144,7 +1144,7 @@ export function App() {
     if (result) {
       setRelay(result);
       await refreshRelayFiles(true);
-      if (!silent || !isSuccessStatus(result.status)) showNotice("纯 API 模式", result.message, result.status);
+      if (!silent || !isSuccessStatus(result.status)) showNotice("Pure API Mode", result.message, result.status);
     }
     return !!result && isSuccessStatus(result.status) && result.configured;
   };
@@ -1154,7 +1154,7 @@ export function App() {
     if (result) {
       setRelay(result);
       await refreshRelayFiles(true);
-      if (!silent || !isSuccessStatus(result.status)) showNotice("官方登录模式", result.message, result.status);
+      if (!silent || !isSuccessStatus(result.status)) showNotice("Official Login Mode", result.message, result.status);
     }
     return !!result && isSuccessStatus(result.status) && !result.configured;
   };
@@ -1184,7 +1184,7 @@ export function App() {
       normalized = normalizeSettings(saveResult.settings);
     }
     setSettingsForm(normalized);
-    if (!isSuccessStatus(result.status)) showResultNotice("工具与插件", result);
+    if (!isSuccessStatus(result.status)) showResultNotice("Tools & Plugins", result);
     return normalized;
   };
 
@@ -1202,7 +1202,7 @@ export function App() {
       normalized = normalizeSettings(saveResult.settings);
     }
     setSettingsForm(normalized);
-    if (!isSuccessStatus(result.status)) showResultNotice("工具与插件", result);
+    if (!isSuccessStatus(result.status)) showResultNotice("Tools & Plugins", result);
     return normalized;
   };
 
@@ -1212,18 +1212,18 @@ export function App() {
         request: { configContents },
       }),
     );
-    if (result) showResultNotice("通用配置文件", result);
+    if (result) showResultNotice("Common Config", result);
     return result && isSuccessStatus(result.status) ? result : null;
   };
 
   const testRelayProfile = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileTestResult>("test_relay_profile", { profile }));
-    if (result) showNotice("供应商测试", result.message, result.status);
+    if (result) showNotice("Provider Test", result.message, result.status);
   };
 
   const fetchRelayProfileModels = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileModelsResult>("fetch_relay_profile_models", { profile }));
-    if (result) showNotice("模型列表", result.message, result.status);
+    if (result) showNotice("Model List", result.message, result.status);
     return result && isSuccessStatus(result.status) ? result.models : null;
   };
 
@@ -1231,14 +1231,14 @@ export function App() {
     const switched = await clearRelayInjection(true);
     if (!switched) return;
     const result = await saveLaunchMode("relay", true);
-    if (result) showNotice("官方登录模式", "已切回官方登录；页面增强已设为兼容增强。", result.status);
+    if (result) showNotice("Official Login Mode", "Switched back to official login; Page Enhancements are set to compatibility mode.", result.status);
   };
 
   const switchPureApiMode = async () => {
     const switched = await applyPureApiInjection(true);
     if (!switched) return;
     const result = await saveLaunchMode("patch", true);
-    if (result) showNotice("纯 API 模式", "已切换到纯 API；页面增强已设为完整增强。", result.status);
+    if (result) showNotice("Pure API Mode", "Switched to Pure API; Page Enhancements are set to full mode.", result.status);
   };
 
   const switchRelayProfile = async (next: BackendSettings, previousActiveRelayId = settingsForm.activeRelayId) => {
@@ -1249,13 +1249,13 @@ export function App() {
       if (!refreshed) return;
       const latest = normalizeSettings(refreshed);
       if (!latest.relayProfiles.some((profile) => profile.id === targetRelayId)) {
-        showNotice("供应商切换", "目标供应商已不在 cc-switch 或本地配置中，请刷新供应商列表后重试。", "failed");
+        showNotice("Provider Switch", "The target provider is no longer in cc-switch or local settings. Refresh the provider list and try again.", "failed");
         return;
       }
       switchSettings = syncLegacyRelayFields({ ...latest, activeRelayId: targetRelayId });
     }
     if (!switchSettings.relayProfilesEnabled) {
-      showNotice("供应商配置已关闭", "当前不会写入 Codex config.toml / auth.json。打开供应商配置总开关后再切换。", "failed");
+      showNotice("Provider configuration is off", "Codex config.toml / auth.json will not be written. Turn on provider switching before switching providers.", "failed");
       return;
     }
     const targetBeforeSnapshot = activeRelayProfile(switchSettings);
@@ -1283,7 +1283,7 @@ export function App() {
         targetRelayName: selectedBeforeSave.name,
         error: validationError,
       });
-      showNotice("供应商配置可能不正确", validationError, "failed");
+      showNotice("Provider configuration may be incorrect", validationError, "failed");
       return;
     }
 
@@ -1303,7 +1303,7 @@ export function App() {
           status: settingsResult.status,
           message: settingsResult.message,
         });
-        showNotice("供应商切换", settingsResult.message, settingsResult.status);
+        showNotice("Provider Switch", settingsResult.message, settingsResult.status);
         return;
       }
     } else {
@@ -1339,7 +1339,7 @@ export function App() {
         message: result.message,
         configured: result.configured,
       });
-      showNotice("供应商切换", relayProfileReadinessText(selectedAfterSave, result), result.status);
+      showNotice("Provider Switch", relayProfileReadinessText(selectedAfterSave, result), result.status);
       return;
     }
 
@@ -1356,7 +1356,7 @@ export function App() {
         launchMode,
         status: modeResult.status,
       });
-      showNotice("供应商切换", relayProfileModeSwitchedText(currentSelected), modeResult.status);
+      showNotice("Provider Switch", relayProfileModeSwitchedText(currentSelected), modeResult.status);
     } else {
       logDiagnostic("switchRelayProfile.launch_mode_no_result", {
         targetRelayId: currentSelected.id,
@@ -1388,7 +1388,7 @@ export function App() {
         status: result?.status,
         message: result?.message,
       });
-      showNotice("供应商切换", result?.message ?? "读取当前配置文件失败，已停止切换以避免覆盖用户改动。", result?.status ?? "failed");
+      showNotice("Provider Switch", result?.message ?? "Failed to read the current config files, so switching was stopped to avoid overwriting your changes.", result?.status ?? "failed");
       return null;
     }
 
@@ -1404,14 +1404,14 @@ export function App() {
     try {
       await navigator.clipboard.writeText(text);
     } catch (error) {
-      showNotice("复制失败", stringifyError(error), "failed");
+      showNotice("Copy failed", stringifyError(error), "failed");
     }
   };
 
   const openExternalUrl = async (url: string) => {
     const result = await run(() => call<CommandResult<Record<string, unknown>>>("open_external_url", { url }));
     if (result) {
-      showResultNotice("打开链接", result, { silentSuccess: true });
+      showResultNotice("Open Link", result, { silentSuccess: true });
     }
   };
 
@@ -1483,25 +1483,25 @@ export function App() {
         try {
           selected = await open(
             mode === "folder"
-              ? { directory: true, multiple: false, title: "选择 Codex 应用目录" }
+              ? { directory: true, multiple: false, title: "Choose Codex App Directory" }
               : {
                   directory: false,
                   multiple: false,
-                  title: "选择 Codex.exe 或 Codex.app",
-                  filters: [{ name: "Codex 应用", extensions: ["exe", "app"] }],
+                  title: "Choose Codex.exe or Codex.app",
+                  filters: [{ name: "Codex App", extensions: ["exe", "app"] }],
                 },
           );
         } catch (error) {
           // Surface plugin failures (e.g. missing capability permission) so the
           // buttons no longer appear unresponsive — see #345.
           const message = error instanceof Error ? error.message : String(error);
-          showNotice("Codex 应用路径", `打开选择器失败：${message}`, "failed");
+          showNotice("Codex App Path", `Failed to open picker: ${message}`, "failed");
           return;
         }
         if (typeof selected === "string" && selected.trim()) {
           const result = await saveCodexAppPath(selected.trim());
           if (result) {
-            showNotice("Codex 应用路径", "应用路径已保存，之后启动会自动复用。", result.status);
+            showNotice("Codex App Path", "App path saved and will be reused for future launches.", result.status);
           }
         }
       },
@@ -1512,19 +1512,19 @@ export function App() {
           setSettings(result);
           setSettingsForm(normalizeSettings(result.settings));
           setLaunchForm((current) => ({ ...current, appPath: "" }));
-          showNotice("Codex 应用路径", "已清除保存路径，后续启动会回到自动探测。", result.status);
+          showNotice("Codex App Path", "Saved path cleared; future launches will use auto-detection.", result.status);
           await refreshOverview(true);
         }
       },
       saveManualCodexAppPath: async () => {
         const appPath = launchForm.appPath.trim();
         if (!appPath) {
-          showNotice("Codex 应用路径", "请先填写或选择应用路径。", "failed");
+          showNotice("Codex App Path", "Please enter or choose an app path first.", "failed");
           return;
         }
         const result = await saveCodexAppPath(appPath);
         if (result) {
-          showNotice("Codex 应用路径", "应用路径已保存，之后启动会自动复用。", result.status);
+          showNotice("Codex App Path", "App path saved and will be reused for future launches.", result.status);
         }
       },
       syncProvidersNow,
@@ -1571,14 +1571,14 @@ export function App() {
       refreshLogs,
       refreshDiagnostics,
       showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
-      copyLogs: () => copyText(logs?.text ?? "", "日志已复制。"),
-      copyDiagnostics: () => copyText(diagnostics?.report ?? "", "诊断报告已复制。"),
+      copyLogs: () => copyText(logs?.text ?? "", "Logs copied."),
+      copyDiagnostics: () => copyText(diagnostics?.report ?? "", "Diagnostics report copied."),
       goLogs: () => navigate("about"),
       checkHealth: async () => {
         await refreshOverview(true);
         await refreshRelay(true);
         await refreshWatcher(true);
-        showNotice("检查完成", "已刷新 Codex 应用、入口和 Watcher 状态。", "ok");
+        showNotice("Check complete", "Refreshed Codex app, entries, and watcher status.", "ok");
       },
       installWatcher: () => watcherAction("install_watcher"),
       uninstallWatcher: () => watcherAction("uninstall_watcher"),
@@ -1605,14 +1605,14 @@ export function App() {
                     setRoute("about");
                     void checkUpdate(false);
                   }}
-                  title={`发现新版本 ${update?.latestVersion ?? ""}`}
+                  title={`New version found ${update?.latestVersion ?? ""}`}
                   type="button"
                 >
                   <CircleArrowUp className="h-4 w-4" aria-hidden="true" />
                 </button>
               ) : null}
             </div>
-            <div className="brand-subtitle">管理控制台</div>
+            <div className="brand-subtitle">Manager Console</div>
           </div>
         </div>
         <nav className="nav">
@@ -1645,16 +1645,16 @@ export function App() {
             <Button
               onClick={actions.toggleTheme}
               size="icon"
-              title={theme === "dark" ? "切换到浅色" : "切换到深色"}
+              title={theme === "dark" ? "Switch to light" : "Switch to dark"}
               variant="outline"
             >
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
-            <Button onClick={() => void actions.restart()} title="重启 Codex++" variant="outline">
+            <Button onClick={() => void actions.restart()} title="Restart Codex++" variant="outline">
               <Rocket className="h-4 w-4" />
-              重启 Codex++
+              Restart Codex++
             </Button>
-            <Button onClick={() => void actions.refreshCurrent()} size="icon" title="刷新当前页面" variant="outline">
+            <Button onClick={() => void actions.refreshCurrent()} size="icon" title="Refresh current page" variant="outline">
               <RefreshCw className="h-4 w-4" />
             </Button>
           </div>
@@ -1820,10 +1820,10 @@ function OverviewScreen({
                 <Network className="h-5 w-5" />
               </div>
               <div>
-                <span className="eyebrow">官方中转站</span>
+                <span className="eyebrow">Official Relay</span>
                 <h2>JOJO Code</h2>
                 <p>
-                  Codex++ 官方中转站，主打稳定接入和划算价格，支持 GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。
+                  The official Codex++ relay, focused on stable access and fair pricing, with support for GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2, and image capabilities.
                 </p>
               </div>
             </div>
@@ -1837,21 +1837,21 @@ function OverviewScreen({
               </div>
               <Button onClick={() => void actions.openExternalUrl("https://jojocode.com/")}>
                 <ExternalLink className="h-4 w-4" />
-                打开 JOJO Code
+                Open JOJO Code
               </Button>
             </div>
           </div>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="健康检查" detail="概览只展示关键问题，具体配置在对应页面处理" />
+        <CardHead title="Health Check" detail="Overview shows key issues; detailed configuration lives in each section" />
         <CardContent>
           <div className="health-grid">
             <div className={`health-item ${overview?.codex_version ? "ok" : "needs-fix"}`}>
               {overview?.codex_version ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
               <div>
-                <strong>Codex 版本</strong>
-                <span>{overview?.codex_version ?? "未检测到 Codex 应用版本。"}</span>
+                <strong>Codex Version</strong>
+                <span>{overview?.codex_version ?? "Codex app version was not detected."}</span>
               </div>
               <Badge status={overview?.codex_version ? "ok" : "not_checked"} />
             </div>
@@ -1869,29 +1869,29 @@ function OverviewScreen({
           <Toolbar>
             <Button onClick={() => void actions.checkHealth()}>
               <RefreshCw className="h-4 w-4" />
-              检查
+              Check
             </Button>
             <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>
               <Wrench className="h-4 w-4" />
-              修复入口
+              Repair Entries
             </Button>
             <Button variant="secondary" onClick={() => void actions.repairBackend()}>
-              修复后端
+              Repair Backend
             </Button>
           </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="最近启动" detail={overview?.logs_path ?? "暂无状态文件"} />
+        <CardHead title="Recent Launch" detail={overview?.logs_path ?? "No status file"} />
         <CardContent>
           <LatestLaunch status={overview?.latest_launch ?? null} />
           <Toolbar>
             <Button onClick={() => void actions.launch()}>
               <Rocket className="h-4 w-4" />
-              启动 Codex++
+              Launch Codex++
             </Button>
             <Button variant="secondary" onClick={() => void actions.goLogs()}>
-              打开关于
+              Open About
             </Button>
           </Toolbar>
         </CardContent>
@@ -1971,7 +1971,7 @@ function RelayScreen({
   return (
     <>
       <Panel>
-        <CardHead title="供应商列表" detail={`${normalized.relayProfiles.length} 个供应商配置；可拖动排序，点编辑进入详情`} />
+        <CardHead title="Provider List" detail={`${normalized.relayProfiles.length} provider configs; drag to sort, click edit for details`} />
         <CardContent>
           <label className="switch-row relay-master-switch">
             <input
@@ -1983,8 +1983,8 @@ function RelayScreen({
               type="checkbox"
             />
             <span>
-              <strong>启用供应商配置切换</strong>
-              <small>关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。</small>
+              <strong>Enable Provider Switching</strong>
+              <small>When off, this tool will not write Codex config.toml / auth.json during manual switching; launching Codex never changes those files automatically.</small>
             </span>
           </label>
           <label className="switch-row relay-link-switch">
@@ -2001,14 +2001,14 @@ function RelayScreen({
               type="checkbox"
             />
             <span>
-              <strong>联动 cc-switch</strong>
-              <small>开启后读取 cc-switch Codex 供应商并保存时回写；建议配合“配置所有权”避免与 CC Switch 互相覆盖。</small>
+              <strong>Link cc-switch</strong>
+              <small>When on, reads cc-switch Codex providers and writes them back on save; pair it with Config Ownership to avoid overwrites with CC Switch.</small>
             </span>
           </label>
           <label className="switch-row relay-ownership-row">
             <span>
-              <strong>配置所有权</strong>
-              <small>决定由谁写入 ~/.codex/config.toml 与 auth.json。auto 在开启联动且检测到 CC Switch 时交由 CC Switch 管理。</small>
+              <strong>Config Ownership</strong>
+              <small>Controls who writes ~/.codex/config.toml and auth.json. Auto delegates to CC Switch when linking is on and CC Switch is detected.</small>
             </span>
             <select
               className="select-input relay-ownership-select"
@@ -2022,9 +2022,9 @@ function RelayScreen({
                 void saveRelaySettings(next);
               }}
             >
-              <option value="auto">自动（推荐）</option>
-              <option value="ccSwitch">CC Switch 管理</option>
-              <option value="codexPlusPlus">Codex++ 管理</option>
+              <option value="auto">Auto (recommended)</option>
+              <option value="ccSwitch">CC Switch managed</option>
+              <option value="codexPlusPlus">Codex++ managed</option>
             </select>
           </label>
           <CoordinationStatusBanner form={normalized} actions={actions} />
@@ -2037,7 +2037,7 @@ function RelayScreen({
               }}
             >
               <Plus className="h-4 w-4" />
-              添加供应商
+              Add Provider
             </Button>
           </div>
           <RelayProfileList
@@ -2068,7 +2068,7 @@ function EnhanceScreen({
   return (
     <>
       <Panel>
-        <CardHead title="页面功能增强" detail="会话删除、导出、项目移动、Timeline 和用户脚本等界面能力" />
+        <CardHead title="Page Enhancements" detail="Session delete, export, project move, Timeline, user scripts, and related page features" />
         <CardContent>
           <label className="switch-row">
             <input
@@ -2077,56 +2077,56 @@ function EnhanceScreen({
               type="checkbox"
             />
             <span>
-              <strong>启用 Codex++ 页面增强</strong>
-              <small>关闭后会停用删除、导出、项目移动、Timeline、插件相关和菜单位置增强。</small>
+              <strong>Enable Codex++ Page Enhancements</strong>
+              <small>When off, disables delete, export, project move, plugin-related features, menu placement, and other page enhancements.</small>
             </span>
           </label>
           <ModeSelector launchMode={form.launchMode} actions={actions} />
           {form.launchMode === "relay" ? (
             <div className="hint-line">
               <ShieldCheck className="h-4 w-4" />
-              <span>当前为兼容增强模式，插件市场解锁、强制解锁入口和特殊插件强制安装不会启用；其他页面功能仍可用。</span>
+              <span>Compatibility enhancement mode is active; marketplace unlock, entry unlock, and force install stay disabled, while other page features still work.</span>
             </div>
           ) : null}
           <div className="feature-switch-grid">
-            <FeatureToggle title="插件市场解锁" detail="API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。" checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
-            <FeatureToggle title="强制解锁入口" detail="恢复 1.1.9 的入口解锁方式，强制显示并启用插件入口。" checked={form.codexAppPluginEntryUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginEntryUnlock", value)} />
-            <FeatureToggle title="特殊插件强制安装" detail="解除 App unavailable / 应用不可用导致的前端安装禁用。" checked={form.codexAppForcePluginInstall} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppForcePluginInstall", value)} />
-            <FeatureToggle title="模型白名单解锁" detail="从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。" checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
-            <FeatureToggle title="Fast 按钮" detail="显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。" checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
-            <FeatureToggle title="会话删除" detail="在会话列表悬停显示删除按钮，并支持撤销。" checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
-            <FeatureToggle title="Markdown 导出" detail="在会话列表显示导出按钮，导出带时间戳的 Markdown。" checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
-            <FeatureToggle title="会话项目移动" detail="把会话移动到普通对话或其他本地项目。" checked={form.codexAppProjectMove} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppProjectMove", value)} />
-            <FeatureToggle title="对话 Timeline" detail="在对话右侧显示用户提问时间线，支持摘要和跳转。" checked={form.codexAppConversationTimeline} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationTimeline", value)} />
-            <FeatureToggle title="对话居中宽度" detail="把主对话和输入框限制到固定最大宽度，适合大屏阅读。" checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
-            <FeatureToggle title="切换对话保留位置" detail="切换 thread 时恢复上一次浏览位置。" checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
-            <FeatureToggle title="Zed Remote open" detail="远程 SSH 文件引用可直接用 Zed Remote Development 打开。" checked={form.codexAppZedRemoteOpen} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppZedRemoteOpen", value)} />
-            <FeatureToggle title="Zed 项目记录" detail="维护 Codex++ 自己的远程项目最近列表。" checked={form.zedRemoteProjectRegistryEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteProjectRegistryEnabled", value)} />
-            <FeatureToggle title="同步 Zed settings" detail="高级选项，默认关闭；当前实现不主动改写 Zed settings。" checked={form.zedRemoteSyncToZedSettings} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteSyncToZedSettings", value)} />
-            <FeatureToggle title="Upstream worktree" detail="从最新 upstream 分支创建 Git worktree。" checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
-            <FeatureToggle title="原生菜单栏位置" detail="把 Codex++ 菜单插入 Codex 顶部原生菜单栏。" checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
+            <FeatureToggle title="Plugin Marketplace Unlock" detail="Extends plugin marketplace requests in API key mode so the full plugin list can be shown; official and mixed modes usually do not need this." checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
+            <FeatureToggle title="Force Entry Unlock" detail="Restores the 1.1.9 entry unlock path to force-show and enable the plugin entry." checked={form.codexAppPluginEntryUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginEntryUnlock", value)} />
+            <FeatureToggle title="Force Plugin Install" detail="Removes frontend install blocking caused by App unavailable states." checked={form.codexAppForcePluginInstall} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppForcePluginInstall", value)} />
+            <FeatureToggle title="Model Whitelist Unlock" detail="Pulls models from environment variables and config.toml /v1/models, then adds them to the model list." checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
+            <FeatureToggle title="Fast Button" detail="Shows service mode controls; Fast only supports gpt-5.4 / gpt-5.5, and other models are sent as Standard." checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
+            <FeatureToggle title="Session Delete" detail="Shows a delete button on session hover, with undo support." checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
+            <FeatureToggle title="Markdown Export" detail="Shows an export button in the session list and exports timestamped Markdown." checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
+            <FeatureToggle title="Session Project Move" detail="Moves sessions to Chats or another local project." checked={form.codexAppProjectMove} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppProjectMove", value)} />
+            <FeatureToggle title="Conversation Timeline" detail="Disabled in this patched build to remove the right-side line and circles." checked={false} disabled={true} onChange={() => {}} />
+            <FeatureToggle title="Centered Conversation Width" detail="Limits the main conversation and input to a fixed max width for large-screen reading." checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
+            <FeatureToggle title="Preserve Position When Switching Conversations" detail="Restores the last viewed position when switching threads." checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
+            <FeatureToggle title="Zed Remote open" detail="Opens remote SSH file references directly in Zed Remote Development." checked={form.codexAppZedRemoteOpen} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppZedRemoteOpen", value)} />
+            <FeatureToggle title="Zed Project Registry" detail="Maintains Codex++'s own recent list of remote projects." checked={form.zedRemoteProjectRegistryEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteProjectRegistryEnabled", value)} />
+            <FeatureToggle title="Sync Zed settings" detail="Advanced option, off by default; the current implementation does not actively rewrite Zed settings." checked={form.zedRemoteSyncToZedSettings} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteSyncToZedSettings", value)} />
+            <FeatureToggle title="Upstream worktree" detail="Creates a Git worktree from the latest upstream branch." checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
+            <FeatureToggle title="Native Menu Bar Placement" detail="Inserts the Codex++ menu into the top native menu bar." checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
           </div>
           <div className="zed-remote-settings">
-            <Field label="Zed 默认打开策略">
+            <Field label="Default Zed Open Strategy">
               <select
                 className="select-input"
                 disabled={!masterEnabled}
                 onChange={(event) => onFormChange({ ...form, zedRemoteOpenStrategy: event.currentTarget.value as ZedOpenStrategy })}
                 value={form.zedRemoteOpenStrategy}
               >
-                <option value="addToFocusedWorkspace">加入当前工作区</option>
-                <option value="reuseWindow">复用窗口</option>
-                <option value="newWindow">新窗口</option>
-                <option value="default">Zed 默认行为</option>
+                <option value="addToFocusedWorkspace">Add to Focused Workspace</option>
+                <option value="reuseWindow">Reuse Window</option>
+                <option value="newWindow">New Window</option>
+                <option value="default">Zed Default Behavior</option>
               </select>
             </Field>
           </div>
           <div className="hint-line">
             <Info className="h-4 w-4" />
-            <span>如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁、强制解锁入口和特殊插件强制安装。</span>
+            <span>Official mode and official mixed API mode usually do not need Plugin Marketplace Unlock, Force Entry Unlock, or Force Plugin Install.</span>
           </div>
           <Toolbar>
-            <Button onClick={() => void actions.saveSettings()}>保存增强设置</Button>
+            <Button onClick={() => void actions.saveSettings()}>Save Enhancement Settings</Button>
           </Toolbar>
         </CardContent>
       </Panel>
@@ -2154,15 +2154,15 @@ function ZedRemoteScreen({
   const copyUrl = async (project: ZedRemoteProject) => {
     try {
       await navigator.clipboard.writeText(project.url);
-      await actions.showMessage("Zed Remote URL", "ssh:// URL 已复制。", "ok");
+      await actions.showMessage("Zed Remote URL", "ssh:// URL copied.", "ok");
     } catch (error) {
-      await actions.showMessage("复制失败", stringifyError(error), "failed");
+      await actions.showMessage("Copy failed", stringifyError(error), "failed");
     }
   };
   return (
     <>
       <Panel>
-        <CardHead title="Zed 远程项目" detail={`${allProjects.length} 个 Codex++ 可识别项目，默认策略：${zedStrategyLabel(form.zedRemoteOpenStrategy)}`} />
+        <CardHead title="Zed Remote Projects" detail={`${allProjects.length} Codex++ recognizable projects, default strategy: ${zedStrategyLabel(form.zedRemoteOpenStrategy)}`} />
         <CardContent>
           <div className="metric-list">
             <Metric label="Current" value={String(currentProjects.length)} />
@@ -2170,16 +2170,16 @@ function ZedRemoteScreen({
             <Metric label="Discovered" value={String(discoveredProjects.length)} />
           </div>
           <div className="zed-remote-settings">
-            <Field label="默认打开策略">
+            <Field label="Default Open Strategy">
               <select
                 className="select-input"
                 onChange={(event) => onFormChange({ ...form, zedRemoteOpenStrategy: event.currentTarget.value as ZedOpenStrategy })}
                 value={form.zedRemoteOpenStrategy}
               >
-                <option value="addToFocusedWorkspace">加入当前工作区</option>
-                <option value="reuseWindow">复用窗口</option>
-                <option value="newWindow">新窗口</option>
-                <option value="default">Zed 默认行为</option>
+                <option value="addToFocusedWorkspace">Add to Focused Workspace</option>
+                <option value="reuseWindow">Reuse Window</option>
+                <option value="newWindow">New Window</option>
+                <option value="default">Zed Default Behavior</option>
               </select>
             </Field>
             <label className="switch-row compact">
@@ -2189,19 +2189,19 @@ function ZedRemoteScreen({
                 type="checkbox"
               />
               <span>
-                <strong>记录最近打开</strong>
-                <small>保存到 Codex++ state，不改写 Zed settings。</small>
+                <strong>Remember Recent Opens</strong>
+                <small>Saves to Codex++ state without rewriting Zed settings.</small>
               </span>
             </label>
           </div>
           <Toolbar>
             <Button onClick={() => void actions.refreshZedRemoteProjects()}>
               <RefreshCw className="h-4 w-4" />
-              刷新项目
+              Refresh Projects
             </Button>
             <Button variant="secondary" onClick={() => void actions.saveSettingsValue(form, false)}>
               <Save className="h-4 w-4" />
-              保存策略
+              Save Strategy
             </Button>
           </Toolbar>
         </CardContent>
@@ -2226,7 +2226,7 @@ function ZedRemoteProjectSection({
 }) {
   return (
     <Panel>
-      <CardHead title={title} detail={`${projects.length} 个项目`} />
+      <CardHead title={title} detail={`${projects.length} projects`} />
       <CardContent>
         {projects.length ? (
           <div className="zed-remote-project-list">
@@ -2246,19 +2246,19 @@ function ZedRemoteProjectSection({
                 <div className="zed-remote-project-actions">
                   <Button onClick={() => void actions.openZedRemoteProject(project, "addToFocusedWorkspace")} size="sm">
                     <ExternalLink className="h-4 w-4" />
-                    加入当前工作区
+                    Add to Focused Workspace
                   </Button>
                   <Button onClick={() => void actions.openZedRemoteProject(project, "reuseWindow")} size="sm" variant="outline">
-                    复用窗口
+                    Reuse Window
                   </Button>
                   <Button onClick={() => void actions.openZedRemoteProject(project, "newWindow")} size="sm" variant="outline">
-                    新窗口
+                    New Window
                   </Button>
-                  <Button onClick={() => void onCopyUrl(project)} size="icon" title="复制 ssh:// URL" variant="ghost">
+                  <Button onClick={() => void onCopyUrl(project)} size="icon" title="Copy ssh:// URL" variant="ghost">
                     <Copy className="h-4 w-4" />
                   </Button>
                   {project.source === "recent" ? (
-                    <Button onClick={() => void actions.forgetZedRemoteProject(project)} size="icon" title="移除最近记录" variant="ghost">
+                    <Button onClick={() => void actions.forgetZedRemoteProject(project)} size="icon" title="Remove recent record" variant="ghost">
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   ) : null}
@@ -2267,7 +2267,7 @@ function ZedRemoteProjectSection({
             ))}
           </div>
         ) : (
-          <div className="empty">暂无项目。</div>
+          <div className="empty">No projects.</div>
         )}
       </CardContent>
     </Panel>
@@ -2282,32 +2282,32 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
   return (
     <>
       <Panel>
-        <CardHead title="脚本市场" detail={`${marketScripts.length} 个市场脚本，已安装 ${installedCount} 个，本地整体 ${inventory?.enabled === false ? "关闭" : "开启"}`} />
+        <CardHead title="Script Market" detail={`${marketScripts.length}  market scripts, installed  ${installedCount} , local scripts  ${inventory?.enabled === false ? "Off" : "On"}`} />
         <CardContent>
           <div className="metric-list">
-            <Metric label="市场状态" value={market?.market.message ?? "尚未刷新"} />
-            <Metric label="远程脚本" value={`${marketScripts.length} 个`} />
-            <Metric label="已安装" value={`${installedCount} 个`} />
-            <Metric label="本地整体" value={inventory?.enabled === false ? "关闭" : "开启"} />
+            <Metric label="Market Status" value={market?.market.message ?? "Not refreshed yet"} />
+            <Metric label="Remote Scripts" value={`${marketScripts.length}`} />
+            <Metric label="Installed" value={`${installedCount}`} />
+            <Metric label="Local Scripts" value={inventory?.enabled === false ? "Off" : "On"} />
           </div>
           <Toolbar>
             <Button onClick={() => void actions.refreshScriptMarket()}>
               <RefreshCw className="h-4 w-4" />
-              刷新市场
+              Refresh Market
             </Button>
             <Button onClick={() => void actions.openExternalUrl(SCRIPT_MARKET_REPOSITORY_URL)} variant="secondary">
               <ExternalLink className="h-4 w-4" />
-              投稿
+              Submit
             </Button>
             <Button onClick={() => void actions.refreshCurrent()} variant="secondary">
               <RefreshCw className="h-4 w-4" />
-              刷新本地
+              Refresh Local
             </Button>
           </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="市场脚本" detail={market?.market.updatedAt ? `清单更新时间：${market.market.updatedAt}` : "从 GitHub 静态清单加载"} />
+        <CardHead title="Market Scripts" detail={market?.market.updatedAt ? `Manifest updated: ${market.market.updatedAt}` : "Loaded from GitHub static manifest"} />
         <CardContent>
           {marketScripts.length ? (
             <div className="script-market-grid">
@@ -2316,15 +2316,15 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
               ))}
             </div>
           ) : (
-            <div className="empty">{market?.status === "failed" ? market.message : "点击刷新市场加载远程脚本。"}</div>
+            <div className="empty">{market?.status === "failed" ? market.message : "Click Refresh Market to load remote scripts."}</div>
           )}
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="本地脚本" detail="内置、手动和市场安装脚本；可在这里启停或删除用户脚本" />
+        <CardHead title="Local Scripts" detail="Built-in, manual, and market-installed scripts; enable, disable, or delete user scripts here" />
         <CardContent>
           <div className="table">
-            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} actions={actions} />) : <div className="empty">未发现用户脚本。</div>}
+            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} actions={actions} />) : <div className="empty">No user scripts found.</div>}
           </div>
         </CardContent>
       </Panel>
@@ -2357,16 +2357,16 @@ function SessionsScreen({
   return (
     <>
       <Panel>
-        <CardHead title="会话管理" detail="读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件" />
+        <CardHead title="Session Management" detail="Reads Codex local SQLite session stores and can delete database records plus matching rollout files" />
         <CardContent>
           <div className="metric-list">
-            <Metric label="会话总数" value={`${items.length} 个`} />
-            <Metric label="未归档" value={`${activeCount} 个`} />
-            <Metric label="已归档" value={`${archivedCount} 个`} />
-            <Metric label="数据库" value={sessions?.dbPath ?? "~/.codex/sqlite/*.db"} />
+            <Metric label="Total Sessions" value={`${items.length}`} />
+            <Metric label="Active" value={`${activeCount}`} />
+            <Metric label="Archived" value={`${archivedCount}`} />
+            <Metric label="Database" value={sessions?.dbPath ?? "~/.codex/sqlite/*.db"} />
           </div>
           <div className="form-row">
-            <Field label="同步目标">
+            <Field label="Sync Target">
               <select
                 className="select-input"
                 disabled={providerSyncProgress.active || !(providerSyncTargets?.targets ?? []).length}
@@ -2375,26 +2375,26 @@ function SessionsScreen({
               >
                 {(providerSyncTargets?.targets ?? []).map((target) => (
                   <option key={target.id} value={target.id}>
-                    {target.id}（{providerSyncTargetLabel(target)}）
+                    {target.id} ({providerSyncTargetLabel(target)})
                   </option>
                 ))}
-                {!(providerSyncTargets?.targets ?? []).length ? <option value="">当前配置 provider</option> : null}
+                {!(providerSyncTargets?.targets ?? []).length ? <option value="">Current configured provider</option> : null}
               </select>
             </Field>
           </div>
           <Toolbar>
             <Button onClick={() => void actions.refreshLocalSessions()}>
               <RefreshCw className="h-4 w-4" />
-              刷新会话
+              Refresh Sessions
             </Button>
             <Button disabled={providerSyncProgress.active} onClick={() => void actions.syncProvidersNow()} variant="outline">
               <RefreshCw className="h-4 w-4" />
-              {providerSyncProgress.active ? "正在修复…" : "立刻修复历史会话"}
+              {providerSyncProgress.active ? "Repairing..." : "Repair Historical Sessions Now"}
             </Button>
           </Toolbar>
           <div className="provider-sync-progress" data-active={providerSyncProgress.active}>
             <div className="provider-sync-progress-head">
-              <strong>{providerSyncProgress.active ? "正在修复历史会话" : "历史会话修复进度"}</strong>
+              <strong>{providerSyncProgress.active ? "Repairing Historical Sessions" : "Historical Session Repair Progress"}</strong>
               <span>{providerSyncProgress.percent}%</span>
             </div>
             <div
@@ -2410,7 +2410,7 @@ function SessionsScreen({
           </div>
           <div className="hint-line">
             <Info className="h-4 w-4" />
-            <span>删除会创建本地备份；如果 Codex App 正在使用该会话，建议先关闭对应会话窗口再操作。</span>
+            <span>Delete creates a local backup. If Codex App is using that session, close the matching session window before deleting it.</span>
           </div>
           <label className="switch-row">
             <input
@@ -2419,41 +2419,41 @@ function SessionsScreen({
               type="checkbox"
             />
             <span>
-              <strong>启动前自动修复历史会话</strong>
-              <small>开启后，通过 Codex++ 启动 Codex 前自动整理一次旧对话的归属标记。</small>
+              <strong>Automatically Repair Historical Sessions Before Launch</strong>
+              <small>When on, Codex++ repairs old conversation ownership markers once before launching Codex.</small>
             </span>
           </label>
           <Toolbar>
-            <Button onClick={() => void actions.saveSettings()}>保存自动修复设置</Button>
+            <Button onClick={() => void actions.saveSettings()}>Save Auto Repair Settings</Button>
           </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="本地会话" detail={items.length ? "按更新时间倒序显示" : "点击刷新会话读取本地数据库"} />
+        <CardHead title="Local Sessions" detail={items.length ? "Sorted by latest update" : "Click Refresh Sessions to read the local database"} />
         <CardContent>
           {items.length ? (
             <div className="session-list">
               {items.map((session) => (
                 <div className="session-row" key={session.id}>
                   <div className="session-main">
-                    <strong>{session.title || "未命名会话"}</strong>
+                    <strong>{session.title || "Untitled session"}</strong>
                     <span>{session.id}</span>
-                    <small>{session.cwd || "未记录项目路径"}</small>
+                    <small>{session.cwd || "No project path recorded"}</small>
                   </div>
                   <div className="session-meta">
                     <Badge status={session.archived ? "archived" : "ok"} />
-                    <span>{session.modelProvider || "provider 未记录"}</span>
+                    <span>{session.modelProvider || "Provider not recorded"}</span>
                     <span>{formatTime(session.updatedAtMs ?? 0)}</span>
                   </div>
                   <Button variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
                     <Trash2 className="h-4 w-4" />
-                    删除
+                    Delete
                   </Button>
                 </div>
               ))}
             </div>
           ) : (
-            <div className="empty">未读取到本地会话，或当前 SQLite 会话库不存在。</div>
+            <div className="empty">No local sessions were read, or the current SQLite session store does not exist.</div>
           )}
         </CardContent>
       </Panel>
@@ -2468,30 +2468,30 @@ function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; action
   return (
     <>
       <Panel>
-        <CardHead title="推荐内容" detail="与 Codex 内插件菜单使用同一个远端广告源" />
+        <CardHead title="Recommendations" detail="Uses the same remote recommendation source as the in-Codex plugin menu" />
         <CardContent>
           <div className="recommend-hero">
             <div>
-              <strong>{ads ? `已加载 ${items.length} 条推荐` : "尚未加载推荐内容"}</strong>
-              <span>内容来自 BigPizzaV3/Ad-List，分为赞助商推荐和普通推荐。</span>
+              <strong>{ads ? `Loaded ${items.length}  recommendations` : "Recommendations not loaded yet"}</strong>
+              <span>Content comes from BigPizzaV3/Ad-List and is split between sponsored and regular recommendations.</span>
             </div>
             <Button onClick={() => void actions.refreshAds()}>
               <RefreshCw className="h-4 w-4" />
-              刷新推荐
+              Refresh Recommendations
             </Button>
           </div>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="赞助商推荐" detail={`${sponsors.length} 条`} />
+        <CardHead title="Sponsored Recommendations" detail={`${sponsors.length}`} />
         <CardContent>
-          <AdGrid actions={actions} ads={sponsors} empty="暂无赞助商推荐。" />
+          <AdGrid actions={actions} ads={sponsors} empty="No sponsored recommendations." />
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="普通推荐" detail={`${normal.length} 条`} />
+        <CardHead title="Recommendations" detail={`${normal.length}`} />
         <CardContent>
-          <AdGrid actions={actions} ads={normal} empty="暂无普通推荐。" />
+          <AdGrid actions={actions} ads={normal} empty="No recommendations." />
         </CardContent>
       </Panel>
     </>
@@ -2521,85 +2521,85 @@ function MaintenanceScreen({
   return (
     <>
       <Panel>
-        <CardHead title="检查与修复" detail="检查入口、Codex 应用和 Watcher 状态" />
+        <CardHead title="Check & Repair" detail="Checks entries, Codex App, and Watcher status" />
         <CardContent>
           <div className="status-table">
-            <StatusRow title="Codex 应用" status={overview?.codex_app.status} path={overview?.codex_app.path} />
-            <StatusRow title="静默启动入口" status={overview?.silent_shortcut.status} path={overview?.silent_shortcut.path} />
-            <StatusRow title="管理控制台入口" status={overview?.management_shortcut.status} path={overview?.management_shortcut.path} />
-            <StatusRow title="Watcher 自动接管" status={watcher?.enabled ? "ok" : "disabled"} path={watcher?.disabled_flag} />
+            <StatusRow title="Codex App" status={overview?.codex_app.status} path={overview?.codex_app.path} />
+            <StatusRow title="Silent Launcher Entry" status={overview?.silent_shortcut.status} path={overview?.silent_shortcut.path} />
+            <StatusRow title="Manager Entry" status={overview?.management_shortcut.status} path={overview?.management_shortcut.path} />
+            <StatusRow title="Watcher Auto Takeover" status={watcher?.enabled ? "ok" : "disabled"} path={watcher?.disabled_flag} />
           </div>
           <Toolbar>
-            <Button onClick={() => void actions.checkHealth()}>检查</Button>
-            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>修复快捷方式</Button>
-            <Button variant="secondary" onClick={() => void actions.repairBackend()}>修复后端</Button>
+            <Button onClick={() => void actions.checkHealth()}>Check</Button>
+            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>Repair Shortcuts</Button>
+            <Button variant="secondary" onClick={() => void actions.repairBackend()}>Repair Backend</Button>
           </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="入口管理" detail="快捷方式写入系统实际桌面位置，不使用写死桌面路径" />
+        <CardHead title="Entry Management" detail="Entries are written to the actual system desktop location instead of a hard-coded desktop path" />
         <CardContent>
           <label className="check-row">
             <input checked={removeOwnedData} onChange={(event) => onRemoveOwnedDataChange(event.currentTarget.checked)} type="checkbox" />
-            <span>卸载时移除 Codex++ 托管数据</span>
+            <span>Remove Codex++ managed data during uninstall</span>
           </label>
           <Toolbar>
-            <Button onClick={() => void actions.installEntrypoints()}>安装入口</Button>
-            <Button variant="secondary" onClick={() => void actions.uninstallEntrypoints()}>卸载入口</Button>
-            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>修复入口</Button>
+            <Button onClick={() => void actions.installEntrypoints()}>Install Entries</Button>
+            <Button variant="secondary" onClick={() => void actions.uninstallEntrypoints()}>Uninstall Entries</Button>
+            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>Repair Entries</Button>
           </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="自动接管" detail="Watcher 用于保持 Codex++ 接管状态" />
+        <CardHead title="Auto Takeover" detail="Watcher keeps Codex++ takeover active" />
         <CardContent>
           <Toolbar>
-            <Button variant="secondary" onClick={() => void actions.installWatcher()}>安装 watcher</Button>
-            <Button variant="secondary" onClick={() => void actions.uninstallWatcher()}>移除 watcher</Button>
-            <Button variant="secondary" onClick={() => void actions.enableWatcher()}>启用</Button>
-            <Button variant="secondary" onClick={() => void actions.disableWatcher()}>禁用</Button>
+            <Button variant="secondary" onClick={() => void actions.installWatcher()}>Install Watcher</Button>
+            <Button variant="secondary" onClick={() => void actions.uninstallWatcher()}>Remove Watcher</Button>
+            <Button variant="secondary" onClick={() => void actions.enableWatcher()}>Enable</Button>
+            <Button variant="secondary" onClick={() => void actions.disableWatcher()}>Disable</Button>
           </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="Codex 应用路径" detail="免安装版或解包版只需要选择一次，之后静默启动会自动复用" />
+        <CardHead title="Codex App Path" detail="Portable or unpacked installs only need to be selected once; silent launch reuses it later" />
         <CardContent>
           <div className="status-table">
-            <StatusRow title="保存路径" status={savedCodexAppPath ? "ok" : "not_checked"} path={savedCodexAppPath || null} />
-            <StatusRow title="当前识别" status={overview?.codex_app.status} path={overview?.codex_app.path} />
+            <StatusRow title="Saved Path" status={savedCodexAppPath ? "ok" : "not_checked"} path={savedCodexAppPath || null} />
+            <StatusRow title="Current Detection" status={overview?.codex_app.status} path={overview?.codex_app.path} />
           </div>
-          <Field label="保存的应用路径">
+          <Field label="Saved App Path">
             <Input
               value={settings?.settings.codexAppPath ?? ""}
-              placeholder="选择 Codex.exe、Codex.app、app 目录或解包目录"
+              placeholder="Choose Codex.exe, Codex.app, the app directory, or an unpacked directory"
               readOnly
             />
           </Field>
           <Toolbar>
-            <Button onClick={() => void actions.chooseCodexAppPath("folder")}>选择应用目录</Button>
-            <Button variant="secondary" onClick={() => void actions.chooseCodexAppPath("file")}>选择 Codex.exe</Button>
-            <Button variant="secondary" onClick={() => void actions.clearCodexAppPath()}>清除保存路径</Button>
+            <Button onClick={() => void actions.chooseCodexAppPath("folder")}>Choose App Directory</Button>
+            <Button variant="secondary" onClick={() => void actions.chooseCodexAppPath("file")}>Choose Codex.exe</Button>
+            <Button variant="secondary" onClick={() => void actions.clearCodexAppPath()}>Clear Saved Path</Button>
           </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="手动启动" detail="应用路径留空时使用已保存路径；没有保存路径时使用自动探测" />
+        <CardHead title="Manual Launch" detail="When app path is empty, uses the saved path; without one, uses auto-detection" />
         <CardContent>
-          <Field label="应用路径覆盖">
+          <Field label="App Path Override">
             <Input
               value={launchForm.appPath}
               onChange={(event) => onLaunchFormChange({ ...launchForm, appPath: event.currentTarget.value })}
-              placeholder={savedCodexAppPath || "例如 C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app"}
+              placeholder={savedCodexAppPath || "Example: C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app"}
             />
           </Field>
           <div className="form-row">
-            <Field label="Debug 端口">
+            <Field label="Debug Port">
               <Input
                 value={launchForm.debugPort}
                 onChange={(event) => onLaunchFormChange({ ...launchForm, debugPort: event.currentTarget.value })}
               />
             </Field>
-            <Field label="Helper 端口">
+            <Field label="Helper Port">
               <Input
                 value={launchForm.helperPort}
                 onChange={(event) => onLaunchFormChange({ ...launchForm, helperPort: event.currentTarget.value })}
@@ -2607,9 +2607,9 @@ function MaintenanceScreen({
             </Field>
           </div>
           <Toolbar>
-            <Button onClick={() => void actions.launch()}>启动 Codex++</Button>
+            <Button onClick={() => void actions.launch()}>Launch Codex++</Button>
             <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
-              保存为默认路径
+              Save as Default Path
             </Button>
           </Toolbar>
         </CardContent>
@@ -2634,21 +2634,21 @@ function AboutScreen({
   return (
     <>
       <Panel>
-        <CardHead title="关于 Codex++" detail="本地 Codex 增强、管理工具和安装包维护" />
+        <CardHead title="About Codex++" detail="Local Codex enhancements, manager, and package maintenance" />
         <CardContent>
           <div className="metric-list">
-            <Metric label="Codex++ 版本" value={overview?.current_version ?? update?.currentVersion ?? "-"} />
-            <Metric label="Codex 版本" value={overview?.codex_version ?? "未检测到"} />
-            <Metric label="项目地址" value="github.com/BigPizzaV3/CodexPlusPlus" />
+            <Metric label="Codex++ Version" value={overview?.current_version ?? update?.currentVersion ?? "-"} />
+            <Metric label="Codex Version" value={overview?.codex_version ?? "Not detected"} />
+            <Metric label="Project URL" value="github.com/BigPizzaV3/CodexPlusPlus" />
           </div>
           <Toolbar>
             <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus")} variant="secondary">
               <ExternalLink className="h-4 w-4" />
-              打开项目主页
+              Open Project Home
             </Button>
             <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus/issues")} variant="secondary">
               <ExternalLink className="h-4 w-4" />
-              反馈问题
+              Report Issue
             </Button>
             <Button onClick={() => void actions.openExternalUrl("https://discord.gg/y96kX7A76v")} variant="secondary">
               <MessageCircle className="h-4 w-4" />
@@ -2662,18 +2662,18 @@ function AboutScreen({
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="GitHub Release 更新" detail={`当前版本 ${overview?.current_version ?? update?.currentVersion ?? "-"}`} />
+        <CardHead title="GitHub Release Updates" detail={`Current Version ${overview?.current_version ?? update?.currentVersion ?? "-"}`} />
         <CardContent>
           <div className="metric-list">
-            <Metric label="状态" value={update?.status ?? "not_checked"} />
-            <Metric label="最新版本" value={update?.latestVersion ?? "未检查"} />
-            <Metric label="资源" value={update?.assetName ?? "-"} />
-            <Metric label="进度" value={`${update?.progress ?? 0}%`} />
+            <Metric label="Status" value={update?.status ?? "not_checked"} />
+            <Metric label="Latest Version" value={update?.latestVersion ?? "Not checked"} />
+            <Metric label="Asset" value={update?.assetName ?? "-"} />
+            <Metric label="Progress" value={`${update?.progress ?? 0}%`} />
           </div>
-          <Textarea className="log-view" readOnly value={update?.releaseSummary || update?.message || "尚未检查 GitHub Release；更新会下载并启动安装包。"} />
+          <Textarea className="log-view" readOnly value={update?.releaseSummary || update?.message || "GitHub releases have not been checked yet. Updating downloads and starts the installer package."} />
           <Toolbar>
-            <Button onClick={() => void actions.checkUpdate()}>检查更新</Button>
-            <Button variant="secondary" onClick={() => void actions.performUpdate()}>下载并运行安装包</Button>
+            <Button onClick={() => void actions.checkUpdate()}>Check for Updates</Button>
+            <Button variant="secondary" onClick={() => void actions.performUpdate()}>Download and Run Installer</Button>
           </Toolbar>
         </CardContent>
       </Panel>
@@ -2699,20 +2699,20 @@ function SettingsScreen({
   return (
     <>
       <Panel>
-        <CardHead title="基础设置" detail={settings?.settings_path ?? ""} />
+        <CardHead title="Basic Settings" detail={settings?.settings_path ?? ""} />
         <CardContent>
           <div className="theme-row">
             <div>
-              <strong>界面主题</strong>
-              <span>当前为{theme === "dark" ? "深色" : "浅色"}模式。</span>
+              <strong>Theme</strong>
+              <span>Current: {theme === "dark" ? "dark" : "light"} mode.</span>
             </div>
-            <Button variant="secondary" onClick={actions.toggleTheme}>切换主题</Button>
+            <Button variant="secondary" onClick={actions.toggleTheme}>Toggle Theme</Button>
           </div>
-          <Field label="供应商测试模型">
+          <Field label="Provider Test Model">
             <Input
               value={form.relayTestModel}
               onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
-              placeholder="例如 gpt-5.4-mini"
+              placeholder="Example: gpt-5.4-mini"
             />
           </Field>
           <label className="check-row">
@@ -2721,16 +2721,16 @@ function SettingsScreen({
               onChange={(event) => onFormChange({ ...form, cliWrapperEnabled: event.currentTarget.checked })}
               type="checkbox"
             />
-            <span>启用 Codex 命令包装器</span>
+            <span>Enable Codex Command Wrapper</span>
           </label>
           <div className="form-row">
-            <Field label="包装器 Base URL">
+            <Field label="Wrapper Base URL">
               <Input
                 value={form.cliWrapperBaseUrl}
                 onChange={(event) => onFormChange({ ...form, cliWrapperBaseUrl: event.currentTarget.value })}
               />
             </Field>
-            <Field label="API Key 环境变量">
+            <Field label="API Key Environment Variable">
               <Input
                 value={form.cliWrapperApiKeyEnv}
                 onChange={(event) => onFormChange({ ...form, cliWrapperApiKeyEnv: event.currentTarget.value })}
@@ -2745,17 +2745,17 @@ function SettingsScreen({
             />
           </Field>
           <Toolbar>
-            <Button onClick={() => void actions.saveSettings()}>保存设置</Button>
+            <Button onClick={() => void actions.saveSettings()}>Save Settings</Button>
             <Button variant="secondary" onClick={() => void actions.resetSettings()}>
-              重置设置
+              Reset Settings
             </Button>
           </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="Codex 启动参数" detail="启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。" />
+        <CardHead title="Codex Launch Arguments" detail="Appended after the default CDP arguments when launching Codex App. Leave empty to keep default launch behavior." />
         <CardContent>
-          <Field label="额外参数">
+          <Field label="Extra Arguments">
             <Textarea
               className="launch-args-input"
               placeholder="--force_high_performance_gpu"
@@ -2769,9 +2769,9 @@ function SettingsScreen({
               }
             />
           </Field>
-          <p className="field-hint">每行一个参数，例如 --force_high_performance_gpu。不需要填写 open 或 --args。</p>
+          <p className="field-hint">One argument per line, for example --force_high_performance_gpu. Do not include open or --args.</p>
           <Toolbar>
-            <Button onClick={() => void actions.saveSettings()}>保存设置</Button>
+            <Button onClick={() => void actions.saveSettings()}>Save Settings</Button>
           </Toolbar>
         </CardContent>
       </Panel>
@@ -2783,7 +2783,7 @@ function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Action
   const lines = splitLogLines(logs?.text ?? "");
   return (
     <Panel>
-      <CardHead title="最近日志" detail={logs?.path ?? ""} />
+      <CardHead title="Recent Logs" detail={logs?.path ?? ""} />
       <CardContent>
         <div className="log-lines">
           {lines.length ? (
@@ -2794,13 +2794,13 @@ function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Action
               </div>
             ))
           ) : (
-            <div className="empty">暂无日志。</div>
+            <div className="empty">No logs.</div>
           )}
         </div>
         <Toolbar>
-          <Button onClick={() => void actions.refreshLogs()}>刷新</Button>
+          <Button onClick={() => void actions.refreshLogs()}>Refresh</Button>
           <Button variant="secondary" onClick={() => void actions.copyLogs()}>
-            复制
+            Copy
           </Button>
         </Toolbar>
       </CardContent>
@@ -2811,13 +2811,13 @@ function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Action
 function DiagnosticsPanel({ diagnostics, actions }: { diagnostics: DiagnosticsResult | null; actions: Actions }) {
   return (
     <Panel>
-      <CardHead title="诊断报告" detail="包含版本、路径、设置和平台信息" />
+      <CardHead title="Diagnostics Report" detail="Includes version, paths, settings, and platform information" />
       <CardContent>
-        <Textarea className="log-view tall" readOnly value={diagnostics?.report ?? "尚未生成诊断报告。"} />
+        <Textarea className="log-view tall" readOnly value={diagnostics?.report ?? "No diagnostics report has been generated yet."} />
         <Toolbar>
-          <Button onClick={() => void actions.refreshDiagnostics()}>重新生成</Button>
+          <Button onClick={() => void actions.refreshDiagnostics()}>Regenerate</Button>
           <Button variant="secondary" onClick={() => void actions.copyDiagnostics()}>
-            复制报告
+            Copy Report
           </Button>
         </Toolbar>
       </CardContent>
@@ -2911,20 +2911,20 @@ function SortableRelayProfileCard({
       tabIndex={0}
     >
       <button
-        aria-label="拖动排序"
+        aria-label="Drag to sort"
         className="relay-drag"
-        title="拖动排序"
+        title="Drag to sort"
         type="button"
         {...attributes}
         {...listeners}
       >
         <GripVertical className="h-4 w-4" />
       </button>
-      <span className="relay-index" title={profile.name || "未命名供应商"}>
+      <span className="relay-index" title={profile.name || "Unnamed Provider"}>
         {providerInitial(profile.name)}
       </span>
       <span className="relay-summary">
-        <strong>{profile.name || "未命名供应商"}</strong>
+        <strong>{profile.name || "Unnamed Provider"}</strong>
         <small>{relayProfileSourceLabel(profile)} · {relayModeLabel(profile.relayMode)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
       </span>
       <span className="relay-card-actions">
@@ -2939,11 +2939,11 @@ function SortableRelayProfileCard({
             void actions.switchRelayProfile(next, previousActiveRelayId);
           }}
           size="sm"
-          title={disabled ? "供应商配置总开关已关闭" : active ? "当前正在使用" : "设为当前"}
+          title={disabled ? "Provider switching is off" : active ? "Currently active" : "Set current"}
           variant={active ? "secondary" : "outline"}
         >
           <CheckCircle2 className="h-4 w-4" />
-          {active ? "使用中" : "使用"}
+          {active ? "Active" : "Use"}
         </Button>
         <span className="relay-card-extra">
           <Button
@@ -2952,7 +2952,7 @@ function SortableRelayProfileCard({
               void actions.testRelayProfile(profile);
             }}
             size="icon"
-            title="发送 hi 测试"
+            title="Send hi test"
             variant="ghost"
           >
             <TestTube className="h-4 w-4" />
@@ -2963,7 +2963,7 @@ function SortableRelayProfileCard({
               onEdit(profile.id);
             }}
             size="icon"
-            title="编辑"
+            title="Edit"
             variant="ghost"
           >
             <Edit3 className="h-4 w-4" />
@@ -2974,7 +2974,7 @@ function SortableRelayProfileCard({
               onFormChange(duplicateRelayProfile(form, profile.id));
             }}
             size="icon"
-            title="复制"
+            title="Copy"
             variant="ghost"
           >
             <Copy className="h-4 w-4" />
@@ -2986,7 +2986,7 @@ function SortableRelayProfileCard({
               onFormChange(removeRelayProfile(form, profile.id));
             }}
             size="icon"
-            title="删除供应商"
+            title="Delete Provider"
             variant="ghost"
           >
             <Trash2 className="h-4 w-4" />
@@ -2998,17 +2998,17 @@ function SortableRelayProfileCard({
 }
 
 function MarketScriptCard({ script, actions }: { script: ScriptMarketItem; actions: Actions }) {
-  const status = script.updateAvailable ? "可更新" : script.installed ? `已安装 ${script.installedVersion}` : "未安装";
+  const status = script.updateAvailable ? "Update available" : script.installed ? `Installed ${script.installedVersion}` : "Not installed";
   return (
     <div className="script-market-card">
       <div className="script-market-title">
         <div>
           <strong>{script.name}</strong>
-          <span>{script.author || "未知作者"}</span>
+          <span>{script.author || "Unknown author"}</span>
         </div>
         <UiBadge variant={script.updateAvailable ? "default" : script.installed ? "secondary" : "outline"}>{status}</UiBadge>
       </div>
-      <p className="script-market-description">{script.description || "暂无描述。"}</p>
+      <p className="script-market-description">{script.description || "No description."}</p>
       <div className="script-market-tags">
         <span className="script-market-tag">v{script.version}</span>
         {script.tags.map((tag) => (
@@ -3018,12 +3018,12 @@ function MarketScriptCard({ script, actions }: { script: ScriptMarketItem; actio
       <div className="script-market-actions">
         <Button onClick={() => void actions.installMarketScript(script.id)} size="sm">
           <Download className="h-4 w-4" />
-          {script.updateAvailable ? "更新" : script.installed ? "重新安装" : "安装"}
+          {script.updateAvailable ? "Update" : script.installed ? "Reinstall" : "Install"}
         </Button>
         {script.homepage ? (
           <Button onClick={() => void actions.openExternalUrl(script.homepage)} size="sm" variant="secondary">
             <ExternalLink className="h-4 w-4" />
-            主页
+            Home
           </Button>
         ) : null}
       </div>
@@ -3098,11 +3098,11 @@ function RelayProfileDetail({
         <Toolbar>
           <Button onClick={onBack} variant="secondary">
             <ArrowLeft className="h-4 w-4" />
-            返回列表
+            Back to list
           </Button>
           <Button onClick={() => void saveDraft()}>
             <Save className="h-4 w-4" />
-            保存
+            Save
           </Button>
         </Toolbar>
       </div>
@@ -3136,7 +3136,7 @@ function ContextScreen({
 }) {
   return (
     <Panel fill>
-      <CardHead title="Codex 工具与插件" detail="独立管理 Codex 的 MCP、Skills、Plugins；切换任意供应商都会带上。" />
+      <CardHead title="Codex Tools & Plugins" detail="Manage MCP, Skills, and Plugins separately; every provider switch includes them." />
       <CardContent>
         <RelayContextManager
           form={normalizeSettings(form)}
@@ -3174,17 +3174,17 @@ function RelayProfileEditor({
     <div className="relay-profile-editor">
       <div className="relay-editor-head">
         <div>
-          <strong>{profile.name || "未命名供应商"}</strong>
+          <strong>{profile.name || "Unnamed Provider"}</strong>
           <span>{relayProfileEditorStatus(profile, form, isNew)}</span>
         </div>
         {isNew ? null : (
           <Button
             disabled={!form.relayProfilesEnabled}
             onClick={onSwitch}
-            title={!form.relayProfilesEnabled ? "供应商配置总开关已关闭" : undefined}
+            title={!form.relayProfilesEnabled ? "Provider switching is off" : undefined}
             variant={profile.id === form.activeRelayId ? "secondary" : "default"}
           >
-            {profile.id === form.activeRelayId ? "使用中" : "设为当前"}
+            {profile.id === form.activeRelayId ? "Active" : "Set current"}
           </Button>
         )}
       </div>
@@ -3196,13 +3196,13 @@ function RelayProfileEditor({
         />
       ) : null}
       <div className="relay-fields">
-        <Field className="relay-field-name" label="名称">
+        <Field className="relay-field-name" label="Name">
           <Input
             value={profile.name}
             onChange={(event) => updateDraft({ name: event.currentTarget.value })}
           />
         </Field>
-        <Field className="relay-field-mode" label="接入模式">
+        <Field className="relay-field-mode" label="Access Mode">
           <select
             className="field-select"
             value={profile.relayMode}
@@ -3211,18 +3211,18 @@ function RelayProfileEditor({
               updateDraft(relayMode === "official" ? { relayMode, officialMixApiKey: false } : { relayMode });
             }}
           >
-            <option value="official">官方登录</option>
-            <option value="pureApi">纯 API</option>
+            <option value="official">Official Login</option>
+            <option value="pureApi">Pure API</option>
           </select>
         </Field>
-        <Field className="relay-field-config-model" label="配置模型">
+        <Field className="relay-field-config-model" label="Config Model">
           <Input
             value={profile.model}
             onChange={(event) => updateDraft({ model: event.currentTarget.value })}
-            placeholder="写入 config.toml 的 model 字段，例如 gpt-5"
+            placeholder="Model field written to config.toml, for example gpt-5"
           />
         </Field>
-        <Field className="relay-field-goals" label="Codex 目标">
+        <Field className="relay-field-goals" label="Codex Goals">
           <label className="inline-check">
             <input
               checked={configHasCodexGoalsFeature(profile.configContents)}
@@ -3233,7 +3233,7 @@ function RelayProfileEditor({
               }
               type="checkbox"
             />
-            <span>启用目标功能</span>
+            <span>Enable goals</span>
           </label>
         </Field>
         <div className="relay-advanced-toggle">
@@ -3245,32 +3245,32 @@ function RelayProfileEditor({
             variant="secondary"
           >
             <Settings className="h-4 w-4" />
-            更多选项
+            More Options
           </Button>
         </div>
         {showAdvanced ? (
           <div className="relay-advanced-fields">
-            <Field className="relay-field-test-model" label="测试模型">
+            <Field className="relay-field-test-model" label="Test Model">
               <Input
                 value={profile.testModel}
                 onChange={(event) => updateDraft({ testModel: event.currentTarget.value })}
-                placeholder={`留空使用默认：${form.relayTestModel || defaultSettings.relayTestModel}`}
+                placeholder={`Leave empty to use the default: ${form.relayTestModel || defaultSettings.relayTestModel}`}
               />
             </Field>
-            <Field className="relay-field-context-window" label="上下文大小">
+            <Field className="relay-field-context-window" label="Context Window">
               <Input
                 inputMode="numeric"
                 value={profile.contextWindow}
                 onChange={(event) => updateDraft({ contextWindow: event.currentTarget.value.replace(/[^\d]/g, "") })}
-                placeholder="留空不改写，例如 200000"
+                placeholder="Leave empty to keep unchanged, for example 200000"
               />
             </Field>
-            <Field className="relay-field-auto-compact" label="压缩上下文大小">
+            <Field className="relay-field-auto-compact" label="Auto Compact Limit">
               <Input
                 inputMode="numeric"
                 value={profile.autoCompactLimit}
                 onChange={(event) => updateDraft({ autoCompactLimit: event.currentTarget.value.replace(/[^\d]/g, "") })}
-                placeholder="留空不改写，例如 160000"
+                placeholder="Leave empty to keep unchanged, for example 160000"
               />
             </Field>
           </div>
@@ -3283,7 +3283,7 @@ function RelayProfileEditor({
                 onChange={(event) => updateDraft({ officialMixApiKey: event.currentTarget.checked })}
                 type="checkbox"
               />
-              <span>混入 API KEY</span>
+              <span>Mix in API Key</span>
             </label>
           </Field>
         ) : null}
@@ -3293,7 +3293,7 @@ function RelayProfileEditor({
               <Input
                 value={profile.baseUrl}
                 onChange={(event) => updateDraft({ baseUrl: event.currentTarget.value })}
-                placeholder="填写中转服务 Base URL"
+                placeholder="Enter relay service Base URL"
               />
             </Field>
             <Field className="relay-field-key" label="Key">
@@ -3301,10 +3301,10 @@ function RelayProfileEditor({
                 type="password"
                 value={profile.apiKey}
                 onChange={(event) => updateDraft({ apiKey: event.currentTarget.value })}
-                placeholder="输入中转服务的 API Key"
+                placeholder="Enter relay service API Key"
               />
             </Field>
-            <Field className="relay-field-protocol" label="上游协议">
+            <Field className="relay-field-protocol" label="Upstream Protocol">
               <div className="protocol-options">
                 <button
                   className={`protocol-option ${profile.protocol === "responses" ? "active" : ""}`}
@@ -3325,12 +3325,12 @@ function RelayProfileEditor({
           </div>
         ) : null}
         {showApiFields ? (
-          <Field className="relay-field-model-list" label="模型列表">
+          <Field className="relay-field-model-list" label="Model List">
             <div className="relay-model-list-tools">
               <Textarea
                 value={profile.modelList}
                 onChange={(event) => updateDraft({ modelList: event.currentTarget.value })}
-                placeholder="每行一个模型，例如 qwen3-coder"
+                placeholder="One model per line, for example qwen3-coder"
               />
               <Button
                 onClick={async () => {
@@ -3342,7 +3342,7 @@ function RelayProfileEditor({
                 variant="secondary"
               >
                 <Download className="h-4 w-4" />
-                从上游获取
+                Fetch from Upstream
               </Button>
             </div>
           </Field>
@@ -3352,7 +3352,7 @@ function RelayProfileEditor({
             <Input
               value={profile.userAgent}
               onChange={(event) => updateDraft({ userAgent: event.currentTarget.value })}
-              placeholder="留空使用默认值"
+              placeholder="Leave blank to use the default"
             />
           </Field>
         ) : null}
@@ -3360,7 +3360,7 @@ function RelayProfileEditor({
       {showApiFields && profile.protocol === "chatCompletions" ? (
         <div className="hint-line relay-protocol-hint">
           <MessageCircle className="h-4 w-4" />
-          <span>此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 Codex++ 启动 Codex。</span>
+          <span>This upstream is converted to the Responses API through local 127.0.0.1:57321 and requires launching Codex from Codex++.</span>
         </div>
       ) : null}
       <div className="hint-line relay-protocol-hint">
@@ -3371,7 +3371,7 @@ function RelayProfileEditor({
         <div className="hint-line relay-protocol-hint">
           <Link2 className="h-4 w-4" />
           <span>
-            此供应商联动自 cc-switch：{profile.linkedCcsProviderId}。开启“保存时回写 cc-switch”后，本页保存会同步修改 cc-switch 数据库中的同一供应商。
+            This provider is linked from cc-switch: {profile.linkedCcsProviderId}. When cc-switch writeback is enabled, saving here updates the same provider in the cc-switch database.
           </span>
         </div>
       ) : null}
@@ -3426,13 +3426,13 @@ function RelayContextManager({
     <div className="relay-context-panel">
       <div className="relay-context-head">
         <div>
-          <strong>Codex 工具与插件</strong>
-          <span>MCP、Skills、Plugins 作为全局配置独立管理，切换任意供应商都会合并。</span>
+          <strong>Codex Tools & Plugins</strong>
+          <span>MCP, Skills, and Plugins are managed as global configuration and merged into every provider switch.</span>
         </div>
         <div className="relay-context-head-actions">
           <Button onClick={() => setEditor({ kind: activeKind })} size="sm" variant="secondary">
             <Plus className="h-4 w-4" />
-            新增{label}
+            Add {label}
           </Button>
         </div>
       </div>
@@ -3450,7 +3450,7 @@ function RelayContextManager({
         ))}
       </div>
       <div className="relay-context-summary">
-        当前共有 {visibleEntries.length} 个{label}；这些条目独立于供应商保存，会写入所有供应商切换后的 config.toml。
+        {visibleEntries.length} {label} entries are saved independently from providers and written into config.toml after every provider switch.
       </div>
       <div className="relay-context-list">
         {visibleEntries.length ? (
@@ -3464,21 +3464,21 @@ function RelayContextManager({
                   className={`context-enabled-switch ${entry.enabled ? "active" : ""}`}
                   onClick={() => void toggleContextEntryEnabled(entry)}
                   role="switch"
-                  title={entry.enabled ? "禁用此扩展项" : "启用此扩展项"}
+                  title={entry.enabled ? "Disable this extension" : "Enable this extension"}
                   type="button"
                 >
                   <span className="context-switch-track" aria-hidden="true">
                     <span className="context-switch-thumb" />
                   </span>
                 </button>
-                <Button onClick={() => setEditor({ kind: entry.kind, entry })} size="icon" title="编辑扩展项" variant="ghost">
+                <Button onClick={() => setEditor({ kind: entry.kind, entry })} size="icon" title="Edit extension" variant="ghost">
                   <Edit3 className="h-4 w-4" />
                 </Button>
                 <Button
                   className="relay-context-delete"
                   onClick={() => void deleteEntry(entry)}
                   size="icon"
-                  title="删除扩展项"
+                  title="Delete extension"
                   variant="ghost"
                 >
                   <Trash2 className="h-4 w-4" />
@@ -3487,7 +3487,7 @@ function RelayContextManager({
             </div>
           ))
         ) : (
-          <div className="empty">暂无{label}，可以从通用配置文件或这里新增。</div>
+          <div className="empty">No {label} entries yet. Add one here or extract it from the common config.</div>
         )}
       </div>
       {editor ? (
@@ -3521,7 +3521,7 @@ function ContextEntryEditor({
   return (
     <div className="context-editor">
       <div className="context-editor-fields">
-        <Field label="类型">
+        <Field label="Type">
           <select
             className="field-select"
             disabled={!!entry}
@@ -3538,25 +3538,25 @@ function ContextEntryEditor({
             disabled={!!entry}
             value={id}
             onChange={(event) => setId(event.currentTarget.value.trim())}
-            placeholder="例如 context7"
+            placeholder="Example: context7"
           />
         </Field>
       </div>
-      <Field label="TOML 配置体">
+      <Field label="TOML Body">
         <Textarea
           className="context-editor-textarea"
           value={tomlBody}
           onChange={(event) => setTomlBody(event.currentTarget.value)}
-          placeholder={'只填写表头下面的内容，例如：\ncommand = "npx"\nargs = ["-y", "@upstash/context7-mcp"]'}
+          placeholder={'Only enter the content under the table header, for example:\ncommand = "npx"\nargs = ["-y", "@upstash/context7-mcp"]'}
           spellCheck={false}
         />
       </Field>
       <Toolbar>
         <Button disabled={!canSave} onClick={() => onSave(draftKind, id.trim(), tomlBody)} size="sm">
           <Save className="h-4 w-4" />
-          保存扩展项
+          Save Extension
         </Button>
-        <Button onClick={onCancel} size="sm" variant="secondary">取消</Button>
+        <Button onClick={onCancel} size="sm" variant="secondary">Cancel</Button>
       </Toolbar>
     </div>
   );
@@ -3629,8 +3629,8 @@ function RelayFileEditors({
       <div className="relay-file-panel">
         <div className="relay-file-head">
           <div>
-            <strong>config.toml 预览</strong>
-            <span>{isActive ? "当前供应商切换后会写入的预览；上下文开关变化会立即反映" : "切换到此供应商时会写入的预览；上下文开关变化会立即反映"}</span>
+            <strong>config.toml Preview</strong>
+            <span>{isActive ? "Preview written after switching the current provider; tool/plugin toggle changes appear immediately" : "Preview written when switching to this provider; tool/plugin toggle changes appear immediately"}</span>
           </div>
         </div>
         <SyncedTextarea
@@ -3652,8 +3652,8 @@ function RelayFileEditors({
       <div className="relay-file-panel">
         <div className="relay-file-head">
           <div>
-            <strong>通用配置文件</strong>
-            <span>只保留非 MCP、Skills、Plugins 的跨供应商配置；工具与插件在独立页面管理。</span>
+            <strong>Common Config</strong>
+            <span>Keeps cross-provider config that is not MCP, Skills, or Plugins; tools and plugins are managed on their own page.</span>
           </div>
           <Button
             onClick={async () => {
@@ -3661,7 +3661,7 @@ function RelayFileEditors({
               if (!extracted) return;
               const split = splitContextConfigText(extracted.commonConfigContents || "");
               if (!split.common.trim() && !split.context.trim()) {
-                await actions.showMessage("通用配置文件", "当前供应商 config.toml 里没有可提取的通用配置。", "failed");
+                await actions.showMessage("Common Config", "The current provider config.toml has no common config to extract.", "failed");
                 return;
               }
               const promotedProfile = {
@@ -3683,7 +3683,7 @@ function RelayFileEditors({
             variant="secondary"
           >
             <Download className="h-4 w-4" />
-            提取当前供应商配置
+            Extract Current Provider Config
           </Button>
         </div>
         <SyncedTextarea
@@ -3696,7 +3696,7 @@ function RelayFileEditors({
         <div className="relay-file-head">
           <div>
             <strong>auth.json</strong>
-            <span>{isActive ? "当前使用中：打开时从 ~/.codex/auth.json 回填，保存后会作为此供应商 auth 存档" : "切换到此供应商时会写入 ~/.codex/auth.json"}</span>
+            <span>{isActive ? "Currently active: loaded from ~/.codex/auth.json when opened and saved as this provider's auth archive" : "Written to ~/.codex/auth.json when switching to this provider"}</span>
           </div>
         </div>
         <SyncedTextarea
@@ -3717,16 +3717,16 @@ function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions
         onClick={() => void actions.setLaunchMode("relay")}
         type="button"
       >
-        <strong>兼容增强</strong>
-        <span>适合官方登录或官方混入 API Key；保留会话删除、导出、项目移动、Timeline 和用户脚本，关闭插件入口相关增强。</span>
+        <strong>Compatibility Enhancement</strong>
+        <span>Best for Official Login or Official Login with API Key; keeps Session Delete, export, Project Move, Timeline, and user scripts while disabling plugin-entry enhancements.</span>
       </button>
       <button
         className={`mode-option ${launchMode === "patch" ? "active" : ""}`}
         onClick={() => void actions.setLaunchMode("patch")}
         type="button"
       >
-        <strong>完整增强</strong>
-        <span>适合纯 API；启用插件入口、强制安装、会话删除导出、项目移动等全部页面能力。</span>
+        <strong>Full Enhancement</strong>
+        <span>Best for Pure API; enables plugin entry, force install, Session Delete, export, Project Move, and the full set of page features.</span>
       </button>
     </div>
   );
@@ -3851,7 +3851,7 @@ function StatusRow({ title, status = "unknown", path }: { title: string; status?
     <div className="status-row">
       <span>{title}</span>
       <Badge status={status} />
-      <code>{path || "未记录路径"}</code>
+      <code>{path || "No path recorded"}</code>
     </div>
   );
 }
@@ -3861,14 +3861,14 @@ function Badge({ status }: { status: string }) {
 }
 
 function LatestLaunch({ status }: { status: LaunchStatus | null }) {
-  if (!status) return <div className="empty">暂无启动状态。</div>;
+  if (!status) return <div className="empty">No launch status.</div>;
   return (
     <div className="metric-list">
-      <Metric label="状态" value={status.status} />
-      <Metric label="消息" value={status.message} />
+      <Metric label="Status" value={status.status} />
+      <Metric label="Message" value={status.message} />
       <Metric label="Debug" value={String(status.debug_port ?? "-")} />
       <Metric label="Helper" value={String(status.helper_port ?? "-")} />
-      <Metric label="时间" value={formatTime(status.started_at_ms)} />
+      <Metric label="Time" value={formatTime(status.started_at_ms)} />
     </div>
   );
 }
@@ -3883,23 +3883,23 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 function ScriptRow({ script, actions }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; actions: Actions }) {
-  const source = script.market_id ? `市场 · ${script.version || "未知版本"}` : script.source === "builtin" ? "内置" : "用户";
+  const source = script.market_id ? `Market · ${script.version || "Unknown version"}` : script.source === "builtin" ? "Built-in" : "User";
   const canDelete = script.source === "user";
   return (
     <div className="table-row">
       <span>{script.name}</span>
       <span>{source}</span>
-      <span>{script.enabled ? "启用" : "关闭"}</span>
+      <span>{script.enabled ? "Enable" : "Off"}</span>
       <span>{script.status}</span>
       <div className="script-row-actions">
         <Button onClick={() => void actions.setUserScriptEnabled(script.key, !script.enabled)} size="sm" variant="secondary">
           {script.enabled ? <PowerOff className="h-4 w-4" /> : <Power className="h-4 w-4" />}
-          {script.enabled ? "禁用" : "启用"}
+          {script.enabled ? "Disable" : "Enable"}
         </Button>
         {canDelete ? (
           <Button onClick={() => void actions.deleteUserScript(script.key)} size="sm" variant="outline">
             <Trash2 className="h-4 w-4" />
-            删除
+            Delete
           </Button>
         ) : null}
       </div>
@@ -3925,7 +3925,7 @@ function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions
             </div>
           ) : null}
           <span className="ad-link">
-            打开
+            Open
             <ExternalLink className="h-4 w-4" />
           </span>
         </button>
@@ -3941,22 +3941,22 @@ function isExpiredAd(ad: AdItem) {
 }
 
 function routeTitle(route: Route) {
-  return routes.find((item) => item.id === route)?.label ?? "概览";
+  return routes.find((item) => item.id === route)?.label ?? "Overview";
 }
 
 function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
-    overview: "检查问题、启动与快速修复",
-    relay: "管理 API 供应商、协议、Key 与配置文件",
-    sessions: "查看、删除和修复 Codex 本地会话",
-    context: "独立管理 MCP、Skills、Plugins",
-    enhance: "会话删除、导出、项目移动和脚本能力",
-    zedRemote: "管理 Codex SSH 项目并加入 Zed workspace",
-    userScripts: "内置和用户自定义脚本清单",
-    recommendations: "赞助商推荐与普通推荐",
-    maintenance: "入口安装、修复、Watcher 与手动启动",
-    about: "版本信息、项目链接、GitHub Release 更新、日志与诊断",
-    settings: "主题、命令包装器和启动参数",
+    overview: "Check issues, launch, and quick repair",
+    relay: "Manage API providers, protocols, keys, and config files",
+    sessions: "View, delete, and repair local Codex sessions",
+    context: "Manage MCP, Skills, and Plugins separately",
+    enhance: "Session Delete, Export, Project Move, and script features",
+    zedRemote: "Manage Codex SSH projects and add them to Zed workspaces",
+    userScripts: "Built-in and custom user script inventory",
+    recommendations: "Sponsored and regular recommendations",
+    maintenance: "Entry install, repair, watcher, and manual launch",
+    about: "Version info, project links, GitHub Release updates, logs, and diagnostics",
+    settings: "Theme, command wrapper, and launch arguments",
   };
   return subtitles[route];
 }
@@ -3964,11 +3964,11 @@ function routeSubtitle(route: Route) {
 const contextKindOptions: Array<{ kind: ContextKind; label: string; tableName: string }> = [
   { kind: "mcp", label: "MCP", tableName: "mcp_servers" },
   { kind: "skill", label: "Skills", tableName: "skills" },
-  { kind: "plugin", label: "插件", tableName: "plugins" },
+  { kind: "plugin", label: "Plugins", tableName: "plugins" },
 ];
 
 function contextKindLabel(kind: ContextKind) {
-  return contextKindOptions.find((option) => option.kind === kind)?.label ?? "扩展项";
+  return contextKindOptions.find((option) => option.kind === kind)?.label ?? "Extension";
 }
 
 function contextEntriesFromSettings(settings: BackendSettings): CodexContextEntries {
@@ -4568,7 +4568,7 @@ function normalizeConfigOwnership(value: ConfigOwnership | undefined): ConfigOwn
 function configOwnershipLabel(value: ConfigOwnership): string {
   if (value === "codexPlusPlus") return "Codex++";
   if (value === "ccSwitch") return "CC Switch";
-  return "自动";
+  return "Auto";
 }
 
 function CoordinationStatusBanner({
@@ -4586,13 +4586,13 @@ function CoordinationStatusBanner({
   const tone = status.conflictDetected ? "failed" : status.effectiveOwnership === "ccSwitch" ? "success" : "info";
   return (
     <div className={`relay-coordination-banner relay-coordination-${tone}`}>
-      <strong>配置协调状态</strong>
+      <strong>Config Coordination Status</strong>
       <p>{status.guidance}</p>
       {status.ccswitchDetected ? (
         <small>
-          有效所有权：{configOwnershipLabel(status.effectiveOwnership)}；live model_provider：{status.liveModelProvider || "（空）"}
-          {status.ccswitchCurrentProviderName ? `；CC Switch 当前：${status.ccswitchCurrentProviderName}` : ""}
-          {status.lastWriter ? `；上次写入方：${status.lastWriter}` : ""}
+          Effective ownership: {configOwnershipLabel(status.effectiveOwnership)}; live model_provider: {status.liveModelProvider || "(empty)"}
+          {status.ccswitchCurrentProviderName ? `; CC Switch current: ${status.ccswitchCurrentProviderName}` : ""}
+          {status.lastWriter ? `; Last writer: ${status.lastWriter}` : ""}
         </small>
       ) : null}
       {status.conflictDetected ? <small>{status.conflictMessage}</small> : null}
@@ -4601,39 +4601,39 @@ function CoordinationStatusBanner({
 }
 
 function relayProfileSourceLabel(profile: RelayProfile) {
-  return profile.linkedCcsProviderId ? "cc-switch 联动" : "本地";
+  return profile.linkedCcsProviderId ? "cc-switch linked" : "Local";
 }
 
 function relayProfileEditorStatus(profile: RelayProfile, form: BackendSettings, isNew: boolean) {
-  if (isNew) return "新建供应商需要先保存到列表";
-  if (!form.relayProfilesEnabled) return "供应商配置总开关已关闭；当前只保存配置，不写入 Codex live 文件";
+  if (isNew) return "Save the new provider to the list first";
+  if (!form.relayProfilesEnabled) return "Provider switching is off; this only saves settings and does not write live Codex files";
   if (profile.linkedCcsProviderId && form.ccsLinkEnabled && form.configOwnership !== "codexPlusPlus") {
-    return "联动 cc-switch；切换时从 cc-switch 数据库应用配置，避免覆盖冲突";
+    return "Linked to cc-switch; switching applies the cc-switch database config to avoid overwrite conflicts";
   }
-  if (profile.linkedCcsProviderId && form.ccsLinkEnabled) return "联动 cc-switch；保存后会回写外部供应商数据库";
-  if (profile.linkedCcsProviderId) return "联动 cc-switch；当前未开启保存回写";
-  return profile.id === form.activeRelayId ? "当前正在使用" : "编辑后保存列表，再切换模式时会使用新配置";
+  if (profile.linkedCcsProviderId && form.ccsLinkEnabled) return "Linked to cc-switch; saving writes back to the external provider database";
+  if (profile.linkedCcsProviderId) return "Linked to cc-switch; writeback is currently off";
+  return profile.id === form.activeRelayId ? "Currently active" : "Edit and save the list, then switch modes to use the new configuration";
 }
 
 function providerInitial(name: string) {
-  const trimmed = (name || "供应商").trim();
-  return Array.from(trimmed)[0]?.toUpperCase() || "供";
+  const trimmed = (name || "Provider").trim();
+  return Array.from(trimmed)[0]?.toUpperCase() || "P";
 }
 
 function statusLabel(status: string) {
   const labels: Record<string, string> = {
-    found: "已找到",
-    missing: "缺失",
-    installed: "已安装",
-    ok: "正常",
-    running: "运行中",
-    failed: "失败",
-    archived: "已归档",
-    accepted: "已受理",
-    not_checked: "未检查",
-    not_implemented: "未实现",
-    disabled: "已禁用",
-    unknown: "未知",
+    found: "Found",
+    missing: "Missing",
+    installed: "Installed",
+    ok: "OK",
+    running: "Running",
+    failed: "Failed",
+    archived: "Archived",
+    accepted: "Accepted",
+    not_checked: "Not checked",
+    not_implemented: "Not implemented",
+    disabled: "Disabled",
+    unknown: "Unknown",
   };
   return labels[status] ?? status;
 }
@@ -4651,22 +4651,22 @@ function isSuccessStatus(status?: Status) {
 function healthItems(overview: OverviewResult | null) {
   return [
     {
-      title: "Codex 应用",
+      title: "Codex App",
       status: overview?.codex_app.status ?? "not_checked",
       ok: overview?.codex_app.status === "found",
-      detail: overview?.codex_app.path || "尚未检查 Codex 应用路径。",
+      detail: overview?.codex_app.path || "Codex app path has not been checked yet.",
     },
     {
-      title: "静默启动入口",
+      title: "Silent Launcher Entry",
       status: overview?.silent_shortcut.status ?? "not_checked",
       ok: overview?.silent_shortcut.status === "installed",
-      detail: overview?.silent_shortcut.path || "缺少 Codex++ 静默启动快捷方式时可在安装维护页修复。",
+      detail: overview?.silent_shortcut.path || "Repair it from Install & Maintenance if the Codex++ silent launcher shortcut is missing.",
     },
     {
-      title: "管理工具入口",
+      title: "Manager Entry",
       status: overview?.management_shortcut.status ?? "not_checked",
       ok: overview?.management_shortcut.status === "installed",
-      detail: overview?.management_shortcut.path || "缺少管理工具快捷方式时可在安装维护页修复。",
+      detail: overview?.management_shortcut.path || "Repair it from Install & Maintenance if the manager shortcut is missing.",
     },
   ];
 }
@@ -4690,7 +4690,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
           {
             id: settings.activeRelayId || "default",
             linkedCcsProviderId: "",
-            name: "默认中转",
+            name: "Default Relay",
             model: "",
             baseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
             upstreamBaseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
@@ -4771,7 +4771,7 @@ function activeRelayProfile(settings: BackendSettings): RelayProfile {
 }
 
 function relayProtocolLabel(protocol: RelayProtocol): string {
-  return protocol === "chatCompletions" ? "Chat Completions 转 Responses" : "Responses API";
+  return protocol === "chatCompletions" ? "Chat Completions to Responses" : "Responses API";
 }
 
 function normalizeRelayMode(mode: RelayMode | undefined): RelayMode {
@@ -4798,45 +4798,45 @@ function normalizeContextSelection(
 }
 
 function relayModeLabel(mode: RelayMode): string {
-  if (mode === "pureApi") return "纯 API";
-  return "官方登录";
+  if (mode === "pureApi") return "Pure API";
+  return "Official Login";
 }
 
 function relayProfileConfigBrief(profile: RelayProfile): string {
-  if (profile.relayMode === "official") return profile.officialMixApiKey ? "混入 API Key" : "不写 API 文件";
-  return profile.baseUrl || "未填写 URL";
+  if (profile.relayMode === "official") return profile.officialMixApiKey ? "Mix in API Key" : "Do not write API files";
+  return profile.baseUrl || "URL not filled";
 }
 
 function relayProfileModeHelp(profile: RelayProfile): string {
   if (profile.relayMode === "official") {
     if (profile.officialMixApiKey) {
-      return "此供应商会保留官方登录模式，并把请求混入当前 API Key；页面增强仍使用兼容模式。";
+      return "This provider keeps Official Login Mode and mixes requests with the current API key; Page Enhancements remain in Compatibility Mode.";
     }
-    return "此供应商会切回官方登录模式，使用 ChatGPT 官方账号，不写入 API Key。";
+    return "This provider switches back to Official Login Mode, uses the ChatGPT official account, and does not write an API key.";
   }
   if (profile.relayMode === "pureApi") {
-    return "此供应商会同时写入 config.toml 和 auth.json；API Key 也会注入到 provider bearer token。";
+    return "This provider writes both config.toml and auth.json; the API key is also injected into the provider bearer token.";
   }
-  return "此供应商会保留官方登录模式，并把请求混入当前 API Key；页面增强仍使用兼容模式。";
+  return "This provider keeps Official Login Mode and mixes requests with the current API key; Page Enhancements remain in Compatibility Mode.";
 }
 
 function relayProfileReadinessText(profile: RelayProfile, relay: RelayResult | null): string {
   if (profile.relayMode === "official") {
     if (profile.officialMixApiKey) {
       const hasApiFields = profile.baseUrl.trim() && profile.apiKey.trim();
-      if (!relay?.authenticated && !hasApiFields) return "当前未登录官方账号，也未配置混入 API 的 Base URL / Key。";
-      if (!relay?.authenticated) return "当前未登录官方账号；官方登录混入 API Key 需要先登录官方账号。";
-      if (!hasApiFields) return "当前还没有填写混入 API 的 Base URL / Key。";
-      return `官方登录已就绪：${relay.accountLabel || "已登录"}，会混入当前 API Key。`;
+      if (!relay?.authenticated && !hasApiFields) return "No official account is logged in, and no Base URL / Key is configured for API mixing.";
+      if (!relay?.authenticated) return "No official account is logged in. Official Login with API Key requires signing in first.";
+      if (!hasApiFields) return "Base URL / Key for API mixing has not been filled in yet.";
+      return `Official Login is ready: ${relay.accountLabel || "Logged in"}. Requests will mix in the current API key.`;
     }
     return relay?.authenticated
-      ? `官方账号已登录：${relay.accountLabel || relay.authSource || "已检测"}。`
-      : "当前未登录官方账号；切到官方登录模式后仍需要先在 Codex/ChatGPT 登录。";
+      ? `Official account logged in: ${relay.accountLabel || relay.authSource || "Detected"}.`
+      : "No official account is logged in. After switching to Official Login Mode, sign in through Codex/ChatGPT first.";
   }
   const hasFiles = profile.configContents.trim() && profile.authContents.trim();
-  if (!hasFiles) return "当前供应商还没有完整 config.toml / API Key 存档。";
-  if (relay && !relay.configured) return "纯 API 配置未完整写入：请检查此供应商是否有 OPENAI_API_KEY，且 config.toml 是否包含 model_provider / provider / base_url。";
-  return "纯 API 就绪：会同时写入 config.toml 和 auth.json。";
+  if (!hasFiles) return "Current provider does not yet have a complete config.toml / API key archive.";
+  if (relay && !relay.configured) return "Pure API config was not fully written. Check whether this provider has OPENAI_API_KEY and whether config.toml contains model_provider / provider / base_url.";
+  return "Pure API is ready. config.toml and auth.json will both be written.";
 }
 
 function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injection" | "apply_relay_injection" | "apply_pure_api_injection" {
@@ -4847,9 +4847,9 @@ function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injectio
 }
 
 function relayProfileModeSwitchedText(profile: RelayProfile): string {
-  if (profile.relayMode === "pureApi") return "已按此供应商切换到纯 API；页面增强已设为完整增强。";
-  if (profile.officialMixApiKey) return "已按此供应商使用官方登录，并混入 API Key；页面增强已设为兼容增强。";
-  return "已按此供应商切回官方登录；页面增强已设为兼容增强。";
+  if (profile.relayMode === "pureApi") return "Switched this provider to Pure API; Page Enhancements are set to Full Enhancement.";
+  if (profile.officialMixApiKey) return "Switched this provider to Official Login with API Key; Page Enhancements are set to Compatibility Enhancement.";
+  return "Switched this provider back to Official Login; Page Enhancements are set to Compatibility Enhancement.";
 }
 
 function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
@@ -5198,10 +5198,10 @@ function removeTomlSectionKey(contents: string, sectionName: string, key: string
 function relayProfileSwitchValidation(profile: RelayProfile): string | null {
   if (profile.relayMode === "official" && !profile.officialMixApiKey) return null;
   if (!profile.configContents.trim()) {
-    return `供应商「${profile.name || profile.id}」缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。请先在该供应商详情里保存 config.toml。`;
+    return `Provider "${profile.name || profile.id}" is missing its own config.toml. Switching was stopped to avoid continuing to show the previous config files. Save config.toml in this provider's details first.`;
   }
   if (profile.relayMode !== "official" || !authJsonHasOpenAiApiKey(profile.authContents)) return null;
-  return "官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。";
+  return "Official mixed API should not store OPENAI_API_KEY in auth.json. Clean this provider's auth.json before switching.";
 }
 
 function authJsonHasOpenAiApiKey(contents: string): boolean {
@@ -5268,7 +5268,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
   const next = {
     id,
     linkedCcsProviderId: "",
-    name: `供应商 ${settings.relayProfiles.length + 1}`,
+    name: `Provider ${settings.relayProfiles.length + 1}`,
     model: "",
     baseUrl: defaultSettings.relayBaseUrl,
     upstreamBaseUrl: defaultSettings.relayBaseUrl,
@@ -5312,7 +5312,7 @@ function duplicateRelayProfile(settings: BackendSettings, id: string): BackendSe
     ...source,
     id: nextId,
     linkedCcsProviderId: "",
-    name: `${source.name || "未命名供应商"} 副本`,
+    name: `${source.name || "Unnamed Provider"} Copy`,
   };
   const relayProfiles = [...settings.relayProfiles];
   relayProfiles.splice(sourceIndex >= 0 ? sourceIndex + 1 : relayProfiles.length, 0, next);
@@ -5355,10 +5355,10 @@ function splitLogLines(text: string) {
 }
 
 function zedStrategyLabel(strategy: ZedOpenStrategy) {
-  if (strategy === "reuseWindow") return "复用窗口";
-  if (strategy === "newWindow") return "新窗口";
-  if (strategy === "default") return "Zed 默认行为";
-  return "加入当前工作区";
+  if (strategy === "reuseWindow") return "Reuse Window";
+  if (strategy === "newWindow") return "New Window";
+  if (strategy === "default") return "Zed Default Behavior";
+  return "Add to Focused Workspace";
 }
 
 function zedRemoteHostLabel(project: ZedRemoteProject) {
@@ -5368,12 +5368,12 @@ function zedRemoteHostLabel(project: ZedRemoteProject) {
 }
 
 function zedRemoteSourceLabel(source: string) {
-  if (source === "currentThread") return "当前会话";
+  if (source === "currentThread") return "Current Thread";
   if (source === "codexRemoteProject") return "Codex remote project";
   if (source === "threadWorkspaceHint") return "Thread workspace hint";
   if (source === "sqliteThreadCwd") return "SQLite cwd";
-  if (source === "recent") return "最近打开";
-  return source || "未知来源";
+  if (source === "recent") return "Recent";
+  return source || "Unknown Source";
 }
 
 function formatTime(value: number) {
@@ -5386,11 +5386,11 @@ function formatDuration(startedAtMs: number): string {
   const elapsed = Date.now() - startedAtMs;
   if (elapsed < 0) return formatTime(startedAtMs);
   const mins = Math.floor(elapsed / 60000);
-  if (mins < 1) return "刚刚启动";
-  if (mins < 60) return `已运行 ${mins} 分钟`;
+  if (mins < 1) return "Just started";
+  if (mins < 60) return `Running for ${mins} min`;
   const hours = Math.floor(mins / 60);
   const remainMins = mins % 60;
-  return `已运行 ${hours} 小时 ${remainMins} 分钟`;
+  return `Running for ${hours} hr ${remainMins} min`;
 }
 
 function stringifyError(error: unknown) {

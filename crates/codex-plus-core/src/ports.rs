@@ -18,11 +18,11 @@ pub fn select_platform_loopback_port(requested: u16) -> u16 {
 
 pub fn select_platform_loopback_port_with(
     requested: u16,
-    is_windows: bool,
+    _is_windows: bool,
     can_bind: impl Fn(u16) -> bool,
     find_available: impl Fn() -> u16,
 ) -> u16 {
-    if !is_windows || can_bind(requested) {
+    if can_bind(requested) {
         requested
     } else {
         find_available()
@@ -33,7 +33,16 @@ pub fn can_bind_loopback_port(port: u16) -> bool {
     if port == 0 {
         return true;
     }
-    TcpListener::bind(("127.0.0.1", port)).is_ok()
+    if TcpListener::bind(("127.0.0.1", port)).is_err() {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if TcpListener::bind(("::1", port)).is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn find_available_loopback_port() -> u16 {

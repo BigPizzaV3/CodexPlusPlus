@@ -207,7 +207,7 @@ fn open_manager_with_update_prompt() -> anyhow::Result<()> {
     command
         .spawn()
         .map(|_| ())
-        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
+        .map_err(|error| anyhow::anyhow!("Failed to start manager: {error}"))
 }
 
 fn parse_launch_options<I, S>(args: I) -> LaunchOptions
@@ -511,13 +511,13 @@ impl BridgeRuntimeService for LauncherRuntimeService {
             std::process::Command::new(&manager_path)
                 .creation_flags(codex_plus_core::windows_create_no_window())
                 .spawn()
-                .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
+                .map_err(|error| anyhow::anyhow!("Failed to start manager: {error}"))?;
         }
         #[cfg(not(windows))]
         {
             std::process::Command::new(&manager_path)
                 .spawn()
-                .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
+                .map_err(|error| anyhow::anyhow!("Failed to start manager: {error}"))?;
         }
         Ok(json!({
             "status": "ok",
@@ -527,7 +527,7 @@ impl BridgeRuntimeService for LauncherRuntimeService {
 
     async fn backend_status(&self) -> anyhow::Result<Value> {
         Ok(
-            json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION}),
+            json!({"status": "ok", "message": "Backend connected", "version": codex_plus_core::version::VERSION}),
         )
     }
 

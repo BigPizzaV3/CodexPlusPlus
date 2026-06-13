@@ -327,10 +327,10 @@ fn ports_windows_falls_back_to_ephemeral_when_requested_is_busy() {
 }
 
 #[test]
-fn ports_non_windows_keeps_requested_even_when_busy() {
+fn ports_non_windows_falls_back_to_ephemeral_when_requested_is_busy() {
     let selected = select_platform_loopback_port_with(9229, false, |_| false, || 43001);
 
-    assert_eq!(selected, 9229);
+    assert_eq!(selected, 43001);
 }
 
 #[tokio::test]
@@ -716,7 +716,7 @@ async fn launch_lifecycle_enters_degraded_mode_and_retries_when_injection_fails(
     );
     let status = status_store.load_latest().unwrap().unwrap();
     assert_eq!(status.status, "running_degraded");
-    assert!(status.message.contains("Codex 已启动"));
+    assert!(status.message.contains("Codex launched"));
 
     handle.wait_for_codex_exit().await.unwrap();
     let events = events.lock().unwrap().clone();

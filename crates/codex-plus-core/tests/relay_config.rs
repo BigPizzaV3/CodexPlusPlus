@@ -1089,7 +1089,7 @@ fn apply_relay_files_with_context_rejects_invalid_context_token_values() {
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("上下文大小"));
+    assert!(error.to_string().contains("context window"));
 }
 
 #[test]

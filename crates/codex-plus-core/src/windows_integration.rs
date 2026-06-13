@@ -95,38 +95,38 @@ pub fn create_shortcut(spec: &ShortcutSpec) -> anyhow::Result<()> {
     if let Some(parent) = spec.path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let _com = ComApartment::init().context("初始化 COM 失败")?;
+    let _com = ComApartment::init().context("Failed to initialize COM")?;
     unsafe {
         let shell_link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
-            .context("创建 ShellLink COM 对象失败")?;
+            .context("Failed to create ShellLink COM object")?;
         shell_link
             .SetPath(PCWSTR(wide_null(spec.target.as_os_str()).as_ptr()))
-            .context("设置快捷方式目标失败")?;
+            .context("Failed to set shortcut target")?;
         shell_link
             .SetArguments(PCWSTR(wide_null(spec.arguments.as_str()).as_ptr()))
-            .context("设置快捷方式参数失败")?;
+            .context("Failed to set shortcut arguments")?;
         if let Some(working_directory) = &spec.working_directory {
             shell_link
                 .SetWorkingDirectory(PCWSTR(wide_null(working_directory.as_os_str()).as_ptr()))
-                .context("设置快捷方式工作目录失败")?;
+                .context("Failed to set shortcut working directory")?;
         }
         shell_link
             .SetDescription(PCWSTR(wide_null(spec.description.as_str()).as_ptr()))
-            .context("设置快捷方式描述失败")?;
+            .context("Failed to set shortcut description")?;
         if let Some(icon) = &spec.icon {
             shell_link
                 .SetIconLocation(PCWSTR(wide_null(icon.as_os_str()).as_ptr()), 0)
-                .context("设置快捷方式图标失败")?;
+                .context("Failed to set shortcut icon")?;
         }
         if spec.show_minimized {
             shell_link
                 .SetShowCmd(SW_SHOWMINNOACTIVE)
-                .context("设置快捷方式窗口模式失败")?;
+                .context("Failed to set shortcut window mode")?;
         }
-        let persist_file: IPersistFile = shell_link.cast().context("获取 IPersistFile 失败")?;
+        let persist_file: IPersistFile = shell_link.cast().context("Failed to get IPersistFile")?;
         persist_file
             .Save(PCWSTR(wide_null(spec.path.as_os_str()).as_ptr()), true)
-            .context("保存快捷方式失败")?;
+            .context("Failed to save shortcut")?;
     }
     Ok(())
 }
@@ -177,7 +177,7 @@ pub fn set_current_user_string_value(subkey: &str, name: &str, value: &str) -> a
             )
         }
         .ok()
-        .with_context(|| format!("写入注册表值 {subkey}\\{name} 失败"))
+        .with_context(|| format!("Failed to write registry value {subkey}\\{name}"))
     })
 }
 
@@ -344,7 +344,7 @@ fn with_created_current_user_key<T>(
         )
     }
     .ok()
-    .with_context(|| format!("打开注册表键 HKCU\\{subkey} 失败"))?;
+    .with_context(|| format!("Failed to open registry key HKCU\\{subkey}"))?;
     let _guard = RegistryKeyGuard(key);
     f(key)
 }

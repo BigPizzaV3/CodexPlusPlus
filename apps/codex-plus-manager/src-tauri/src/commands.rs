@@ -258,7 +258,7 @@ pub struct StartupPayload {
 #[tauri::command]
 pub fn backend_version() -> CommandResult<VersionPayload> {
     ok(
-        "后端版本已读取。",
+        "Backend version read.",
         VersionPayload {
             version: codex_plus_core::version::VERSION.to_string(),
         },
@@ -268,7 +268,7 @@ pub fn backend_version() -> CommandResult<VersionPayload> {
 #[tauri::command]
 pub fn startup_options() -> CommandResult<StartupPayload> {
     ok(
-        "启动参数已读取。",
+        "Launch arguments loaded.",
         StartupPayload {
             show_update: startup_should_show_update(),
         },
@@ -295,7 +295,7 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
     let payload = tauri::async_runtime::spawn_blocking(load_overview_payload).await;
     let Ok((codex_app_path, entrypoints, latest_launch)) = payload else {
         return failed(
-            "概览后台任务失败。",
+            "Overview background task failed.",
             OverviewPayload {
                 codex_app: path_state(None),
                 codex_version: None,
@@ -314,7 +314,7 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
         );
     };
     ok(
-        "概览已加载。",
+        "Overview loaded.",
         OverviewPayload {
             codex_version: codex_app_path
                 .as_deref()
@@ -337,14 +337,14 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
 
 #[tauri::command]
 pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
-    spawn_codex_plus_launch(request, "启动任务已在后台开始，可稍后查看概览状态。")
+    spawn_codex_plus_launch(request, "Launch task started in the background. Check the overview status shortly.")
 }
 
 #[tauri::command]
 pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     codex_plus_core::watcher::stop_launcher_processes();
     codex_plus_core::watcher::stop_codex_processes();
-    spawn_codex_plus_launch(request, "Codex 已请求重启，启动任务正在后台运行。")
+    spawn_codex_plus_launch(request, "Codex restart requested. The launch task is running in the background.")
 }
 
 fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> CommandResult<Value> {
@@ -368,7 +368,7 @@ fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> Co
             }),
         },
         Err(error) => failed(
-            &format!("启动静默入口失败：{error}"),
+            &format!("Failed to start the silent launcher: {error}"),
             json!({
                 "debugPort": debug_port,
                 "helperPort": helper_port
@@ -396,12 +396,12 @@ fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
     command
         .spawn()
         .map(|_| ())
-        .map_err(|error| anyhow::anyhow!("无法启动 {}：{error}", launcher.to_string_lossy()))
+        .map_err(|error| anyhow::anyhow!("Failed to launch {}: {error}", launcher.to_string_lossy()))
 }
 
 #[tauri::command]
 pub fn load_settings() -> CommandResult<SettingsPayload> {
-    settings_payload("设置已加载。", "设置读取失败")
+    settings_payload("Settings loaded.", "Failed to read settings")
 }
 
 #[tauri::command]
@@ -410,7 +410,7 @@ pub fn get_config_coordination_status()
     let settings =
         settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default());
     ok(
-        "已读取配置协调状态。",
+        "Loaded config coordination status.",
         codex_plus_core::config_coordinator::coordination_status(&settings),
     )
 }
@@ -429,7 +429,7 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
                     .to_string(),
                 user_scripts: user_script_inventory(),
             };
-            return failed(&format!("写回 cc-switch 供应商配置失败：{error}"), payload);
+            return failed(&format!("Failed to write cc-switch provider config: {error}"), payload);
         }
         let active = settings.active_relay_profile();
         if !active.linked_ccs_provider_id.trim().is_empty() {
@@ -445,7 +445,7 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
                         .to_string(),
                     user_scripts: user_script_inventory(),
                 };
-                return failed(&format!("同步 cc-switch 当前供应商失败：{error}"), payload);
+                return failed(&format!("Failed to sync the current cc-switch provider: {error}"), payload);
             }
         }
     }
@@ -454,12 +454,12 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
         Ok(()) => {
             let wrapper_message = refresh_cli_wrapper_after_settings_save(&settings);
             settings_payload(
-                &format!("设置已保存。{wrapper_message}"),
-                "设置保存后重新读取失败",
+                &format!("Settings saved. {wrapper_message}"),
+                "Failed to reload settings after saving",
             )
         }
         Err(error) => failed(
-            &format!("保存设置失败：{error}"),
+            &format!("Failed to save settings: {error}"),
             SettingsPayload {
                 settings,
                 settings_path: codex_plus_core::paths::default_settings_path()
@@ -476,14 +476,14 @@ pub fn load_ccs_providers() -> CommandResult<CcsProvidersPayload> {
     let db_path = codex_plus_core::ccs_import::default_ccs_db_path();
     match codex_plus_core::ccs_import::list_codex_providers_from_db(&db_path) {
         Ok(providers) => ok(
-            &format!("已读取外部 Codex 供应商配置：{} 个。", providers.len()),
+            &format!("Loaded {} external Codex provider configs.", providers.len()),
             CcsProvidersPayload {
                 db_path: db_path.to_string_lossy().to_string(),
                 providers,
             },
         ),
         Err(error) => failed(
-            &format!("读取外部供应商配置失败：{error}"),
+            &format!("Failed to read external provider config: {error}"),
             CcsProvidersPayload {
                 db_path: db_path.to_string_lossy().to_string(),
                 providers: Vec::new(),
@@ -502,23 +502,23 @@ pub fn import_ccs_providers() -> CommandResult<SettingsPayload> {
             let payload = settings_payload_value()
                 .map(|payload| payload)
                 .unwrap_or_else(|(_, payload)| payload);
-            return failed(&format!("读取外部供应商配置失败：{error}"), payload);
+            return failed(&format!("Failed to read external provider config: {error}"), payload);
         }
     };
     settings.ccs_link_enabled = true;
     remove_linked_ccs_profiles_for_local_storage(&mut settings);
 
     if synced == 0 {
-        return settings_payload("没有可联动的 cc-switch Codex 供应商配置。", "设置读取失败");
+        return settings_payload("No linkable cc-switch Codex provider config was found.", "Failed to read settings");
     }
 
     match store.save(&settings) {
         Ok(()) => settings_payload(
-            &format!("已开启 cc-switch 联动：{synced} 个供应商将直接从 cc-switch 读取。"),
-            "联动供应商配置后重新读取设置失败",
+            &format!("cc-switch linking enabled: {synced} provider configs will be read directly from cc-switch."),
+            "Failed to reload settings after linking provider configs",
         ),
         Err(error) => failed(
-            &format!("保存外部供应商配置失败：{error}"),
+            &format!("Failed to save external provider config: {error}"),
             settings_payload_value()
                 .map(|payload| payload)
                 .unwrap_or_else(|(_, payload)| payload),
@@ -561,12 +561,12 @@ pub fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
     };
     if errors.is_empty() {
         ok(
-            &format!("已读取 {} 个本地会话。", payload.sessions.len()),
+            &format!("Loaded {} local sessions.", payload.sessions.len()),
             payload,
         )
     } else {
         failed(
-            &format!("读取部分本地会话失败：{}", errors.join("; ")),
+            &format!("Failed to load some local sessions: {}", errors.join("; ")),
             payload,
         )
     }
@@ -584,7 +584,7 @@ pub fn list_zed_remote_projects() -> CommandResult<ZedRemoteProjectsPayload> {
         )
         .unwrap_or_default();
         return ok(
-            &format!("已读取 {} 个 Zed 远程项目。", projects.len()),
+            &format!("Loaded {} Zed remote projects.", projects.len()),
             ZedRemoteProjectsPayload { projects },
         );
     }
@@ -592,7 +592,7 @@ pub fn list_zed_remote_projects() -> CommandResult<ZedRemoteProjectsPayload> {
         result
             .get("message")
             .and_then(Value::as_str)
-            .unwrap_or("读取 Zed 远程项目失败。"),
+            .unwrap_or("Failed to read Zed remote projects."),
         ZedRemoteProjectsPayload {
             projects: Vec::new(),
         },
@@ -614,7 +614,7 @@ pub fn open_zed_remote(payload: Value) -> CommandResult<ZedRemoteOpenPayload> {
         .to_string();
     if result.get("status").and_then(Value::as_str) == Some("ok") {
         return ok(
-            "已在 Zed Remote 打开项目。",
+            "Opened project in Zed Remote.",
             ZedRemoteOpenPayload { url, strategy },
         );
     }
@@ -622,7 +622,7 @@ pub fn open_zed_remote(payload: Value) -> CommandResult<ZedRemoteOpenPayload> {
         result
             .get("message")
             .and_then(Value::as_str)
-            .unwrap_or("无法在 Zed Remote 打开项目。"),
+            .unwrap_or("Unable to open project in Zed Remote."),
         ZedRemoteOpenPayload { url, strategy },
     )
 }
@@ -636,7 +636,7 @@ pub fn forget_zed_remote_project(id: String) -> CommandResult<ZedRemoteProjectsP
             result
                 .get("message")
                 .and_then(Value::as_str)
-                .unwrap_or("移除 Zed 远程项目失败。"),
+                .unwrap_or("Failed to remove Zed remote project."),
             ZedRemoteProjectsPayload {
                 projects: Vec::new(),
             },
@@ -650,11 +650,11 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
     let session_id = request.session_id.trim();
     if session_id.is_empty() {
         return failed(
-            "会话 ID 不能为空。",
+            "Session ID cannot be empty.",
             DeleteResult {
                 status: codex_plus_core::models::DeleteStatus::Failed,
                 session_id: String::new(),
-                message: "会话 ID 不能为空。".to_string(),
+                message: "Session ID cannot be empty.".to_string(),
                 undo_token: None,
                 backup_path: None,
             },
@@ -984,11 +984,11 @@ pub async fn load_provider_sync_targets() -> CommandResult<Value> {
                 .collect::<Vec<_>>();
             merge_manual_provider_sync_targets(&mut targets, &manual, &settings);
             ok(
-                "Provider 同步目标已加载。",
+                "Provider sync targets loaded.",
                 serde_json::to_value(targets).unwrap_or_else(|_| json!({})),
             )
         }
-        Err(error) => failed(&format!("Provider 同步目标加载失败：{error}"), json!({})),
+        Err(error) => failed(&format!("Failed to load provider sync targets: {error}"), json!({})),
     }
 }
 
@@ -1052,7 +1052,7 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
             }
             ok(
                 &format!(
-                    "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。",
+                "Providers synced once: {} session files, {} index rows, skipped {} locked files.",
                     sync.changed_session_files,
                     sync.sqlite_rows_updated,
                     sync.skipped_locked_rollout_files.len()
@@ -1073,7 +1073,7 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
                 }),
             )
         }
-        Err(error) => failed(&format!("供应商同步失败：{error}"), json!({})),
+        Err(error) => failed(&format!("Provider sync failed: {error}"), json!({})),
     }
 }
 
@@ -1106,9 +1106,9 @@ fn persist_provider_sync_selection(provider: &str) {
 #[tauri::command]
 pub async fn load_ads() -> CommandResult<AdsPayload> {
     match codex_plus_core::ads::fetch_ad_list().await {
-        Ok(payload) => ok("推荐内容已加载。", ads_payload(payload)),
+        Ok(payload) => ok("Recommendations loaded.", ads_payload(payload)),
         Err(error) => failed(
-            &format!("推荐内容加载失败：{error}"),
+            &format!("Failed to load recommendations: {error}"),
             AdsPayload {
                 version: 1,
                 ads: Vec::new(),
@@ -1121,12 +1121,12 @@ pub async fn load_ads() -> CommandResult<AdsPayload> {
 pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
     match script_market::fetch_market_manifest(script_market::DEFAULT_MARKET_INDEX_URL).await {
         Ok(manifest) => ok(
-            "脚本市场已刷新。",
-            script_market_payload_from_manifest(&manifest, "ok", "脚本市场已刷新。"),
+            "Script market refreshed.",
+            script_market_payload_from_manifest(&manifest, "ok", "Script market refreshed."),
         ),
         Err(error) => failed(
-            &format!("脚本市场加载失败：{error}"),
-            failed_script_market_payload(&format!("脚本市场加载失败：{error}")),
+            &format!("Failed to load script market: {error}"),
+            failed_script_market_payload(&format!("Failed to load script market: {error}")),
         ),
     }
 }
@@ -1136,8 +1136,8 @@ pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayl
     let trimmed = id.trim();
     if trimmed.is_empty() {
         return failed(
-            "脚本 id 不能为空。",
-            failed_script_market_payload("脚本 id 不能为空。"),
+            "Script id cannot be empty.",
+            failed_script_market_payload("Script id cannot be empty."),
         );
     }
     let manifest =
@@ -1145,29 +1145,29 @@ pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayl
             Ok(manifest) => manifest,
             Err(error) => {
                 return failed(
-                    &format!("脚本市场加载失败：{error}"),
-                    failed_script_market_payload(&format!("脚本市场加载失败：{error}")),
+                    &format!("Failed to load script market: {error}"),
+                    failed_script_market_payload(&format!("Failed to load script market: {error}")),
                 );
             }
         };
     let Some(script) = manifest.scripts.iter().find(|script| script.id == trimmed) else {
         return failed(
-            "市场清单中未找到该脚本。",
-            script_market_payload_from_manifest(&manifest, "failed", "市场清单中未找到该脚本。"),
+            "Script was not found in the market manifest.",
+            script_market_payload_from_manifest(&manifest, "failed", "Script was not found in the market manifest."),
         );
     };
     let manager = default_user_script_manager();
     match script_market::install_market_script(&manager, script).await {
         Ok(()) => ok(
-            "脚本已安装。",
-            script_market_payload_from_manifest(&manifest, "ok", "脚本已安装。"),
+            "Script installed.",
+            script_market_payload_from_manifest(&manifest, "ok", "Script installed."),
         ),
         Err(error) => failed(
-            &format!("安装脚本失败：{error}"),
+            &format!("Failed to install script: {error}"),
             script_market_payload_from_manifest(
                 &manifest,
                 "failed",
-                &format!("安装脚本失败：{error}"),
+                &format!("Failed to install script: {error}"),
             ),
         ),
     }
@@ -1177,20 +1177,20 @@ pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayl
 pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<SettingsPayload> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
-        return failed("脚本 key 不能为空。", fallback_settings_payload());
+        return failed("Script key cannot be empty.", fallback_settings_payload());
     }
     let manager = default_user_script_manager();
     match manager.set_script_enabled(trimmed, enabled) {
         Ok(_) => settings_payload(
             if enabled {
-                "脚本已启用。"
+                "Script enabled."
             } else {
-                "脚本已禁用。"
+                "Script disabled."
             },
-            "脚本启停失败",
+            "Failed to toggle script",
         ),
         Err(error) => failed(
-            &format!("脚本启停失败：{error}"),
+            &format!("Failed to toggle script: {error}"),
             fallback_settings_payload(),
         ),
     }
@@ -1200,13 +1200,13 @@ pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<Sett
 pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
-        return failed("脚本 key 不能为空。", fallback_settings_payload());
+        return failed("Script key cannot be empty.", fallback_settings_payload());
     }
     let manager = default_user_script_manager();
     match manager.delete_user_script(trimmed) {
-        Ok(_) => settings_payload("脚本已删除。", "脚本删除失败"),
+        Ok(_) => settings_payload("Script deleted.", "Failed to delete script"),
         Err(error) => failed(
-            &format!("脚本删除失败：{error}"),
+            &format!("Failed to delete script: {error}"),
             fallback_settings_payload(),
         ),
     }
@@ -1216,11 +1216,11 @@ pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
 pub fn open_external_url(url: String) -> CommandResult<Value> {
     let trimmed = url.trim();
     if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
-        return failed("只允许打开 http 或 https 链接。", json!({}));
+        return failed("Only http or https links can be opened.", json!({}));
     }
     match open_url(trimmed) {
-        Ok(()) => ok("已在系统浏览器打开链接。", json!({ "url": trimmed })),
-        Err(error) => failed(&format!("打开链接失败：{error}"), json!({ "url": trimmed })),
+        Ok(()) => ok("Opened link in the system browser.", json!({ "url": trimmed })),
+        Err(error) => failed(&format!("Failed to open link: {error}"), json!({ "url": trimmed })),
     }
 }
 
@@ -1228,21 +1228,21 @@ pub fn open_external_url(url: String) -> CommandResult<Value> {
 pub async fn install_entrypoints() -> InstallActionResult {
     tauri::async_runtime::spawn_blocking(install::install_entrypoints)
         .await
-        .unwrap_or_else(|error| install_background_failure("安装入口", error))
+        .unwrap_or_else(|error| install_background_failure("install entries", error))
 }
 
 #[tauri::command]
 pub async fn uninstall_entrypoints(options: InstallOptions) -> InstallActionResult {
     tauri::async_runtime::spawn_blocking(move || install::uninstall_entrypoints(options))
         .await
-        .unwrap_or_else(|error| install_background_failure("卸载入口", error))
+        .unwrap_or_else(|error| install_background_failure("uninstall entries", error))
 }
 
 #[tauri::command]
 pub async fn repair_shortcuts() -> InstallActionResult {
     tauri::async_runtime::spawn_blocking(install::repair_shortcuts)
         .await
-        .unwrap_or_else(|error| install_background_failure("修复快捷方式", error))
+        .unwrap_or_else(|error| install_background_failure("repair shortcuts", error))
 }
 
 #[tauri::command]
@@ -1251,13 +1251,13 @@ pub fn repair_backend() -> CommandResult<SettingsPayload> {
         settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default());
     let message = match codex_plus_core::cli_wrapper::ensure_cli_wrapper(&settings) {
         Ok(Some(install)) => format!(
-            "后端已修复，命令包装器已指向 {}。",
+            "Backend repaired; command wrapper now points to {}.",
             install.real_codex.to_string_lossy()
         ),
-        Ok(None) => "后端已修复，命令包装器当前未启用。".to_string(),
-        Err(error) => format!("后端修复部分失败：{error}"),
+        Ok(None) => "Backend repaired; command wrapper is currently disabled.".to_string(),
+        Err(error) => format!("Backend repair partially failed: {error}"),
     };
-    settings_payload(&message, "修复后重新读取设置失败")
+    settings_payload(&message, "Failed to reload settings after repair")
 }
 
 #[tauri::command]
@@ -1272,9 +1272,9 @@ pub async fn check_update() -> CommandResult<Value> {
             CommandResult {
                 status: status.to_string(),
                 message: if update.update_available {
-                    "发现可用更新。".to_string()
+                    "Update available.".to_string()
                 } else {
-                    "当前已是最新版本。".to_string()
+                    "Already on the latest version.".to_string()
                 },
                 payload: json!({
                     "currentVersion": update.current_version,
@@ -1288,7 +1288,7 @@ pub async fn check_update() -> CommandResult<Value> {
             }
         }
         Err(error) => failed(
-            &format!("检查更新失败：{error}"),
+            &format!("Failed to check for updates: {error}"),
             json!({
                 "currentVersion": codex_plus_core::version::VERSION,
                 "latestVersion": Value::Null,
@@ -1308,7 +1308,7 @@ pub async fn perform_update(
 ) -> CommandResult<Value> {
     let Some(release) = release else {
         return failed(
-            "请先检查更新并选择可下载的 Release asset。",
+            "Check for updates first and choose a downloadable release asset.",
             json!({
                 "currentVersion": codex_plus_core::version::VERSION,
                 "progress": 0
@@ -1318,7 +1318,7 @@ pub async fn perform_update(
     let download_dir = codex_plus_core::paths::default_app_state_dir().join("updates");
     match codex_plus_core::update::perform_update(&release, &download_dir).await {
         Ok(result) => ok(
-            "安装包已下载并启动，请按安装向导完成更新。",
+            "Installer package downloaded and started. Follow the installer to finish updating.",
             json!({
                 "currentVersion": codex_plus_core::version::VERSION,
                 "latestVersion": result.release.version,
@@ -1329,7 +1329,7 @@ pub async fn perform_update(
             }),
         ),
         Err(error) => failed(
-            &format!("安装更新失败：{error}"),
+            &format!("Failed to install update: {error}"),
             json!({
                 "currentVersion": codex_plus_core::version::VERSION,
                 "latestVersion": release.version,
@@ -1342,7 +1342,7 @@ pub async fn perform_update(
 
 #[tauri::command]
 pub fn load_watcher_state() -> CommandResult<WatcherPayload> {
-    ok("watcher 状态已加载。", watcher_payload())
+    ok("Watcher status loaded.", watcher_payload())
 }
 
 #[tauri::command]
@@ -1350,32 +1350,32 @@ pub fn install_watcher() -> CommandResult<WatcherPayload> {
     let launcher_path =
         codex_plus_core::install::companion_binary_path(codex_plus_core::install::SILENT_BINARY);
     match codex_plus_core::watcher::install_watcher(&launcher_path, default_debug_port()) {
-        Ok(()) => ok("watcher 已安装。", watcher_payload()),
-        Err(error) => failed(&format!("安装 watcher 失败：{error}"), watcher_payload()),
+        Ok(()) => ok("Watcher installed.", watcher_payload()),
+        Err(error) => failed(&format!("Failed to install watcher: {error}"), watcher_payload()),
     }
 }
 
 #[tauri::command]
 pub fn uninstall_watcher() -> CommandResult<WatcherPayload> {
     match codex_plus_core::watcher::uninstall_watcher() {
-        Ok(()) => ok("watcher 已移除。", watcher_payload()),
-        Err(error) => failed(&format!("移除 watcher 失败：{error}"), watcher_payload()),
+        Ok(()) => ok("Watcher removed.", watcher_payload()),
+        Err(error) => failed(&format!("Failed to remove watcher: {error}"), watcher_payload()),
     }
 }
 
 #[tauri::command]
 pub fn enable_watcher() -> CommandResult<WatcherPayload> {
     match codex_plus_core::watcher::enable_watcher() {
-        Ok(()) => ok("watcher 已启用。", watcher_payload()),
-        Err(error) => failed(&format!("启用 watcher 失败：{error}"), watcher_payload()),
+        Ok(()) => ok("Watcher enabled.", watcher_payload()),
+        Err(error) => failed(&format!("Failed to enable watcher: {error}"), watcher_payload()),
     }
 }
 
 #[tauri::command]
 pub fn disable_watcher() -> CommandResult<WatcherPayload> {
     match codex_plus_core::watcher::disable_watcher() {
-        Ok(()) => ok("watcher 已禁用。", watcher_payload()),
-        Err(error) => failed(&format!("禁用 watcher 失败：{error}"), watcher_payload()),
+        Ok(()) => ok("Watcher disabled.", watcher_payload()),
+        Err(error) => failed(&format!("Failed to disable watcher: {error}"), watcher_payload()),
     }
 }
 
@@ -1384,7 +1384,7 @@ pub fn read_latest_logs(request: LogRequest) -> CommandResult<LogsPayload> {
     let path = codex_plus_core::paths::default_diagnostic_log_path();
     match read_tail(&path, request.lines) {
         Ok(text) => ok(
-            "日志已读取。",
+            "Logs read.",
             LogsPayload {
                 path: path.to_string_lossy().to_string(),
                 text,
@@ -1392,7 +1392,7 @@ pub fn read_latest_logs(request: LogRequest) -> CommandResult<LogsPayload> {
             },
         ),
         Err(error) => failed(
-            &format!("读取日志失败：{error}"),
+            &format!("Failed to read logs: {error}"),
             LogsPayload {
                 path: path.to_string_lossy().to_string(),
                 text: String::new(),
@@ -1405,7 +1405,7 @@ pub fn read_latest_logs(request: LogRequest) -> CommandResult<LogsPayload> {
 #[tauri::command]
 pub fn copy_diagnostics() -> CommandResult<DiagnosticsPayload> {
     ok(
-        "诊断报告已生成。",
+        "Diagnostics report generated.",
         DiagnosticsPayload {
             report: diagnostics_report(),
         },
@@ -1416,9 +1416,9 @@ pub fn copy_diagnostics() -> CommandResult<DiagnosticsPayload> {
 pub fn reset_settings() -> CommandResult<SettingsPayload> {
     let settings = BackendSettings::default();
     match SettingsStore::default().save(&settings) {
-        Ok(()) => settings_payload("设置已重置为默认值。", "设置重置后重新读取失败"),
+        Ok(()) => settings_payload("Settings reset to defaults.", "Failed to reload settings after reset"),
         Err(error) => failed(
-            &format!("重置设置失败：{error}"),
+            &format!("Failed to reset settings: {error}"),
             SettingsPayload {
                 settings,
                 settings_path: codex_plus_core::paths::default_settings_path()
@@ -1434,9 +1434,9 @@ pub fn reset_settings() -> CommandResult<SettingsPayload> {
 pub fn relay_status() -> CommandResult<RelayPayload> {
     let status = codex_plus_core::relay_config::default_relay_status();
     let message = if status.authenticated {
-        "已检测到 ChatGPT 登录状态。"
+        "ChatGPT login state detected."
     } else {
-        "未检测到 ChatGPT 登录状态，请先在 Codex/ChatGPT 中正常登录。"
+        "ChatGPT login state was not detected. Sign in normally through Codex/ChatGPT first."
     };
     ok(message, relay_payload(status, None))
 }
@@ -1445,9 +1445,9 @@ pub fn relay_status() -> CommandResult<RelayPayload> {
 pub fn read_relay_files() -> CommandResult<RelayFilesPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     match relay_files_payload_from_home(&home) {
-        Ok(payload) => ok("配置文件内容已读取。", payload),
+        Ok(payload) => ok("Config file contents read.", payload),
         Err(error) => failed(
-            &format!("读取配置文件失败：{error}"),
+            &format!("Failed to read config file: {error}"),
             RelayFilesPayload {
                 config_path: home.join("config.toml").to_string_lossy().to_string(),
                 auth_path: home.join("auth.json").to_string_lossy().to_string(),
@@ -1464,9 +1464,9 @@ pub fn save_relay_file(request: SaveRelayFileRequest) -> CommandResult<RelayFile
     match save_relay_file_in_home(&home, &request.kind, &request.contents)
         .and_then(|_| relay_files_payload_from_home(&home))
     {
-        Ok(payload) => ok("配置文件已保存。", payload),
+        Ok(payload) => ok("Config file saved.", payload),
         Err(error) => failed(
-            &format!("保存配置文件失败：{error}"),
+            &format!("Failed to save config file: {error}"),
             relay_files_payload_from_home(&home).unwrap_or_else(|_| RelayFilesPayload {
                 config_path: home.join("config.toml").to_string_lossy().to_string(),
                 auth_path: home.join("auth.json").to_string_lossy().to_string(),
@@ -1481,8 +1481,8 @@ pub fn save_relay_file(request: SaveRelayFileRequest) -> CommandResult<RelayFile
 pub fn write_diagnostic_event(event: String, detail: Value) -> CommandResult<Value> {
     let event = sanitize_manager_event(&event);
     match codex_plus_core::diagnostic_log::append_diagnostic_log(&event, detail) {
-        Ok(()) => ok("诊断日志已写入。", json!({})),
-        Err(error) => failed(&format!("写入诊断日志失败：{error}"), json!({})),
+        Ok(()) => ok("Diagnostic log written.", json!({})),
+        Err(error) => failed(&format!("Failed to write diagnostic log: {error}"), json!({})),
     }
 }
 
@@ -1512,7 +1512,7 @@ pub fn backfill_relay_profile_from_live(
             }),
         );
         return failed(
-            "当前供应商已不在配置列表中，已停止切换以避免覆盖用户改动。",
+            "The current provider is no longer in the config list, so switching stopped to avoid overwriting your changes.",
             SettingsBackfillPayload { settings },
         );
     };
@@ -1530,7 +1530,7 @@ pub fn backfill_relay_profile_from_live(
                 }),
             );
             ok(
-                "当前供应商配置已从 live 文件回填。",
+                "Current provider config was backfilled from live files.",
                 SettingsBackfillPayload { settings },
             )
         }
@@ -1543,7 +1543,7 @@ pub fn backfill_relay_profile_from_live(
                 }),
             );
             failed(
-                &format!("回填当前供应商配置失败：{error}"),
+                &format!("Failed to backfill current provider config: {error}"),
                 SettingsBackfillPayload { settings },
             )
         }
@@ -1558,14 +1558,14 @@ pub fn list_context_entries(
         &request.settings.relay_context_config_contents,
     ) {
         Ok(entries) => ok(
-            "工具与插件列表已读取。",
+            "Tool and plugin list read.",
             ContextEntriesPayload {
                 settings: request.settings,
                 entries,
             },
         ),
         Err(error) => failed(
-            &format!("读取工具与插件列表失败：{error}"),
+            &format!("Failed to read tool and plugin list: {error}"),
             ContextEntriesPayload {
                 settings: request.settings,
                 entries: empty_context_entries(),
@@ -1581,11 +1581,11 @@ pub fn read_live_context_entries() -> CommandResult<LiveContextEntriesPayload> {
     let config = read_optional_text_file(&config_path).unwrap_or_default();
     match codex_plus_core::relay_config::list_context_entries_from_common_config(&config) {
         Ok(entries) => ok(
-            "live 工具与插件已读取。",
+            "Live tools and plugins read.",
             LiveContextEntriesPayload { entries },
         ),
         Err(error) => failed(
-            &format!("读取 live 工具与插件失败：{error}"),
+            &format!("Failed to read live tools and plugins: {error}"),
             LiveContextEntriesPayload {
                 entries: empty_context_entries(),
             },
@@ -1607,7 +1607,7 @@ pub fn upsert_context_entry(request: ContextEntryRequest) -> CommandResult<Conte
             list_context_entries(ContextSettingsRequest { settings })
         }
         Err(error) => failed(
-            &format!("保存工具与插件失败：{error}"),
+            &format!("Failed to save tools and plugins: {error}"),
             ContextEntriesPayload {
                 settings,
                 entries: empty_context_entries(),
@@ -1626,7 +1626,7 @@ pub fn sync_live_context_entries(
         Ok(config) => config,
         Err(error) => {
             return failed(
-                &format!("读取 live config.toml 失败：{error}"),
+                &format!("Failed to read live config.toml: {error}"),
                 LiveContextEntriesPayload {
                     entries: empty_context_entries(),
                 },
@@ -1640,7 +1640,7 @@ pub fn sync_live_context_entries(
         Ok(config) => config,
         Err(error) => {
             return failed(
-                &format!("同步 live 工具与插件失败：{error}"),
+                &format!("Failed to sync live tools and plugins: {error}"),
                 LiveContextEntriesPayload {
                     entries: empty_context_entries(),
                 },
@@ -1650,7 +1650,7 @@ pub fn sync_live_context_entries(
     if let Some(parent) = config_path.parent() {
         if let Err(error) = std::fs::create_dir_all(parent) {
             return failed(
-                &format!("创建 Codex 配置目录失败：{error}"),
+                &format!("Failed to create Codex config directory: {error}"),
                 LiveContextEntriesPayload {
                     entries: empty_context_entries(),
                 },
@@ -1659,7 +1659,7 @@ pub fn sync_live_context_entries(
     }
     if let Err(error) = std::fs::write(&config_path, &updated_config) {
         return failed(
-            &format!("写入 live config.toml 失败：{error}"),
+            &format!("Failed to write live config.toml: {error}"),
             LiveContextEntriesPayload {
                 entries: empty_context_entries(),
             },
@@ -1667,11 +1667,11 @@ pub fn sync_live_context_entries(
     }
     match codex_plus_core::relay_config::list_context_entries_from_common_config(&updated_config) {
         Ok(entries) => ok(
-            "live 工具与插件已同步。",
+            "Live tools and plugins synced.",
             LiveContextEntriesPayload { entries },
         ),
         Err(error) => failed(
-            &format!("读取同步后的 live 工具与插件失败：{error}"),
+            &format!("Failed to read synced live tools and plugins: {error}"),
             LiveContextEntriesPayload {
                 entries: empty_context_entries(),
             },
@@ -1692,7 +1692,7 @@ pub fn delete_context_entry(request: ContextDeleteRequest) -> CommandResult<Cont
             list_context_entries(ContextSettingsRequest { settings })
         }
         Err(error) => failed(
-            &format!("删除工具与插件失败：{error}"),
+            &format!("Failed to delete tools and plugins: {error}"),
             ContextEntriesPayload {
                 settings,
                 entries: empty_context_entries(),
@@ -1717,9 +1717,9 @@ pub fn extract_relay_common_config(
                 profile_config_contents,
             })
         }) {
-        Ok(payload) => ok("通用配置已按兼容切换规则提取。", payload),
+        Ok(payload) => ok("Common config extracted using compatible switching rules.", payload),
         Err(error) => failed(
-            &format!("提取通用配置失败：{error}"),
+            &format!("Failed to extract common config: {error}"),
             ExtractRelayCommonConfigPayload {
                 common_config_contents: String::new(),
                 profile_config_contents: request.config_contents,
@@ -1731,20 +1731,20 @@ pub fn extract_relay_common_config(
 #[tauri::command]
 pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayProfileTestPayload> {
     let profile_name = if profile.name.trim().is_empty() {
-        "未命名供应商"
+        "Unnamed provider"
     } else {
         profile.name.trim()
     };
     let settings =
         settings_with_live_ccs_profiles(SettingsStore::default().load().unwrap_or_default());
     let test_model: String = if !profile.test_model.trim().is_empty() {
-        // 1. 使用者在該供應商明確填的測試模型
+        // 1. Use the explicit test model set on this provider.
         profile.test_model.trim().to_string()
     } else {
-        // 2. 該供應商自己 config.toml 裡的 model（避免串味）
+        // 2. Fall back to this provider's own config.toml model to avoid cross-provider bleed.
         let from_profile = codex_plus_core::relay_config::relay_profile_model(&profile);
         if from_profile.trim().is_empty() {
-            // 3. 最後才用全域預設
+            // 3. Only then use the global default.
             settings.relay_test_model.trim().to_string()
         } else {
             from_profile
@@ -1759,14 +1759,14 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
             };
             let preview = result.response_preview.trim();
             let detail = if preview.is_empty() {
-                "响应内容为空".to_string()
+                "Response body is empty".to_string()
             } else {
-                format!("响应：{preview}")
+                format!("Response: {preview}")
             };
             CommandResult {
                 status: status.to_string(),
                 message: format!(
-                    "已向「{profile_name}」用模型「{test_model}」发送 hi，HTTP {}。{detail}",
+                    "Sent hi to \"{profile_name}\" using model \"{test_model}\", HTTP {}. {detail}",
                     result.http_status
                 ),
                 payload: RelayProfileTestPayload {
@@ -1777,7 +1777,7 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
             }
         }
         Err(error) => failed(
-            &format!("测试「{profile_name}」失败：{error}"),
+            &format!("Test for \"{profile_name}\" failed: {error}"),
             RelayProfileTestPayload {
                 http_status: 0,
                 endpoint: String::new(),
@@ -1792,17 +1792,17 @@ pub async fn fetch_relay_profile_models(
     profile: RelayProfile,
 ) -> CommandResult<RelayProfileModelsPayload> {
     let profile_name = if profile.name.trim().is_empty() {
-        "未命名供应商"
+        "Unnamed provider"
     } else {
         profile.name.trim()
     };
     match codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&profile).await {
         Ok((models, endpoint)) => ok(
-            &format!("已从「{profile_name}」获取 {} 个模型。", models.len()),
+            &format!("Fetched {} models from \"{profile_name}\".", models.len()),
             RelayProfileModelsPayload { models, endpoint },
         ),
         Err(error) => failed(
-            &format!("从「{profile_name}」获取模型失败：{error}"),
+            &format!("Failed to fetch models from \"{profile_name}\": {error}"),
             RelayProfileModelsPayload {
                 models: Vec::new(),
                 endpoint: String::new(),
@@ -1819,7 +1819,7 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     if !settings.relay_profiles_enabled {
         let status = codex_plus_core::relay_config::relay_status_from_home(&home);
         return failed(
-            "供应商配置总开关已关闭，未写入 config.toml / auth.json。",
+            "Provider config master switch is off, so config.toml / auth.json were not written.",
             relay_payload(status, None),
         );
     }
@@ -1847,7 +1847,7 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
                     None,
                 );
                 ok(
-                    "已按兼容切换规则切换供应商。",
+                    "Switched providers using compatible switching rules.",
                     relay_payload(status, result.backup_path),
                 )
             }
@@ -1861,7 +1861,7 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
                     Some(error.to_string()),
                 );
                 failed(
-                    &format!("切换完整中转配置失败：{error}"),
+                    &format!("Failed to switch full relay config: {error}"),
                     relay_payload(status, None),
                 )
             }
@@ -1876,10 +1876,10 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
             &relay,
             &status,
             None,
-            Some("未检测到 ChatGPT 登录状态".to_string()),
+            Some("ChatGPT login state was not detected".to_string()),
         );
         return failed(
-            "未检测到 ChatGPT 登录状态，已停止写入中转配置。",
+            "ChatGPT login state was not detected, so relay config writing stopped.",
             relay_payload(status, None),
         );
     }
@@ -1901,7 +1901,7 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
                 None,
             );
             ok(
-                "中转配置已写入，密钥未在界面明文显示。",
+                "Relay config written; the key is not shown in plain text in the UI.",
                 relay_payload(status, result.backup_path),
             )
         }
@@ -1915,7 +1915,7 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
                 Some(error.to_string()),
             );
             failed(
-                &format!("写入中转配置失败：{error}"),
+                &format!("Failed to write relay config: {error}"),
                 relay_payload(status, None),
             )
         }
@@ -1930,7 +1930,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
     if !settings.relay_profiles_enabled {
         let status = codex_plus_core::relay_config::relay_status_from_home(&home);
         return failed(
-            "供应商配置总开关已关闭，未写入 config.toml / auth.json。",
+            "Provider config master switch is off, so config.toml / auth.json were not written.",
             relay_payload(status, None),
         );
     }
@@ -1959,12 +1959,12 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
                 );
                 if !status.configured {
                     return failed(
-                        "纯 API 配置写入后未检测到完整 custom provider，请检查 config.toml 和供应商 API Key。",
+                        "Pure API config was written, but no complete custom provider was detected. Check config.toml and the provider API key.",
                         relay_payload(status, result.backup_path),
                     );
                 }
                 ok(
-                    "已按兼容切换规则切换供应商。",
+                    "Switched providers using compatible switching rules.",
                     relay_payload(status, result.backup_path),
                 )
             }
@@ -1978,7 +1978,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
                     Some(error.to_string()),
                 );
                 failed(
-                    &format!("切换纯 API 配置失败：{error}"),
+                    &format!("Failed to switch Pure API config: {error}"),
                     relay_payload(status, None),
                 )
             }
@@ -2003,12 +2003,12 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
             );
             if !status.configured {
                 return failed(
-                    "纯 API 配置写入后未检测到完整 custom provider，请检查 config.toml 和供应商 API Key。",
+                    "Pure API config was written, but no complete custom provider was detected. Check config.toml and the provider API key.",
                     relay_payload(status, result.backup_path),
                 );
             }
             ok(
-                "纯 API 模式已写入：config.toml 已写入 custom provider，auth.json 已切换为当前供应商。",
+                "Pure API mode written: config.toml now has the custom provider, and auth.json now points at the current provider.",
                 relay_payload(status, result.backup_path),
             )
         }
@@ -2022,7 +2022,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
                 Some(error.to_string()),
             );
             failed(
-                &format!("写入纯 API 模式失败：{error}"),
+                &format!("Failed to write Pure API mode: {error}"),
                 relay_payload(status, None),
             )
         }
@@ -2058,7 +2058,7 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
                 }),
             );
             ok(
-                "已清除 custom 中转 API 模式，并切换到官方 ChatGPT 登录模式。",
+                "Cleared custom relay API mode and switched back to official ChatGPT login mode.",
                 relay_payload(status, result.backup_path),
             )
         }
@@ -2072,7 +2072,7 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
                 }),
             );
             failed(
-                &format!("清除中转配置失败：{error}"),
+                &format!("Failed to clear relay config: {error}"),
                 relay_payload(status, None),
             )
         }
@@ -2110,14 +2110,14 @@ fn try_apply_linked_ccs_provider(
                 None,
             );
             Some(ok(
-                "已通过 cc-switch 联动应用当前供应商配置，避免与 CC Switch 发生覆盖冲突。",
+                "Applied the current provider through cc-switch linking to avoid overwrite conflicts with CC Switch.",
                 relay_payload(status, result.backup_path),
             ))
         }
         Err(error) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             Some(failed(
-                &format!("通过 cc-switch 联动应用供应商失败：{error}"),
+                &format!("Failed to apply provider through cc-switch linking: {error}"),
                 relay_payload(status, None),
             ))
         }
@@ -2219,11 +2219,11 @@ fn sanitize_manager_event(event: &str) -> String {
 fn refresh_cli_wrapper_after_settings_save(settings: &BackendSettings) -> String {
     match codex_plus_core::cli_wrapper::ensure_cli_wrapper(settings) {
         Ok(Some(install)) => format!(
-            " 命令包装器已更新：{}。",
+            " Command wrapper updated: {}.",
             install.real_codex.to_string_lossy()
         ),
         Ok(None) => String::new(),
-        Err(error) => format!(" 但命令包装器更新失败：{error}。"),
+        Err(error) => format!(" But command wrapper update failed: {error}."),
     }
 }
 
@@ -2270,7 +2270,7 @@ fn save_relay_file_in_home(
     let path = match kind {
         "config" => home.join("config.toml"),
         "auth" => home.join("auth.json"),
-        other => anyhow::bail!("未知配置文件类型：{other}"),
+        other => anyhow::bail!("Unknown config file type: {other}"),
     };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -2309,7 +2309,7 @@ fn open_url(url: &str) -> anyhow::Result<()> {
             .arg(url)
             .spawn()
             .map(|_| ())
-            .map_err(|error| anyhow::anyhow!("启动系统浏览器失败：{error}"))
+            .map_err(|error| anyhow::anyhow!("Failed to start system browser: {error}"))
     }
 }
 
@@ -2479,7 +2479,7 @@ fn builtin_user_scripts_dir() -> PathBuf {
 fn diagnostics_report() -> String {
     let (codex_app_path, entrypoints, latest_launch) = load_overview_payload();
     let overview = ok(
-        "概览已加载。",
+        "Overview loaded.",
         OverviewPayload {
             codex_version: codex_app_path
                 .as_deref()
@@ -2517,7 +2517,7 @@ fn diagnostics_report() -> String {
             "arch": std::env::consts::ARCH
         }
     }))
-    .unwrap_or_else(|error| format!("诊断报告序列化失败：{error}"))
+    .unwrap_or_else(|error| format!("Failed to serialize diagnostics report: {error}"))
 }
 
 fn load_overview_payload() -> (
@@ -2540,7 +2540,7 @@ fn install_background_failure(action: &str, error: impl std::fmt::Display) -> In
     let state = install::inspect_entrypoints();
     InstallActionResult {
         status: "failed".to_string(),
-        message: format!("{action}后台任务失败：{error}"),
+        message: format!("{action} background task failed: {error}"),
         silent_shortcut: state.silent_shortcut,
         management_shortcut: state.management_shortcut,
     }
@@ -2685,7 +2685,7 @@ mod tests {
         let result = tauri::async_runtime::block_on(perform_update(None));
 
         assert_eq!(result.status, "failed");
-        assert!(result.message.contains("请先检查更新"));
+        assert!(result.message.contains("Check for updates first"));
     }
 
     #[test]
@@ -3036,6 +3036,6 @@ model_reasoning_effort = "high"
         let result = open_external_url("file:///C:/Windows/win.ini".to_string());
 
         assert_eq!(result.status, "failed");
-        assert!(result.message.contains("只允许打开 http 或 https 链接"));
+        assert!(result.message.contains("Only http or https links can be opened"));
     }
 }
