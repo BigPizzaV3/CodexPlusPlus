@@ -824,6 +824,27 @@ fn write_codex_live_atomic(
     std::fs::create_dir_all(home)?;
     let config_path = home.join("config.toml");
     let auth_path = home.join("auth.json");
+    #[cfg(windows)]
+    let guarded_config_text = match config_text {
+        Some(config_text) => {
+            let notify_exe = crate::computer_use_guard::find_computer_use_notify_exe(home);
+            let marketplace_path =
+                crate::computer_use_guard::ensure_openai_bundled_marketplace(home)?;
+            let guarded = if let Some(marketplace_path) = marketplace_path.as_deref() {
+                crate::computer_use_guard::guard_config_text_with_marketplace(
+                    config_text,
+                    notify_exe.as_deref(),
+                    Some(marketplace_path),
+                )?
+            } else {
+                crate::computer_use_guard::guard_config_text(config_text, notify_exe.as_deref())?
+            };
+            Some(guarded)
+        }
+        None => None,
+    };
+    #[cfg(windows)]
+    let config_text = guarded_config_text.as_deref();
 
     if let Some(config_text) = config_text {
         validate_toml_config(config_text, &config_path)?;
