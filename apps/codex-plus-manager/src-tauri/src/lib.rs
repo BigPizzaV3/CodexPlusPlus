@@ -35,6 +35,7 @@ pub fn run() {
             commands::launch_codex_plus,
             commands::restart_codex_plus,
             commands::load_settings,
+            commands::get_config_coordination_status,
             commands::save_settings,
             commands::list_local_sessions,
             commands::list_zed_remote_projects,
