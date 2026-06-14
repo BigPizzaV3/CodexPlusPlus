@@ -254,9 +254,6 @@ where
         if settings.provider_sync_enabled {
             hooks.run_provider_sync().await?;
         }
-        if settings.relay_profiles_enabled {
-            hooks.apply_active_relay_profile(&settings).await?;
-        }
         if settings.computer_use_guard_enabled {
             hooks.ensure_computer_use_config(&settings).await?;
         }

@@ -1322,6 +1322,30 @@ pub fn reset_settings() -> CommandResult<SettingsPayload> {
 }
 
 #[tauri::command]
+pub fn reset_image_overlay_settings() -> CommandResult<SettingsPayload> {
+    let store = SettingsStore::default();
+    let mut settings = store.load().unwrap_or_default();
+    let defaults = BackendSettings::default();
+    settings.codex_app_image_overlay_enabled = defaults.codex_app_image_overlay_enabled;
+    settings.codex_app_image_overlay_path = defaults.codex_app_image_overlay_path;
+    settings.codex_app_image_overlay_opacity = defaults.codex_app_image_overlay_opacity;
+    let settings = normalize_settings_before_save(settings);
+    match store.save(&settings) {
+        Ok(()) => settings_payload("图片覆盖层设置已重置。", "图片覆盖层重置后重新读取失败"),
+        Err(error) => failed(
+            &format!("重置图片覆盖层失败：{error}"),
+            SettingsPayload {
+                settings,
+                settings_path: codex_plus_core::paths::default_settings_path()
+                    .to_string_lossy()
+                    .to_string(),
+                user_scripts: user_script_inventory(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
 pub fn relay_status() -> CommandResult<RelayPayload> {
     let status = codex_plus_core::relay_config::default_relay_status();
     let message = if status.authenticated {
@@ -2884,6 +2908,41 @@ mod tests {
                 .relay_common_config_contents
                 .contains("[mcp_servers")
         );
+    }
+
+    #[test]
+    fn reset_image_overlay_settings_preserves_supplier_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let previous = codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
+
+        let settings = BackendSettings {
+            codex_app_image_overlay_enabled: true,
+            codex_app_image_overlay_path: "C:\\Users\\me\\Pictures\\overlay.png".to_string(),
+            codex_app_image_overlay_opacity: 42,
+            active_relay_id: "supplier-a".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "supplier-a".to_string(),
+                name: "供应商 A".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+                api_key: "sk-test".to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+        SettingsStore::default().save(&settings).unwrap();
+
+        let result = reset_image_overlay_settings();
+        codex_plus_core::paths::set_settings_path_for_tests(previous);
+
+        assert_eq!(result.status, "ok");
+        assert!(!result.payload.settings.codex_app_image_overlay_enabled);
+        assert_eq!(result.payload.settings.codex_app_image_overlay_path, "");
+        assert_eq!(result.payload.settings.codex_app_image_overlay_opacity, 35);
+        assert_eq!(result.payload.settings.active_relay_id, "supplier-a");
+        assert_eq!(result.payload.settings.relay_profiles.len(), 1);
+        assert_eq!(result.payload.settings.relay_profiles[0].id, "supplier-a");
+        assert_eq!(result.payload.settings.relay_profiles[0].api_key, "sk-test");
     }
 
     #[test]

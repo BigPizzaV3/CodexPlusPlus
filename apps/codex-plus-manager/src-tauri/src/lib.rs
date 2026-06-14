@@ -63,6 +63,7 @@ pub fn run() {
             commands::read_latest_logs,
             commands::copy_diagnostics,
             commands::reset_settings,
+            commands::reset_image_overlay_settings,
             commands::relay_status,
             commands::read_relay_files,
             commands::save_relay_file,

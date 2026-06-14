@@ -450,7 +450,6 @@ async fn launch_lifecycle_runs_sync_before_launch_writes_success_and_shutdowns_o
             "select-helper:57321",
             "load-settings",
             "provider-sync",
-            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "inject:9229:57321",
@@ -535,7 +534,6 @@ async fn launch_lifecycle_keeps_js_injection_in_relay_mode() {
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "inject:9229:57321",
@@ -577,7 +575,6 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "apply-relay",
             "launch:9229",
             "status:running",
             "wait-codex",
@@ -616,7 +613,6 @@ async fn launch_lifecycle_runs_computer_use_guard_when_enabled() {
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "apply-relay",
             "computer-use-guard",
             "start-helper:57321",
             "launch:9229",
@@ -658,6 +654,36 @@ async fn launch_lifecycle_skips_computer_use_guard_by_default() {
 }
 
 #[tokio::test]
+async fn launch_lifecycle_does_not_apply_relay_profile_while_launching_codex() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
+        relay_profiles_enabled: true,
+        ..BackendSettings::default()
+    });
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    let events = events.lock().unwrap().clone();
+    assert!(!events.contains(&"apply-relay".to_string()));
+    assert!(events.contains(&"launch:9229".to_string()));
+}
+
+#[tokio::test]
 async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabled() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
@@ -689,7 +715,7 @@ async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabl
 }
 
 #[tokio::test]
-async fn launch_lifecycle_tolerates_duplicate_context_parent_tables_before_applying_relay() {
+async fn launch_lifecycle_tolerates_duplicate_context_parent_tables_without_applying_relay() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -735,7 +761,7 @@ experimental_bearer_token = "sk-test"
     handle.wait_for_codex_exit().await.unwrap();
 
     let events = events.lock().unwrap().clone();
-    assert!(events.contains(&"apply-relay".to_string()));
+    assert!(!events.contains(&"apply-relay".to_string()));
     assert!(!events.contains(&"computer-use-guard".to_string()));
     assert!(events.contains(&"launch:9229".to_string()));
 }
@@ -767,7 +793,6 @@ async fn launch_lifecycle_enters_degraded_mode_and_retries_when_injection_fails(
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "inject:9229:57321",
@@ -813,7 +838,6 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "shutdown-helper:57321",
@@ -920,7 +944,6 @@ async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "inject:9229:57321",
