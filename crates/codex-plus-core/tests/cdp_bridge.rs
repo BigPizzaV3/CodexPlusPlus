@@ -352,6 +352,23 @@ fn injection_script_exposes_conversation_view_width_control() {
 }
 
 #[test]
+fn injection_script_exposes_sidebar_thread_id_badge_control() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("threadIdBadge: false"));
+    assert!(script.contains("threadIdBadge: \"codexAppThreadIdBadge\""));
+    assert!(script.contains("会话 ID 标识"));
+    assert!(script.contains("data-codex-plus-setting=\"threadIdBadge\""));
+    assert!(script.contains("codex-thread-id-badge"));
+    assert!(script.contains("data-codex-thread-id-badge-wrap=\"true\""));
+    assert!(script.contains("let threadIdBadgeActive = false"));
+    assert!(script.contains("if (threadIdBadgeActive)"));
+    assert!(script.contains("function refreshThreadIdBadges()"));
+    assert!(script.contains("uuidV7TimestampMs(sessionId)"));
+    assert!(script.contains("refreshThreadIdBadges();"));
+}
+
+#[test]
 fn injection_script_keeps_session_action_buttons_in_pr_style() {
     let script = assets::injection_script(57321);
 

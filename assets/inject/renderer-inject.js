@@ -9,6 +9,7 @@
   const moreButtonClass = "codex-session-more-button";
   const moreMenuClass = "codex-session-more-menu";
   const actionTooltipClass = "codex-session-action-tooltip";
+  const threadIdBadgeClass = "codex-thread-id-badge";
   const timelineClass = "codex-conversation-timeline";
   const timelineTrackClass = "codex-conversation-timeline-track";
   const timelineMarkerClass = "codex-conversation-timeline-marker";
@@ -40,7 +41,7 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "13";
+  const codexDeleteStyleVersion = "14";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "7";
@@ -52,6 +53,7 @@
   const codexConversationTimelineVersion = "2";
   const codexConversationViewVersion = "1";
   const codexThreadScrollVersion = "1";
+  const codexThreadIdBadgeVersion = "1";
   const codexThreadServiceTierVersion = "1";
   const codexServiceTierBadgeClass = "codex-service-tier-badge";
   const codexServiceTierBadgeVersion = "3";
@@ -250,6 +252,30 @@
       .codex-session-more-menu-icon {
         width: 16px;
         text-align: center;
+      }
+      .${threadIdBadgeClass} {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        max-width: 152px;
+        margin-right: 8px;
+        color: var(--text-secondary, var(--token-text-secondary, rgba(142,142,160,.95)));
+        font: 11px/1.1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        letter-spacing: .01em;
+        opacity: .9;
+        white-space: nowrap;
+        user-select: text;
+      }
+      ${selectors.sidebarThread} [data-codex-thread-id-badge-wrap="true"] {
+        display: inline-flex;
+        align-items: center;
+        min-width: 0;
+        max-width: 100%;
+      }
+      ${selectors.sidebarThread} [data-codex-thread-id-badge-wrap="true"] ${selectors.threadTitle},
+      ${selectors.sidebarThread} [data-codex-thread-id-badge-wrap="true"] .truncate.select-none,
+      ${selectors.sidebarThread} [data-codex-thread-id-badge-wrap="true"] .truncate.text-base {
+        min-width: 0;
       }
       .codex-archive-row-button {
         border: 1px solid #ef4444;
@@ -931,7 +957,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, pluginMarketplaceUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
+    return { pluginEntryUnlock: true, pluginMarketplaceUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
   }
 
   const codexPlusBackendSettingMap = {
@@ -943,6 +969,7 @@
     markdownExport: "codexAppMarkdownExport",
     projectMove: "codexAppProjectMove",
     conversationTimeline: "codexAppConversationTimeline",
+    threadIdBadge: "codexAppThreadIdBadge",
     conversationView: "codexAppConversationView",
     threadScrollRestore: "codexAppThreadScrollRestore",
     zedRemoteOpen: "codexAppZedRemoteOpen",
@@ -973,6 +1000,7 @@
         markdownExport: false,
         projectMove: false,
         conversationTimeline: false,
+        threadIdBadge: false,
         conversationView: false,
         conversationViewMaxWidth: conversationViewDefaultWidth,
         threadScrollRestore: false,
@@ -2198,6 +2226,10 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationTimeline"><span></span></button>
             </div>
             <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">会话 ID 标识</div><div class="codex-plus-row-description">在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadIdBadge"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">对话居中宽度</div><div class="codex-plus-row-description">开启后把主对话和输入框限制到固定最大宽度，适合大屏阅读。</div></div>
               <div class="codex-plus-width-control">
                 <input class="codex-plus-width-input" data-codex-plus-conversation-view-width="true" min="${conversationViewMinWidth}" max="${conversationViewMaxAllowedWidth}" step="10" type="number" value="${conversationViewWidth()}">
@@ -3048,6 +3080,7 @@
 
   let cachedSessionRows = [];
   let cachedSessionRowsAt = 0;
+  let threadIdBadgeActive = false;
 
   function sessionRows(forceRefresh = false) {
     const now = Date.now();
@@ -3110,6 +3143,113 @@
     const rawTitle = (titleNode?.textContent || (titleNode ? "" : (row.textContent || "Untitled session")));
     const title = (titleNode ? rawTitle : rawTitle.replace(/\s*(导出|删除|移动|移出项目)(\s*(导出|删除|移动|移出项目))*$/g, "")).trim().slice(0, 160);
     return { session_id: sessionId, title };
+  }
+
+  function threadIdBadgeTitleNode(row) {
+    return row.querySelector(`${selectors.threadTitle}, .truncate.select-none, .truncate.text-base`);
+  }
+
+  function padThreadIdBadgePart(value) {
+    return String(value).padStart(2, "0");
+  }
+
+  function threadIdBadgeCreatedAt(sessionId) {
+    const timestampMs = uuidV7TimestampMs(sessionId);
+    const minReasonableMs = Date.UTC(2020, 0, 1);
+    const maxReasonableMs = Date.now() + 366 * 24 * 60 * 60 * 1000;
+    if (!timestampMs || timestampMs < minReasonableMs || timestampMs > maxReasonableMs) return null;
+    return new Date(timestampMs);
+  }
+
+  function formatThreadIdBadgeCreatedAt(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+    return `${padThreadIdBadgePart(date.getMonth() + 1)}-${padThreadIdBadgePart(date.getDate())} ${padThreadIdBadgePart(date.getHours())}:${padThreadIdBadgePart(date.getMinutes())}`;
+  }
+
+  function threadIdBadgeMeta(sessionId) {
+    const id = projectMoveSessionKey(sessionId);
+    const compact = id.replaceAll("-", "");
+    const shortId = compact.slice(0, 8);
+    const createdAt = threadIdBadgeCreatedAt(sessionId);
+    const createdLabel = formatThreadIdBadgeCreatedAt(createdAt);
+    return {
+      id,
+      shortId,
+      createdAt,
+      label: shortId ? `[${shortId}${createdLabel ? ` ${createdLabel}` : ""}]` : "",
+    };
+  }
+
+  function wrapThreadTitleForBadge(row, titleNode) {
+    const parent = titleNode?.parentElement;
+    if (!parent) return null;
+    if (parent.dataset?.codexThreadIdBadgeWrap === "true") return parent;
+    const wrapper = document.createElement("span");
+    wrapper.dataset.codexThreadIdBadgeWrap = "true";
+    parent.insertBefore(wrapper, titleNode);
+    wrapper.appendChild(titleNode);
+    return wrapper;
+  }
+
+  function removeThreadIdBadges(root = document) {
+    root.querySelectorAll?.(`.${threadIdBadgeClass}`).forEach((badge) => badge.remove());
+    root.querySelectorAll?.('[data-codex-thread-id-badge-wrap="true"]').forEach((wrapper) => {
+      const parent = wrapper.parentElement;
+      if (!parent) return;
+      while (wrapper.firstChild) parent.insertBefore(wrapper.firstChild, wrapper);
+      wrapper.remove();
+    });
+    const rows = root.matches?.(selectors.sidebarThread) ? [root] : Array.from(root.querySelectorAll?.(selectors.sidebarThread) || []);
+    rows.forEach((row) => {
+      delete row.dataset.codexThreadIdBadge;
+      delete row.dataset.codexThreadIdBadgeVersion;
+    });
+  }
+
+  function installThreadIdBadge(row) {
+    const ref = sessionRefFromRow(row);
+    if (!ref.session_id) {
+      removeThreadIdBadges(row);
+      return;
+    }
+    const meta = threadIdBadgeMeta(ref.session_id);
+    const titleNode = threadIdBadgeTitleNode(row);
+    if (!meta.label || !titleNode) {
+      removeThreadIdBadges(row);
+      return;
+    }
+
+    const wrapper = wrapThreadTitleForBadge(row, titleNode);
+    if (!wrapper) return;
+
+    let badge = wrapper.querySelector(`.${threadIdBadgeClass}`);
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = threadIdBadgeClass;
+      wrapper.insertBefore(badge, titleNode);
+    }
+
+    badge.dataset.codexThreadIdBadgeVersion = codexThreadIdBadgeVersion;
+    if (badge.textContent !== meta.label) badge.textContent = meta.label;
+    const fullTitle = meta.createdAt
+      ? `${meta.label}\nSession ID: ${meta.id}\nCreated: ${meta.createdAt.toLocaleString()}`
+      : `${meta.label}\nSession ID: ${meta.id}`;
+    badge.setAttribute("title", fullTitle);
+    badge.setAttribute("aria-label", fullTitle);
+    row.dataset.codexThreadIdBadge = meta.label;
+    row.dataset.codexThreadIdBadgeVersion = codexThreadIdBadgeVersion;
+  }
+
+  function refreshThreadIdBadges() {
+    if (!codexPlusSettings().threadIdBadge) {
+      if (threadIdBadgeActive) {
+        removeThreadIdBadges();
+        threadIdBadgeActive = false;
+      }
+      return;
+    }
+    threadIdBadgeActive = true;
+    sessionRows().forEach(installThreadIdBadge);
   }
 
   function codexPlusDiagnosticPayload(event, detail) {
@@ -7978,6 +8118,7 @@
       unblockPluginInstallButtons();
       refreshForcePluginInstallUnlockLoop();
     }
+    refreshThreadIdBadges();
     sessionRows().forEach(tryAttachButton);
     syncActionGroupsLayout();
     updateDeleteButtonOffsets();
