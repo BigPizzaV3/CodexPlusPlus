@@ -92,7 +92,8 @@
 
   function installCodexPlusImageOverlay() {
     const config = window.__CODEX_PLUS_IMAGE_OVERLAY__ || {};
-    const existing = document.getElementById(codexPlusImageOverlayId);
+    const canQueryById = typeof document?.getElementById === "function";
+    const existing = canQueryById ? document.getElementById(codexPlusImageOverlayId) : null;
     const source = config.dataUrl || "";
     if (!config.enabled || !source) {
       if (window.__codexPlusImageOverlayBlobUrl) {
@@ -100,6 +101,10 @@
         window.__codexPlusImageOverlayBlobUrl = "";
       }
       if (existing) existing.remove();
+      return;
+    }
+    const root = document?.documentElement;
+    if (!root || typeof document?.createElement !== "function") {
       return;
     }
     const opacity = Math.min(1, Math.max(0.01, Number(config.opacity) || 0.35));
@@ -120,7 +125,7 @@
       zIndex: "2147483646",
       userSelect: "none",
     });
-    if (!existing) document.documentElement.appendChild(image);
+    if (!existing) root.appendChild(image);
     sendCodexPlusDiagnostic("image_overlay_installed", {
       opacity,
       sourceKind: source.startsWith("data:") ? "data-uri" : "unknown",
