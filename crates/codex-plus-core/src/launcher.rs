@@ -1228,7 +1228,7 @@ fn log_helper_response(
 }
 
 #[cfg(test)]
-mod tests {
+mod computer_use_tests {
     use super::overlay_image_content_type;
     use std::path::Path;
 
