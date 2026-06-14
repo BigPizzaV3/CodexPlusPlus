@@ -35,6 +35,32 @@ fn app_paths_find_latest_windows_package_prefers_highest_version_app_dir() {
 }
 
 #[test]
+fn app_paths_find_latest_windows_package_detects_beta_package() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(
+        temp.path()
+            .join("OpenAI.CodexBeta_26.527.7698.0_x64__2p2nqsd0c76g0/app"),
+    )
+    .unwrap();
+
+    let latest = find_latest_codex_app_dir(temp.path()).unwrap();
+
+    assert_eq!(
+        latest,
+        temp.path()
+            .join("OpenAI.CodexBeta_26.527.7698.0_x64__2p2nqsd0c76g0/app")
+    );
+    assert_eq!(
+        codex_app_version(&latest).as_deref(),
+        Some("26.527.7698.0")
+    );
+    assert_eq!(
+        packaged_app_user_model_id(&latest).as_deref(),
+        Some("OpenAI.CodexBeta_2p2nqsd0c76g0!App")
+    );
+}
+
+#[test]
 fn app_paths_find_latest_windows_package_returns_package_when_app_dir_missing() {
     let temp = tempfile::tempdir().unwrap();
     let package = temp.path().join("OpenAI.Codex_26.429.8261.0_x64__abc");

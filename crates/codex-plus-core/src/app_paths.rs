@@ -1,6 +1,8 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+const CODEX_PACKAGE_IDENTITIES: &[&str] = &["OpenAI.Codex", "OpenAI.CodexBeta"];
+
 pub fn find_latest_codex_app_dir(root: &Path) -> Option<PathBuf> {
     let mut matches = std::fs::read_dir(root)
         .ok()?
@@ -219,11 +221,7 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
 
 pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
     let package_name = package_name_from_app_dir(app_dir)?;
-    if !package_name.starts_with("OpenAI.Codex_") || !package_name.contains("__") {
-        return None;
-    }
-    let identity_name = package_name.split_once('_')?.0;
-    let publisher_id = package_name.rsplit_once("__")?.1;
+    let (identity_name, _, publisher_id) = codex_package_parts(&package_name)?;
     if publisher_id.is_empty() {
         return None;
     }
@@ -245,9 +243,8 @@ fn codex_package_version(package_dir: &Path) -> Option<String> {
     let name = path
         .split('/')
         .rev()
-        .find(|part| part.starts_with("OpenAI.Codex_"))?;
-    let rest = name.strip_prefix("OpenAI.Codex_")?;
-    let version = rest.split_once('_')?.0;
+        .find(|part| codex_package_parts(part).is_some())?;
+    let (_, version, _) = codex_package_parts(name)?;
     if version.is_empty() {
         None
     } else {
@@ -291,12 +288,30 @@ fn macos_app_candidates(root: &Path) -> Vec<PathBuf> {
 
 fn version_tuple(path: &Path) -> Option<Vec<u32>> {
     let name = path.file_name()?.to_str()?;
-    let rest = name.strip_prefix("OpenAI.Codex_")?;
-    let version = rest.split_once('_')?.0;
+    let (_, version, _) = codex_package_parts(name)?;
     let parts = version
         .split('.')
         .map(str::parse::<u32>)
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
     if parts.is_empty() { None } else { Some(parts) }
+}
+
+fn codex_package_parts(package_name: &str) -> Option<(&str, &str, &str)> {
+    for identity in CODEX_PACKAGE_IDENTITIES {
+        let Some(rest) = package_name.strip_prefix(identity) else {
+            continue;
+        };
+        let Some(rest) = rest.strip_prefix('_') else {
+            continue;
+        };
+        let Some((version, rest)) = rest.split_once('_') else {
+            continue;
+        };
+        let Some((_, publisher_id)) = rest.rsplit_once("__") else {
+            continue;
+        };
+        return Some((*identity, version, publisher_id));
+    }
+    None
 }
