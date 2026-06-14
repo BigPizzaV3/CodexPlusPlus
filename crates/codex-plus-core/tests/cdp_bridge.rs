@@ -1,7 +1,10 @@
 use base64::Engine;
 use codex_plus_core::assets;
 use codex_plus_core::bridge::{self, BRIDGE_BINDING_NAME};
-use codex_plus_core::cdp::{CdpTarget, list_targets, pick_page_target};
+use codex_plus_core::cdp::{
+    CdpTarget, list_targets, pick_injectable_codex_page_target, pick_page_target,
+};
+
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::future::Future;
@@ -845,7 +848,7 @@ fn pick_page_target_prefers_codex_title_or_url() {
 }
 
 #[test]
-fn pick_page_target_falls_back_to_first_injectable_page() {
+fn pick_page_target_leniently_falls_back_to_first_injectable_page() {
     let targets = vec![
         target(
             "browser",
@@ -889,6 +892,49 @@ fn pick_page_target_rejects_non_pages_and_pages_without_websocket() {
     ];
 
     let error = pick_page_target(&targets).expect_err("no injectable page should be selected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("No injectable page target found")
+    );
+}
+
+#[test]
+fn pick_injectable_codex_page_target_rejects_non_codex_pages() {
+    let targets = vec![
+        target(
+            "browser",
+            "browser",
+            "Codex",
+            "https://codex.test",
+            Some("ws://browser"),
+        ),
+        target(
+            "other-page",
+            "page",
+            "Other App",
+            "https://example.test",
+            Some("ws://other"),
+        ),
+    ];
+
+    let error = pick_injectable_codex_page_target(&targets)
+        .expect_err("non-Codex page must not be selected for injection");
+
+    assert!(
+        error
+            .to_string()
+            .contains("No injectable Codex page target found")
+    );
+}
+
+#[test]
+fn pick_injectable_codex_page_target_requires_websocket() {
+    let targets = vec![target("codex", "page", "Codex", "https://codex.test", None)];
+
+    let error = pick_injectable_codex_page_target(&targets)
+        .expect_err("Codex page without websocket must not be selected for injection");
 
     assert!(
         error

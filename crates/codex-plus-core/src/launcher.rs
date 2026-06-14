@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -14,6 +15,13 @@ use tokio::sync::Mutex;
 
 use crate::settings::{BackendSettings, SettingsStore, normalize_codex_extra_args};
 use crate::status::{LaunchStatus, StatusStore};
+
+#[cfg(windows)]
+const POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS: &[u64] = &[0, 5, 15, 30, 60, 120, 180, 240, 300];
+#[cfg_attr(not(windows), allow(dead_code))]
+const POST_LAUNCH_COMPUTER_USE_GUARD_STABLE_ATTEMPTS: usize = 3;
+const PACKAGED_CDP_READY_ATTEMPTS: usize = 10;
+const PACKAGED_CDP_READY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexLaunch {
@@ -127,6 +135,9 @@ pub trait LaunchHooks: Send + Sync {
     async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
     }
+    async fn ensure_computer_use_config(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()>;
     async fn launch_codex(
         &self,
@@ -182,6 +193,12 @@ pub trait LaunchHooks: Send + Sync {
     ) -> anyhow::Result<()> {
         Ok(())
     }
+    async fn start_computer_use_guard_watchdog(
+        &self,
+        _settings: &BackendSettings,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn write_status(&self, status: &str);
     async fn wait_for_codex_exit(&self, launch: &CodexLaunch) -> anyhow::Result<()>;
     async fn shutdown_helper(&self, helper_port: u16);
@@ -193,6 +210,8 @@ pub struct DefaultLaunchHooks {
     child: Mutex<Option<Child>>,
     helper: Mutex<Option<HelperRuntime>>,
     bridge_watchdog: Mutex<Option<BridgeWatchdogRuntime>>,
+    computer_use_guard_watchdog: Mutex<Option<ComputerUseGuardWatchdogRuntime>>,
+    computer_use_guard_artifacts: Mutex<Option<crate::computer_use_guard::GuardArtifacts>>,
 }
 
 struct HelperRuntime {
@@ -201,6 +220,11 @@ struct HelperRuntime {
 }
 
 struct BridgeWatchdogRuntime {
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+struct ComputerUseGuardWatchdogRuntime {
     shutdown: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -230,6 +254,12 @@ where
         if settings.provider_sync_enabled {
             hooks.run_provider_sync().await?;
         }
+        if settings.relay_profiles_enabled {
+            hooks.apply_active_relay_profile(&settings).await?;
+        }
+        if settings.computer_use_guard_enabled {
+            hooks.ensure_computer_use_config(&settings).await?;
+        }
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings);
         if protocol_proxy_enabled {
             helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
@@ -244,6 +274,9 @@ where
             .await?;
         launched = Some(launch.clone());
         keep_launched_on_error = true;
+        if settings.computer_use_guard_enabled {
+            hooks.start_computer_use_guard_watchdog(&settings).await?;
+        }
 
         let mut injection_degraded = false;
         if settings.enhancements_enabled {
@@ -256,7 +289,7 @@ where
             } else {
                 let degraded = launch_status(
                     "running_degraded",
-                    "Codex 已启动，Codex++ 增强仍在等待页面就绪。",
+                    "Codex launched; Codex++ enhancements are still waiting for the page bridge.",
                     debug_port,
                     helper_port,
                     &app_dir,
@@ -361,7 +394,7 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     fn select_debug_port(&self, requested: u16) -> u16 {
-        crate::ports::select_platform_loopback_port(requested)
+        crate::ports::select_packaged_codex_debug_port(requested)
     }
 
     fn select_helper_port(&self, requested: u16) -> u16 {
@@ -398,14 +431,30 @@ impl LaunchHooks for DefaultLaunchHooks {
         {
             let auth_contents = (!profile.auth_contents.trim().is_empty())
                 .then_some(profile.auth_contents.as_str());
-            crate::relay_config::clear_relay_config_to_home_with_auth(&home, auth_contents)?;
+            crate::relay_config::clear_relay_config_to_home_with_auth_and_computer_use_guard(
+                &home,
+                auth_contents,
+                settings.computer_use_guard_enabled,
+            )?;
             return Ok(());
         }
-        crate::relay_config::apply_relay_profile_to_home_with_switch_rules(
+        crate::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
             &home,
             &profile,
             &common_config,
+            settings.computer_use_guard_enabled,
         )?;
+        Ok(())
+    }
+
+    async fn ensure_computer_use_config(&self, settings: &BackendSettings) -> anyhow::Result<()> {
+        if !settings.computer_use_guard_enabled {
+            return Ok(());
+        }
+        let home = crate::relay_config::default_codex_home_dir();
+        let artifacts = crate::computer_use_guard::resolve_computer_use_guard_artifacts(&home)?;
+        crate::computer_use_guard::ensure_computer_use_config_with_artifacts(&home, &artifacts)?;
+        *self.computer_use_guard_artifacts.lock().await = Some(artifacts);
         Ok(())
     }
 
@@ -458,8 +507,26 @@ impl LaunchHooks for DefaultLaunchHooks {
                 else {
                     unreachable!();
                 };
+                let app_user_model_id_for_log = app_user_model_id.clone();
+                let preexisting_cdp_targets = query_cdp_targets(debug_port).await;
+                let preexisting_cdp_target_ids = cdp_target_fingerprints(&preexisting_cdp_targets);
+                if preexisting_cdp_targets.iter().any(is_codex_cdp_target) {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.packaged_activation_reuse_preexisting_cdp",
+                        serde_json::json!({
+                            "debug_port": debug_port,
+                            "app_user_model_id": app_user_model_id_for_log,
+                            "preexisting_cdp_target_count": preexisting_cdp_targets.len()
+                        }),
+                    );
+                    return Ok(CodexLaunch::PackagedActivation {
+                        app_user_model_id: app_user_model_id.clone(),
+                        arguments: arguments.clone(),
+                        process_id: None,
+                    });
+                }
                 let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
-                return Ok(match activation {
+                let packaged_launch = match activation {
                     CodexLaunch::PackagedActivation {
                         app_user_model_id,
                         arguments,
@@ -470,7 +537,27 @@ impl LaunchHooks for DefaultLaunchHooks {
                         process_id: Some(process_id),
                     },
                     CodexLaunch::Process { .. } => unreachable!(),
-                });
+                };
+                if cdp_json_ready(
+                    debug_port,
+                    PACKAGED_CDP_READY_ATTEMPTS,
+                    PACKAGED_CDP_READY_DELAY,
+                    &preexisting_cdp_target_ids,
+                )
+                .await
+                {
+                    return Ok(packaged_launch);
+                }
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.packaged_activation_cdp_unready_direct_fallback",
+                    serde_json::json!({
+                        "debug_port": debug_port,
+                        "app_user_model_id": app_user_model_id_for_log,
+                        "process_id": process_id,
+                        "preexisting_cdp_target_count": preexisting_cdp_targets.len()
+                    }),
+                );
+                let _ = terminate_windows_process_id(process_id).await;
             }
         }
 
@@ -549,6 +636,34 @@ impl LaunchHooks for DefaultLaunchHooks {
         Ok(())
     }
 
+    async fn start_computer_use_guard_watchdog(
+        &self,
+        settings: &BackendSettings,
+    ) -> anyhow::Result<()> {
+        if !settings.computer_use_guard_enabled {
+            return Ok(());
+        }
+        #[cfg(windows)]
+        {
+            let home = crate::relay_config::default_codex_home_dir();
+            let artifacts = self.computer_use_guard_artifacts.lock().await.clone();
+            let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                run_post_launch_computer_use_guard(home, artifacts, &mut shutdown_rx).await;
+            });
+            if let Some(runtime) = self
+                .computer_use_guard_watchdog
+                .lock()
+                .await
+                .replace(ComputerUseGuardWatchdogRuntime { shutdown, task })
+            {
+                let _ = runtime.shutdown.send(());
+                let _ = runtime.task.await;
+            }
+        }
+        Ok(())
+    }
+
     async fn write_status(&self, _status: &str) {}
 
     async fn wait_for_codex_exit(&self, launch: &CodexLaunch) -> anyhow::Result<()> {
@@ -569,6 +684,10 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn shutdown_helper(&self, _helper_port: u16) {
+        if let Some(runtime) = self.computer_use_guard_watchdog.lock().await.take() {
+            let _ = runtime.shutdown.send(());
+            let _ = runtime.task.await;
+        }
         if let Some(runtime) = self.bridge_watchdog.lock().await.take() {
             let _ = runtime.shutdown.send(());
             let _ = runtime.task.await;
@@ -1124,7 +1243,7 @@ fn log_helper_response(
 }
 
 #[cfg(test)]
-mod tests {
+mod computer_use_tests {
     use super::overlay_image_content_type;
     use std::path::Path;
 
@@ -1249,6 +1368,145 @@ pub fn build_packaged_activation(
     })
 }
 
+async fn cdp_json_ready(
+    debug_port: u16,
+    attempts: usize,
+    delay: std::time::Duration,
+    preexisting_targets: &HashSet<String>,
+) -> bool {
+    let client = match reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+    for attempt in 0..attempts {
+        if cdp_json_ready_once(&client, debug_port, preexisting_targets).await {
+            return true;
+        }
+        if attempt + 1 < attempts {
+            tokio::time::sleep(delay).await;
+        }
+    }
+    false
+}
+
+async fn query_cdp_targets(debug_port: u16) -> Vec<crate::cdp::CdpTarget> {
+    let client = match reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return Vec::new(),
+    };
+    let Some(targets) = query_cdp_targets_once(&client, debug_port).await else {
+        return Vec::new();
+    };
+    targets
+}
+
+fn cdp_target_fingerprints(targets: &[crate::cdp::CdpTarget]) -> HashSet<String> {
+    targets.iter().map(cdp_target_fingerprint).collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CdpTargetReadiness {
+    Ready,
+    NotPage,
+    MissingWebsocket,
+    NotCodexContext,
+    Preexisting,
+}
+
+async fn cdp_json_ready_once(
+    client: &reqwest::Client,
+    debug_port: u16,
+    preexisting_targets: &HashSet<String>,
+) -> bool {
+    let Some(targets) = query_cdp_targets_once(client, debug_port).await else {
+        return false;
+    };
+    targets.iter().any(|target| {
+        let readiness = cdp_target_readiness(target, preexisting_targets);
+        let accepted = readiness == CdpTargetReadiness::Ready;
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "launcher.cdp_readiness_target",
+            serde_json::json!({
+                "debug_port": debug_port,
+                "target_id": target.id,
+                "target_type": target.target_type,
+                "title": target.title,
+                "url": target.url,
+                "has_websocket": target.web_socket_debugger_url.as_deref().is_some_and(|url| !url.is_empty()),
+                "fingerprint": cdp_target_fingerprint(target),
+                "readiness": format!("{readiness:?}"),
+                "accepted": accepted
+            }),
+        );
+        accepted
+    })
+}
+
+async fn query_cdp_targets_once(
+    client: &reqwest::Client,
+    debug_port: u16,
+) -> Option<Vec<crate::cdp::CdpTarget>> {
+    for url in [
+        format!("http://127.0.0.1:{debug_port}/json"),
+        format!("http://[::1]:{debug_port}/json"),
+    ] {
+        let Ok(response) = client.get(url).send().await else {
+            continue;
+        };
+        let Ok(response) = response.error_for_status() else {
+            continue;
+        };
+        let Ok(targets) = response.json::<Vec<crate::cdp::CdpTarget>>().await else {
+            continue;
+        };
+        return Some(targets);
+    }
+    None
+}
+
+fn cdp_target_fingerprint(target: &crate::cdp::CdpTarget) -> String {
+    if !target.id.is_empty() {
+        return target.id.clone();
+    }
+    target.web_socket_debugger_url.clone().unwrap_or_default()
+}
+
+fn is_codex_cdp_target(target: &crate::cdp::CdpTarget) -> bool {
+    cdp_target_readiness(target, &HashSet::new()) == CdpTargetReadiness::Ready
+}
+
+fn cdp_target_readiness(
+    target: &crate::cdp::CdpTarget,
+    preexisting_targets: &HashSet<String>,
+) -> CdpTargetReadiness {
+    if target.target_type != "page" {
+        return CdpTargetReadiness::NotPage;
+    }
+    if !target
+        .web_socket_debugger_url
+        .as_deref()
+        .is_some_and(|url| !url.is_empty())
+    {
+        return CdpTargetReadiness::MissingWebsocket;
+    }
+    if preexisting_targets.contains(&cdp_target_fingerprint(target)) {
+        return CdpTargetReadiness::Preexisting;
+    }
+    let haystack = format!("{} {}", target.title, target.url).to_lowercase();
+    if !haystack.contains("codex") {
+        return CdpTargetReadiness::NotCodexContext;
+    }
+    CdpTargetReadiness::Ready
+}
+
 async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
     let mut last_error = None;
     for _ in 0..20 {
@@ -1316,7 +1574,7 @@ pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> boo
 
 async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
     let targets = crate::cdp::list_targets(debug_port).await?;
-    let target = crate::cdp::pick_page_target(&targets)?;
+    let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
         .web_socket_debugger_url
         .as_deref()
@@ -1341,7 +1599,7 @@ fn runtime_evaluate_result_is_true(result: &Value) -> bool {
 
 async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
     let targets = crate::cdp::list_targets(debug_port).await?;
-    let target = crate::cdp::pick_page_target(&targets)?;
+    let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
         .web_socket_debugger_url
         .as_deref()
@@ -1454,6 +1712,119 @@ async fn is_macos_app_running(app_dir: &Path) -> bool {
         && String::from_utf8_lossy(&output.stdout)
             .trim()
             .eq_ignore_ascii_case("true")
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn post_launch_guard_artifacts_ready(
+    artifacts: &crate::computer_use_guard::GuardArtifacts,
+) -> bool {
+    artifacts.notify_exe.is_some()
+        && artifacts.marketplace_path.is_some()
+        && (!artifacts.runtime_exports_needed || artifacts.sky_package_json.is_some())
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn should_stop_post_launch_computer_use_guard(
+    stable_unchanged_attempts: usize,
+    artifacts: &crate::computer_use_guard::GuardArtifacts,
+) -> bool {
+    stable_unchanged_attempts >= POST_LAUNCH_COMPUTER_USE_GUARD_STABLE_ATTEMPTS
+        && post_launch_guard_artifacts_ready(artifacts)
+}
+
+#[cfg(windows)]
+async fn run_post_launch_computer_use_guard(
+    home: PathBuf,
+    mut artifacts: Option<crate::computer_use_guard::GuardArtifacts>,
+    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
+) {
+    let mut previous_delay = 0_u64;
+    let mut stable_unchanged_attempts = 0_usize;
+    for (index, delay) in POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        let wait_seconds = delay.saturating_sub(previous_delay);
+        previous_delay = delay;
+        if wait_seconds > 0 {
+            tokio::select! {
+                _ = &mut *shutdown_rx => return,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(wait_seconds)) => {}
+            }
+        }
+        let attempt = index + 1;
+        let resolved_artifacts = match artifacts.take() {
+            Some(artifacts) => artifacts,
+            None => match crate::computer_use_guard::resolve_computer_use_guard_artifacts(&home) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    stable_unchanged_attempts = 0;
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "computer_use_guard.post_launch_failed",
+                        serde_json::json!({
+                            "attempt": attempt,
+                            "delay_seconds": delay,
+                            "phase": "resolve_artifacts",
+                            "message": error.to_string()
+                        }),
+                    );
+                    continue;
+                }
+            },
+        };
+        let artifacts_ready = post_launch_guard_artifacts_ready(&resolved_artifacts);
+        artifacts = artifacts_ready.then_some(resolved_artifacts.clone());
+        match crate::computer_use_guard::ensure_computer_use_config_with_artifacts(
+            &home,
+            &resolved_artifacts,
+        ) {
+            Ok(result) => {
+                if !result.changed && artifacts_ready {
+                    stable_unchanged_attempts += 1;
+                } else {
+                    stable_unchanged_attempts = 0;
+                }
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "computer_use_guard.post_launch_ok",
+                    serde_json::json!({
+                        "attempt": attempt,
+                        "delay_seconds": delay,
+                        "changed": result.changed,
+                        "stable_unchanged_attempts": stable_unchanged_attempts,
+                        "notify_exe": result
+                            .notify_exe
+                            .map(|path| path.to_string_lossy().to_string())
+                    }),
+                );
+                if should_stop_post_launch_computer_use_guard(
+                    stable_unchanged_attempts,
+                    &resolved_artifacts,
+                ) {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "computer_use_guard.post_launch_stable_stop",
+                        serde_json::json!({
+                            "attempt": attempt,
+                            "delay_seconds": delay,
+                            "stable_unchanged_attempts": stable_unchanged_attempts
+                        }),
+                    );
+                    return;
+                }
+            }
+            Err(error) => {
+                stable_unchanged_attempts = 0;
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "computer_use_guard.post_launch_failed",
+                    serde_json::json!({
+                        "attempt": attempt,
+                        "delay_seconds": delay,
+                        "message": error.to_string()
+                    }),
+                );
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -1641,5 +2012,196 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
             CoUninitialize();
         }
         result.map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cdp_target(
+        id: &str,
+        target_type: &str,
+        title: &str,
+        url: &str,
+        ws: Option<&str>,
+    ) -> crate::cdp::CdpTarget {
+        crate::cdp::CdpTarget {
+            id: id.to_string(),
+            target_type: target_type.to_string(),
+            title: title.to_string(),
+            url: url.to_string(),
+            web_socket_debugger_url: ws.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn cdp_readiness_accepts_only_codex_page_targets_with_websocket() {
+        assert!(is_codex_cdp_target(&cdp_target(
+            "target-1",
+            "page",
+            "Codex",
+            "https://codex.local/",
+            Some("ws://127.0.0.1:9229/devtools/page/target-1"),
+        )));
+        assert!(!is_codex_cdp_target(&cdp_target(
+            "target-2",
+            "page",
+            "Other App",
+            "https://example.test/",
+            Some("ws://127.0.0.1:9229/devtools/page/target-2"),
+        )));
+        assert!(!is_codex_cdp_target(&cdp_target(
+            "target-3",
+            "worker",
+            "Codex Worker",
+            "https://codex.local/",
+            Some("ws://127.0.0.1:9229/devtools/page/target-3"),
+        )));
+        assert!(!is_codex_cdp_target(&cdp_target(
+            "target-4",
+            "page",
+            "Codex",
+            "https://codex.local/",
+            None,
+        )));
+    }
+
+    #[test]
+    fn cdp_readiness_rejects_preexisting_codex_target() {
+        let target = cdp_target(
+            "target-1",
+            "page",
+            "Codex",
+            "https://codex.local/",
+            Some("ws://127.0.0.1:9229/devtools/page/target-1"),
+        );
+        let mut preexisting = HashSet::new();
+        preexisting.insert(cdp_target_fingerprint(&target));
+
+        assert_eq!(
+            cdp_target_readiness(&target, &preexisting),
+            CdpTargetReadiness::Preexisting
+        );
+    }
+
+    #[test]
+    fn cdp_readiness_reports_rejection_reasons() {
+        assert_eq!(
+            cdp_target_readiness(
+                &cdp_target(
+                    "target-1",
+                    "worker",
+                    "Codex Worker",
+                    "https://codex.local/",
+                    Some("ws://127.0.0.1:9229/devtools/page/target-1"),
+                ),
+                &HashSet::new(),
+            ),
+            CdpTargetReadiness::NotPage
+        );
+        assert_eq!(
+            cdp_target_readiness(
+                &cdp_target(
+                    "target-2",
+                    "page",
+                    "Other App",
+                    "https://example.test/",
+                    None
+                ),
+                &HashSet::new(),
+            ),
+            CdpTargetReadiness::MissingWebsocket
+        );
+        assert_eq!(
+            cdp_target_readiness(
+                &cdp_target(
+                    "target-3",
+                    "page",
+                    "Other App",
+                    "https://example.test/",
+                    Some("ws://127.0.0.1:9229/devtools/page/target-3"),
+                ),
+                &HashSet::new(),
+            ),
+            CdpTargetReadiness::NotCodexContext
+        );
+    }
+
+    #[test]
+    fn cdp_target_fingerprint_prefers_stable_id() {
+        let target = cdp_target(
+            "target-1",
+            "page",
+            "Codex",
+            "https://codex.local/",
+            Some("ws://127.0.0.1:9229/devtools/page/target-1"),
+        );
+
+        assert_eq!(cdp_target_fingerprint(&target), "target-1");
+    }
+
+    #[test]
+    fn cdp_target_fingerprint_falls_back_to_websocket_url() {
+        let target = cdp_target(
+            "",
+            "page",
+            "Codex",
+            "https://codex.local/",
+            Some("ws://127.0.0.1:9229/devtools/page/target-1"),
+        );
+
+        assert_eq!(
+            cdp_target_fingerprint(&target),
+            "ws://127.0.0.1:9229/devtools/page/target-1"
+        );
+    }
+
+    #[test]
+    fn post_launch_guard_stops_after_stable_ready_artifacts() {
+        let artifacts = crate::computer_use_guard::GuardArtifacts {
+            notify_exe: Some(PathBuf::from("codex-computer-use.exe")),
+            marketplace_path: Some(PathBuf::from("openai-bundled")),
+            sky_package_json: None,
+            runtime_exports_needed: false,
+        };
+
+        assert!(!should_stop_post_launch_computer_use_guard(2, &artifacts));
+        assert!(should_stop_post_launch_computer_use_guard(3, &artifacts));
+    }
+
+    #[test]
+    fn post_launch_guard_keeps_retrying_until_artifacts_are_ready() {
+        let missing_notify = crate::computer_use_guard::GuardArtifacts {
+            notify_exe: None,
+            marketplace_path: Some(PathBuf::from("openai-bundled")),
+            sky_package_json: None,
+            runtime_exports_needed: false,
+        };
+        let missing_marketplace = crate::computer_use_guard::GuardArtifacts {
+            notify_exe: Some(PathBuf::from("codex-computer-use.exe")),
+            marketplace_path: None,
+            sky_package_json: None,
+            runtime_exports_needed: false,
+        };
+        let missing_runtime_package = crate::computer_use_guard::GuardArtifacts {
+            notify_exe: Some(PathBuf::from("codex-computer-use.exe")),
+            marketplace_path: Some(PathBuf::from("openai-bundled")),
+            sky_package_json: None,
+            runtime_exports_needed: true,
+        };
+
+        assert!(!should_stop_post_launch_computer_use_guard(
+            3,
+            &missing_notify
+        ));
+        assert!(!should_stop_post_launch_computer_use_guard(
+            3,
+            &missing_marketplace
+        ));
+        assert!(!should_stop_post_launch_computer_use_guard(
+            3,
+            &missing_runtime_package
+        ));
     }
 }

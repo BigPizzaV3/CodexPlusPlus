@@ -101,6 +101,7 @@ type BackendSettings = {
   providerSyncLastSelectedProvider: string;
   relayProfilesEnabled: boolean;
   enhancementsEnabled: boolean;
+  computerUseGuardEnabled: boolean;
   codexAppPluginEntryUnlock: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppForcePluginInstall: boolean;
@@ -507,6 +508,7 @@ const defaultSettings: BackendSettings = {
   providerSyncLastSelectedProvider: "",
   relayProfilesEnabled: true,
   enhancementsEnabled: true,
+  computerUseGuardEnabled: false,
   codexAppPluginEntryUnlock: true,
   codexAppPluginMarketplaceUnlock: true,
   codexAppForcePluginInstall: true,
@@ -1935,6 +1937,17 @@ function EnhanceScreen({
             <span>
               <strong>启用 Codex++ 页面增强</strong>
               <small>关闭后会停用删除、导出、项目移动、Timeline、插件相关和菜单位置增强。</small>
+            </span>
+          </label>
+          <label className="switch-row">
+            <input
+              checked={form.computerUseGuardEnabled}
+              onChange={(event) => onFormChange({ ...form, computerUseGuardEnabled: event.currentTarget.checked })}
+              type="checkbox"
+            />
+            <span>
+              <strong>启用 Windows Computer Use Guard</strong>
+              <small>默认关闭；开启后启动 Codex 时会自动保留官方 Computer Use 插件所需的 config.toml、bundled 插件和 notify 配置。</small>
             </span>
           </label>
           <ModeSelector launchMode={form.launchMode} actions={actions} />
@@ -4550,6 +4563,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ...defaultSettings,
     ...settings,
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
+    computerUseGuardEnabled: settings.computerUseGuardEnabled === true,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     relayCommonConfigContents,
     relayContextConfigContents,

@@ -3,6 +3,7 @@ use codex_plus_core::relay_config::{
     apply_pure_api_config_to_home, apply_relay_config_file_to_home, apply_relay_config_to_home,
     apply_relay_files_to_home, apply_relay_files_to_home_with_common,
     apply_relay_profile_files_to_home_with_context, apply_relay_profile_to_home_with_switch_rules,
+    apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard,
     backfill_relay_profile_from_home, backfill_relay_profile_from_home_with_common,
     chatgpt_auth_status_from_home, clear_relay_config_to_home,
     clear_relay_config_to_home_with_auth, delete_context_entry_from_common_config,
@@ -2122,6 +2123,114 @@ requires_openai_auth = true
     assert!(config.contains(r#"base_url = "https://max2.jojocode.com/v1""#));
     assert!(!config.contains("experimental_bearer_token"));
     assert!(!config.contains("[model_providers.custom]"));
+}
+
+#[cfg(windows)]
+#[test]
+fn apply_relay_profile_to_home_with_switch_rules_does_not_preserve_computer_use_guard_config_by_default()
+ {
+    let temp = tempfile::tempdir().unwrap();
+    let helper = temp
+        .path()
+        .join("plugins")
+        .join("cache")
+        .join("openai-bundled")
+        .join("computer-use")
+        .join("26.608.12217")
+        .join("node_modules")
+        .join("@oai")
+        .join("sky")
+        .join("bin")
+        .join("windows")
+        .join("codex-computer-use.exe");
+    std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
+    std::fs::write(&helper, "").unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model_provider = "max_ai"
+model = "gpt-5.4"
+
+[features]
+js_repl = false
+
+[model_providers.max_ai]
+name = "max_ai"
+base_url = "https://max2.jojocode.com/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains("js_repl = false"));
+    assert!(!config.contains("[plugins.\"browser@openai-bundled\"]"));
+    assert!(!config.contains("[plugins.\"chrome@openai-bundled\"]"));
+    assert!(!config.contains("[plugins.\"computer-use@openai-bundled\"]"));
+    assert!(!config.contains(r#"notify = ["#));
+    assert!(!config.contains("codex-computer-use.exe"));
+}
+
+#[cfg(windows)]
+#[test]
+fn apply_relay_profile_to_home_with_switch_rules_preserves_computer_use_guard_config_when_enabled()
+{
+    let temp = tempfile::tempdir().unwrap();
+    let helper = temp
+        .path()
+        .join("plugins")
+        .join("cache")
+        .join("openai-bundled")
+        .join("computer-use")
+        .join("26.608.12217")
+        .join("node_modules")
+        .join("@oai")
+        .join("sky")
+        .join("bin")
+        .join("windows")
+        .join("codex-computer-use.exe");
+    std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
+    std::fs::write(&helper, "").unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model_provider = "max_ai"
+model = "gpt-5.4"
+
+[features]
+js_repl = false
+
+[model_providers.max_ai]
+name = "max_ai"
+base_url = "https://max2.jojocode.com/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+        temp.path(),
+        &profile,
+        "",
+        true,
+    )
+    .unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains("js_repl = true"));
+    assert!(config.contains("[plugins.\"browser@openai-bundled\"]"));
+    assert!(config.contains("[plugins.\"chrome@openai-bundled\"]"));
+    assert!(config.contains("[plugins.\"computer-use@openai-bundled\"]"));
+    assert!(config.contains(r#"notify = ["#));
+    assert!(config.contains("codex-computer-use.exe"));
 }
 
 #[test]

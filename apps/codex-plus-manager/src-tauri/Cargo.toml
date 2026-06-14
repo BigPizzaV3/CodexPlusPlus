@@ -28,4 +28,5 @@ tauri-plugin-dialog = "2"
 tauri-build = { version = "2", features = [] }
 
 [dev-dependencies]
+rusqlite.workspace = true
 tempfile.workspace = true

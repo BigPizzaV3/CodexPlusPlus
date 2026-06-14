@@ -159,6 +159,8 @@ pub struct BackendSettings {
     pub relay_profiles_enabled: bool,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
     pub enhancements_enabled: bool,
+    #[serde(rename = "computerUseGuardEnabled", default)]
+    pub computer_use_guard_enabled: bool,
     #[serde(rename = "codexAppPluginEntryUnlock", default = "default_true")]
     pub codex_app_plugin_entry_unlock: bool,
     #[serde(rename = "codexAppPluginMarketplaceUnlock", default = "default_true")]
@@ -246,6 +248,7 @@ impl Default for BackendSettings {
             provider_sync_last_selected_provider: String::new(),
             relay_profiles_enabled: true,
             enhancements_enabled: true,
+            computer_use_guard_enabled: false,
             codex_app_plugin_entry_unlock: true,
             codex_app_plugin_marketplace_unlock: true,
             codex_app_force_plugin_install: true,
@@ -543,6 +546,12 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     if let Some(value) = source.get("enhancementsEnabled").and_then(Value::as_bool) {
         target.insert("enhancementsEnabled".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = source
+        .get("computerUseGuardEnabled")
+        .and_then(Value::as_bool)
+    {
+        target.insert("computerUseGuardEnabled".to_string(), Value::Bool(value));
     }
     merge_bool_setting(target, source, "codexAppPluginEntryUnlock");
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
@@ -887,6 +896,7 @@ mod tests {
         assert!(!settings.provider_sync_enabled);
         assert!(settings.relay_profiles_enabled);
         assert!(settings.enhancements_enabled);
+        assert!(!settings.computer_use_guard_enabled);
         assert!(settings.codex_app_plugin_entry_unlock);
         assert!(settings.codex_app_plugin_marketplace_unlock);
         assert!(settings.codex_app_force_plugin_install);

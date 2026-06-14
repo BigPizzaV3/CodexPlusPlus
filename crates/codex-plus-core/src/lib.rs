@@ -5,6 +5,7 @@ pub mod bridge;
 pub mod cdp;
 pub mod cli_wrapper;
 pub mod codex_sqlite;
+mod computer_use_guard;
 pub mod diagnostic_log;
 pub mod http_client;
 pub mod install;

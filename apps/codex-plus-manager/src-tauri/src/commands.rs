@@ -453,6 +453,8 @@ pub fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
             .cmp(&left.updated_at_ms)
             .then_with(|| right.id.cmp(&left.id))
     });
+    let mut seen_session_ids = std::collections::HashSet::new();
+    sessions.retain(|session| seen_session_ids.insert(session.id.clone()));
     let payload = LocalSessionsPayload {
         db_path: db_paths
             .first()
@@ -569,32 +571,51 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
         session_id: session_id.to_string(),
         title: request.title,
     };
-    let candidate_paths = request
-        .db_path
-        .as_deref()
-        .map(|path| vec![PathBuf::from(path)])
-        .unwrap_or_else(|| {
-            codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(
-                &codex_plus_core::codex_sqlite::default_codex_home_dir(),
-            )
-        });
-    let mut result = DeleteResult {
-        status: codex_plus_core::models::DeleteStatus::Failed,
-        session_id: session_id.to_string(),
-        message: "Thread not found in local storage".to_string(),
-        undo_token: None,
-        backup_path: None,
-    };
-    for db_path in candidate_paths {
-        let adapter = local_session_adapter(&db_path);
-        result = adapter.delete_local(&session);
-        if matches!(
-            result.status,
-            codex_plus_core::models::DeleteStatus::LocalDeleted
-        ) {
-            break;
+    let mut candidate_paths = Vec::new();
+    if let Some(path) = request.db_path.as_deref() {
+        let path = PathBuf::from(path);
+        if !candidate_paths.iter().any(|candidate| candidate == &path) {
+            candidate_paths.push(path);
         }
     }
+    for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(
+        &codex_plus_core::codex_sqlite::default_codex_home_dir(),
+    ) {
+        if !candidate_paths.iter().any(|candidate| candidate == &path) {
+            candidate_paths.push(path);
+        }
+    }
+    log_manager_event(
+        "manager.delete_local_session.start",
+        json!({
+            "session_id": session_id,
+            "title": session.title,
+            "requested_db_path": request.db_path,
+            "candidate_paths": candidate_paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>(),
+        }),
+    );
+    let result = codex_plus_data::delete_local_from_paths(
+        candidate_paths.clone(),
+        codex_plus_data::BackupStore::new(
+            codex_plus_core::paths::default_app_state_dir().join("backups"),
+        ),
+        &session,
+    );
+    log_manager_event(
+        "manager.delete_local_session.finish",
+        json!({
+            "session_id": session_id,
+            "final_status": format!("{:?}", result.status),
+            "final_message": result.message,
+            "candidate_paths": candidate_paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>(),
+        }),
+    );
     let status = if matches!(
         result.status,
         codex_plus_core::models::DeleteStatus::LocalDeleted
@@ -1768,10 +1789,11 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
     if relay_has_complete_files(&relay) {
-        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
+        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
             &home,
             &relay,
             &relay_combined_common_config(&settings),
+            settings.computer_use_guard_enabled,
         ) {
             Ok(result) => {
                 let status = codex_plus_core::relay_config::relay_status_from_home(&home);
@@ -1872,10 +1894,11 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_pure_api_injection", &settings, &relay);
     if relay_has_complete_files(&relay) {
-        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
+        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
             &home,
             &relay,
             &relay_combined_common_config(&settings),
+            settings.computer_use_guard_enabled,
         ) {
             Ok(result) => {
                 let status = codex_plus_core::relay_config::relay_status_from_home(&home);
@@ -2627,6 +2650,159 @@ mod tests {
         assert!(payload.auth_path.ends_with("auth.json"));
         assert_eq!(payload.config_contents, "model_provider = \"custom\"\n");
         assert_eq!(payload.auth_contents, "{\"OPENAI_API_KEY\":\"sk-test\"}\n");
+    }
+
+    #[test]
+    fn delete_local_session_falls_back_when_requested_db_no_longer_contains_thread() {
+        let temp = tempfile::tempdir().unwrap();
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        let codex_home = temp.path().join("codex-home");
+        let sqlite_dir = codex_home.join("sqlite");
+        std::fs::create_dir_all(&sqlite_dir).unwrap();
+        let stale_db = sqlite_dir.join("codex-dev.db");
+        let active_db = sqlite_dir.join("state_5.sqlite");
+        let rollout_path = temp.path().join("rollout.jsonl");
+        std::fs::write(&rollout_path, "{\"type\":\"message\"}\n").unwrap();
+        let stale = rusqlite::Connection::open(&stale_db).unwrap();
+        stale
+            .execute(
+                "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT)",
+                [],
+            )
+            .unwrap();
+        drop(stale);
+        let active = rusqlite::Connection::open(&active_db).unwrap();
+        active
+            .execute(
+                "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT)",
+                [],
+            )
+            .unwrap();
+        active
+            .execute(
+                "INSERT INTO threads VALUES ('t1', ?1, 'Active Thread')",
+                [rollout_path.to_string_lossy().to_string()],
+            )
+            .unwrap();
+        drop(active);
+
+        unsafe {
+            std::env::set_var("CODEX_HOME", &codex_home);
+        }
+        let result = delete_local_session(DeleteLocalSessionRequest {
+            session_id: "t1".to_string(),
+            title: "Active Thread".to_string(),
+            db_path: Some(stale_db.to_string_lossy().to_string()),
+        });
+        unsafe {
+            if let Some(value) = previous_codex_home {
+                std::env::set_var("CODEX_HOME", value);
+            } else {
+                std::env::remove_var("CODEX_HOME");
+            }
+        }
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(
+            result.payload.status,
+            codex_plus_core::models::DeleteStatus::LocalDeleted
+        );
+        let active = rusqlite::Connection::open(&active_db).unwrap();
+        assert_eq!(
+            active
+                .query_row("SELECT COUNT(*) FROM threads WHERE id = 't1'", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn list_local_sessions_deduplicates_threads_across_current_and_legacy_dbs() {
+        let temp = tempfile::tempdir().unwrap();
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        let codex_home = temp.path().join("codex-home");
+        let sqlite_dir = codex_home.join("sqlite");
+        std::fs::create_dir_all(&sqlite_dir).unwrap();
+        let current_db = sqlite_dir.join("state_5.sqlite");
+        let legacy_db = codex_home.join("state_5.sqlite");
+        create_minimal_thread_db(&current_db, "t1", "Current Copy", 100);
+        create_minimal_thread_db(&legacy_db, "t1", "Legacy Copy", 200);
+
+        unsafe {
+            std::env::set_var("CODEX_HOME", &codex_home);
+        }
+        let result = list_local_sessions();
+        restore_codex_home(previous_codex_home);
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.payload.sessions.len(), 1);
+        assert_eq!(result.payload.sessions[0].id, "t1");
+        assert_eq!(result.payload.sessions[0].title, "Legacy Copy");
+        assert_eq!(
+            result.payload.sessions[0].db_path,
+            legacy_db.to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn delete_local_session_removes_duplicate_threads_from_all_candidate_dbs() {
+        let temp = tempfile::tempdir().unwrap();
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        let codex_home = temp.path().join("codex-home");
+        let sqlite_dir = codex_home.join("sqlite");
+        std::fs::create_dir_all(&sqlite_dir).unwrap();
+        let current_db = sqlite_dir.join("state_5.sqlite");
+        let legacy_db = codex_home.join("state_5.sqlite");
+        create_minimal_thread_db(&current_db, "t1", "Current Copy", 100);
+        create_minimal_thread_db(&legacy_db, "t1", "Legacy Copy", 200);
+
+        unsafe {
+            std::env::set_var("CODEX_HOME", &codex_home);
+        }
+        let result = delete_local_session(DeleteLocalSessionRequest {
+            session_id: "t1".to_string(),
+            title: "Legacy Copy".to_string(),
+            db_path: Some(legacy_db.to_string_lossy().to_string()),
+        });
+        restore_codex_home(previous_codex_home);
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(thread_count(&current_db, "t1"), 0);
+        assert_eq!(thread_count(&legacy_db, "t1"), 0);
+    }
+
+    fn create_minimal_thread_db(path: &Path, id: &str, title: &str, updated_at_ms: i64) {
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT, updated_at_ms INTEGER)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO threads VALUES (?1, '', ?2, ?3)",
+            (id, title, updated_at_ms),
+        )
+        .unwrap();
+    }
+
+    fn thread_count(path: &Path, id: &str) -> i64 {
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.query_row("SELECT COUNT(*) FROM threads WHERE id = ?1", [id], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap()
+    }
+
+    fn restore_codex_home(previous: Option<std::ffi::OsString>) {
+        unsafe {
+            if let Some(value) = previous {
+                std::env::set_var("CODEX_HOME", value);
+            } else {
+                std::env::remove_var("CODEX_HOME");
+            }
+        }
     }
 
     #[test]
