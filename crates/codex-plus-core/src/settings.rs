@@ -10,15 +10,6 @@ use toml_edit::{DocumentMut, Item};
 use crate::zed_remote::ZedOpenStrategy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub enum ConfigOwnership {
-    #[default]
-    Auto,
-    CodexPlusPlus,
-    CcSwitch,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LaunchMode {
     #[default]
@@ -51,8 +42,6 @@ impl Default for RelayContextSelection {
 #[serde(rename_all = "camelCase")]
 pub struct RelayProfile {
     pub id: String,
-    #[serde(rename = "linkedCcsProviderId", default)]
-    pub linked_ccs_provider_id: String,
     pub name: String,
     #[serde(default, skip_serializing)]
     pub model: String,
@@ -134,7 +123,6 @@ impl Default for RelayProfile {
     fn default() -> Self {
         Self {
             id: "default".to_string(),
-            linked_ccs_provider_id: String::new(),
             name: "默认中转".to_string(),
             model: String::new(),
             base_url: default_relay_base_url(),
@@ -200,10 +188,6 @@ pub struct BackendSettings {
     pub provider_sync_last_selected_provider: String,
     #[serde(rename = "relayProfilesEnabled", default = "default_true")]
     pub relay_profiles_enabled: bool,
-    #[serde(rename = "ccsLinkEnabled", default)]
-    pub ccs_link_enabled: bool,
-    #[serde(rename = "configOwnership", default)]
-    pub config_ownership: ConfigOwnership,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
     pub enhancements_enabled: bool,
     #[serde(rename = "codexAppPluginEntryUnlock", default = "default_true")]
@@ -240,6 +224,16 @@ pub struct BackendSettings {
     pub codex_app_native_menu_placement: bool,
     #[serde(rename = "codexAppServiceTierControls", default)]
     pub codex_app_service_tier_controls: bool,
+    #[serde(rename = "codexAppImageOverlayEnabled", default)]
+    pub codex_app_image_overlay_enabled: bool,
+    #[serde(rename = "codexAppImageOverlayPath", default)]
+    pub codex_app_image_overlay_path: String,
+    #[serde(
+        rename = "codexAppImageOverlayOpacity",
+        default = "default_image_overlay_opacity",
+        deserialize_with = "deserialize_image_overlay_opacity"
+    )]
+    pub codex_app_image_overlay_opacity: u8,
     #[serde(rename = "codexGoalsEnabled", default)]
     pub codex_goals_enabled: bool,
     #[serde(rename = "launchMode", default)]
@@ -286,8 +280,6 @@ impl Default for BackendSettings {
             provider_sync_manual_providers: Vec::new(),
             provider_sync_last_selected_provider: String::new(),
             relay_profiles_enabled: true,
-            ccs_link_enabled: false,
-            config_ownership: ConfigOwnership::Auto,
             enhancements_enabled: true,
             codex_app_plugin_entry_unlock: true,
             codex_app_plugin_marketplace_unlock: true,
@@ -306,6 +298,9 @@ impl Default for BackendSettings {
             codex_app_upstream_worktree_create: true,
             codex_app_native_menu_placement: true,
             codex_app_service_tier_controls: false,
+            codex_app_image_overlay_enabled: false,
+            codex_app_image_overlay_path: String::new(),
+            codex_app_image_overlay_opacity: default_image_overlay_opacity(),
             codex_goals_enabled: false,
             launch_mode: LaunchMode::Patch,
             relay_base_url: default_relay_base_url(),
@@ -334,7 +329,6 @@ impl BackendSettings {
         {
             return RelayProfile {
                 id: default_active_relay_id(),
-                linked_ccs_provider_id: String::new(),
                 name: "默认中转".to_string(),
                 model: String::new(),
                 base_url: if self.relay_base_url.is_empty() {
@@ -379,7 +373,6 @@ impl BackendSettings {
             } else {
                 self.active_relay_id.clone()
             },
-            linked_ccs_provider_id: String::new(),
             name: "默认中转".to_string(),
             model: String::new(),
             base_url: if self.relay_base_url.is_empty() {
@@ -445,6 +438,14 @@ pub fn default_api_key_env() -> String {
     "CUSTOM_OPENAI_API_KEY".to_string()
 }
 
+fn default_image_overlay_opacity() -> u8 {
+    35
+}
+
+fn clamp_image_overlay_opacity(value: u8) -> u8 {
+    value.clamp(1, 100)
+}
+
 pub fn default_true() -> bool {
     true
 }
@@ -477,6 +478,15 @@ where
     Ok(value
         .filter(|value| !value.is_empty())
         .unwrap_or_else(default_api_key_env))
+}
+
+fn deserialize_image_overlay_opacity<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<u8>::deserialize(deserializer)?
+        .map(clamp_image_overlay_opacity)
+        .unwrap_or_else(default_image_overlay_opacity))
 }
 
 fn deserialize_profile_api_key<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -602,14 +612,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     if let Some(value) = source.get("relayProfilesEnabled").and_then(Value::as_bool) {
         target.insert("relayProfilesEnabled".to_string(), Value::Bool(value));
     }
-    if let Some(value) = source.get("ccsLinkEnabled").and_then(Value::as_bool) {
-        target.insert("ccsLinkEnabled".to_string(), Value::Bool(value));
-    }
-    if let Some(value) = source.get("configOwnership") {
-        if serde_json::from_value::<ConfigOwnership>(value.clone()).is_ok() {
-            target.insert("configOwnership".to_string(), value.clone());
-        }
-    }
     if let Some(value) = source.get("enhancementsEnabled").and_then(Value::as_bool) {
         target.insert("enhancementsEnabled".to_string(), Value::Bool(value));
     }
@@ -634,6 +636,26 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppUpstreamWorktreeCreate");
     merge_bool_setting(target, source, "codexAppNativeMenuPlacement");
     merge_bool_setting(target, source, "codexAppServiceTierControls");
+    merge_bool_setting(target, source, "codexAppImageOverlayEnabled");
+    if let Some(value) = source
+        .get("codexAppImageOverlayPath")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppImageOverlayPath".to_string(),
+            Value::String(value.to_string()),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppImageOverlayOpacity")
+        .and_then(Value::as_u64)
+        .and_then(|value| u8::try_from(value).ok())
+    {
+        target.insert(
+            "codexAppImageOverlayOpacity".to_string(),
+            Value::Number(serde_json::Number::from(clamp_image_overlay_opacity(value))),
+        );
+    }
     if let Some(value) = source.get("codexGoalsEnabled").and_then(Value::as_bool) {
         target.insert("codexGoalsEnabled".to_string(), Value::Bool(value));
     }
@@ -845,6 +867,8 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     for profile in &mut settings.relay_profiles {
         let _ = crate::relay_config::normalize_relay_profile_for_storage(profile);
     }
+    settings.codex_app_image_overlay_opacity =
+        clamp_image_overlay_opacity(settings.codex_app_image_overlay_opacity);
     settings
 }
 
@@ -948,7 +972,6 @@ mod tests {
         let settings = BackendSettings::default();
         assert!(!settings.provider_sync_enabled);
         assert!(settings.relay_profiles_enabled);
-        assert!(!settings.ccs_link_enabled);
         assert!(settings.enhancements_enabled);
         assert!(settings.codex_app_plugin_entry_unlock);
         assert!(settings.codex_app_plugin_marketplace_unlock);
@@ -1530,6 +1553,28 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(updated.cli_wrapper_base_url, "https://old.test");
         assert_eq!(updated.cli_wrapper_api_key, "old-key");
         assert_eq!(updated.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
+        assert_eq!(store.load().unwrap(), updated);
+    }
+
+    #[test]
+    fn settings_store_update_persists_image_overlay_settings() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "codexAppImageOverlayEnabled": true,
+                "codexAppImageOverlayPath": "C:\\Users\\me\\Pictures\\overlay.png",
+                "codexAppImageOverlayOpacity": 42
+            }))
+            .unwrap();
+
+        assert!(updated.codex_app_image_overlay_enabled);
+        assert_eq!(
+            updated.codex_app_image_overlay_path,
+            r"C:\Users\me\Pictures\overlay.png"
+        );
+        assert_eq!(updated.codex_app_image_overlay_opacity, 42);
         assert_eq!(store.load().unwrap(), updated);
     }
 

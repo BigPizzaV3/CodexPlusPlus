@@ -328,6 +328,8 @@ pub fn apply_relay_files_to_home_with_context(
 ) -> anyhow::Result<RelayApplyResult> {
     let selected_common = filter_common_config_for_selection(common_config_contents, selection)?;
     let config_with_common = merge_common_config_into_config(config_contents, &selected_common)?;
+    let config_with_common =
+        preserve_unmanaged_live_context_entries(home, &config_with_common, common_config_contents)?;
     let config_with_limits =
         apply_context_limits_to_config(&config_with_common, context_window, auto_compact_limit)?;
     apply_relay_files_to_home(home, &config_with_limits, auth_contents)
@@ -339,12 +341,14 @@ pub fn apply_relay_profile_files_to_home_with_context(
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
     let selected_common = if profile.use_common_config {
-        filter_common_config_for_selection(common_config_contents, &profile.context_selection)?
+        filter_common_config_for_profile(common_config_contents, profile)?
     } else {
         String::new()
     };
     let profile_config = complete_relay_profile_config(profile)?;
     let config_with_common = merge_common_config_into_config(&profile_config, &selected_common)?;
+    let config_with_common =
+        preserve_unmanaged_live_context_entries(home, &config_with_common, common_config_contents)?;
     let config_with_limits = apply_context_limits_to_config(
         &config_with_common,
         &profile.context_window,
@@ -359,12 +363,14 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
     let selected_common = if profile.use_common_config {
-        filter_common_config_for_selection(common_config_contents, &profile.context_selection)?
+        filter_common_config_for_profile(common_config_contents, profile)?
     } else {
         String::new()
     };
     let profile_config = complete_relay_profile_config(profile)?;
     let config_with_common = merge_common_config_into_config(&profile_config, &selected_common)?;
+    let config_with_common =
+        preserve_unmanaged_live_context_entries(home, &config_with_common, common_config_contents)?;
     let config_with_limits = apply_context_limits_to_config(
         &config_with_common,
         &profile.context_window,
@@ -764,12 +770,27 @@ pub fn delete_context_entry_from_common_config(
 
 pub fn filter_common_config_for_selection(
     common_config: &str,
-    _selection: &RelayContextSelection,
+    selection: &RelayContextSelection,
 ) -> anyhow::Result<String> {
     let sanitized_common = sanitize_common_config_contents(common_config);
     let mut filtered = parse_toml_document(&sanitized_common)?;
+    filter_context_tables_for_selection(filtered.as_table_mut(), selection);
     remove_disabled_context_tables(filtered.as_table_mut());
     Ok(normalize_optional_toml(filtered))
+}
+
+fn filter_common_config_for_profile(
+    common_config: &str,
+    profile: &RelayProfile,
+) -> anyhow::Result<String> {
+    if profile.context_selection_initialized {
+        filter_common_config_for_selection(common_config, &profile.context_selection)
+    } else {
+        let sanitized_common = sanitize_common_config_contents(common_config);
+        let mut filtered = parse_toml_document(&sanitized_common)?;
+        remove_disabled_context_tables(filtered.as_table_mut());
+        Ok(normalize_optional_toml(filtered))
+    }
 }
 
 pub fn sync_live_config_context_entries(
@@ -779,20 +800,169 @@ pub fn sync_live_config_context_entries(
     let normalized_live = normalize_duplicate_toml_text(live_config);
     let normalized_context = normalize_duplicate_toml_text(context_config);
     let mut live_doc = parse_toml_document(&normalized_live)?;
-    for table_name in ["mcp_servers", "skills", "plugins"] {
-        live_doc.as_table_mut().remove(table_name);
-    }
     if normalized_context.trim().is_empty() {
         return Ok(normalize_optional_toml(live_doc));
     }
-    let mut context_doc = parse_toml_document(&normalized_context)?;
+    let managed_doc = parse_toml_document(&normalized_context)?;
+    remove_managed_context_entries(live_doc.as_table_mut(), managed_doc.as_table());
+    let mut context_doc = managed_doc;
     remove_disabled_context_tables(context_doc.as_table_mut());
+    merge_managed_context_tables(live_doc.as_table_mut(), context_doc.as_table());
+    Ok(normalize_optional_toml(live_doc))
+}
+
+fn preserve_unmanaged_live_context_entries(
+    home: &Path,
+    config_text: &str,
+    managed_context_config: &str,
+) -> anyhow::Result<String> {
+    let live_config = read_optional_text(&home.join("config.toml"))?;
+    if live_config.trim().is_empty() {
+        return Ok(ensure_trailing_newline(config_text.to_string()));
+    }
+    let mut target_doc = parse_toml_document(config_text)?;
+    let live_doc = parse_toml_document(&live_config)?;
+    let managed_doc =
+        parse_toml_document(&sanitize_common_config_contents(managed_context_config))?;
+    preserve_unmanaged_context_tables(
+        target_doc.as_table_mut(),
+        live_doc.as_table(),
+        managed_doc.as_table(),
+    );
+    Ok(normalize_optional_toml(target_doc))
+}
+
+fn filter_context_tables_for_selection(
+    table: &mut toml_edit::Table,
+    selection: &RelayContextSelection,
+) {
+    filter_context_table_for_ids(table, "mcp_servers", &selection.mcp_servers);
+    filter_context_table_for_ids(table, "skills", &selection.skills);
+    filter_context_table_for_ids(table, "plugins", &selection.plugins);
+}
+
+fn filter_context_table_for_ids(
+    table: &mut toml_edit::Table,
+    table_name: &str,
+    selected_ids: &[String],
+) {
+    let Some(item) = table.get_mut(table_name) else {
+        return;
+    };
+    let Some(context_table) = item.as_table_mut() else {
+        return;
+    };
+    let selected = selected_ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .collect::<HashSet<_>>();
+    let remove_ids = context_table
+        .iter()
+        .filter_map(|(id, _)| (!selected.contains(id)).then_some(id.to_string()))
+        .collect::<Vec<_>>();
+    for id in remove_ids {
+        context_table.remove(&id);
+    }
+}
+
+fn merge_managed_context_tables(target: &mut toml_edit::Table, managed: &toml_edit::Table) {
     for table_name in ["mcp_servers", "skills", "plugins"] {
-        if let Some(item) = context_doc.as_table_mut().remove(table_name) {
-            live_doc[table_name] = item;
+        merge_managed_context_table(target, managed, table_name);
+    }
+}
+
+fn merge_managed_context_table(
+    target: &mut toml_edit::Table,
+    managed: &toml_edit::Table,
+    table_name: &str,
+) {
+    let Some(managed_item) = managed.get(table_name) else {
+        return;
+    };
+    let Some(managed_table) = managed_item.as_table_like() else {
+        return;
+    };
+    if target.get(table_name).is_none() {
+        target[table_name] = toml_edit::table();
+    }
+    let Some(target_table) = target.get_mut(table_name).and_then(Item::as_table_like_mut) else {
+        target[table_name] = managed_item.clone();
+        return;
+    };
+    for (id, item) in managed_table.iter() {
+        target_table.insert(id, item.clone());
+    }
+}
+
+fn remove_managed_context_entries(target: &mut toml_edit::Table, managed: &toml_edit::Table) {
+    for table_name in ["mcp_servers", "skills", "plugins"] {
+        remove_managed_context_entry_table(target, managed, table_name);
+    }
+}
+
+fn remove_managed_context_entry_table(
+    target: &mut toml_edit::Table,
+    managed: &toml_edit::Table,
+    table_name: &str,
+) {
+    let Some(managed_item) = managed.get(table_name) else {
+        return;
+    };
+    let Some(managed_table) = managed_item.as_table_like() else {
+        return;
+    };
+    let Some(target_table) = target.get_mut(table_name).and_then(Item::as_table_like_mut) else {
+        return;
+    };
+    for (id, _) in managed_table.iter() {
+        target_table.remove(id);
+    }
+}
+
+fn preserve_unmanaged_context_tables(
+    target: &mut toml_edit::Table,
+    live: &toml_edit::Table,
+    managed: &toml_edit::Table,
+) {
+    for table_name in ["mcp_servers", "skills", "plugins"] {
+        preserve_unmanaged_context_table(target, live, managed, table_name);
+    }
+}
+
+fn preserve_unmanaged_context_table(
+    target: &mut toml_edit::Table,
+    live: &toml_edit::Table,
+    managed: &toml_edit::Table,
+    table_name: &str,
+) {
+    let Some(live_item) = live.get(table_name) else {
+        return;
+    };
+    let Some(live_table) = live_item.as_table_like() else {
+        return;
+    };
+    if target.get(table_name).is_none() {
+        target[table_name] = toml_edit::table();
+    }
+    let Some(target_table) = target.get_mut(table_name).and_then(Item::as_table_like_mut) else {
+        return;
+    };
+    let managed_ids = managed
+        .get(table_name)
+        .and_then(Item::as_table_like)
+        .map(|table| {
+            table
+                .iter()
+                .map(|(id, _)| id.to_string())
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    for (id, item) in live_table.iter() {
+        if !managed_ids.contains(id) && target_table.get(id).is_none() {
+            target_table.insert(id, item.clone());
         }
     }
-    Ok(normalize_optional_toml(live_doc))
 }
 
 fn remove_disabled_context_tables(table: &mut toml_edit::Table) {
@@ -852,10 +1022,6 @@ fn write_codex_live_atomic(
             let _ = restore_optional_file(&config_path, old_config.as_deref());
             return Err(error.context("写入 config.toml 失败"));
         }
-    }
-
-    if config_text.is_some() || auth_bytes.is_some() {
-        let _ = crate::config_coordinator::record_write_marker("codexplusplus", home);
     }
 
     Ok(backup_path)

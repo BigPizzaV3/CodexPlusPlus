@@ -97,8 +97,7 @@ pub fn resolve_codex_app_dir(app_dir: Option<&Path>) -> Option<PathBuf> {
         return find_macos_codex_app_default();
     }
     // Windows: try MS Store version first, then standalone install
-    find_latest_codex_app_dir_default()
-        .or_else(|| find_standalone_codex_app_dir())
+    find_latest_codex_app_dir_default().or_else(|| find_standalone_codex_app_dir())
 }
 
 /// Search for standalone Codex installations (non-MS Store).
@@ -111,9 +110,15 @@ pub fn find_standalone_codex_app_dir() -> Option<PathBuf> {
     let local_appdata = std::env::var_os("LOCALAPPDATA")?;
 
     let candidates: &[PathBuf] = &[
-        PathBuf::from(&local_appdata).join("OpenAI").join("Codex").join("bin"),
+        PathBuf::from(&local_appdata)
+            .join("OpenAI")
+            .join("Codex")
+            .join("bin"),
         PathBuf::from(&local_appdata).join("OpenAI").join("Codex"),
-        PathBuf::from(&local_appdata).join("Programs").join("OpenAI").join("Codex"),
+        PathBuf::from(&local_appdata)
+            .join("Programs")
+            .join("OpenAI")
+            .join("Codex"),
     ];
 
     for candidate in candidates {

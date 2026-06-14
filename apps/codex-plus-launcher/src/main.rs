@@ -630,7 +630,10 @@ async fn try_inject_with_context(
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
     runtime.set_websocket_url(websocket_url);
-    let script = codex_plus_core::assets::injection_script(helper_port);
+    let settings = codex_plus_core::settings::SettingsStore::default()
+        .load()
+        .unwrap_or_default();
+    let script = codex_plus_core::assets::injection_script_with_settings(helper_port, &settings);
     let user_bundle = runtime
         .user_scripts
         .build_enabled_bundle()
@@ -655,11 +658,7 @@ async fn try_inject_with_context(
 }
 
 fn default_codex_db_path() -> PathBuf {
-    directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".codex")
-        .join("state_5.sqlite")
+    codex_plus_core::codex_sqlite::codex_session_db_path()
 }
 
 fn open_url(url: &str) -> anyhow::Result<()> {

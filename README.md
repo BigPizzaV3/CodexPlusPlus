@@ -278,7 +278,7 @@ Codex++ 通过 GitHub Release 发布安装包。Windows 会生成 NSIS 安装程
 
 - Codex 配置：`~/.codex/config.toml`
 - Codex 登录状态：`~/.codex/auth.json`
-- Codex 本地数据库：`~/.codex/state_5.sqlite`
+- Codex 本地数据库：优先读取 `~/.codex/sqlite/*.db`，旧版回退到 `~/.codex/state_5.sqlite`
 - Codex++ 状态与日志：`~/.codex-session-delete/`
 - Provider 同步备份：`~/.codex/backups_state/provider-sync`
 

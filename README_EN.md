@@ -203,7 +203,7 @@ The manager's About page can check and start updates. When the silent launcher f
 
 - Codex config: `~/.codex/config.toml`
 - Codex auth state: `~/.codex/auth.json`
-- Codex local database: `~/.codex/state_5.sqlite`
+- Codex local database: prefers `~/.codex/sqlite/*.db`, falls back to legacy `~/.codex/state_5.sqlite`
 - Codex++ state and logs: `~/.codex-session-delete/`
 - Provider Sync backups: `~/.codex/backups_state/provider-sync`
 
