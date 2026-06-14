@@ -42,6 +42,25 @@ fn app_paths_find_latest_windows_package_returns_package_when_app_dir_missing() 
 }
 
 #[test]
+fn app_paths_find_latest_windows_package_includes_beta() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("OpenAI.Codex_26.429.8261.0_x64__abc/app")).unwrap();
+    std::fs::create_dir_all(
+        temp.path()
+            .join("OpenAI.CodexBeta_26.527.7698.0_x64__abc/app"),
+    )
+    .unwrap();
+
+    let latest = find_latest_codex_app_dir(temp.path()).unwrap();
+
+    assert_eq!(
+        latest,
+        temp.path()
+            .join("OpenAI.CodexBeta_26.527.7698.0_x64__abc/app")
+    );
+}
+
+#[test]
 fn app_paths_find_latest_windows_package_checks_roots_before_fallback() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("WindowsApps");
@@ -61,6 +80,17 @@ fn app_paths_extracts_codex_version_from_windows_package_app_dir() {
     assert_eq!(
         codex_app_version(&app_dir).as_deref(),
         Some("26.513.3673.0")
+    );
+}
+
+#[test]
+fn app_paths_extracts_codex_beta_version_from_windows_package_app_dir() {
+    let app_dir =
+        PathBuf::from(r"C:\Program Files\WindowsApps\OpenAI.CodexBeta_26.527.7698.0_x64__abc\app");
+
+    assert_eq!(
+        codex_app_version(&app_dir).as_deref(),
+        Some("26.527.7698.0")
     );
 }
 
@@ -243,6 +273,27 @@ fn launcher_constructs_windows_packaged_activation_without_real_app() {
         build_packaged_activation(&app_dir, 9229, &[]).unwrap(),
         CodexLaunch::PackagedActivation {
             app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
+            arguments: "--remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229"
+                .to_string(),
+            process_id: None,
+        }
+    );
+}
+
+#[test]
+fn launcher_constructs_windows_beta_packaged_activation_without_real_app() {
+    let app_dir = PathBuf::from(
+        r"C:\Program Files\WindowsApps\OpenAI.CodexBeta_26.527.7698.0_x64__2p2nqsd0c76g0\app",
+    );
+
+    assert_eq!(
+        packaged_app_user_model_id(&app_dir).unwrap(),
+        "OpenAI.CodexBeta_2p2nqsd0c76g0!App"
+    );
+    assert_eq!(
+        build_packaged_activation(&app_dir, 9229, &[]).unwrap(),
+        CodexLaunch::PackagedActivation {
+            app_user_model_id: "OpenAI.CodexBeta_2p2nqsd0c76g0!App".to_string(),
             arguments: "--remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229"
                 .to_string(),
             process_id: None,

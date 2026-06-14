@@ -1,6 +1,8 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+const CODEX_PACKAGE_PREFIXES: &[&str] = &["OpenAI.Codex_", "OpenAI.CodexBeta_"];
+
 pub fn find_latest_codex_app_dir(root: &Path) -> Option<PathBuf> {
     let mut matches = std::fs::read_dir(root)
         .ok()?
@@ -219,9 +221,7 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
 
 pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
     let package_name = package_name_from_app_dir(app_dir)?;
-    if !package_name.starts_with("OpenAI.Codex_") || !package_name.contains("__") {
-        return None;
-    }
+    strip_codex_prefix(&package_name)?;
     let identity_name = package_name.split_once('_')?.0;
     let publisher_id = package_name.rsplit_once("__")?.1;
     if publisher_id.is_empty() {
@@ -245,8 +245,8 @@ fn codex_package_version(package_dir: &Path) -> Option<String> {
     let name = path
         .split('/')
         .rev()
-        .find(|part| part.starts_with("OpenAI.Codex_"))?;
-    let rest = name.strip_prefix("OpenAI.Codex_")?;
+        .find(|part| strip_codex_prefix(part).is_some())?;
+    let rest = strip_codex_prefix(name)?;
     let version = rest.split_once('_')?.0;
     if version.is_empty() {
         None
@@ -291,7 +291,7 @@ fn macos_app_candidates(root: &Path) -> Vec<PathBuf> {
 
 fn version_tuple(path: &Path) -> Option<Vec<u32>> {
     let name = path.file_name()?.to_str()?;
-    let rest = name.strip_prefix("OpenAI.Codex_")?;
+    let rest = strip_codex_prefix(name)?;
     let version = rest.split_once('_')?.0;
     let parts = version
         .split('.')
@@ -299,4 +299,10 @@ fn version_tuple(path: &Path) -> Option<Vec<u32>> {
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
     if parts.is_empty() { None } else { Some(parts) }
+}
+
+fn strip_codex_prefix(name: &str) -> Option<&str> {
+    CODEX_PACKAGE_PREFIXES
+        .iter()
+        .find_map(|prefix| name.strip_prefix(prefix))
 }
