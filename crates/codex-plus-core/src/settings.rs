@@ -205,6 +205,10 @@ pub struct BackendSettings {
         deserialize_with = "deserialize_image_overlay_opacity"
     )]
     pub codex_app_image_overlay_opacity: u8,
+    #[serde(rename = "codexAppCompletionSoundEnabled", default)]
+    pub codex_app_completion_sound_enabled: bool,
+    #[serde(rename = "codexAppCompletionSoundPath", default)]
+    pub codex_app_completion_sound_path: String,
     #[serde(rename = "codexGoalsEnabled", default)]
     pub codex_goals_enabled: bool,
     #[serde(rename = "launchMode", default)]
@@ -269,6 +273,8 @@ impl Default for BackendSettings {
             codex_app_image_overlay_enabled: false,
             codex_app_image_overlay_path: String::new(),
             codex_app_image_overlay_opacity: default_image_overlay_opacity(),
+            codex_app_completion_sound_enabled: true,
+            codex_app_completion_sound_path: String::new(),
             codex_goals_enabled: false,
             launch_mode: LaunchMode::Patch,
             relay_base_url: default_relay_base_url(),
@@ -592,6 +598,16 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         target.insert(
             "codexAppImageOverlayOpacity".to_string(),
             Value::Number(serde_json::Number::from(clamp_image_overlay_opacity(value))),
+        );
+    }
+    merge_bool_setting(target, source, "codexAppCompletionSoundEnabled");
+    if let Some(value) = source
+        .get("codexAppCompletionSoundPath")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppCompletionSoundPath".to_string(),
+            Value::String(value.to_string()),
         );
     }
     if let Some(value) = source.get("codexGoalsEnabled").and_then(Value::as_bool) {
@@ -1442,6 +1458,26 @@ experimental_bearer_token = "sk-existing""#
             r"C:\Users\me\Pictures\overlay.png"
         );
         assert_eq!(updated.codex_app_image_overlay_opacity, 42);
+        assert_eq!(store.load().unwrap(), updated);
+    }
+
+    #[test]
+    fn settings_store_update_persists_completion_sound_settings() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "codexAppCompletionSoundEnabled": true,
+                "codexAppCompletionSoundPath": "C:\\Users\\me\\Music\\done.wav"
+            }))
+            .unwrap();
+
+        assert!(updated.codex_app_completion_sound_enabled);
+        assert_eq!(
+            updated.codex_app_completion_sound_path,
+            r"C:\Users\me\Music\done.wav"
+        );
         assert_eq!(store.load().unwrap(), updated);
     }
 

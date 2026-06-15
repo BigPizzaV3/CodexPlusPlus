@@ -1045,6 +1045,9 @@ fn write_codex_live_atomic(
     std::fs::create_dir_all(home)?;
     let config_path = home.join("config.toml");
     let auth_path = home.join("auth.json");
+    let backend_settings = crate::settings::SettingsStore::default()
+        .load()
+        .unwrap_or_default();
     #[cfg(windows)]
     let guarded_config_text = match config_text {
         Some(config_text) if preserve_computer_use_guard => {
@@ -1066,7 +1069,23 @@ fn write_codex_live_atomic(
         None => None,
     };
     #[cfg(windows)]
-    let config_text = guarded_config_text.as_deref();
+    let mut config_text = guarded_config_text;
+    #[cfg(not(windows))]
+    let mut config_text = config_text.map(ToString::to_string);
+    if backend_settings.codex_app_completion_sound_enabled {
+        crate::completion_sound::ensure_completion_sound_notify(home, &backend_settings)?;
+        if let Some(current_config_text) = config_text.as_deref() {
+            config_text = Some(
+                crate::completion_sound::completion_sound_notify_config_text(
+                    current_config_text,
+                    &home
+                        .join("codex-plus-plus")
+                        .join("completion-sound-notify.sh"),
+                )?,
+            );
+        }
+    }
+    let config_text = config_text.as_deref();
 
     if let Some(config_text) = config_text {
         validate_toml_config(config_text, &config_path)?;

@@ -7,7 +7,12 @@ use crate::settings::BackendSettings;
 const RENDERER_SCRIPT: &str = include_str!("../../../assets/inject/renderer-inject.js");
 const SPONSOR_ALIPAY: &[u8] = include_bytes!("../../../assets/images/sponsor-alipay.jpg");
 const SPONSOR_WECHAT: &[u8] = include_bytes!("../../../assets/images/sponsor-wechat.jpg");
+const DEFAULT_COMPLETION_SOUND: &[u8] = include_bytes!("../../../assets/audio/finish.mp3");
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
+
+pub fn default_completion_sound_bytes() -> &'static [u8] {
+    DEFAULT_COMPLETION_SOUND
+}
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT

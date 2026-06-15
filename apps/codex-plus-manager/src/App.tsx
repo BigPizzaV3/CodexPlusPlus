@@ -122,6 +122,8 @@ type BackendSettings = {
   codexAppImageOverlayEnabled: boolean;
   codexAppImageOverlayPath: string;
   codexAppImageOverlayOpacity: number;
+  codexAppCompletionSoundEnabled: boolean;
+  codexAppCompletionSoundPath: string;
   codexGoalsEnabled: boolean;
   launchMode: LaunchMode;
   relayBaseUrl: string;
@@ -525,10 +527,12 @@ const defaultSettings: BackendSettings = {
   zedRemoteSyncToZedSettings: false,
   codexAppUpstreamWorktreeCreate: true,
   codexAppNativeMenuPlacement: true,
-  codexAppServiceTierControls: false,
+  codexAppServiceTierControls: true,
   codexAppImageOverlayEnabled: false,
   codexAppImageOverlayPath: "",
   codexAppImageOverlayOpacity: 35,
+  codexAppCompletionSoundEnabled: true,
+  codexAppCompletionSoundPath: "",
   codexGoalsEnabled: false,
   launchMode: "patch",
   relayBaseUrl: "",
@@ -1435,6 +1439,28 @@ export function App() {
           }));
         }
       },
+      chooseCompletionSoundPath: async () => {
+        let selected: unknown;
+        try {
+          selected = await open({
+            directory: false,
+            multiple: false,
+            title: "选择任务完成提示音",
+            filters: [{ name: "音频", extensions: ["mp3", "wav", "m4a", "aac", "ogg", "oga", "flac", "webm"] }],
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          showNotice("任务完成提示音", `打开选择器失败：${message}`, "failed");
+          return;
+        }
+        if (typeof selected === "string" && selected.trim()) {
+          setSettingsForm((current) => ({
+            ...current,
+            codexAppCompletionSoundEnabled: true,
+            codexAppCompletionSoundPath: selected.trim(),
+          }));
+        }
+      },
       saveManualCodexAppPath: async () => {
         const appPath = launchForm.appPath.trim();
         if (!appPath) {
@@ -1666,6 +1692,7 @@ type Actions = {
   chooseCodexAppPath: (mode: "folder" | "file") => Promise<void>;
   clearCodexAppPath: () => Promise<void>;
   chooseImageOverlayPath: () => Promise<void>;
+  chooseCompletionSoundPath: () => Promise<void>;
   saveManualCodexAppPath: () => Promise<void>;
   syncProvidersNow: () => Promise<void>;
   refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
@@ -1980,6 +2007,7 @@ function EnhanceScreen({
             <FeatureToggle title="对话 Timeline" detail="在对话右侧显示用户提问时间线，支持摘要和跳转。" checked={form.codexAppConversationTimeline} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationTimeline", value)} />
             <FeatureToggle title="对话居中宽度" detail="把主对话和输入框限制到固定最大宽度，适合大屏阅读。" checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
             <FeatureToggle title="切换对话保留位置" detail="切换 thread 时恢复上一次浏览位置。" checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
+            <FeatureToggle title="任务完成提示音" detail="默认播放内置 finish.mp3；选择文件后会优先播放自定义音频。" checked={form.codexAppCompletionSoundEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppCompletionSoundEnabled", value)} />
             <FeatureToggle title="Zed Remote open" detail="远程 SSH 文件引用可直接用 Zed Remote Development 打开。" checked={form.codexAppZedRemoteOpen} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppZedRemoteOpen", value)} />
             <FeatureToggle title="Zed 项目记录" detail="维护 Codex++ 自己的远程项目最近列表。" checked={form.zedRemoteProjectRegistryEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteProjectRegistryEnabled", value)} />
             <FeatureToggle title="同步 Zed settings" detail="高级选项，默认关闭；当前实现不主动改写 Zed settings。" checked={form.zedRemoteSyncToZedSettings} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteSyncToZedSettings", value)} />
@@ -1987,6 +2015,32 @@ function EnhanceScreen({
             <FeatureToggle title="原生菜单栏位置" detail="把 Codex++ 菜单插入 Codex 顶部原生菜单栏。" checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
           </div>
           <div className="zed-remote-settings">
+            <div className="form-row">
+              <Field label="任务完成提示音文件">
+                <Input
+                  value={form.codexAppCompletionSoundPath}
+                  onChange={(event) => onFormChange({ ...form, codexAppCompletionSoundPath: event.currentTarget.value })}
+                  placeholder="留空使用内置 finish.mp3；可选择 mp3 / wav / m4a / ogg / flac"
+                />
+              </Field>
+              <Toolbar>
+                <Button variant="secondary" onClick={() => void actions.chooseCompletionSoundPath()}>
+                  选择声音
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() =>
+                    onFormChange({
+                      ...form,
+                      codexAppCompletionSoundEnabled: false,
+                      codexAppCompletionSoundPath: "",
+                    })
+                  }
+                >
+                  清除
+                </Button>
+              </Toolbar>
+            </div>
             <Field label="Zed 默认打开策略">
               <select
                 className="select-input"
@@ -4576,6 +4630,8 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     computerUseGuardEnabled: settings.computerUseGuardEnabled === true,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
+    codexAppCompletionSoundEnabled: settings.codexAppCompletionSoundEnabled !== false,
+    codexAppCompletionSoundPath: settings.codexAppCompletionSoundPath || "",
     relayCommonConfigContents,
     relayContextConfigContents,
     relayProfiles: profiles,

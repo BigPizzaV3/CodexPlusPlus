@@ -127,6 +127,9 @@ fn should_recover_stale_launcher(debug_port: u16) -> bool {
 async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {
     let hooks = LauncherHooks::default();
     let settings = hooks.load_settings().await?;
+    if settings.codex_app_completion_sound_enabled {
+        hooks.ensure_completion_sound_notify(&settings).await?;
+    }
     if settings.computer_use_guard_enabled {
         hooks.ensure_computer_use_config(&settings).await?;
     }
@@ -350,6 +353,13 @@ impl LaunchHooks for LauncherHooks {
         settings: &codex_plus_core::settings::BackendSettings,
     ) -> anyhow::Result<()> {
         self.core.ensure_computer_use_config(settings).await
+    }
+
+    async fn ensure_completion_sound_notify(
+        &self,
+        settings: &codex_plus_core::settings::BackendSettings,
+    ) -> anyhow::Result<()> {
+        self.core.ensure_completion_sound_notify(settings).await
     }
 
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
