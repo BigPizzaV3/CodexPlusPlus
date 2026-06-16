@@ -1,6 +1,17 @@
 pub mod commands;
 pub mod install;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Manager, WindowEvent};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+static APP_EXITING: AtomicBool = AtomicBool::new(false);
+const TRAY_MENU_SHOW: &str = "tray_show_main";
+const TRAY_MENU_QUIT: &str = "tray_quit_app";
+
 pub fn run() {
     install_panic_logger();
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
@@ -21,11 +32,14 @@ pub fn run() {
             } else {
                 "index.html"
             };
-            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
+            let main_window =
+                tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
                 .title("Codex++ 管理工具")
                 .inner_size(1180.0, 820.0)
                 .min_inner_size(960.0, 720.0)
                 .build()?;
+            install_tray(app)?;
+            register_main_window_events(main_window, app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -90,6 +104,100 @@ pub fn run() {
                 "error": error.to_string()
             }),
         );
+    }
+}
+
+fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
+    let show_item = MenuItem::with_id(app, TRAY_MENU_SHOW, "显示主窗口", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, TRAY_MENU_QUIT, "退出程序", true, None::<&str>)?;
+    let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+    let mut tray_builder = TrayIconBuilder::new()
+        .menu(&tray_menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            TRAY_MENU_SHOW => {
+                show_main_window(app);
+            }
+            TRAY_MENU_QUIT => {
+                APP_EXITING.store(true, Ordering::SeqCst);
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| match event {
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            }
+            | TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } => {
+                show_main_window(&tray.app_handle());
+            }
+            _ => {}
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray_builder = tray_builder.icon(icon);
+    }
+
+    let _ = tray_builder.build(app)?;
+    Ok(())
+}
+
+fn register_main_window_events<R: tauri::Runtime>(
+    window: tauri::WebviewWindow<R>,
+    app_handle: tauri::AppHandle<R>,
+) {
+    let event_window = window.clone();
+    let dialog_window = window.clone();
+    let dialog_app_handle = app_handle.clone();
+    let minimized_window = event_window.clone();
+
+    event_window.on_window_event(move |event| match event {
+        WindowEvent::Resized(_) => {
+            if matches!(minimized_window.is_minimized(), Ok(true)) {
+                let _ = minimized_window.hide();
+            }
+        }
+        WindowEvent::CloseRequested { api, .. } => {
+            if APP_EXITING.load(Ordering::SeqCst) {
+                return;
+            }
+
+            api.prevent_close();
+            let app_for_decision = dialog_app_handle.clone();
+            let window_for_decision = dialog_window.clone();
+            dialog_app_handle
+                .dialog()
+                .message("要退出 Codex++ 管理工具，还是最小化到系统托盘？")
+                .title("关闭确认")
+                .kind(MessageDialogKind::Info)
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "退出程序".into(),
+                    "最小化到托盘".into(),
+                ))
+                .show(move |should_exit| {
+                    if should_exit {
+                        APP_EXITING.store(true, Ordering::SeqCst);
+                        app_for_decision.exit(0);
+                    } else {
+                        let _ = window_for_decision.hide();
+                    }
+                });
+        }
+        _ => {}
+    });
+}
+
+fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
     }
 }
 
