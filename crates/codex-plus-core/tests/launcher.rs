@@ -50,10 +50,7 @@ fn app_paths_find_latest_windows_package_detects_beta_package() {
         temp.path()
             .join("OpenAI.CodexBeta_26.527.7698.0_x64__2p2nqsd0c76g0/app")
     );
-    assert_eq!(
-        codex_app_version(&latest).as_deref(),
-        Some("26.527.7698.0")
-    );
+    assert_eq!(codex_app_version(&latest).as_deref(), Some("26.527.7698.0"));
     assert_eq!(
         packaged_app_user_model_id(&latest).as_deref(),
         Some("OpenAI.CodexBeta_2p2nqsd0c76g0!App")

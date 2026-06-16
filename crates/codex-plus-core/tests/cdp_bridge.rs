@@ -417,6 +417,9 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("appServerModelRequestMethod"));
     assert!(script.contains("send-cli-request-for-host"));
     assert!(script.contains("Response.prototype.json"));
+    assert!(script.contains("scheduleCodexModelWhitelistRefresh"));
+    assert!(script.contains("runCodexModelWhitelistRefreshPass"));
+    assert!(script.contains("model_whitelist_refresh_scheduled"));
     assert!(script.contains("available_models"));
     assert!(script.contains("modelWhitelistUnlock"));
     assert!(script.contains("isWorkspaceChromeNode"));
@@ -496,6 +499,18 @@ fn injection_script_exposes_fast_service_tier_control() {
 }
 
 #[test]
+fn injection_script_prompts_for_markdown_export_path_when_supported() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("showSaveFilePicker"));
+    assert!(script.contains("suggestedName: filename"));
+    assert!(script.contains("createWritable()"));
+    assert!(script.contains("await writable.write(markdown)"));
+    assert!(script.contains("status: \"cancelled\""));
+    assert!(script.contains("导出已取消"));
+}
+
+#[test]
 fn injection_script_applies_fast_service_tier_contract() {
     let cases = run_service_tier_contract_harness();
 
@@ -566,6 +581,7 @@ globalThis.document = {{
   documentElement: node(),
   body: node(),
   createElement: () => node(),
+  getElementById: () => null,
   querySelector: () => null,
   querySelectorAll: () => [],
   addEventListener() {{}},

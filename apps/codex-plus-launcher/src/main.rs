@@ -455,11 +455,12 @@ impl BridgeDataService for LauncherDataService {
     }
 
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult> {
-        let export_service =
-            codex_plus_data::MarkdownExportService::new(Some(self.db_path.clone()));
-        tokio::task::spawn_blocking(move || export_service.export(&session))
-            .await
-            .map_err(|error| anyhow::anyhow!("export markdown task failed: {error}"))
+        let db_paths = self.candidate_db_paths();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::export_markdown_from_paths(db_paths, &session)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("export markdown task failed: {error}"))
     }
 
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value> {

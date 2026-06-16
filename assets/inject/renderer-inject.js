@@ -3849,7 +3849,7 @@
     }
   }
 
-  function downloadMarkdown(filename, markdown) {
+  function downloadMarkdownFallback(filename, markdown) {
     if (!filename || typeof markdown !== "string") {
       throw new Error("导出结果不完整");
     }
@@ -3862,6 +3862,34 @@
     anchor.click();
     anchor.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function saveMarkdown(filename, markdown) {
+    if (!filename || typeof markdown !== "string") {
+      throw new Error("导出结果不完整");
+    }
+    if (typeof window.showSaveFilePicker !== "function") {
+      downloadMarkdownFallback(filename, markdown);
+      return { status: "saved" };
+    }
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{
+          description: "Markdown",
+          accept: { "text/markdown": [".md", ".markdown"] },
+        }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(markdown);
+      await writable.close();
+      return { status: "saved" };
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        return { status: "cancelled", message: "导出已取消" };
+      }
+      throw error;
+    }
   }
 
   let codexStateApiPromise = null;
@@ -3901,6 +3929,8 @@
   let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
   let codexModelCatalogLoadedAt = 0;
   let codexModelCatalogPromise = null;
+  let codexModelWhitelistRefreshTimer = 0;
+  let codexModelWhitelistRefreshUntil = 0;
   const codexPlusModelListRequestIds = new Set();
 
   if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
@@ -3959,7 +3989,7 @@
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
-        patchCodexModelWhitelist();
+        scheduleCodexModelWhitelistRefresh();
         return codexModelCatalog;
       })
       .catch((error) => {
@@ -4372,14 +4402,42 @@
     installAppServerModelRequestPatch();
   }
 
+  function runCodexModelWhitelistRefreshPass() {
+    if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
+    let changed = false;
+    try {
+      patchStatsigModelWhitelist();
+      if (patchReactModelState()) changed = true;
+      installAppServerModelRequestPatch();
+    } catch (error) {
+      window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+      window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+    }
+    return changed;
+  }
+
+  function scheduleCodexModelWhitelistRefresh(durationMs = 2500) {
+    if (!codexPlusModelUnlockEnabled()) return;
+    codexModelWhitelistRefreshUntil = Math.max(codexModelWhitelistRefreshUntil, Date.now() + durationMs);
+    if (codexModelWhitelistRefreshTimer) return;
+    sendCodexPlusDiagnostic("model_whitelist_refresh_scheduled", { durationMs });
+    const tick = () => {
+      codexModelWhitelistRefreshTimer = 0;
+      runCodexModelWhitelistRefreshPass();
+      if (Date.now() < codexModelWhitelistRefreshUntil) {
+        codexModelWhitelistRefreshTimer = window.setTimeout(tick, 120);
+      }
+    };
+    tick();
+  }
+
   function patchCodexModelWhitelist() {
     ensureCodexModelWhitelistInstalls();
     if (!codexPlusModelNames().length) {
       loadCodexModelCatalog();
       return;
     }
-    patchStatsigModelWhitelist();
-    patchReactModelState();
+    runCodexModelWhitelistRefreshPass();
   }
 
   function refreshCodexModelWhitelistFromScan(mutations) {
@@ -4388,8 +4446,11 @@
       loadCodexModelCatalog();
       return;
     }
-    patchStatsigModelWhitelist();
-    if (shouldScheduleReactModelStatePatch(mutations)) schedulePatchReactModelState();
+    if (shouldScheduleReactModelStatePatch(mutations)) {
+      scheduleCodexModelWhitelistRefresh();
+    } else {
+      runCodexModelWhitelistRefreshPass();
+    }
   }
 
   function threadIdVariants(sessionId) {
@@ -6194,8 +6255,12 @@
   async function exportMarkdown(ref) {
     const result = await postJson("/export-markdown", ref);
     if (result.status === "exported" && result.filename && typeof result.markdown === "string") {
-      downloadMarkdown(result.filename, result.markdown);
-      showToast(result.message || "导出成功", null);
+      const saveResult = await saveMarkdown(result.filename, result.markdown);
+      if (saveResult?.status === "cancelled") {
+        showToast(saveResult.message || "导出已取消", null);
+      } else {
+        showToast(result.message || "导出成功", null);
+      }
       return;
     }
     showToast(result.message || "导出失败", null);

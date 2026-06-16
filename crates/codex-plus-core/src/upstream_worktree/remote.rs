@@ -1,4 +1,3 @@
-use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -14,16 +13,7 @@ use super::types::{
 use crate::zed_remote::{SshTarget, resolve_ssh_target_for_host_id};
 
 pub fn codex_global_state_path() -> PathBuf {
-    env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("HOME")
-                .or_else(|| env::var_os("USERPROFILE"))
-                .map(PathBuf::from)
-                .map(|home| home.join(".codex"))
-        })
-        .unwrap_or_else(|| PathBuf::from(".codex"))
-        .join(".codex-global-state.json")
+    crate::codex_home::default_codex_home_dir().join(".codex-global-state.json")
 }
 
 pub fn remote_project_from_state(state: &Value, project_id: &str) -> Option<UpstreamRemoteProject> {

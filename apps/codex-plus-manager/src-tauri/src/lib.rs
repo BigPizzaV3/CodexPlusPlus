@@ -80,6 +80,8 @@ pub fn run() {
             commands::reset_image_overlay_settings,
             commands::relay_status,
             commands::read_relay_files,
+            commands::check_env_conflicts,
+            commands::remove_env_conflicts,
             commands::save_relay_file,
             commands::write_diagnostic_event,
             commands::backfill_relay_profile_from_live,

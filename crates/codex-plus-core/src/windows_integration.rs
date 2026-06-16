@@ -22,8 +22,8 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 #[cfg(windows)]
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegCreateKeyW, RegDeleteKeyW,
-    RegDeleteValueW, RegOpenKeyExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_EXPAND_SZ, REG_SZ, RegCloseKey,
+    RegCreateKeyW, RegDeleteKeyW, RegDeleteValueW, RegEnumValueW, RegOpenKeyExW, RegSetValueExW,
 };
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
@@ -203,6 +203,72 @@ pub fn delete_current_user_value(subkey: &str, name: &str) -> anyhow::Result<()>
     unsafe { RegDeleteValueW(key, PCWSTR(name.as_ptr())) }
         .ok()
         .or_else(|_| Ok(()))
+}
+
+#[cfg(windows)]
+pub fn read_current_user_string_values(
+    subkey: &str,
+) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    let subkey = wide_null(subkey);
+    let mut key = HKEY::default();
+    if unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(subkey.as_ptr()),
+            0,
+            KEY_READ,
+            &mut key,
+        )
+    }
+    .is_err()
+    {
+        return Ok(Vec::new());
+    }
+    let _guard = RegistryKeyGuard(key);
+    let mut values = Vec::new();
+    for index in 0.. {
+        let mut name = vec![0u16; 256];
+        let mut name_len = name.len() as u32;
+        let mut value_type = 0u32;
+        let mut data = vec![0u8; 8192];
+        let mut data_len = data.len() as u32;
+        let result = unsafe {
+            RegEnumValueW(
+                key,
+                index,
+                PWSTR(name.as_mut_ptr()),
+                &mut name_len,
+                None,
+                Some(&mut value_type),
+                Some(data.as_mut_ptr()),
+                Some(&mut data_len),
+            )
+        };
+        if result.is_err() {
+            break;
+        }
+        let name = OsString::from_wide(&name[..name_len as usize])
+            .to_string_lossy()
+            .to_string();
+        let value = if value_type == REG_SZ.0 || value_type == REG_EXPAND_SZ.0 {
+            let units = unsafe {
+                std::slice::from_raw_parts(
+                    data.as_ptr().cast::<u16>(),
+                    (data_len as usize).div_ceil(2),
+                )
+            };
+            let len = units.iter().position(|ch| *ch == 0).unwrap_or(units.len());
+            Some(
+                OsString::from_wide(&units[..len])
+                    .to_string_lossy()
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        values.push((name, value));
+    }
+    Ok(values)
 }
 
 #[cfg(windows)]

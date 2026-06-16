@@ -161,6 +161,26 @@ pub struct RelayProfileModelsPayload {
     pub endpoint: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvConflictsPayload {
+    pub conflicts: Vec<codex_plus_core::env_conflicts::EnvConflict>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveEnvConflictsRequest {
+    pub names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveEnvConflictsPayload {
+    pub removed: Vec<codex_plus_core::env_conflicts::EnvConflictRemoval>,
+    pub backup_path: Option<String>,
+    pub remaining: Vec<codex_plus_core::env_conflicts::EnvConflict>,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveRelayFileRequest {
@@ -1368,6 +1388,45 @@ pub fn read_relay_files() -> CommandResult<RelayFilesPayload> {
                 auth_path: home.join("auth.json").to_string_lossy().to_string(),
                 config_contents: String::new(),
                 auth_contents: String::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn check_env_conflicts() -> CommandResult<EnvConflictsPayload> {
+    let conflicts = codex_plus_core::env_conflicts::detect_env_conflicts();
+    let message = if conflicts.is_empty() {
+        "未检测到会覆盖 Codex 供应商配置的 OPENAI 环境变量。"
+    } else {
+        "检测到可能覆盖 Codex 供应商配置的 OPENAI 环境变量。"
+    };
+    ok(message, EnvConflictsPayload { conflicts })
+}
+
+#[tauri::command]
+pub fn remove_env_conflicts(
+    request: RemoveEnvConflictsRequest,
+) -> CommandResult<RemoveEnvConflictsPayload> {
+    let backup_dir = codex_plus_core::paths::default_app_state_dir().join("backups");
+    match codex_plus_core::env_conflicts::remove_env_conflicts(&request.names, backup_dir) {
+        Ok(result) => {
+            let remaining = codex_plus_core::env_conflicts::detect_env_conflicts();
+            ok(
+                "环境变量已按确认项删除；重新启动 Codex 后生效。",
+                RemoveEnvConflictsPayload {
+                    removed: result.removed,
+                    backup_path: result.backup_path,
+                    remaining,
+                },
+            )
+        }
+        Err(error) => failed(
+            &format!("删除环境变量失败：{error}"),
+            RemoveEnvConflictsPayload {
+                removed: Vec::new(),
+                backup_path: None,
+                remaining: codex_plus_core::env_conflicts::detect_env_conflicts(),
             },
         ),
     }
@@ -2674,6 +2733,57 @@ mod tests {
         assert!(payload.auth_path.ends_with("auth.json"));
         assert_eq!(payload.config_contents, "model_provider = \"custom\"\n");
         assert_eq!(payload.auth_contents, "{\"OPENAI_API_KEY\":\"sk-test\"}\n");
+    }
+
+    #[test]
+    fn env_conflict_commands_ignore_codex_home_and_remove_openai_vars() {
+        let test_openai_name = "OPENAI_CODEX_PLUS_ENV_CONFLICT_TEST";
+        let previous_openai = std::env::var_os(test_openai_name);
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        let temp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var(test_openai_name, "sk-test");
+            std::env::set_var("CODEX_HOME", temp.path());
+        }
+
+        let check = check_env_conflicts();
+        assert_eq!(check.status, "ok");
+        assert!(
+            check
+                .payload
+                .conflicts
+                .iter()
+                .any(|item| item.name == test_openai_name)
+        );
+        assert!(
+            !check
+                .payload
+                .conflicts
+                .iter()
+                .any(|item| item.name == "CODEX_HOME")
+        );
+
+        codex_plus_core::env_conflicts::remove_process_env_conflicts_for_tests(
+            &[test_openai_name.to_string(), "CODEX_HOME".to_string()],
+            codex_plus_core::paths::default_app_state_dir().join("test-backups"),
+        )
+        .unwrap();
+        assert!(std::env::var_os(test_openai_name).is_none());
+        assert_eq!(
+            std::env::var_os("CODEX_HOME"),
+            Some(temp.path().as_os_str().to_os_string())
+        );
+
+        unsafe {
+            match previous_openai {
+                Some(value) => std::env::set_var(test_openai_name, value),
+                None => std::env::remove_var(test_openai_name),
+            }
+            match previous_codex_home {
+                Some(value) => std::env::set_var("CODEX_HOME", value),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+        }
     }
 
     #[test]

@@ -212,10 +212,7 @@ pub async fn read_codex_model_catalog_from_home(
 }
 
 fn codex_home_dir() -> PathBuf {
-    std::env::var_os("CODEX_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(crate::relay_config::default_codex_home_dir)
+    crate::codex_home::default_codex_home_dir()
 }
 
 fn load_codex_config(path: &Path) -> (CodexConfig, HashMap<String, String>, Option<String>) {

@@ -85,9 +85,7 @@ pub struct CodexContextEntries {
 }
 
 pub fn default_codex_home_dir() -> PathBuf {
-    directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().join(".codex"))
-        .unwrap_or_else(|| PathBuf::from(".codex"))
+    crate::codex_home::default_codex_home_dir()
 }
 
 pub fn default_relay_status() -> RelayStatus {

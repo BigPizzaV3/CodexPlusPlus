@@ -103,19 +103,17 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
   </tr>
   <tr>
     <td align="center">
-      <a href="https://rawchat.cn">
-        <img src="docs/images/sponsor-rawchat.svg" alt="RawChat" width="150">
-      </a>
-    </td>
-    <td><a href="https://rawchat.cn"><strong>RawChat | Codex Relay Station</strong></a><br>A long-running relay station with monthly plans, low-rate usage, high cache hit rates, Pro/Plus account pools, and dedicated all-day maintenance.</td>
-  </tr>
-  <tr>
-    <td align="center">
       <a href="https://coder.visioncoder.cn">
         <img src="https://coder.visioncoder.cn/logo.png" alt="VisionCoder" width="110">
       </a>
     </td>
     <td><a href="https://coder.visioncoder.cn"><strong>VisionCoder Developer Platform</strong></a><br>Thanks to VisionCoder for supporting this project. VisionCoder Developer Platform is a reliable and efficient API relay service provider, offering access to mainstream AI models such as Claude Code, Codex, and Gemini. It helps developers and teams integrate AI capabilities more easily and improve productivity. VisionCoder is also offering our users a limited-time <a href="https://coder.visioncoder.cn">Token Plan</a> promotion: buy 1 month and get 1 month free.</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/images/sponsor-codelf.png" alt="Codelf" width="110">
+    </td>
+    <td><strong>Codelf</strong><br>Codelf is a desktop app with an autonomous AI Agent and a full editor. It can help users build projects, organize materials, operate local apps, and work with multiple AI model providers through natural language, with direct access in China and high context-cache efficiency.</td>
   </tr>
 </table>
 

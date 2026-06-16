@@ -584,6 +584,66 @@ body {
   margin-bottom: 10px;
 }
 
+.env-conflict-notice {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  border: 1px solid hsl(var(--brand-accent) / 0.34);
+  border-radius: 8px;
+  background: hsl(var(--brand-accent) / 0.1);
+  margin-bottom: 12px;
+  padding: 12px;
+}
+
+.env-conflict-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: hsl(var(--brand-accent) / 0.16);
+  color: hsl(var(--brand-accent));
+}
+
+.env-conflict-body {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.env-conflict-body p {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.45;
+}
+
+.env-conflict-tags,
+.env-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.env-conflict-tags span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: hsl(var(--background) / 0.6);
+  color: hsl(var(--foreground));
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.env-conflict-tags small {
+  color: hsl(var(--muted-foreground));
+  font-family: Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
 .relay-master-switch {
   margin-bottom: 10px;
 }
@@ -2279,6 +2339,14 @@ body {
 
   .relay-profile-card {
     grid-template-columns: 18px 32px minmax(0, 1fr);
+  }
+
+  .env-conflict-notice {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .env-conflict-actions {
+    grid-column: 2;
   }
 
   .relay-card-actions {

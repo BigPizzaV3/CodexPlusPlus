@@ -42,6 +42,7 @@ import {
   Save,
   Settings,
   ShieldCheck,
+  ShieldAlert,
   Sun,
   TestTube,
   Trash2,
@@ -322,6 +323,26 @@ type RelayProfileModelsResult = CommandResult<{
   endpoint: string;
 }>;
 
+type EnvConflict = {
+  name: string;
+  source: "process" | "user" | string;
+  valuePresent: boolean;
+};
+
+type EnvConflictsResult = CommandResult<{
+  conflicts: EnvConflict[];
+}>;
+
+type RemoveEnvConflictsResult = CommandResult<{
+  removed: Array<{
+    name: string;
+    removedProcess: boolean;
+    removedUser: boolean;
+  }>;
+  backupPath: string | null;
+  remaining: EnvConflict[];
+}>;
+
 type ProviderSyncPayload = {
   syncStatus?: string;
   targetProvider?: string;
@@ -574,6 +595,7 @@ export function App() {
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [relay, setRelay] = useState<RelayResult | null>(null);
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
+  const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
   const [zedRemoteProjects, setZedRemoteProjects] = useState<ZedRemoteProjectsResult | null>(null);
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
@@ -703,6 +725,30 @@ export function App() {
     return result;
   };
 
+  const refreshEnvConflicts = async (silent = false) => {
+    const result = await run(() => call<EnvConflictsResult>("check_env_conflicts"));
+    if (result) {
+      setEnvConflicts(result);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("环境变量检测", result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const removeEnvConflicts = async (names: string[]) => {
+    const uniqueNames = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
+    if (!uniqueNames.length) return;
+    if (!window.confirm(`删除这些环境变量？\n\n${uniqueNames.join("\n")}\n\n删除前会写入备份。`)) return;
+    const result = await run(() => call<RemoveEnvConflictsResult>("remove_env_conflicts", { request: { names: uniqueNames } }));
+    if (result) {
+      setEnvConflicts({
+        status: result.status,
+        message: result.message,
+        conflicts: result.remaining,
+      });
+      showNotice("环境变量清理", result.message, result.status);
+    }
+  };
+
   const refreshLocalSessions = async (silent = false) => {
     const result = await run(() => call<LocalSessionsResult>("list_local_sessions"));
     if (result) {
@@ -813,6 +859,7 @@ export function App() {
       await refreshSettings(true);
       await refreshRelay(true);
       await refreshRelayFiles(true);
+      await refreshEnvConflicts(true);
     }
     if (next === "sessions") {
       await refreshSettings(true);
@@ -1336,6 +1383,7 @@ export function App() {
       await refreshOverview(true);
       await refreshSettings(true);
       await refreshRelay(true);
+      await refreshEnvConflicts(true);
       await refreshProviderSyncTargets(true);
     })();
   }, []);
@@ -1457,6 +1505,8 @@ export function App() {
       },
       refreshRelay,
       refreshRelayFiles,
+      refreshEnvConflicts,
+      removeEnvConflicts,
       refreshLiveContextEntries,
       syncLiveContextEntries,
       refreshAds,
@@ -1501,7 +1551,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget],
+    [route, launchForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts],
   );
   const hasUpdate = update?.updateAvailable === true;
 
@@ -1585,6 +1635,7 @@ export function App() {
             <RelayScreen
               settings={settings}
               relayFiles={relayFiles}
+              envConflicts={envConflicts}
               form={settingsForm}
               onFormChange={setSettingsForm}
               actions={actions}
@@ -1673,6 +1724,8 @@ type Actions = {
   setLaunchMode: (launchMode: LaunchMode) => Promise<void>;
   refreshRelay: () => Promise<void>;
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
+  refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
+  removeEnvConflicts: (names: string[]) => Promise<void>;
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   refreshAds: () => Promise<void>;
@@ -1819,12 +1872,14 @@ function OverviewScreen({
 function RelayScreen({
   settings: _settings,
   relayFiles,
+  envConflicts,
   form,
   onFormChange,
   actions,
 }: {
   settings: SettingsResult | null;
   relayFiles: RelayFilesResult | null;
+  envConflicts: EnvConflictsResult | null;
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
@@ -1883,6 +1938,7 @@ function RelayScreen({
       <Panel>
         <CardHead title="供应商列表" detail={`${normalized.relayProfiles.length} 个供应商配置；可拖动排序，点编辑进入详情`} />
         <CardContent>
+          <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
           <label className="switch-row relay-master-switch">
             <input
               checked={normalized.relayProfilesEnabled}
@@ -1920,6 +1976,53 @@ function RelayScreen({
       </Panel>
     </>
   );
+}
+
+function EnvConflictNotice({
+  envConflicts,
+  actions,
+}: {
+  envConflicts: EnvConflictsResult | null;
+  actions: Actions;
+}) {
+  const conflicts = envConflicts?.conflicts ?? [];
+  if (!conflicts.length) return null;
+  const names = Array.from(new Set(conflicts.map((conflict) => conflict.name))).sort();
+  return (
+    <div className="env-conflict-notice">
+      <div className="env-conflict-icon">
+        <ShieldAlert className="h-4 w-4" />
+      </div>
+      <div className="env-conflict-body">
+        <strong>检测到 OPENAI 环境变量</strong>
+        <p>这些变量可能覆盖当前供应商写入的 config.toml / auth.json；CODEX_HOME 不会被清理。</p>
+        <div className="env-conflict-tags">
+          {conflicts.map((conflict) => (
+            <span key={`${conflict.source}-${conflict.name}`}>
+              {conflict.name}
+              <small>{envConflictSourceLabel(conflict.source)}</small>
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="env-conflict-actions">
+        <Button onClick={() => void actions.removeEnvConflicts(names)} size="sm">
+          <Trash2 className="h-4 w-4" />
+          删除
+        </Button>
+        <Button onClick={() => void actions.refreshEnvConflicts(false)} size="sm" variant="secondary">
+          <RefreshCw className="h-4 w-4" />
+          检测
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function envConflictSourceLabel(source: string): string {
+  if (source === "process") return "当前进程";
+  if (source === "user") return "用户环境";
+  return source || "环境变量";
 }
 
 function EnhanceScreen({
