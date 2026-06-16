@@ -305,6 +305,14 @@ fn launcher_packaged_activation_can_preserve_process_id() {
     assert_eq!(launch.process_id(), Some(4242));
 }
 
+#[test]
+fn launcher_packaged_activation_does_not_directly_fallback_to_windowsapps_exe() {
+    let source = include_str!("../src/launcher.rs");
+
+    assert!(!source.contains("launcher.packaged_activation_cdp_unready_direct_fallback"));
+    assert!(!source.contains("terminate_windows_process_id(process_id).await"));
+}
+
 #[cfg(windows)]
 #[test]
 fn launcher_windows_packaged_process_management_uses_native_api() {

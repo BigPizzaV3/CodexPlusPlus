@@ -8,6 +8,8 @@ use std::time::Duration;
 pub const WATCHER_INTERVAL_SECONDS: f64 = 3.0;
 pub const CDP_PROBE_TIMEOUT_SECONDS: f64 = 0.5;
 pub const TAKEOVER_FAILURE_BACKOFF_SECONDS: f64 = 30.0;
+pub const RESTART_STOP_WAIT_TIMEOUT_MS: u64 = 5_000;
+const RESTART_STOP_WAIT_INTERVAL_MS: u64 = 100;
 pub const WATCHER_RUN_NAME: &str = "CodexPlusPlusWatcher";
 pub const WATCHER_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 pub const WATCHER_STARTUP_SHORTCUT_NAME: &str = "CodexPlusPlusWatcher.lnk";
@@ -121,6 +123,17 @@ pub fn should_recover_stale_launcher(has_codex_process: bool, cdp_listening: boo
     !has_codex_process && !cdp_listening
 }
 
+pub fn process_ids_still_running(
+    expected: &[u32],
+    running: impl IntoIterator<Item = u32>,
+) -> Vec<u32> {
+    let expected = expected.iter().copied().collect::<HashSet<_>>();
+    running
+        .into_iter()
+        .filter(|process_id| expected.contains(process_id))
+        .collect()
+}
+
 #[cfg(windows)]
 pub fn install_watcher(launcher_path: &Path, debug_port: u16) -> anyhow::Result<()> {
     let plan = build_watcher_install_plan(launcher_path.to_path_buf(), debug_port);
@@ -200,6 +213,29 @@ pub fn stop_launcher_processes() {
 pub fn stop_launcher_processes() {}
 
 #[cfg(windows)]
+pub fn stop_launcher_processes_and_wait() {
+    let processes = crate::windows_integration::enumerate_processes();
+    let killable = filter_killable_launcher_processes(
+        processes.iter().map(|process| {
+            (
+                process.process_id,
+                process.parent_process_id,
+                process.exe_file.as_str(),
+            )
+        }),
+        std::process::id(),
+    );
+    terminate_and_wait_for_exit(
+        killable,
+        RESTART_STOP_WAIT_TIMEOUT_MS,
+        RESTART_STOP_WAIT_INTERVAL_MS,
+    );
+}
+
+#[cfg(not(windows))]
+pub fn stop_launcher_processes_and_wait() {}
+
+#[cfg(windows)]
 pub fn stop_codex_processes() {
     for process_id in find_codex_processes() {
         let _ = crate::windows_integration::terminate_process(process_id);
@@ -208,6 +244,48 @@ pub fn stop_codex_processes() {
 
 #[cfg(not(windows))]
 pub fn stop_codex_processes() {}
+
+#[cfg(windows)]
+pub fn stop_codex_processes_and_wait() {
+    terminate_and_wait_for_exit(
+        find_codex_processes(),
+        RESTART_STOP_WAIT_TIMEOUT_MS,
+        RESTART_STOP_WAIT_INTERVAL_MS,
+    );
+}
+
+#[cfg(not(windows))]
+pub fn stop_codex_processes_and_wait() {}
+
+#[cfg(windows)]
+fn terminate_and_wait_for_exit(process_ids: Vec<u32>, timeout_ms: u64, interval_ms: u64) {
+    if process_ids.is_empty() {
+        return;
+    }
+    for process_id in &process_ids {
+        let _ = crate::windows_integration::terminate_process(*process_id);
+    }
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let running_process_ids = crate::windows_integration::enumerate_processes()
+            .into_iter()
+            .map(|process| process.process_id);
+        let remaining = process_ids_still_running(&process_ids, running_process_ids);
+        if remaining.is_empty() || std::time::Instant::now() >= deadline {
+            if !remaining.is_empty() {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "watcher.stop_wait_timeout",
+                    serde_json::json!({
+                        "remaining_process_ids": remaining,
+                        "timeout_ms": timeout_ms
+                    }),
+                );
+            }
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(interval_ms));
+    }
+}
 
 #[cfg(windows)]
 fn create_startup_shortcut(launcher_path: &Path, arguments: &str) -> anyhow::Result<()> {

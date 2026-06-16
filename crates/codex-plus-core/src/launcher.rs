@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -20,8 +19,6 @@ use crate::status::{LaunchStatus, StatusStore};
 const POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS: &[u64] = &[0, 5, 15, 30, 60, 120, 180, 240, 300];
 #[cfg_attr(not(windows), allow(dead_code))]
 const POST_LAUNCH_COMPUTER_USE_GUARD_STABLE_ATTEMPTS: usize = 3;
-const PACKAGED_CDP_READY_ATTEMPTS: usize = 10;
-const PACKAGED_CDP_READY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexLaunch {
@@ -504,26 +501,8 @@ impl LaunchHooks for DefaultLaunchHooks {
                 else {
                     unreachable!();
                 };
-                let app_user_model_id_for_log = app_user_model_id.clone();
-                let preexisting_cdp_targets = query_cdp_targets(debug_port).await;
-                let preexisting_cdp_target_ids = cdp_target_fingerprints(&preexisting_cdp_targets);
-                if preexisting_cdp_targets.iter().any(is_codex_cdp_target) {
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "launcher.packaged_activation_reuse_preexisting_cdp",
-                        serde_json::json!({
-                            "debug_port": debug_port,
-                            "app_user_model_id": app_user_model_id_for_log,
-                            "preexisting_cdp_target_count": preexisting_cdp_targets.len()
-                        }),
-                    );
-                    return Ok(CodexLaunch::PackagedActivation {
-                        app_user_model_id: app_user_model_id.clone(),
-                        arguments: arguments.clone(),
-                        process_id: None,
-                    });
-                }
                 let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
-                let packaged_launch = match activation {
+                return Ok(match activation {
                     CodexLaunch::PackagedActivation {
                         app_user_model_id,
                         arguments,
@@ -534,27 +513,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                         process_id: Some(process_id),
                     },
                     CodexLaunch::Process { .. } => unreachable!(),
-                };
-                if cdp_json_ready(
-                    debug_port,
-                    PACKAGED_CDP_READY_ATTEMPTS,
-                    PACKAGED_CDP_READY_DELAY,
-                    &preexisting_cdp_target_ids,
-                )
-                .await
-                {
-                    return Ok(packaged_launch);
-                }
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "launcher.packaged_activation_cdp_unready_direct_fallback",
-                    serde_json::json!({
-                        "debug_port": debug_port,
-                        "app_user_model_id": app_user_model_id_for_log,
-                        "process_id": process_id,
-                        "preexisting_cdp_target_count": preexisting_cdp_targets.len()
-                    }),
-                );
-                let _ = terminate_windows_process_id(process_id).await;
+                });
             }
         }
 
@@ -1365,145 +1324,6 @@ pub fn build_packaged_activation(
     })
 }
 
-async fn cdp_json_ready(
-    debug_port: u16,
-    attempts: usize,
-    delay: std::time::Duration,
-    preexisting_targets: &HashSet<String>,
-) -> bool {
-    let client = match reqwest::Client::builder()
-        .no_proxy()
-        .timeout(std::time::Duration::from_millis(500))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return false,
-    };
-    for attempt in 0..attempts {
-        if cdp_json_ready_once(&client, debug_port, preexisting_targets).await {
-            return true;
-        }
-        if attempt + 1 < attempts {
-            tokio::time::sleep(delay).await;
-        }
-    }
-    false
-}
-
-async fn query_cdp_targets(debug_port: u16) -> Vec<crate::cdp::CdpTarget> {
-    let client = match reqwest::Client::builder()
-        .no_proxy()
-        .timeout(std::time::Duration::from_millis(500))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return Vec::new(),
-    };
-    let Some(targets) = query_cdp_targets_once(&client, debug_port).await else {
-        return Vec::new();
-    };
-    targets
-}
-
-fn cdp_target_fingerprints(targets: &[crate::cdp::CdpTarget]) -> HashSet<String> {
-    targets.iter().map(cdp_target_fingerprint).collect()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CdpTargetReadiness {
-    Ready,
-    NotPage,
-    MissingWebsocket,
-    NotCodexContext,
-    Preexisting,
-}
-
-async fn cdp_json_ready_once(
-    client: &reqwest::Client,
-    debug_port: u16,
-    preexisting_targets: &HashSet<String>,
-) -> bool {
-    let Some(targets) = query_cdp_targets_once(client, debug_port).await else {
-        return false;
-    };
-    targets.iter().any(|target| {
-        let readiness = cdp_target_readiness(target, preexisting_targets);
-        let accepted = readiness == CdpTargetReadiness::Ready;
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "launcher.cdp_readiness_target",
-            serde_json::json!({
-                "debug_port": debug_port,
-                "target_id": target.id,
-                "target_type": target.target_type,
-                "title": target.title,
-                "url": target.url,
-                "has_websocket": target.web_socket_debugger_url.as_deref().is_some_and(|url| !url.is_empty()),
-                "fingerprint": cdp_target_fingerprint(target),
-                "readiness": format!("{readiness:?}"),
-                "accepted": accepted
-            }),
-        );
-        accepted
-    })
-}
-
-async fn query_cdp_targets_once(
-    client: &reqwest::Client,
-    debug_port: u16,
-) -> Option<Vec<crate::cdp::CdpTarget>> {
-    for url in [
-        format!("http://127.0.0.1:{debug_port}/json"),
-        format!("http://[::1]:{debug_port}/json"),
-    ] {
-        let Ok(response) = client.get(url).send().await else {
-            continue;
-        };
-        let Ok(response) = response.error_for_status() else {
-            continue;
-        };
-        let Ok(targets) = response.json::<Vec<crate::cdp::CdpTarget>>().await else {
-            continue;
-        };
-        return Some(targets);
-    }
-    None
-}
-
-fn cdp_target_fingerprint(target: &crate::cdp::CdpTarget) -> String {
-    if !target.id.is_empty() {
-        return target.id.clone();
-    }
-    target.web_socket_debugger_url.clone().unwrap_or_default()
-}
-
-fn is_codex_cdp_target(target: &crate::cdp::CdpTarget) -> bool {
-    cdp_target_readiness(target, &HashSet::new()) == CdpTargetReadiness::Ready
-}
-
-fn cdp_target_readiness(
-    target: &crate::cdp::CdpTarget,
-    preexisting_targets: &HashSet<String>,
-) -> CdpTargetReadiness {
-    if target.target_type != "page" {
-        return CdpTargetReadiness::NotPage;
-    }
-    if !target
-        .web_socket_debugger_url
-        .as_deref()
-        .is_some_and(|url| !url.is_empty())
-    {
-        return CdpTargetReadiness::MissingWebsocket;
-    }
-    if preexisting_targets.contains(&cdp_target_fingerprint(target)) {
-        return CdpTargetReadiness::Preexisting;
-    }
-    let haystack = format!("{} {}", target.title, target.url).to_lowercase();
-    if !haystack.contains("codex") {
-        return CdpTargetReadiness::NotCodexContext;
-    }
-    CdpTargetReadiness::Ready
-}
-
 async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
     let mut last_error = None;
     for _ in 0..20 {
@@ -2015,144 +1835,6 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn cdp_target(
-        id: &str,
-        target_type: &str,
-        title: &str,
-        url: &str,
-        ws: Option<&str>,
-    ) -> crate::cdp::CdpTarget {
-        crate::cdp::CdpTarget {
-            id: id.to_string(),
-            target_type: target_type.to_string(),
-            title: title.to_string(),
-            url: url.to_string(),
-            web_socket_debugger_url: ws.map(str::to_string),
-        }
-    }
-
-    #[test]
-    fn cdp_readiness_accepts_only_codex_page_targets_with_websocket() {
-        assert!(is_codex_cdp_target(&cdp_target(
-            "target-1",
-            "page",
-            "Codex",
-            "https://codex.local/",
-            Some("ws://127.0.0.1:9229/devtools/page/target-1"),
-        )));
-        assert!(!is_codex_cdp_target(&cdp_target(
-            "target-2",
-            "page",
-            "Other App",
-            "https://example.test/",
-            Some("ws://127.0.0.1:9229/devtools/page/target-2"),
-        )));
-        assert!(!is_codex_cdp_target(&cdp_target(
-            "target-3",
-            "worker",
-            "Codex Worker",
-            "https://codex.local/",
-            Some("ws://127.0.0.1:9229/devtools/page/target-3"),
-        )));
-        assert!(!is_codex_cdp_target(&cdp_target(
-            "target-4",
-            "page",
-            "Codex",
-            "https://codex.local/",
-            None,
-        )));
-    }
-
-    #[test]
-    fn cdp_readiness_rejects_preexisting_codex_target() {
-        let target = cdp_target(
-            "target-1",
-            "page",
-            "Codex",
-            "https://codex.local/",
-            Some("ws://127.0.0.1:9229/devtools/page/target-1"),
-        );
-        let mut preexisting = HashSet::new();
-        preexisting.insert(cdp_target_fingerprint(&target));
-
-        assert_eq!(
-            cdp_target_readiness(&target, &preexisting),
-            CdpTargetReadiness::Preexisting
-        );
-    }
-
-    #[test]
-    fn cdp_readiness_reports_rejection_reasons() {
-        assert_eq!(
-            cdp_target_readiness(
-                &cdp_target(
-                    "target-1",
-                    "worker",
-                    "Codex Worker",
-                    "https://codex.local/",
-                    Some("ws://127.0.0.1:9229/devtools/page/target-1"),
-                ),
-                &HashSet::new(),
-            ),
-            CdpTargetReadiness::NotPage
-        );
-        assert_eq!(
-            cdp_target_readiness(
-                &cdp_target(
-                    "target-2",
-                    "page",
-                    "Other App",
-                    "https://example.test/",
-                    None
-                ),
-                &HashSet::new(),
-            ),
-            CdpTargetReadiness::MissingWebsocket
-        );
-        assert_eq!(
-            cdp_target_readiness(
-                &cdp_target(
-                    "target-3",
-                    "page",
-                    "Other App",
-                    "https://example.test/",
-                    Some("ws://127.0.0.1:9229/devtools/page/target-3"),
-                ),
-                &HashSet::new(),
-            ),
-            CdpTargetReadiness::NotCodexContext
-        );
-    }
-
-    #[test]
-    fn cdp_target_fingerprint_prefers_stable_id() {
-        let target = cdp_target(
-            "target-1",
-            "page",
-            "Codex",
-            "https://codex.local/",
-            Some("ws://127.0.0.1:9229/devtools/page/target-1"),
-        );
-
-        assert_eq!(cdp_target_fingerprint(&target), "target-1");
-    }
-
-    #[test]
-    fn cdp_target_fingerprint_falls_back_to_websocket_url() {
-        let target = cdp_target(
-            "",
-            "page",
-            "Codex",
-            "https://codex.local/",
-            Some("ws://127.0.0.1:9229/devtools/page/target-1"),
-        );
-
-        assert_eq!(
-            cdp_target_fingerprint(&target),
-            "ws://127.0.0.1:9229/devtools/page/target-1"
-        );
-    }
 
     #[test]
     fn post_launch_guard_stops_after_stable_ready_artifacts() {

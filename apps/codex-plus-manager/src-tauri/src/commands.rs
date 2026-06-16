@@ -365,8 +365,8 @@ pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 
 #[tauri::command]
 pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
-    codex_plus_core::watcher::stop_launcher_processes();
-    codex_plus_core::watcher::stop_codex_processes();
+    codex_plus_core::watcher::stop_launcher_processes_and_wait();
+    codex_plus_core::watcher::stop_codex_processes_and_wait();
     spawn_codex_plus_launch(request, "Codex 已请求重启，启动任务正在后台运行。")
 }
 
