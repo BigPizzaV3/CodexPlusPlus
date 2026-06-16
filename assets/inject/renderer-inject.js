@@ -328,14 +328,6 @@
         pointer-events: auto;
         z-index: 2147483201;
       }
-      [data-codex-delete-row="true"]:hover [data-thread-title] {
-        display: block;
-        max-width: var(--codex-session-title-max-width, 100%);
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
       [data-codex-delete-row="true"].codex-archive-confirm-visible .${actionGroupClass} {
         right: max(66px, var(--codex-session-actions-right, 28px));
       }
@@ -6349,6 +6341,7 @@
 
   function syncActionGroupLayout(row, group) {
     if (!row || !group) return;
+    if (group.dataset.codexActionLayoutStable === "true") return;
     const rowRect = row.getBoundingClientRect();
     const nativeButtons = nativeActionButtonsFromRow(row);
     const leftmostNative = nativeButtons
@@ -6368,6 +6361,7 @@
     group.style.setProperty("--codex-session-actions-right", `${right}px`);
     row.style.setProperty("--codex-session-title-mask", `${right + groupWidth + 12}px`);
     row.style.setProperty("--codex-session-title-max-width", `${maxTitleWidth}px`);
+    group.dataset.codexActionLayoutStable = "true";
   }
 
   function syncActionGroupsLayout() {
@@ -6563,7 +6557,6 @@
     const deleteReady = !settings.sessionDelete || existingDeleteButton?.dataset.codexDeleteVersion === codexDeleteVersion;
     const groupReady = existingGroup?.dataset.codexActionGroupVersion === codexActionGroupVersion;
     if (groupReady && deleteReady && !hasUnexpectedDelete && !hasUnexpectedMore && !hasUnexpectedExport && !hasUnexpectedMove && !missingDelete && !missingMore) {
-      syncActionGroupLayout(row, existingGroup);
       return;
     }
     removeActionGroups(row);
@@ -8027,7 +8020,6 @@
       refreshForcePluginInstallUnlockLoop();
     }
     sessionRows().forEach(tryAttachButton);
-    syncActionGroupsLayout();
     updateDeleteButtonOffsets();
     scheduleProjectMoveProjection();
     scheduleChatsSortCorrection();
@@ -8143,6 +8135,11 @@
   window.__codexPlusResizeHandler = () => {
     cancelAnimationFrame(codexPlusResizeRafId);
     codexPlusResizeRafId = requestAnimationFrame(() => {
+      sessionRows().forEach((row) => {
+        const group = actionGroupFromRow(row);
+        if (group) delete group.dataset.codexActionLayoutStable;
+      });
+      syncActionGroupsLayout();
       updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));
       runScanStep(refreshConversationTimeline);
       runScanStep(refreshConversationView);
