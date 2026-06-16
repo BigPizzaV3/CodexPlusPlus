@@ -37,7 +37,7 @@ fn bridge_script_defines_expected_globals_and_binding() {
     assert!(script.contains("window.__codexSessionDeleteBridge"));
     assert!(script.contains("window.__codexSessionDeleteResolve"));
     assert!(script.contains("window.__codexSessionDeleteReject"));
-    assert!(script.contains("codexSessionDeleteV3"));
+    assert!(script.contains("codexSessionDeleteV2"));
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
 fn injection_script_uses_cached_backend_status_for_menu_dialog() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPlusBackendHeartbeatVersion = \"4\""));
+    assert!(script.contains("codexPlusBackendHeartbeatVersion = \"5\""));
     assert!(script.contains("function backendStatusForDisplay()"));
     assert!(script.contains("codexPlusBackendFailureCount < 2"));
     assert!(script.contains("Date.now() - codexPlusBackendLastOkAt <= 12_000"));
@@ -139,11 +139,11 @@ fn injection_script_uses_cached_backend_status_for_menu_dialog() {
 fn injection_script_keeps_codex_plus_menu_unframed() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexDeleteStyleVersion = \"38\""));
+    assert!(script.contains("codexDeleteStyleVersion = \"14\""));
     assert!(script.contains("border: 0;"));
     assert!(script.contains("background: transparent;"));
-    assert!(script.contains("codexPlusMenuVersion !== \"10\""));
-    assert!(script.contains("codexPlusTriggerInstalled === \"8\""));
+    assert!(script.contains("codexPlusMenuVersion !== \"11\""));
+    assert!(script.contains("codexPlusTriggerInstalled === \"9\""));
     assert!(!script.contains("height: calc(100% - 4px) !important;"));
     assert!(script.contains("border: 1px solid var(--color-token-button-border"));
     assert!(script.contains("background: transparent !important;"));
@@ -155,6 +155,9 @@ fn injection_script_follows_codex_language_and_defaults_to_english() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("function codexPlusNativeTextLanguageHint()"));
+    assert!(script.contains("codexPlusNativeLanguageSelectors"));
+    assert!(script.contains("codexPlusNativeLanguageScore"));
+    assert!(script.contains("codexPlusVisibleNativeLanguageValues"));
     assert!(script.contains("Default permissions"));
     assert!(script.contains("默认权限"));
     assert!(script.contains("return codexPlusRuntimeLanguageHint()"));
@@ -165,37 +168,79 @@ fn injection_script_follows_codex_language_and_defaults_to_english() {
 }
 
 #[test]
+fn injection_script_hides_menu_on_settings_and_waits_for_header_actions() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("function isCodexSettingsPage()"));
+    assert!(script.contains("Back to app"));
+    assert!(script.contains("Keyboard shortcuts"));
+    assert!(script.contains("function codexHeaderActionsReady()"));
+    assert!(script.contains("if (isCodexSettingsPage()) {\n      removeDuplicateCodexPlusMenus(null);\n      return;\n    }"));
+    assert!(script.contains("if (!insertionPoint && !codexHeaderActionsReady()) {\n      removeDuplicateCodexPlusMenus(null);\n      return;\n    }"));
+    assert!(script.contains("if (!document.getElementById(codexPlusMenuId) && codexHeaderActionsReady()) return true;"));
+    assert!(!script.contains("!document.getElementById(codexPlusMenuId) && document.querySelector(selectors.appHeader)"));
+}
+
+#[test]
 fn injection_script_uses_dark_safe_modal_scrim_fallback() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("--codex-plus-modal-overlay-bg: var(--color-background-scrim"));
-    assert!(script.contains("rgba(0, 0, 0, .42)"));
+    assert!(script.contains("--codex-plus-modal-overlay-bg: transparent"));
+    assert!(script.contains(".codex-plus-modal-overlay {\n        position: fixed;"));
+    assert!(script.contains("background: transparent;\n        pointer-events: auto;"));
+    assert!(!script.contains("color-simple-scrim"));
     assert!(!script.contains("CanvasText 28%"));
 }
 
 #[test]
-fn injection_script_uses_codex_accent_for_enabled_toggles() {
+fn injection_script_uses_native_codex_switch_contract() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("--codex-plus-toggle-active-bg: var(--color-token-primary"));
-    assert!(script.contains("--codex-plus-toggle-active-border: var(--color-token-primary"));
-    assert!(
-        script.contains("--codex-plus-toggle-active-knob-bg: var(--color-token-button-foreground")
-    );
-    assert!(
-        script.contains(
-            "--codex-plus-toggle-active-knob-border: var(--color-token-button-foreground"
-        )
-    );
-    assert!(
-        !script.contains("--codex-plus-toggle-active-bg: var(--color-background-accent-active")
-    );
-    assert!(
-        !script.contains("--codex-plus-toggle-active-border: var(--color-background-accent-active")
-    );
-    assert!(
-        !script.contains("--codex-plus-toggle-active-bg: var(--color-token-checkbox-background")
-    );
+    assert!(script.contains(
+        "--codex-plus-toggle-bg: color-mix(in srgb, var(--color-token-foreground"
+    ));
+    assert!(script.contains("--codex-plus-toggle-active-bg: var(--color-token-charts-blue"));
+    assert!(script.contains("--codex-plus-toggle-knob-bg: var(--gray-0"));
+    assert!(script.contains("function codexPlusToggleMarkup(state = \"unchecked\")"));
+    assert!(script.contains("codex-plus-toggle-track"));
+    assert!(script.contains("codex-plus-toggle-knob"));
+    assert!(script.contains("width: 32px;\n        height: 20px;"));
+    assert!(script.contains("width: 16px;\n        height: 16px;"));
+    assert!(script.contains("transform: translateX(2px);"));
+    assert!(script.contains("transform: translateX(14px);"));
+    assert!(script.contains("button.setAttribute(\"role\", \"switch\");"));
+    assert!(script.contains("button.setAttribute(\"aria-checked\", String(isEnabled));"));
+    assert!(script.contains("button.dataset.state = state;"));
+    assert!(script.contains("setAttribute(\"data-state\", state);"));
+    assert!(!script.contains("width: 42px;"));
+    assert!(!script.contains("transform: translateX(18px);"));
+    assert!(!script.contains("rgb(49, 107, 168)"));
+    assert!(!script.contains("--codex-plus-toggle-active-bg: #"));
+    assert!(!script.contains("--codex-plus-toggle-knob-bg: #fff;"));
+    assert!(!script.contains("--codex-plus-toggle-active-bg: var(--color-token-checkbox-background"));
+}
+
+#[test]
+fn injection_script_uses_native_codex_action_button_contract() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains(
+        "--codex-plus-action-button-bg: color-mix(in srgb, var(--color-token-foreground"
+    ));
+    assert!(script.contains(
+        "--codex-plus-action-button-hover-bg: color-mix(in srgb, var(--color-token-foreground"
+    ));
+    assert!(script.contains("--codex-plus-action-button-fg: var(--color-token-foreground"));
+    assert!(script.contains("--codex-plus-action-button-border: transparent"));
+    assert!(script.contains(
+        "border: 1px solid var(--codex-plus-action-button-border);"
+    ));
+    assert!(script.contains("background: var(--codex-plus-action-button-bg);"));
+    assert!(script.contains("color: var(--codex-plus-action-button-fg);"));
+    assert!(script.contains("background: var(--codex-plus-action-button-hover-bg);"));
+    assert!(script.contains("font: var(--codex-plus-font-size-sm) var(--codex-plus-font-sans);"));
+    assert!(script.contains("line-height: 1.2;"));
+    assert!(script.contains("padding: 6px 8px;"));
 }
 
 #[test]
@@ -878,6 +923,38 @@ fn injection_script_localizes_upstream_worktree_dialog() {
 }
 
 #[test]
+fn injection_script_upstream_worktree_dialog_closes_with_escape() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("node.__codexUpstreamWorktreeClose"));
+    assert!(script.contains("overlay.__codexUpstreamWorktreeClose = close"));
+    assert!(script.contains("document.addEventListener(\"keydown\", handleKeydown, true);"));
+    assert!(script.contains("document.removeEventListener(\"keydown\", handleKeydown, true);"));
+    assert!(script.contains("if (event.key !== \"Escape\") return;"));
+    assert!(script.contains("close(event);"));
+    assert!(!script.contains("target?.closest(\"[data-codex-upstream-worktree-cancel]\")) {\n        overlay.remove();"));
+}
+
+#[test]
+fn injection_script_localizes_project_move_dialog() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("moveDialogLabel: \"Move conversation\""));
+    assert!(script.contains("moveDialogTitle: \"Move \\\"{title}\\\"\""));
+    assert!(script.contains("moveTargetsLoading: \"Loading projects...\""));
+    assert!(script.contains("moveDialogLabel: \"移动对话\""));
+    assert!(script.contains("moveDialogTitle: \"移动“{title}”\""));
+    assert!(script.contains("moveTargetsLoadFailed: \"加载项目失败：{message}\""));
+    assert!(script.contains("codexPlusEscapedText(\"moveDialogLabel\")"));
+    assert!(script.contains("codexPlusEscapedText(\"moveDialogTitle\", { title: ref.title || ref.session_id })"));
+    assert!(script.contains("codexPlusEscapedText(\"moveTargetsLoading\")"));
+    assert!(script.contains("codexPlusEscapedText(\"moveTargetsEmpty\")"));
+    assert!(script.contains("t(\"moveTargetsLoadFailed\", { message: error?.message || error })"));
+    assert!(!script.contains("aria-label=\"移动对话\""));
+    assert!(!script.contains("加载项目失败：${error?.message || error}"));
+}
+
+#[test]
 fn injection_script_prevents_switching_to_branches_used_by_other_worktrees() {
     let script = assets::injection_script(57321);
 
@@ -1114,6 +1191,31 @@ fn pick_injectable_codex_page_target_rejects_non_codex_pages() {
             .to_string()
             .contains("No injectable Codex page target found")
     );
+}
+
+#[test]
+fn pick_injectable_codex_page_target_prefers_main_codex_page_over_avatar_overlay() {
+    let targets = vec![
+        target(
+            "overlay",
+            "page",
+            "Codex",
+            "app://-/index.html?initialRoute=%2Favatar-overlay",
+            Some("ws://overlay"),
+        ),
+        target(
+            "main",
+            "page",
+            "Codex",
+            "app://-/index.html",
+            Some("ws://main"),
+        ),
+    ];
+
+    let picked =
+        pick_injectable_codex_page_target(&targets).expect("target should be selected");
+
+    assert_eq!(picked.id, "main");
 }
 
 #[test]

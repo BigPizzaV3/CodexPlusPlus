@@ -87,13 +87,22 @@ pub fn pick_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
 }
 
 pub fn pick_injectable_codex_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
-    for target in targets
+    let mut pages: Vec<&CdpTarget> = targets
         .iter()
         .filter(|target| is_injectable_page_target(target))
+        .filter(|target| is_codex_page_target(target))
+        .collect();
+    pages.sort_by_key(|target| target_is_avatar_overlay(target));
+
+    if let Some(target) = pages
+        .iter()
+        .find(|target| target.url == "app://-/index.html")
     {
-        if is_codex_page_target(target) {
-            return Ok(target.clone());
-        }
+        return Ok((*target).clone());
+    }
+
+    if let Some(target) = pages.into_iter().next() {
+        return Ok(target.clone());
     }
 
     bail!("No injectable Codex page target found")
