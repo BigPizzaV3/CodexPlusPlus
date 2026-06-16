@@ -112,7 +112,7 @@ export const PRESETS: ProviderPreset[] = [
   },
   {
     id: "volcano-ark",
-    name: "火山引擎 Ark",
+    name: "Volcengine Ark",
     websiteUrl: "https://www.volcengine.com/product/ark",
     apiKeyUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
     category: "cn_official",
@@ -123,7 +123,7 @@ export const PRESETS: ProviderPreset[] = [
   },
   {
     id: "baidu-qianfan",
-    name: "百度千帆 Coding Plan",
+    name: "Baidu Qianfan Coding Plan",
     category: "cn_official",
     baseUrl: "https://qianfan.baidubce.com/v2/coding",
     protocol: "chatCompletions",
@@ -132,7 +132,7 @@ export const PRESETS: ProviderPreset[] = [
   },
   {
     id: "xiaomi-mimo",
-    name: "小米 MiMo",
+    name: "Xiaomi MiMo",
     category: "cn_official",
     baseUrl: "https://api.xiaomimimo.com/v1",
     protocol: "chatCompletions",

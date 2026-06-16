@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import type { ProviderPreset, RelayProtocol } from "../presets";
 import { PRESETS } from "../presets";
 
@@ -25,11 +26,11 @@ export type RelayProfile = {
 
 export type PresetPatch = Partial<RelayProfile>;
 
-const categoryLabels: Record<string, string> = {
-  official: "官方",
-  cn_official: "中国官方",
-  aggregator: "聚合/中转",
-  third_party: "第三方",
+const categoryKeys: Record<string, string> = {
+  official: "preset.cat_official",
+  cn_official: "preset.cat_cn_official",
+  aggregator: "preset.cat_aggregator",
+  third_party: "preset.cat_third_party",
 };
 
 const initialFor = (name: string): string => {
@@ -55,6 +56,7 @@ export function ProviderPresetSelector({
 }: {
   onSelect: (patch: PresetPatch) => void;
 }) {
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(true);
   const [query, setQuery] = useState("");
 
@@ -86,21 +88,21 @@ export function ProviderPresetSelector({
         type="button"
       >
         <span className="preset-toggle-label">
-          从预设模板创建
+          {t("preset.create_from_template")}
           <span className="preset-toggle-count">
-            {collapsed ? `${PRESETS.length} 个供应商` : ""}
+            {collapsed ? ` ${t("preset.providers_count", { count: PRESETS.length })}` : ""}
           </span>
         </span>
         <span className="preset-toggle-arrow">{collapsed ? "▾" : "▴"}</span>
       </button>
 
       {!collapsed && (
-        <div className="preset-grid" role="region" aria-label="供应商预设列表">
+        <div className="preset-grid" role="region" aria-label={t("preset.aria_label")}>
           <div className="preset-search">
             <span className="preset-search-icon">⌕</span>
             <input
               className="preset-search-input"
-              placeholder="搜索供应商…"
+              placeholder={t("preset.search_placeholder")}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               autoFocus
@@ -109,7 +111,7 @@ export function ProviderPresetSelector({
 
           {filtered.length === 0 && (
             <div className="preset-empty">
-              没有匹配「{query}」的供应商
+              {t("preset.no_match", { query })}
             </div>
           )}
 
@@ -126,10 +128,11 @@ export function ProviderPresetSelector({
               categories.map((cat) => {
                 const items = PRESETS.filter((p) => p.category === cat);
                 if (items.length === 0) return null;
+                const translationKey = categoryKeys[cat];
                 return (
                   <div className="preset-category" key={cat}>
                     <h3 className="preset-category-label">
-                      {categoryLabels[cat] || cat}
+                      {translationKey ? t(translationKey) : cat}
                     </h3>
                     <div className="preset-category-items">
                       {items.map((preset) => (

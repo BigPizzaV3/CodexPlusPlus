@@ -80,7 +80,9 @@ pub fn run() {
             commands::switch_relay_profile,
             commands::apply_relay_injection,
             commands::apply_pure_api_injection,
-            commands::clear_relay_injection
+            commands::clear_relay_injection,
+            commands::load_custom_locales,
+            commands::import_custom_locale
         ])
         .run(tauri::generate_context!());
     if let Err(error) = run_result {
