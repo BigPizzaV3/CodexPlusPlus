@@ -31,11 +31,7 @@ pub fn select_packaged_codex_debug_port_with(
     can_bind: impl Fn(u16) -> bool,
     find_available: impl Fn() -> u16,
 ) -> u16 {
-    if is_windows {
-        requested
-    } else {
-        select_platform_loopback_port_with(requested, is_windows, can_bind, find_available)
-    }
+    select_platform_loopback_port_with(requested, is_windows, can_bind, find_available)
 }
 
 pub fn select_platform_loopback_port_with(
