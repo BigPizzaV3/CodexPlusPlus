@@ -111,9 +111,11 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
   </tr>
   <tr>
     <td align="center">
-      <img src="docs/images/sponsor-codelf.png" alt="Codelf" width="110">
+      <a href="https://github.com/Liuchun-oss/codelf-agent">
+        <img src="docs/images/sponsor-codelf.png" alt="Codelf" width="110">
+      </a>
     </td>
-    <td><strong>Codelf</strong><br>Codelf is a desktop app with an autonomous AI Agent and a full editor. It can help users build projects, organize materials, operate local apps, and work with multiple AI model providers through natural language, with direct access in China and high context-cache efficiency.</td>
+    <td><a href="https://github.com/Liuchun-oss/codelf-agent"><strong>Codelf</strong></a><br>Codelf is a desktop app with an autonomous AI Agent and a full editor. It can help users build projects, organize materials, operate local apps, and work with multiple AI model providers through natural language, with direct access in China and high context-cache efficiency.</td>
   </tr>
 </table>
 
