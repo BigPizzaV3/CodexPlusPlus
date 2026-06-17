@@ -1,7 +1,7 @@
 use codex_plus_core::watcher::{
     build_spawn_launcher_command, build_watcher_install_plan, cdp_listening, codex_process_ids,
     disable_watcher_at, enable_watcher_at, filter_killable_launcher_processes,
-    should_recover_stale_launcher, watcher_disabled_flag,
+    process_ids_still_running, should_recover_stale_launcher, watcher_disabled_flag,
 };
 
 #[test]
@@ -102,4 +102,12 @@ fn stale_launcher_recovery_only_runs_when_codex_and_cdp_are_absent() {
     assert!(!should_recover_stale_launcher(true, false));
     assert!(!should_recover_stale_launcher(false, true));
     assert!(!should_recover_stale_launcher(true, true));
+}
+
+#[test]
+fn stop_wait_tracks_only_expected_process_ids() {
+    assert_eq!(
+        process_ids_still_running(&[10, 20, 30], [5, 20, 40, 30]),
+        vec![20, 30]
+    );
 }

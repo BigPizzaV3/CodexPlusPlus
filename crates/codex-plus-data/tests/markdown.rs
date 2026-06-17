@@ -57,6 +57,108 @@ fn markdown_exporter_exports_messages_images_and_sanitized_filename() {
 }
 
 #[test]
+fn markdown_exporter_exports_automation_run_by_discovering_rollout_file() {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join(".codex").join("db").join("codex.sqlite");
+    let sessions_dir = tmp.path().join(".codex").join("sessions").join("2026");
+    fs::create_dir_all(&sessions_dir).unwrap();
+    let rollout_path = sessions_dir.join("rollout-thread-123.jsonl");
+    fs::write(
+        &rollout_path,
+        concat!(
+            "{\"type\":\"session_meta\",\"timestamp\":\"2026-05-10T13:00:00Z\",\"payload\":{\"id\":\"thread-123\",\"title\":\"Meta Title\"}}\n",
+            "{\"type\":\"response_item\",\"timestamp\":\"2026-05-10T13:12:06Z\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Hello from automation\"}]}}\n",
+            "{\"type\":\"response_item\",\"timestamp\":\"2026-05-10T13:12:07Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Automation reply\"}]}}\n",
+        ),
+    )
+    .unwrap();
+    fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let db = Connection::open(&db_path).unwrap();
+    db.execute(
+        "CREATE TABLE automation_runs (thread_id TEXT PRIMARY KEY, thread_title TEXT)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO automation_runs (thread_id, thread_title) VALUES ('thread-123', 'Automation Title')",
+        [],
+    )
+    .unwrap();
+
+    let result =
+        MarkdownExportService::new(Some(&db_path)).export(&session("thread-123", "Ignored"));
+
+    assert_eq!(result.status, ExportStatus::Exported);
+    assert_eq!(result.session_id, "thread-123");
+    assert_eq!(
+        result.filename,
+        Some("Automation Title-thread-123.md".to_string())
+    );
+    let markdown = result.markdown.unwrap();
+    assert!(markdown.starts_with("# Automation Title\n\n### User\n"));
+    assert!(markdown.contains("Hello from automation"));
+    assert!(markdown.contains("### Assistant\n"));
+    assert!(markdown.contains("Automation reply"));
+}
+
+#[test]
+fn markdown_exporter_searches_candidate_databases() {
+    let tmp = tempdir().unwrap();
+    let codex_home = tmp.path().join(".codex");
+    let first_db_path = codex_home.join("sqlite").join("codex-dev.db");
+    let second_db_path = codex_home.join("sqlite").join("state.db");
+    let sessions_dir = codex_home.join("sessions").join("2026");
+    fs::create_dir_all(&sessions_dir).unwrap();
+    fs::create_dir_all(first_db_path.parent().unwrap()).unwrap();
+
+    let first_db = Connection::open(&first_db_path).unwrap();
+    first_db
+        .execute(
+            "CREATE TABLE automation_runs (thread_id TEXT PRIMARY KEY, thread_title TEXT)",
+            [],
+        )
+        .unwrap();
+    first_db
+        .execute(
+            "INSERT INTO automation_runs (thread_id, thread_title) VALUES ('other-thread', 'Other')",
+            [],
+        )
+        .unwrap();
+
+    let second_db = Connection::open(&second_db_path).unwrap();
+    second_db
+        .execute(
+            "CREATE TABLE automation_runs (thread_id TEXT PRIMARY KEY, thread_title TEXT)",
+            [],
+        )
+        .unwrap();
+    second_db
+        .execute(
+            "INSERT INTO automation_runs (thread_id, thread_title) VALUES ('thread-456', 'Second DB')",
+            [],
+        )
+        .unwrap();
+
+    fs::write(
+        sessions_dir.join("rollout-thread-456.jsonl"),
+        concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-456\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"From second db\"}]}}\n",
+        ),
+    )
+    .unwrap();
+
+    let result = codex_plus_data::export_markdown_from_paths(
+        [first_db_path, second_db_path],
+        &session("thread-456", "Ignored"),
+    );
+
+    assert_eq!(result.status, ExportStatus::Exported);
+    assert_eq!(result.filename, Some("Second DB-thread-456.md".to_string()));
+    assert!(result.markdown.unwrap().contains("From second db"));
+}
+
+#[test]
 fn markdown_exporter_returns_failed_for_missing_or_empty_rollout() {
     let tmp = tempdir().unwrap();
     let missing_db = tmp.path().join("missing.sqlite");

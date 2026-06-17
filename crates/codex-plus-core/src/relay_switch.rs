@@ -3,8 +3,7 @@ use std::path::Path;
 use anyhow::Context;
 
 use crate::relay_config::{
-    apply_relay_profile_to_home_with_switch_rules, backfill_relay_profile_from_home_with_common,
-    clear_relay_config_to_home_with_auth, relay_config_status_from_home,
+    backfill_relay_profile_from_home_with_common, relay_config_status_from_home,
 };
 use crate::settings::{BackendSettings, LaunchMode, RelayMode, SettingsStore};
 
@@ -38,6 +37,7 @@ pub fn switch_relay_profile_in_home(
     store
         .save(&selected_settings)
         .context("保存供应商设置失败")?;
+    let selected_settings = store.load().context("读取供应商设置失败")?;
 
     match apply_selected_relay_profile(home, &selected_settings) {
         Ok(result) => Ok(result),
@@ -75,10 +75,19 @@ fn apply_selected_relay_profile(
     let result = if relay.relay_mode == RelayMode::Official && !relay.official_mix_api_key {
         let auth_contents =
             (!relay.auth_contents.trim().is_empty()).then_some(relay.auth_contents.as_str());
-        clear_relay_config_to_home_with_auth(home, auth_contents)?
+        crate::relay_config::clear_relay_config_to_home_with_auth_and_computer_use_guard(
+            home,
+            auth_contents,
+            settings.computer_use_guard_enabled,
+        )?
     } else {
         validate_switch_profile_files(&relay)?;
-        apply_relay_profile_to_home_with_switch_rules(home, &relay, &common_config)?
+        crate::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+            home,
+            &relay,
+            &common_config,
+            settings.computer_use_guard_enabled,
+        )?
     };
     let status = relay_config_status_from_home(home);
     if relay.relay_mode == RelayMode::PureApi && !status.configured {

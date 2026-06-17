@@ -190,6 +190,8 @@ pub struct BackendSettings {
     pub relay_profiles_enabled: bool,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
     pub enhancements_enabled: bool,
+    #[serde(rename = "computerUseGuardEnabled", default)]
+    pub computer_use_guard_enabled: bool,
     #[serde(rename = "codexAppPluginEntryUnlock", default = "default_true")]
     pub codex_app_plugin_entry_unlock: bool,
     #[serde(rename = "codexAppPluginMarketplaceUnlock", default = "default_true")]
@@ -206,6 +208,8 @@ pub struct BackendSettings {
     pub codex_app_project_move: bool,
     #[serde(rename = "codexAppConversationTimeline", default = "default_true")]
     pub codex_app_conversation_timeline: bool,
+    #[serde(rename = "codexAppThreadIdBadge", default)]
+    pub codex_app_thread_id_badge: bool,
     #[serde(rename = "codexAppConversationView", default)]
     pub codex_app_conversation_view: bool,
     #[serde(rename = "codexAppThreadScrollRestore", default = "default_true")]
@@ -281,6 +285,7 @@ impl Default for BackendSettings {
             provider_sync_last_selected_provider: String::new(),
             relay_profiles_enabled: true,
             enhancements_enabled: true,
+            computer_use_guard_enabled: false,
             codex_app_plugin_entry_unlock: true,
             codex_app_plugin_marketplace_unlock: true,
             codex_app_force_plugin_install: true,
@@ -289,6 +294,7 @@ impl Default for BackendSettings {
             codex_app_markdown_export: true,
             codex_app_project_move: true,
             codex_app_conversation_timeline: true,
+            codex_app_thread_id_badge: false,
             codex_app_conversation_view: false,
             codex_app_thread_scroll_restore: true,
             codex_app_zed_remote_open: true,
@@ -615,6 +621,12 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     if let Some(value) = source.get("enhancementsEnabled").and_then(Value::as_bool) {
         target.insert("enhancementsEnabled".to_string(), Value::Bool(value));
     }
+    if let Some(value) = source
+        .get("computerUseGuardEnabled")
+        .and_then(Value::as_bool)
+    {
+        target.insert("computerUseGuardEnabled".to_string(), Value::Bool(value));
+    }
     merge_bool_setting(target, source, "codexAppPluginEntryUnlock");
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
     merge_bool_setting(target, source, "codexAppForcePluginInstall");
@@ -623,6 +635,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppProjectMove");
     merge_bool_setting(target, source, "codexAppConversationTimeline");
+    merge_bool_setting(target, source, "codexAppThreadIdBadge");
     merge_bool_setting(target, source, "codexAppConversationView");
     merge_bool_setting(target, source, "codexAppThreadScrollRestore");
     merge_bool_setting(target, source, "codexAppZedRemoteOpen");
@@ -973,9 +986,11 @@ mod tests {
         assert!(!settings.provider_sync_enabled);
         assert!(settings.relay_profiles_enabled);
         assert!(settings.enhancements_enabled);
+        assert!(!settings.computer_use_guard_enabled);
         assert!(settings.codex_app_plugin_entry_unlock);
         assert!(settings.codex_app_plugin_marketplace_unlock);
         assert!(settings.codex_app_force_plugin_install);
+        assert!(!settings.codex_app_thread_id_badge);
         assert!(!settings.codex_goals_enabled);
         assert!(settings.codex_app_path.is_empty());
         assert!(settings.codex_extra_args.is_empty());
@@ -1522,6 +1537,7 @@ experimental_bearer_token = "sk-existing""#
             "codexAppPluginEntryUnlock": false,
             "codexAppSessionDelete": false,
             "codexAppConversationView": true,
+            "codexAppThreadIdBadge": true,
             "codexAppServiceTierControls": true,
             "codexGoalsEnabled": true,
             "relayBaseUrl": "https://relay.example.test/v1",
@@ -1538,6 +1554,7 @@ experimental_bearer_token = "sk-existing""#
         assert!(!updated.codex_app_plugin_entry_unlock);
         assert!(!updated.codex_app_session_delete);
         assert!(updated.codex_app_conversation_view);
+        assert!(updated.codex_app_thread_id_badge);
         assert!(updated.codex_app_service_tier_controls);
         assert!(updated.codex_goals_enabled);
         assert_eq!(updated.relay_base_url, "https://relay.example.test/v1");

@@ -42,6 +42,7 @@ import {
   Save,
   Settings,
   ShieldCheck,
+  ShieldAlert,
   Sun,
   TestTube,
   Trash2,
@@ -101,6 +102,7 @@ type BackendSettings = {
   providerSyncLastSelectedProvider: string;
   relayProfilesEnabled: boolean;
   enhancementsEnabled: boolean;
+  computerUseGuardEnabled: boolean;
   codexAppPluginEntryUnlock: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppForcePluginInstall: boolean;
@@ -109,6 +111,7 @@ type BackendSettings = {
   codexAppMarkdownExport: boolean;
   codexAppProjectMove: boolean;
   codexAppConversationTimeline: boolean;
+  codexAppThreadIdBadge: boolean;
   codexAppConversationView: boolean;
   codexAppThreadScrollRestore: boolean;
   codexAppZedRemoteOpen: boolean;
@@ -348,6 +351,26 @@ type RelayProfileModelsResult = CommandResult<{
   endpoint: string;
 }>;
 
+type EnvConflict = {
+  name: string;
+  source: "process" | "user" | string;
+  valuePresent: boolean;
+};
+
+type EnvConflictsResult = CommandResult<{
+  conflicts: EnvConflict[];
+}>;
+
+type RemoveEnvConflictsResult = CommandResult<{
+  removed: Array<{
+    name: string;
+    removedProcess: boolean;
+    removedUser: boolean;
+  }>;
+  backupPath: string | null;
+  remaining: EnvConflict[];
+}>;
+
 type ProviderSyncPayload = {
   syncStatus?: string;
   targetProvider?: string;
@@ -534,6 +557,7 @@ const defaultSettings: BackendSettings = {
   providerSyncLastSelectedProvider: "",
   relayProfilesEnabled: true,
   enhancementsEnabled: true,
+  computerUseGuardEnabled: false,
   codexAppPluginEntryUnlock: true,
   codexAppPluginMarketplaceUnlock: true,
   codexAppForcePluginInstall: true,
@@ -542,6 +566,7 @@ const defaultSettings: BackendSettings = {
   codexAppMarkdownExport: true,
   codexAppProjectMove: true,
   codexAppConversationTimeline: true,
+  codexAppThreadIdBadge: false,
   codexAppConversationView: false,
   codexAppThreadScrollRestore: true,
   codexAppZedRemoteOpen: true,
@@ -601,6 +626,7 @@ export function App() {
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [relay, setRelay] = useState<RelayResult | null>(null);
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
+  const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
   const [zedRemoteProjects, setZedRemoteProjects] = useState<ZedRemoteProjectsResult | null>(null);
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
@@ -730,6 +756,30 @@ export function App() {
     return result;
   };
 
+  const refreshEnvConflicts = async (silent = false) => {
+    const result = await run(() => call<EnvConflictsResult>("check_env_conflicts"));
+    if (result) {
+      setEnvConflicts(result);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice("环境变量检测", result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const removeEnvConflicts = async (names: string[]) => {
+    const uniqueNames = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
+    if (!uniqueNames.length) return;
+    if (!window.confirm(`删除这些环境变量？\n\n${uniqueNames.join("\n")}\n\n删除前会写入备份。`)) return;
+    const result = await run(() => call<RemoveEnvConflictsResult>("remove_env_conflicts", { request: { names: uniqueNames } }));
+    if (result) {
+      setEnvConflicts({
+        status: result.status,
+        message: result.message,
+        conflicts: result.remaining,
+      });
+      showNotice("环境变量清理", result.message, result.status);
+    }
+  };
+
   const refreshLocalSessions = async (silent = false) => {
     const result = await run(() => call<LocalSessionsResult>("list_local_sessions"));
     if (result) {
@@ -840,6 +890,7 @@ export function App() {
       await refreshSettings(true);
       await refreshRelay(true);
       await refreshRelayFiles(true);
+      await refreshEnvConflicts(true);
     }
     if (next === "sessions") {
       await refreshSettings(true);
@@ -1001,6 +1052,15 @@ export function App() {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
       showNotice("设置重置", result.message, result.status);
+    }
+  };
+
+  const resetImageOverlaySettings = async () => {
+    const result = await run(() => call<SettingsResult>("reset_image_overlay_settings"));
+    if (result) {
+      setSettings(result);
+      setSettingsForm(normalizeSettings(result.settings));
+      showNotice("图片覆盖层", result.message, result.status);
     }
   };
 
@@ -1378,6 +1438,7 @@ export function App() {
       await refreshOverview(true);
       await refreshSettings(true);
       await refreshRelay(true);
+      await refreshEnvConflicts(true);
       await refreshProviderSyncTargets(true);
     })();
   }, []);
@@ -1416,6 +1477,7 @@ export function App() {
       saveSettingsValue,
       refreshSettings,
       resetSettings,
+      resetImageOverlaySettings,
       chooseCodexAppPath: async (mode: "folder" | "file") => {
         let selected: unknown;
         try {
@@ -1498,6 +1560,8 @@ export function App() {
       },
       refreshRelay,
       refreshRelayFiles,
+      refreshEnvConflicts,
+      removeEnvConflicts,
       refreshLiveContextEntries,
       syncLiveContextEntries,
       refreshAds,
@@ -1542,7 +1606,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget],
+    [route, launchForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts],
   );
   const hasUpdate = update?.updateAvailable === true;
 
@@ -1626,6 +1690,7 @@ export function App() {
             <RelayScreen
               settings={settings}
               relayFiles={relayFiles}
+              envConflicts={envConflicts}
               form={settingsForm}
               onFormChange={setSettingsForm}
               actions={actions}
@@ -1703,6 +1768,7 @@ type Actions = {
   saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<void>;
   refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
   resetSettings: () => Promise<void>;
+  resetImageOverlaySettings: () => Promise<void>;
   chooseCodexAppPath: (mode: "folder" | "file") => Promise<void>;
   clearCodexAppPath: () => Promise<void>;
   chooseImageOverlayPath: () => Promise<void>;
@@ -1713,6 +1779,8 @@ type Actions = {
   setLaunchMode: (launchMode: LaunchMode) => Promise<void>;
   refreshRelay: () => Promise<void>;
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
+  refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
+  removeEnvConflicts: (names: string[]) => Promise<void>;
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   refreshAds: () => Promise<void>;
@@ -1859,12 +1927,14 @@ function OverviewScreen({
 function RelayScreen({
   settings: _settings,
   relayFiles,
+  envConflicts,
   form,
   onFormChange,
   actions,
 }: {
   settings: SettingsResult | null;
   relayFiles: RelayFilesResult | null;
+  envConflicts: EnvConflictsResult | null;
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
@@ -1935,6 +2005,7 @@ function RelayScreen({
       <Panel>
         <CardHead title="供应商列表" detail={`${normalized.relayProfiles.length} 个供应商配置；可拖动排序，点编辑进入详情`} />
         <CardContent>
+          <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
           <label className="switch-row relay-master-switch">
             <input
               checked={normalized.relayProfilesEnabled}
@@ -1981,6 +2052,53 @@ function RelayScreen({
   );
 }
 
+function EnvConflictNotice({
+  envConflicts,
+  actions,
+}: {
+  envConflicts: EnvConflictsResult | null;
+  actions: Actions;
+}) {
+  const conflicts = envConflicts?.conflicts ?? [];
+  if (!conflicts.length) return null;
+  const names = Array.from(new Set(conflicts.map((conflict) => conflict.name))).sort();
+  return (
+    <div className="env-conflict-notice">
+      <div className="env-conflict-icon">
+        <ShieldAlert className="h-4 w-4" />
+      </div>
+      <div className="env-conflict-body">
+        <strong>检测到 OPENAI 环境变量</strong>
+        <p>这些变量可能覆盖当前供应商写入的 config.toml / auth.json；CODEX_HOME 不会被清理。</p>
+        <div className="env-conflict-tags">
+          {conflicts.map((conflict) => (
+            <span key={`${conflict.source}-${conflict.name}`}>
+              {conflict.name}
+              <small>{envConflictSourceLabel(conflict.source)}</small>
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="env-conflict-actions">
+        <Button onClick={() => void actions.removeEnvConflicts(names)} size="sm">
+          <Trash2 className="h-4 w-4" />
+          删除
+        </Button>
+        <Button onClick={() => void actions.refreshEnvConflicts(false)} size="sm" variant="secondary">
+          <RefreshCw className="h-4 w-4" />
+          检测
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function envConflictSourceLabel(source: string): string {
+  if (source === "process") return "当前进程";
+  if (source === "user") return "用户环境";
+  return source || "环境变量";
+}
+
 function EnhanceScreen({
   form,
   onFormChange,
@@ -2009,6 +2127,17 @@ function EnhanceScreen({
               <small>关闭后会停用删除、导出、项目移动、Timeline、插件相关和菜单位置增强。</small>
             </span>
           </label>
+          <label className="switch-row">
+            <input
+              checked={form.computerUseGuardEnabled}
+              onChange={(event) => onFormChange({ ...form, computerUseGuardEnabled: event.currentTarget.checked })}
+              type="checkbox"
+            />
+            <span>
+              <strong>启用 Windows Computer Use Guard</strong>
+              <small>默认关闭；开启后启动 Codex 时会自动保留官方 Computer Use 插件所需的 config.toml、bundled 插件和 notify 配置。</small>
+            </span>
+          </label>
           <ModeSelector launchMode={form.launchMode} actions={actions} />
           {form.launchMode === "relay" ? (
             <div className="hint-line">
@@ -2026,6 +2155,7 @@ function EnhanceScreen({
             <FeatureToggle title="Markdown 导出" detail="在会话列表显示导出按钮，导出带时间戳的 Markdown。" checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
             <FeatureToggle title="会话项目移动" detail="把会话移动到普通对话或其他本地项目。" checked={form.codexAppProjectMove} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppProjectMove", value)} />
             <FeatureToggle title="对话 Timeline" detail="在对话右侧显示用户提问时间线，支持摘要和跳转。" checked={form.codexAppConversationTimeline} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationTimeline", value)} />
+            <FeatureToggle title="会话 ID 标识" detail="在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。" checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
             <FeatureToggle title="对话居中宽度" detail="把主对话和输入框限制到固定最大宽度，适合大屏阅读。" checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
             <FeatureToggle title="切换对话保留位置" detail="切换 thread 时恢复上一次浏览位置。" checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
             <FeatureToggle title="Zed Remote open" detail="远程 SSH 文件引用可直接用 Zed Remote Development 打开。" checked={form.codexAppZedRemoteOpen} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppZedRemoteOpen", value)} />
@@ -2714,8 +2844,8 @@ function SettingsScreen({
           </div>
           <Toolbar>
             <Button onClick={() => void actions.saveSettings()}>保存设置</Button>
-            <Button variant="secondary" onClick={() => void actions.resetSettings()}>
-              重置设置
+            <Button variant="secondary" onClick={() => void actions.resetImageOverlaySettings()}>
+              重置背景
             </Button>
           </Toolbar>
         </CardContent>
@@ -3022,12 +3152,13 @@ function RelayProfileDetail({
 }) {
   const [draft, setDraft] = useState<RelayProfile>(profile);
   const isActive = !isNew && profile.id === form.activeRelayId;
+  const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
   useEffect(() => {
     setDraft(
       isAggregateRelayProfile(profile)
         ? normalizeAggregateRelayProfile(profile, form)
         : deriveRelayProfileFromFiles(
-            isActive && relayFiles
+            isActive && profileUsesLiveFiles && relayFiles
               ? {
                 ...profile,
                 configContents: relayFiles.configContents,
@@ -3036,7 +3167,7 @@ function RelayProfileDetail({
               : profile,
           ),
     );
-  }, [profile.id, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
+  }, [profile.id, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
   const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
   const saveDraft = async () => {
     if (validationError) return;
@@ -3045,7 +3176,7 @@ function RelayProfileDetail({
       ? addRelayProfile(form, normalizedDraft)
       : updateRelayProfile(form, profile.id, normalizedDraft);
     await onFormChange(next);
-    if (isActive) {
+    if (isActive && relayProfileUsesLiveFiles(normalizedDraft)) {
       await actions.saveRelayFile(
         "config",
         effectiveRelayConfigPreview(normalizedDraft, form, normalizedDraft),
@@ -4786,6 +4917,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ...defaultSettings,
     ...settings,
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
+    computerUseGuardEnabled: settings.computerUseGuardEnabled === true,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     relayCommonConfigContents,
     relayContextConfigContents,
@@ -4835,6 +4967,8 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
       null,
     );
   }
+  const relayMode = normalizeRelayMode(profile.relayMode);
+  const officialMixApiKey = profile.officialMixApiKey === true || legacyMixedApi;
   let normalized: RelayProfile = {
     ...profile,
     model: profile.model || "",
@@ -4842,11 +4976,11 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl || "",
     apiKey: profile.apiKey || "",
     protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
-    relayMode: normalizeRelayMode(profile.relayMode),
-    officialMixApiKey: profile.officialMixApiKey === true || legacyMixedApi,
+    relayMode,
+    officialMixApiKey,
     testModel: profile.testModel || "",
-    configContents: profile.configContents || "",
-    authContents: profile.authContents || "",
+    configContents: relayMode === "official" && !officialMixApiKey ? "" : profile.configContents || "",
+    authContents: relayMode === "official" && !officialMixApiKey ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "",
     useCommonConfig: profile.useCommonConfig !== false,
     contextSelection: profile.contextSelectionInitialized
       ? normalizeContextSelection(profile.contextSelection)
@@ -4858,7 +4992,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     userAgent: profile.userAgent || "",
     aggregate: null,
   };
-  return deriveRelayProfileFromFiles(normalized);
+  return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
 }
 
 function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: AggregateRelayProfile | undefined): RelayProfile {
@@ -5343,6 +5477,10 @@ function relayProfileSwitchValidation(profile: RelayProfile): string | null {
   }
   if (profile.relayMode !== "official" || !authJsonHasOpenAiApiKey(profile.authContents)) return null;
   return "官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。";
+}
+
+function relayProfileUsesLiveFiles(profile: RelayProfile): boolean {
+  return profile.relayMode !== "official" || profile.officialMixApiKey;
 }
 
 function authJsonHasOpenAiApiKey(contents: string): boolean {

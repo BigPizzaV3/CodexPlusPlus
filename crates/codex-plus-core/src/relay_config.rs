@@ -85,9 +85,7 @@ pub struct CodexContextEntries {
 }
 
 pub fn default_codex_home_dir() -> PathBuf {
-    directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().join(".codex"))
-        .unwrap_or_else(|| PathBuf::from(".codex"))
+    crate::codex_home::default_codex_home_dir()
 }
 
 pub fn default_relay_status() -> RelayStatus {
@@ -263,7 +261,7 @@ pub fn apply_relay_config_to_home_with_protocol(
         "OPENAI_API_KEY": bearer_token
     }))?;
     let backup_path =
-        write_codex_live_atomic(home, Some(&updated), Some(auth_contents.as_bytes()))?;
+        write_codex_live_atomic(home, Some(&updated), Some(auth_contents.as_bytes()), false)?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
@@ -291,13 +289,26 @@ pub fn apply_relay_files_to_home(
     config_contents: &str,
     auth_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
+    apply_relay_files_to_home_with_computer_use_guard(home, config_contents, auth_contents, false)
+}
+
+pub fn apply_relay_files_to_home_with_computer_use_guard(
+    home: &Path,
+    config_contents: &str,
+    auth_contents: &str,
+    preserve_computer_use_guard: bool,
+) -> anyhow::Result<RelayApplyResult> {
     if config_contents.trim().is_empty() {
         anyhow::bail!("config.toml 内容不能为空");
     }
     std::fs::create_dir_all(home)?;
 
-    let backup_path =
-        write_codex_live_atomic(home, Some(config_contents), Some(auth_contents.as_bytes()))?;
+    let backup_path = write_codex_live_atomic(
+        home,
+        Some(config_contents),
+        Some(auth_contents.as_bytes()),
+        preserve_computer_use_guard,
+    )?;
 
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
@@ -362,6 +373,20 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
     profile: &RelayProfile,
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
+    apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+        home,
+        profile,
+        common_config_contents,
+        false,
+    )
+}
+
+pub fn apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+    home: &Path,
+    profile: &RelayProfile,
+    common_config_contents: &str,
+    preserve_computer_use_guard: bool,
+) -> anyhow::Result<RelayApplyResult> {
     let selected_common = if profile.use_common_config {
         filter_common_config_for_profile(common_config_contents, profile)?
     } else {
@@ -378,10 +403,20 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
     )?;
 
     if profile.relay_mode == crate::settings::RelayMode::PureApi {
-        apply_relay_files_to_home(home, &config_with_limits, &profile.auth_contents)
+        apply_relay_files_to_home_with_computer_use_guard(
+            home,
+            &config_with_limits,
+            &profile.auth_contents,
+            preserve_computer_use_guard,
+        )
     } else {
         let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
-        apply_relay_files_to_home(home, &config_with_limits, &auth_contents)
+        apply_relay_files_to_home_with_computer_use_guard(
+            home,
+            &config_with_limits,
+            &auth_contents,
+            preserve_computer_use_guard,
+        )
     }
 }
 
@@ -414,7 +449,7 @@ pub fn apply_relay_config_file_to_home(
     }
     std::fs::create_dir_all(home)?;
 
-    let backup_path = write_codex_live_atomic(home, Some(config_contents), None)?;
+    let backup_path = write_codex_live_atomic(home, Some(config_contents), None, false)?;
 
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
@@ -445,7 +480,7 @@ pub fn apply_pure_api_config_to_home_with_protocol(
         "OPENAI_API_KEY": bearer_token
     }))?;
     let backup_path =
-        write_codex_live_atomic(home, Some(&updated), Some(auth_contents.as_bytes()))?;
+        write_codex_live_atomic(home, Some(&updated), Some(auth_contents.as_bytes()), false)?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
@@ -561,6 +596,14 @@ pub fn clear_relay_config_to_home_with_auth(
     home: &Path,
     auth_contents: Option<&str>,
 ) -> anyhow::Result<RelayApplyResult> {
+    clear_relay_config_to_home_with_auth_and_computer_use_guard(home, auth_contents, false)
+}
+
+pub fn clear_relay_config_to_home_with_auth_and_computer_use_guard(
+    home: &Path,
+    auth_contents: Option<&str>,
+    preserve_computer_use_guard: bool,
+) -> anyhow::Result<RelayApplyResult> {
     std::fs::create_dir_all(home)?;
     let auth_bytes = match auth_contents {
         Some(contents) if !contents.trim().is_empty() => Some(contents.as_bytes().to_vec()),
@@ -584,7 +627,12 @@ pub fn clear_relay_config_to_home_with_auth(
     ] {
         updated = remove_root_key(&updated, key);
     }
-    let backup_path = write_codex_live_atomic(home, Some(&updated), auth_bytes.as_deref())?;
+    let backup_path = write_codex_live_atomic(
+        home,
+        Some(&updated),
+        auth_bytes.as_deref(),
+        preserve_computer_use_guard,
+    )?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
@@ -990,10 +1038,33 @@ fn write_codex_live_atomic(
     home: &Path,
     config_text: Option<&str>,
     auth_bytes: Option<&[u8]>,
+    preserve_computer_use_guard: bool,
 ) -> anyhow::Result<Option<String>> {
     std::fs::create_dir_all(home)?;
     let config_path = home.join("config.toml");
     let auth_path = home.join("auth.json");
+    #[cfg(windows)]
+    let guarded_config_text = match config_text {
+        Some(config_text) if preserve_computer_use_guard => {
+            let notify_exe = crate::computer_use_guard::find_computer_use_notify_exe(home);
+            let marketplace_path =
+                crate::computer_use_guard::ensure_openai_bundled_marketplace(home)?;
+            let guarded = if let Some(marketplace_path) = marketplace_path.as_deref() {
+                crate::computer_use_guard::guard_config_text_with_marketplace(
+                    config_text,
+                    notify_exe.as_deref(),
+                    Some(marketplace_path),
+                )?
+            } else {
+                crate::computer_use_guard::guard_config_text(config_text, notify_exe.as_deref())?
+            };
+            Some(guarded)
+        }
+        Some(config_text) => Some(config_text.to_string()),
+        None => None,
+    };
+    #[cfg(windows)]
+    let config_text = guarded_config_text.as_deref();
 
     if let Some(config_text) = config_text {
         validate_toml_config(config_text, &config_path)?;
@@ -1609,6 +1680,10 @@ fn restore_profile_auth_from_live_config(
 }
 
 fn sync_profile_mode_from_backfilled_live(profile: &mut RelayProfile) {
+    if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
+        return;
+    }
+
     if codex_auth_api_key(&profile.auth_contents)
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty())

@@ -283,6 +283,13 @@ impl LaunchHooks for LauncherHooks {
         self.core.apply_active_relay_profile(settings).await
     }
 
+    async fn ensure_computer_use_config(
+        &self,
+        settings: &codex_plus_core::settings::BackendSettings,
+    ) -> anyhow::Result<()> {
+        self.core.ensure_computer_use_config(settings).await
+    }
+
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
         self.core.start_helper(helper_port).await
     }
@@ -324,6 +331,13 @@ impl LaunchHooks for LauncherHooks {
         self.core.inject(debug_port, helper_port).await
     }
 
+    async fn start_computer_use_guard_watchdog(
+        &self,
+        settings: &codex_plus_core::settings::BackendSettings,
+    ) -> anyhow::Result<()> {
+        self.core.start_computer_use_guard_watchdog(settings).await
+    }
+
     async fn write_status(&self, status: &str) {
         self.core.write_status(status).await;
     }
@@ -362,10 +376,13 @@ impl Default for LauncherDataService {
 #[async_trait::async_trait]
 impl BridgeDataService for LauncherDataService {
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
-        let adapter = self.storage_adapter();
-        tokio::task::spawn_blocking(move || adapter.delete_local(&session))
-            .await
-            .map_err(|error| anyhow::anyhow!("delete task failed: {error}"))
+        let db_paths = self.candidate_db_paths();
+        let backup_store = codex_plus_data::BackupStore::new(self.backup_dir.clone());
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::delete_local_from_paths(db_paths, backup_store, &session)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("delete task failed: {error}"))
     }
 
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult> {
@@ -376,11 +393,12 @@ impl BridgeDataService for LauncherDataService {
     }
 
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult> {
-        let export_service =
-            codex_plus_data::MarkdownExportService::new(Some(self.db_path.clone()));
-        tokio::task::spawn_blocking(move || export_service.export(&session))
-            .await
-            .map_err(|error| anyhow::anyhow!("export markdown task failed: {error}"))
+        let db_paths = self.candidate_db_paths();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::export_markdown_from_paths(db_paths, &session)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("export markdown task failed: {error}"))
     }
 
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value> {
@@ -429,6 +447,18 @@ impl BridgeDataService for LauncherDataService {
 }
 
 impl LauncherDataService {
+    fn candidate_db_paths(&self) -> Vec<PathBuf> {
+        let mut paths = vec![self.db_path.clone()];
+        for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(
+            &codex_plus_core::codex_sqlite::default_codex_home_dir(),
+        ) {
+            if !paths.iter().any(|candidate| candidate == &path) {
+                paths.push(path);
+            }
+        }
+        paths
+    }
+
     fn storage_adapter(&self) -> codex_plus_data::SQLiteStorageAdapter {
         codex_plus_data::SQLiteStorageAdapter::new(
             self.db_path.clone(),
@@ -624,7 +654,7 @@ async fn try_inject_with_context(
     runtime: Arc<LauncherRuntimeService>,
 ) -> anyhow::Result<()> {
     let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
-    let target = codex_plus_core::cdp::pick_page_target(&targets)?;
+    let target = codex_plus_core::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
         .web_socket_debugger_url
         .as_deref()
@@ -767,18 +797,14 @@ mod tests {
     }
 
     #[test]
-    fn existing_instance_path_starts_helper_and_ensures_injection() {
-        let source = include_str!("main.rs").replace("\r\n", "\n");
+    fn launcher_hooks_forward_computer_use_guard_methods() {
+        let source = include_str!("main.rs");
 
-        assert!(source.contains(
-            "async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {\n    let hooks = LauncherHooks::default();"
-        ));
-        assert!(source.contains("hooks.start_helper(options.helper_port).await?"));
-        assert!(
-            source
-                .contains("hooks.ensure_injection(options.debug_port, options.helper_port).await")
-        );
-        assert!(source.contains("injection_ready"));
+        assert!(source.contains("async fn ensure_computer_use_config"));
+        assert!(source.contains("self.core.ensure_computer_use_config(settings).await"));
+        assert!(source.contains("async fn start_computer_use_guard_watchdog"));
+        assert!(source.contains("self.core"));
+        assert!(source.contains(".start_computer_use_guard_watchdog(settings)"));
     }
 
     #[test]

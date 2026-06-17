@@ -75,6 +75,14 @@ fn installer_exports_expected_two_entrypoint_names() {
 }
 
 #[test]
+fn macos_dmg_includes_applications_shortcut_for_drag_install() {
+    let script = std::fs::read_to_string("../../scripts/installer/macos/package-dmg.sh")
+        .expect("read macOS DMG packaging script");
+
+    assert!(script.contains("ln -s /Applications \"$STAGE/Applications\""));
+}
+
+#[test]
 fn companion_binary_path_resolves_macos_silent_app_next_to_manager_app() {
     let manager_exe = std::path::Path::new(
         "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager",

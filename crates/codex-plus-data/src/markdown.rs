@@ -4,6 +4,34 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub fn export_markdown_from_paths(
+    db_paths: impl IntoIterator<Item = PathBuf>,
+    session: &SessionRef,
+) -> ExportResult {
+    let thread_id = normalize_session_id(&session.session_id);
+    let mut result = failed(&thread_id, "未找到对应会话");
+    let mut saw_candidate = false;
+    for db_path in db_paths {
+        if !db_path.exists() {
+            continue;
+        }
+        saw_candidate = true;
+        let candidate = MarkdownExportService::new(Some(db_path)).export(session);
+        if matches!(candidate.status, ExportStatus::Exported) {
+            return candidate;
+        }
+        if result.message == "未找到对应会话" || candidate.message != "未找到对应会话"
+        {
+            result = candidate;
+        }
+    }
+    if saw_candidate {
+        result
+    } else {
+        failed(&thread_id, "未配置本地 Codex 数据库")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MarkdownExportService {
     db_path: Option<PathBuf>,
@@ -29,38 +57,27 @@ impl MarkdownExportService {
         let thread_id = normalize_session_id(&session.session_id);
         let result = (|| -> anyhow::Result<ExportResult> {
             let db = Connection::open(db_path)?;
-            if !supports_codex_threads(&db)? {
-                return Ok(failed(&thread_id, "不支持当前本地存储结构"));
-            }
-            let row = db.query_row(
-                "SELECT id, title, rollout_path FROM threads WHERE id = ?1",
-                [&thread_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                    ))
-                },
-            );
-            let (_, title, rollout_path) = match row {
-                Ok(row) => row,
-                Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    return Ok(failed(&thread_id, "未找到对应会话"));
+            let record = match lookup_thread_record(&db, db_path, &thread_id)? {
+                ThreadLookup::Found(record) => record,
+                ThreadLookup::Missing => return Ok(failed(&thread_id, "未找到对应会话")),
+                ThreadLookup::Unsupported => {
+                    return Ok(failed(&thread_id, "不支持当前本地存储结构"));
                 }
-                Err(err) => return Err(err.into()),
             };
-            let title = display_title(title.as_deref().unwrap_or(&session.title));
-            let Some(rollout_path) = rollout_path.filter(|path| !path.is_empty()) else {
+            let title = display_title(record.title.as_deref().unwrap_or(&session.title));
+            let Some(rollout_path) = record
+                .rollout_path
+                .filter(|path| !path.as_os_str().is_empty())
+            else {
                 return Ok(failed(&thread_id, "会话缺少 rollout 文件路径"));
             };
-            if !Path::new(&rollout_path).is_file() {
+            if !rollout_path.is_file() {
                 return Ok(failed(
                     &thread_id,
-                    format!("rollout 文件不存在：{rollout_path}"),
+                    format!("rollout 文件不存在：{}", rollout_path.to_string_lossy()),
                 ));
             }
-            let messages = load_messages(Path::new(&rollout_path))?;
+            let messages = load_messages(&rollout_path)?;
             if messages.is_empty() {
                 return Ok(failed(&thread_id, "未找到可导出的用户或助手消息"));
             }
@@ -76,6 +93,19 @@ impl MarkdownExportService {
         })();
         result.unwrap_or_else(|err| failed(&thread_id, format!("读取 rollout 失败：{err}")))
     }
+}
+
+#[derive(Debug)]
+struct ThreadRecord {
+    title: Option<String>,
+    rollout_path: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+enum ThreadLookup {
+    Found(ThreadRecord),
+    Missing,
+    Unsupported,
 }
 
 #[derive(Debug)]
@@ -95,24 +125,163 @@ fn failed(session_id: &str, message: impl Into<String>) -> ExportResult {
     }
 }
 
-fn supports_codex_threads(db: &Connection) -> anyhow::Result<bool> {
-    let has_threads = db
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'threads'",
-            [],
-            |_| Ok(()),
-        )
-        .is_ok();
-    if !has_threads {
+fn lookup_thread_record(
+    db: &Connection,
+    db_path: &Path,
+    thread_id: &str,
+) -> anyhow::Result<ThreadLookup> {
+    if has_columns(db, "threads", &["id", "title", "rollout_path"])? {
+        let row = db.query_row(
+            "SELECT title, rollout_path FROM threads WHERE id = ?1",
+            [thread_id],
+            |row| {
+                Ok(ThreadRecord {
+                    title: row.get::<_, Option<String>>(0)?,
+                    rollout_path: row
+                        .get::<_, Option<String>>(1)?
+                        .filter(|path| !path.trim().is_empty())
+                        .map(PathBuf::from),
+                })
+            },
+        );
+        return match row {
+            Ok(row) => Ok(ThreadLookup::Found(row)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ThreadLookup::Missing),
+            Err(err) => Err(err.into()),
+        };
+    }
+
+    if has_columns(db, "automation_runs", &["thread_id"])? {
+        let columns = table_columns(db, "automation_runs")?;
+        let title_expr = if columns.iter().any(|column| column == "thread_title") {
+            "thread_title"
+        } else if columns.iter().any(|column| column == "title") {
+            "title"
+        } else {
+            "''"
+        };
+        let sql = format!("SELECT {title_expr} FROM automation_runs WHERE thread_id = ?1");
+        let row = db.query_row(
+            &sql,
+            [thread_id],
+            |row| Ok(row.get::<_, Option<String>>(0)?),
+        );
+        return match row {
+            Ok(title) => Ok(ThreadLookup::Found(ThreadRecord {
+                title,
+                rollout_path: discover_rollout_path(db_path, thread_id)?,
+            })),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ThreadLookup::Missing),
+            Err(err) => Err(err.into()),
+        };
+    }
+
+    Ok(ThreadLookup::Unsupported)
+}
+
+fn discover_rollout_path(db_path: &Path, thread_id: &str) -> anyhow::Result<Option<PathBuf>> {
+    for home in codex_home_candidates(db_path) {
+        let mut candidates = Vec::new();
+        collect_jsonl_files(&home.join("sessions"), &mut candidates)?;
+        collect_jsonl_files(&home.join("archived_sessions"), &mut candidates)?;
+        candidates.sort_by_key(|path| {
+            std::cmp::Reverse(
+                fs::metadata(path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok(),
+            )
+        });
+        for path in candidates {
+            if rollout_matches_thread(&path, thread_id)? {
+                return Ok(Some(path));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn codex_home_candidates(db_path: &Path) -> Vec<PathBuf> {
+    let mut homes = Vec::new();
+    for ancestor in db_path.ancestors().skip(1) {
+        if ancestor.join("sessions").is_dir() || ancestor.join("archived_sessions").is_dir() {
+            homes.push(ancestor.to_path_buf());
+        }
+    }
+    if homes.is_empty() {
+        if let Some(parent) = db_path.parent().and_then(Path::parent) {
+            homes.push(parent.to_path_buf());
+        }
+    }
+    homes
+}
+
+fn collect_jsonl_files(dir: &Path, output: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_jsonl_files(&path, output)?;
+        } else if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
+            output.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn rollout_matches_thread(path: &Path, thread_id: &str) -> anyhow::Result<bool> {
+    for raw in fs::read_to_string(path)?.lines() {
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(raw) else {
+            continue;
+        };
+        if event.get("type") != Some(&Value::String("session_meta".to_string())) {
+            continue;
+        }
+        let id = event
+            .get("payload")
+            .and_then(|payload| payload.get("id"))
+            .or_else(|| event.get("id"))
+            .and_then(Value::as_str)
+            .map(normalize_session_id)
+            .unwrap_or_default();
+        if id == thread_id {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn has_columns(db: &Connection, table: &str, columns: &[&str]) -> anyhow::Result<bool> {
+    let existing = table_columns(db, table)?;
+    if existing.is_empty() {
         return Ok(false);
     }
-    let mut stmt = db.prepare("PRAGMA table_info(\"threads\")")?;
-    let columns = stmt
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(["id", "title", "rollout_path"]
+    Ok(columns
         .iter()
-        .all(|column| columns.iter().any(|existing| existing == column)))
+        .all(|column| existing.iter().any(|existing| existing == column)))
+}
+
+fn table_columns(db: &Connection, table: &str) -> anyhow::Result<Vec<String>> {
+    if !db
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |_| Ok(()),
+        )
+        .is_ok()
+    {
+        return Ok(Vec::new());
+    }
+    let mut stmt = db.prepare(&format!(
+        "PRAGMA table_info(\"{}\")",
+        table.replace('"', "\"\"")
+    ))?;
+    let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    Ok(columns.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 fn load_messages(path: &Path) -> anyhow::Result<Vec<Message>> {

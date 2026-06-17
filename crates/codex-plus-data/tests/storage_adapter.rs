@@ -1,5 +1,5 @@
 use codex_plus_core::models::{DeleteStatus, SessionRef};
-use codex_plus_data::{BackupStore, SQLiteStorageAdapter};
+use codex_plus_data::{BackupStore, SQLiteStorageAdapter, delete_local_from_paths};
 use rusqlite::Connection;
 use serde_json::json;
 use std::fs;
@@ -81,6 +81,14 @@ fn create_codex_thread_db(path: &Path, rollout_path: &Path) {
         [],
     )
     .unwrap();
+}
+
+fn thread_count(path: &Path, id: &str) -> i64 {
+    let db = Connection::open(path).unwrap();
+    db.query_row("SELECT COUNT(*) FROM threads WHERE id = ?1", [id], |row| {
+        row.get::<_, i64>(0)
+    })
+    .unwrap()
 }
 
 #[test]
@@ -370,6 +378,32 @@ fn delete_codex_thread_schema_removes_related_rows_file_and_undo_restores_everyt
         .unwrap(),
         Some("t1".to_string())
     );
+}
+
+#[test]
+fn delete_local_from_paths_removes_duplicate_threads_from_all_databases() {
+    let tmp = tempdir().unwrap();
+    let first_db = tmp.path().join("first.sqlite");
+    let second_db = tmp.path().join("second.sqlite");
+    let first_rollout = tmp.path().join("first.jsonl");
+    let second_rollout = tmp.path().join("second.jsonl");
+    fs::write(&first_rollout, "{\"type\":\"message\"}\n").unwrap();
+    fs::write(&second_rollout, "{\"type\":\"message\"}\n").unwrap();
+    create_codex_thread_db(&first_db, &first_rollout);
+    create_codex_thread_db(&second_db, &second_rollout);
+
+    let result = delete_local_from_paths(
+        vec![first_db.clone(), second_db.clone()],
+        BackupStore::new(tmp.path().join("backups")),
+        &session("t1", "Codex Thread"),
+    );
+
+    assert_eq!(result.status, DeleteStatus::LocalDeleted);
+    assert_eq!(result.message, "已从 2 个本地存储删除");
+    assert_eq!(thread_count(&first_db, "t1"), 0);
+    assert_eq!(thread_count(&second_db, "t1"), 0);
+    assert!(!first_rollout.exists());
+    assert!(!second_rollout.exists());
 }
 
 #[test]

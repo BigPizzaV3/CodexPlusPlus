@@ -10,6 +10,32 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+pub fn delete_local_from_paths(
+    db_paths: impl IntoIterator<Item = PathBuf>,
+    backup_store: BackupStore,
+    session: &SessionRef,
+) -> DeleteResult {
+    let mut result = failed(
+        &session.session_id,
+        "Thread not found in local storage".to_string(),
+    );
+    let mut deleted_count = 0usize;
+    for db_path in db_paths {
+        let adapter = SQLiteStorageAdapter::new(db_path, backup_store.clone());
+        let candidate_result = adapter.delete_local(session);
+        if matches!(candidate_result.status, DeleteStatus::LocalDeleted) {
+            deleted_count += 1;
+            result = candidate_result;
+        } else if deleted_count == 0 {
+            result = candidate_result;
+        }
+    }
+    if deleted_count > 1 {
+        result.message = format!("已从 {deleted_count} 个本地存储删除");
+    }
+    result
+}
+
 #[derive(Debug, Clone)]
 pub struct SQLiteStorageAdapter {
     db_path: PathBuf,

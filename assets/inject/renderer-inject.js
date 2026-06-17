@@ -9,6 +9,7 @@
   const moreButtonClass = "codex-session-more-button";
   const moreMenuClass = "codex-session-more-menu";
   const actionTooltipClass = "codex-session-action-tooltip";
+  const threadIdBadgeClass = "codex-thread-id-badge";
   const timelineClass = "codex-conversation-timeline";
   const timelineTrackClass = "codex-conversation-timeline-track";
   const timelineMarkerClass = "codex-conversation-timeline-marker";
@@ -40,7 +41,7 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "13";
+  const codexDeleteStyleVersion = "14";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "7";
@@ -52,6 +53,7 @@
   const codexConversationTimelineVersion = "2";
   const codexConversationViewVersion = "1";
   const codexThreadScrollVersion = "1";
+  const codexThreadIdBadgeVersion = "1";
   const codexThreadServiceTierVersion = "1";
   const codexServiceTierBadgeClass = "codex-service-tier-badge";
   const codexServiceTierBadgeVersion = "3";
@@ -170,6 +172,8 @@
     pluginNavButton: 'nav[role="navigation"] button.h-token-nav-row.w-full',
     pluginSvgPath: 'svg path[d^="M7.94562 14.0277"]',
   };
+  const headerContextButtonClass = "border-token-border user-select-none no-drag cursor-interaction flex items-center gap-1 border whitespace-nowrap focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 rounded-lg border-token-border text-token-button-tertiary-foreground bg-token-bg-fog enabled:hover:bg-token-list-hover-background data-[state=open]:bg-token-list-hover-background border h-token-button-composer px-2 py-0 text-base leading-[18px]";
+  const headerIconTextButtonClass = "border-token-border no-drag cursor-interaction flex items-center gap-1 border whitespace-nowrap select-none focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 rounded-lg text-token-text-tertiary enabled:hover:bg-token-list-hover-background data-[state=open]:bg-token-list-hover-background border-transparent h-token-button-composer px-2 py-0 text-base leading-[18px]";
 
   function installStyle() {
     const existingStyle = document.getElementById(styleId);
@@ -256,6 +260,30 @@
         width: 16px;
         text-align: center;
       }
+      .${threadIdBadgeClass} {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        max-width: 152px;
+        margin-right: 8px;
+        color: var(--text-secondary, var(--token-text-secondary, rgba(142,142,160,.95)));
+        font: 11px/1.1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        letter-spacing: .01em;
+        opacity: .9;
+        white-space: nowrap;
+        user-select: text;
+      }
+      ${selectors.sidebarThread} [data-codex-thread-id-badge-wrap="true"] {
+        display: inline-flex;
+        align-items: center;
+        min-width: 0;
+        max-width: 100%;
+      }
+      ${selectors.sidebarThread} [data-codex-thread-id-badge-wrap="true"] ${selectors.threadTitle},
+      ${selectors.sidebarThread} [data-codex-thread-id-badge-wrap="true"] .truncate.select-none,
+      ${selectors.sidebarThread} [data-codex-thread-id-badge-wrap="true"] .truncate.text-base {
+        min-width: 0;
+      }
       .codex-archive-row-button {
         border: 1px solid #ef4444;
         border-radius: 7px;
@@ -332,14 +360,6 @@
         opacity: 1;
         pointer-events: auto;
         z-index: 2147483201;
-      }
-      [data-codex-delete-row="true"]:hover [data-thread-title] {
-        display: block;
-        max-width: var(--codex-session-title-max-width, 100%);
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
       }
       [data-codex-delete-row="true"].codex-archive-confirm-visible .${actionGroupClass} {
         right: max(66px, var(--codex-session-actions-right, 28px));
@@ -936,7 +956,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, pluginMarketplaceUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
+    return { pluginEntryUnlock: true, pluginMarketplaceUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
   }
 
   const codexPlusBackendSettingMap = {
@@ -948,6 +968,7 @@
     markdownExport: "codexAppMarkdownExport",
     projectMove: "codexAppProjectMove",
     conversationTimeline: "codexAppConversationTimeline",
+    threadIdBadge: "codexAppThreadIdBadge",
     conversationView: "codexAppConversationView",
     threadScrollRestore: "codexAppThreadScrollRestore",
     zedRemoteOpen: "codexAppZedRemoteOpen",
@@ -978,6 +999,7 @@
         markdownExport: false,
         projectMove: false,
         conversationTimeline: false,
+        threadIdBadge: false,
         conversationView: false,
         conversationViewMaxWidth: conversationViewDefaultWidth,
         threadScrollRestore: false,
@@ -1909,6 +1931,13 @@
 
   function renderBackendStatus() {
     const status = codexPlusBackendStatus.status || "failed";
+    if (codexPlusBackendStatus.version) {
+      codexPlusVersion = codexPlusBackendStatus.version;
+      document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
+        node.textContent = `Codex++ ${codexPlusVersion}`;
+      });
+      document.querySelectorAll(`#${codexPlusMenuId} button`).forEach(setCodexPlusTriggerLabel);
+    }
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
       label.dataset.status = status;
@@ -2203,6 +2232,10 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationTimeline"><span></span></button>
             </div>
             <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">会话 ID 标识</div><div class="codex-plus-row-description">在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadIdBadge"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">对话居中宽度</div><div class="codex-plus-row-description">开启后把主对话和输入框限制到固定最大宽度，适合大屏阅读。</div></div>
               <div class="codex-plus-width-control">
                 <input class="codex-plus-width-input" data-codex-plus-conversation-view-width="true" min="${conversationViewMinWidth}" max="${conversationViewMaxAllowedWidth}" step="10" type="number" value="${conversationViewWidth()}">
@@ -2427,17 +2460,39 @@
   function findNativeMenuInsertionPoint() {
     if (!codexPlusSettings().nativeMenuPlacement) return null;
     const header = document.querySelector(selectors.appHeader);
-    const menuBar = header?.querySelector(selectors.nativeMenuBar);
+    const isIconOnlyButton = (button) => String(button.className || "").includes("aspect-square");
+    const menuBar = Array.from(header?.querySelectorAll?.(selectors.nativeMenuBar) || [])
+      .find((node) => {
+        const rect = node.getBoundingClientRect();
+        return !node.closest(".invisible") && rect.width > 0 && rect.height > 0;
+      });
     if (menuBar) {
       const buttons = Array.from(menuBar.querySelectorAll("button")).filter((button) => !button.closest(`#${codexPlusMenuId}`));
+      if (buttons.length && buttons.every(isIconOnlyButton)) return null;
+      const openLocationButton = buttons.find((button) => /^(打开位置|Open location)$/i.test(button.getAttribute("aria-label") || ""));
+      const openLocationGroup = openLocationButton?.closest?.(".inline-flex.self-start.items-stretch.overflow-hidden.rounded-lg");
+      const openLocationIndex = buttons.indexOf(openLocationButton);
+      const nativeButtonClass = openLocationButton
+        ? buttons[openLocationIndex + 1]?.className || openLocationButton.className || ""
+        : buttons[buttons.length - 1]?.className || "";
+      if (openLocationGroup?.parentElement === menuBar) return { parent: menuBar, before: openLocationGroup, nativeButtonClass };
+      if (openLocationGroup?.parentElement?.parentElement === menuBar) return { parent: menuBar, before: openLocationGroup.parentElement, nativeButtonClass };
       return { parent: menuBar, before: buttons[buttons.length - 1]?.nextSibling || null, nativeButtonClass: buttons[buttons.length - 1]?.className || "" };
     }
     const contextSurface = header?.querySelector(selectors.headerContextMenuSurface);
     const buttons = Array.from(contextSurface?.querySelectorAll?.("button") || [])
       .filter((button) => !button.closest(`#${codexPlusMenuId}`) && button.getBoundingClientRect().width > 0 && button.getBoundingClientRect().height > 0);
+    if (buttons.length && buttons.every(isIconOnlyButton)) return null;
     const nativeButton = buttons.find((button) => !button.parentElement?.classList?.contains("inline-flex")) || buttons[0];
     const parent = nativeButton?.parentElement;
-    if (!parent) return null;
+    if (!parent) {
+      const emptyButtonGroup = Array.from(contextSurface?.querySelectorAll?.("div") || [])
+        .find((node) => {
+          const className = String(node.className || "");
+          return className.includes("items-center") && className.includes("gap-2");
+        });
+      return emptyButtonGroup ? { parent: emptyButtonGroup, before: emptyButtonGroup.firstChild, nativeButtonClass: headerIconTextButtonClass } : null;
+    }
     return { parent, before: nativeButton, nativeButtonClass: nativeButton.className || "" };
   }
 
@@ -2468,6 +2523,13 @@
   function configureCodexPlusTrigger(menu, trigger, nativeButtonClass) {
     if (!trigger) return;
     if (nativeButtonClass) trigger.className = normalizeCodexPlusTriggerClassName(nativeButtonClass);
+    if (!trigger.querySelector(".codex-plus-backend-indicator")) {
+      const indicator = document.createElement("span");
+      indicator.className = "codex-plus-backend-indicator";
+      indicator.dataset.codexBackendIndicator = "true";
+      indicator.dataset.status = codexPlusBackendStatus.status || "checking";
+      trigger.prepend(indicator);
+    }
     if (trigger.dataset.codexPlusTriggerInstalled === "5") return;
     trigger.dataset.codexPlusTriggerInstalled = "5";
     trigger.addEventListener("click", (event) => {
@@ -2543,6 +2605,8 @@
       insertionPoint = findNativeMenuInsertionPoint();
     } else if (existing && insertionPoint && existing.parentElement === insertionPoint.parent) {
       configureCodexPlusTrigger(existing, existing.querySelector("button"), insertionPoint.nativeButtonClass);
+      const safeBefore = insertionPoint.before?.parentElement === insertionPoint.parent ? insertionPoint.before : null;
+      if (existing.nextSibling !== safeBefore) insertionPoint.parent.insertBefore(existing, safeBefore);
       removeDuplicateCodexPlusMenus(existing);
       return;
     } else if (existing && insertionPoint) {
@@ -2550,6 +2614,13 @@
       existing.className = "";
       const safeBefore = insertionPoint.before?.parentElement === insertionPoint.parent ? insertionPoint.before : null;
       insertionPoint.parent.insertBefore(existing, safeBefore);
+      removeDuplicateCodexPlusMenus(existing);
+      return;
+    } else if (existing) {
+      configureCodexPlusTrigger(existing, existing.querySelector("button"), headerIconTextButtonClass);
+      existing.className = codexPlusMenuFloatingClass;
+      document.documentElement.appendChild(existing);
+      updateFloatingCodexPlusMenuPosition(existing);
       removeDuplicateCodexPlusMenus(existing);
       return;
     }
@@ -2562,7 +2633,7 @@
     const indicator = ensureCodexPlusTriggerIndicator(trigger);
     if (indicator) indicator.dataset.status = codexPlusBackendStatus.status || "checking";
     setCodexPlusTriggerLabel(trigger);
-    const nativeButtonClass = insertionPoint?.nativeButtonClass || "codex-plus-trigger";
+    const nativeButtonClass = insertionPoint?.nativeButtonClass || headerIconTextButtonClass;
     configureCodexPlusTrigger(menu, trigger, nativeButtonClass);
     menu.appendChild(trigger);
     if (insertionPoint) {
@@ -3053,6 +3124,7 @@
 
   let cachedSessionRows = [];
   let cachedSessionRowsAt = 0;
+  let threadIdBadgeActive = false;
 
   function sessionRows(forceRefresh = false) {
     const now = Date.now();
@@ -3115,6 +3187,113 @@
     const rawTitle = (titleNode?.textContent || (titleNode ? "" : (row.textContent || "Untitled session")));
     const title = (titleNode ? rawTitle : rawTitle.replace(/\s*(导出|删除|移动|移出项目)(\s*(导出|删除|移动|移出项目))*$/g, "")).trim().slice(0, 160);
     return { session_id: sessionId, title };
+  }
+
+  function threadIdBadgeTitleNode(row) {
+    return row.querySelector(`${selectors.threadTitle}, .truncate.select-none, .truncate.text-base`);
+  }
+
+  function padThreadIdBadgePart(value) {
+    return String(value).padStart(2, "0");
+  }
+
+  function threadIdBadgeCreatedAt(sessionId) {
+    const timestampMs = uuidV7TimestampMs(sessionId);
+    const minReasonableMs = Date.UTC(2020, 0, 1);
+    const maxReasonableMs = Date.now() + 366 * 24 * 60 * 60 * 1000;
+    if (!timestampMs || timestampMs < minReasonableMs || timestampMs > maxReasonableMs) return null;
+    return new Date(timestampMs);
+  }
+
+  function formatThreadIdBadgeCreatedAt(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+    return `${padThreadIdBadgePart(date.getMonth() + 1)}-${padThreadIdBadgePart(date.getDate())} ${padThreadIdBadgePart(date.getHours())}:${padThreadIdBadgePart(date.getMinutes())}`;
+  }
+
+  function threadIdBadgeMeta(sessionId) {
+    const id = projectMoveSessionKey(sessionId);
+    const compact = id.replaceAll("-", "");
+    const shortId = compact.slice(0, 8);
+    const createdAt = threadIdBadgeCreatedAt(sessionId);
+    const createdLabel = formatThreadIdBadgeCreatedAt(createdAt);
+    return {
+      id,
+      shortId,
+      createdAt,
+      label: shortId ? `[${shortId}${createdLabel ? ` ${createdLabel}` : ""}]` : "",
+    };
+  }
+
+  function wrapThreadTitleForBadge(row, titleNode) {
+    const parent = titleNode?.parentElement;
+    if (!parent) return null;
+    if (parent.dataset?.codexThreadIdBadgeWrap === "true") return parent;
+    const wrapper = document.createElement("span");
+    wrapper.dataset.codexThreadIdBadgeWrap = "true";
+    parent.insertBefore(wrapper, titleNode);
+    wrapper.appendChild(titleNode);
+    return wrapper;
+  }
+
+  function removeThreadIdBadges(root = document) {
+    root.querySelectorAll?.(`.${threadIdBadgeClass}`).forEach((badge) => badge.remove());
+    root.querySelectorAll?.('[data-codex-thread-id-badge-wrap="true"]').forEach((wrapper) => {
+      const parent = wrapper.parentElement;
+      if (!parent) return;
+      while (wrapper.firstChild) parent.insertBefore(wrapper.firstChild, wrapper);
+      wrapper.remove();
+    });
+    const rows = root.matches?.(selectors.sidebarThread) ? [root] : Array.from(root.querySelectorAll?.(selectors.sidebarThread) || []);
+    rows.forEach((row) => {
+      delete row.dataset.codexThreadIdBadge;
+      delete row.dataset.codexThreadIdBadgeVersion;
+    });
+  }
+
+  function installThreadIdBadge(row) {
+    const ref = sessionRefFromRow(row);
+    if (!ref.session_id) {
+      removeThreadIdBadges(row);
+      return;
+    }
+    const meta = threadIdBadgeMeta(ref.session_id);
+    const titleNode = threadIdBadgeTitleNode(row);
+    if (!meta.label || !titleNode) {
+      removeThreadIdBadges(row);
+      return;
+    }
+
+    const wrapper = wrapThreadTitleForBadge(row, titleNode);
+    if (!wrapper) return;
+
+    let badge = wrapper.querySelector(`.${threadIdBadgeClass}`);
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = threadIdBadgeClass;
+      wrapper.insertBefore(badge, titleNode);
+    }
+
+    badge.dataset.codexThreadIdBadgeVersion = codexThreadIdBadgeVersion;
+    if (badge.textContent !== meta.label) badge.textContent = meta.label;
+    const fullTitle = meta.createdAt
+      ? `${meta.label}\nSession ID: ${meta.id}\nCreated: ${meta.createdAt.toLocaleString()}`
+      : `${meta.label}\nSession ID: ${meta.id}`;
+    badge.setAttribute("title", fullTitle);
+    badge.setAttribute("aria-label", fullTitle);
+    row.dataset.codexThreadIdBadge = meta.label;
+    row.dataset.codexThreadIdBadgeVersion = codexThreadIdBadgeVersion;
+  }
+
+  function refreshThreadIdBadges() {
+    if (!codexPlusSettings().threadIdBadge) {
+      if (threadIdBadgeActive) {
+        removeThreadIdBadges();
+        threadIdBadgeActive = false;
+      }
+      return;
+    }
+    threadIdBadgeActive = true;
+    sessionRows().forEach(installThreadIdBadge);
   }
 
   function codexPlusDiagnosticPayload(event, detail) {
@@ -3862,7 +4041,7 @@
     }
   }
 
-  function downloadMarkdown(filename, markdown) {
+  function downloadMarkdownFallback(filename, markdown) {
     if (!filename || typeof markdown !== "string") {
       throw new Error("导出结果不完整");
     }
@@ -3875,6 +4054,34 @@
     anchor.click();
     anchor.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function saveMarkdown(filename, markdown) {
+    if (!filename || typeof markdown !== "string") {
+      throw new Error("导出结果不完整");
+    }
+    if (typeof window.showSaveFilePicker !== "function") {
+      downloadMarkdownFallback(filename, markdown);
+      return { status: "saved" };
+    }
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{
+          description: "Markdown",
+          accept: { "text/markdown": [".md", ".markdown"] },
+        }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(markdown);
+      await writable.close();
+      return { status: "saved" };
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        return { status: "cancelled", message: "导出已取消" };
+      }
+      throw error;
+    }
   }
 
   let codexStateApiPromise = null;
@@ -3914,6 +4121,8 @@
   let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
   let codexModelCatalogLoadedAt = 0;
   let codexModelCatalogPromise = null;
+  let codexModelWhitelistRefreshTimer = 0;
+  let codexModelWhitelistRefreshUntil = 0;
   const codexPlusModelListRequestIds = new Set();
 
   if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
@@ -3972,7 +4181,7 @@
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
-        patchCodexModelWhitelist();
+        scheduleCodexModelWhitelistRefresh();
         return codexModelCatalog;
       })
       .catch((error) => {
@@ -4216,9 +4425,43 @@
     return Object.keys(element).filter((key) => key.startsWith("__reactFiber") || key.startsWith("__reactInternalInstance") || key.startsWith("__reactProps"));
   }
 
+  function isWorkspaceChromeNode(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.closest?.('[data-app-action-sidebar-section-heading="Chats"], [data-app-action-sidebar-section-heading="Projects"], [data-app-action-sidebar-thread-id], [data-app-action-sidebar-project-row], [data-app-action-sidebar-project-id]')) {
+      return false;
+    }
+    return !!node.closest?.("main aside");
+  }
+
+  function patchReactModelStateNodes() {
+    const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
+    return [document.body, ...document.querySelectorAll(selector)].filter((node) => node && !isWorkspaceChromeNode(node));
+  }
+
+  function shouldScheduleReactModelStatePatch(mutations) {
+    if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
+    if (!mutations) return false;
+    const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
+    return mutations.some((mutation) => [...mutation.addedNodes].some((node) => {
+      if (node.nodeType !== 1 || isWorkspaceChromeNode(node)) return false;
+      return !!node.matches?.(selector) || !!node.querySelector?.(selector);
+    }));
+  }
+
+  function schedulePatchReactModelState() {
+    if (window.__codexPlusReactModelStatePatchPending) return;
+    window.__codexPlusReactModelStatePatchPending = true;
+    clearTimeout(window.__codexPlusReactModelStatePatchTimer);
+    window.__codexPlusReactModelStatePatchTimer = setTimeout(() => {
+      window.__codexPlusReactModelStatePatchPending = false;
+      window.__codexPlusReactModelStatePatchTimer = null;
+      patchReactModelState();
+    }, 120);
+  }
+
   function patchReactModelState() {
     const visited = new WeakSet();
-    const nodes = [document.body, ...document.querySelectorAll("button, [role='menu'], [role='dialog'], [data-radix-popper-content-wrapper]")].filter(Boolean);
+    const nodes = patchReactModelStateNodes();
     let changed = false;
     for (const node of nodes.slice(0, 220)) {
       for (const key of reactFiberKeys(node)) {
@@ -4344,17 +4587,62 @@
     void patch();
   }
 
-  function patchCodexModelWhitelist() {
+  function ensureCodexModelWhitelistInstalls() {
     if (!codexPlusModelUnlockEnabled()) return;
     installModelJsonResponsePatch();
     patchAppServerModelMessages();
     installAppServerModelRequestPatch();
+  }
+
+  function runCodexModelWhitelistRefreshPass() {
+    if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
+    let changed = false;
+    try {
+      patchStatsigModelWhitelist();
+      if (patchReactModelState()) changed = true;
+      installAppServerModelRequestPatch();
+    } catch (error) {
+      window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+      window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+    }
+    return changed;
+  }
+
+  function scheduleCodexModelWhitelistRefresh(durationMs = 2500) {
+    if (!codexPlusModelUnlockEnabled()) return;
+    codexModelWhitelistRefreshUntil = Math.max(codexModelWhitelistRefreshUntil, Date.now() + durationMs);
+    if (codexModelWhitelistRefreshTimer) return;
+    sendCodexPlusDiagnostic("model_whitelist_refresh_scheduled", { durationMs });
+    const tick = () => {
+      codexModelWhitelistRefreshTimer = 0;
+      runCodexModelWhitelistRefreshPass();
+      if (Date.now() < codexModelWhitelistRefreshUntil) {
+        codexModelWhitelistRefreshTimer = window.setTimeout(tick, 120);
+      }
+    };
+    tick();
+  }
+
+  function patchCodexModelWhitelist() {
+    ensureCodexModelWhitelistInstalls();
     if (!codexPlusModelNames().length) {
       loadCodexModelCatalog();
       return;
     }
-    patchStatsigModelWhitelist();
-    patchReactModelState();
+    runCodexModelWhitelistRefreshPass();
+  }
+
+  function refreshCodexModelWhitelistFromScan(mutations) {
+    ensureCodexModelWhitelistInstalls();
+    if (!codexPlusModelNames().length) {
+      loadCodexModelCatalog();
+      return;
+    }
+    if (shouldScheduleReactModelStatePatch(mutations)) {
+      scheduleCodexModelWhitelistRefresh();
+    } else {
+      runCodexModelWhitelistRefreshPass();
+    }
   }
 
   function threadIdVariants(sessionId) {
@@ -6159,8 +6447,12 @@
   async function exportMarkdown(ref) {
     const result = await postJson("/export-markdown", ref);
     if (result.status === "exported" && result.filename && typeof result.markdown === "string") {
-      downloadMarkdown(result.filename, result.markdown);
-      showToast(result.message || "导出成功", null);
+      const saveResult = await saveMarkdown(result.filename, result.markdown);
+      if (saveResult?.status === "cancelled") {
+        showToast(saveResult.message || "导出已取消", null);
+      } else {
+        showToast(result.message || "导出成功", null);
+      }
       return;
     }
     showToast(result.message || "导出失败", null);
@@ -6306,6 +6598,7 @@
 
   function syncActionGroupLayout(row, group) {
     if (!row || !group) return;
+    if (group.dataset.codexActionLayoutStable === "true") return;
     const rowRect = row.getBoundingClientRect();
     const nativeButtons = nativeActionButtonsFromRow(row);
     const leftmostNative = nativeButtons
@@ -6325,6 +6618,7 @@
     group.style.setProperty("--codex-session-actions-right", `${right}px`);
     row.style.setProperty("--codex-session-title-mask", `${right + groupWidth + 12}px`);
     row.style.setProperty("--codex-session-title-max-width", `${maxTitleWidth}px`);
+    group.dataset.codexActionLayoutStable = "true";
   }
 
   function syncActionGroupsLayout() {
@@ -6520,7 +6814,6 @@
     const deleteReady = !settings.sessionDelete || existingDeleteButton?.dataset.codexDeleteVersion === codexDeleteVersion;
     const groupReady = existingGroup?.dataset.codexActionGroupVersion === codexActionGroupVersion;
     if (groupReady && deleteReady && !hasUnexpectedDelete && !hasUnexpectedMore && !hasUnexpectedExport && !hasUnexpectedMove && !missingDelete && !missingMore) {
-      syncActionGroupLayout(row, existingGroup);
       return;
     }
     removeActionGroups(row);
@@ -7983,8 +8276,8 @@
       unblockPluginInstallButtons();
       refreshForcePluginInstallUnlockLoop();
     }
+    refreshThreadIdBadges();
     sessionRows().forEach(tryAttachButton);
-    syncActionGroupsLayout();
     updateDeleteButtonOffsets();
     scheduleProjectMoveProjection();
     scheduleChatsSortCorrection();
@@ -7993,7 +8286,7 @@
     refreshConversationView();
     installCodexServiceTierBadge();
     scheduleThreadScrollSync();
-    patchCodexModelWhitelist();
+    refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
   }
 
   function runScanStep(step) {
@@ -8078,6 +8371,7 @@
   }
 
   function scheduleScan(mutations) {
+    window.__codexSessionDeleteLastMutations = mutations;
     scheduleZedRemoteMenuRefresh(mutations);
     if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
@@ -8099,6 +8393,11 @@
   window.__codexPlusResizeHandler = () => {
     cancelAnimationFrame(codexPlusResizeRafId);
     codexPlusResizeRafId = requestAnimationFrame(() => {
+      sessionRows().forEach((row) => {
+        const group = actionGroupFromRow(row);
+        if (group) delete group.dataset.codexActionLayoutStable;
+      });
+      syncActionGroupsLayout();
       updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));
       runScanStep(refreshConversationTimeline);
       runScanStep(refreshConversationView);

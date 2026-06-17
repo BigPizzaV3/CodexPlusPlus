@@ -5,15 +5,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 pub fn default_codex_home_dir() -> PathBuf {
-    std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .or_else(|| std::env::var_os("USERPROFILE"))
-                .map(PathBuf::from)
-                .map(|home| home.join(".codex"))
-        })
-        .unwrap_or_else(|| PathBuf::from(".codex"))
+    crate::codex_home::default_codex_home_dir()
 }
 
 pub fn codex_session_db_path() -> PathBuf {

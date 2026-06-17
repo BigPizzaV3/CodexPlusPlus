@@ -107,6 +107,70 @@ base_url = "https://edited-a.example/v1"
     assert_eq!(stored.launch_mode, LaunchMode::Patch);
 }
 
+#[test]
+fn switch_returns_normalized_previous_official_profile_after_backfill() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model = "gpt-5.5"
+model_reasoning_effort = "high"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://third-party.example/v1"
+
+[features]
+goals = true
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        home.join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-third-party"}"#,
+    )
+    .unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let official = RelayProfile {
+        id: "official".to_string(),
+        name: "官方".to_string(),
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: false,
+        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#
+            .to_string(),
+        ..RelayProfile::default()
+    };
+    let pure = pure_profile("api", "https://third-party.example/v1", "sk-third-party");
+    let original = BackendSettings {
+        active_relay_id: "official".to_string(),
+        relay_profiles: vec![official.clone(), pure.clone()],
+        ..BackendSettings::default()
+    };
+    store.save(&original).unwrap();
+    let next = BackendSettings {
+        active_relay_id: "api".to_string(),
+        relay_profiles: vec![official, pure],
+        ..BackendSettings::default()
+    };
+
+    let result = switch_relay_profile_in_home(&store, &home, next, "official").unwrap();
+    let returned = result
+        .settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "official")
+        .unwrap();
+
+    assert_eq!(returned.relay_mode, RelayMode::Official);
+    assert!(!returned.official_mix_api_key);
+    assert!(returned.config_contents.is_empty());
+    assert!(returned.api_key.is_empty());
+}
+
 fn pure_profile(id: &str, base_url: &str, key: &str) -> RelayProfile {
     RelayProfile {
         id: id.to_string(),

@@ -1,7 +1,10 @@
 use base64::Engine;
 use codex_plus_core::assets;
 use codex_plus_core::bridge::{self, BRIDGE_BINDING_NAME};
-use codex_plus_core::cdp::{CdpTarget, list_targets, pick_page_target};
+use codex_plus_core::cdp::{
+    CdpTarget, list_targets, pick_injectable_codex_page_target, pick_page_target,
+};
+
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::future::Future;
@@ -349,6 +352,23 @@ fn injection_script_exposes_conversation_view_width_control() {
 }
 
 #[test]
+fn injection_script_exposes_sidebar_thread_id_badge_control() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("threadIdBadge: false"));
+    assert!(script.contains("threadIdBadge: \"codexAppThreadIdBadge\""));
+    assert!(script.contains("会话 ID 标识"));
+    assert!(script.contains("data-codex-plus-setting=\"threadIdBadge\""));
+    assert!(script.contains("codex-thread-id-badge"));
+    assert!(script.contains("data-codex-thread-id-badge-wrap=\"true\""));
+    assert!(script.contains("let threadIdBadgeActive = false"));
+    assert!(script.contains("if (threadIdBadgeActive)"));
+    assert!(script.contains("function refreshThreadIdBadges()"));
+    assert!(script.contains("uuidV7TimestampMs(sessionId)"));
+    assert!(script.contains("refreshThreadIdBadges();"));
+}
+
+#[test]
 fn injection_script_keeps_session_action_buttons_in_pr_style() {
     let script = assets::injection_script(57321);
 
@@ -414,8 +434,14 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("appServerModelRequestMethod"));
     assert!(script.contains("send-cli-request-for-host"));
     assert!(script.contains("Response.prototype.json"));
+    assert!(script.contains("scheduleCodexModelWhitelistRefresh"));
+    assert!(script.contains("runCodexModelWhitelistRefreshPass"));
+    assert!(script.contains("model_whitelist_refresh_scheduled"));
     assert!(script.contains("available_models"));
     assert!(script.contains("modelWhitelistUnlock"));
+    assert!(script.contains("isWorkspaceChromeNode"));
+    assert!(script.contains("refreshCodexModelWhitelistFromScan"));
+    assert!(!script.contains("querySelectorAll(\"button, [role='menu']"));
 }
 
 #[test]
@@ -490,6 +516,18 @@ fn injection_script_exposes_fast_service_tier_control() {
 }
 
 #[test]
+fn injection_script_prompts_for_markdown_export_path_when_supported() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("showSaveFilePicker"));
+    assert!(script.contains("suggestedName: filename"));
+    assert!(script.contains("createWritable()"));
+    assert!(script.contains("await writable.write(markdown)"));
+    assert!(script.contains("status: \"cancelled\""));
+    assert!(script.contains("导出已取消"));
+}
+
+#[test]
 fn injection_script_applies_fast_service_tier_contract() {
     let cases = run_service_tier_contract_harness();
 
@@ -560,6 +598,7 @@ globalThis.document = {{
   documentElement: node(),
   body: node(),
   createElement: () => node(),
+  getElementById: () => null,
   querySelector: () => null,
   querySelectorAll: () => [],
   addEventListener() {{}},
@@ -845,7 +884,7 @@ fn pick_page_target_prefers_codex_title_or_url() {
 }
 
 #[test]
-fn pick_page_target_falls_back_to_first_injectable_page() {
+fn pick_page_target_leniently_falls_back_to_first_injectable_page() {
     let targets = vec![
         target(
             "browser",
@@ -889,6 +928,49 @@ fn pick_page_target_rejects_non_pages_and_pages_without_websocket() {
     ];
 
     let error = pick_page_target(&targets).expect_err("no injectable page should be selected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("No injectable page target found")
+    );
+}
+
+#[test]
+fn pick_injectable_codex_page_target_rejects_non_codex_pages() {
+    let targets = vec![
+        target(
+            "browser",
+            "browser",
+            "Codex",
+            "https://codex.test",
+            Some("ws://browser"),
+        ),
+        target(
+            "other-page",
+            "page",
+            "Other App",
+            "https://example.test",
+            Some("ws://other"),
+        ),
+    ];
+
+    let error = pick_injectable_codex_page_target(&targets)
+        .expect_err("non-Codex page must not be selected for injection");
+
+    assert!(
+        error
+            .to_string()
+            .contains("No injectable Codex page target found")
+    );
+}
+
+#[test]
+fn pick_injectable_codex_page_target_requires_websocket() {
+    let targets = vec![target("codex", "page", "Codex", "https://codex.test", None)];
+
+    let error = pick_injectable_codex_page_target(&targets)
+        .expect_err("Codex page without websocket must not be selected for injection");
 
     assert!(
         error

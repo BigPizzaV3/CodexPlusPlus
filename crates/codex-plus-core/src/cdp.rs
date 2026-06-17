@@ -58,19 +58,13 @@ async fn query_targets_url(client: &reqwest::Client, url: &str) -> anyhow::Resul
 }
 
 pub fn pick_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
-    let pages = targets.iter().filter(|target| {
-        target.target_type == "page"
-            && target
-                .web_socket_debugger_url
-                .as_deref()
-                .is_some_and(|url| !url.is_empty())
-    });
-
     let mut first_page = None;
-    for target in pages {
+    for target in targets
+        .iter()
+        .filter(|target| is_injectable_page_target(target))
+    {
         first_page.get_or_insert(target);
-        let haystack = format!("{} {}", target.title, target.url).to_lowercase();
-        if haystack.contains("codex") {
+        if is_codex_page_target(target) {
             return Ok(target.clone());
         }
     }
@@ -79,5 +73,34 @@ pub fn pick_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
         return Ok(target.clone());
     }
 
+    bail!("No injectable page target found")
+}
+
+pub fn pick_injectable_codex_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
+    for target in targets
+        .iter()
+        .filter(|target| is_injectable_page_target(target))
+    {
+        if is_codex_page_target(target) {
+            return Ok(target.clone());
+        }
+    }
+
     bail!("No injectable Codex page target found")
+}
+
+pub fn is_injectable_page_target(target: &CdpTarget) -> bool {
+    target.target_type == "page"
+        && target
+            .web_socket_debugger_url
+            .as_deref()
+            .is_some_and(|url| !url.is_empty())
+}
+
+pub fn is_codex_page_target(target: &CdpTarget) -> bool {
+    if target.target_type != "page" {
+        return false;
+    }
+    let haystack = format!("{} {}", target.title, target.url).to_lowercase();
+    haystack.contains("codex")
 }
