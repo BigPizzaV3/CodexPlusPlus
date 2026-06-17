@@ -3075,10 +3075,11 @@ function RelayProfileDetail({
 }) {
   const [draft, setDraft] = useState<RelayProfile>(profile);
   const isActive = !isNew && profile.id === form.activeRelayId;
+  const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
   useEffect(() => {
     setDraft(
       deriveRelayProfileFromFiles(
-        isActive && relayFiles
+        isActive && profileUsesLiveFiles && relayFiles
           ? {
             ...profile,
             configContents: relayFiles.configContents,
@@ -3087,14 +3088,14 @@ function RelayProfileDetail({
           : profile,
       ),
     );
-  }, [profile.id, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
+  }, [profile.id, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
   const saveDraft = async () => {
     const normalizedDraft = deriveRelayProfileFromFiles(draft);
     const next = isNew
       ? addRelayProfile(form, normalizedDraft)
       : updateRelayProfile(form, profile.id, normalizedDraft);
     await onFormChange(next);
-    if (isActive) {
+    if (isActive && relayProfileUsesLiveFiles(normalizedDraft)) {
       await actions.saveRelayFile(
         "config",
         effectiveRelayConfigPreview(normalizedDraft, form, normalizedDraft),
@@ -4701,6 +4702,8 @@ function inputToCodexExtraArgs(value: string) {
 
 function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = emptyContextSelection()): RelayProfile {
   const legacyMixedApi = profile.relayMode === "mixedApi";
+  const relayMode = normalizeRelayMode(profile.relayMode);
+  const officialMixApiKey = profile.officialMixApiKey === true || legacyMixedApi;
   let normalized: RelayProfile = {
     ...profile,
     model: profile.model || "",
@@ -4708,11 +4711,11 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl || "",
     apiKey: profile.apiKey || "",
     protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
-    relayMode: normalizeRelayMode(profile.relayMode),
-    officialMixApiKey: profile.officialMixApiKey === true || legacyMixedApi,
+    relayMode,
+    officialMixApiKey,
     testModel: profile.testModel || "",
-    configContents: profile.configContents || "",
-    authContents: profile.authContents || "",
+    configContents: relayMode === "official" && !officialMixApiKey ? "" : profile.configContents || "",
+    authContents: relayMode === "official" && !officialMixApiKey ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "",
     useCommonConfig: profile.useCommonConfig !== false,
     contextSelection: profile.contextSelectionInitialized
       ? normalizeContextSelection(profile.contextSelection)
@@ -4723,7 +4726,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     modelList: profile.modelList || "",
     userAgent: profile.userAgent || "",
   };
-  return deriveRelayProfileFromFiles(normalized);
+  return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
 }
 
 function activeRelayProfile(settings: BackendSettings): RelayProfile {
@@ -5140,6 +5143,10 @@ function relayProfileSwitchValidation(profile: RelayProfile): string | null {
   }
   if (profile.relayMode !== "official" || !authJsonHasOpenAiApiKey(profile.authContents)) return null;
   return "官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。";
+}
+
+function relayProfileUsesLiveFiles(profile: RelayProfile): boolean {
+  return profile.relayMode !== "official" || profile.officialMixApiKey;
 }
 
 function authJsonHasOpenAiApiKey(contents: string): boolean {

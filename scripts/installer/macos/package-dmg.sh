@@ -127,5 +127,7 @@ sign_app "$STAGE/Codex++ 管理工具.app"
 verify_app "$STAGE/Codex++.app"
 verify_app "$STAGE/Codex++ 管理工具.app"
 
+ln -s /Applications "$STAGE/Applications"
+
 hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 echo "$DMG"

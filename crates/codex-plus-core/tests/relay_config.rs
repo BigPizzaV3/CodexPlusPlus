@@ -1816,25 +1816,11 @@ requires_openai_auth = true
     backfill_relay_profile_from_home_with_common(temp.path(), &mut current, &mut common).unwrap();
     normalize_relay_profile_for_storage(&mut current).unwrap();
 
-    assert_eq!(current.relay_mode, RelayMode::PureApi);
+    assert_eq!(current.relay_mode, RelayMode::Official);
     assert!(!current.official_mix_api_key);
-    assert!(
-        current
-            .config_contents
-            .contains(r#"model_provider = "manual_api""#)
-    );
-    assert!(
-        current
-            .config_contents
-            .contains("[model_providers.manual_api]")
-    );
-    assert!(
-        !current
-            .config_contents
-            .contains("experimental_bearer_token")
-    );
-    let auth: serde_json::Value = serde_json::from_str(&current.auth_contents).unwrap();
-    assert_eq!(auth["OPENAI_API_KEY"], "sk-manual");
+    assert!(current.config_contents.is_empty());
+    assert!(current.api_key.is_empty());
+    assert!(!current.auth_contents.contains("OPENAI_API_KEY"));
 }
 
 #[test]
@@ -1873,25 +1859,94 @@ experimental_bearer_token = "sk-mix"
     normalize_relay_profile_for_storage(&mut current).unwrap();
 
     assert_eq!(current.relay_mode, RelayMode::Official);
-    assert!(current.official_mix_api_key);
-    assert!(
-        current
-            .config_contents
-            .contains(r#"model_provider = "manual_mix""#)
-    );
-    assert!(
-        current
-            .config_contents
-            .contains("[model_providers.manual_mix]")
-    );
-    assert!(
-        current
-            .config_contents
-            .contains(r#"experimental_bearer_token = "sk-mix""#)
-    );
-    assert_eq!(current.api_key, "sk-mix");
-    let auth: serde_json::Value = serde_json::from_str(&current.auth_contents).unwrap();
-    assert!(auth.get("OPENAI_API_KEY").is_none());
+    assert!(!current.official_mix_api_key);
+    assert!(current.config_contents.is_empty());
+    assert!(current.api_key.is_empty());
+    assert!(!current.auth_contents.contains("OPENAI_API_KEY"));
+}
+
+#[test]
+fn backfill_official_profile_does_not_promote_codex_plus_switch_live_config() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "deepseek-chat"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://third-party.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-third-party"}"#,
+    )
+    .unwrap();
+    let mut current = RelayProfile {
+        id: "official".to_string(),
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: false,
+        config_contents: String::new(),
+        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#
+            .to_string(),
+        ..RelayProfile::default()
+    };
+    let mut common = String::new();
+
+    backfill_relay_profile_from_home_with_common(temp.path(), &mut current, &mut common).unwrap();
+    normalize_relay_profile_for_storage(&mut current).unwrap();
+
+    assert_eq!(current.relay_mode, RelayMode::Official);
+    assert!(!current.official_mix_api_key);
+    assert!(current.config_contents.is_empty());
+    assert!(current.api_key.is_empty());
+    assert!(!current.auth_contents.contains("OPENAI_API_KEY"));
+}
+
+#[test]
+fn backfill_official_profile_does_not_promote_custom_numbered_live_config() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-5.5"
+model_provider = "custom1"
+
+[model_providers.custom1]
+name = "custom1"
+base_url = "https://third-party.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-third-party"}"#,
+    )
+    .unwrap();
+    let mut current = RelayProfile {
+        id: "official".to_string(),
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: false,
+        config_contents: String::new(),
+        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#
+            .to_string(),
+        ..RelayProfile::default()
+    };
+    let mut common = String::new();
+
+    backfill_relay_profile_from_home_with_common(temp.path(), &mut current, &mut common).unwrap();
+    normalize_relay_profile_for_storage(&mut current).unwrap();
+
+    assert_eq!(current.relay_mode, RelayMode::Official);
+    assert!(!current.official_mix_api_key);
+    assert!(current.config_contents.is_empty());
+    assert!(current.api_key.is_empty());
+    assert!(!current.auth_contents.contains("OPENAI_API_KEY"));
 }
 
 #[test]

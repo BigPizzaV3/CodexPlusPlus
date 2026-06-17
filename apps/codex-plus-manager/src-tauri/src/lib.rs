@@ -34,10 +34,10 @@ pub fn run() {
             };
             let main_window =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
-                .title("Codex++ 管理工具")
-                .inner_size(1180.0, 820.0)
-                .min_inner_size(960.0, 720.0)
-                .build()?;
+                    .title("Codex++ 管理工具")
+                    .inner_size(1180.0, 820.0)
+                    .min_inner_size(960.0, 720.0)
+                    .build()?;
             install_tray(app)?;
             register_main_window_events(main_window, app.handle().clone());
             Ok(())

@@ -37,6 +37,7 @@ pub fn switch_relay_profile_in_home(
     store
         .save(&selected_settings)
         .context("保存供应商设置失败")?;
+    let selected_settings = store.load().context("读取供应商设置失败")?;
 
     match apply_selected_relay_profile(home, &selected_settings) {
         Ok(result) => Ok(result),

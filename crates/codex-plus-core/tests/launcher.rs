@@ -308,7 +308,8 @@ fn launcher_packaged_activation_can_preserve_process_id() {
 
 #[test]
 fn app_paths_parse_appx_install_location_from_powershell_output() {
-    let output = "\r\nC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.611.7849.0_x64__2p2nqsd0c76g0\r\n";
+    let output =
+        "\r\nC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.611.7849.0_x64__2p2nqsd0c76g0\r\n";
 
     assert_eq!(
         latest_appx_install_location_from_output(output).as_deref(),

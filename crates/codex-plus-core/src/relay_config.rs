@@ -1680,6 +1680,10 @@ fn restore_profile_auth_from_live_config(
 }
 
 fn sync_profile_mode_from_backfilled_live(profile: &mut RelayProfile) {
+    if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
+        return;
+    }
+
     if codex_auth_api_key(&profile.auth_contents)
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty())
