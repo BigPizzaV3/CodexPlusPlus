@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -19,6 +20,8 @@ use crate::status::{LaunchStatus, StatusStore};
 const POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS: &[u64] = &[0, 5, 15, 30, 60, 120, 180, 240, 300];
 #[cfg_attr(not(windows), allow(dead_code))]
 const POST_LAUNCH_COMPUTER_USE_GUARD_STABLE_ATTEMPTS: usize = 3;
+const PACKAGED_CDP_READY_ATTEMPTS: usize = 10;
+const PACKAGED_CDP_READY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexLaunch {
@@ -1431,6 +1434,141 @@ pub fn build_codex_command(app_dir: &Path, debug_port: u16, extra_args: &[String
     ];
     command.extend(build_codex_arguments(debug_port, extra_args));
     command
+}
+
+async fn cdp_json_ready(
+    debug_port: u16,
+    attempts: usize,
+    delay: std::time::Duration,
+    preexisting_targets: &HashSet<String>,
+) -> bool {
+    let client = match reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+    for attempt in 0..attempts {
+        if cdp_json_ready_once(&client, debug_port, preexisting_targets).await {
+            return true;
+        }
+        if attempt + 1 < attempts {
+            tokio::time::sleep(delay).await;
+        }
+    }
+    false
+}
+
+async fn query_cdp_targets(debug_port: u16) -> Vec<crate::cdp::CdpTarget> {
+    let client = match reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return Vec::new(),
+    };
+    let Some(targets) = query_cdp_targets_once(&client, debug_port).await else {
+        return Vec::new();
+    };
+    targets
+}
+
+fn cdp_target_fingerprints(targets: &[crate::cdp::CdpTarget]) -> HashSet<String> {
+    targets.iter().map(cdp_target_fingerprint).collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CdpTargetReadiness {
+    Ready,
+    NotPage,
+    MissingWebsocket,
+    NotCodexContext,
+    Preexisting,
+}
+
+async fn cdp_json_ready_once(
+    client: &reqwest::Client,
+    debug_port: u16,
+    preexisting_targets: &HashSet<String>,
+) -> bool {
+    let Some(targets) = query_cdp_targets_once(client, debug_port).await else {
+        return false;
+    };
+    targets.iter().any(|target| {
+        let readiness = cdp_target_readiness(target, preexisting_targets);
+        let accepted = readiness == CdpTargetReadiness::Ready;
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "launcher.cdp_readiness_target",
+            serde_json::json!({
+                "debug_port": debug_port,
+                "target_id": target.id,
+                "target_type": target.target_type,
+                "title": target.title,
+                "url": target.url,
+                "has_websocket": target.web_socket_debugger_url.as_deref().is_some_and(|url| !url.is_empty()),
+                "fingerprint": cdp_target_fingerprint(target),
+                "readiness": format!("{readiness:?}"),
+                "accepted": accepted
+            }),
+        );
+        accepted
+    })
+}
+
+async fn query_cdp_targets_once(
+    client: &reqwest::Client,
+    debug_port: u16,
+) -> Option<Vec<crate::cdp::CdpTarget>> {
+    for url in [
+        format!("http://127.0.0.1:{debug_port}/json"),
+        format!("http://[::1]:{debug_port}/json"),
+    ] {
+        let Ok(response) = client.get(url).send().await else {
+            continue;
+        };
+        let Ok(response) = response.error_for_status() else {
+            continue;
+        };
+        let Ok(targets) = response.json::<Vec<crate::cdp::CdpTarget>>().await else {
+            continue;
+        };
+        return Some(targets);
+    }
+    None
+}
+
+fn cdp_target_fingerprint(target: &crate::cdp::CdpTarget) -> String {
+    if !target.id.is_empty() {
+        return target.id.clone();
+    }
+    target.web_socket_debugger_url.clone().unwrap_or_default()
+}
+
+fn cdp_target_readiness(
+    target: &crate::cdp::CdpTarget,
+    preexisting_targets: &HashSet<String>,
+) -> CdpTargetReadiness {
+    if target.target_type != "page" {
+        return CdpTargetReadiness::NotPage;
+    }
+    if !target
+        .web_socket_debugger_url
+        .as_deref()
+        .is_some_and(|url| !url.is_empty())
+    {
+        return CdpTargetReadiness::MissingWebsocket;
+    }
+    if preexisting_targets.contains(&cdp_target_fingerprint(target)) {
+        return CdpTargetReadiness::Preexisting;
+    }
+    let haystack = format!("{} {}", target.title, target.url).to_lowercase();
+    if !haystack.contains("codex") {
+        return CdpTargetReadiness::NotCodexContext;
+    }
+    CdpTargetReadiness::Ready
 }
 
 pub fn build_packaged_activation(
