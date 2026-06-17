@@ -423,7 +423,10 @@ pub fn is_models_proxy_path(path: &str) -> bool {
     )
 }
 
-pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<UpstreamProxyResponse> {
+pub async fn open_responses_proxy_request(
+    body: &str,
+    original_user_agent: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
     if relay.protocol != RelayProtocol::ChatCompletions {
@@ -442,7 +445,10 @@ pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<Upstream
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let chat_request = responses_to_chat_completions(request_json.clone())?;
-    let client = crate::http_client::proxied_client(&relay.user_agent)?;
+    let client = crate::http_client::proxied_client(&effective_user_agent(
+        &relay.user_agent,
+        original_user_agent,
+    ))?;
     let upstream = client
         .post(chat_completions_url(&relay.base_url))
         .bearer_auth(relay.api_key.trim())
@@ -466,7 +472,9 @@ pub async fn open_responses_proxy_request(body: &str) -> anyhow::Result<Upstream
     })
 }
 
-pub async fn open_models_proxy_request() -> anyhow::Result<UpstreamProxyResponse> {
+pub async fn open_models_proxy_request(
+    original_user_agent: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
     if relay.protocol != RelayProtocol::ChatCompletions {
@@ -479,7 +487,10 @@ pub async fn open_models_proxy_request() -> anyhow::Result<UpstreamProxyResponse
         anyhow::bail!("Chat Completions 上游 Key 不能为空");
     }
 
-    let client = crate::http_client::proxied_client(&relay.user_agent)?;
+    let client = crate::http_client::proxied_client(&effective_user_agent(
+        &relay.user_agent,
+        original_user_agent,
+    ))?;
     let upstream = client
         .get(models_url(&relay.base_url))
         .bearer_auth(relay.api_key.trim())
@@ -503,6 +514,7 @@ pub async fn open_models_proxy_request() -> anyhow::Result<UpstreamProxyResponse
 
 pub async fn open_chat_completions_proxy_request(
     body: &str,
+    original_user_agent: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
@@ -521,7 +533,11 @@ pub async fn open_chat_completions_proxy_request(
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let upstream = reqwest::Client::new()
+    let client = crate::http_client::proxied_client(&effective_user_agent(
+        &relay.user_agent,
+        original_user_agent,
+    ))?;
+    let upstream = client
         .post(chat_completions_url(&relay.base_url))
         .bearer_auth(relay.api_key.trim())
         .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -544,9 +560,21 @@ pub async fn open_chat_completions_proxy_request(
     })
 }
 
+fn effective_user_agent(configured_user_agent: &str, original_user_agent: Option<&str>) -> String {
+    let configured_user_agent = configured_user_agent.trim();
+    if !configured_user_agent.is_empty() {
+        return configured_user_agent.to_string();
+    }
+    original_user_agent
+        .map(str::trim)
+        .filter(|user_agent| !user_agent.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
 pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyHttpResponse> {
     let request_json: Value = serde_json::from_str(body)?;
-    let upstream = open_responses_proxy_request(body).await?;
+    let upstream = open_responses_proxy_request(body, None).await?;
     let status_code = upstream.status_code;
     let upstream_content_type = upstream.content_type.clone();
     let is_stream = upstream.is_stream;
