@@ -6817,7 +6817,9 @@ function stringifyError(error: unknown) {
 
 function loadInitialTheme(): Theme {
   if (typeof window === "undefined") return "dark";
-  return window.localStorage.getItem("codex-plus-theme") === "light" ? "light" : "dark";
+  const storedTheme = window.localStorage.getItem("codex-plus-theme");
+  if (storedTheme === "dark" || storedTheme === "light") return storedTheme;
+  return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ? "dark" : "light";
 }
 
 function loadInitialRoute(): Route {
