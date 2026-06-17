@@ -2,9 +2,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use codex_plus_core::install::SILENT_BINARY;
 use codex_plus_core::models::{DeleteResult, SessionRef};
 use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
 use codex_plus_core::settings::{BackendSettings, RelayProfile, SettingsStore};
@@ -340,17 +339,67 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
 
 #[tauri::command]
 pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
-    spawn_codex_plus_launch(request, "启动任务已在后台开始，可稍后查看概览状态。")
+    match prepare_ctrip_launch(&request, false) {
+        Ok(()) => spawn_codex_plus_launch_accepted(&request, "启动任务已在后台开始，可稍后查看概览状态。"),
+        Err(error) => failed(
+            &error,
+            json!({
+                "debugPort": request.debug_port,
+                "helperPort": request.helper_port
+            }),
+        ),
+    }
 }
 
 #[tauri::command]
 pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
-    codex_plus_core::watcher::stop_launcher_processes();
-    codex_plus_core::watcher::stop_codex_processes();
-    spawn_codex_plus_launch(request, "Codex 已请求重启，启动任务正在后台运行。")
+    match prepare_ctrip_launch(&request, true) {
+        Ok(()) => spawn_codex_plus_launch_accepted(
+            &request,
+            "Codex 已请求重启，启动任务正在后台运行。",
+        ),
+        Err(error) => failed(
+            &error,
+            json!({
+                "debugPort": request.debug_port,
+                "helperPort": request.helper_port
+            }),
+        ),
+    }
 }
 
-fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> CommandResult<Value> {
+const CTRIP_STOP_SLEEP_MS: u64 = 800;
+
+fn stop_codex_and_launcher() {
+    codex_plus_core::watcher::stop_launcher_processes();
+    codex_plus_core::watcher::stop_codex_processes();
+    std::thread::sleep(Duration::from_millis(CTRIP_STOP_SLEEP_MS));
+}
+
+fn validate_ctrip_token_file() -> Result<(), String> {
+    if codex_plus_core::ctrip_store::load_ctrip_token().is_some() {
+        return Ok(());
+    }
+    Err("未保存 ADA Token，请先填写 Token。".to_string())
+}
+
+fn prepare_ctrip_launch(request: &LaunchRequest, stop_processes: bool) -> Result<(), String> {
+    if stop_processes {
+        stop_codex_and_launcher();
+    }
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    codex_plus_core::relay_config::ensure_ctrip_ada_doc_config_on_home(&home).map_err(|error| {
+        log_manager_event(
+            "manager.prepare_ctrip_launch.ensure_failed",
+            json!({ "error": error.to_string() }),
+        );
+        format!("写入 Codex 配置失败：{error}")
+    })?;
+    validate_ctrip_token_file()?;
+    spawn_silent_launcher(request).map_err(|error| format!("启动静默入口失败：{error}"))
+}
+
+fn spawn_codex_plus_launch_accepted(request: &LaunchRequest, accepted_message: &str) -> CommandResult<Value> {
     let debug_port = request.debug_port;
     let helper_port = request.helper_port;
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
@@ -361,27 +410,109 @@ fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> Co
             "app_path": request.app_path.trim()
         }),
     );
-    match spawn_silent_launcher(&request) {
-        Ok(()) => CommandResult {
-            status: "accepted".to_string(),
-            message: accepted_message.to_string(),
-            payload: json!({
-                "debugPort": debug_port,
-                "helperPort": helper_port
-            }),
-        },
-        Err(error) => failed(
-            &format!("启动静默入口失败：{error}"),
-            json!({
-                "debugPort": debug_port,
-                "helperPort": helper_port
-            }),
-        ),
+    CommandResult {
+        status: "accepted".to_string(),
+        message: accepted_message.to_string(),
+        payload: json!({
+            "debugPort": debug_port,
+            "helperPort": helper_port
+        }),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CtripTokenPayload {
+    pub token: Option<String>,
+}
+
+#[tauri::command]
+pub fn load_ctrip_token() -> CommandResult<CtripTokenPayload> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let token = codex_plus_core::ctrip_store::load_ctrip_token_with_migration(&settings);
+    ok("Token 已加载。", CtripTokenPayload { token })
+}
+
+#[tauri::command]
+pub fn save_ctrip_token(token: String) -> CommandResult<CtripTokenPayload> {
+    match codex_plus_core::ctrip_store::save_ctrip_token(&token) {
+        Ok(()) => {
+            log_manager_event("manager.save_ctrip_token.ok", json!({}));
+            ok(
+                "Token 已保存。",
+                CtripTokenPayload {
+                    token: codex_plus_core::ctrip_store::load_ctrip_token(),
+                },
+            )
+        }
+        Err(error) => {
+            log_manager_event(
+                "manager.save_ctrip_token.failed",
+                json!({ "error": error.to_string() }),
+            );
+            failed(
+                &format!("保存 Token 失败：{error}"),
+                CtripTokenPayload { token: None },
+            )
+        }
+    }
+}
+
+#[tauri::command]
+pub fn reset_ctrip_codex(request: LaunchRequest) -> CommandResult<Value> {
+    log_manager_event("manager.reset_ctrip_codex.start", json!({}));
+    if codex_plus_core::ctrip_store::load_ctrip_token().is_none() {
+        let settings = SettingsStore::default().load().unwrap_or_default();
+        let _ = codex_plus_core::ctrip_store::migrate_token_from_settings(&settings);
+        if codex_plus_core::ctrip_store::load_ctrip_token().is_none() {
+            return failed(
+                "未保存 ADA Token，请先打开窗口填写 Token。",
+                json!({}),
+            );
+        }
+    }
+
+    stop_codex_and_launcher();
+
+    if let Err(error) = codex_plus_core::relay_config::clear_codex_gui_auth_cache() {
+        log_manager_event(
+            "manager.reset_ctrip_codex.clear_failed",
+            json!({ "error": error.to_string() }),
+        );
+        return failed(
+            &format!("清除 Codex 登录态失败：{error}"),
+            json!({}),
+        );
+    }
+
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    if let Err(error) = codex_plus_core::relay_config::ensure_ctrip_ada_doc_config_on_home(&home) {
+        log_manager_event(
+            "manager.reset_ctrip_codex.ensure_failed",
+            json!({ "error": error.to_string() }),
+        );
+        return failed(
+            &format!("写入 Codex 配置失败：{error}"),
+            json!({}),
+        );
+    }
+
+    let config_path = home.join("config.toml");
+    log_manager_event(
+        "manager.reset_ctrip_codex.ok",
+        json!({
+            "configPath": config_path.to_string_lossy().to_string()
+        }),
+    );
+
+    match prepare_ctrip_launch(&request, false) {
+        Ok(()) => spawn_codex_plus_launch_accepted(&request, "Codex 已重置并重新启动。"),
+        Err(error) => failed(&error, json!({})),
     }
 }
 
 fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
-    let launcher = codex_plus_core::install::companion_binary_path(SILENT_BINARY);
+    let launcher = codex_plus_core::install::resolve_silent_launcher_path()?;
     let mut command = std::process::Command::new(&launcher);
     if !request.app_path.trim().is_empty() {
         command.arg("--app-path").arg(request.app_path.trim());
@@ -1238,8 +1369,10 @@ pub fn load_watcher_state() -> CommandResult<WatcherPayload> {
 
 #[tauri::command]
 pub fn install_watcher() -> CommandResult<WatcherPayload> {
-    let launcher_path =
-        codex_plus_core::install::companion_binary_path(codex_plus_core::install::SILENT_BINARY);
+    let launcher_path = match codex_plus_core::install::resolve_silent_launcher_path() {
+        Ok(path) => path,
+        Err(error) => return failed(&format!("安装 watcher 失败：{error}"), watcher_payload()),
+    };
     match codex_plus_core::watcher::install_watcher(&launcher_path, default_debug_port()) {
         Ok(()) => ok("watcher 已安装。", watcher_payload()),
         Err(error) => failed(&format!("安装 watcher 失败：{error}"), watcher_payload()),
@@ -2048,11 +2181,85 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
     }
 }
 
+#[tauri::command]
+pub fn apply_ctrip_ada_doc_config(
+) -> CommandResult<codex_plus_core::relay_config::RelayApplyResult> {
+    log_manager_event("manager.apply_ctrip_ada_doc_config.start", json!({}));
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    match codex_plus_core::relay_config::ensure_ctrip_ada_doc_config_on_home(&home) {
+        Ok(result) => {
+            log_manager_event(
+                "manager.apply_ctrip_ada_doc_config.ok",
+                json!({ "configPath": result.config_path }),
+            );
+            ok("已写入携程 ADA 文档 config.toml。", result)
+        }
+        Err(error) => {
+            log_manager_event(
+                "manager.apply_ctrip_ada_doc_config.failed",
+                json!({ "error": error.to_string() }),
+            );
+            failed(
+                &format!("写入 Codex 配置失败：{error}"),
+                codex_plus_core::relay_config::RelayApplyResult {
+                    config_path: home
+                        .join("config.toml")
+                        .to_string_lossy()
+                        .to_string(),
+                    backup_path: None,
+                    configured: false,
+                },
+            )
+        }
+    }
+}
+
+#[tauri::command]
+pub fn detect_ctrip_setup_state() -> CommandResult<codex_plus_core::relay_config::CtripSetupState> {
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let state = codex_plus_core::relay_config::detect_ctrip_setup_state(&home);
+    ok("携程 ADA 配置状态已检测。", state)
+}
+
+#[tauri::command]
+pub fn clear_codex_gui_auth() -> CommandResult<codex_plus_core::relay_config::ClearCodexGuiAuthResult> {
+    log_manager_event("manager.clear_codex_gui_auth.start", json!({}));
+    stop_codex_and_launcher();
+    match codex_plus_core::relay_config::clear_codex_gui_auth_cache() {
+        Ok(result) => {
+            log_manager_event(
+                "manager.clear_codex_gui_auth.ok",
+                json!({
+                    "removedPaths": result.removed_paths
+                }),
+            );
+            let message = result.message.clone();
+            ok(&message, result)
+        }
+        Err(error) => {
+            log_manager_event(
+                "manager.clear_codex_gui_auth.failed",
+                json!({ "error": error.to_string() }),
+            );
+            failed(
+                &format!("清除 Codex 登录态失败：{error}"),
+                codex_plus_core::relay_config::ClearCodexGuiAuthResult {
+                    message: error.to_string(),
+                    removed_paths: Vec::new(),
+                },
+            )
+        }
+    }
+}
+
 fn relay_has_complete_files(relay: &codex_plus_core::settings::RelayProfile) -> bool {
     if relay.relay_mode == codex_plus_core::settings::RelayMode::Official
         && relay.official_mix_api_key
     {
         return !relay.config_contents.trim().is_empty();
+    }
+    if !relay.api_key_env.trim().is_empty() {
+        return !relay.config_contents.trim().is_empty() && !relay.api_key.trim().is_empty();
     }
     !relay.config_contents.trim().is_empty() && !relay.auth_contents.trim().is_empty()
 }

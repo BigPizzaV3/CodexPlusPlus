@@ -87,6 +87,12 @@ pub struct RelayProfile {
         skip_serializing_if = "String::is_empty"
     )]
     pub user_agent: String,
+    #[serde(rename = "providerId", default = "default_relay_provider_id")]
+    pub provider_id: String,
+    #[serde(rename = "apiKeyEnv", default, skip_serializing_if = "String::is_empty")]
+    pub api_key_env: String,
+    #[serde(rename = "presetId", default, skip_serializing_if = "String::is_empty")]
+    pub preset_id: String,
 }
 
 impl Default for RelayProfile {
@@ -112,8 +118,15 @@ impl Default for RelayProfile {
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
             user_agent: String::new(),
+            provider_id: default_relay_provider_id(),
+            api_key_env: String::new(),
+            preset_id: String::new(),
         }
     }
+}
+
+pub fn default_relay_provider_id() -> String {
+    "custom".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -322,6 +335,9 @@ impl BackendSettings {
                 model_insert_mode: RelayModelInsertMode::Patch,
                 model_list: String::new(),
                 user_agent: String::new(),
+                provider_id: default_relay_provider_id(),
+                api_key_env: String::new(),
+                preset_id: String::new(),
             };
         }
 
@@ -366,6 +382,9 @@ impl BackendSettings {
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
             user_agent: String::new(),
+            provider_id: default_relay_provider_id(),
+            api_key_env: String::new(),
+            preset_id: String::new(),
         }
     }
 }

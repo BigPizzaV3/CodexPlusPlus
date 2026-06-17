@@ -374,6 +374,74 @@ impl DefaultLaunchHooks {
     pub fn shared() -> Arc<dyn LaunchHooks> {
         Arc::new(Self::default())
     }
+
+    async fn launch_codex_direct_with_env(
+        &self,
+        app_dir: &Path,
+        debug_port: u16,
+        extra_args: &[String],
+        env_vars: &[(String, String)],
+    ) -> anyhow::Result<CodexLaunch> {
+        let executable = crate::app_paths::build_codex_executable(app_dir);
+        if !executable.exists() {
+            anyhow::bail!(
+                "Codex 可执行文件不存在，无法注入环境变量: {}",
+                executable.display()
+            );
+        }
+        let args = build_codex_arguments(debug_port, extra_args);
+        let mut command = Command::new(&executable);
+        command
+            .args(&args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        for (key, value) in env_vars {
+            command.env(key, value);
+        }
+        #[cfg(windows)]
+        command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
+        let child = command.spawn().with_context(|| {
+            format!(
+                "failed to launch Codex executable with relay env vars: {}",
+                executable.display()
+            )
+        })?;
+        *self.child.lock().await = Some(child);
+
+        let mut command_line = vec![executable.to_string_lossy().to_string()];
+        command_line.extend(args);
+        let is_macos_app = app_dir.extension().and_then(|value| value.to_str()) == Some("app");
+        let macos_cleanup_policy = if is_macos_app {
+            if is_macos_app_running(app_dir).await {
+                Some(MacosCleanupPolicy::SkipQuitBecauseAlreadyRunning)
+            } else {
+                Some(MacosCleanupPolicy::QuitIfNotPreviouslyRunning)
+            }
+        } else {
+            None
+        };
+        Ok(CodexLaunch::Process {
+            command: command_line,
+            wait_strategy: if is_macos_app {
+                ProcessWaitStrategy::ExternalWaitCommand
+            } else {
+                ProcessWaitStrategy::TrackedChild
+            },
+            macos_cleanup_policy,
+        })
+    }
+}
+
+fn relay_env_vars_from_settings(settings: &BackendSettings) -> Option<Vec<(String, String)>> {
+    if !settings.relay_profiles_enabled {
+        return None;
+    }
+    let vars = crate::relay_config::relay_launch_env_vars(&settings.active_relay_profile());
+    if vars.is_empty() {
+        None
+    } else {
+        Some(vars)
+    }
 }
 
 #[async_trait(?Send)]
@@ -494,6 +562,21 @@ impl LaunchHooks for DefaultLaunchHooks {
         debug_port: u16,
         extra_args: &[String],
     ) -> anyhow::Result<CodexLaunch> {
+        let ctrip_env = crate::ctrip_store::ctrip_launch_env_vars();
+        let relay_env = if let Some(env_vars) = ctrip_env {
+            Some(env_vars)
+        } else {
+            self.load_settings()
+                .await
+                .ok()
+                .and_then(|settings| relay_env_vars_from_settings(&settings))
+        };
+        if let Some(env_vars) = relay_env {
+            return self
+                .launch_codex_direct_with_env(app_dir, debug_port, extra_args, &env_vars)
+                .await;
+        }
+
         if cfg!(windows) {
             if let Some(activation) = build_packaged_activation(app_dir, debug_port, extra_args) {
                 let CodexLaunch::PackagedActivation {

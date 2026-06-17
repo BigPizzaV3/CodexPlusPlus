@@ -197,7 +197,9 @@ pub fn stop_launcher_processes() {
 }
 
 #[cfg(not(windows))]
-pub fn stop_launcher_processes() {}
+pub fn stop_launcher_processes() {
+    run_killall_process("codex-plus-plus");
+}
 
 #[cfg(windows)]
 pub fn stop_codex_processes() {
@@ -207,7 +209,18 @@ pub fn stop_codex_processes() {
 }
 
 #[cfg(not(windows))]
-pub fn stop_codex_processes() {}
+pub fn stop_codex_processes() {
+    run_killall_process("Codex");
+}
+
+#[cfg(unix)]
+fn run_killall_process(process_name: &str) {
+    let _ = std::process::Command::new("killall")
+        .arg(process_name)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
 
 #[cfg(windows)]
 fn create_startup_shortcut(launcher_path: &Path, arguments: &str) -> anyhow::Result<()> {

@@ -1,6 +1,14 @@
 pub mod commands;
 pub mod install;
 
+use tauri::{
+    Manager, RunEvent, WindowEvent,
+    menu::{MenuBuilder, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+};
+
+const TRAY_ID: &str = "main-tray";
+
 pub fn run() {
     install_panic_logger();
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
@@ -12,20 +20,58 @@ pub fn run() {
     let Some(_guard) = acquire_single_instance_guard() else {
         return;
     };
-    let show_update = commands::startup_should_show_update();
-    let run_result = tauri::Builder::default()
+
+    tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
-            let url = if show_update {
-                "index.html?showUpdate=1"
-            } else {
-                "index.html"
-            };
-            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
-                .title("Codex++ 管理工具")
-                .inner_size(1180.0, 820.0)
-                .min_inner_size(960.0, 720.0)
+            let show_window = MenuItem::with_id(app, "show_window", "显示窗口", true, None::<&str>)?;
+            let reset_codex = MenuItem::with_id(app, "reset_codex", "重置 Codex", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let tray_menu = MenuBuilder::new(app)
+                .item(&show_window)
+                .separator()
+                .item(&reset_codex)
+                .separator()
+                .item(&quit)
                 .build()?;
+
+            let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
+                .tooltip("Codex++")
+                .menu(&tray_menu)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show_window" => show_main_window(app),
+                    "reset_codex" => reset_codex_from_tray(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                });
+
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray_builder = tray_builder.icon(icon);
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                tray_builder = tray_builder.show_menu_on_left_click(false).icon_as_template(true);
+            }
+
+            tray_builder.build(app)?;
+
+            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+                .title("Codex++")
+                .inner_size(480.0, 420.0)
+                .resizable(false)
+                .build()?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -34,6 +80,10 @@ pub fn run() {
             commands::load_overview,
             commands::launch_codex_plus,
             commands::restart_codex_plus,
+            commands::reset_ctrip_codex,
+            commands::load_ctrip_token,
+            commands::save_ctrip_token,
+            commands::apply_ctrip_ada_doc_config,
             commands::load_settings,
             commands::save_settings,
             commands::list_local_sessions,
@@ -80,17 +130,51 @@ pub fn run() {
             commands::switch_relay_profile,
             commands::apply_relay_injection,
             commands::apply_pure_api_injection,
-            commands::clear_relay_injection
+            commands::clear_relay_injection,
+            commands::detect_ctrip_setup_state,
+            commands::clear_codex_gui_auth
         ])
-        .run(tauri::generate_context!());
-    if let Err(error) = run_result {
-        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-            "manager.run_failed",
-            serde_json::json!({
-                "error": error.to_string()
-            }),
-        );
+        .build(tauri::generate_context!())
+        .expect("failed to build tauri application")
+        .run(|app, event| {
+            if let RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::CloseRequested { api, .. },
+                ..
+            } = event
+            {
+                if label == "main" {
+                    api.prevent_close();
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.hide();
+                    }
+                }
+            }
+        });
+}
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
     }
+}
+
+fn reset_codex_from_tray(_app: &tauri::AppHandle) {
+    let settings = codex_plus_core::settings::SettingsStore::default()
+        .load()
+        .unwrap_or_default();
+    let request = commands::LaunchRequest {
+        app_path: settings.codex_app_path,
+        debug_port: 9229,
+        helper_port: 57321,
+    };
+    let _ = commands::reset_ctrip_codex(request);
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.tray.reset_codex",
+        serde_json::json!({}),
+    );
 }
 
 fn install_panic_logger() {

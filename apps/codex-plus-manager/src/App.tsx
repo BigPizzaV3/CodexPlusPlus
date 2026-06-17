@@ -160,6 +160,9 @@ type RelayProfile = {
   autoCompactLimit: string;
   modelList: string;
   userAgent: string;
+  providerId: string;
+  apiKeyEnv: string;
+  presetId: string;
 };
 
 type RelayContextSelection = {
@@ -190,6 +193,9 @@ type RelayMode = "official" | "mixedApi" | "pureApi";
 const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
 const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
+const CTRIP_ADA_PROFILE_ID = "ctrip-ada";
+const CTRIP_ADA_BASE_URL = "http://ada-cli-golang.ctripcorp.com/coding-plan/openai/v1";
+const CTRIP_ADA_MODEL = "gpt-5.4-2026-03-05";
 
 const emptyContextSelection = (): RelayContextSelection => ({
   mcpServers: [],
@@ -554,6 +560,9 @@ const defaultSettings: BackendSettings = {
       autoCompactLimit: "",
       modelList: "",
       userAgent: "",
+      providerId: "custom",
+      apiKeyEnv: "",
+      presetId: "",
     },
   ],
   relayCommonConfigContents: "",
@@ -1483,6 +1492,21 @@ export function App() {
       relaySwitching,
       switchOfficialMode,
       switchPureApiMode,
+      clearCodexGuiAuth: async () => {
+        const result = await run(() =>
+          call<CommandResult<{ message: string; removedPaths: string[] }>>("clear_codex_gui_auth"),
+        );
+        if (result) {
+          showNotice("清除 Codex 登录态", result.message, result.status);
+        }
+      },
+      launchCodex: async () => {
+        const result = await launchCommand("launch_codex_plus");
+        if (result) {
+          showNotice("启动 Codex++", result.message, result.status);
+          await refreshOverview(true);
+        }
+      },
       refreshLogs,
       refreshDiagnostics,
       showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
@@ -1704,6 +1728,8 @@ type Actions = {
   relaySwitching: boolean;
   switchOfficialMode: () => Promise<void>;
   switchPureApiMode: () => Promise<void>;
+  clearCodexGuiAuth: () => Promise<void>;
+  launchCodex: () => Promise<void>;
   refreshLogs: () => Promise<void>;
   refreshDiagnostics: () => Promise<void>;
   showMessage: (title: string, message: string, status?: Status) => Promise<void>;
@@ -1816,6 +1842,112 @@ function OverviewScreen({
   );
 }
 
+function CtripQuickSetup({
+  form,
+  onFormChange,
+  actions,
+}: {
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => Promise<void>;
+  actions: Actions;
+}) {
+  const ctripProfile = form.relayProfiles.find(
+    (profile) => profile.id === CTRIP_ADA_PROFILE_ID || profile.presetId === "ctrip-ada",
+  );
+  const [apiKey, setApiKey] = useState(ctripProfile?.apiKey ?? "");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setApiKey(ctripProfile?.apiKey ?? "");
+  }, [ctripProfile?.apiKey]);
+
+  const applyCtripConfig = async () => {
+    const trimmed = apiKey.trim();
+    if (!trimmed) {
+      await actions.showMessage("携程 ADA", "请先填写 ADA_API_KEY。", "failed");
+      return;
+    }
+    setBusy(true);
+    try {
+      const next = upsertCtripAdaProfile(form, trimmed);
+      await onFormChange(next);
+      await actions.switchRelayProfile(next);
+      await actions.showMessage("携程 ADA", "配置已应用。可通过「启动 Codex」进入桌面版。", "ok");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applyAndLaunch = async () => {
+    const trimmed = apiKey.trim();
+    if (!trimmed) {
+      await actions.showMessage("携程 ADA", "请先填写 ADA_API_KEY。", "failed");
+      return;
+    }
+    setBusy(true);
+    try {
+      const next = upsertCtripAdaProfile(form, trimmed);
+      await onFormChange(next);
+      await actions.switchRelayProfile(next);
+      await actions.launchCodex();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Panel>
+      <CardHead
+        title="携程 CodingPlan 快速配置"
+        detail="填写 ADA_API_KEY 即可，Base URL、模型与 config.toml 会自动写入"
+      />
+      <CardContent>
+        <p className="relay-quick-setup-note">
+          若 Codex 卡在欢迎页或无法连接，请先点击「清除 Codex 登录态」，再重新应用配置。
+        </p>
+        <div className="field-grid">
+          <div className="field">
+            <Label htmlFor="ctrip-ada-api-key">ADA_API_KEY</Label>
+            <Input
+              id="ctrip-ada-api-key"
+              type="password"
+              autoComplete="off"
+              placeholder="粘贴 CodingPlan Token"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.currentTarget.value)}
+            />
+          </div>
+        </div>
+        <Toolbar>
+          <Button disabled={busy || actions.relaySwitching} onClick={() => void applyCtripConfig()}>
+            <Save className="h-4 w-4" />
+            应用配置
+          </Button>
+          <Button disabled={busy || actions.relaySwitching} variant="secondary" onClick={() => void applyAndLaunch()}>
+            <Rocket className="h-4 w-4" />
+            应用并启动
+          </Button>
+          <Button
+            disabled={busy}
+            variant="secondary"
+            onClick={() => {
+              if (window.confirm("将清除 ~/.codex 与 Codex 应用缓存。清除后需重新点击「应用配置」。是否继续？")) {
+                void actions.clearCodexGuiAuth();
+              }
+            }}
+          >
+            <Trash2 className="h-4 w-4" />
+            清除 Codex 登录态
+          </Button>
+        </Toolbar>
+        {ctripProfile && form.activeRelayId === ctripProfile.id ? (
+          <small>当前已激活携程 ADA 供应商。</small>
+        ) : null}
+      </CardContent>
+    </Panel>
+  );
+}
+
 function RelayScreen({
   settings: _settings,
   relayFiles,
@@ -1880,6 +2012,11 @@ function RelayScreen({
 
   return (
     <>
+      <CtripQuickSetup
+        form={normalized}
+        onFormChange={saveRelaySettings}
+        actions={actions}
+      />
       <Panel>
         <CardHead title="供应商列表" detail={`${normalized.relayProfiles.length} 个供应商配置；可拖动排序，点编辑进入详情`} />
         <CardContent>
@@ -4565,6 +4702,9 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             autoCompactLimit: "",
             modelList: "",
             userAgent: "",
+            providerId: "custom",
+            apiKeyEnv: "",
+            presetId: "",
           },
         ];
   const activeRelayId = profiles.some((profile) => profile.id === settings.activeRelayId)
@@ -4619,6 +4759,9 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     autoCompactLimit: profile.autoCompactLimit || "",
     modelList: profile.modelList || "",
     userAgent: profile.userAgent || "",
+    providerId: profile.providerId || "custom",
+    apiKeyEnv: profile.apiKeyEnv || "",
+    presetId: profile.presetId || "",
   };
   return deriveRelayProfileFromFiles(normalized);
 }
@@ -4698,25 +4841,50 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
   return {
     ...profile,
     configContents: buildRelayConfigToml(profile, { includeBearerToken: false }),
-    authContents: buildRelayAuthJson(profile),
+    authContents: profile.apiKeyEnv.trim() ? "{}\n" : buildRelayAuthJson(profile),
   };
 }
 
+function buildEnvKeyRelayConfigToml(
+  profile: Pick<RelayProfile, "model" | "baseUrl" | "providerId" | "apiKeyEnv">,
+): string {
+  const providerId = profile.providerId.trim() || "custom";
+  const baseUrl = profile.baseUrl.trim();
+  return [
+    `model_provider = "${tomlString(providerId)}"`,
+    profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
+    'model_reasoning_effort = "xhigh"',
+    "request_max_retries = 4",
+    "stream_max_retries = 10",
+    "",
+    `[model_providers.${providerId}]`,
+    `name = "${tomlString(providerId)}"`,
+    `base_url = "${tomlString(baseUrl)}"`,
+    'wire_api = "responses"',
+    `env_key = "${tomlString(profile.apiKeyEnv.trim())}"`,
+    "",
+  ].filter((line): line is string => line !== null).join("\n");
+}
+
 function buildRelayConfigToml(
-  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">,
+  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "providerId" | "apiKeyEnv">,
   options: { includeBearerToken: boolean },
 ): string {
+  if (profile.apiKeyEnv.trim()) {
+    return buildEnvKeyRelayConfigToml(profile);
+  }
   const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
+  const providerId = profile.providerId.trim() || "custom";
   const rootLines = [
     profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
-    'model_provider = "custom"',
+    `model_provider = "${tomlString(providerId)}"`,
     "",
   ].filter((line): line is string => line !== null);
   return [
     ...rootLines,
-    "[model_providers.custom]",
-    'name = "custom"',
+    `[model_providers.${providerId}]`,
+    `name = "${tomlString(providerId)}"`,
     'wire_api = "responses"',
     "requires_openai_auth = true",
     `base_url = "${tomlString(baseUrl)}"`,
@@ -5035,6 +5203,12 @@ function relayProfileSwitchValidation(profile: RelayProfile): string | null {
   if (!profile.configContents.trim()) {
     return `供应商「${profile.name || profile.id}」缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。请先在该供应商详情里保存 config.toml。`;
   }
+  if (profile.apiKeyEnv.trim()) {
+    if (!profile.apiKey.trim()) {
+      return `供应商「${profile.name || profile.id}」缺少 ${profile.apiKeyEnv}，请先填写 API Key。`;
+    }
+    return null;
+  }
   if (profile.relayMode !== "official" || !authJsonHasOpenAiApiKey(profile.authContents)) return null;
   return "官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。";
 }
@@ -5076,6 +5250,57 @@ function updateRelayProfile(settings: BackendSettings, id: string, patch: Partia
   });
 }
 
+function createCtripAdaProfile(apiKey: string, settings: BackendSettings): RelayProfile {
+  const contextSelection = contextSelectionForAllEntries(settings);
+  const base: RelayProfile = {
+    id: CTRIP_ADA_PROFILE_ID,
+    name: "携程 CodingPlan (ADA)",
+    model: CTRIP_ADA_MODEL,
+    baseUrl: CTRIP_ADA_BASE_URL,
+    upstreamBaseUrl: CTRIP_ADA_BASE_URL,
+    apiKey: apiKey.trim(),
+    protocol: "responses",
+    relayMode: "pureApi",
+    officialMixApiKey: false,
+    testModel: CTRIP_ADA_MODEL,
+    configContents: "",
+    authContents: "",
+    useCommonConfig: true,
+    contextSelection,
+    contextSelectionInitialized: true,
+    contextWindow: "",
+    autoCompactLimit: "",
+    modelList: "",
+    userAgent: "",
+    providerId: "ctrip",
+    apiKeyEnv: "ADA_API_KEY",
+    presetId: "ctrip-ada",
+  };
+  return withGeneratedRelayFiles(base);
+}
+
+function upsertCtripAdaProfile(settings: BackendSettings, apiKey: string): BackendSettings {
+  const profile = createCtripAdaProfile(apiKey, settings);
+  const existingIndex = settings.relayProfiles.findIndex(
+    (item) => item.id === CTRIP_ADA_PROFILE_ID || item.presetId === "ctrip-ada",
+  );
+  const relayProfiles = [...settings.relayProfiles];
+  let activeRelayId = profile.id;
+  if (existingIndex >= 0) {
+    activeRelayId = relayProfiles[existingIndex].id;
+    relayProfiles[existingIndex] = { ...profile, id: activeRelayId };
+  } else {
+    relayProfiles.push(profile);
+  }
+  return syncLegacyRelayFields({
+    ...settings,
+    relayProfiles,
+    activeRelayId,
+    launchMode: "patch",
+    relayProfilesEnabled: true,
+  });
+}
+
 function createRelayProfile(settings: BackendSettings): RelayProfile {
   const id = `relay-${Date.now().toString(36)}`;
   const contextSelection = contextSelectionForAllEntries(settings);
@@ -5099,6 +5324,9 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     autoCompactLimit: "",
     modelList: "",
     userAgent: "",
+    providerId: "custom",
+    apiKeyEnv: "",
+    presetId: "",
   };
   return withGeneratedRelayFiles(next);
 }
