@@ -350,11 +350,7 @@ pub fn launch_zed_url(url: &str) -> Result<(), ZedRemoteError> {
 }
 
 pub fn codex_global_state_path() -> PathBuf {
-    env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| home_dir().map(|home| home.join(".codex")))
-        .unwrap_or_else(|| PathBuf::from(".codex"))
-        .join(".codex-global-state.json")
+    crate::codex_home::default_codex_home_dir().join(".codex-global-state.json")
 }
 
 pub fn target_from_managed_remote_connection(

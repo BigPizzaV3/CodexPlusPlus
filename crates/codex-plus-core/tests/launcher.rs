@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use codex_plus_core::app_paths::{
     build_codex_executable, codex_app_version, find_latest_codex_app_dir,
-    find_latest_codex_app_dir_from_roots, find_macos_codex_app, normalize_codex_app_path,
-    packaged_app_user_model_id, resolve_codex_app_dir_with_saved, user_data_candidates_from,
+    find_latest_codex_app_dir_from_roots, find_macos_codex_app,
+    latest_appx_install_location_from_output, normalize_codex_app_path, packaged_app_user_model_id,
+    resolve_codex_app_dir_with_saved, user_data_candidates_from,
 };
 use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
@@ -50,10 +51,7 @@ fn app_paths_find_latest_windows_package_detects_beta_package() {
         temp.path()
             .join("OpenAI.CodexBeta_26.527.7698.0_x64__2p2nqsd0c76g0/app")
     );
-    assert_eq!(
-        codex_app_version(&latest).as_deref(),
-        Some("26.527.7698.0")
-    );
+    assert_eq!(codex_app_version(&latest).as_deref(), Some("26.527.7698.0"));
     assert_eq!(
         packaged_app_user_model_id(&latest).as_deref(),
         Some("OpenAI.CodexBeta_2p2nqsd0c76g0!App")
@@ -312,6 +310,24 @@ fn launcher_packaged_activation_can_preserve_process_id() {
     assert_eq!(launch.process_id(), Some(4242));
 }
 
+#[test]
+fn app_paths_parse_appx_install_location_from_powershell_output() {
+    let output = "\r\nC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.611.7849.0_x64__2p2nqsd0c76g0\r\n";
+
+    assert_eq!(
+        latest_appx_install_location_from_output(output).as_deref(),
+        Some(r"C:\Program Files\WindowsApps\OpenAI.Codex_26.611.7849.0_x64__2p2nqsd0c76g0")
+    );
+}
+
+#[test]
+fn launcher_packaged_activation_does_not_directly_fallback_to_windowsapps_exe() {
+    let source = include_str!("../src/launcher.rs");
+
+    assert!(!source.contains("launcher.packaged_activation_cdp_unready_direct_fallback"));
+    assert!(!source.contains("terminate_windows_process_id(process_id).await"));
+}
+
 #[cfg(windows)]
 #[test]
 fn launcher_windows_packaged_process_management_uses_native_api() {
@@ -360,10 +376,10 @@ fn ports_windows_falls_back_to_ephemeral_when_requested_is_busy() {
 }
 
 #[test]
-fn ports_windows_packaged_debug_keeps_requested_even_when_busy() {
+fn ports_windows_packaged_debug_falls_back_to_ephemeral_when_requested_is_busy() {
     let selected = select_packaged_codex_debug_port_with(9229, true, |_| false, || 43001);
 
-    assert_eq!(selected, 9229);
+    assert_eq!(selected, 43001);
 }
 
 #[test]

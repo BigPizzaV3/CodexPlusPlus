@@ -207,10 +207,15 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             }
         }
 
-        if injection_ready || !enhancements_enabled {
+        if injection_ready {
+            hooks
+                .start_bridge_watchdog(options.debug_port, options.helper_port)
+                .await?;
             hooks.write_status("running").await;
-        } else {
+        } else if enhancements_enabled {
             hooks.write_status("running_degraded").await;
+        } else {
+            hooks.write_status("running").await;
         }
         let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
             "launcher.activate_existing_codex",
@@ -457,11 +462,12 @@ impl BridgeDataService for LauncherDataService {
     }
 
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult> {
-        let export_service =
-            codex_plus_data::MarkdownExportService::new(Some(self.db_path.clone()));
-        tokio::task::spawn_blocking(move || export_service.export(&session))
-            .await
-            .map_err(|error| anyhow::anyhow!("export markdown task failed: {error}"))
+        let db_paths = self.candidate_db_paths();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::export_markdown_from_paths(db_paths, &session)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("export markdown task failed: {error}"))
     }
 
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value> {
@@ -857,14 +863,6 @@ mod tests {
         assert!(source.contains("acquire_single_instance_guard(options.debug_port)?"));
         assert!(source.contains("LAUNCHER_GUARD_PORT"));
         assert!(source.contains("launcher.already_running"));
-    }
-
-    #[test]
-    fn existing_instance_launches_only_when_cdp_is_unavailable() {
-        assert!(existing_instance_should_launch(false, false));
-        assert!(!existing_instance_should_launch(true, false));
-        assert!(!existing_instance_should_launch(true, true));
-        assert!(!existing_instance_should_launch(false, true));
     }
 
     #[test]

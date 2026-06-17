@@ -1,5 +1,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::process::Command;
 
 const CODEX_PACKAGE_IDENTITIES: &[&str] = &["OpenAI.Codex", "OpenAI.CodexBeta"];
 
@@ -31,12 +33,40 @@ pub fn find_latest_codex_app_dir_default() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         find_latest_codex_app_dir_from_roots(&windows_app_package_roots())
+            .or_else(find_latest_codex_app_dir_from_appx_package)
     }
 
     #[cfg(not(windows))]
     {
         None
     }
+}
+
+#[cfg(windows)]
+fn find_latest_codex_app_dir_from_appx_package() -> Option<PathBuf> {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "Get-AppxPackage -Name OpenAI.Codex* | Where-Object { @('OpenAI.Codex','OpenAI.CodexBeta') -contains $_.Name } | Sort-Object Version -Descending | Select-Object -First 1 -ExpandProperty InstallLocation",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    latest_appx_install_location_from_output(&String::from_utf8_lossy(&output.stdout))
+        .and_then(|location| normalize_codex_app_path(Path::new(&location)))
+}
+
+pub fn latest_appx_install_location_from_output(output: &str) -> Option<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(ToString::to_string)
 }
 
 #[cfg(windows)]

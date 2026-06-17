@@ -328,14 +328,6 @@
         pointer-events: auto;
         z-index: 2147483201;
       }
-      [data-codex-delete-row="true"]:hover [data-thread-title] {
-        display: block;
-        max-width: var(--codex-session-title-max-width, 100%);
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
       [data-codex-delete-row="true"].codex-archive-confirm-visible .${actionGroupClass} {
         right: max(66px, var(--codex-session-actions-right, 28px));
       }
@@ -3857,7 +3849,7 @@
     }
   }
 
-  function downloadMarkdown(filename, markdown) {
+  function downloadMarkdownFallback(filename, markdown) {
     if (!filename || typeof markdown !== "string") {
       throw new Error("导出结果不完整");
     }
@@ -3870,6 +3862,34 @@
     anchor.click();
     anchor.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function saveMarkdown(filename, markdown) {
+    if (!filename || typeof markdown !== "string") {
+      throw new Error("导出结果不完整");
+    }
+    if (typeof window.showSaveFilePicker !== "function") {
+      downloadMarkdownFallback(filename, markdown);
+      return { status: "saved" };
+    }
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{
+          description: "Markdown",
+          accept: { "text/markdown": [".md", ".markdown"] },
+        }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(markdown);
+      await writable.close();
+      return { status: "saved" };
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        return { status: "cancelled", message: "导出已取消" };
+      }
+      throw error;
+    }
   }
 
   let codexStateApiPromise = null;
@@ -3909,6 +3929,8 @@
   let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
   let codexModelCatalogLoadedAt = 0;
   let codexModelCatalogPromise = null;
+  let codexModelWhitelistRefreshTimer = 0;
+  let codexModelWhitelistRefreshUntil = 0;
   const codexPlusModelListRequestIds = new Set();
 
   if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
@@ -3967,7 +3989,7 @@
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
-        patchCodexModelWhitelist();
+        scheduleCodexModelWhitelistRefresh();
         return codexModelCatalog;
       })
       .catch((error) => {
@@ -4211,9 +4233,43 @@
     return Object.keys(element).filter((key) => key.startsWith("__reactFiber") || key.startsWith("__reactInternalInstance") || key.startsWith("__reactProps"));
   }
 
+  function isWorkspaceChromeNode(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.closest?.('[data-app-action-sidebar-section-heading="Chats"], [data-app-action-sidebar-section-heading="Projects"], [data-app-action-sidebar-thread-id], [data-app-action-sidebar-project-row], [data-app-action-sidebar-project-id]')) {
+      return false;
+    }
+    return !!node.closest?.("main aside");
+  }
+
+  function patchReactModelStateNodes() {
+    const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
+    return [document.body, ...document.querySelectorAll(selector)].filter((node) => node && !isWorkspaceChromeNode(node));
+  }
+
+  function shouldScheduleReactModelStatePatch(mutations) {
+    if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
+    if (!mutations) return false;
+    const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
+    return mutations.some((mutation) => [...mutation.addedNodes].some((node) => {
+      if (node.nodeType !== 1 || isWorkspaceChromeNode(node)) return false;
+      return !!node.matches?.(selector) || !!node.querySelector?.(selector);
+    }));
+  }
+
+  function schedulePatchReactModelState() {
+    if (window.__codexPlusReactModelStatePatchPending) return;
+    window.__codexPlusReactModelStatePatchPending = true;
+    clearTimeout(window.__codexPlusReactModelStatePatchTimer);
+    window.__codexPlusReactModelStatePatchTimer = setTimeout(() => {
+      window.__codexPlusReactModelStatePatchPending = false;
+      window.__codexPlusReactModelStatePatchTimer = null;
+      patchReactModelState();
+    }, 120);
+  }
+
   function patchReactModelState() {
     const visited = new WeakSet();
-    const nodes = [document.body, ...document.querySelectorAll("button, [role='menu'], [role='dialog'], [data-radix-popper-content-wrapper]")].filter(Boolean);
+    const nodes = patchReactModelStateNodes();
     let changed = false;
     for (const node of nodes.slice(0, 220)) {
       for (const key of reactFiberKeys(node)) {
@@ -4339,17 +4395,62 @@
     void patch();
   }
 
-  function patchCodexModelWhitelist() {
+  function ensureCodexModelWhitelistInstalls() {
     if (!codexPlusModelUnlockEnabled()) return;
     installModelJsonResponsePatch();
     patchAppServerModelMessages();
     installAppServerModelRequestPatch();
+  }
+
+  function runCodexModelWhitelistRefreshPass() {
+    if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
+    let changed = false;
+    try {
+      patchStatsigModelWhitelist();
+      if (patchReactModelState()) changed = true;
+      installAppServerModelRequestPatch();
+    } catch (error) {
+      window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+      window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+    }
+    return changed;
+  }
+
+  function scheduleCodexModelWhitelistRefresh(durationMs = 2500) {
+    if (!codexPlusModelUnlockEnabled()) return;
+    codexModelWhitelistRefreshUntil = Math.max(codexModelWhitelistRefreshUntil, Date.now() + durationMs);
+    if (codexModelWhitelistRefreshTimer) return;
+    sendCodexPlusDiagnostic("model_whitelist_refresh_scheduled", { durationMs });
+    const tick = () => {
+      codexModelWhitelistRefreshTimer = 0;
+      runCodexModelWhitelistRefreshPass();
+      if (Date.now() < codexModelWhitelistRefreshUntil) {
+        codexModelWhitelistRefreshTimer = window.setTimeout(tick, 120);
+      }
+    };
+    tick();
+  }
+
+  function patchCodexModelWhitelist() {
+    ensureCodexModelWhitelistInstalls();
     if (!codexPlusModelNames().length) {
       loadCodexModelCatalog();
       return;
     }
-    patchStatsigModelWhitelist();
-    patchReactModelState();
+    runCodexModelWhitelistRefreshPass();
+  }
+
+  function refreshCodexModelWhitelistFromScan(mutations) {
+    ensureCodexModelWhitelistInstalls();
+    if (!codexPlusModelNames().length) {
+      loadCodexModelCatalog();
+      return;
+    }
+    if (shouldScheduleReactModelStatePatch(mutations)) {
+      scheduleCodexModelWhitelistRefresh();
+    } else {
+      runCodexModelWhitelistRefreshPass();
+    }
   }
 
   function threadIdVariants(sessionId) {
@@ -6154,8 +6255,12 @@
   async function exportMarkdown(ref) {
     const result = await postJson("/export-markdown", ref);
     if (result.status === "exported" && result.filename && typeof result.markdown === "string") {
-      downloadMarkdown(result.filename, result.markdown);
-      showToast(result.message || "导出成功", null);
+      const saveResult = await saveMarkdown(result.filename, result.markdown);
+      if (saveResult?.status === "cancelled") {
+        showToast(saveResult.message || "导出已取消", null);
+      } else {
+        showToast(result.message || "导出成功", null);
+      }
       return;
     }
     showToast(result.message || "导出失败", null);
@@ -6301,6 +6406,7 @@
 
   function syncActionGroupLayout(row, group) {
     if (!row || !group) return;
+    if (group.dataset.codexActionLayoutStable === "true") return;
     const rowRect = row.getBoundingClientRect();
     const nativeButtons = nativeActionButtonsFromRow(row);
     const leftmostNative = nativeButtons
@@ -6320,6 +6426,7 @@
     group.style.setProperty("--codex-session-actions-right", `${right}px`);
     row.style.setProperty("--codex-session-title-mask", `${right + groupWidth + 12}px`);
     row.style.setProperty("--codex-session-title-max-width", `${maxTitleWidth}px`);
+    group.dataset.codexActionLayoutStable = "true";
   }
 
   function syncActionGroupsLayout() {
@@ -6515,7 +6622,6 @@
     const deleteReady = !settings.sessionDelete || existingDeleteButton?.dataset.codexDeleteVersion === codexDeleteVersion;
     const groupReady = existingGroup?.dataset.codexActionGroupVersion === codexActionGroupVersion;
     if (groupReady && deleteReady && !hasUnexpectedDelete && !hasUnexpectedMore && !hasUnexpectedExport && !hasUnexpectedMove && !missingDelete && !missingMore) {
-      syncActionGroupLayout(row, existingGroup);
       return;
     }
     removeActionGroups(row);
@@ -7979,7 +8085,6 @@
       refreshForcePluginInstallUnlockLoop();
     }
     sessionRows().forEach(tryAttachButton);
-    syncActionGroupsLayout();
     updateDeleteButtonOffsets();
     scheduleProjectMoveProjection();
     scheduleChatsSortCorrection();
@@ -7988,7 +8093,7 @@
     refreshConversationView();
     installCodexServiceTierBadge();
     scheduleThreadScrollSync();
-    patchCodexModelWhitelist();
+    refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
   }
 
   function runScanStep(step) {
@@ -8073,6 +8178,7 @@
   }
 
   function scheduleScan(mutations) {
+    window.__codexSessionDeleteLastMutations = mutations;
     scheduleZedRemoteMenuRefresh(mutations);
     if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
@@ -8094,6 +8200,11 @@
   window.__codexPlusResizeHandler = () => {
     cancelAnimationFrame(codexPlusResizeRafId);
     codexPlusResizeRafId = requestAnimationFrame(() => {
+      sessionRows().forEach((row) => {
+        const group = actionGroupFromRow(row);
+        if (group) delete group.dataset.codexActionLayoutStable;
+      });
+      syncActionGroupsLayout();
       updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));
       runScanStep(refreshConversationTimeline);
       runScanStep(refreshConversationView);

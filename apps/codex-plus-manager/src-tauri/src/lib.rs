@@ -1,13 +1,19 @@
 pub mod commands;
 pub mod install;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tauri::{
     Emitter, Manager, RunEvent, WindowEvent,
     menu::{MenuBuilder, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
+static APP_EXITING: AtomicBool = AtomicBool::new(false);
 const TRAY_ID: &str = "main-tray";
+const TRAY_MENU_SHOW: &str = "show_window";
+const TRAY_MENU_RESET: &str = "reset_codex";
+const TRAY_MENU_QUIT: &str = "quit";
 
 pub fn run() {
     install_panic_logger();
@@ -20,53 +26,18 @@ pub fn run() {
     let Some(_guard) = acquire_single_instance_guard() else {
         return;
     };
-
+    let show_update = commands::startup_should_show_update();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
-            let show_window = MenuItem::with_id(app, "show_window", "显示窗口", true, None::<&str>)?;
-            let reset_codex = MenuItem::with_id(app, "reset_codex", "重置 Codex", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let tray_menu = MenuBuilder::new(app)
-                .item(&show_window)
-                .separator()
-                .item(&reset_codex)
-                .separator()
-                .item(&quit)
-                .build()?;
+            install_tray(app)?;
 
-            let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
-                .tooltip("Codex++")
-                .menu(&tray_menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show_window" => show_main_window(app),
-                    "reset_codex" => reset_codex_from_tray(app),
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_main_window(tray.app_handle());
-                    }
-                });
-
-            if let Some(icon) = app.default_window_icon().cloned() {
-                tray_builder = tray_builder.icon(icon);
-            }
-
-            #[cfg(target_os = "macos")]
-            {
-                tray_builder = tray_builder.show_menu_on_left_click(false).icon_as_template(true);
-            }
-
-            tray_builder.build(app)?;
-
-            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+            let url = if show_update {
+                "index.html?showUpdate=1"
+            } else {
+                "index.html"
+            };
+            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
                 .title("Codex++")
                 .inner_size(480.0, 420.0)
                 .resizable(false)
@@ -116,6 +87,8 @@ pub fn run() {
             commands::reset_image_overlay_settings,
             commands::relay_status,
             commands::read_relay_files,
+            commands::check_env_conflicts,
+            commands::remove_env_conflicts,
             commands::save_relay_file,
             commands::write_diagnostic_event,
             commands::backfill_relay_profile_from_live,
@@ -143,7 +116,7 @@ pub fn run() {
                 ..
             } = event
             {
-                if label == "main" {
+                if label == "main" && !APP_EXITING.load(Ordering::SeqCst) {
                     api.prevent_close();
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.hide();
@@ -151,6 +124,54 @@ pub fn run() {
                 }
             }
         });
+}
+
+fn install_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show_window = MenuItem::with_id(app, TRAY_MENU_SHOW, "显示窗口", true, None::<&str>)?;
+    let reset_codex = MenuItem::with_id(app, TRAY_MENU_RESET, "重置 Codex", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, TRAY_MENU_QUIT, "退出", true, None::<&str>)?;
+    let tray_menu = MenuBuilder::new(app)
+        .item(&show_window)
+        .separator()
+        .item(&reset_codex)
+        .separator()
+        .item(&quit)
+        .build()?;
+
+    let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
+        .tooltip("Codex++")
+        .menu(&tray_menu)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            TRAY_MENU_SHOW => show_main_window(app),
+            TRAY_MENU_RESET => reset_codex_from_tray(app),
+            TRAY_MENU_QUIT => {
+                APP_EXITING.store(true, Ordering::SeqCst);
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray_builder = tray_builder.icon(icon);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        tray_builder = tray_builder.show_menu_on_left_click(false).icon_as_template(true);
+    }
+
+    tray_builder.build(app)?;
+    Ok(())
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
