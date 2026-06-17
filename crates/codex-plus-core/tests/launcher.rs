@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use codex_plus_core::app_paths::{
     build_codex_executable, codex_app_version, find_latest_codex_app_dir,
-    find_latest_codex_app_dir_from_roots, find_macos_codex_app, normalize_codex_app_path,
-    packaged_app_user_model_id, resolve_codex_app_dir_with_saved, user_data_candidates_from,
+    find_latest_codex_app_dir_from_roots, find_macos_codex_app,
+    latest_appx_install_location_from_output, normalize_codex_app_path, packaged_app_user_model_id,
+    resolve_codex_app_dir_with_saved, user_data_candidates_from,
 };
 use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
@@ -303,6 +304,16 @@ fn launcher_packaged_activation_can_preserve_process_id() {
     };
 
     assert_eq!(launch.process_id(), Some(4242));
+}
+
+#[test]
+fn app_paths_parse_appx_install_location_from_powershell_output() {
+    let output = "\r\nC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.611.7849.0_x64__2p2nqsd0c76g0\r\n";
+
+    assert_eq!(
+        latest_appx_install_location_from_output(output).as_deref(),
+        Some(r"C:\Program Files\WindowsApps\OpenAI.Codex_26.611.7849.0_x64__2p2nqsd0c76g0")
+    );
 }
 
 #[test]
