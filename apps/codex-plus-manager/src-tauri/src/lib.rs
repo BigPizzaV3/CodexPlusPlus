@@ -2,7 +2,7 @@ pub mod commands;
 pub mod install;
 
 use tauri::{
-    Manager, RunEvent, WindowEvent,
+    Emitter, Manager, RunEvent, WindowEvent,
     menu::{MenuBuilder, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -161,18 +161,11 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-fn reset_codex_from_tray(_app: &tauri::AppHandle) {
-    let settings = codex_plus_core::settings::SettingsStore::default()
-        .load()
-        .unwrap_or_default();
-    let request = commands::LaunchRequest {
-        app_path: settings.codex_app_path,
-        debug_port: 9229,
-        helper_port: 57321,
-    };
-    let _ = commands::reset_ctrip_codex(request);
+fn reset_codex_from_tray(app: &tauri::AppHandle) {
+    show_main_window(app);
+    let _ = app.emit("tray-reset-requested", ());
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-        "manager.tray.reset_codex",
+        "manager.tray.reset_codex_requested",
         serde_json::json!({}),
     );
 }

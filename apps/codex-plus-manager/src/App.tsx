@@ -1931,7 +1931,11 @@ function CtripQuickSetup({
             disabled={busy}
             variant="secondary"
             onClick={() => {
-              if (window.confirm("将清除 ~/.codex 与 Codex 应用缓存。清除后需重新点击「应用配置」。是否继续？")) {
+              if (
+                window.confirm(
+                  "即将删除所有会话记录和 Codex 使用的 skill、MCP、插件、配置等，并将其重置到初始可用状态。清除后需重新点击「应用配置」。是否继续？",
+                )
+              ) {
                 void actions.clearCodexGuiAuth();
               }
             }}

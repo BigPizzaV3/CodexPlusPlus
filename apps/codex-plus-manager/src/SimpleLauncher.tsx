@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ExternalLink, RefreshCw, Rocket } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -28,20 +29,6 @@ type TokenResult = CommandResult<{
   token: string | null;
 }>;
 
-type CtripSetupState = {
-  configReady: boolean;
-  guiAuthCachePresent: boolean;
-  chatgptAuthPresent: boolean;
-  needsGuiClear: boolean;
-  needsConfigWrite: boolean;
-  needsClearBeforeApply: boolean;
-};
-
-type ClearAuthResult = CommandResult<{
-  message: string;
-  removedPaths: string[];
-}>;
-
 function isSuccessStatus(status: string) {
   return status === "ok" || status === "accepted";
 }
@@ -49,19 +36,6 @@ function isSuccessStatus(status: string) {
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   return invoke<T>(command, args);
 }
-
-function needsGuiClear(state: CtripSetupState) {
-  return state.guiAuthCachePresent || state.chatgptAuthPresent;
-}
-
-function isSetupReady(state: CtripSetupState, hasToken: boolean) {
-  return state.configReady && !needsGuiClear(state) && hasToken;
-}
-
-const CLEAR_CONFIRM_MESSAGE =
-  "检测到 Codex 存在 GUI 登录缓存或 ChatGPT 登录态。\n\n" +
-  "将按内部文档清除 Codex GUI 登录态与缓存，并重新写入 config.toml。\n\n" +
-  "是否继续？";
 
 function launchRequest(settings: BackendSettings) {
   return {
@@ -71,6 +45,60 @@ function launchRequest(settings: BackendSettings) {
   };
 }
 
+function ResetConfirmDialog({
+  open,
+  confirming,
+  onCancel,
+  onConfirm,
+}: {
+  open: boolean;
+  confirming: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [countdown, setCountdown] = useState(3);
+
+  useEffect(() => {
+    if (!open) {
+      setCountdown(3);
+      return;
+    }
+
+    setCountdown(3);
+    const timer = window.setInterval(() => {
+      setCountdown((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [open]);
+
+  if (!open) {
+    return null;
+  }
+
+  const confirmDisabled = countdown > 0 || confirming;
+  const confirmLabel = countdown > 0 ? `确认重置 (${countdown})` : "确认重置";
+
+  return (
+    <div className="reset-confirm-overlay">
+      <div className="reset-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="reset-title">
+        <h2 id="reset-title">重置 Codex</h2>
+        <p>
+          即将删除所有会话记录和 Codex 使用的 skill、MCP、插件、配置等，并将其重置到初始可用状态，是否确认重置？
+        </p>
+        <div className="reset-confirm-actions">
+          <Button variant="secondary" disabled={confirming} onClick={onCancel}>
+            取消
+          </Button>
+          <Button variant="destructive" disabled={confirmDisabled} onClick={onConfirm}>
+            {confirmLabel}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function SimpleLauncher() {
   const [phase, setPhase] = useState<Phase>("loading");
   const [token, setToken] = useState("");
@@ -78,6 +106,8 @@ export function SimpleLauncher() {
   const [errorText, setErrorText] = useState("");
   const [codexInstalled, setCodexInstalled] = useState(true);
   const [codexRunning, setCodexRunning] = useState(false);
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const [resetConfirming, setResetConfirming] = useState(false);
   const settingsRef = useRef<BackendSettings | null>(null);
   const autoLaunchAttempted = useRef(false);
 
@@ -115,7 +145,7 @@ export function SimpleLauncher() {
   );
 
   const launchCodex = useCallback(
-    async (adaToken: string, settings: BackendSettings, silent = false, skipConfirm = false) => {
+    async (adaToken: string, settings: BackendSettings, silent = false) => {
       const trimmed = adaToken.trim();
       if (!trimmed) {
         setErrorText("请先填写 ADA Token。");
@@ -129,27 +159,6 @@ export function SimpleLauncher() {
 
       if (!(await saveToken(trimmed))) {
         return false;
-      }
-
-      const setupState = await call<CtripSetupState>("detect_ctrip_setup_state");
-
-      if (isSetupReady(setupState, true)) {
-        return launchCodexOnly(settings);
-      }
-
-      if (needsGuiClear(setupState)) {
-        if (!skipConfirm && !window.confirm(CLEAR_CONFIRM_MESSAGE)) {
-          setStatusText("已取消启动。请确认清除登录态后再试。");
-          setPhase("ready");
-          return false;
-        }
-
-        const clearResult = await call<ClearAuthResult>("clear_codex_gui_auth");
-        if (!isSuccessStatus(clearResult.status)) {
-          setErrorText(clearResult.message || "清除 Codex 登录态失败。");
-          setPhase("error");
-          return false;
-        }
       }
 
       return launchCodexOnly(settings);
@@ -189,6 +198,36 @@ export function SimpleLauncher() {
     await markLaunchSuccess();
   }, [markLaunchSuccess, saveToken, token]);
 
+  const confirmReset = useCallback(async () => {
+    const settings = settingsRef.current;
+    if (!settings) {
+      setErrorText("设置尚未加载，请稍后重试。");
+      setPhase("error");
+      setResetDialogOpen(false);
+      return;
+    }
+
+    setResetConfirming(true);
+    setPhase("launching");
+    setErrorText("");
+    setStatusText("正在重置 Codex…");
+    setResetDialogOpen(false);
+
+    const resetResult = await call<LaunchResult>("reset_ctrip_codex", {
+      request: launchRequest(settings),
+    });
+
+    setResetConfirming(false);
+
+    if (!isSuccessStatus(resetResult.status)) {
+      setErrorText(resetResult.message || "重置 Codex 失败。");
+      setPhase("error");
+      return;
+    }
+
+    await markLaunchSuccess();
+  }, [markLaunchSuccess]);
+
   const openDownloadPage = async () => {
     await call<CommandResult<Record<string, unknown>>>("open_external_url", {
       url: CODEX_DOWNLOAD_URL,
@@ -227,27 +266,12 @@ export function SimpleLauncher() {
 
         if (savedToken && !autoLaunchAttempted.current) {
           autoLaunchAttempted.current = true;
-          const setupState = await call<CtripSetupState>("detect_ctrip_setup_state");
+          setPhase("launching");
+          setStatusText("正在自动启动 Codex…");
+          const launched = await launchCodexOnly(settingsResult.settings);
           if (cancelled) return;
-
-          if (isSetupReady(setupState, true)) {
-            setPhase("launching");
-            setStatusText("正在自动启动 Codex…");
-            const launched = await launchCodexOnly(settingsResult.settings);
-            if (cancelled) return;
-            if (!launched) {
-              setPhase("ready");
-            }
-            return;
-          }
-
-          setPhase("ready");
-          if (needsGuiClear(setupState)) {
-            setStatusText("检测到 Codex 登录缓存，请点击启动并完成清除确认。");
-          } else if (setupState.needsConfigWrite) {
-            setStatusText("检测到 Codex 配置未就绪，点击启动即可写入配置。");
-          } else {
-            setStatusText("检测到 Codex 配置未就绪，请点击启动。");
+          if (!launched) {
+            setPhase("ready");
           }
           return;
         }
@@ -266,6 +290,20 @@ export function SimpleLauncher() {
     };
   }, [launchCodexOnly]);
 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    void listen("tray-reset-requested", () => {
+      setResetDialogOpen(true);
+    }).then((dispose) => {
+      unlisten = dispose;
+    });
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
   const handleLaunch = async () => {
     const settings = settingsRef.current;
     if (!settings) {
@@ -277,7 +315,7 @@ export function SimpleLauncher() {
       setPhase("missingCodex");
       return;
     }
-    await launchCodex(token, settings, false, false);
+    await launchCodex(token, settings, false);
   };
 
   const formDisabled = phase === "loading" || phase === "launching" || phase === "missingCodex";
@@ -289,6 +327,13 @@ export function SimpleLauncher() {
 
   return (
     <div className="simple-launcher">
+      <ResetConfirmDialog
+        open={resetDialogOpen}
+        confirming={resetConfirming}
+        onCancel={() => setResetDialogOpen(false)}
+        onConfirm={() => void confirmReset()}
+      />
+
       <div className="simple-launcher-card">
         <header className="simple-launcher-header">
           <h1>Codex++</h1>

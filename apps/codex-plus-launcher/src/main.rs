@@ -131,6 +131,8 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
         hooks.ensure_computer_use_config(&settings).await?;
     }
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
+    let enhancements_enabled = settings.enhancements_enabled
+        || codex_plus_core::ctrip_store::ctrip_cdp_injection_enabled();
     let mut helper_started = false;
 
     let result = async {
@@ -154,12 +156,12 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
         };
         let cdp_listening_before_launch =
             codex_plus_core::watcher::cdp_listening(options.debug_port);
-        if settings.enhancements_enabled {
+        if enhancements_enabled {
             hooks.start_helper(options.helper_port).await?;
             helper_started = true;
         }
         let mut injection_ready = false;
-        if settings.enhancements_enabled && cdp_listening_before_launch {
+        if enhancements_enabled && cdp_listening_before_launch {
             injection_ready = hooks
                 .ensure_injection(options.debug_port, options.helper_port, &app_dir)
                 .await;
@@ -176,7 +178,7 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             {
                 Ok(_) => {
                     launch_ok = Some(true);
-                    if settings.enhancements_enabled {
+                    if enhancements_enabled {
                         injection_ready = hooks
                             .ensure_injection(options.debug_port, options.helper_port, &app_dir)
                             .await;
@@ -205,7 +207,7 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             }
         }
 
-        if injection_ready || !settings.enhancements_enabled {
+        if injection_ready || !enhancements_enabled {
             hooks.write_status("running").await;
         } else {
             hooks.write_status("running_degraded").await;

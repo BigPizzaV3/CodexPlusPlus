@@ -396,6 +396,13 @@ fn prepare_ctrip_launch(request: &LaunchRequest, stop_processes: bool) -> Result
         format!("写入 Codex 配置失败：{error}")
     })?;
     validate_ctrip_token_file()?;
+    if let Err(error) = codex_plus_core::ctrip_store::ensure_ctrip_launch_settings() {
+        log_manager_event(
+            "manager.prepare_ctrip_launch.settings_failed",
+            json!({ "error": error.to_string() }),
+        );
+        return Err(format!("启用 CDP 注入设置失败：{error}"));
+    }
     spawn_silent_launcher(request).map_err(|error| format!("启动静默入口失败：{error}"))
 }
 

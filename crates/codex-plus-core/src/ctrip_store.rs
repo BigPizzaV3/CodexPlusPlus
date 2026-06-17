@@ -94,3 +94,22 @@ pub fn load_ctrip_token_with_migration(settings: &BackendSettings) -> Option<Str
     migrate_token_from_settings(settings).ok()?;
     load_ctrip_token()
 }
+
+pub fn ctrip_cdp_injection_enabled() -> bool {
+    load_ctrip_token().is_some()
+}
+
+pub fn ensure_ctrip_launch_settings() -> anyhow::Result<()> {
+    use crate::settings::SettingsStore;
+
+    if !ctrip_cdp_injection_enabled() {
+        return Ok(());
+    }
+    let store = SettingsStore::default();
+    let mut settings = store.load()?;
+    if settings.enhancements_enabled {
+        return Ok(());
+    }
+    settings.enhancements_enabled = true;
+    store.save(&settings)
+}

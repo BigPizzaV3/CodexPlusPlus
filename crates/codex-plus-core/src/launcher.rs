@@ -261,7 +261,9 @@ where
         if protocol_proxy_enabled {
             helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
         }
-        if settings.enhancements_enabled || protocol_proxy_enabled {
+        let enhancements_enabled =
+            settings.enhancements_enabled || crate::ctrip_store::ctrip_cdp_injection_enabled();
+        if enhancements_enabled || protocol_proxy_enabled {
             hooks.start_helper(helper_port).await?;
             helper_started = true;
         }
@@ -276,7 +278,7 @@ where
         }
 
         let mut injection_degraded = false;
-        if settings.enhancements_enabled {
+        if enhancements_enabled {
             let injection_ready = hooks
                 .ensure_injection(debug_port, helper_port, &app_dir)
                 .await;
@@ -297,7 +299,7 @@ where
             }
         }
 
-        if !settings.enhancements_enabled || !injection_degraded {
+        if !enhancements_enabled || !injection_degraded {
             let status = launch_status(
                 "running",
                 "Codex++ launcher ready",
@@ -572,9 +574,33 @@ impl LaunchHooks for DefaultLaunchHooks {
                 .and_then(|settings| relay_env_vars_from_settings(&settings))
         };
         if let Some(env_vars) = relay_env {
-            return self
+            let preexisting_cdp_targets = query_cdp_targets(debug_port).await;
+            let preexisting_cdp_target_ids = cdp_target_fingerprints(&preexisting_cdp_targets);
+            let launch = self
                 .launch_codex_direct_with_env(app_dir, debug_port, extra_args, &env_vars)
-                .await;
+                .await?;
+            let is_macos_app = app_dir.extension().and_then(|value| value.to_str()) == Some("app");
+            if is_macos_app {
+                if cdp_json_ready(
+                    debug_port,
+                    PACKAGED_CDP_READY_ATTEMPTS,
+                    PACKAGED_CDP_READY_DELAY,
+                    &preexisting_cdp_target_ids,
+                )
+                .await
+                {
+                    return Ok(launch);
+                }
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.macos_direct_env_cdp_unready",
+                    serde_json::json!({
+                        "debug_port": debug_port,
+                        "app_dir": app_dir.to_string_lossy(),
+                        "preexisting_cdp_target_count": preexisting_cdp_targets.len()
+                    }),
+                );
+            }
+            return Ok(launch);
         }
 
         if cfg!(windows) {
@@ -1421,6 +1447,7 @@ pub fn build_codex_arguments(debug_port: u16, extra_args: &[String]) -> Vec<Stri
     let mut args = vec![
         format!("--remote-debugging-port={debug_port}"),
         format!("--remote-allow-origins=http://127.0.0.1:{debug_port}"),
+        "--remote-allow-origins=*".to_string(),
     ];
     args.extend(normalize_codex_extra_args(extra_args));
     args
