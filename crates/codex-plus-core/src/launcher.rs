@@ -628,15 +628,26 @@ impl LaunchHooks for DefaultLaunchHooks {
                 if let Some(mut child) = self.child.lock().await.take() {
                     let _ = child.wait().await;
                 }
-                Ok(())
             }
             CodexLaunch::PackagedActivation { process_id, .. } => {
                 if let Some(process_id) = process_id {
                     wait_for_windows_process_id(*process_id).await?;
                 }
-                Ok(())
             }
         }
+        let mut empty_streak = 0u32;
+        loop {
+            if crate::watcher::find_codex_processes().is_empty() {
+                empty_streak = empty_streak.saturating_add(1);
+                if empty_streak >= 3 {
+                    break;
+                }
+            } else {
+                empty_streak = 0;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        Ok(())
     }
 
     async fn shutdown_helper(&self, _helper_port: u16) {
