@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 pub mod macos;
@@ -240,6 +241,57 @@ pub fn option_or_current_exe(value: &Option<PathBuf>, binary: &str) -> PathBuf {
 pub fn companion_binary_path(binary: &str) -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     companion_binary_path_from_exe(&exe, binary)
+}
+
+pub fn resolve_silent_launcher_path() -> anyhow::Result<PathBuf> {
+    resolve_companion_binary_path(SILENT_BINARY)
+}
+
+pub fn resolve_companion_binary_path(binary: &str) -> anyhow::Result<PathBuf> {
+    let path = companion_binary_path(binary);
+    if path.is_file() {
+        return Ok(path);
+    }
+    if let Some(root) = dev_workspace_root_from_current_exe() {
+        let package = if binary == SILENT_BINARY {
+            "codex-plus-launcher"
+        } else if binary == MANAGER_BINARY {
+            "codex-plus-manager"
+        } else {
+            anyhow::bail!("未知 companion binary: {binary}");
+        };
+        let status = std::process::Command::new("cargo")
+            .args(["build", "-p", package])
+            .current_dir(&root)
+            .status()
+            .with_context(|| format!("无法执行 cargo build -p {package}"))?;
+        if !status.success() {
+            anyhow::bail!("构建 {package} 失败，请手动执行: cargo build -p {package}");
+        }
+        let path = companion_binary_path(binary);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    anyhow::bail!(
+        "找不到 {binary}。请先构建: cargo build -p codex-plus-launcher"
+    )
+}
+
+fn dev_workspace_root_from_current_exe() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let profile_dir = exe.parent()?; // target/debug or target/release
+    let target_dir = profile_dir.parent()?; // target
+    let root = target_dir.parent()?; // workspace root
+    let manifest = root.join("Cargo.toml");
+    if manifest.is_file()
+        && root.join("apps/codex-plus-launcher").is_dir()
+        && root.join("apps/codex-plus-manager").is_dir()
+    {
+        Some(root.to_path_buf())
+    } else {
+        None
+    }
 }
 
 pub fn companion_binary_path_from_exe(exe: &Path, binary: &str) -> PathBuf {

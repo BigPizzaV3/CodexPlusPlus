@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { App } from "./App";
+import { SimpleLauncher } from "./SimpleLauncher";
 import "./styles.css";
 
 /* ── Bundled fonts (offline, no Google Fonts request) ──
@@ -11,5 +11,5 @@ import "@fontsource/jetbrains-mono";
 const app = document.getElementById("app");
 
 if (app instanceof HTMLElement) {
-  createRoot(app).render(<App />);
+  createRoot(app).render(<SimpleLauncher />);
 }

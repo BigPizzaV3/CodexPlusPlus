@@ -16,6 +16,7 @@ const API_KEY_ENV_KEYS: &[&str] = &[
     "CODEX_PLUS_OPENAI_API_KEY",
     "CODEX_PLUS_API_KEY",
     "OPENAI_API_KEY",
+    "ADA_API_KEY",
 ];
 
 #[derive(Debug, Clone)]

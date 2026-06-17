@@ -2662,3 +2662,144 @@ body {
   background: hsl(var(--brand-accent));
   color: hsl(var(--primary-foreground));
 }
+
+.simple-launcher {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+.simple-launcher-card {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 28px 24px;
+  border-radius: 12px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  box-shadow: 0 8px 32px hsl(0 0% 0% / 0.24);
+}
+
+.simple-launcher-header h1 {
+  margin: 0 0 6px;
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.simple-launcher-header p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.5;
+}
+
+.simple-launcher-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.simple-launcher-button {
+  width: 100%;
+}
+
+.simple-launcher-restart {
+  width: auto;
+  align-self: center;
+  margin-top: -4px;
+  font-size: 0.8125rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.simple-launcher-restart:hover {
+  color: hsl(var(--foreground));
+}
+
+.simple-launcher-status {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: hsl(var(--muted-foreground));
+  text-align: center;
+}
+
+.simple-launcher-error {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: hsl(var(--destructive));
+  text-align: center;
+  line-height: 1.5;
+}
+
+.simple-launcher-missing {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid hsl(var(--destructive) / 0.35);
+  background: hsl(var(--destructive) / 0.08);
+}
+
+.simple-launcher-missing p {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: hsl(var(--foreground));
+}
+
+.simple-launcher-download {
+  width: 100%;
+}
+
+.reset-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgb(0 0 0 / 55%);
+}
+
+.reset-confirm-dialog {
+  width: min(100%, 22rem);
+  padding: 1.25rem;
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.75rem;
+  background: hsl(var(--card));
+  box-shadow: 0 12px 32px rgb(0 0 0 / 35%);
+}
+
+.reset-confirm-dialog h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+.reset-confirm-dialog p {
+  margin: 0 0 1rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground));
+}
+
+.reset-confirm-dialog code {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.8125rem;
+  color: hsl(var(--foreground));
+}
+
+.reset-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}

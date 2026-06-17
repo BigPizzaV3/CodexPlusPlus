@@ -21,6 +21,9 @@ export type RelayProfile = {
   modelInsertMode: string;
   modelList: string;
   userAgent: string;
+  providerId?: string;
+  apiKeyEnv?: string;
+  presetId?: string;
 };
 
 export type PresetPatch = Partial<RelayProfile>;
@@ -47,6 +50,9 @@ export function createPresetPatch(preset: ProviderPreset): PresetPatch {
     modelList: preset.modelList?.join("\n") ?? "",
     relayMode: preset.category === "official" ? "official" : "pureApi",
     officialMixApiKey: false,
+    providerId: preset.providerId ?? "custom",
+    apiKeyEnv: preset.apiKeyEnv ?? "",
+    presetId: preset.id,
   };
 }
 

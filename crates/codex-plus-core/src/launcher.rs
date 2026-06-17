@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -19,6 +20,8 @@ use crate::status::{LaunchStatus, StatusStore};
 const POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS: &[u64] = &[0, 5, 15, 30, 60, 120, 180, 240, 300];
 #[cfg_attr(not(windows), allow(dead_code))]
 const POST_LAUNCH_COMPUTER_USE_GUARD_STABLE_ATTEMPTS: usize = 3;
+const PACKAGED_CDP_READY_ATTEMPTS: usize = 10;
+const PACKAGED_CDP_READY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexLaunch {
@@ -258,7 +261,9 @@ where
         if protocol_proxy_enabled {
             helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
         }
-        if settings.enhancements_enabled || protocol_proxy_enabled {
+        let enhancements_enabled =
+            settings.enhancements_enabled || crate::ctrip_store::ctrip_cdp_injection_enabled();
+        if enhancements_enabled || protocol_proxy_enabled {
             hooks.start_helper(helper_port).await?;
             helper_started = true;
         }
@@ -273,7 +278,7 @@ where
         }
 
         let mut injection_degraded = false;
-        if settings.enhancements_enabled {
+        if enhancements_enabled {
             let injection_ready = hooks
                 .ensure_injection(debug_port, helper_port, &app_dir)
                 .await;
@@ -294,7 +299,7 @@ where
             }
         }
 
-        if !settings.enhancements_enabled || !injection_degraded {
+        if !enhancements_enabled || !injection_degraded {
             let status = launch_status(
                 "running",
                 "Codex++ launcher ready",
@@ -370,6 +375,74 @@ impl IntoLaunchHooks for DefaultLaunchHooks {
 impl DefaultLaunchHooks {
     pub fn shared() -> Arc<dyn LaunchHooks> {
         Arc::new(Self::default())
+    }
+
+    async fn launch_codex_direct_with_env(
+        &self,
+        app_dir: &Path,
+        debug_port: u16,
+        extra_args: &[String],
+        env_vars: &[(String, String)],
+    ) -> anyhow::Result<CodexLaunch> {
+        let executable = crate::app_paths::build_codex_executable(app_dir);
+        if !executable.exists() {
+            anyhow::bail!(
+                "Codex 可执行文件不存在，无法注入环境变量: {}",
+                executable.display()
+            );
+        }
+        let args = build_codex_arguments(debug_port, extra_args);
+        let mut command = Command::new(&executable);
+        command
+            .args(&args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        for (key, value) in env_vars {
+            command.env(key, value);
+        }
+        #[cfg(windows)]
+        command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
+        let child = command.spawn().with_context(|| {
+            format!(
+                "failed to launch Codex executable with relay env vars: {}",
+                executable.display()
+            )
+        })?;
+        *self.child.lock().await = Some(child);
+
+        let mut command_line = vec![executable.to_string_lossy().to_string()];
+        command_line.extend(args);
+        let is_macos_app = app_dir.extension().and_then(|value| value.to_str()) == Some("app");
+        let macos_cleanup_policy = if is_macos_app {
+            if is_macos_app_running(app_dir).await {
+                Some(MacosCleanupPolicy::SkipQuitBecauseAlreadyRunning)
+            } else {
+                Some(MacosCleanupPolicy::QuitIfNotPreviouslyRunning)
+            }
+        } else {
+            None
+        };
+        Ok(CodexLaunch::Process {
+            command: command_line,
+            wait_strategy: if is_macos_app {
+                ProcessWaitStrategy::ExternalWaitCommand
+            } else {
+                ProcessWaitStrategy::TrackedChild
+            },
+            macos_cleanup_policy,
+        })
+    }
+}
+
+fn relay_env_vars_from_settings(settings: &BackendSettings) -> Option<Vec<(String, String)>> {
+    if !settings.relay_profiles_enabled {
+        return None;
+    }
+    let vars = crate::relay_config::relay_launch_env_vars(&settings.active_relay_profile());
+    if vars.is_empty() {
+        None
+    } else {
+        Some(vars)
     }
 }
 
@@ -491,6 +564,45 @@ impl LaunchHooks for DefaultLaunchHooks {
         debug_port: u16,
         extra_args: &[String],
     ) -> anyhow::Result<CodexLaunch> {
+        let ctrip_env = crate::ctrip_store::ctrip_launch_env_vars();
+        let relay_env = if let Some(env_vars) = ctrip_env {
+            Some(env_vars)
+        } else {
+            self.load_settings()
+                .await
+                .ok()
+                .and_then(|settings| relay_env_vars_from_settings(&settings))
+        };
+        if let Some(env_vars) = relay_env {
+            let preexisting_cdp_targets = query_cdp_targets(debug_port).await;
+            let preexisting_cdp_target_ids = cdp_target_fingerprints(&preexisting_cdp_targets);
+            let launch = self
+                .launch_codex_direct_with_env(app_dir, debug_port, extra_args, &env_vars)
+                .await?;
+            let is_macos_app = app_dir.extension().and_then(|value| value.to_str()) == Some("app");
+            if is_macos_app {
+                if cdp_json_ready(
+                    debug_port,
+                    PACKAGED_CDP_READY_ATTEMPTS,
+                    PACKAGED_CDP_READY_DELAY,
+                    &preexisting_cdp_target_ids,
+                )
+                .await
+                {
+                    return Ok(launch);
+                }
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.macos_direct_env_cdp_unready",
+                    serde_json::json!({
+                        "debug_port": debug_port,
+                        "app_dir": app_dir.to_string_lossy(),
+                        "preexisting_cdp_target_count": preexisting_cdp_targets.len()
+                    }),
+                );
+            }
+            return Ok(launch);
+        }
+
         if cfg!(windows) {
             if let Some(activation) = build_packaged_activation(app_dir, debug_port, extra_args) {
                 let CodexLaunch::PackagedActivation {
@@ -1308,6 +1420,7 @@ pub fn build_codex_arguments(debug_port: u16, extra_args: &[String]) -> Vec<Stri
     let mut args = vec![
         format!("--remote-debugging-port={debug_port}"),
         format!("--remote-allow-origins=http://127.0.0.1:{debug_port}"),
+        "--remote-allow-origins=*".to_string(),
     ];
     args.extend(normalize_codex_extra_args(extra_args));
     args
@@ -1321,6 +1434,141 @@ pub fn build_codex_command(app_dir: &Path, debug_port: u16, extra_args: &[String
     ];
     command.extend(build_codex_arguments(debug_port, extra_args));
     command
+}
+
+async fn cdp_json_ready(
+    debug_port: u16,
+    attempts: usize,
+    delay: std::time::Duration,
+    preexisting_targets: &HashSet<String>,
+) -> bool {
+    let client = match reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+    for attempt in 0..attempts {
+        if cdp_json_ready_once(&client, debug_port, preexisting_targets).await {
+            return true;
+        }
+        if attempt + 1 < attempts {
+            tokio::time::sleep(delay).await;
+        }
+    }
+    false
+}
+
+async fn query_cdp_targets(debug_port: u16) -> Vec<crate::cdp::CdpTarget> {
+    let client = match reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return Vec::new(),
+    };
+    let Some(targets) = query_cdp_targets_once(&client, debug_port).await else {
+        return Vec::new();
+    };
+    targets
+}
+
+fn cdp_target_fingerprints(targets: &[crate::cdp::CdpTarget]) -> HashSet<String> {
+    targets.iter().map(cdp_target_fingerprint).collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CdpTargetReadiness {
+    Ready,
+    NotPage,
+    MissingWebsocket,
+    NotCodexContext,
+    Preexisting,
+}
+
+async fn cdp_json_ready_once(
+    client: &reqwest::Client,
+    debug_port: u16,
+    preexisting_targets: &HashSet<String>,
+) -> bool {
+    let Some(targets) = query_cdp_targets_once(client, debug_port).await else {
+        return false;
+    };
+    targets.iter().any(|target| {
+        let readiness = cdp_target_readiness(target, preexisting_targets);
+        let accepted = readiness == CdpTargetReadiness::Ready;
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "launcher.cdp_readiness_target",
+            serde_json::json!({
+                "debug_port": debug_port,
+                "target_id": target.id,
+                "target_type": target.target_type,
+                "title": target.title,
+                "url": target.url,
+                "has_websocket": target.web_socket_debugger_url.as_deref().is_some_and(|url| !url.is_empty()),
+                "fingerprint": cdp_target_fingerprint(target),
+                "readiness": format!("{readiness:?}"),
+                "accepted": accepted
+            }),
+        );
+        accepted
+    })
+}
+
+async fn query_cdp_targets_once(
+    client: &reqwest::Client,
+    debug_port: u16,
+) -> Option<Vec<crate::cdp::CdpTarget>> {
+    for url in [
+        format!("http://127.0.0.1:{debug_port}/json"),
+        format!("http://[::1]:{debug_port}/json"),
+    ] {
+        let Ok(response) = client.get(url).send().await else {
+            continue;
+        };
+        let Ok(response) = response.error_for_status() else {
+            continue;
+        };
+        let Ok(targets) = response.json::<Vec<crate::cdp::CdpTarget>>().await else {
+            continue;
+        };
+        return Some(targets);
+    }
+    None
+}
+
+fn cdp_target_fingerprint(target: &crate::cdp::CdpTarget) -> String {
+    if !target.id.is_empty() {
+        return target.id.clone();
+    }
+    target.web_socket_debugger_url.clone().unwrap_or_default()
+}
+
+fn cdp_target_readiness(
+    target: &crate::cdp::CdpTarget,
+    preexisting_targets: &HashSet<String>,
+) -> CdpTargetReadiness {
+    if target.target_type != "page" {
+        return CdpTargetReadiness::NotPage;
+    }
+    if !target
+        .web_socket_debugger_url
+        .as_deref()
+        .is_some_and(|url| !url.is_empty())
+    {
+        return CdpTargetReadiness::MissingWebsocket;
+    }
+    if preexisting_targets.contains(&cdp_target_fingerprint(target)) {
+        return CdpTargetReadiness::Preexisting;
+    }
+    let haystack = format!("{} {}", target.title, target.url).to_lowercase();
+    if !haystack.contains("codex") {
+        return CdpTargetReadiness::NotCodexContext;
+    }
+    CdpTargetReadiness::Ready
 }
 
 pub fn build_packaged_activation(

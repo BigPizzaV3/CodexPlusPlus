@@ -215,14 +215,122 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
         .and_then(|values| values.get("base_url"))
         .map(|value| !unquote_toml_string(value).trim().is_empty())
         .unwrap_or(false);
+    let has_env_key = provider
+        .as_ref()
+        .and_then(|values| values.get("env_key"))
+        .map(|value| !unquote_toml_string(value).trim().is_empty())
+        .unwrap_or(false);
     RelayConfigStatus {
         configured: root_provider.is_some()
-            && requires_openai_auth
-            && (has_bearer_token || codex_auth_api_key(&auth_contents).is_some())
-            && has_base_url,
+            && has_base_url
+            && (has_env_key
+                || (requires_openai_auth
+                    && (has_bearer_token || codex_auth_api_key(&auth_contents).is_some()))),
         requires_openai_auth,
         has_bearer_token,
         config_path: config_path.to_string_lossy().to_string(),
+    }
+}
+
+pub const CTRIP_ADA_PROVIDER_ID: &str = "ctrip";
+pub const CTRIP_ADA_ENV_KEY: &str = "ADA_API_KEY";
+pub const CTRIP_ADA_BASE_URL: &str = "http://ada-cli-golang.ctripcorp.com/coding-plan/openai/v1";
+pub const CTRIP_ADA_MODEL: &str = "gpt-5.4-2026-03-05";
+
+pub fn ctrip_ada_doc_config_toml() -> &'static str {
+    r#"model_provider = "ctrip"
+model = "gpt-5.4-2026-03-05"
+model_reasoning_effort = "xhigh"
+
+request_max_retries = 4
+stream_max_retries = 10
+
+[model_providers.ctrip]
+name = "ctrip"
+base_url = "http://ada-cli-golang.ctripcorp.com/coding-plan/openai/v1"
+wire_api = "responses"
+env_key = "ADA_API_KEY"
+"#
+}
+
+fn normalized_ctrip_doc_config_lines(contents: &str) -> Vec<String> {
+    contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+pub fn config_matches_ctrip_ada_doc(contents: &str) -> bool {
+    normalized_ctrip_doc_config_lines(contents)
+        == normalized_ctrip_doc_config_lines(ctrip_ada_doc_config_toml())
+}
+
+pub fn apply_ctrip_ada_doc_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResult> {
+    let config_text = ctrip_ada_doc_config_toml();
+    let auth_contents = b"{}\n";
+    let backup_path =
+        write_codex_live_atomic(home, Some(config_text), Some(auth_contents), false)?;
+    let status = relay_config_status_from_home(home);
+    Ok(RelayApplyResult {
+        config_path: status.config_path,
+        backup_path,
+        configured: status.configured,
+    })
+}
+
+pub fn ensure_ctrip_ada_doc_config_on_home(home: &Path) -> anyhow::Result<RelayApplyResult> {
+    let config_path = home.join("config.toml");
+    let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
+    if config_matches_ctrip_ada_doc(&contents) {
+        let status = relay_config_status_from_home(home);
+        return Ok(RelayApplyResult {
+            config_path: status.config_path,
+            backup_path: None,
+            configured: status.configured,
+        });
+    }
+    let result = apply_ctrip_ada_doc_config_to_home(home)?;
+    let written = std::fs::read_to_string(&config_path).unwrap_or_default();
+    if !config_matches_ctrip_ada_doc(&written) {
+        anyhow::bail!("写入后 config.toml 与文档模板不一致");
+    }
+    Ok(result)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CtripSetupState {
+    pub config_ready: bool,
+    pub gui_auth_cache_present: bool,
+    pub chatgpt_auth_present: bool,
+    pub needs_gui_clear: bool,
+    pub needs_config_write: bool,
+    pub needs_clear_before_apply: bool,
+}
+
+pub fn detect_ctrip_setup_state(home: &Path) -> CtripSetupState {
+    let config_path = home.join("config.toml");
+    let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let config_ready = config_matches_ctrip_ada_doc(&contents);
+
+    let chatgpt_auth_present = chatgpt_auth_status_from_home(home).authenticated;
+    let gui_auth_cache_present = codex_gui_auth_cache_paths()
+        .iter()
+        .any(|path| path.exists());
+
+    let needs_gui_clear = gui_auth_cache_present || chatgpt_auth_present;
+    let needs_config_write = !config_ready;
+    let needs_clear_before_apply = needs_gui_clear || needs_config_write;
+
+    CtripSetupState {
+        config_ready,
+        gui_auth_cache_present,
+        chatgpt_auth_present,
+        needs_gui_clear,
+        needs_config_write,
+        needs_clear_before_apply,
     }
 }
 
@@ -1775,7 +1883,13 @@ fn relay_profile_api_key(profile: &RelayProfile) -> String {
 
 fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(&profile.config_contents)?;
-    let provider_id = active_or_default_provider_id(&doc);
+    let provider_id = if !profile.provider_id.trim().is_empty()
+        && profile.provider_id.trim() != crate::settings::default_relay_provider_id()
+    {
+        profile.provider_id.trim().to_string()
+    } else {
+        active_or_default_provider_id(&doc)
+    };
     set_provider_id(&mut doc, &provider_id);
 
     let model = relay_profile_model(profile);
@@ -1829,6 +1943,10 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     } else if !api_key.trim().is_empty() {
         provider["experimental_bearer_token"] = toml_edit::value(api_key.trim());
     }
+    if !profile.api_key_env.trim().is_empty() {
+        provider["env_key"] = toml_edit::value(profile.api_key_env.trim());
+        provider.remove("experimental_bearer_token");
+    }
 
     Ok(move_model_providers_before_profiles(
         &ensure_trailing_newline(doc.to_string()),
@@ -1856,10 +1974,17 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
     if profile.relay_mode == crate::settings::RelayMode::PureApi
         && profile.auth_contents.trim().is_empty()
         && !source_api_key.trim().is_empty()
+        && profile.api_key_env.trim().is_empty()
     {
         profile.auth_contents = serde_json::to_string_pretty(&json!({
             "OPENAI_API_KEY": source_api_key.trim()
         }))?;
+    }
+    if !profile.api_key_env.trim().is_empty() {
+        profile.auth_contents = remove_openai_api_key_from_auth_contents(&profile.auth_contents)?;
+        if profile.auth_contents.trim().is_empty() {
+            profile.auth_contents = "{}\n".to_string();
+        }
     }
     if profile.relay_mode == crate::settings::RelayMode::Official {
         profile.auth_contents = remove_openai_api_key_from_auth_contents(&profile.auth_contents)?;
@@ -2376,4 +2501,108 @@ fn root_line_key(line: &str) -> Option<&str> {
         return None;
     }
     trimmed.split_once('=').map(|(key, _)| key.trim())
+}
+
+pub fn relay_launch_env_vars(profile: &RelayProfile) -> Vec<(String, String)> {
+    let api_key_env = profile.api_key_env.trim();
+    if api_key_env.is_empty() {
+        return Vec::new();
+    }
+    let mut vars = Vec::new();
+    let api_key = profile.api_key.trim();
+    if !api_key.is_empty() {
+        vars.push((api_key_env.to_string(), api_key.to_string()));
+    }
+    let base_url = relay_profile_base_url(profile);
+    if !base_url.is_empty() {
+        vars.push(("OPENAI_BASE_URL".to_string(), base_url));
+    }
+    vars
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearCodexGuiAuthResult {
+    pub message: String,
+    pub removed_paths: Vec<String>,
+}
+
+pub fn clear_codex_gui_auth_cache() -> anyhow::Result<ClearCodexGuiAuthResult> {
+    let mut removed_paths = Vec::new();
+
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("killall")
+            .arg("Codex")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-Process -Name Codex -ErrorAction SilentlyContinue | Stop-Process -Force",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
+    let codex_home = default_codex_home_dir();
+    if remove_path_all_if_exists(&codex_home)? {
+        removed_paths.push(codex_home.to_string_lossy().to_string());
+    }
+
+    for path in codex_gui_auth_cache_paths() {
+        if remove_path_all_if_exists(&path)? {
+            removed_paths.push(path.to_string_lossy().to_string());
+        }
+    }
+
+    Ok(ClearCodexGuiAuthResult {
+        message: "已清除 Codex GUI 登录态与缓存。请重新应用供应商配置后再启动 Codex。".to_string(),
+        removed_paths,
+    })
+}
+
+fn codex_gui_auth_cache_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(base_dirs) = directories::BaseDirs::new() {
+            let home = base_dirs.home_dir();
+            paths.push(home.join("Library/Application Support/Codex"));
+            paths.push(home.join("Library/Caches/com.openai.codex"));
+            paths.push(home.join("Library/Preferences/com.openai.codex.plist"));
+            paths.push(home.join("Library/Containers/com.openai.codex"));
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Some(app_data) = std::env::var_os("APPDATA") {
+            paths.push(PathBuf::from(app_data).join("Codex"));
+        }
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            paths.push(PathBuf::from(local_app_data).join("Codex"));
+        }
+    }
+    paths
+}
+
+fn remove_path_all_if_exists(path: &Path) -> anyhow::Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)
+            .with_context(|| format!("删除目录失败: {}", path.display()))?;
+    } else {
+        std::fs::remove_file(path)
+            .with_context(|| format!("删除文件失败: {}", path.display()))?;
+    }
+    Ok(true)
 }

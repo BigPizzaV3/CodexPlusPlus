@@ -21,6 +21,8 @@ export interface ProviderPreset {
   protocol: RelayProtocol;
   model: string;
   modelList?: string[];
+  providerId?: string;
+  apiKeyEnv?: string;
 }
 
 /**
@@ -44,6 +46,16 @@ export const PRESETS: ProviderPreset[] = [
   },
 
   // ── 中国官方 ──
+  {
+    id: "ctrip-ada",
+    name: "携程 CodingPlan (ADA)",
+    category: "cn_official",
+    baseUrl: "http://ada-cli-golang.ctripcorp.com/coding-plan/openai/v1",
+    protocol: "responses",
+    model: "gpt-5.4-2026-03-05",
+    providerId: "ctrip",
+    apiKeyEnv: "ADA_API_KEY",
+  },
   {
     id: "deepseek",
     name: "DeepSeek",
