@@ -481,12 +481,8 @@ pub async fn open_responses_proxy_request(
     original_user_agent: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
-    open_responses_proxy_request_with_settings_and_user_agent(
-        body,
-        settings,
-        original_user_agent,
-    )
-    .await
+    open_responses_proxy_request_with_settings_and_user_agent(body, settings, original_user_agent)
+        .await
 }
 
 pub async fn open_responses_proxy_request_with_settings(
@@ -657,8 +653,8 @@ pub async fn open_models_proxy_request(
             &relay.user_agent,
             original_user_agent,
         ))?
-            .get(endpoint)
-            .bearer_auth(relay.api_key.trim()),
+        .get(endpoint)
+        .bearer_auth(relay.api_key.trim()),
     )
     .await?;
     let status_code = upstream.status().as_u16();
@@ -703,12 +699,12 @@ pub async fn open_chat_completions_proxy_request(
         &relay.user_agent,
         original_user_agent,
     ))?
-        .post(chat_completions_url(&relay.base_url))
-        .bearer_auth(relay.api_key.trim())
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .json(&request_json)
-        .send()
-        .await?;
+    .post(chat_completions_url(&relay.base_url))
+    .bearer_auth(relay.api_key.trim())
+    .header(reqwest::header::CONTENT_TYPE, "application/json")
+    .json(&request_json)
+    .send()
+    .await?;
     let status_code = upstream.status().as_u16();
     let content_type = upstream
         .headers()
