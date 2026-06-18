@@ -266,6 +266,27 @@ fn apply_chat_protocol_relay_points_codex_to_local_responses_proxy() {
 }
 
 #[test]
+fn apply_aggregate_relay_points_codex_to_local_responses_proxy_without_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "agg".to_string(),
+        name: "聚合供应商 1".to_string(),
+        relay_mode: RelayMode::Aggregate,
+        config_contents: String::new(),
+        auth_contents: String::new(),
+        ..RelayProfile::default()
+    };
+
+    let result = apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(result.configured);
+    assert!(updated.contains(r#"wire_api = "responses""#));
+    assert!(updated.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    assert!(updated.contains(r#"experimental_bearer_token = "codex-plus-aggregate""#));
+}
+
+#[test]
 fn chat_protocol_profile_keeps_upstream_base_url_separate_from_codex_proxy() {
     let temp = tempfile::tempdir().unwrap();
     let mut profile = RelayProfile {

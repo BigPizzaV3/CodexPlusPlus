@@ -1761,6 +1761,11 @@ pub fn relay_profile_model(profile: &RelayProfile) -> String {
 }
 
 fn relay_profile_base_url(profile: &RelayProfile) -> String {
+    if profile.relay_mode == crate::settings::RelayMode::Aggregate {
+        return crate::protocol_proxy::local_responses_proxy_base_url(
+            crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        );
+    }
     if profile.protocol == RelayProtocol::ChatCompletions {
         if !profile.upstream_base_url.trim().is_empty() {
             return profile.upstream_base_url.trim().to_string();
@@ -1792,6 +1797,9 @@ fn relay_profile_base_url(profile: &RelayProfile) -> String {
 }
 
 fn relay_profile_api_key(profile: &RelayProfile) -> String {
+    if profile.relay_mode == crate::settings::RelayMode::Aggregate {
+        return "codex-plus-aggregate".to_string();
+    }
     if profile.relay_mode == crate::settings::RelayMode::Official {
         return experimental_bearer_token_from_config(&profile.config_contents)
             .ok()

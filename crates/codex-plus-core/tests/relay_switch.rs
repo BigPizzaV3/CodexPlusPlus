@@ -1,6 +1,7 @@
 use codex_plus_core::relay_switch::switch_relay_profile_in_home;
 use codex_plus_core::settings::{
-    BackendSettings, LaunchMode, RelayMode, RelayProfile, SettingsStore,
+    AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
+    LaunchMode, RelayMode, RelayProfile, SettingsStore,
 };
 
 #[test]
@@ -109,6 +110,51 @@ base_url = "https://edited-a.example/v1"
     assert_eq!(previous.auto_compact_limit, "900000");
     assert_eq!(stored.active_relay_id, "b");
     assert_eq!(stored.launch_mode, LaunchMode::Patch);
+}
+
+#[test]
+fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let api = pure_profile("api", "https://api.example/v1", "sk-api");
+    let aggregate = RelayProfile {
+        id: "agg".to_string(),
+        name: "聚合供应商 1".to_string(),
+        relay_mode: RelayMode::Aggregate,
+        config_contents: String::new(),
+        auth_contents: String::new(),
+        ..RelayProfile::default()
+    };
+    let original = BackendSettings {
+        active_relay_id: "api".to_string(),
+        relay_profiles: vec![api.clone(), aggregate.clone()],
+        ..BackendSettings::default()
+    };
+    store.save(&original).unwrap();
+    let next = BackendSettings {
+        active_relay_id: "agg".to_string(),
+        relay_profiles: vec![api, aggregate],
+        aggregate_relay_profiles: vec![AggregateRelayProfile {
+            id: "agg".to_string(),
+            name: "聚合供应商 1".to_string(),
+            strategy: AggregateRelayStrategy::Failover,
+            members: vec![AggregateRelayMember {
+                relay_id: "api".to_string(),
+                weight: 1,
+            }],
+        }],
+        active_aggregate_relay_id: "agg".to_string(),
+        ..BackendSettings::default()
+    };
+
+    let result = switch_relay_profile_in_home(&store, &home, next, "api").unwrap();
+    let live = std::fs::read_to_string(home.join("config.toml")).unwrap();
+
+    assert!(result.configured);
+    assert_eq!(store.load().unwrap().active_relay_id, "agg");
+    assert!(live.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
 }
 
 #[test]
