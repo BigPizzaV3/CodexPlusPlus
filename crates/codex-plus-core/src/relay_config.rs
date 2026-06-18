@@ -667,6 +667,8 @@ pub fn backfill_relay_profile_from_home(
 ) -> anyhow::Result<()> {
     profile.config_contents = read_optional_text(&home.join("config.toml"))?;
     profile.auth_contents = read_optional_text(&home.join("auth.json"))?;
+    let live_config = profile.config_contents.clone();
+    sync_context_limits_from_config(profile, &live_config);
     if profile.model.trim().is_empty() {
         if let Some(model) = root_key_string(&profile.config_contents, "model") {
             profile.model = model;
@@ -693,6 +695,7 @@ pub fn backfill_relay_profile_from_home_with_common(
     profile.auth_contents = read_optional_text(&home.join("auth.json"))?;
     restore_profile_auth_from_live_config(profile, &template_auth)?;
     sync_profile_mode_from_backfilled_live(profile);
+    sync_context_limits_from_config(profile, &live_config);
     if profile.model.trim().is_empty() {
         if let Some(model) = root_key_string(&live_config, "model") {
             profile.model = model;
@@ -1362,6 +1365,35 @@ fn apply_context_limits_to_config(
         doc["model_auto_compact_token_limit"] = toml_edit::value(value as i64);
     }
     Ok(normalize_optional_toml(doc))
+}
+
+fn sync_context_limits_from_config(profile: &mut RelayProfile, config_text: &str) {
+    if let Some(value) = root_positive_int_string(config_text, "model_context_window") {
+        profile.context_window = value;
+    }
+    if let Some(value) = root_positive_int_string(config_text, "model_auto_compact_token_limit") {
+        profile.auto_compact_limit = value;
+    }
+}
+
+fn root_positive_int_string(config_text: &str, key: &str) -> Option<String> {
+    if let Ok(doc) = parse_toml_document(config_text) {
+        if let Some(value) = doc
+            .get(key)
+            .and_then(Item::as_value)
+            .and_then(toml_edit::Value::as_integer)
+            .filter(|value| *value > 0)
+        {
+            return Some(value.to_string());
+        }
+    }
+
+    root_key_value(config_text, key)
+        .and_then(|value| value.split('#').next())
+        .map(str::trim)
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.to_string())
 }
 
 fn toml_value_is_subset(target: &toml_edit::Value, source: &toml_edit::Value) -> bool {

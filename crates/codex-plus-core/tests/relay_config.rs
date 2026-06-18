@@ -1492,6 +1492,39 @@ fn backfill_relay_profile_reads_live_files_and_model() {
 }
 
 #[test]
+fn backfill_relay_profile_reads_live_context_limits() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "mimo-v2.5-pro"
+model_provider = "custom"
+model_context_window = 1000000
+model_auto_compact_token_limit = 900000
+
+[model_providers.custom]
+base_url = "http://127.0.0.1:57321/v1"
+"#,
+    )
+    .unwrap();
+    let mut profile = RelayProfile::default();
+
+    backfill_relay_profile_from_home(temp.path(), &mut profile).unwrap();
+
+    assert_eq!(profile.context_window, "1000000");
+    assert_eq!(profile.auto_compact_limit, "900000");
+    assert!(
+        profile
+            .config_contents
+            .contains("model_context_window = 1000000")
+    );
+    assert!(
+        profile
+            .config_contents
+            .contains("model_auto_compact_token_limit = 900000")
+    );
+}
+
+#[test]
 fn backfill_relay_profile_with_common_strips_common_config_for_switching() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -1527,6 +1560,40 @@ command = "npx"
             .contains(r#"model_provider = "live""#)
     );
     assert_eq!(profile.auth_contents, r#"{"OPENAI_API_KEY":"sk-live"}"#);
+}
+
+#[test]
+fn backfill_relay_profile_with_common_reads_live_context_limits() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "mimo-v2.5-pro"
+model_provider = "custom"
+model_context_window = 1000000
+model_auto_compact_token_limit = 900000
+
+[model_providers.custom]
+base_url = "http://127.0.0.1:57321/v1"
+
+[mcp_servers.context7]
+command = "npx"
+"#,
+    )
+    .unwrap();
+    let mut profile = RelayProfile::default();
+    let mut common = r#"[mcp_servers.context7]
+command = "npx"
+"#
+    .to_string();
+
+    backfill_relay_profile_from_home_with_common(temp.path(), &mut profile, &mut common).unwrap();
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, &common).unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert_eq!(profile.context_window, "1000000");
+    assert_eq!(profile.auto_compact_limit, "900000");
+    assert!(config.contains("model_context_window = 1000000"));
+    assert!(config.contains("model_auto_compact_token_limit = 900000"));
 }
 
 #[test]

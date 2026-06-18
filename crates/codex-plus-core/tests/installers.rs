@@ -26,6 +26,22 @@ fn windows_entrypoint_plan_contains_silent_and_manager_entrypoints() {
     );
     assert_eq!(plan.uninstall_key, "CodexPlusPlus");
     assert_eq!(plan.legacy_uninstall_key, "Codex++");
+    assert_eq!(
+        plan.uninstaller_path.replace('\\', "/"),
+        "C:/Tools/uninstall.exe"
+    );
+    assert_eq!(
+        plan.uninstall_command.replace('\\', "/"),
+        "\"C:/Tools/uninstall.exe\""
+    );
+    assert_eq!(
+        plan.quiet_uninstall_command.replace('\\', "/"),
+        "\"C:/Tools/uninstall.exe\" /S"
+    );
+    assert_ne!(
+        plan.uninstall_command,
+        "\"C:/Tools/codex-plus-plus-manager.exe\""
+    );
 }
 
 #[test]

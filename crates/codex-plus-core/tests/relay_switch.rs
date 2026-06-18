@@ -63,6 +63,8 @@ fn switch_backfills_previous_profile_from_live_before_selecting_target() {
         home.join("config.toml"),
         r#"model = "edited-live-model"
 model_provider = "manual_a"
+model_context_window = 1000000
+model_auto_compact_token_limit = 900000
 
 [model_providers.manual_a]
 name = "manual_a"
@@ -103,6 +105,8 @@ base_url = "https://edited-a.example/v1"
         .unwrap();
     assert!(previous.config_contents.contains("edited-live-model"));
     assert!(previous.config_contents.contains("manual_a"));
+    assert_eq!(previous.context_window, "1000000");
+    assert_eq!(previous.auto_compact_limit, "900000");
     assert_eq!(stored.active_relay_id, "b");
     assert_eq!(stored.launch_mode, LaunchMode::Patch);
 }
