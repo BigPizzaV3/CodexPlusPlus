@@ -1544,6 +1544,16 @@ export function App() {
       targetRelayName: targetBeforeSnapshot.name,
       targetRelayMode: targetBeforeSnapshot.relayMode,
     });
+    const switchSettingsWithSnapshot = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
+    if (!switchSettingsWithSnapshot) {
+      logDiagnostic("switchRelayProfile.snapshot_failed", {
+        currentRelayId: previousActiveRelayId,
+        targetRelayId: switchSettings.activeRelayId,
+      });
+      return;
+    }
+    switchSettings = switchSettingsWithSnapshot;
+
     const selectedBeforeSave = activeRelayProfile(switchSettings);
     const validationError = relayProfileSwitchValidation(selectedBeforeSave);
     if (validationError) {
@@ -1555,8 +1565,7 @@ export function App() {
       showNotice("供应商配置可能不正确", validationError, "failed");
       return;
     }
-    switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
-    const selectedAfterSave = activeRelayProfile(switchSettings);
+    const selectedAfterSave = selectedBeforeSave;
     const command = relayProfileSwitchCommand(selectedAfterSave);
 
     logDiagnostic("switchRelayProfile.apply_start", {
@@ -1618,21 +1627,38 @@ export function App() {
   const snapshotActiveRelayFilesBeforeSwitch = async (
     next: BackendSettings,
     previousActiveRelayId: string,
-  ): Promise<BackendSettings> => {
-    const profileId = previousActiveRelayId.trim();
-    if (!profileId) return next;
+  ): Promise<BackendSettings | null> => {
+    const current = activeRelayProfile({ ...settingsForm, activeRelayId: previousActiveRelayId });
+    const selected = activeRelayProfile(next);
+    if (current.id === selected.id) return next;
+
+    logDiagnostic("snapshotActiveRelayFilesBeforeSwitch.start", {
+      currentRelayId: current.id,
+      currentRelayName: current.name,
+      selectedRelayId: selected.id,
+      selectedRelayName: selected.name,
+    });
     const result = await run(() =>
       call<SettingsBackfillResult>("backfill_relay_profile_from_live", {
-        request: { settings: next, profileId },
+        request: { settings: next, profileId: current.id },
       }),
     );
-    if (!result) return next;
-    const normalized = normalizeSettings(result.settings);
-    if (!isSuccessStatus(result.status)) {
-      showNotice("供应商切换", result.message, result.status);
-      return next;
+    if (!result || !isSuccessStatus(result.status)) {
+      logDiagnostic("snapshotActiveRelayFilesBeforeSwitch.failed", {
+        currentRelayId: current.id,
+        selectedRelayId: selected.id,
+        status: result?.status,
+        message: result?.message,
+      });
+      showNotice("供应商切换", result?.message ?? "读取当前配置文件失败，已停止切换以避免覆盖用户改动。", result?.status ?? "failed");
+      return null;
     }
-    return normalized;
+
+    logDiagnostic("snapshotActiveRelayFilesBeforeSwitch.ok", {
+      currentRelayId: current.id,
+      selectedRelayId: selected.id,
+    });
+    return syncLegacyRelayFields(normalizeSettings(result.settings));
   };
 
   const copyText = async (text: string, message: string) => {
@@ -6071,6 +6097,12 @@ function relayProfileModeSwitchedText(profile: RelayProfile): string {
   if (profile.relayMode === "pureApi") return "已按此供应商切换到纯 API；Codex增强已设为完整增强。";
   if (profile.officialMixApiKey) return "已按此供应商使用官方登录，并混入 API Key；Codex增强已设为兼容增强。";
   return "已按此供应商切回官方登录；Codex增强已设为兼容增强。";
+}
+
+function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injection" | "apply_relay_injection" | "apply_pure_api_injection" {
+  if (profile.relayMode === "pureApi") return "apply_pure_api_injection";
+  if (profile.relayMode === "official" && !profile.officialMixApiKey) return "clear_relay_injection";
+  return "apply_relay_injection";
 }
 
 function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
