@@ -149,7 +149,7 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
         hooks.start_helper(options.helper_port).await?;
     }
     let process_ids = codex_plus_core::watcher::find_codex_processes();
-    let activated = false;
+    let mut activated = false;
     #[cfg(windows)]
     {
         for process_id in &process_ids {
