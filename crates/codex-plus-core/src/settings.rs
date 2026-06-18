@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+﻿use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -81,6 +81,10 @@ pub struct RelayProfile {
     pub model_insert_mode: RelayModelInsertMode,
     #[serde(rename = "modelList", default)]
     pub model_list: String,
+    #[serde(rename = "modelMappings", default)]
+    pub model_mappings: HashMap<String, String>,
+    #[serde(rename = "modelMappingsEnabled", default = "default_true")]
+    pub model_mappings_enabled: bool,
     #[serde(
         rename = "userAgent",
         default,
@@ -141,6 +145,8 @@ impl Default for RelayProfile {
             auto_compact_limit: String::new(),
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
+            model_mappings: HashMap::new(),
+            model_mappings_enabled: true,
             user_agent: String::new(),
         }
     }
@@ -362,6 +368,8 @@ impl BackendSettings {
                 model_insert_mode: RelayModelInsertMode::Patch,
                 model_list: String::new(),
                 user_agent: String::new(),
+                model_mappings: HashMap::new(),
+            model_mappings_enabled: true,
             };
         }
 
@@ -405,6 +413,8 @@ impl BackendSettings {
             auto_compact_limit: String::new(),
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
+            model_mappings: HashMap::new(),
+            model_mappings_enabled: true,
             user_agent: String::new(),
         }
     }

@@ -163,6 +163,8 @@ type RelayProfile = {
   contextWindow: string;
   autoCompactLimit: string;
   modelList: string;
+  modelMappings: Record<string, string>;
+  modelMappingsEnabled: boolean;
   userAgent: string;
   aggregate?: RelayAggregateConfig | null;
 };
@@ -215,6 +217,7 @@ type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
 const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
 const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
+const CODEX_MODEL_MAPPING_KEYS = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2", "codex-auto-review"] as const;
 
 const emptyContextSelection = (): RelayContextSelection => ({
   mcpServers: [],
@@ -603,6 +606,8 @@ const defaultSettings: BackendSettings = {
       contextWindow: "",
       autoCompactLimit: "",
       modelList: "",
+      modelMappings: {},
+      modelMappingsEnabled: true,
       userAgent: "",
     },
   ],
@@ -3273,6 +3278,22 @@ function RelayProfileEditor({
   actions: Actions;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [availableModels, setAvailableModels] = useState<string[]>(() =>
+    profile.modelList
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+  );
+  useEffect(() => {
+    const nextModels = profile.modelList
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    setAvailableModels((current) => {
+      const merged = Array.from(new Set([...nextModels, ...Object.values(profile.modelMappings || {}), ...current]));
+      return merged;
+    });
+  }, [profile.modelList, profile.modelMappings]);
   if (isAggregateRelayProfile(profile)) {
     return (
       <AggregateRelayProfileEditor
@@ -3472,6 +3493,60 @@ function RelayProfileEditor({
               onChange={(event) => updateDraft({ userAgent: event.currentTarget.value })}
               placeholder="留空使用默认值"
             />
+          </Field>
+        ) : null}
+        {showApiFields ? (
+          <Field className="relay-field-model-mappings" label="模型映射">
+            <div className="relay-model-mappings-help hint-line">
+              <Info className="h-4 w-4" />
+              <span>将 Codex 固定模型名映射到当前供应商支持的上游模型；建议先点“从上游获取可选模型”。</span>
+            </div>
+            <div className="relay-model-mappings-grid">
+              {CODEX_MODEL_MAPPING_KEYS.map((codexModel) => {
+                const currentValue = (profile.modelMappings || {})[codexModel] || "";
+                const options = Array.from(new Set([...availableModels, currentValue].filter(Boolean)));
+                return (
+                  <div className="relay-model-mapping-row" key={codexModel}>
+                    <label>{codexModel}</label>
+                    <select
+                      className="relay-model-mapping-select"
+                      value={currentValue}
+                      onChange={(event) => {
+                        const nextMappings = { ...(profile.modelMappings || {}) };
+                        const nextValue = event.currentTarget.value.trim();
+                        if (nextValue) nextMappings[codexModel] = nextValue;
+                        else delete nextMappings[codexModel];
+                        updateDraft({ modelMappings: nextMappings });
+                      }}
+                    >
+                      <option value="">???</option>
+                      {options.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="relay-model-list-tools">
+              <Button
+                onClick={async () => {
+                  const models = await actions.fetchRelayProfileModels(profile);
+                  if (!models?.length) return;
+                  setAvailableModels(models);
+                  updateDraft({ modelList: models.join("\n") });
+                }}
+                size="sm"
+                type="button"
+                variant="secondary"
+              >
+                <Download className="h-4 w-4" />
+                从上游获取可选模型
+              </Button>
+              <span className="relay-model-mappings-summary">当前可选 {availableModels.length} 个模型</span>
+            </div>
           </Field>
         ) : null}
       </div>
@@ -4907,6 +4982,8 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             contextWindow: "",
             autoCompactLimit: "",
             modelList: "",
+            modelMappings: {},
+      modelMappingsEnabled: true,
             userAgent: "",
           },
         ];
@@ -4989,6 +5066,8 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     contextWindow: profile.contextWindow || "",
     autoCompactLimit: profile.autoCompactLimit || "",
     modelList: profile.modelList || "",
+    modelMappings: profile.modelMappings || {},
+    modelMappingsEnabled: profile.modelMappingsEnabled !== false,
     userAgent: profile.userAgent || "",
     aggregate: null,
   };
@@ -5571,6 +5650,8 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     contextWindow: "",
     autoCompactLimit: "",
     modelList: "",
+    modelMappings: {},
+      modelMappingsEnabled: true,
     userAgent: "",
   };
   return withGeneratedRelayFiles(next);
@@ -5600,6 +5681,8 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       contextWindow: "",
       autoCompactLimit: "",
       modelList: "",
+      modelMappings: {},
+      modelMappingsEnabled: true,
       userAgent: "",
       aggregate: {
         strategy: "failover",

@@ -732,8 +732,25 @@ fn response_header_timeout(is_stream: bool) -> Duration {
 
 fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
-    request_json: Value,
+    mut request_json: Value,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi)> {
+    // === Model name rewriting ===
+    // If relay has model_mappings, rewrite the model field
+    // (so Codex whitelist names like gpt-5.4 become actual upstream models)
+    if relay.model_mappings_enabled && !relay.model_mappings.is_empty() {
+        if let Some(model_val) = request_json.get("model") {
+            let model_str = model_val.as_str().unwrap_or_default();
+            if !model_str.is_empty() {
+                if let Some(mapped_to) = relay.model_mappings.get(model_str) {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "protocol_proxy.model_rewrite",
+                        serde_json::json!({"from": model_str, "to": mapped_to}),
+                    );
+                    request_json["model"] = serde_json::json!(mapped_to);
+                }
+            }
+        }
+    }
     match relay.protocol {
         RelayProtocol::Responses => Ok((
             responses_url(&relay.base_url),

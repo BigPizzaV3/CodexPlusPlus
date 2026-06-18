@@ -2752,3 +2752,73 @@ body {
   background: hsl(var(--brand-accent));
   color: hsl(var(--primary-foreground));
 }
+
+
+.relay-model-mappings-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.relay-model-mapping-row {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.relay-model-mapping-row label {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  font-weight: 600;
+}
+
+.relay-model-mapping-select {
+  width: 100%;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.relay-model-mapping-select:focus {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 1px;
+}
+
+.relay-model-mappings-help {
+  margin-bottom: 10px;
+}
+
+.relay-model-mappings-summary {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+
+@media (max-width: 900px) {
+  .relay-model-mapping-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.relay-model-mappings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: hsl(var(--foreground));
+  cursor: pointer;
+}
+
+.relay-model-mappings-toggle input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: hsl(var(--brand-accent));
+  cursor: pointer;
+}
