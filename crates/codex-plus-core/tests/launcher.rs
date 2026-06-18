@@ -210,10 +210,15 @@ fn launcher_builds_debug_arguments_and_commands() {
 }
 
 #[test]
-fn launcher_does_not_override_codex_app_environment() {
+fn launcher_uses_gated_startup_preload_without_proxy_environment_override() {
     let source = include_str!("../src/launcher.rs");
 
-    assert!(!source.contains(".envs(codex_process_environment())"));
+    assert!(source.contains("NODE_OPTIONS"));
+    assert!(source.contains("ensure_service_tier_preload"));
+    assert!(source.contains("ScopedEnvVar::set(\"NODE_OPTIONS\""));
+    assert!(source.contains("settings.enhancements_enabled"));
+    assert!(source.contains("settings.codex_app_service_tier_controls"));
+    assert!(source.contains("launcher.service_tier_preload_disabled"));
     assert!(!source.contains("activate_packaged_app_with_environment"));
     assert!(!source.contains("with_temporary_proxy_environment"));
 }

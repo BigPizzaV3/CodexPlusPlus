@@ -1,3 +1,5 @@
+use std::env;
+use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -481,6 +483,67 @@ fn helper_bind_host() -> String {
         .unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
+struct ServiceTierPreloadEnv {
+    node_options: String,
+}
+
+fn prepare_service_tier_preload(
+    settings: &BackendSettings,
+) -> anyhow::Result<Option<ServiceTierPreloadEnv>> {
+    if settings.enhancements_enabled && settings.codex_app_service_tier_controls {
+        let preload_path = crate::service_tier_preload::ensure_service_tier_preload()
+            .context("failed to prepare service tier preload")?;
+        let node_options = crate::service_tier_preload::node_options_with_service_tier_preload(
+            env::var("NODE_OPTIONS").ok().as_deref(),
+            &preload_path.to_string_lossy(),
+        );
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "launcher.service_tier_preload_enabled",
+            serde_json::json!({
+                "preload_path": preload_path.to_string_lossy(),
+                "node_options": node_options,
+            }),
+        );
+        Ok(Some(ServiceTierPreloadEnv { node_options }))
+    } else {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "launcher.service_tier_preload_disabled",
+            serde_json::json!({
+                "enhancements_enabled": settings.enhancements_enabled,
+                "service_tier_controls": settings.codex_app_service_tier_controls,
+            }),
+        );
+        Ok(None)
+    }
+}
+
+struct ScopedEnvVar {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl ScopedEnvVar {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = env::var_os(key);
+        unsafe {
+            env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        unsafe {
+            if let Some(previous) = &self.previous {
+                env::set_var(self.key, previous);
+            } else {
+                env::remove_var(self.key);
+            }
+        }
+    }
+}
+
 #[async_trait(?Send)]
 impl LaunchHooks for DefaultLaunchHooks {
     fn resolve_app_dir(
@@ -640,6 +703,7 @@ impl LaunchHooks for DefaultLaunchHooks {
         let native_menu_localization_enabled = settings.codex_app_native_menu_localization;
         let native_menu_inspector_port =
             native_menu_localization_enabled.then(|| select_native_menu_inspector_port(debug_port));
+        let service_tier_preload = prepare_service_tier_preload(settings)?;
         if cfg!(windows) {
             let activation = if let Some(inspector_port) = native_menu_inspector_port {
                 build_packaged_activation_with_native_menu_inspector(
@@ -660,6 +724,9 @@ impl LaunchHooks for DefaultLaunchHooks {
                 else {
                     unreachable!();
                 };
+                let _node_options_guard = service_tier_preload
+                    .as_ref()
+                    .map(|preload| ScopedEnvVar::set("NODE_OPTIONS", &preload.node_options));
                 let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
                 if let Some(inspector_port) = native_menu_inspector_port {
                     start_native_menu_localizer(inspector_port);
@@ -697,11 +764,16 @@ impl LaunchHooks for DefaultLaunchHooks {
             };
             let executable = command
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
-            let child = Command::new(executable)
+                .ok_or_else(|| anyhow::anyhow!("macOS Codex command is empty"))?;
+            let mut child_command = Command::new(executable);
+            child_command
                 .args(&command[1..])
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::null());
+            if let Some(preload) = &service_tier_preload {
+                child_command.env("NODE_OPTIONS", &preload.node_options);
+            }
+            let child = child_command
                 .spawn()
                 .context("failed to launch macOS Codex app")?;
             *self.child.lock().await = Some(child);
@@ -710,7 +782,7 @@ impl LaunchHooks for DefaultLaunchHooks {
             }
             return Ok(CodexLaunch::Process {
                 command,
-                wait_strategy: ProcessWaitStrategy::ExternalWaitCommand,
+                wait_strategy: ProcessWaitStrategy::TrackedChild,
                 macos_cleanup_policy: Some(cleanup_policy),
             });
         }
@@ -733,6 +805,9 @@ impl LaunchHooks for DefaultLaunchHooks {
             .args(&command[1..])
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if let Some(preload) = &service_tier_preload {
+            child_command.env("NODE_OPTIONS", &preload.node_options);
+        }
         #[cfg(windows)]
         child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
         let child = child_command
