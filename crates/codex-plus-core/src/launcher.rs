@@ -339,7 +339,7 @@ where
 }
 
 fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
-    settings.active_relay_profile().protocol == crate::settings::RelayProtocol::ChatCompletions
+    settings.active_relay_uses_protocol_proxy()
 }
 
 pub trait IntoLaunchHooks {
@@ -1038,6 +1038,26 @@ async fn handle_protocol_proxy_connection(
 
     if upstream.is_stream {
         write_http_stream_headers(stream, "200 OK", "text/event-stream; charset=utf-8").await?;
+        if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
+            let mut bytes_stream = upstream.response.bytes_stream();
+            while let Some(chunk) = bytes_stream.next().await {
+                if let Ok(bytes) = chunk {
+                    stream.write_all(&bytes).await?;
+                } else {
+                    break;
+                }
+            }
+            log_helper_response(
+                "helper.protocol_proxy_stream_ok",
+                method,
+                path,
+                "200 OK",
+                remote_addr_text,
+            );
+            stream.shutdown().await?;
+            return Ok(());
+        }
+
         let mut converter = request_json
             .as_ref()
             .map(crate::protocol_proxy::ChatSseToResponsesConverter::with_request)
@@ -1085,6 +1105,29 @@ async fn handle_protocol_proxy_connection(
     }
 
     let upstream_body = upstream.response.bytes().await?;
+    if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
+        write_http_response(
+            stream,
+            "200 OK",
+            if upstream.content_type.is_empty() {
+                "application/json; charset=utf-8"
+            } else {
+                &upstream.content_type
+            },
+            &upstream_body,
+        )
+        .await?;
+        log_helper_response(
+            "helper.protocol_proxy_ok",
+            method,
+            path,
+            "200 OK",
+            remote_addr_text,
+        );
+        stream.shutdown().await?;
+        return Ok(());
+    }
+
     let chat_json: serde_json::Value = serde_json::from_slice(&upstream_body)?;
     let response_json = if let Some(request_json) = request_json.as_ref() {
         crate::protocol_proxy::chat_completion_to_response_with_request(chat_json, request_json)?
