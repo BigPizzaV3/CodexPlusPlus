@@ -2,16 +2,22 @@ use codex_plus_core::protocol_proxy::{
     ChatSseToResponsesConverter, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
     chat_sse_to_responses_sse_with_request, is_chat_completions_proxy_path, is_models_proxy_path,
-    is_responses_proxy_path, models_url, open_responses_proxy_request_with_settings,
-    responses_error_from_upstream, responses_to_chat_completions,
-    send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
-    upstream_stream_header_timeout,
+    is_responses_proxy_path, models_url, open_chat_completions_proxy_request,
+    open_models_proxy_request, open_responses_proxy_request,
+    open_responses_proxy_request_with_settings, responses_error_from_upstream,
+    responses_to_chat_completions, send_upstream_request_with_header_timeout,
+    upstream_header_timeout, upstream_http_client, upstream_stream_header_timeout,
 };
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
     RelayMode, RelayProfile,
 };
 use serde_json::json;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::thread;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1428,4 +1434,191 @@ fn aggregate_proxy_settings(
         }],
         ..BackendSettings::default()
     }
+}
+#[tokio::test]
+async fn chat_completions_proxy_uses_configured_user_agent() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let server = spawn_chat_server();
+    write_chat_relay_settings(temp.path(), &server.base_url, "Configured-Codex-UA/1.0");
+
+    let upstream = open_chat_completions_proxy_request(
+        r#"{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}"#,
+        Some("Original-Codex-UA/1.0"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+
+    let request = server.finish();
+    assert_eq!(request.user_agent, "Configured-Codex-UA/1.0");
+}
+
+#[tokio::test]
+async fn chat_completions_proxy_passes_through_original_user_agent_when_unconfigured() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let server = spawn_chat_server();
+    write_chat_relay_settings(temp.path(), &server.base_url, "");
+
+    let upstream = open_chat_completions_proxy_request(
+        r#"{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}"#,
+        Some("Original-Codex-UA/1.0"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+
+    let request = server.finish();
+    assert_eq!(request.user_agent, "Original-Codex-UA/1.0");
+}
+
+#[tokio::test]
+async fn responses_proxy_passes_through_original_user_agent_when_unconfigured() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let server = spawn_chat_server();
+    write_chat_relay_settings(temp.path(), &server.base_url, "");
+
+    let upstream = open_responses_proxy_request(
+        r#"{"model":"gpt-5.5","input":"hello","stream":false}"#,
+        Some("Original-Codex-UA/1.0"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+
+    let request = server.finish();
+    assert_eq!(request.user_agent, "Original-Codex-UA/1.0");
+}
+
+#[tokio::test]
+async fn models_proxy_passes_through_original_user_agent_when_unconfigured() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let server = spawn_chat_server();
+    write_chat_relay_settings(temp.path(), &server.base_url, "");
+
+    let upstream = open_models_proxy_request(Some("Original-Codex-UA/1.0"))
+        .await
+        .unwrap();
+    assert_eq!(upstream.status_code, 200);
+
+    let request = server.finish();
+    assert_eq!(request.user_agent, "Original-Codex-UA/1.0");
+}
+
+fn write_chat_relay_settings(settings_dir: &Path, base_url: &str, user_agent: &str) {
+    let settings = json!({
+        "relayProfiles": [{
+            "id": "chat",
+            "name": "Chat",
+            "baseUrl": base_url,
+            "upstreamBaseUrl": base_url,
+            "apiKey": "sk-test",
+            "protocol": "chatCompletions",
+            "relayMode": "mixedApi",
+            "userAgent": user_agent
+        }],
+        "activeRelayId": "chat"
+    });
+    std::fs::write(
+        settings_dir.join("settings.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+}
+
+struct SettingsPathGuard {
+    previous: Option<PathBuf>,
+}
+
+fn settings_path_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+impl SettingsPathGuard {
+    fn set(path: PathBuf) -> Self {
+        let previous = codex_plus_core::paths::set_settings_path_for_tests(Some(path));
+        Self { previous }
+    }
+}
+
+impl Drop for SettingsPathGuard {
+    fn drop(&mut self) {
+        codex_plus_core::paths::set_settings_path_for_tests(self.previous.take());
+    }
+}
+
+struct ChatServer {
+    base_url: String,
+    handle: thread::JoinHandle<ChatRequest>,
+}
+
+impl ChatServer {
+    fn finish(self) -> ChatRequest {
+        self.handle.join().unwrap()
+    }
+}
+
+struct ChatRequest {
+    user_agent: String,
+}
+
+fn spawn_chat_server() -> ChatServer {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let base_url = format!("http://{address}/v1");
+    listener.set_nonblocking(true).unwrap();
+    let handle = thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        started.elapsed() < std::time::Duration::from_secs(5),
+                        "test upstream did not receive a request"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("failed to accept test request: {error}"),
+            }
+        };
+        let mut buffer = [0u8; 4096];
+        let bytes = loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Ok(bytes) => break bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("failed to read test request: {error}"),
+            }
+        };
+        let request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+        let user_agent = request
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("user-agent")
+                        .then(|| value.trim().to_string())
+                })
+            })
+            .unwrap_or_default();
+        let body = r#"{"id":"chatcmpl-test","object":"chat.completion","choices":[]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+        ChatRequest { user_agent }
+    });
+    ChatServer { base_url, handle }
 }
