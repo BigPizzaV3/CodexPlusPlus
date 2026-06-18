@@ -439,8 +439,8 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("codexServiceTierMaybeLoadModelCatalog"));
     assert!(script.contains("fastBlocked"));
     assert!(script.contains("data-tier=\"unsupported\""));
-    assert!(script.contains("nextParams.service_tier = override.serviceTier"));
-    assert!(script.contains("serviceTierControls: false"));
+    assert!(script.contains("service_tier: override.serviceTier"));
+    assert!(script.contains("serviceTierControls: true"));
     assert!(script.contains("data-codex-plus-setting=\"serviceTierControls\""));
     assert!(script.contains("data-codex-service-tier-controls"));
     assert!(script.contains("removeCodexServiceTierBadges"));
@@ -509,6 +509,7 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
 
     assert_eq!(cases["turnWithoutModel"]["serviceTier"], "priority");
+    assert_eq!(cases["turnWithoutModel"]["service_tier"], "priority");
     assert_eq!(cases["turnWithoutModelDiagnosticModel"], "gpt-5.4");
 
     assert_eq!(
@@ -521,6 +522,7 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
 
     assert_eq!(cases["startConversation"]["serviceTier"], "priority");
+    assert_eq!(cases["startConversation"]["service_tier"], "priority");
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {

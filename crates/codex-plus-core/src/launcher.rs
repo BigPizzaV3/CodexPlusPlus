@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -143,7 +144,7 @@ pub trait LaunchHooks: Send + Sync {
         &self,
         app_dir: &Path,
         debug_port: u16,
-        extra_args: &[String],
+        settings: &BackendSettings,
     ) -> anyhow::Result<CodexLaunch>;
     async fn bridge_context(
         &self,
@@ -266,9 +267,7 @@ where
             helper_started = true;
         }
 
-        let launch = hooks
-            .launch_codex(&app_dir, debug_port, &settings.codex_extra_args)
-            .await?;
+        let launch = hooks.launch_codex(&app_dir, debug_port, &settings).await?;
         launched = Some(launch.clone());
         keep_launched_on_error = true;
         if settings.computer_use_guard_enabled {
@@ -492,8 +491,9 @@ impl LaunchHooks for DefaultLaunchHooks {
         &self,
         app_dir: &Path,
         debug_port: u16,
-        extra_args: &[String],
+        settings: &BackendSettings,
     ) -> anyhow::Result<CodexLaunch> {
+        let extra_args = &settings.codex_extra_args;
         if cfg!(windows) {
             if let Some(activation) = build_packaged_activation(app_dir, debug_port, extra_args) {
                 let CodexLaunch::PackagedActivation {
@@ -564,20 +564,46 @@ impl LaunchHooks for DefaultLaunchHooks {
             } else {
                 MacosCleanupPolicy::QuitIfNotPreviouslyRunning
             };
-            let command = build_macos_open_command(app_dir, debug_port, extra_args);
+            let command = build_codex_command(app_dir, debug_port, extra_args);
             let executable = command
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
-            let child = Command::new(executable)
+                .ok_or_else(|| anyhow::anyhow!("macOS Codex command is empty"))?;
+            let mut child_command = Command::new(executable);
+            child_command
                 .args(&command[1..])
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::null());
+            if settings.enhancements_enabled {
+                let preload_path = crate::service_tier_preload::ensure_service_tier_preload()
+                    .context("failed to prepare service tier preload")?;
+                let node_options =
+                    crate::service_tier_preload::node_options_with_service_tier_preload(
+                        env::var("NODE_OPTIONS").ok().as_deref(),
+                        &preload_path.to_string_lossy(),
+                    );
+                child_command.env("NODE_OPTIONS", node_options.clone());
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.service_tier_preload_enabled",
+                    serde_json::json!({
+                        "preload_path": preload_path.to_string_lossy(),
+                        "node_options": node_options,
+                    }),
+                );
+            } else {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.service_tier_preload_disabled",
+                    serde_json::json!({
+                        "enhancements_enabled": settings.enhancements_enabled,
+                    }),
+                );
+            }
+            let child = child_command
                 .spawn()
                 .context("failed to launch macOS Codex app")?;
             *self.child.lock().await = Some(child);
             return Ok(CodexLaunch::Process {
                 command,
-                wait_strategy: ProcessWaitStrategy::ExternalWaitCommand,
+                wait_strategy: ProcessWaitStrategy::TrackedChild,
                 macos_cleanup_policy: Some(cleanup_policy),
             });
         }

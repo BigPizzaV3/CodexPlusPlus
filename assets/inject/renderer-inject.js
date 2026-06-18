@@ -931,7 +931,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginEntryUnlock: true, pluginMarketplaceUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
+    return { pluginEntryUnlock: true, pluginMarketplaceUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, projectMove: true, conversationTimeline: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: true };
   }
 
   const codexPlusBackendSettingMap = {
@@ -989,6 +989,7 @@
         settings.pluginMarketplaceUnlock = false;
         settings.forcePluginInstall = false;
       }
+      settings.serviceTierControls = true;
       return settings;
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
@@ -997,6 +998,7 @@
         settings.pluginMarketplaceUnlock = false;
         settings.forcePluginInstall = false;
       }
+      settings.serviceTierControls = true;
       return settings;
     }
   }
@@ -1736,10 +1738,7 @@
   function applyCodexServiceTierRequestOverride(method, params, threadIdHint = "") {
     const override = codexServiceTierOverrideForRequest(method, params, threadIdHint);
     if (!override) return params;
-    const nextParams = { ...(params || {}), serviceTier: override.serviceTier };
-    if (Object.prototype.hasOwnProperty.call(nextParams, "service_tier") || override.fastBlocked) {
-      nextParams.service_tier = override.serviceTier;
-    }
+    const nextParams = { ...(params || {}), serviceTier: override.serviceTier, service_tier: override.serviceTier };
     sendCodexPlusDiagnostic("service_tier_request_override_applied", {
       method,
       threadId: override.threadId || "",
@@ -2160,8 +2159,8 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
+              <div><div class="codex-plus-row-title">系统 Fast 开关</div><div class="codex-plus-row-description">是否开启系统 Fast 开关：已默认开启，API Key 登录复用 Codex 原生速度选项与标识；具体 Fast / Standard 在 Codex 界面选择，Fast 仅支持 ${codexServiceTierFastModelListLabel()}。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls" disabled><span></span></button>
             </div>
             <div class="codex-plus-row" data-codex-service-tier-controls="true">
               <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承使用 config.toml 的 service tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>

@@ -20,6 +20,7 @@ pub mod relay_config;
 pub mod relay_switch;
 pub mod routes;
 pub mod script_market;
+pub mod service_tier_preload;
 pub mod settings;
 pub mod status;
 pub mod update;

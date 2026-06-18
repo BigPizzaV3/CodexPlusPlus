@@ -193,7 +193,7 @@ pub struct BackendSettings {
     pub codex_app_upstream_worktree_create: bool,
     #[serde(rename = "codexAppNativeMenuPlacement", default = "default_true")]
     pub codex_app_native_menu_placement: bool,
-    #[serde(rename = "codexAppServiceTierControls", default)]
+    #[serde(rename = "codexAppServiceTierControls", default = "default_true")]
     pub codex_app_service_tier_controls: bool,
     #[serde(rename = "codexAppImageOverlayEnabled", default)]
     pub codex_app_image_overlay_enabled: bool,
@@ -265,7 +265,7 @@ impl Default for BackendSettings {
             zed_remote_sync_to_zed_settings: false,
             codex_app_upstream_worktree_create: true,
             codex_app_native_menu_placement: true,
-            codex_app_service_tier_controls: false,
+            codex_app_service_tier_controls: true,
             codex_app_image_overlay_enabled: false,
             codex_app_image_overlay_path: String::new(),
             codex_app_image_overlay_opacity: default_image_overlay_opacity(),
@@ -792,6 +792,7 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     }
     settings.codex_app_image_overlay_opacity =
         clamp_image_overlay_opacity(settings.codex_app_image_overlay_opacity);
+    settings.codex_app_service_tier_controls = true;
     settings
 }
 
