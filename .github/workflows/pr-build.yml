@@ -38,7 +38,10 @@ jobs:
 
       - name: Build frontend
         working-directory: apps/codex-plus-manager
-        run: npm run vite:build
+        shell: bash
+        run: |
+          ./node_modules/.bin/vite build
+          test -d dist
 
       - name: Rust tests
         run: cargo test --workspace
@@ -116,7 +119,10 @@ jobs:
 
       - name: Build frontend
         working-directory: apps/codex-plus-manager
-        run: npm run vite:build
+        shell: bash
+        run: |
+          ./node_modules/.bin/vite build
+          test -d dist
 
       - name: Build release binaries
         run: cargo build --release --target ${{ matrix.target }}
