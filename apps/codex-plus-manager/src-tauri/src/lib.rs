@@ -28,9 +28,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let url = if show_update {
-                "index.html?showUpdate=1"
+                "/index.html?showUpdate=1"
             } else {
-                "index.html"
+                "/index.html"
             };
             let main_window =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))

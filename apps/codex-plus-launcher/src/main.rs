@@ -35,7 +35,16 @@ impl Default for LauncherHooks {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let options = parse_launch_options(std::env::args().skip(1));
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let helper_only = args.iter().any(|arg| arg == "--helper-only");
+    let options = parse_launch_options(args.iter());
+    if helper_only {
+        let hooks = LauncherHooks::default();
+        hooks.start_helper(options.helper_port).await?;
+        std::future::pending::<()>().await;
+        hooks.shutdown_helper(options.helper_port).await;
+        return Ok(());
+    }
     let Some(_guard) = acquire_single_instance_guard(options.debug_port)? else {
         activate_existing_codex_app(&options).await?;
         return Ok(());

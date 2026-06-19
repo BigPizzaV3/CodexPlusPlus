@@ -7,9 +7,7 @@ use std::thread;
 use codex_plus_core::model_catalog::{
     read_codex_model_catalog, read_codex_model_catalog_from_home,
 };
-use codex_plus_core::settings::{
-    BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore,
-};
+use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol, SettingsStore};
 use serde_json::json;
 
 #[tokio::test]

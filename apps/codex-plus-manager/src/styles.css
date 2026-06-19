@@ -573,6 +573,64 @@ body {
   padding: 7px 0;
 }
 
+.mobile-server-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.mobile-server-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-raised));
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  padding: 14px;
+  text-align: left;
+}
+
+.mobile-server-card:hover,
+.mobile-server-card:focus-visible,
+.mobile-server-card.active {
+  border-color: hsl(var(--primary) / 0.64);
+  background: hsl(var(--primary) / 0.1);
+  outline: none;
+}
+
+.mobile-server-card span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mobile-server-card strong,
+.mobile-server-card small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-server-card small {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.mobile-server-card em {
+  min-width: 58px;
+  border-radius: 999px;
+  background: hsl(var(--secondary));
+  color: hsl(var(--foreground));
+  font-style: normal;
+  font-weight: 700;
+  padding: 5px 9px;
+  text-align: center;
+}
+
 .relay-profile-list {
   display: grid;
   gap: 10px;
