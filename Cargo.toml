@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.2.16"
+version = "1.2.17"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/BigPizzaV3/CodexPlusPlus"
@@ -35,3 +35,4 @@ toml_edit = "0.22"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 winresource = "0.1"
+zip = { version = "2", default-features = false, features = ["deflate"] }

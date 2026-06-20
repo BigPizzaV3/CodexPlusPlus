@@ -60,6 +60,25 @@ pub struct SettingsPayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PluginMarketplaceRepairPayload {
+    pub codex_home: String,
+    pub marketplace_root: Option<String>,
+    pub initialized: bool,
+    pub configured: bool,
+    pub needs_repair: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginMarketplaceStatusPayload {
+    pub codex_home: String,
+    pub marketplace_root: Option<String>,
+    pub config_registered: bool,
+    pub needs_repair: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CcsProvidersPayload {
     pub db_path: String,
     pub providers: Vec<codex_plus_core::ccs_import::CcsProviderImport>,
@@ -1283,6 +1302,73 @@ pub fn repair_backend() -> CommandResult<SettingsPayload> {
         Err(error) => format!("后端修复部分失败：{error}"),
     };
     settings_payload(&message, "修复后重新读取设置失败")
+}
+
+#[tauri::command]
+pub fn plugin_marketplace_status() -> CommandResult<PluginMarketplaceStatusPayload> {
+    let home = codex_plus_core::codex_home::default_codex_home_dir();
+    let status = codex_plus_core::plugin_marketplace::openai_curated_marketplace_status(&home);
+    ok(
+        if status.needs_repair() {
+            "插件市场需要初始化或注册。"
+        } else {
+            "插件市场已可用。"
+        },
+        PluginMarketplaceStatusPayload {
+            codex_home: home.to_string_lossy().to_string(),
+            marketplace_root: status
+                .marketplace_root
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string()),
+            config_registered: status.config_registered,
+            needs_repair: status.needs_repair(),
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn repair_plugin_marketplace() -> CommandResult<PluginMarketplaceRepairPayload> {
+    let home = codex_plus_core::codex_home::default_codex_home_dir();
+    match codex_plus_core::plugin_marketplace::initialize_openai_curated_marketplace_and_configure(
+        &home,
+    )
+    .await
+    {
+        Ok(result) => ok(
+            if result.initialized {
+                "插件市场已从 openai/plugins 初始化并注册。"
+            } else if result.configured {
+                "已注册本地插件市场。"
+            } else {
+                "插件市场已可用，无需修复。"
+            },
+            PluginMarketplaceRepairPayload {
+                codex_home: home.to_string_lossy().to_string(),
+                marketplace_root:
+                    codex_plus_core::plugin_marketplace::openai_curated_marketplace_status(&home)
+                        .marketplace_root
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().to_string()),
+                initialized: result.initialized,
+                configured: result.configured,
+                needs_repair: false,
+            },
+        ),
+        Err(error) => failed(
+            &format!("插件市场修复失败：{error}"),
+            PluginMarketplaceRepairPayload {
+                codex_home: home.to_string_lossy().to_string(),
+                marketplace_root:
+                    codex_plus_core::plugin_marketplace::openai_curated_marketplace_status(&home)
+                        .marketplace_root
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().to_string()),
+                initialized: false,
+                configured: false,
+                needs_repair: true,
+            },
+        ),
+    }
 }
 
 #[tauri::command]

@@ -93,6 +93,21 @@ type OverviewResult = CommandResult<{
   logs_path: string;
 }>;
 
+type PluginMarketplaceRepairResult = CommandResult<{
+  codexHome: string;
+  marketplaceRoot?: string | null;
+  initialized: boolean;
+  configured: boolean;
+  needsRepair: boolean;
+}>;
+
+type PluginMarketplaceStatusResult = CommandResult<{
+  codexHome: string;
+  marketplaceRoot?: string | null;
+  configRegistered: boolean;
+  needsRepair: boolean;
+}>;
+
 type BackendSettings = {
   codexAppPath: string;
   codexExtraArgs: string[];
@@ -434,6 +449,12 @@ type ProviderSyncProgress = {
   result: CommandResult<ProviderSyncPayload> | null;
 };
 
+type TaskProgress = {
+  active: boolean;
+  percent: number;
+  message: string;
+};
+
 type LogsResult = CommandResult<{
   path: string;
   text: string;
@@ -681,6 +702,12 @@ export function App() {
     message: "尚未运行历史会话修复。",
     result: null,
   });
+  const [pluginMarketplaceProgress, setPluginMarketplaceProgress] = useState<TaskProgress>({
+    active: false,
+    percent: 0,
+    message: "尚未运行插件市场修复。",
+  });
+  const [pluginMarketplacePrompt, setPluginMarketplacePrompt] = useState<PluginMarketplaceStatusResult | null>(null);
   const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
@@ -1011,6 +1038,52 @@ export function App() {
       setSettingsForm(normalizeSettings(result.settings));
       showNotice("后端修复", result.message, result.status);
     }
+  };
+
+  const repairPluginMarketplace = async () => {
+    if (pluginMarketplaceProgress.active) return;
+    setPluginMarketplacePrompt(null);
+    setPluginMarketplaceProgress({ active: true, percent: 8, message: "正在检查本地插件市场…" });
+    const progressTimer = window.setInterval(() => {
+      setPluginMarketplaceProgress((current) => {
+        if (!current.active) return current;
+        const nextPercent = Math.min(92, current.percent + 9);
+        const message =
+          nextPercent < 28
+            ? "正在连接 openai/plugins…"
+            : nextPercent < 62
+              ? "正在下载插件市场快照…"
+              : nextPercent < 84
+                ? "正在解压并校验插件文件…"
+                : "正在写入 Codex 配置…";
+        return { ...current, percent: nextPercent, message };
+      });
+    }, 500);
+    try {
+      const result = await run(() => call<PluginMarketplaceRepairResult>("repair_plugin_marketplace"));
+      if (result) {
+        setPluginMarketplaceProgress({
+          active: false,
+          percent: 100,
+          message: result.message,
+        });
+        showNotice("插件市场修复", result.message, result.status);
+      } else {
+        setPluginMarketplaceProgress({
+          active: false,
+          percent: 100,
+          message: "插件市场修复失败，请查看错误提示后重试。",
+        });
+      }
+    } finally {
+      window.clearInterval(progressTimer);
+    }
+  };
+
+  const checkPluginMarketplacePrompt = async () => {
+    const result = await run(() => call<PluginMarketplaceStatusResult>("plugin_marketplace_status"));
+    if (result?.needsRepair) setPluginMarketplacePrompt(result);
+    return result;
   };
 
   const installEntrypoints = async () => {
@@ -1492,6 +1565,7 @@ export function App() {
       await refreshRelay(true);
       await refreshEnvConflicts(true);
       await refreshProviderSyncTargets(true);
+      await checkPluginMarketplacePrompt();
     })();
   }, []);
 
@@ -1520,6 +1594,8 @@ export function App() {
       launch,
       restart,
       repairBackend,
+      repairPluginMarketplace,
+      checkPluginMarketplacePrompt,
       installEntrypoints,
       uninstallEntrypoints,
       repairShortcuts,
@@ -1738,6 +1814,7 @@ export function App() {
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
+              pluginMarketplaceProgress={pluginMarketplaceProgress}
               actions={actions}
             />
           ) : null}
@@ -1777,7 +1854,12 @@ export function App() {
             />
           ) : null}
           {route === "enhance" ? (
-            <EnhanceScreen form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
+            <EnhanceScreen
+              form={settingsForm}
+              pluginMarketplaceProgress={pluginMarketplaceProgress}
+              onFormChange={setSettingsForm}
+              actions={actions}
+            />
           ) : null}
           {route === "zedRemote" ? (
             <ZedRemoteScreen projects={zedRemoteProjects} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
@@ -1809,6 +1891,14 @@ export function App() {
           onClose={() => setNotice(null)}
         />
       ) : null}
+      {pluginMarketplacePrompt ? (
+        <PluginMarketplacePromptDialog
+          progress={pluginMarketplaceProgress}
+          status={pluginMarketplacePrompt}
+          onClose={() => setPluginMarketplacePrompt(null)}
+          onRepair={() => void actions.repairPluginMarketplace()}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1818,6 +1908,8 @@ type Actions = {
   launch: () => Promise<void>;
   restart: () => Promise<void>;
   repairBackend: () => Promise<void>;
+  repairPluginMarketplace: () => Promise<void>;
+  checkPluginMarketplacePrompt: () => Promise<PluginMarketplaceStatusResult | null>;
   installEntrypoints: () => Promise<void>;
   uninstallEntrypoints: () => Promise<void>;
   repairShortcuts: () => Promise<void>;
@@ -2131,9 +2223,11 @@ function MobileControlScreen({
 
 function OverviewScreen({
   overview,
+  pluginMarketplaceProgress,
   actions,
 }: {
   overview: OverviewResult | null;
+  pluginMarketplaceProgress: TaskProgress;
   actions: Actions;
 }) {
   const health = healthItems(overview);
@@ -2205,7 +2299,11 @@ function OverviewScreen({
             <Button variant="secondary" onClick={() => void actions.repairBackend()}>
               修复后端
             </Button>
+            <Button disabled={pluginMarketplaceProgress.active} variant="secondary" onClick={() => void actions.repairPluginMarketplace()}>
+              {pluginMarketplaceProgress.active ? "正在修复…" : "修复插件市场"}
+            </Button>
           </Toolbar>
+          <TaskProgressBox progress={pluginMarketplaceProgress} title="插件市场修复进度" />
         </CardContent>
       </Panel>
       <Panel>
@@ -2442,10 +2540,12 @@ function envConflictSourceLabel(source: string): string {
 
 function EnhanceScreen({
   form,
+  pluginMarketplaceProgress,
   onFormChange,
   actions,
 }: {
   form: BackendSettings;
+  pluginMarketplaceProgress: TaskProgress;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
@@ -2505,6 +2605,14 @@ function EnhanceScreen({
             <FeatureToggle title="Upstream worktree" detail="从最新 upstream 分支创建 Git worktree。" checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
             <FeatureToggle title="原生菜单栏位置" detail="把 Codex++ 菜单插入 Codex 顶部原生菜单栏。" checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
           </div>
+          <div className="hint-line">
+            <Wrench className="h-4 w-4" />
+            <span>新机器没有本地插件市场时，可从 openai/plugins 初始化到当前 CODEX_HOME。</span>
+            <Button disabled={pluginMarketplaceProgress.active} variant="secondary" onClick={() => void actions.repairPluginMarketplace()}>
+              {pluginMarketplaceProgress.active ? "正在修复…" : "修复插件市场"}
+            </Button>
+          </div>
+          <TaskProgressBox progress={pluginMarketplaceProgress} title="插件市场修复进度" />
           <div className="zed-remote-settings">
             <Field label="Zed 默认打开策略">
               <select
@@ -4449,6 +4557,67 @@ function NoticeDialog({
         </div>
         <button className="toast-close" onClick={onClose} type="button">×</button>
       </div>
+    </div>
+  );
+}
+
+function PluginMarketplacePromptDialog({
+  status,
+  progress,
+  onRepair,
+  onClose,
+}: {
+  status: PluginMarketplaceStatusResult;
+  progress: TaskProgress;
+  onRepair: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card plugin-marketplace-modal">
+        <div className="modal-head">
+          <div>
+            <h2>插件市场需要修复</h2>
+            <p>当前 CODEX_HOME 未发现可用的完整插件市场，API Key 模式下可能出现插件安装后不可用。</p>
+          </div>
+          <button className="toast-close" onClick={onClose} type="button">×</button>
+        </div>
+        <div className="metric-list">
+          <Metric label="CODEX_HOME" value={status.codexHome} />
+          <Metric label="本地插件市场" value={status.marketplaceRoot ?? "未发现"} />
+          <Metric label="配置状态" value={status.configRegistered ? "已注册" : "未注册"} />
+        </div>
+        <TaskProgressBox progress={progress} title="修复进度" />
+        <Toolbar>
+          <Button disabled={progress.active} onClick={onRepair}>
+            <Download className="h-4 w-4" />
+            {progress.active ? "正在修复…" : "一键修复"}
+          </Button>
+          <Button disabled={progress.active} onClick={onClose} variant="secondary">稍后处理</Button>
+        </Toolbar>
+      </div>
+    </div>
+  );
+}
+
+function TaskProgressBox({ progress, title }: { progress: TaskProgress; title: string }) {
+  if (!progress.active && progress.percent <= 0) return null;
+  return (
+    <div className="provider-sync-progress task-progress" data-active={progress.active}>
+      <div className="provider-sync-progress-head">
+        <strong>{progress.active ? title : "上次修复结果"}</strong>
+        <span>{progress.percent}%</span>
+      </div>
+      <div
+        aria-valuemax={100}
+        aria-valuemin={0}
+        aria-valuenow={progress.percent}
+        className="provider-sync-progress-bar"
+        role="progressbar"
+      >
+        <div className="provider-sync-progress-fill" style={{ width: `${progress.percent}%` }} />
+      </div>
+      <small>{progress.message}</small>
     </div>
   );
 }

@@ -142,6 +142,12 @@ pub trait LaunchHooks: Send + Sync {
     async fn ensure_computer_use_config(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
     }
+    async fn ensure_plugin_marketplace_config(
+        &self,
+        _settings: &BackendSettings,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()>;
     async fn launch_codex(
         &self,
@@ -264,6 +270,7 @@ where
         if settings.provider_sync_enabled {
             hooks.run_provider_sync().await?;
         }
+        hooks.ensure_plugin_marketplace_config(&settings).await?;
         if settings.computer_use_guard_enabled {
             hooks.ensure_computer_use_config(&settings).await?;
         }
@@ -491,6 +498,38 @@ impl LaunchHooks for DefaultLaunchHooks {
         let artifacts = crate::computer_use_guard::resolve_computer_use_guard_artifacts(&home)?;
         crate::computer_use_guard::ensure_computer_use_config_with_artifacts(&home, &artifacts)?;
         *self.computer_use_guard_artifacts.lock().await = Some(artifacts);
+        Ok(())
+    }
+
+    async fn ensure_plugin_marketplace_config(
+        &self,
+        settings: &BackendSettings,
+    ) -> anyhow::Result<()> {
+        if !settings.codex_app_plugin_marketplace_unlock {
+            return Ok(());
+        }
+        let home = crate::relay_config::default_codex_home_dir();
+        match crate::plugin_marketplace::ensure_openai_curated_marketplace_config(&home) {
+            Ok(configured) => {
+                if configured {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.openai_curated_marketplace_configured",
+                        serde_json::json!({
+                            "home": home,
+                        }),
+                    );
+                }
+            }
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.openai_curated_marketplace_config_failed",
+                    serde_json::json!({
+                        "home": home,
+                        "message": error.to_string(),
+                    }),
+                );
+            }
+        }
         Ok(())
     }
 

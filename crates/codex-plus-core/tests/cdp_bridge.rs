@@ -222,19 +222,19 @@ fn injection_script_unlocks_nested_disabled_plugin_install_buttons() {
 fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"10\""));
-    assert!(script.contains("if (name === \"openai-bundled\") return \"\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
+    assert!(!script.contains("function pluginMarketplaceAliasForName"));
     assert!(
         !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
     );
-    assert!(script.contains("if (name === \"openai-bundled\" || name === \"codex-plus-openai-bundled\") return \"OpenAI插件1(Codex++)\""));
+    assert!(script.contains("if (name === \"openai-bundled\") return \"OpenAI插件1(Codex++)\""));
 }
 
 #[test]
 fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"10\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
     assert!(script.contains("source.includes(\"!u(e.marketplaceName)||e.marketplaceName===r\")"));
     assert!(script.contains("source.includes(\"!t.includes(e.name)\")"));
@@ -246,8 +246,9 @@ fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
 fn injection_script_expands_api_key_plugin_marketplace_requests() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"10\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
     assert!(script.contains("installPluginMarketplaceRequestPatch"));
+    assert!(script.contains("installPluginMarketplaceBridgePatch"));
     assert!(script.contains("installPluginBuildFlavorFilterPatch"));
     assert!(script.contains("Array.prototype.filter"));
     assert!(script.contains("codexPluginBuildFlavorFilterPatch"));
@@ -261,21 +262,24 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     ));
     assert!(script.contains("plugin_marketplace_hidden_filter_bypassed"));
     assert!(script.contains("method === \"list-plugins\""));
+    assert!(script.contains("method === \"vscode://codex/list-plugins\""));
+    assert!(script.contains("message.type === \"fetch\""));
+    assert!(script.contains("data?.type === \"fetch-response\""));
+    assert!(script.contains("__codexPluginMarketplaceFetchRequestIds"));
     assert!(script.contains("delete next.marketplaceKinds"));
     assert!(script.contains("patchPluginMarketplaceResult"));
-    assert!(script.contains("pluginMarketplaceAliasForName"));
-    assert!(script.contains("marketplace.name = alias"));
+    assert!(script.contains("__CODEX_PLUS_PLUGIN_MARKETPLACES__"));
+    assert!(script.contains("mergeLocalPluginMarketplaces(result)"));
+    assert!(script.contains("plugin_marketplace_local_merged"));
     assert!(script.contains("restorePluginMarketplaceName"));
     assert!(script.contains(
         "next.remoteMarketplaceName = restorePluginMarketplaceName(next.remoteMarketplaceName)"
     ));
-    assert!(script.contains("if (name === \"openai-bundled\") return \"\""));
+    assert!(!script.contains("marketplace.name = alias"));
+    assert!(script.contains("if (name === \"openai-curated\") return \"OpenAI插件2(Codex++)\""));
     assert!(
-        script.contains("if (name === \"openai-curated\") return \"codex-plus-openai-curated\"")
+        script.contains("if (name === \"openai-primary-runtime\") return \"OpenAI插件3(Codex++)\"")
     );
-    assert!(script.contains(
-        "if (name === \"openai-primary-runtime\") return \"codex-plus-openai-primary-runtime\""
-    ));
     assert!(script.contains("OpenAI插件1(Codex++)"));
     assert!(script.contains("OpenAI插件2(Codex++)"));
     assert!(script.contains("OpenAI插件3(Codex++)"));

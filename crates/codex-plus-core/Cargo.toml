@@ -24,6 +24,7 @@ tokio-tungstenite.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
 uuid.workspace = true
+zip.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

@@ -1854,6 +1854,54 @@ body {
   transition: width 220ms var(--motion-ease);
 }
 
+.task-progress {
+  margin-top: 10px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: hsl(0 0% 0% / 0.45);
+  padding: 24px;
+}
+
+.modal-card {
+  width: min(560px, calc(100vw - 32px));
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--popover));
+  color: hsl(var(--popover-foreground));
+  box-shadow: 0 24px 80px hsl(0 0% 0% / 0.36);
+  padding: 18px;
+}
+
+.modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.modal-head h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.modal-head p {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.plugin-marketplace-modal .metric-list {
+  margin-bottom: 12px;
+}
+
 .guide-list {
   margin-bottom: 12px;
 }
