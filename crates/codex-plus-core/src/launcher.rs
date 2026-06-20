@@ -1180,9 +1180,7 @@ async fn handle_mobile_relay_app_server_connect(
     let (app_tx, app_rx) = mpsc::unbounded_channel::<Message>();
     app_server_sessions.insert(
         session_id.clone(),
-        MobileRelayAppServerSession {
-            sender: app_tx,
-        },
+        MobileRelayAppServerSession { sender: app_tx },
     );
     let session_cipher = cipher.clone();
     tokio::spawn(run_mobile_relay_app_server_session(

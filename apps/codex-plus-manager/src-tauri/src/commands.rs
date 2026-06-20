@@ -60,6 +60,13 @@ pub struct SettingsPayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CcsProvidersPayload {
+    pub db_path: String,
+    pub providers: Vec<codex_plus_core::ccs_import::CcsProviderImport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalSessionsPayload {
     pub db_path: String,
     pub db_paths: Vec<String>,
@@ -447,6 +454,83 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
                     .to_string(),
                 user_scripts: user_script_inventory(),
             },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn load_ccs_providers() -> CommandResult<CcsProvidersPayload> {
+    let db_path = codex_plus_core::ccs_import::default_ccs_db_path();
+    match codex_plus_core::ccs_import::list_codex_providers_from_db(&db_path) {
+        Ok(providers) => ok(
+            &format!(
+                "已读取 cc-switch Codex 供应商配置：{} 个。",
+                providers.len()
+            ),
+            CcsProvidersPayload {
+                db_path: db_path.to_string_lossy().to_string(),
+                providers,
+            },
+        ),
+        Err(error) => failed(
+            &format!("读取 cc-switch 供应商配置失败：{error}"),
+            CcsProvidersPayload {
+                db_path: db_path.to_string_lossy().to_string(),
+                providers: Vec::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn import_ccs_providers() -> CommandResult<SettingsPayload> {
+    let providers = match codex_plus_core::ccs_import::list_codex_providers_from_default_db() {
+        Ok(providers) => providers,
+        Err(error) => {
+            let payload = settings_payload_value().unwrap_or_else(|(_, payload)| payload);
+            return failed(&format!("读取 cc-switch 供应商配置失败：{error}"), payload);
+        }
+    };
+
+    let store = SettingsStore::default();
+    let mut settings = store.load().unwrap_or_default();
+    let mut existing_keys: Vec<String> = settings
+        .relay_profiles
+        .iter()
+        .map(codex_plus_core::ccs_import::imported_provider_identity)
+        .collect();
+    let mut existing_ids: Vec<String> = settings
+        .relay_profiles
+        .iter()
+        .map(|profile| profile.id.clone())
+        .collect();
+    let mut imported = 0usize;
+
+    for provider in providers {
+        let key = codex_plus_core::ccs_import::provider_identity_from_ccs(&provider);
+        if existing_keys.iter().any(|existing| existing == &key) {
+            continue;
+        }
+        let profile = codex_plus_core::ccs_import::relay_profile_from_ccs(&provider, &existing_ids);
+        existing_ids.push(profile.id.clone());
+        existing_keys.push(key);
+        settings.relay_profiles.push(profile);
+        imported += 1;
+    }
+
+    if imported == 0 {
+        return settings_payload("没有新的 cc-switch 供应商配置需要导入。", "设置读取失败");
+    }
+
+    settings = normalize_settings_before_save(settings);
+    match store.save(&settings) {
+        Ok(()) => settings_payload(
+            &format!("已从 cc-switch 导入供应商配置：{imported} 个。"),
+            "导入供应商配置后重新读取设置失败",
+        ),
+        Err(error) => failed(
+            &format!("保存 cc-switch 供应商配置失败：{error}"),
+            settings_payload_value().unwrap_or_else(|(_, payload)| payload),
         ),
     }
 }

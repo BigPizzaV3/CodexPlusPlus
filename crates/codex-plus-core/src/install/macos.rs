@@ -22,41 +22,52 @@ pub fn build_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBund
     } else {
         SILENT_BINARY
     };
-    let target = option_or_current_exe(
-        if manager {
-            &options.manager_path
-        } else {
-            &options.launcher_path
-        },
+    let binary_source = install_binary_source(
+        option_or_current_exe(
+            if manager {
+                &options.manager_path
+            } else {
+                &options.launcher_path
+            },
+            binary,
+        ),
         binary,
     );
-    let (target, binary_source, binary_target_name) =
-        if is_bundle_executable_target(&target, executable_name) {
-            let sidecar = target
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(binary);
-            (sidecar, Some(target), Some(binary.to_string()))
-        } else {
-            (target, None, None)
-        };
     let identifier_suffix = if manager { ".manager" } else { "" };
     MacosAppBundle {
         app_path: install_root.join(format!("{display_name}.app")),
         info_plist: info_plist(display_name, executable_name, identifier_suffix),
-        launch_script: format!("#!/bin/sh\nexec \"{}\"\n", target.to_string_lossy()),
-        binary_source,
-        binary_target_name,
+        launch_script: launch_script(binary),
+        binary_source: Some(binary_source),
+        binary_target_name: Some(binary.to_string()),
     }
 }
 
-fn is_bundle_executable_target(target: &Path, executable_name: &str) -> bool {
-    target.file_name().and_then(|name| name.to_str()) == Some(executable_name)
-        && target
+fn launch_script(binary: &str) -> String {
+    format!(
+        "#!/bin/sh\nDIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nexec \"$DIR/{binary}\" \"$@\"\n"
+    )
+}
+
+fn install_binary_source(target: std::path::PathBuf, binary: &str) -> std::path::PathBuf {
+    if is_bundle_macos_target(&target) {
+        let sidecar = target
             .parent()
-            .and_then(|parent| parent.file_name())
-            .and_then(|name| name.to_str())
-            == Some("MacOS")
+            .unwrap_or_else(|| Path::new("."))
+            .join(binary);
+        if sidecar.exists() {
+            return sidecar;
+        }
+    }
+    target
+}
+
+fn is_bundle_macos_target(target: &Path) -> bool {
+    target
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        == Some("MacOS")
         && target
             .parent()
             .and_then(|parent| parent.parent())

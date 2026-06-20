@@ -50,6 +50,8 @@ pub fn run() {
             commands::restart_codex_plus,
             commands::load_settings,
             commands::save_settings,
+            commands::load_ccs_providers,
+            commands::import_ccs_providers,
             commands::list_local_sessions,
             commands::list_zed_remote_projects,
             commands::open_zed_remote,

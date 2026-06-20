@@ -80,8 +80,20 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
             .info_plist
             .contains("<string>Codex++ 管理工具</string>")
     );
-    assert!(silent.launch_script.contains("codex-plus-plus"));
-    assert!(manager.launch_script.contains("codex-plus-plus-manager"));
+    assert_eq!(
+        silent.binary_target_name.as_deref(),
+        Some("codex-plus-plus")
+    );
+    assert_eq!(
+        manager.binary_target_name.as_deref(),
+        Some("codex-plus-plus-manager")
+    );
+    assert!(silent.launch_script.contains("$DIR/codex-plus-plus"));
+    assert!(
+        manager
+            .launch_script
+            .contains("$DIR/codex-plus-plus-manager")
+    );
 }
 
 #[test]
@@ -119,6 +131,21 @@ fn companion_binary_path_resolves_macos_silent_app_next_to_manager_app() {
 }
 
 #[test]
+fn companion_binary_path_resolves_macos_manager_app_next_to_silent_app() {
+    let silent_exe = std::path::Path::new("/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus");
+
+    let companion =
+        companion_binary_path_from_exe(silent_exe, codex_plus_core::install::MANAGER_BINARY);
+
+    assert_eq!(
+        companion,
+        std::path::PathBuf::from(
+            "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager"
+        )
+    );
+}
+
+#[test]
 fn macos_bundle_does_not_wrap_the_bundle_executable_in_itself() {
     let options = InstallOptions {
         install_root: Some("/Applications".into()),
@@ -132,10 +159,24 @@ fn macos_bundle_does_not_wrap_the_bundle_executable_in_itself() {
     let silent = build_macos_app_bundle(&options, false);
     let manager = build_macos_app_bundle(&options, true);
 
-    assert!(!silent.launch_script.contains("CodexPlusPlus\""));
-    assert!(!manager.launch_script.contains("CodexPlusPlusManager\""));
-    assert!(silent.launch_script.contains("codex-plus-plus"));
-    assert!(manager.launch_script.contains("codex-plus-plus-manager"));
+    assert_eq!(
+        silent.binary_source,
+        Some(std::path::PathBuf::from(
+            "/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus"
+        ))
+    );
+    assert_eq!(
+        manager.binary_source,
+        Some(std::path::PathBuf::from(
+            "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager"
+        ))
+    );
+    assert!(silent.launch_script.contains("$DIR/codex-plus-plus"));
+    assert!(
+        manager
+            .launch_script
+            .contains("$DIR/codex-plus-plus-manager")
+    );
 }
 
 #[test]
