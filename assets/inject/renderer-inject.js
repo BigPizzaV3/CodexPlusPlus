@@ -8716,7 +8716,7 @@
   window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, { childList: true, subtree: true });
 })();
 
-// === CodexPasteFix integration (from /Users/crazyi/CodexPasteFix project) ===
+// === 粘贴修复 (CodexPlusPlus 页面增强) ===
 // 控制开关：window.__CODEX_PLUS_PASTE_FIX__ = { enabled: <bool> }
 // 由 CodexPlusPlus 在启动时根据 settings.codexAppPasteFix 注入。
 // 关闭时不进入 if 体，行为与原 Codex 完全一致；开启时在 document 捕获阶段
@@ -8729,7 +8729,7 @@ if (window.__CODEX_PLUS_PASTE_FIX__ && window.__CODEX_PLUS_PASTE_FIX__.enabled =
     if (window[SENTINEL]) return;
     window[SENTINEL] = true;
 
-    const TAG = '[CodexPasteFix]';
+    const TAG = '[PasteFix]';
 
     const handler = (e) => {
       const cd = e.clipboardData;
