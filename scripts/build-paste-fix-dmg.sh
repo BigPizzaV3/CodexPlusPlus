@@ -3,7 +3,8 @@
 #
 # 用法: bash scripts/build-paste-fix-dmg.sh [version] [arch]
 #   version 可选，默认 1.2.17-pastefix.1
-#   arch 可选：x86_64 (Intel) | arm64 (Apple Silicon) | host，默认 x86_64
+#   arch 可选：x86_64 (Intel) | arm64 (Apple Silicon)
+#          默认跟随当前机器 (uname -m)
 #
 # 前置: Rust toolchain (rustc + cargo), Node 22+, npm
 #       macOS 自带: sips, iconutil, hdiutil, codesign
@@ -16,8 +17,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 VERSION="${1:-1.2.17-pastefix.1}"
 
-# 解析 arch：第二个参数 > 环境变量 > 默认 x86_64
-REQUESTED_ARCH="${2:-${CODEXPP_ARCH:-x86_64}}"
+# 解析 arch：第二个参数 > 环境变量 > 当前机器架构
+REQUESTED_ARCH="${2:-${CODEXPP_ARCH:-$(uname -m)}}"
 case "$REQUESTED_ARCH" in
   x86_64|intel)
     ARCH="x86_64"
@@ -26,14 +27,6 @@ case "$REQUESTED_ARCH" in
   arm64|apple|apple-silicon)
     ARCH="arm64"
     TARGET="aarch64-apple-darwin"
-    ;;
-  host)
-    HOST_ARCH_RAW="$(uname -m)"
-    case "$HOST_ARCH_RAW" in
-      x86_64) ARCH="x86_64"; TARGET="x86_64-apple-darwin" ;;
-      arm64)  ARCH="arm64";  TARGET="aarch64-apple-darwin" ;;
-      *) echo "error: unknown host arch: $HOST_ARCH_RAW" >&2; exit 1 ;;
-    esac
     ;;
   *) echo "error: arch must be x86_64, arm64, or host (got: $REQUESTED_ARCH)" >&2; exit 1 ;;
 esac
