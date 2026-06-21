@@ -113,6 +113,40 @@ fn asset_selection_prefers_current_platform_artifacts() {
 }
 
 #[test]
+fn asset_selection_distinguishes_x64_and_arm64_macos_dmgs() {
+    // Regression test for the bug where an x86_64 Mac user could be handed
+    // the arm64 DMG (or vice versa) because `is_macos_installer_asset` did
+    // not check the arch token in the filename.
+    let assets = vec![
+        (
+            "CodexPlusPlus-1.2.17-macos-arm64.dmg".to_string(),
+            "https://example.test/app-arm64.dmg".to_string(),
+        ),
+        (
+            "CodexPlusPlus-1.2.17-macos-x64.dmg".to_string(),
+            "https://example.test/app-x64.dmg".to_string(),
+        ),
+    ];
+
+    if cfg!(target_os = "macos") {
+        let selected = select_update_asset(&assets)
+            .expect("a macOS DMG should be selected for the running arch");
+        let expected = match std::env::consts::ARCH {
+            "x86_64" => "CodexPlusPlus-1.2.17-macos-x64.dmg",
+            "aarch64" => "CodexPlusPlus-1.2.17-macos-arm64.dmg",
+            other => panic!("unexpected target arch in test: {other}"),
+        };
+        assert_eq!(
+            selected.name, expected,
+            "x86_64 binary must select x64 DMG, aarch64 binary must select arm64 DMG"
+        );
+    } else {
+        // Non-macOS platforms should not pick either macOS DMG.
+        assert!(select_update_asset(&assets).is_none());
+    }
+}
+
+#[test]
 fn safe_asset_name_rejects_path_traversal() {
     assert_eq!(safe_asset_name("pkg.zip").unwrap(), "pkg.zip");
     assert!(safe_asset_name("../pkg.zip").is_err());
