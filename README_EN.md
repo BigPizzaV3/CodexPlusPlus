@@ -120,6 +120,7 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 - Relay injection mode with multiple relay profiles, `CodexPlusPlus` provider configuration, and a one-click switch back to official ChatGPT login mode.
 - Traditional enhancement mode with plugin entry unlock, forced plugin install, session delete, Markdown export, project move, Timeline, and more.
 - Paste fix: when pasting from Word or other rich-text sources into the Codex composer, only keep the plain text so Codex does not treat the clipboard content as an image or file attachment. Off by default; requires a Codex relaunch to take effect. Mirrors the standalone [CodexPasteFix](https://github.com/BigPizzaV3/CodexPasteFix) project.
+  - **Usage note**: after toggling in the manager, click the "保存增强设置" / "Save enhancement settings" button to persist, then restart Codex++ for the change to take effect.
 - Independent user script management with startup injection.
 - Provider Sync to keep historical sessions visible after switching providers.
 - Zed open entry detects remote SSH context and opens the matching remote file in Zed Remote Development from Codex.
