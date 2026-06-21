@@ -56,3 +56,24 @@ fn paste_fix_config_reflects_setting() {
         serde_json::json!({ "enabled": true })
     );
 }
+
+#[test]
+fn injection_script_includes_paste_fix_global() {
+    use codex_plus_core::assets::injection_script_with_settings;
+
+    let mut settings = BackendSettings::default();
+    settings.codex_app_paste_fix = true;
+    let script = injection_script_with_settings(0, &settings);
+    assert!(
+        script.contains("window.__CODEX_PLUS_PASTE_FIX__ = {\"enabled\":true};"),
+        "script should declare __CODEX_PLUS_PASTE_FIX__ as enabled, got: {}",
+        &script[..script.find("window.__CODEX_PLUS_PASTE_FIX__").unwrap_or(0) + 80]
+    );
+
+    settings.codex_app_paste_fix = false;
+    let script = injection_script_with_settings(0, &settings);
+    assert!(
+        script.contains("window.__CODEX_PLUS_PASTE_FIX__ = {\"enabled\":false};"),
+        "script should declare __CODEX_PLUS_PASTE_FIX__ as disabled"
+    );
+}
