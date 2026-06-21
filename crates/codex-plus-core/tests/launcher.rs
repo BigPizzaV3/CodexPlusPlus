@@ -1049,6 +1049,40 @@ async fn default_provider_sync_enabled_fails_instead_of_silently_skipping() {
     );
 }
 
+#[tokio::test]
+async fn launch_continues_when_plugin_marketplace_config_fails() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let hooks = FakeHooks::new(events.clone())
+        .with_plugin_marketplace_error("config.toml TOML parse failed");
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(PathBuf::from("/Applications/Codex.app")),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store: StatusStore::new(tempfile::tempdir().unwrap().path().join("status.json")),
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(handle.debug_port, 9229);
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        [
+            "select-debug:9229",
+            "select-helper:57321",
+            "load-settings",
+            "plugin-marketplace",
+            "start-helper:57321",
+            "launch:9229",
+            "inject:9229:57321",
+            "status:running"
+        ]
+    );
+}
+
 #[test]
 fn launcher_macos_cleanup_command_targets_specific_app_bundle() {
     let command = build_macos_cleanup_command(
@@ -1094,6 +1128,7 @@ struct FakeHooks {
     launch_error: Option<String>,
     inject_error: Option<String>,
     provider_sync_unsupported: bool,
+    plugin_marketplace_error: Option<String>,
 }
 
 impl FakeHooks {
@@ -1109,6 +1144,7 @@ impl FakeHooks {
             launch_error: None,
             inject_error: None,
             provider_sync_unsupported: false,
+            plugin_marketplace_error: None,
         }
     }
 
@@ -1134,6 +1170,11 @@ impl FakeHooks {
 
     fn with_provider_sync_unsupported(mut self) -> Self {
         self.provider_sync_unsupported = true;
+        self
+    }
+
+    fn with_plugin_marketplace_error(mut self, message: &str) -> Self {
+        self.plugin_marketplace_error = Some(message.to_string());
         self
     }
 
@@ -1184,6 +1225,17 @@ impl LaunchHooks for FakeHooks {
 
     async fn ensure_computer_use_config(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         self.event("computer-use-guard");
+        Ok(())
+    }
+
+    async fn ensure_plugin_marketplace_config(
+        &self,
+        _settings: &BackendSettings,
+    ) -> anyhow::Result<()> {
+        if let Some(message) = &self.plugin_marketplace_error {
+            self.event("plugin-marketplace");
+            anyhow::bail!(message.clone());
+        }
         Ok(())
     }
 

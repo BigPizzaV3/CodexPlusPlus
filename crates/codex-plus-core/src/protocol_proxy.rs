@@ -3745,8 +3745,22 @@ fn copy_response_request_fields(response: &mut Value, original_request: Option<&
 
 fn responses_arguments_to_chat(value: &Value) -> String {
     match value {
-        Value::String(text) => text.clone(),
-        other => canonical_json_string(other),
+        Value::String(text) => normalize_chat_tool_arguments_string(text),
+        Value::Object(_) => canonical_json_string(value),
+        Value::Null => "{}".to_string(),
+        other => canonical_json_string(&json!({ "input": other })),
+    }
+}
+
+fn normalize_chat_tool_arguments_string(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "{}".to_string();
+    }
+    match serde_json::from_str::<Value>(trimmed) {
+        Ok(Value::Object(_)) => trimmed.to_string(),
+        Ok(value) => canonical_json_string(&json!({ "input": value })),
+        Err(_) => canonical_json_string(&json!({ "input": text })),
     }
 }
 

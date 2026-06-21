@@ -270,7 +270,14 @@ where
         if settings.provider_sync_enabled {
             hooks.run_provider_sync().await?;
         }
-        hooks.ensure_plugin_marketplace_config(&settings).await?;
+        if let Err(error) = hooks.ensure_plugin_marketplace_config(&settings).await {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.plugin_marketplace_config_failed_nonfatal",
+                serde_json::json!({
+                    "message": error.to_string()
+                }),
+            );
+        }
         if settings.computer_use_guard_enabled {
             hooks.ensure_computer_use_config(&settings).await?;
         }
