@@ -932,7 +932,6 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     }
     settings.codex_app_image_overlay_opacity =
         clamp_image_overlay_opacity(settings.codex_app_image_overlay_opacity);
-    settings.codex_app_service_tier_controls = true;
     settings
 }
 
