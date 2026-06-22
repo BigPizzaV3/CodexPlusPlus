@@ -109,6 +109,14 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
     </td>
     <td><a href="https://github.com/Liuchun-oss/codelf-agent"><strong>Codelf</strong></a><br>Codelf is a desktop app with an autonomous AI Agent and a full editor. It can help users build projects, organize materials, operate local apps, and work with multiple AI model providers through natural language, with direct access in China and high context-cache efficiency.</td>
   </tr>
+  <tr>
+    <td align="center">
+      <a href="https://xc.y1yun.net/">
+        <img src="docs/images/sponsor-yiyun-tech.jpg" alt="Yiyun Technology" width="150">
+      </a>
+    </td>
+    <td><a href="https://xc.y1yun.net/"><strong>Yiyun Technology</strong></a><br>Yiyun Technology provides payment and settlement products for AI aggregation businesses, including Jiuwu Yunshang and Yiyun Pay. It supports WeChat Pay, Alipay, UnionPay, and Cloud QuickPass channels with low rates, D1/D0 settlement, 24/7 technical support, dedicated WeCom service groups, and strong website protection for merchants.</td>
+  </tr>
 </table>
 
 
