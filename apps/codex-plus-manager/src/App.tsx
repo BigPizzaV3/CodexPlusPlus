@@ -6099,12 +6099,6 @@ function relayProfileModeSwitchedText(profile: RelayProfile): string {
   return "已按此供应商切回官方登录；Codex增强已设为兼容增强。";
 }
 
-function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injection" | "apply_relay_injection" | "apply_pure_api_injection" {
-  if (profile.relayMode === "pureApi") return "apply_pure_api_injection";
-  if (profile.relayMode === "official" && !profile.officialMixApiKey) return "clear_relay_injection";
-  return "apply_relay_injection";
-}
-
 function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
   if (isAggregateRelayProfile(profile)) {
     return { ...profile, configContents: "", authContents: "", aggregate: normalizeAggregateConfig(profile.aggregate, []) };
