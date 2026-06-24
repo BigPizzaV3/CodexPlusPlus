@@ -3789,8 +3789,9 @@ function RelayProfileEditor({
           <Input
             value={profile.model}
             onChange={(event) => updateDraft({ model: event.currentTarget.value })}
-            placeholder="写入 config.toml 的 model 字段，例如 gpt-5"
+            placeholder="例如 deepseek-v4-pro 或 deepseek-v4-pro[1M]"
           />
+          <p className="field-hint">支持在模型名后加 <code>[1M]</code>、<code>[200K]</code> 或 <code>[1000000]</code> 指定上下文窗口；不写则使用 Codex 默认长度。</p>
         </Field>
         <Field className="relay-field-goals" label="Codex 目标">
           <label className="inline-check">
