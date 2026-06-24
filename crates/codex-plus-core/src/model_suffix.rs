@@ -110,14 +110,37 @@ pub fn collect_catalog_entries(model_list: &str, current_model: &str) -> Vec<Mod
     entries
 }
 
-/// 构建 codex model_catalog_json 内容。条目字段对齐 cc-switch 覆盖集与 codex
-/// 内置目录必要字段（见 docs/research/01-调研结果.md 第五节）。
+/// 内置 codex bundled catalog 模板（assets/codex-models.json），用于 clone entry
+/// 保证字段齐全，避免 codex 因缺字段忽略条目。
+const BUNDLED_TEMPLATE_JSON: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/codex-models.json"));
+
+/// 构建 codex model_catalog_json 内容。
+///
+/// 采用 cc-switch 的 template-clone 思路：取 codex 自带 bundled entry 做模板，
+/// 再覆盖 slug / display_name / description / context_window / max_context_window /
+/// effective_context_window_percent / priority / auto_compact_token_limit 等字段。
 /// 无后缀条目用 fallback_window；fallback 也无时回落 272000（codex 默认）。
 /// auto_compact_token_limit 留 null：codex 内置模型即 null（按比例算，调研第六节）。
 pub fn build_model_catalog_json(
     entries: &[ModelCatalogEntry],
     fallback_window: Option<u64>,
 ) -> String {
+    build_model_catalog_json_with_template(entries, fallback_window, None)
+}
+
+/// 使用指定模板（或内置 bundled 模板）构建 catalog。
+/// `template` 为单个 model entry 的 JSON Value；为 None 时使用内置模板的第一条。
+pub fn build_model_catalog_json_with_template(
+    entries: &[ModelCatalogEntry],
+    fallback_window: Option<u64>,
+    template: Option<&Value>,
+) -> String {
+    let template = template
+        .cloned()
+        .or_else(|| load_bundled_template_entry())
+        .unwrap_or_else(|| json!({}));
+
     let models: Vec<Value> = entries
         .iter()
         .enumerate()
@@ -126,22 +149,34 @@ pub fn build_model_catalog_json(
                 .suffix_window
                 .or(fallback_window)
                 .unwrap_or(272_000);
-            json!({
-                "slug": entry.slug,
-                "display_name": entry.display_name,
-                "description": entry.display_name,
-                "context_window": context_window,
-                "max_context_window": context_window,
-                "auto_compact_token_limit": Value::Null,
-                "priority": 1000 + index,
-                "visibility": "list",
-                "supported_in_api": true,
-                "additional_speed_tiers": [],
-                "service_tiers": [],
-                "availability_nux": Value::Null,
-                "upgrade": Value::Null,
-            })
+            let mut model = template.clone();
+            model["slug"] = json!(entry.slug);
+            model["display_name"] = json!(entry.display_name);
+            model["description"] = json!(entry.display_name);
+            model["context_window"] = json!(context_window);
+            model["max_context_window"] = json!(context_window);
+            // 默认 95 会让 1M 显示为 950K，显式写 100 以显示真实窗口。
+            model["effective_context_window_percent"] = json!(100);
+            model["auto_compact_token_limit"] = Value::Null;
+            model["priority"] = json!(1000 + index);
+            model["visibility"] = json!("list");
+            model["supported_in_api"] = json!(true);
+            model["additional_speed_tiers"] = json!([]);
+            model["service_tiers"] = json!([]);
+            model["availability_nux"] = Value::Null;
+            model["upgrade"] = Value::Null;
+            model
         })
         .collect();
     serde_json::to_string_pretty(&json!({ "models": models })).unwrap_or_default()
+}
+
+/// 加载内置 bundled catalog 模板的第一条 model entry。
+fn load_bundled_template_entry() -> Option<Value> {
+    let catalog: Value = serde_json::from_str(BUNDLED_TEMPLATE_JSON).ok()?;
+    catalog
+        .get("models")?
+        .as_array()?
+        .first()
+        .cloned()
 }
