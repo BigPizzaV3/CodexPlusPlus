@@ -117,6 +117,14 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
     </td>
     <td><a href="https://xc.y1yun.net/"><strong>Yiyun Technology</strong></a><br>Yiyun Technology provides payment and settlement products for AI aggregation businesses, including Jiuwu Yunshang and Yiyun Pay. It supports WeChat Pay, Alipay, UnionPay, and Cloud QuickPass channels with low rates, D1/D0 settlement, 24/7 technical support, dedicated WeCom service groups, and strong website protection for merchants.</td>
   </tr>
+  <tr>
+    <td align="center">
+      <a href="https://sui-xiang.com/">
+        <img src="docs/images/sponsor-sui-xiang-ai-gateway.jpg" alt="Sui Xiang AI Gateway" width="150">
+      </a>
+    </td>
+    <td><a href="https://sui-xiang.com/"><strong>Sui Xiang AI Gateway</strong></a><br>Thanks to Sui Xiang AI Gateway for sponsoring this project! Sui Xiang AI Gateway is a reliable and efficient API relay service provider for Claude, Codex, Gemini, and more. It focuses on privacy, transparent service, fast support, no data resale, and no model dilution. New accounts can receive 0.5 CNY in daily check-in test credit, with 1:1 recharge credit, no subscription, and pay-as-you-go billing.</td>
+  </tr>
 </table>
 
 
