@@ -2849,4 +2849,74 @@ experimental_bearer_token = "sk-new"
     assert!(!config.contains("[1M]"));
 }
 
+#[test]
+fn apply_relay_profile_no_catalog_when_model_list_has_no_suffix() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        name: "Relay A".to_string(),
+        model: "qwen3-coder".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "qwen3-coder"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        model_insert_mode: Default::default(),
+        model_list: "deepseek-coder\nqwen3-coder".to_string(),
+        context_window: "200000".to_string(),
+        auto_compact_limit: "160000".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(!config.contains("model_catalog_json"));
+    assert!(config.contains("model_context_window = 200000"));
+    assert!(!temp.path().join("model-catalogs").exists());
+}
+
+#[test]
+fn apply_relay_profile_does_not_overwrite_user_model_catalog_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        name: "Relay A".to_string(),
+        model: "deepseek-v4-pro".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "deepseek-v4-pro"
+model_catalog_json = "/old/catalog.json"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        model_insert_mode: Default::default(),
+        // 即使有后缀，用户已手写指针也应保留不覆盖
+        model_list: "deepseek-v4-pro[1M]".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"model_catalog_json = "/old/catalog.json""#));
+    assert!(!config.contains("model-catalogs/relay-a.json"));
+    assert!(!temp.path().join("model-catalogs").exists());
+}
+
 
