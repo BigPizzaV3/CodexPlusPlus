@@ -365,7 +365,8 @@ pub fn apply_relay_profile_files_to_home_with_context(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
-    apply_relay_files_to_home(home, &config_with_limits, &profile.auth_contents)
+    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
+    apply_relay_files_to_home(home, &config_with_catalog, &profile.auth_contents)
 }
 
 pub fn apply_relay_profile_to_home_with_switch_rules(
@@ -401,11 +402,12 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
+    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
 
     if profile.relay_mode == crate::settings::RelayMode::PureApi {
         apply_relay_files_to_home_with_computer_use_guard(
             home,
-            &config_with_limits,
+            &config_with_catalog,
             &profile.auth_contents,
             preserve_computer_use_guard,
         )
@@ -413,7 +415,7 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
         let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
         apply_relay_files_to_home_with_computer_use_guard(
             home,
-            &config_with_limits,
+            &config_with_catalog,
             &auth_contents,
             preserve_computer_use_guard,
         )
@@ -437,7 +439,8 @@ pub fn apply_relay_profile_config_to_home_with_context(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
-    apply_relay_config_file_to_home(home, &config_with_limits)
+    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
+    apply_relay_config_file_to_home(home, &config_with_catalog)
 }
 
 pub fn apply_relay_config_file_to_home(
@@ -1365,6 +1368,48 @@ fn apply_context_limits_to_config(
         doc["model_auto_compact_token_limit"] = toml_edit::value(value as i64);
     }
     Ok(normalize_optional_toml(doc))
+}
+
+fn apply_model_catalog_to_config(
+    home: &Path,
+    profile: &RelayProfile,
+    config_text: &str,
+) -> anyhow::Result<String> {
+    // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
+    if root_key_string(config_text, "model_catalog_json").is_some() {
+        return Ok(config_text.to_string());
+    }
+    let entries = crate::model_suffix::collect_catalog_entries(&profile.model_list, &profile.model);
+    // 无后缀条目则 no-op，保持现有 per-profile 单值行为（保 does_not_write 测试）
+    if !entries.iter().any(|entry| entry.suffix_window.is_some()) {
+        return Ok(config_text.to_string());
+    }
+    let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
+    let catalog_relative = format!(
+        "model-catalogs/{}.json",
+        sanitize_catalog_filename(&profile.id)
+    );
+    let catalog_path = home.join(&catalog_relative);
+    if let Some(parent) = catalog_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let catalog_json = crate::model_suffix::build_model_catalog_json(&entries, fallback);
+    std::fs::write(&catalog_path, catalog_json)?;
+    let mut doc = parse_toml_document(config_text)?;
+    doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+    Ok(normalize_optional_toml(doc))
+}
+
+fn sanitize_catalog_filename(id: &str) -> String {
+    id.chars()
+        .map(|char| {
+            if char.is_ascii_alphanumeric() || char == '-' || char == '_' {
+                char
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 fn sync_context_limits_from_config(profile: &mut RelayProfile, config_text: &str) {

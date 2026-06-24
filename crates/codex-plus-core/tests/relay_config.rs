@@ -2805,3 +2805,48 @@ fn base64_url_no_pad(value: &str) -> String {
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.as_bytes())
 }
+
+#[test]
+fn apply_relay_profile_generates_model_catalog_for_suffixed_models() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        name: "Relay A".to_string(),
+        model: "deepseek-v4-pro".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "deepseek-v4-pro"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        model_insert_mode: Default::default(),
+        model_list: "deepseek-v4-pro[1M]\nclaude-sonnet-4[200K]".to_string(),
+        context_window: "272000".to_string(),
+        auto_compact_limit: String::new(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-a.json""#));
+    let catalog_path = temp.path().join("model-catalogs").join("relay-a.json");
+    assert!(catalog_path.exists());
+    let catalog = std::fs::read_to_string(&catalog_path).unwrap();
+    assert!(catalog.contains(r#""slug": "deepseek-v4-pro""#));
+    assert!(catalog.contains(r#""context_window": 1000000"#));
+    assert!(catalog.contains(r#""slug": "claude-sonnet-4""#));
+    assert!(catalog.contains(r#""context_window": 200000"#));
+    // 后缀不得进入 catalog 或 config
+    assert!(!catalog.contains("[1M]"));
+    assert!(!config.contains("[1M]"));
+}
+
+
