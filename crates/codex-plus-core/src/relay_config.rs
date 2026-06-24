@@ -1868,6 +1868,9 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     set_provider_id(&mut doc, &provider_id);
 
     let model = relay_profile_model(profile);
+    // 若用户把后缀语法（如 deepseek-v4-flash[1M]）写在 model 字段，
+    // 写入 config.toml 前需剥离后缀；codex 本身不理解后缀，只会按原串匹配 catalog slug。
+    let (model, _) = crate::model_suffix::parse_model_suffix(&model);
     if !model.trim().is_empty() {
         doc["model"] = toml_edit::value(model.trim());
     }

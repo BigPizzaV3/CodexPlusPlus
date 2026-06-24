@@ -2919,4 +2919,102 @@ experimental_bearer_token = "sk-new"
     assert!(!temp.path().join("model-catalogs").exists());
 }
 
+#[test]
+fn apply_relay_profile_strips_model_suffix_and_generates_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-ark".to_string(),
+        name: "火山引擎 Ark".to_string(),
+        model: "deepseek-v4-flash[1M]".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "deepseek-v4-flash[1M]"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
+experimental_bearer_token = "sk-ark"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-ark"}"#.to_string(),
+        model_insert_mode: Default::default(),
+        model_list: "glm-5.2[1M]\ndeepseek-v4-flash[1M]\nkimi-k2.6[262K]".to_string(),
+        context_window: String::new(),
+        auto_compact_limit: String::new(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+        temp.path(),
+        &profile,
+        "",
+        false,
+    )
+    .unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    // 后缀不得进入 config.toml 的 model 字段，否则 codex 无法匹配 catalog
+    assert!(!config.contains("[1M]"));
+    assert!(config.contains(r#"model = "deepseek-v4-flash""#));
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-ark.json""#));
+
+    let catalog_path = temp.path().join("model-catalogs").join("relay-ark.json");
+    assert!(catalog_path.exists());
+    let catalog = std::fs::read_to_string(&catalog_path).unwrap();
+    assert!(catalog.contains(r#""slug": "deepseek-v4-flash""#));
+    assert!(catalog.contains(r#""context_window": 1000000"#));
+    assert!(catalog.contains(r#""slug": "glm-5.2""#));
+    assert!(catalog.contains(r#""context_window": 262000"#));
+    assert!(!catalog.contains("[1M]"));
+}
+
+#[test]
+fn apply_relay_profile_strips_suffix_from_config_contents_model() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-ark".to_string(),
+        name: "火山引擎 Ark".to_string(),
+        // 用户可能在「配置模型」留空，只在 config_contents / 模型列表写后缀
+        model: String::new(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "glm-5.2[1M]"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
+experimental_bearer_token = "sk-ark"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-ark"}"#.to_string(),
+        model_insert_mode: Default::default(),
+        model_list: "glm-5.2[1M]\ndeepseek-v4-flash[1M]".to_string(),
+        context_window: String::new(),
+        auto_compact_limit: String::new(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+        temp.path(),
+        &profile,
+        "",
+        false,
+    )
+    .unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(!config.contains("[1M]"));
+    assert!(config.contains(r#"model = "glm-5.2""#));
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-ark.json""#));
+
+    let catalog = std::fs::read_to_string(temp.path().join("model-catalogs").join("relay-ark.json")).unwrap();
+    assert!(catalog.contains(r#""slug": "glm-5.2""#));
+    assert!(catalog.contains(r#""context_window": 1000000"#));
+    assert!(catalog.contains(r#""slug": "deepseek-v4-flash""#));
+    assert!(!catalog.contains("[1M]"));
+}
 
