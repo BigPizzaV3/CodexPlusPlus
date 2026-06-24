@@ -3901,7 +3901,7 @@ function RelayProfileEditor({
               <Textarea
                 value={profile.modelList}
                 onChange={(event) => updateDraft({ modelList: event.currentTarget.value })}
-                placeholder="每行一个模型，例如 qwen3-coder"
+                placeholder="每行一个模型，例如 qwen3-coder 或 deepseek-v4-pro[1M]"
               />
               <Button
                 onClick={async () => {
@@ -3916,6 +3916,9 @@ function RelayProfileEditor({
                 从上游获取
               </Button>
             </div>
+            <p className="field-hint">
+              每行一个模型，支持在模型名后加 <code>[1M]</code>、<code>[200K]</code> 或 <code>[1000000]</code>；不写后缀的模型使用 Codex 默认长度。
+            </p>
           </Field>
         ) : null}
         {showApiFields ? (
