@@ -92,3 +92,12 @@ fn build_catalog_json_uses_fallback_for_no_suffix_entries() {
     assert!(catalog.contains(r#""slug": "qwen3-coder""#));
     assert!(catalog.contains(r#""context_window": 272000"#));
 }
+
+#[test]
+fn collect_entries_adopts_suffix_for_current_model_from_list() {
+    // 当前 model 本身无后缀，但 model_list 中靠后位置有同名带后缀条目。
+    let entries = collect_catalog_entries("qwen3-coder\ndeepseek-v4-pro[1M]", "deepseek-v4-pro");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].slug, "deepseek-v4-pro");
+    assert_eq!(entries[0].suffix_window, Some(1_000_000));
+}

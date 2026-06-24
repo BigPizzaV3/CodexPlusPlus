@@ -76,7 +76,8 @@ pub fn collect_catalog_entries(model_list: &str, current_model: &str) -> Vec<Mod
             continue;
         }
         if let Some(window) = suffix_window {
-            suffix_for_slug.entry(slug.clone()).or_insert(window);
+            // 同名条目靠后的后缀生效，确保 current_model 能采纳到明确声明的窗口。
+            suffix_for_slug.insert(slug.clone(), window);
         }
         list_entries.push(ModelCatalogEntry {
             display_name: slug.clone(),
