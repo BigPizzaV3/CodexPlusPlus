@@ -1375,9 +1375,16 @@ fn apply_model_catalog_to_config(
     profile: &RelayProfile,
     config_text: &str,
 ) -> anyhow::Result<String> {
+    let catalog_relative = format!(
+        "model-catalogs/{}.json",
+        sanitize_catalog_filename(&profile.id)
+    );
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
-    if root_key_string(config_text, "model_catalog_json").is_some() {
-        return Ok(config_text.to_string());
+    // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
+    if let Some(existing) = root_key_string(config_text, "model_catalog_json") {
+        if existing != catalog_relative {
+            return Ok(config_text.to_string());
+        }
     }
     let entries = crate::model_suffix::collect_catalog_entries(&profile.model_list, &profile.model);
     // 无后缀条目则 no-op，保持现有 per-profile 单值行为（保 does_not_write 测试）
@@ -1385,10 +1392,6 @@ fn apply_model_catalog_to_config(
         return Ok(config_text.to_string());
     }
     let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
-    let catalog_relative = format!(
-        "model-catalogs/{}.json",
-        sanitize_catalog_filename(&profile.id)
-    );
     let catalog_path = home.join(&catalog_relative);
     if let Some(parent) = catalog_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1867,7 +1870,19 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     let provider_id = active_or_default_provider_id(&doc);
     set_provider_id(&mut doc, &provider_id);
 
-    let model = relay_profile_model(profile);
+    let mut model = relay_profile_model(profile);
+    // 若用户未填写默认模型，但 model_list 有内容，则取第一条作为默认 model，
+    // 避免 codex 启动时回退到历史会话中带后缀的模型名。
+    if model.trim().is_empty() && !profile.model_list.trim().is_empty() {
+        if let Some(first) = profile
+            .model_list
+            .split(['\r', '\n', ','])
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+        {
+            model = crate::model_suffix::parse_model_suffix(first).0;
+        }
+    }
     // 若用户把后缀语法（如 deepseek-v4-flash[1M]）写在 model 字段，
     // 写入 config.toml 前需剥离后缀；codex 本身不理解后缀，只会按原串匹配 catalog slug。
     let (model, _) = crate::model_suffix::parse_model_suffix(&model);

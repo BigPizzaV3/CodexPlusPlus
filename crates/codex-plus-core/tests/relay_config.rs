@@ -3018,3 +3018,91 @@ experimental_bearer_token = "sk-ark"
     assert!(!catalog.contains("[1M]"));
 }
 
+#[test]
+fn apply_relay_profile_regenerates_existing_self_generated_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        name: "Relay A".to_string(),
+        model: "deepseek-v4-pro".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "deepseek-v4-pro"
+model_provider = "custom"
+model_catalog_json = "model-catalogs/relay-a.json"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        model_insert_mode: Default::default(),
+        // 旧 catalog 是 200K，现在改成 1M，应被重新生成
+        model_list: "deepseek-v4-pro[1M]".to_string(),
+        ..RelayProfile::default()
+    };
+
+    // 先写入一个旧的、窗口错误的 catalog
+    std::fs::create_dir_all(temp.path().join("model-catalogs")).unwrap();
+    std::fs::write(
+        temp.path().join("model-catalogs").join("relay-a.json"),
+        r#"{"models":[{"slug":"deepseek-v4-pro","context_window":200000}]}"#,
+    )
+    .unwrap();
+
+    apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+        temp.path(),
+        &profile,
+        "",
+        false,
+    )
+    .unwrap();
+
+    let catalog =
+        std::fs::read_to_string(temp.path().join("model-catalogs").join("relay-a.json")).unwrap();
+    assert!(catalog.contains(r#""context_window": 1000000"#));
+    assert!(!catalog.contains(r#""context_window": 200000"#));
+}
+
+#[test]
+fn apply_relay_profile_uses_first_model_list_entry_when_model_empty() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        name: "Relay A".to_string(),
+        model: String::new(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        model_insert_mode: Default::default(),
+        model_list: "deepseek/deepseek-v4-flash[1M]\nqwen/qwen3-coder".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+        temp.path(),
+        &profile,
+        "",
+        false,
+    )
+    .unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    // model 为空时，应取 model_list 第一条的 slug（剥离后缀）写入 config.toml
+    assert!(config.contains(r#"model = "deepseek/deepseek-v4-flash""#));
+    assert!(!config.contains("[1M]"));
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-a.json""#));
+}
+
