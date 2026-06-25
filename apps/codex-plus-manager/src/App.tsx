@@ -59,6 +59,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { modelWindowsMapToText } from "./model-windows";
 
 type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
 
@@ -3605,6 +3606,9 @@ function RelayProfileDetail({
   actions: Actions;
 }) {
   const [draft, setDraft] = useState<RelayProfile>(profile);
+  const [modelWindowsText, setModelWindowsText] = useState(
+    modelWindowsMapToText(profile.modelList, profile.modelWindows || ""),
+  );
   const isActive = !isNew && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
   useEffect(() => {
@@ -3622,6 +3626,9 @@ function RelayProfileDetail({
           ),
     );
   }, [profile.id, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
+  useEffect(() => {
+    setModelWindowsText(modelWindowsMapToText(draft.modelList, draft.modelWindows || ""));
+  }, [draft.modelList, draft.modelWindows]);
   const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
   const saveDraft = async () => {
     if (validationError) return;
@@ -3665,7 +3672,7 @@ function RelayProfileDetail({
           </Button>
         </Toolbar>
       </div>
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} />
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} modelWindowsText={modelWindowsText} setModelWindowsText={setModelWindowsText} />
       {isAggregateRelayProfile(draft) ? null : (
       <RelayFileEditors
         contextProfile={profile}
@@ -3718,6 +3725,8 @@ function RelayProfileEditor({
   onProfileChange,
   onSwitch,
   actions,
+  modelWindowsText,
+  setModelWindowsText,
 }: {
   profile: RelayProfile;
   form: BackendSettings;
@@ -3725,6 +3734,8 @@ function RelayProfileEditor({
   onProfileChange: (value: RelayProfile) => void;
   onSwitch: () => void;
   actions: Actions;
+  modelWindowsText: string;
+  setModelWindowsText: (value: string) => void;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   if (isAggregateRelayProfile(profile)) {
