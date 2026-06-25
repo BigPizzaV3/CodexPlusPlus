@@ -18,3 +18,24 @@ docs/superpowers/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local development artifacts
+backups/
+bin/
+.codex-merge/
+.codex-tmp-gh/
+.codex-upstream/
+psforge_debug.log
+apps/codex-plus-manager/codex-plus-plus.exe
+
+# Local-only files (not for upstream PR)
+AGENT.md
+README_SYNC_FIX.md
+README_AGGREGATE_KERNEL_VERIFY.md
+build-to-bin.bat
+build-to-bin.ps1
+reapply-local-mods.ps1
+update-and-build.bat
+update-and-build.ps1
+scripts/aggregate-kernel-smoke.ps1
+scripts/installer/windows/test-update-script.ps1
