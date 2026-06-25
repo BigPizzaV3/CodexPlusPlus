@@ -4,7 +4,7 @@
 //! 单位 K/k=1000、M/m=1000000；纯数字也接受。后缀在生成 catalog 时剥离。
 
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelCatalogEntry {
@@ -33,6 +33,20 @@ pub fn parse_model_suffix(raw: &str) -> (String, Option<u64>) {
         }
     }
     (raw.to_string(), None)
+}
+
+/// 一次性迁移：把旧格式 `slug[suffix]` 的 model_list 拆成无后缀列表和窗口 map。
+pub fn migrate_model_list_with_suffixes(model_list: &str) -> (String, HashMap<String, String>) {
+    let mut clean_lines = Vec::new();
+    let mut windows = HashMap::new();
+    for raw in model_list.split(['\r', '\n', ',']).map(str::trim).filter(|v| !v.is_empty()) {
+        let (slug, window) = parse_model_suffix(raw);
+        clean_lines.push(slug.clone());
+        if let Some(window) = window {
+            windows.insert(slug, window.to_string());
+        }
+    }
+    (clean_lines.join("\n"), windows)
 }
 
 /// 解析括号内的窗口 token，如 "1M" / "200K" / "1000000"。非法或 0 返回 None。

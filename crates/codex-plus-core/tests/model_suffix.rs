@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use codex_plus_core::model_suffix::{
     build_model_catalog_json, collect_catalog_entries, parse_model_suffix,
 };
@@ -124,4 +126,14 @@ fn collect_entries_prefers_later_suffix_when_reversed() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].slug, "deepseek/deepseek-v4-flash");
     assert_eq!(entries[0].suffix_window, Some(200_000));
+}
+
+#[test]
+fn migrate_model_list_with_suffixes_splits_slug_and_window() {
+    let input = "deepseek-v4-flash[1M]\ndeepseek-v4-pro\nnvidia/...:free[200K]";
+    let (clean_list, windows) = codex_plus_core::model_suffix::migrate_model_list_with_suffixes(input);
+    assert_eq!(clean_list, "deepseek-v4-flash\ndeepseek-v4-pro\nnvidia/...:free");
+    assert_eq!(windows.get("deepseek-v4-flash"), Some(&"1000000".to_string()));
+    assert_eq!(windows.get("deepseek-v4-pro"), None);
+    assert_eq!(windows.get("nvidia/...:free"), Some(&"200000".to_string()));
 }
