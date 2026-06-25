@@ -69,39 +69,33 @@ fn parse_window_token(token: &str) -> Option<u64> {
         .filter(|value| *value > 0)
 }
 
-/// 收集 profile 的全部模型条目（当前 model + model_list），去重并解析后缀。
+/// 收集 profile 的全部模型条目（当前 model + model_list），去重并从 `model_windows` map 读取窗口。
 /// 返回顺序：当前 model 在前。用于生成 catalog，包含全部模型以避免
 /// #1064 单模型副作用（catalog 只剩当前 model）。
 ///
-/// 当前 model 若不带后缀，但在 model_list 中存在同名且带后缀的条目，
-/// 则采纳该后缀（让当前 model 的窗口也能生效）。
-pub fn collect_catalog_entries(model_list: &str, current_model: &str) -> Vec<ModelCatalogEntry> {
-    // 先解析 model_list，保留顺序并去重。
+/// 当前 model 若不带后缀，但在 `model_windows` 中存在同名条目，
+/// 则采纳该窗口（让当前 model 的窗口也能生效）。
+pub fn collect_catalog_entries(
+    model_list: &str,
+    model_windows: &HashMap<String, String>,
+    current_model: &str,
+) -> Vec<ModelCatalogEntry> {
+    // 先解析 model_list，保留顺序并去重；后缀已从 model_list 剥离，窗口来自 model_windows map。
     let mut seen = HashSet::new();
     let mut list_entries: Vec<ModelCatalogEntry> = Vec::new();
-    let mut suffix_for_slug: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     for raw in model_list
         .split(['\r', '\n', ','])
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let (slug, suffix_window) = parse_model_suffix(raw);
+        let (slug, _) = parse_model_suffix(raw);
         if slug.is_empty() {
             continue;
         }
         if !seen.insert(slug.clone()) {
-            // 同名 slug 已存在；如果当前条目带后缀，更新已有条目的窗口。
-            if let Some(window) = suffix_window {
-                if let Some(entry) = list_entries.iter_mut().find(|entry| entry.slug == slug) {
-                    entry.suffix_window = Some(window);
-                }
-                suffix_for_slug.insert(slug.clone(), window);
-            }
             continue;
         }
-        if let Some(window) = suffix_window {
-            suffix_for_slug.insert(slug.clone(), window);
-        }
+        let suffix_window = model_windows.get(&slug).and_then(|token| parse_window_token(token));
         list_entries.push(ModelCatalogEntry {
             display_name: slug.clone(),
             slug,
@@ -113,13 +107,9 @@ pub fn collect_catalog_entries(model_list: &str, current_model: &str) -> Vec<Mod
     let current_model = current_model.trim();
     let mut entries = Vec::new();
     if !current_model.is_empty() {
-        let (slug, mut suffix_window) = parse_model_suffix(current_model);
+        let (slug, _) = parse_model_suffix(current_model);
         if !slug.is_empty() {
-            if suffix_window.is_none() {
-                if let Some(window) = suffix_for_slug.get(&slug) {
-                    suffix_window = Some(*window);
-                }
-            }
+            let suffix_window = model_windows.get(&slug).and_then(|token| parse_window_token(token));
             entries.push(ModelCatalogEntry {
                 display_name: slug.clone(),
                 slug: slug.clone(),

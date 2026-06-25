@@ -56,7 +56,9 @@ fn parse_suffix_rejects_zero_and_negative() {
 
 #[test]
 fn collect_entries_includes_current_model_and_strips_suffix() {
-    let entries = collect_catalog_entries("deepseek-v4-pro[1M]\nqwen3-coder", "deepseek-v4-pro");
+    let mut windows = HashMap::new();
+    windows.insert("deepseek-v4-pro".to_string(), "1M".to_string());
+    let entries = collect_catalog_entries("deepseek-v4-pro\nqwen3-coder", &windows, "deepseek-v4-pro");
     // 当前 model 与列表去重后共 2 条
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].slug, "deepseek-v4-pro");
@@ -67,13 +69,16 @@ fn collect_entries_includes_current_model_and_strips_suffix() {
 
 #[test]
 fn collect_entries_deduplicates() {
-    let entries = collect_catalog_entries("qwen3-coder\nqwen3-coder", "qwen3-coder");
+    let entries = collect_catalog_entries("qwen3-coder\nqwen3-coder", &HashMap::new(), "qwen3-coder");
     assert_eq!(entries.len(), 1);
 }
 
 #[test]
 fn build_catalog_json_writes_context_window_and_strips_suffix() {
-    let entries = collect_catalog_entries("deepseek-v4-pro[1M]\nclaude-sonnet-4[200K]", "");
+    let mut windows = HashMap::new();
+    windows.insert("deepseek-v4-pro".to_string(), "1M".to_string());
+    windows.insert("claude-sonnet-4".to_string(), "200K".to_string());
+    let entries = collect_catalog_entries("deepseek-v4-pro\nclaude-sonnet-4", &windows, "");
     let catalog = build_model_catalog_json(&entries, None);
     assert!(catalog.contains(r#""slug": "deepseek-v4-pro""#));
     assert!(catalog.contains(r#""context_window": 1000000"#));
@@ -89,7 +94,7 @@ fn build_catalog_json_writes_context_window_and_strips_suffix() {
 
 #[test]
 fn build_catalog_json_uses_fallback_for_no_suffix_entries() {
-    let entries = collect_catalog_entries("qwen3-coder", "");
+    let entries = collect_catalog_entries("qwen3-coder", &HashMap::new(), "");
     let catalog = build_model_catalog_json(&entries, Some(272_000));
     assert!(catalog.contains(r#""slug": "qwen3-coder""#));
     assert!(catalog.contains(r#""context_window": 272000"#));
@@ -98,7 +103,9 @@ fn build_catalog_json_uses_fallback_for_no_suffix_entries() {
 #[test]
 fn collect_entries_adopts_suffix_for_current_model_from_list() {
     // 当前 model 本身无后缀，但 model_list 中靠后位置有同名带后缀条目。
-    let entries = collect_catalog_entries("qwen3-coder\ndeepseek-v4-pro[1M]", "deepseek-v4-pro");
+    let mut windows = HashMap::new();
+    windows.insert("deepseek-v4-pro".to_string(), "1M".to_string());
+    let entries = collect_catalog_entries("qwen3-coder\ndeepseek-v4-pro", &windows, "deepseek-v4-pro");
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].slug, "deepseek-v4-pro");
     assert_eq!(entries[0].suffix_window, Some(1_000_000));
@@ -107,8 +114,11 @@ fn collect_entries_adopts_suffix_for_current_model_from_list() {
 #[test]
 fn collect_entries_prefers_later_suffix_for_duplicate_slug() {
     // 同一 slug 先出现无后缀条目，后出现带后缀条目，应采纳后者窗口。
+    let mut windows = HashMap::new();
+    windows.insert("deepseek/deepseek-v4-flash".to_string(), "1M".to_string());
     let entries = collect_catalog_entries(
-        "deepseek/deepseek-v4-flash\ndeepseek/deepseek-v4-flash[1M]",
+        "deepseek/deepseek-v4-flash\ndeepseek/deepseek-v4-flash",
+        &windows,
         "",
     );
     assert_eq!(entries.len(), 1);
@@ -119,8 +129,11 @@ fn collect_entries_prefers_later_suffix_for_duplicate_slug() {
 #[test]
 fn collect_entries_prefers_later_suffix_when_reversed() {
     // 同一 slug 先出现 [1M]，后出现 [200K]，后者应覆盖前者。
+    let mut windows = HashMap::new();
+    windows.insert("deepseek/deepseek-v4-flash".to_string(), "200K".to_string());
     let entries = collect_catalog_entries(
-        "deepseek/deepseek-v4-flash[1M]\ndeepseek/deepseek-v4-flash[200K]",
+        "deepseek/deepseek-v4-flash\ndeepseek/deepseek-v4-flash",
+        &windows,
         "",
     );
     assert_eq!(entries.len(), 1);
