@@ -3106,3 +3106,9 @@ experimental_bearer_token = "sk-new"
     assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-a.json""#));
 }
 
+#[test]
+fn relay_profile_default_has_empty_model_windows() {
+    let profile = RelayProfile::default();
+    assert_eq!(profile.model_windows, "");
+}
+
