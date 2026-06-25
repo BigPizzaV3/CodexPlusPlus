@@ -140,6 +140,7 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 - Independent user script management with startup injection.
 - Provider Sync to keep historical sessions visible after switching providers.
 - Zed open entry detects remote SSH context and opens the matching remote file in Zed Remote Development from Codex.
+- Per-model context window configuration: add suffixes like `[1M]`, `[200K]`, or `[1000000]` to model names in "Configured model" or "Model list". Codex++ auto-generates `model_catalog_json` and injects it into `config.toml`; the matching window is applied when you switch models. If the same model appears both with and without a suffix, the suffixed version wins.
 - Upstream worktree creation: create new worktrees from `upstream/<base-branch>` after fetching the remote branch, reducing conflicts caused by stale local HEAD state.
 - GitHub Release updates. Both the manager and silent launcher can detect available updates.
 - Windows single instance, no console window, administrator manifest, and system Desktop path detection.
