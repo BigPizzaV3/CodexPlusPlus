@@ -3165,3 +3165,33 @@ experimental_bearer_token = "sk-new"
     assert_eq!(pro["context_window"].as_u64().unwrap(), 200_000);
 }
 
+#[test]
+fn normalize_migrates_model_list_suffixes_to_model_windows() {
+    let mut profile = RelayProfile {
+        id: "relay-migrate".to_string(),
+        name: "Migrate".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        model_list: "deepseek-v4-flash[1M]\ndeepseek-v4-pro".to_string(),
+        model_windows: String::new(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    assert_eq!(profile.model_list, "deepseek-v4-flash\ndeepseek-v4-pro");
+    let windows: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&profile.model_windows).unwrap();
+    assert_eq!(windows.get("deepseek-v4-flash").unwrap().as_str().unwrap(), "1000000");
+    assert!(!windows.contains_key("deepseek-v4-pro"));
+}
+

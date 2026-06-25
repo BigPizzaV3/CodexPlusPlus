@@ -1949,6 +1949,11 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
 }
 
 pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
+        let (clean_list, windows) = crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);
+        profile.model_list = clean_list;
+        profile.model_windows = serde_json::to_string(&windows).unwrap_or_default();
+    }
     if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
         let has_api_config = !profile.base_url.trim().is_empty()
             || !profile.api_key.trim().is_empty()
