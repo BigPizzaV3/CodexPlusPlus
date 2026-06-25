@@ -1386,7 +1386,13 @@ fn apply_model_catalog_to_config(
             return Ok(config_text.to_string());
         }
     }
-    let entries = crate::model_suffix::collect_catalog_entries(&profile.model_list, &profile.model);
+    let model_windows: std::collections::HashMap<String, String> =
+        serde_json::from_str(&profile.model_windows).unwrap_or_default();
+    let entries = crate::model_suffix::collect_catalog_entries(
+        &profile.model_list,
+        &model_windows,
+        &profile.model,
+    );
     // 无后缀条目则 no-op，保持现有 per-profile 单值行为（保 does_not_write 测试）
     if !entries.iter().any(|entry| entry.suffix_window.is_some()) {
         return Ok(config_text.to_string());
