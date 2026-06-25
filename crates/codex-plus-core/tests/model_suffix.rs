@@ -101,3 +101,27 @@ fn collect_entries_adopts_suffix_for_current_model_from_list() {
     assert_eq!(entries[0].slug, "deepseek-v4-pro");
     assert_eq!(entries[0].suffix_window, Some(1_000_000));
 }
+
+#[test]
+fn collect_entries_prefers_later_suffix_for_duplicate_slug() {
+    // 同一 slug 先出现无后缀条目，后出现带后缀条目，应采纳后者窗口。
+    let entries = collect_catalog_entries(
+        "deepseek/deepseek-v4-flash\ndeepseek/deepseek-v4-flash[1M]",
+        "",
+    );
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].slug, "deepseek/deepseek-v4-flash");
+    assert_eq!(entries[0].suffix_window, Some(1_000_000));
+}
+
+#[test]
+fn collect_entries_prefers_later_suffix_when_reversed() {
+    // 同一 slug 先出现 [1M]，后出现 [200K]，后者应覆盖前者。
+    let entries = collect_catalog_entries(
+        "deepseek/deepseek-v4-flash[1M]\ndeepseek/deepseek-v4-flash[200K]",
+        "",
+    );
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].slug, "deepseek/deepseek-v4-flash");
+    assert_eq!(entries[0].suffix_window, Some(200_000));
+}
