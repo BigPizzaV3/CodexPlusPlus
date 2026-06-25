@@ -3814,10 +3814,10 @@ function RelayProfileEditor({
           <Input
             value={profile.model}
             onChange={(event) => updateDraft({ model: event.currentTarget.value })}
-            placeholder="例如 deepseek-v4-pro 或 deepseek-v4-pro[1M]"
+            placeholder="例如 deepseek-v4-pro"
           />
           <p className="field-hint">
-            支持在模型名后加 <code>[1M]</code>、<code>[200K]</code> 或 <code>[1000000]</code> 指定上下文窗口；不写则使用 Codex 默认长度。
+            默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。
           </p>
         </Field>
         <Field className="relay-field-goals" label="Codex 目标">
