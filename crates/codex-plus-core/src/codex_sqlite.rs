@@ -90,3 +90,65 @@ fn has_session_table(path: &Path) -> bool {
             .is_ok()
         })
 }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SanitizeModelSuffixResult {
+    pub scanned: usize,
+    pub updated: usize,
+}
+
+/// 扫描 codex session 数据库中的 threads 表，把 model 字段里带合法后缀的
+/// 记录改写为剥离后缀的 slug，使 codex 模型选择器不再显示带后缀的历史项。
+pub fn sanitize_thread_model_suffixes(home: &Path) -> anyhow::Result<SanitizeModelSuffixResult> {
+    let mut result = SanitizeModelSuffixResult::default();
+    for db_path in codex_session_db_paths_from_home(home) {
+        if !db_path.exists() {
+            continue;
+        }
+        let (scanned, updated) = sanitize_thread_model_suffixes_in_db(&db_path)?;
+        result.scanned += scanned;
+        result.updated += updated;
+    }
+    Ok(result)
+}
+
+fn sanitize_thread_model_suffixes_in_db(db_path: &Path) -> anyhow::Result<(usize, usize)> {
+    let mut conn = Connection::open(db_path)?;
+    let tx = conn.transaction()?;
+    let has_model = tx
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'threads' LIMIT 1",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok()
+        && tx
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('threads') WHERE name = 'model' LIMIT 1",
+                [],
+                |_| Ok(()),
+            )
+            .is_ok();
+    if !has_model {
+        return Ok((0, 0));
+    }
+
+    let mut stmt = tx.prepare("SELECT id, model FROM threads WHERE model LIKE '%[%'")?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .filter_map(Result::ok)
+        .collect();
+    drop(stmt);
+
+    let scanned = rows.len();
+    let mut updated = 0;
+    for (id, model) in rows {
+        let (slug, suffix_window) = crate::model_suffix::parse_model_suffix(&model);
+        if suffix_window.is_some() && slug != model {
+            tx.execute("UPDATE threads SET model = ?1 WHERE id = ?2", [&slug, &id])?;
+            updated += 1;
+        }
+    }
+    tx.commit()?;
+    Ok((scanned, updated))
+}
