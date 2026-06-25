@@ -3948,7 +3948,10 @@ function RelayProfileEditor({
               <Button
                 onClick={async () => {
                   const models = await actions.fetchRelayProfileModels(profile);
-                  if (models?.length) updateDraft({ modelList: models.join("\n") });
+                  if (models?.length) {
+                    updateDraft({ modelList: models.join("\n") });
+                    setModelWindowsText("");
+                  }
                 }}
                 size="sm"
                 type="button"
