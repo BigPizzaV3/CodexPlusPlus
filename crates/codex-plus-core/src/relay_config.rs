@@ -1386,10 +1386,14 @@ fn apply_model_catalog_to_config(
             return Ok(config_text.to_string());
         }
     }
-    let model_windows: std::collections::HashMap<String, String> =
-        serde_json::from_str(&profile.model_windows).unwrap_or_default();
+    let (model_list, model_windows): (String, std::collections::HashMap<String, String>) =
+        if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
+            crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list)
+        } else {
+            (profile.model_list.clone(), serde_json::from_str(&profile.model_windows).unwrap_or_default())
+        };
     let entries = crate::model_suffix::collect_catalog_entries(
-        &profile.model_list,
+        &model_list,
         &model_windows,
         &profile.model,
     );
