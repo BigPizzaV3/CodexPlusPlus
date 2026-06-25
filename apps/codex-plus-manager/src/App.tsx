@@ -3912,12 +3912,27 @@ function RelayProfileEditor({
         ) : null}
         {showApiFields ? (
           <Field className="relay-field-model-list" label="模型列表">
+            <div className="relay-model-list-split">
+              <div className="relay-model-list-column">
+                <label className="relay-model-list-label">模型名称</label>
+                <Textarea
+                  value={profile.modelList}
+                  onChange={(event) => updateDraft({ modelList: event.currentTarget.value })}
+                  placeholder="deepseek/deepseek-v4-flash"
+                  style={{ fontFamily: "monospace" }}
+                />
+              </div>
+              <div className="relay-model-list-column">
+                <label className="relay-model-list-label">上下文窗口</label>
+                <Textarea
+                  value={modelWindowsText}
+                  onChange={(event) => setModelWindowsText(event.currentTarget.value)}
+                  placeholder="1M"
+                  style={{ fontFamily: "monospace" }}
+                />
+              </div>
+            </div>
             <div className="relay-model-list-tools">
-              <Textarea
-                value={profile.modelList}
-                onChange={(event) => updateDraft({ modelList: event.currentTarget.value })}
-                placeholder="每行一个模型，例如 qwen3-coder 或 deepseek-v4-pro[1M]"
-              />
               <Button
                 onClick={async () => {
                   const models = await actions.fetchRelayProfileModels(profile);
@@ -3932,7 +3947,7 @@ function RelayProfileEditor({
               </Button>
             </div>
             <p className="field-hint">
-              每行一个模型，支持在模型名后加 <code>[1M]</code>、<code>[200K]</code> 或 <code>[1000000]</code>；不写后缀的模型使用 Codex 默认长度。同时出现有无后缀版本的同一模型将按有后缀处理。
+              每行一个模型；左侧填模型名，右侧填上下文窗口（如 <code>1M</code>、<code>200K</code> 或 <code>1000000</code>）。右侧留空表示使用 Codex 默认长度。
             </p>
           </Field>
         ) : null}
