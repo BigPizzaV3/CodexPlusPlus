@@ -3628,7 +3628,7 @@ function RelayProfileDetail({
   }, [profile.id, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
   useEffect(() => {
     setModelWindowsText(modelWindowsMapToText(draft.modelList, draft.modelWindows || ""));
-  }, [draft.modelList, draft.modelWindows]);
+  }, [draft.modelWindows, profile.id]);
   const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
   const saveDraft = async () => {
     if (validationError) return;
