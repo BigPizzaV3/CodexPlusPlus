@@ -64,7 +64,7 @@ fn parse_window_token(token: &str) -> Option<u64> {
 pub fn collect_catalog_entries(model_list: &str, current_model: &str) -> Vec<ModelCatalogEntry> {
     // 先解析 model_list，保留顺序并去重。
     let mut seen = HashSet::new();
-    let mut list_entries = Vec::new();
+    let mut list_entries: Vec<ModelCatalogEntry> = Vec::new();
     let mut suffix_for_slug: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     for raw in model_list
         .split(['\r', '\n', ','])
@@ -72,11 +72,20 @@ pub fn collect_catalog_entries(model_list: &str, current_model: &str) -> Vec<Mod
         .filter(|value| !value.is_empty())
     {
         let (slug, suffix_window) = parse_model_suffix(raw);
-        if slug.is_empty() || !seen.insert(slug.clone()) {
+        if slug.is_empty() {
+            continue;
+        }
+        if !seen.insert(slug.clone()) {
+            // 同名 slug 已存在；如果当前条目带后缀，更新已有条目的窗口。
+            if let Some(window) = suffix_window {
+                if let Some(entry) = list_entries.iter_mut().find(|entry| entry.slug == slug) {
+                    entry.suffix_window = Some(window);
+                }
+                suffix_for_slug.insert(slug.clone(), window);
+            }
             continue;
         }
         if let Some(window) = suffix_window {
-            // 同名条目靠后的后缀生效，确保 current_model 能采纳到明确声明的窗口。
             suffix_for_slug.insert(slug.clone(), window);
         }
         list_entries.push(ModelCatalogEntry {
