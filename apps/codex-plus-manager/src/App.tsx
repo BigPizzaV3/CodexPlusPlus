@@ -164,7 +164,7 @@ type BackendSettings = {
 type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
 type LaunchMode = "patch" | "relay";
 
-type RelayProfile = {
+export type RelayProfile = {
   id: string;
   name: string;
   model: string;
@@ -183,6 +183,7 @@ type RelayProfile = {
   contextWindow: string;
   autoCompactLimit: string;
   modelList: string;
+  modelWindows: string;
   userAgent: string;
   aggregate?: RelayAggregateConfig | null;
 };
@@ -657,6 +658,7 @@ const defaultSettings: BackendSettings = {
       contextWindow: "",
       autoCompactLimit: "",
       modelList: "",
+      modelWindows: "",
       userAgent: "",
     },
   ],
@@ -5473,6 +5475,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             contextWindow: "",
             autoCompactLimit: "",
             modelList: "",
+            modelWindows: "",
             userAgent: "",
           },
         ];
@@ -5529,6 +5532,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         contextWindow: "",
         autoCompactLimit: "",
         modelList: "",
+        modelWindows: "",
       },
       null,
     );
@@ -5555,6 +5559,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     contextWindow: profile.contextWindow || "",
     autoCompactLimit: profile.autoCompactLimit || "",
     modelList: profile.modelList || "",
+    modelWindows: profile.modelWindows || "",
     userAgent: profile.userAgent || "",
     aggregate: null,
   };
@@ -6167,6 +6172,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     contextWindow: "",
     autoCompactLimit: "",
     modelList: "",
+    modelWindows: "",
     userAgent: "",
   };
   return withGeneratedRelayFiles(next);
@@ -6196,6 +6202,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       contextWindow: "",
       autoCompactLimit: "",
       modelList: "",
+      modelWindows: "",
       userAgent: "",
       aggregate: {
         strategy: "failover",
