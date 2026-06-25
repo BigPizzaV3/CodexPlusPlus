@@ -59,7 +59,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { modelWindowsMapToText } from "./model-windows";
+import { buildModelWindows, modelWindowsMapToText } from "./model-windows";
 
 type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
 
@@ -3632,7 +3632,13 @@ function RelayProfileDetail({
   const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
   const saveDraft = async () => {
     if (validationError) return;
-    const normalizedDraft = isAggregateRelayProfile(draft) ? normalizeAggregateRelayProfile(draft, form) : deriveRelayProfileFromFiles(draft);
+    const modelWindowsResult = buildModelWindows(draft.modelList, modelWindowsText);
+    if (!modelWindowsResult.ok) {
+      alert(modelWindowsResult.error);
+      return;
+    }
+    const draftWithWindows = { ...draft, modelWindows: modelWindowsResult.modelWindows };
+    const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const next = isNew
       ? addRelayProfile(form, normalizedDraft)
       : updateRelayProfile(form, profile.id, normalizedDraft);
@@ -3649,7 +3655,13 @@ function RelayProfileDetail({
   };
   const switchDraft = () => {
     if (isNew || !form.relayProfilesEnabled) return;
-    const normalizedDraft = isAggregateRelayProfile(draft) ? normalizeAggregateRelayProfile(draft, form) : deriveRelayProfileFromFiles(draft);
+    const modelWindowsResult = buildModelWindows(draft.modelList, modelWindowsText);
+    if (!modelWindowsResult.ok) {
+      alert(modelWindowsResult.error);
+      return;
+    }
+    const draftWithWindows = { ...draft, modelWindows: modelWindowsResult.modelWindows };
+    const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const previousActiveRelayId = form.activeRelayId;
     const next = syncLegacyRelayFields({
       ...form,

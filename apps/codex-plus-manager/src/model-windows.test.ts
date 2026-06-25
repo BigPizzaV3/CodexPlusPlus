@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import type { RelayProfile } from "./App.tsx";
-import { modelWindowsMapToText, modelWindowsTextToMap } from "./model-windows.ts";
+import { buildModelWindows, modelWindowsMapToText, modelWindowsTextToMap } from "./model-windows.ts";
 
 // 类型检查：确保 RelayProfile 包含 modelWindows 字段
 const _profileTypeCheck: RelayProfile = {
@@ -53,5 +53,22 @@ describe("model-windows helpers", () => {
       modelWindowsTextToMap("a\nb", "1M"),
       '{"a":"1M"}',
     );
+  });
+
+  it("buildModelWindows 行数一致时返回 modelWindows JSON", () => {
+    const result = buildModelWindows("deepseek-v4-flash\ndeepseek-v4-pro", "1M\n");
+    assert.strictEqual(result.ok, true);
+    if (result.ok) {
+      assert.strictEqual(result.modelWindows, '{"deepseek-v4-flash":"1M"}');
+    }
+  });
+
+  it("buildModelWindows 行数不一致时返回错误", () => {
+    const result = buildModelWindows("a\nb", "1M");
+    assert.strictEqual(result.ok, false);
+    if (!result.ok) {
+      assert.ok(result.error.includes("2"));
+      assert.ok(result.error.includes("1"));
+    }
   });
 });

@@ -23,3 +23,20 @@ export function modelWindowsTextToMap(modelList: string, modelWindowsText: strin
   });
   return JSON.stringify(map);
 }
+
+export type BuildModelWindowsResult =
+  | { ok: true; modelWindows: string }
+  | { ok: false; error: string };
+
+/// 校验模型列表与窗口文本行数一致，并组装成 model_windows JSON。
+export function buildModelWindows(modelList: string, modelWindowsText: string): BuildModelWindowsResult {
+  const models = modelList.split("\n").map((s) => s.trim()).filter(Boolean);
+  const windows = modelWindowsText.split("\n").map((s) => s.trim());
+  if (models.length !== windows.length) {
+    return {
+      ok: false,
+      error: `模型名称有 ${models.length} 行，上下文窗口有 ${windows.length} 行，请保持行数一致。`,
+    };
+  }
+  return { ok: true, modelWindows: modelWindowsTextToMap(modelList, modelWindowsText) };
+}
