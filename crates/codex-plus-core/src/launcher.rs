@@ -281,6 +281,28 @@ where
         if settings.computer_use_guard_enabled {
             hooks.ensure_computer_use_config(&settings).await?;
         }
+        hooks.apply_active_relay_profile(&settings).await?;
+        let home = crate::relay_config::default_codex_home_dir();
+        match crate::codex_sqlite::sanitize_thread_model_suffixes(&home) {
+            Ok(result) if result.updated > 0 => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.sanitize_thread_model_suffixes",
+                    serde_json::json!({
+                        "scanned": result.scanned,
+                        "updated": result.updated
+                    }),
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.sanitize_thread_model_suffixes_failed",
+                    serde_json::json!({
+                        "error": error.to_string()
+                    }),
+                );
+            }
+        }
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings);
         if protocol_proxy_enabled {
             helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
