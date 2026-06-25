@@ -283,10 +283,10 @@ where
         }
         hooks.apply_active_relay_profile(&settings).await?;
         let home = crate::relay_config::default_codex_home_dir();
-        match crate::codex_sqlite::sanitize_thread_model_suffixes(&home) {
+        match crate::codex_sqlite::sanitize_historical_model_suffixes(&home) {
             Ok(result) if result.updated > 0 => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "launcher.sanitize_thread_model_suffixes",
+                    "launcher.sanitize_historical_model_suffixes",
                     serde_json::json!({
                         "scanned": result.scanned,
                         "updated": result.updated
@@ -296,7 +296,7 @@ where
             Ok(_) => {}
             Err(error) => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "launcher.sanitize_thread_model_suffixes_failed",
+                    "launcher.sanitize_historical_model_suffixes_failed",
                     serde_json::json!({
                         "error": error.to_string()
                     }),
@@ -328,6 +328,12 @@ where
                 .await;
             if injection_ready {
                 keep_launched_on_error = false;
+                // 注入成功后页面已加载，此时可以通过 CDP 清理 Electron Local Storage
+                // 中残留的带后缀模型名，避免模型选择器继续显示废弃项。
+                crate::codex_local_storage::sanitize_local_storage_model_suffixes_nonfatal(
+                    debug_port,
+                )
+                .await;
                 hooks.start_bridge_watchdog(debug_port, helper_port).await?;
             } else {
                 let degraded = launch_status(

@@ -3919,7 +3919,7 @@ function RelayProfileEditor({
               </Button>
             </div>
             <p className="field-hint">
-              每行一个模型，支持在模型名后加 <code>[1M]</code>、<code>[200K]</code> 或 <code>[1000000]</code>；不写后缀的模型使用 Codex 默认长度。
+              每行一个模型，支持在模型名后加 <code>[1M]</code>、<code>[200K]</code> 或 <code>[1000000]</code>；不写后缀的模型使用 Codex 默认长度。同时出现有无后缀版本的同一模型将按有后缀处理。
             </p>
           </Field>
         ) : null}
