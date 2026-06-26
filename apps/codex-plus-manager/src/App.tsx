@@ -941,24 +941,12 @@ export function App() {
       return;
     }
 
-    let deletedCount = 0;
-    const failures: string[] = [];
     for (const session of uniqueSessions) {
-      const title = session.title || session.id;
-      try {
-        const result = await requestDeleteLocalSession(session);
-        if (isSuccessStatus(result.status)) {
-          deletedCount += 1;
-        } else {
-          failures.push(`${title}：${result.message || "删除失败"}`);
-        }
-      } catch (error) {
-        failures.push(`${title}：${stringifyError(error)}`);
-      }
+      const result = await run(() => requestDeleteLocalSession(session));
+      if (!result) return;
     }
 
-    const failureSummary = failures.length ? `，${failures.length} 个失败：${failures.slice(0, 2).join("；")}` : "";
-    showNotice("批量删除会话", `已删除 ${deletedCount} 个会话${failureSummary}。`, failures.length ? "failed" : "ok");
+    showNotice("批量删除会话", "删除成功。", "ok");
     await refreshLocalSessions(true);
   };
 
