@@ -907,18 +907,59 @@ export function App() {
     }
   };
 
+  const requestDeleteLocalSession = (session: LocalSession) =>
+    call<DeleteLocalSessionResult>("delete_local_session", {
+      request: { sessionId: session.id, title: session.title, dbPath: session.dbPath },
+    });
+
   const deleteLocalSession = async (session: LocalSession) => {
     const title = session.title || session.id;
     if (!window.confirm(`删除会话“${title}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。`)) return;
-    const result = await run(() =>
-      call<DeleteLocalSessionResult>("delete_local_session", {
-        request: { sessionId: session.id, title: session.title, dbPath: session.dbPath },
-      }),
-    );
+    const result = await run(() => requestDeleteLocalSession(session));
     if (result) {
       showResultNotice("会话删除", result);
       await refreshLocalSessions(true);
     }
+  };
+
+  const deleteLocalSessions = async (sessions: LocalSession[]) => {
+    const uniqueSessions = Array.from(new Map(sessions.map((session) => [session.id, session])).values());
+    if (!uniqueSessions.length) {
+      showNotice("批量删除会话", "请先选择要删除的会话。", "failed");
+      return;
+    }
+    const preview = uniqueSessions
+      .slice(0, 6)
+      .map((session) => `- ${session.title || session.id}`)
+      .join("\n");
+    const extraCount = uniqueSessions.length > 6 ? `\n…以及另外 ${uniqueSessions.length - 6} 个会话` : "";
+    if (
+      !window.confirm(
+        `删除选中的 ${uniqueSessions.length} 个会话？此操作会删除本地数据库记录和 rollout 文件，并为每个会话创建备份。\n\n${preview}${extraCount}`,
+      )
+    ) {
+      return;
+    }
+
+    let deletedCount = 0;
+    const failures: string[] = [];
+    for (const session of uniqueSessions) {
+      const title = session.title || session.id;
+      try {
+        const result = await requestDeleteLocalSession(session);
+        if (isSuccessStatus(result.status)) {
+          deletedCount += 1;
+        } else {
+          failures.push(`${title}：${result.message || "删除失败"}`);
+        }
+      } catch (error) {
+        failures.push(`${title}：${stringifyError(error)}`);
+      }
+    }
+
+    const failureSummary = failures.length ? `，${failures.length} 个失败：${failures.slice(0, 2).join("；")}` : "";
+    showNotice("批量删除会话", `已删除 ${deletedCount} 个会话${failureSummary}。`, failures.length ? "failed" : "ok");
+    await refreshLocalSessions(true);
   };
 
   const refreshLiveContextEntries = async (silent = false) => {
@@ -1703,6 +1744,7 @@ export function App() {
       deleteUserScript,
       refreshLocalSessions,
       deleteLocalSession,
+      deleteLocalSessions,
       refreshZedRemoteProjects,
       openZedRemoteProject,
       forgetZedRemoteProject,
@@ -1945,6 +1987,7 @@ type Actions = {
   deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: () => Promise<LocalSessionsResult | null>;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
+  deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
   refreshZedRemoteProjects: () => Promise<ZedRemoteProjectsResult | null>;
   openZedRemoteProject: (project: ZedRemoteProject, strategy?: ZedOpenStrategy) => Promise<void>;
   forgetZedRemoteProject: (project: ZedRemoteProject) => Promise<void>;
@@ -2864,6 +2907,43 @@ function SessionsScreen({
   const items = sessions?.sessions ?? [];
   const activeCount = items.filter((item) => !item.archived).length;
   const archivedCount = items.length - activeCount;
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
+  const selectedCount = selectedSessions.length;
+  const allSelected = items.length > 0 && selectedCount === items.length;
+
+  useEffect(() => {
+    const itemIds = new Set(items.map((session) => session.id));
+    setSelectedSessionIds((current) => {
+      const next = new Set(Array.from(current).filter((id) => itemIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [items]);
+
+  const toggleSessionSelection = (sessionId: string, checked: boolean) => {
+    setSelectedSessionIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(sessionId);
+      } else {
+        next.delete(sessionId);
+      }
+      return next;
+    });
+  };
+
+  const selectAllSessions = () => setSelectedSessionIds(new Set(items.map((session) => session.id)));
+  const clearSelectedSessions = () => setSelectedSessionIds(new Set());
+  const deleteSelectedSessions = async () => {
+    setBulkDeleting(true);
+    try {
+      await actions.deleteLocalSessions(selectedSessions);
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
   return (
     <>
       <Panel>
@@ -2942,26 +3022,54 @@ function SessionsScreen({
         <CardHead title="本地会话" detail={items.length ? "按更新时间倒序显示" : "点击刷新会话读取本地数据库"} />
         <CardContent>
           {items.length ? (
-            <div className="session-list">
-              {items.map((session) => (
-                <div className="session-row" key={session.id}>
-                  <div className="session-main">
-                    <strong>{session.title || "未命名会话"}</strong>
-                    <span>{session.id}</span>
-                    <small>{session.cwd || "未记录项目路径"}</small>
-                  </div>
-                  <div className="session-meta">
-                    <Badge status={session.archived ? "archived" : "ok"} />
-                    <span>{session.modelProvider || "provider 未记录"}</span>
-                    <span>{formatTime(session.updatedAtMs ?? 0)}</span>
-                  </div>
-                  <Button variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
+            <>
+              <div className="session-list-toolbar">
+                <span className="session-selection-summary">已选择 {selectedCount} / {items.length} 个会话</span>
+                <div className="session-selection-actions">
+                  <Button disabled={allSelected || bulkDeleting} onClick={selectAllSessions} size="sm" variant="outline">
+                    全选当前列表
+                  </Button>
+                  <Button disabled={!selectedCount || bulkDeleting} onClick={clearSelectedSessions} size="sm" variant="outline">
+                    清空选择
+                  </Button>
+                  <Button disabled={!selectedCount || bulkDeleting} onClick={() => void deleteSelectedSessions()} size="sm" variant="outline">
                     <Trash2 className="h-4 w-4" />
-                    删除
+                    {bulkDeleting ? "正在删除…" : "删除已选"}
                   </Button>
                 </div>
-              ))}
-            </div>
+              </div>
+              <div className="session-list">
+                {items.map((session) => {
+                  const selected = selectedSessionIds.has(session.id);
+                  return (
+                    <div className="session-row" data-selected={selected} key={session.id}>
+                      <label className="session-select" title="选择会话">
+                        <input
+                          aria-label={`选择会话 ${session.title || session.id}`}
+                          checked={selected}
+                          onChange={(event) => toggleSessionSelection(session.id, event.currentTarget.checked)}
+                          type="checkbox"
+                        />
+                      </label>
+                      <div className="session-main">
+                        <strong>{session.title || "未命名会话"}</strong>
+                        <span>{session.id}</span>
+                        <small>{session.cwd || "未记录项目路径"}</small>
+                      </div>
+                      <div className="session-meta">
+                        <Badge status={session.archived ? "archived" : "ok"} />
+                        <span>{session.modelProvider || "provider 未记录"}</span>
+                        <span>{formatTime(session.updatedAtMs ?? 0)}</span>
+                      </div>
+                      <Button className="session-delete-button" variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
+                        <Trash2 className="h-4 w-4" />
+                        删除
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           ) : (
             <div className="empty">未读取到本地会话，或当前 SQLite 会话库不存在。</div>
           )}

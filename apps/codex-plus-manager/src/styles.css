@@ -2234,9 +2234,30 @@ body {
   gap: 8px;
 }
 
+.session-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.session-selection-summary {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.session-selection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .session-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(180px, auto) auto;
+  grid-template-columns: auto minmax(0, 1fr) minmax(180px, auto) auto;
   gap: 12px;
   align-items: center;
   border: 1px solid hsl(var(--border));
@@ -2251,6 +2272,26 @@ body {
 .session-row:hover {
   border-color: hsl(var(--primary) / 0.32);
   background: hsl(var(--accent) / 0.45);
+}
+
+.session-row[data-selected="true"] {
+  border-color: hsl(var(--primary) / 0.42);
+  background: hsl(var(--accent) / 0.62);
+}
+
+.session-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+}
+
+.session-select input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: hsl(var(--primary));
 }
 
 .session-main,
@@ -2622,8 +2663,29 @@ body {
     grid-template-columns: 1fr;
   }
 
+  .session-list-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .session-selection-actions {
+    justify-content: flex-start;
+  }
+
   .session-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .session-select {
+    grid-row: 1 / span 3;
+    margin-top: 2px;
+  }
+
+  .session-main,
+  .session-meta,
+  .session-delete-button {
+    grid-column: 2;
   }
 
   .zed-remote-project-row {
