@@ -456,6 +456,14 @@ type TaskProgress = {
   message: string;
 };
 
+type ConfirmDialogState = {
+  title: string;
+  message: string;
+  confirmText?: string;
+  cancelText?: string;
+  resolve: (confirmed: boolean) => void;
+};
+
 type LogsResult = CommandResult<{
   path: string;
   text: string;
@@ -710,6 +718,7 @@ export function App() {
     message: "尚未运行插件市场修复。",
   });
   const [pluginMarketplacePrompt, setPluginMarketplacePrompt] = useState<PluginMarketplaceStatusResult | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
@@ -912,9 +921,21 @@ export function App() {
       request: { sessionId: session.id, title: session.title, dbPath: session.dbPath },
     });
 
+  const confirmSessionDelete = (title: string, message: string) =>
+    new Promise<boolean>((resolve) => {
+      setConfirmDialog({
+        title,
+        message,
+        confirmText: "确认删除",
+        cancelText: "取消",
+        resolve,
+      });
+    });
+
   const deleteLocalSession = async (session: LocalSession) => {
     const title = session.title || session.id;
-    if (!window.confirm(`删除会话“${title}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。`)) return;
+    const confirmed = await confirmSessionDelete("删除会话", `删除会话“${title}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。`);
+    if (!confirmed) return;
     const result = await run(() => requestDeleteLocalSession(session));
     if (result) {
       showResultNotice("会话删除", result);
@@ -930,16 +951,14 @@ export function App() {
     }
     const preview = uniqueSessions
       .slice(0, 6)
-      .map((session) => `- ${session.title || session.id}`)
+      .map((session) => `- ${truncateSessionDeletePreview(session.title || session.id)}`)
       .join("\n");
     const extraCount = uniqueSessions.length > 6 ? `\n…以及另外 ${uniqueSessions.length - 6} 个会话` : "";
-    if (
-      !window.confirm(
-        `删除选中的 ${uniqueSessions.length} 个会话？此操作会删除本地数据库记录和 rollout 文件，并为每个会话创建备份。\n\n${preview}${extraCount}`,
-      )
-    ) {
-      return;
-    }
+    const confirmed = await confirmSessionDelete(
+      "批量删除会话",
+      `删除选中的 ${uniqueSessions.length} 个会话？此操作会删除本地数据库记录和 rollout 文件，并为每个会话创建备份。\n\n${preview}${extraCount}`,
+    );
+    if (!confirmed) return;
 
     for (const session of uniqueSessions) {
       const result = await run(() => requestDeleteLocalSession(session));
@@ -1931,6 +1950,15 @@ export function App() {
           onRepair={() => void actions.repairPluginMarketplace()}
         />
       ) : null}
+      {confirmDialog ? (
+        <ConfirmDialog
+          dialog={confirmDialog}
+          onClose={(confirmed) => {
+            confirmDialog.resolve(confirmed);
+            setConfirmDialog(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -2896,6 +2924,7 @@ function SessionsScreen({
   const activeCount = items.filter((item) => !item.archived).length;
   const archivedCount = items.length - activeCount;
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
+  const [selectionMode, setSelectionMode] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
   const selectedCount = selectedSessions.length;
@@ -2921,9 +2950,16 @@ function SessionsScreen({
     });
   };
 
-  const selectAllSessions = () => setSelectedSessionIds(new Set(items.map((session) => session.id)));
+  const selectAllSessions = () => {
+    setSelectionMode(true);
+    setSelectedSessionIds(new Set(items.map((session) => session.id)));
+  };
   const clearSelectedSessions = () => setSelectedSessionIds(new Set());
   const deleteSelectedSessions = async () => {
+    if (!selectionMode) {
+      setSelectionMode(true);
+      return;
+    }
     setBulkDeleting(true);
     try {
       await actions.deleteLocalSessions(selectedSessions);
@@ -3020,9 +3056,9 @@ function SessionsScreen({
                   <Button disabled={!selectedCount || bulkDeleting} onClick={clearSelectedSessions} size="sm" variant="outline">
                     清空选择
                   </Button>
-                  <Button disabled={!selectedCount || bulkDeleting} onClick={() => void deleteSelectedSessions()} size="sm" variant="outline">
-                    <Trash2 className="h-4 w-4" />
-                    {bulkDeleting ? "正在删除…" : "删除已选"}
+                  <Button disabled={(selectionMode && !selectedCount) || bulkDeleting} onClick={() => void deleteSelectedSessions()} size="sm" variant="outline">
+                    {selectionMode ? <Trash2 className="h-4 w-4" /> : null}
+                    {selectionMode ? (bulkDeleting ? "正在删除…" : "删除已选") : "多选"}
                   </Button>
                 </div>
               </div>
@@ -3030,15 +3066,17 @@ function SessionsScreen({
                 {items.map((session) => {
                   const selected = selectedSessionIds.has(session.id);
                   return (
-                    <div className="session-row" data-selected={selected} key={session.id}>
-                      <label className="session-select" title="选择会话">
-                        <input
-                          aria-label={`选择会话 ${session.title || session.id}`}
-                          checked={selected}
-                          onChange={(event) => toggleSessionSelection(session.id, event.currentTarget.checked)}
-                          type="checkbox"
-                        />
-                      </label>
+                    <div className="session-row" data-selection-mode={selectionMode} data-selected={selected} key={session.id}>
+                      {selectionMode ? (
+                        <label className="session-select" title="选择会话">
+                          <input
+                            aria-label={`选择会话 ${session.title || session.id}`}
+                            checked={selected}
+                            onChange={(event) => toggleSessionSelection(session.id, event.currentTarget.checked)}
+                            type="checkbox"
+                          />
+                        </label>
+                      ) : null}
                       <div className="session-main">
                         <strong>{session.title || "未命名会话"}</strong>
                         <span>{session.id}</span>
@@ -4660,6 +4698,40 @@ function NoticeDialog({
   );
 }
 
+function ConfirmDialog({
+  dialog,
+  onClose,
+}: {
+  dialog: ConfirmDialogState;
+  onClose: (confirmed: boolean) => void;
+}) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
+      <div className="modal-card confirm-modal">
+        <div className="modal-head">
+          <div>
+            <h2 id="confirm-dialog-title">{dialog.title}</h2>
+            <p>{dialog.message}</p>
+          </div>
+          <button className="toast-close" onClick={() => onClose(false)} type="button">×</button>
+        </div>
+        <Toolbar>
+          <Button onClick={() => onClose(true)} variant="default">{dialog.confirmText ?? "确认"}</Button>
+          <Button onClick={() => onClose(false)} variant="secondary">{dialog.cancelText ?? "取消"}</Button>
+        </Toolbar>
+      </div>
+    </div>
+  );
+}
+
 function PluginMarketplacePromptDialog({
   status,
   progress,
@@ -5498,6 +5570,11 @@ function statusClass(status: string) {
 
 function isSuccessStatus(status?: Status) {
   return status === "ok" || status === "accepted";
+}
+
+function truncateSessionDeletePreview(value: string) {
+  const normalized = value.trim();
+  return normalized.length > 20 ? `${normalized.slice(0, 20)}...` : normalized;
 }
 
 function healthItems(overview: OverviewResult | null) {

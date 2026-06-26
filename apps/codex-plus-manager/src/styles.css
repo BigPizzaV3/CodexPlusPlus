@@ -1902,6 +1902,19 @@ body {
   margin-bottom: 12px;
 }
 
+.confirm-modal .modal-head {
+  margin-bottom: 18px;
+}
+
+.confirm-modal .modal-head p {
+  white-space: pre-line;
+}
+
+.confirm-modal .toolbar {
+  justify-content: flex-end;
+  margin-top: 0;
+}
+
 .guide-list {
   margin-bottom: 12px;
 }
@@ -2257,7 +2270,7 @@ body {
 
 .session-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(180px, auto) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, auto) auto;
   gap: 12px;
   align-items: center;
   border: 1px solid hsl(var(--border));
@@ -2267,6 +2280,10 @@ body {
   transition:
     border-color var(--motion-normal) var(--motion-ease),
     background-color var(--motion-normal) var(--motion-ease);
+}
+
+.session-row[data-selection-mode="true"] {
+  grid-template-columns: auto minmax(0, 1fr) minmax(180px, auto) auto;
 }
 
 .session-row:hover {
@@ -2673,8 +2690,12 @@ body {
   }
 
   .session-row {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: 1fr;
     align-items: start;
+  }
+
+  .session-row[data-selection-mode="true"] {
+    grid-template-columns: auto minmax(0, 1fr);
   }
 
   .session-select {
@@ -2682,9 +2703,9 @@ body {
     margin-top: 2px;
   }
 
-  .session-main,
-  .session-meta,
-  .session-delete-button {
+  .session-row[data-selection-mode="true"] .session-main,
+  .session-row[data-selection-mode="true"] .session-meta,
+  .session-row[data-selection-mode="true"] .session-delete-button {
     grid-column: 2;
   }
 
