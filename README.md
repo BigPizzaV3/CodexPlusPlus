@@ -204,6 +204,7 @@ Telegram 频道：<https://t.me/CodexPlusPlus>
 - 用户脚本独立管理，可在启动时注入自定义脚本。
 - Provider 同步：启动前同步本地会话 metadata，切换供应商后旧会话仍可见。
 - Zed 打开入口：识别远程 SSH 上下文后，可从 Codex 直接打开对应文件到 Zed Remote Development。
+- 按模型粒度配置上下文窗口：「模型列表」分为左右两列，左侧填模型名，右侧填上下文窗口（如 `1M`、`200K` 或 `1000000`）；Codex++ 自动生成 `model_catalog_json` 并注入 `config.toml`，切换模型即生效。右侧留空则使用 Codex 默认长度。
 - Upstream worktree 创建：可从 `upstream/<base-branch>` 创建新 worktree，创建前自动 fetch 远端分支，降低从陈旧本地 HEAD 派生导致的冲突风险。
 - GitHub Release 自动更新，管理工具和静默启动器都会检测可用更新。
 - Windows 单实例、无黑框启动、管理员权限清单、系统桌面路径识别。

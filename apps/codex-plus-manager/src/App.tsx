@@ -59,6 +59,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { buildModelWindows, modelWindowsMapToText } from "./model-windows";
 
 type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
 
@@ -163,7 +164,7 @@ type BackendSettings = {
 type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
 type LaunchMode = "patch" | "relay";
 
-type RelayProfile = {
+export type RelayProfile = {
   id: string;
   name: string;
   model: string;
@@ -182,6 +183,7 @@ type RelayProfile = {
   contextWindow: string;
   autoCompactLimit: string;
   modelList: string;
+  modelWindows: string;
   userAgent: string;
   aggregate?: RelayAggregateConfig | null;
 };
@@ -669,6 +671,7 @@ const defaultSettings: BackendSettings = {
       contextWindow: "",
       autoCompactLimit: "",
       modelList: "",
+      modelWindows: "",
       userAgent: "",
     },
   ],
@@ -3658,6 +3661,9 @@ function RelayProfileDetail({
   actions: Actions;
 }) {
   const [draft, setDraft] = useState<RelayProfile>(profile);
+  const [modelWindowsText, setModelWindowsText] = useState(
+    modelWindowsMapToText(profile.modelList, profile.modelWindows || ""),
+  );
   const isActive = !isNew && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
   useEffect(() => {
@@ -3675,10 +3681,19 @@ function RelayProfileDetail({
           ),
     );
   }, [profile.id, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
+  useEffect(() => {
+    setModelWindowsText(modelWindowsMapToText(draft.modelList, draft.modelWindows || ""));
+  }, [draft.modelWindows, profile.id]);
   const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
   const saveDraft = async () => {
     if (validationError) return;
-    const normalizedDraft = isAggregateRelayProfile(draft) ? normalizeAggregateRelayProfile(draft, form) : deriveRelayProfileFromFiles(draft);
+    const modelWindowsResult = buildModelWindows(draft.modelList, modelWindowsText);
+    if (!modelWindowsResult.ok) {
+      alert(modelWindowsResult.error);
+      return;
+    }
+    const draftWithWindows = { ...draft, modelWindows: modelWindowsResult.modelWindows };
+    const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const next = isNew
       ? addRelayProfile(form, normalizedDraft)
       : updateRelayProfile(form, profile.id, normalizedDraft);
@@ -3695,7 +3710,13 @@ function RelayProfileDetail({
   };
   const switchDraft = () => {
     if (isNew || !form.relayProfilesEnabled) return;
-    const normalizedDraft = isAggregateRelayProfile(draft) ? normalizeAggregateRelayProfile(draft, form) : deriveRelayProfileFromFiles(draft);
+    const modelWindowsResult = buildModelWindows(draft.modelList, modelWindowsText);
+    if (!modelWindowsResult.ok) {
+      alert(modelWindowsResult.error);
+      return;
+    }
+    const draftWithWindows = { ...draft, modelWindows: modelWindowsResult.modelWindows };
+    const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const previousActiveRelayId = form.activeRelayId;
     const next = syncLegacyRelayFields({
       ...form,
@@ -3718,7 +3739,7 @@ function RelayProfileDetail({
           </Button>
         </Toolbar>
       </div>
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} />
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} modelWindowsText={modelWindowsText} setModelWindowsText={setModelWindowsText} />
       {isAggregateRelayProfile(draft) ? null : (
       <RelayFileEditors
         contextProfile={profile}
@@ -3771,6 +3792,8 @@ function RelayProfileEditor({
   onProfileChange,
   onSwitch,
   actions,
+  modelWindowsText,
+  setModelWindowsText,
 }: {
   profile: RelayProfile;
   form: BackendSettings;
@@ -3778,6 +3801,8 @@ function RelayProfileEditor({
   onProfileChange: (value: RelayProfile) => void;
   onSwitch: () => void;
   actions: Actions;
+  modelWindowsText: string;
+  setModelWindowsText: (value: string) => void;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   if (isAggregateRelayProfile(profile)) {
@@ -3844,8 +3869,11 @@ function RelayProfileEditor({
           <Input
             value={profile.model}
             onChange={(event) => updateDraft({ model: event.currentTarget.value })}
-            placeholder="写入 config.toml 的 model 字段，例如 gpt-5"
+            placeholder="例如 deepseek-v4-pro"
           />
+          <p className="field-hint">
+            默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。
+          </p>
         </Field>
         <Field className="relay-field-goals" label="Codex 目标">
           <label className="inline-check">
@@ -3951,16 +3979,34 @@ function RelayProfileEditor({
         ) : null}
         {showApiFields ? (
           <Field className="relay-field-model-list" label="模型列表">
+            <div className="relay-model-list-split">
+              <div className="relay-model-list-column">
+                <label className="relay-model-list-label">模型名称</label>
+                <Textarea
+                  value={profile.modelList}
+                  onChange={(event) => updateDraft({ modelList: event.currentTarget.value })}
+                  placeholder="deepseek/deepseek-v4-flash"
+                  style={{ fontFamily: "monospace" }}
+                />
+              </div>
+              <div className="relay-model-list-column">
+                <label className="relay-model-list-label">上下文窗口</label>
+                <Textarea
+                  value={modelWindowsText}
+                  onChange={(event) => setModelWindowsText(event.currentTarget.value)}
+                  placeholder="1M"
+                  style={{ fontFamily: "monospace" }}
+                />
+              </div>
+            </div>
             <div className="relay-model-list-tools">
-              <Textarea
-                value={profile.modelList}
-                onChange={(event) => updateDraft({ modelList: event.currentTarget.value })}
-                placeholder="每行一个模型，例如 qwen3-coder"
-              />
               <Button
                 onClick={async () => {
                   const models = await actions.fetchRelayProfileModels(profile);
-                  if (models?.length) updateDraft({ modelList: models.join("\n") });
+                  if (models?.length) {
+                    updateDraft({ modelList: models.join("\n") });
+                    setModelWindowsText("");
+                  }
                 }}
                 size="sm"
                 type="button"
@@ -3970,6 +4016,9 @@ function RelayProfileEditor({
                 从上游获取
               </Button>
             </div>
+            <p className="field-hint">
+              每行一个模型；左侧填模型名，右侧填上下文窗口（如 <code>1M</code>、<code>200K</code> 或 <code>1000000</code>）。右侧留空表示使用 Codex 默认长度。
+            </p>
           </Field>
         ) : null}
         {showApiFields ? (
@@ -5560,6 +5609,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             contextWindow: "",
             autoCompactLimit: "",
             modelList: "",
+            modelWindows: "",
             userAgent: "",
           },
         ];
@@ -5616,6 +5666,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         contextWindow: "",
         autoCompactLimit: "",
         modelList: "",
+        modelWindows: "",
       },
       null,
     );
@@ -5642,6 +5693,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     contextWindow: profile.contextWindow || "",
     autoCompactLimit: profile.autoCompactLimit || "",
     modelList: profile.modelList || "",
+    modelWindows: profile.modelWindows || "",
     userAgent: profile.userAgent || "",
     aggregate: null,
   };
@@ -5867,9 +5919,13 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
   const isProxyConfig = configBaseUrl === PROTOCOL_PROXY_BASE_URL;
   const upstreamBaseUrl = profile.upstreamBaseUrl || chatUpstreamBaseUrl || (configBaseUrl && !isProxyConfig ? configBaseUrl : profile.baseUrl || "");
   const configApiKey = codexExperimentalBearerTokenFromConfig(configContents);
+  const configModel = codexModelFromConfig(configContents);
+  // 如果用户输入了带后缀的模型名，优先保留在界面的「配置模型」字段中；
+  // config.toml 里实际写的是剥离后缀的 slug（由 applyRelayProfilePatchToFiles 处理）。
+  const model = /\[.+\]$/.test(profile.model.trim()) ? profile.model.trim() : configModel;
   return {
     ...profile,
-    model: codexModelFromConfig(configContents),
+    model,
     baseUrl: upstreamBaseUrl,
     upstreamBaseUrl,
     apiKey: profile.relayMode === "official"
@@ -5899,7 +5955,10 @@ function applyRelayProfilePatchToFiles(
   }
 
   if ("model" in patch) {
-    next.configContents = setRootTomlStringKey(next.configContents, "model", patch.model || "");
+    // 模型后缀（如 [1M]）仅供 CodexPlusPlus 内部使用，写入 config.toml 前需剥离，
+    // 否则 codex 会按带后缀的字符串去匹配 catalog slug，导致窗口回退到默认值。
+    const { slug } = parseModelSuffix(patch.model || "");
+    next.configContents = setRootTomlStringKey(next.configContents, "model", slug);
   }
   if ("apiKey" in patch) {
     if (next.relayMode === "pureApi") {
@@ -5951,6 +6010,22 @@ function codexModelFromConfig(contents: string): string {
     if (match) return match[2].replace(/\\(["'\\])/g, "$1");
   }
   return "";
+}
+
+/// 解析模型后缀语法，如 deepseek-v4-flash[1M] -> { slug: "deepseek-v4-flash", window: 1000000 }
+/// 非法或没有后缀时返回原串作为 slug。
+function parseModelSuffix(raw: string): { slug: string; window?: number } {
+  const trimmed = raw.trim();
+  const match = /^(.*?)\[(\d+(?:[KkMm])?)\]$/.exec(trimmed);
+  if (!match) return { slug: trimmed };
+  const inner = match[2];
+  const numPart = inner.replace(/[KkMm]$/, "");
+  const multiplier = inner.endsWith("K") || inner.endsWith("k") ? 1_000
+    : inner.endsWith("M") || inner.endsWith("m") ? 1_000_000
+    : 1;
+  const window = Number.parseInt(numPart, 10) * multiplier;
+  if (!Number.isFinite(window) || window <= 0) return { slug: trimmed };
+  return { slug: match[1].trim(), window };
 }
 
 function codexBaseUrlFromConfig(contents: string): string {
@@ -6254,6 +6329,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     contextWindow: "",
     autoCompactLimit: "",
     modelList: "",
+    modelWindows: "",
     userAgent: "",
   };
   return withGeneratedRelayFiles(next);
@@ -6283,6 +6359,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       contextWindow: "",
       autoCompactLimit: "",
       modelList: "",
+      modelWindows: "",
       userAgent: "",
       aggregate: {
         strategy: "failover",

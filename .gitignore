@@ -18,3 +18,9 @@ docs/superpowers/
 *.log
 .DS_Store
 Thumbs.db
+.env
+
+# pnpm artifacts (project uses npm)
+pnpm-lock.yaml
+pnpm-workspace.yaml
+

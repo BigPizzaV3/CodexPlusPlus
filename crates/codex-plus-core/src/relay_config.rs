@@ -365,7 +365,8 @@ pub fn apply_relay_profile_files_to_home_with_context(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
-    apply_relay_files_to_home(home, &config_with_limits, &profile.auth_contents)
+    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
+    apply_relay_files_to_home(home, &config_with_catalog, &profile.auth_contents)
 }
 
 pub fn apply_relay_profile_to_home_with_switch_rules(
@@ -401,11 +402,12 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
+    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
 
     if profile.relay_mode == crate::settings::RelayMode::PureApi {
         apply_relay_files_to_home_with_computer_use_guard(
             home,
-            &config_with_limits,
+            &config_with_catalog,
             &profile.auth_contents,
             preserve_computer_use_guard,
         )
@@ -413,7 +415,7 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
         let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
         apply_relay_files_to_home_with_computer_use_guard(
             home,
-            &config_with_limits,
+            &config_with_catalog,
             &auth_contents,
             preserve_computer_use_guard,
         )
@@ -437,7 +439,8 @@ pub fn apply_relay_profile_config_to_home_with_context(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
-    apply_relay_config_file_to_home(home, &config_with_limits)
+    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
+    apply_relay_config_file_to_home(home, &config_with_catalog)
 }
 
 pub fn apply_relay_config_file_to_home(
@@ -1364,6 +1367,61 @@ fn apply_context_limits_to_config(
     Ok(normalize_optional_toml(doc))
 }
 
+fn apply_model_catalog_to_config(
+    home: &Path,
+    profile: &RelayProfile,
+    config_text: &str,
+) -> anyhow::Result<String> {
+    let catalog_relative = format!(
+        "model-catalogs/{}.json",
+        sanitize_catalog_filename(&profile.id)
+    );
+    // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
+    // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
+    if let Some(existing) = root_key_string(config_text, "model_catalog_json") {
+        if existing != catalog_relative {
+            return Ok(config_text.to_string());
+        }
+    }
+    let (model_list, model_windows): (String, std::collections::HashMap<String, String>) =
+        if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
+            crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list)
+        } else {
+            (
+                profile.model_list.clone(),
+                serde_json::from_str(&profile.model_windows).unwrap_or_default(),
+            )
+        };
+    let entries =
+        crate::model_suffix::collect_catalog_entries(&model_list, &model_windows, &profile.model);
+    // 无后缀条目则 no-op，保持现有 per-profile 单值行为（保 does_not_write 测试）
+    if !entries.iter().any(|entry| entry.suffix_window.is_some()) {
+        return Ok(config_text.to_string());
+    }
+    let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
+    let catalog_path = home.join(&catalog_relative);
+    if let Some(parent) = catalog_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let catalog_json = crate::model_suffix::build_model_catalog_json(&entries, fallback);
+    std::fs::write(&catalog_path, catalog_json)?;
+    let mut doc = parse_toml_document(config_text)?;
+    doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+    Ok(normalize_optional_toml(doc))
+}
+
+fn sanitize_catalog_filename(id: &str) -> String {
+    id.chars()
+        .map(|char| {
+            if char.is_ascii_alphanumeric() || char == '-' || char == '_' {
+                char
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 fn sync_context_limits_from_config(profile: &mut RelayProfile, config_text: &str) {
     if let Some(value) = root_positive_int_string(config_text, "model_context_window") {
         profile.context_window = value;
@@ -1819,7 +1877,22 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     let provider_id = active_or_default_provider_id(&doc);
     set_provider_id(&mut doc, &provider_id);
 
-    let model = relay_profile_model(profile);
+    let mut model = relay_profile_model(profile);
+    // 若用户未填写默认模型，但 model_list 有内容，则取第一条作为默认 model，
+    // 避免 codex 启动时回退到历史会话中带后缀的模型名。
+    if model.trim().is_empty() && !profile.model_list.trim().is_empty() {
+        if let Some(first) = profile
+            .model_list
+            .split(['\r', '\n', ','])
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+        {
+            model = crate::model_suffix::parse_model_suffix(first).0;
+        }
+    }
+    // 若用户把后缀语法（如 deepseek-v4-flash[1M]）写在 model 字段，
+    // 写入 config.toml 前需剥离后缀；codex 本身不理解后缀，只会按原串匹配 catalog slug。
+    let (model, _) = crate::model_suffix::parse_model_suffix(&model);
     if !model.trim().is_empty() {
         doc["model"] = toml_edit::value(model.trim());
     }
@@ -1877,6 +1950,12 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
 }
 
 pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
+        let (clean_list, windows) =
+            crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);
+        profile.model_list = clean_list;
+        profile.model_windows = serde_json::to_string(&windows).unwrap_or_default();
+    }
     if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
         let has_api_config = !profile.base_url.trim().is_empty()
             || !profile.api_key.trim().is_empty()

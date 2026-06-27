@@ -2925,3 +2925,28 @@ body {
   background: hsl(var(--brand-accent));
   color: hsl(var(--primary-foreground));
 }
+
+.relay-model-list-split {
+  display: flex;
+  gap: 12px;
+}
+
+.relay-model-list-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.relay-model-list-label {
+  font-size: 0.875rem;
+  margin-bottom: 4px;
+  color: hsl(var(--muted-foreground));
+}
+
+.relay-model-list-column textarea {
+  min-height: 120px;
+  resize: vertical;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
