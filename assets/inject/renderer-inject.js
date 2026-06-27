@@ -98,6 +98,9 @@
   const codexServiceTierRequestOverrideVersion = "3";
   const codexAppServerModelRequestPatchVersion = "1";
   const codexPluginMarketplaceUnlockVersion = "12";
+  const codexPluginAutoExpandVersion = "1";
+  const codexPluginAutoExpandMaxClicks = 80;
+  const codexPluginAutoExpandClickDelayMs = 90;
   const codexThreadScrollMaxEntries = 120;
   const codexThreadScrollSaveThrottleMs = 120;
   const codexThreadScrollRestoreWindowMs = 3200;
@@ -912,12 +915,13 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, forcePluginInstall: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
+    return { pluginMarketplaceUnlock: true, forcePluginInstall: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
   }
 
   const codexPlusBackendSettingMap = {
     pluginMarketplaceUnlock: "codexAppPluginMarketplaceUnlock",
     forcePluginInstall: "codexAppForcePluginInstall",
+    pluginAutoExpand: "codexAppPluginAutoExpand",
     modelWhitelistUnlock: "codexAppModelWhitelistUnlock",
     sessionDelete: "codexAppSessionDelete",
     markdownExport: "codexAppMarkdownExport",
@@ -948,6 +952,7 @@
       return {
         pluginMarketplaceUnlock: false,
         forcePluginInstall: false,
+        pluginAutoExpand: false,
         modelWhitelistUnlock: false,
         sessionDelete: false,
         markdownExport: false,
@@ -1012,6 +1017,12 @@
         removeCodexServiceTierBadges();
         refreshCodexServiceTierControls();
       }
+    }
+    if (key === "pluginAutoExpand" && !value) {
+      clearTimeout(window.__codexPluginAutoExpandTimer);
+      window.__codexPluginAutoExpandTimer = null;
+      window.__codexPluginAutoExpandRunning = false;
+      window.__codexPluginAutoExpandLastSignature = "";
     }
     renderCodexPlusMenu();
     scan();
@@ -2867,6 +2878,101 @@
       });
     }
     return result;
+  }
+
+  function pluginAutoExpandVisibleElement(el) {
+    if (!(el instanceof HTMLElement) || !el.isConnected) return false;
+    const style = getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden" || style.pointerEvents === "none") return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function pluginAutoExpandPageLooksRelevant() {
+    const text = String(document.body?.innerText || "");
+    return /插件|Plugins?|Marketplace|市场/i.test(text) && !!document.querySelector('button, [role="button"]');
+  }
+
+  function pluginAutoExpandButtonLooksScoped(button) {
+    let node = button;
+    for (let depth = 0; node instanceof HTMLElement && node !== document.body && depth < 8; depth += 1, node = node.parentElement) {
+      const text = String(node.innerText || "");
+      if (text.length > 16000) continue;
+      if (/插件|Plugins?|Marketplace|市场/i.test(text)) return true;
+    }
+    return false;
+  }
+
+  function pluginAutoExpandButtonText(button) {
+    return String(button?.textContent || button?.getAttribute?.("aria-label") || button?.getAttribute?.("title") || "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function pluginAutoExpandButtonLooksLikeMore(button) {
+    const text = pluginAutoExpandButtonText(button);
+    if (!text || text.length > 120) return false;
+    if (/^(更多|显示更多|查看更多|加载更多|Show more|Load more|More)$/i.test(text)) return true;
+    if (/^查看\s+.+以及另外\s*\d+\s*个$/i.test(text)) return true;
+    if (/^View\s+.+\s+and\s+\d+\s+more$/i.test(text)) return true;
+    if (/^Show\s+.+\s+and\s+\d+\s+more$/i.test(text)) return true;
+    return false;
+  }
+
+  function pluginAutoExpandButtonCandidates() {
+    if (!codexPlusSettings().pluginAutoExpand || !pluginAutoExpandPageLooksRelevant()) return [];
+    return Array.from(document.querySelectorAll('button, [role="button"]'))
+      .filter(pluginAutoExpandVisibleElement)
+      .filter((button) => !button.disabled && button.getAttribute("aria-disabled") !== "true")
+      .filter(pluginAutoExpandButtonLooksLikeMore)
+      .filter(pluginAutoExpandButtonLooksScoped)
+      .filter((button) => !button.closest?.(`.${moreMenuClass}, #${codexPlusMenuId}, .codex-plus-modal-overlay`));
+  }
+
+  function pluginAutoExpandSignature() {
+    return pluginAutoExpandButtonCandidates()
+      .map((button) => {
+        const rect = button.getBoundingClientRect();
+        return `${pluginAutoExpandButtonText(button)}:${Math.round(rect.top)}:${Math.round(rect.left)}`;
+      })
+      .join("|");
+  }
+
+  function schedulePluginAutoExpand(force = false) {
+    if (!codexPlusSettings().pluginAutoExpand) return;
+    if (window.__codexPluginAutoExpandRunning && !force) return;
+    clearTimeout(window.__codexPluginAutoExpandTimer);
+    window.__codexPluginAutoExpandTimer = setTimeout(() => runPluginAutoExpand(force), force ? 30 : 180);
+  }
+
+  function runPluginAutoExpand(force = false) {
+    if (!codexPlusSettings().pluginAutoExpand) return;
+    const currentSignature = pluginAutoExpandSignature();
+    if (!force && currentSignature && currentSignature === window.__codexPluginAutoExpandLastSignature) return;
+    window.__codexPluginAutoExpandLastSignature = currentSignature;
+    window.__codexPluginAutoExpandRunning = true;
+    window.__codexPluginAutoExpandClicks = 0;
+    const clickNext = () => {
+      if (!codexPlusSettings().pluginAutoExpand) {
+        window.__codexPluginAutoExpandRunning = false;
+        return;
+      }
+      const button = pluginAutoExpandButtonCandidates()[0];
+      if (!button || window.__codexPluginAutoExpandClicks >= codexPluginAutoExpandMaxClicks) {
+        window.__codexPluginAutoExpandRunning = false;
+        sendCodexPlusDiagnostic("plugin_auto_expand_finished", {
+          version: codexPluginAutoExpandVersion,
+          clicks: window.__codexPluginAutoExpandClicks || 0,
+          exhausted: !!button,
+        });
+        return;
+      }
+      window.__codexPluginAutoExpandClicks = (window.__codexPluginAutoExpandClicks || 0) + 1;
+      button.dataset.codexPluginAutoExpandClicked = String(Date.now());
+      button.click();
+      setTimeout(clickNext, codexPluginAutoExpandClickDelayMs);
+    };
+    clickNext();
   }
 
   function patchPluginMarketplaceRequestClient(client) {
@@ -8342,6 +8448,7 @@
     installCodexServiceTierBadge();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
+    schedulePluginAutoExpand();
   }
 
   function runScanStep(step) {
@@ -8426,6 +8533,7 @@
   function scheduleScan(mutations) {
     window.__codexSessionDeleteLastMutations = mutations;
     scheduleZedRemoteMenuRefresh(mutations);
+    schedulePluginAutoExpand();
     if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
     window.__codexSessionDeleteScanPending = true;
