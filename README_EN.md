@@ -134,12 +134,13 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 - Tauri + React manager with dark/light theme support.
 - External CDP injection. No `app.asar` patching and no DLL writes into the Codex installation.
 - Relay injection mode with multiple relay profiles, `CodexPlusPlus` provider configuration, and a one-click switch back to official ChatGPT login mode.
-- Traditional enhancement mode with plugin entry unlock, forced plugin install, session delete, Markdown export, project move, Timeline, and more.
+- Traditional enhancement mode with plugin marketplace unlock, forced plugin install, session delete, Markdown export, project move, and more.
 - Paste fix: when pasting from Word or other rich-text sources into the Codex composer, only keep the plain text so Codex does not treat the clipboard content as an image or file attachment. Off by default; requires a Codex relaunch to take effect.
   - **Usage note**: after toggling in the manager, click the "保存增强设置" / "Save enhancement settings" button to persist, then restart Codex++ for the change to take effect.
 - Independent user script management with startup injection.
 - Provider Sync to keep historical sessions visible after switching providers.
 - Zed open entry detects remote SSH context and opens the matching remote file in Zed Remote Development from Codex.
+- Per-model context window configuration: the "Model list" is split into two columns, model name on the left and context window (e.g. `1M`, `200K`, or `1000000`) on the right. Codex++ auto-generates `model_catalog_json` and injects it into `config.toml`; the matching window is applied when you switch models. Leave the window empty to use Codex's default length.
 - Upstream worktree creation: create new worktrees from `upstream/<base-branch>` after fetching the remote branch, reducing conflicts caused by stale local HEAD state.
 - GitHub Release updates. Both the manager and silent launcher can detect available updates.
 - Windows single instance, no console window, administrator manifest, and system Desktop path detection.
@@ -190,7 +191,7 @@ To return to the official login mode, use the clear API mode button in the Relay
 
 Enhancements are controlled in the manager. Enhancement injection is enabled by default. When disabled, Codex++ will not inject its menu or scripts.
 
-When relay injection mode is active, plugin entry unlock and forced plugin install are unnecessary, and the UI will say so. Other enhancements, including session delete, export, move, Timeline, paste fix, recommendations, and user scripts, can still be used.
+When relay injection mode is active, plugin marketplace unlock and forced plugin install are unnecessary, and the UI will say so. Other enhancements, including session delete, export, move, paste fix, recommendations, and user scripts, can still be used.
 
 ## Recommendations
 

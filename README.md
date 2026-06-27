@@ -198,12 +198,13 @@ Telegram 频道：<https://t.me/CodexPlusPlus>
 - Tauri + React 管理工具，支持深色/浅色切换。
 - 外部 CDP 注入，不改 `app.asar`，不向 Codex 安装目录写入 DLL。
 - 中转注入模式：支持多个中转配置，写入 `CodexPlusPlus` provider，并可切回官方 ChatGPT 登录态。
-- 传统增强模式：插件入口解锁、特殊插件强制安装、会话删除、Markdown 导出、项目移动、Timeline 等。
+- 传统增强模式：插件市场解锁、特殊插件强制安装、会话删除、Markdown 导出、项目移动等。
 - 粘贴修复：从 Word 等富文本来源粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。默认关闭，启用后需重启 Codex 才生效。
   - **使用提示**：管理工具里勾选后需点「保存增强设置」按钮才会写盘，然后重启 Codex++ 才会生效。
 - 用户脚本独立管理，可在启动时注入自定义脚本。
 - Provider 同步：启动前同步本地会话 metadata，切换供应商后旧会话仍可见。
 - Zed 打开入口：识别远程 SSH 上下文后，可从 Codex 直接打开对应文件到 Zed Remote Development。
+- 按模型粒度配置上下文窗口：「模型列表」分为左右两列，左侧填模型名，右侧填上下文窗口（如 `1M`、`200K` 或 `1000000`）；Codex++ 自动生成 `model_catalog_json` 并注入 `config.toml`，切换模型即生效。右侧留空则使用 Codex 默认长度。
 - Upstream worktree 创建：可从 `upstream/<base-branch>` 创建新 worktree，创建前自动 fetch 远端分支，降低从陈旧本地 HEAD 派生导致的冲突风险。
 - GitHub Release 自动更新，管理工具和静默启动器都会检测可用更新。
 - Windows 单实例、无黑框启动、管理员权限清单、系统桌面路径识别。
@@ -211,17 +212,17 @@ Telegram 频道：<https://t.me/CodexPlusPlus>
 
 ## 痛点与解决
 
-API Key 登录模式下，Codex 原生插件入口会提示需要登录 ChatGPT，导致插件功能无法正常使用：
+API Key 登录模式下，Codex 原生插件市场会提示需要登录 ChatGPT，导致插件功能无法正常使用：
 
-![API Key 模式下插件入口不可用](docs/images/pain-plugin-disabled.png)
+![API Key 模式下插件市场不可用](docs/images/pain-plugin-disabled.png)
 
 Codex 原生会话列表只有归档入口，没有真正的删除按钮：
 
 ![原生会话列表缺少删除能力](docs/images/pain-no-delete-button.png)
 
-Codex++ 启动后会解锁插件入口，并在会话列表悬停时显示删除按钮：
+Codex++ 启动后会解锁插件市场能力，并在会话列表悬停时显示删除按钮：
 
-![Codex++ 解锁插件入口并添加删除按钮](docs/images/solution-plugin-and-delete.png)
+![Codex++ 解锁插件市场并添加删除按钮](docs/images/solution-plugin-and-delete.png)
 
 顶部菜单栏会出现 `Codex++`，可以查看后端状态并打开设置面板：
 
@@ -273,7 +274,7 @@ experimental_bearer_token = "sk-..."
 
 增强功能在管理工具中统一开关。默认开启增强注入；关闭后不会注入 Codex++ 菜单和脚本。
 
-如果启用中转注入模式，插件入口解锁和强制安装不再需要，界面会提示“中转注入模式下无需开启”。会话删除、导出、移动、Timeline、粘贴修复、推荐内容和用户脚本等增强仍可继续使用。
+如果启用中转注入模式，插件市场解锁和强制安装不再需要，界面会提示“中转注入模式下无需开启”。会话删除、导出、移动、粘贴修复、推荐内容和用户脚本等增强仍可继续使用。
 
 ## 推荐内容
 

@@ -138,7 +138,12 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
     let settings = hooks.load_settings().await?;
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
     let launch_result = hooks
-        .launch_codex(&app_dir, options.debug_port, &settings.codex_extra_args)
+        .launch_codex(
+            &app_dir,
+            options.debug_port,
+            &settings,
+            &settings.codex_extra_args,
+        )
         .await;
     if settings.enhancements_enabled {
         hooks.start_helper(options.helper_port).await?;
@@ -314,10 +319,11 @@ impl LaunchHooks for LauncherHooks {
         &self,
         app_dir: &Path,
         debug_port: u16,
+        settings: &codex_plus_core::settings::BackendSettings,
         extra_args: &[String],
     ) -> anyhow::Result<codex_plus_core::launcher::CodexLaunch> {
         self.core
-            .launch_codex(app_dir, debug_port, extra_args)
+            .launch_codex(app_dir, debug_port, settings, extra_args)
             .await
     }
 

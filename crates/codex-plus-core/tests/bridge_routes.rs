@@ -113,7 +113,6 @@ async fn settings_get_includes_runtime_codex_app_version() {
     let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
 
     assert_eq!(result["codexAppVersion"], json!("26.601.21317"));
-    assert_eq!(result["codexAppPluginEntryUnlock"], json!(true));
     assert_eq!(result["codexAppPluginMarketplaceUnlock"], json!(true));
     assert_eq!(result["codexAppForcePluginInstall"], json!(true));
     assert_eq!(result["codexAppThreadIdBadge"], json!(false));
@@ -956,14 +955,12 @@ impl BridgeSettingsService for FakeSettings {
             raw.insert("enhancementsEnabled".to_string(), json!(value));
         }
         for key in [
-            "codexAppPluginEntryUnlock",
             "codexAppPluginMarketplaceUnlock",
             "codexAppForcePluginInstall",
             "codexAppModelWhitelistUnlock",
             "codexAppSessionDelete",
             "codexAppMarkdownExport",
             "codexAppProjectMove",
-            "codexAppConversationTimeline",
             "codexAppThreadIdBadge",
             "codexAppConversationView",
             "codexAppThreadScrollRestore",
@@ -1342,6 +1339,7 @@ impl LaunchHooks for ContextHooks {
         &self,
         _app_dir: &std::path::Path,
         _debug_port: u16,
+        _settings: &BackendSettings,
         _extra_args: &[String],
     ) -> anyhow::Result<CodexLaunch> {
         Ok(CodexLaunch::Process {

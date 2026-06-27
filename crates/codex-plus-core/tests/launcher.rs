@@ -9,8 +9,11 @@ use codex_plus_core::app_paths::{
 };
 use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
-    build_codex_arguments, build_codex_command, build_macos_cleanup_command,
-    build_macos_open_command, build_packaged_activation, launch_and_inject_with_hooks,
+    build_codex_arguments, build_codex_arguments_with_native_menu_inspector, build_codex_command,
+    build_codex_command_with_native_menu_inspector, build_macos_cleanup_command,
+    build_macos_open_command, build_macos_open_command_with_native_menu_inspector,
+    build_packaged_activation, build_packaged_activation_with_native_menu_inspector,
+    launch_and_inject_with_hooks,
 };
 #[cfg(windows)]
 use codex_plus_core::launcher::{WindowsProcessControlStrategy, windows_process_control_strategy};
@@ -256,6 +259,27 @@ fn launcher_appends_extra_codex_arguments_after_debug_arguments() {
 }
 
 #[test]
+fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
+    let app_dir = PathBuf::from(r"C:\Codex\app");
+    let extra_args = vec!["--force_high_performance_gpu".to_string()];
+
+    assert_eq!(
+        build_codex_arguments_with_native_menu_inspector(9229, 9329, &extra_args),
+        vec![
+            "--remote-debugging-port=9229".to_string(),
+            "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
+            "--inspect=127.0.0.1:9329".to_string(),
+            "--force_high_performance_gpu".to_string(),
+        ]
+    );
+    let command = build_codex_command_with_native_menu_inspector(&app_dir, 9229, 9329, &extra_args);
+    assert_eq!(command[1], "--remote-debugging-port=9229");
+    assert_eq!(command[2], "--remote-allow-origins=http://127.0.0.1:9229");
+    assert_eq!(command[3], "--inspect=127.0.0.1:9329");
+    assert_eq!(command[4], "--force_high_performance_gpu");
+}
+
+#[test]
 fn launcher_constructs_windows_packaged_activation_without_real_app() {
     let app_dir = PathBuf::from(
         r"C:\Program Files\WindowsApps\OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0\app",
@@ -289,6 +313,24 @@ fn launcher_packaged_activation_appends_extra_codex_arguments() {
             app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
             arguments:
                 "--remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229 --force_high_performance_gpu"
+                    .to_string(),
+            process_id: None,
+        }
+    );
+}
+
+#[test]
+fn launcher_packaged_activation_adds_native_menu_inspector_argument() {
+    let app_dir = PathBuf::from(
+        r"C:\Program Files\WindowsApps\OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0\app",
+    );
+
+    assert_eq!(
+        build_packaged_activation_with_native_menu_inspector(&app_dir, 9229, 9329, &[]).unwrap(),
+        CodexLaunch::PackagedActivation {
+            app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
+            arguments:
+                "--remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229 --inspect=127.0.0.1:9329"
                     .to_string(),
             process_id: None,
         }
@@ -360,6 +402,29 @@ fn launcher_macos_open_command_appends_extra_codex_arguments_after_args() {
             "--remote-debugging-port=9229".to_string(),
             "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
             "--force_high_performance_gpu".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn launcher_macos_open_command_adds_native_menu_inspector_argument() {
+    let command = build_macos_open_command_with_native_menu_inspector(
+        Path::new("/Applications/Codex.app"),
+        9229,
+        9329,
+        &[],
+    );
+    let args_index = command
+        .iter()
+        .position(|part| part == "--args")
+        .expect("macOS command should contain --args");
+
+    assert_eq!(
+        &command[args_index + 1..],
+        &[
+            "--remote-debugging-port=9229".to_string(),
+            "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
+            "--inspect=127.0.0.1:9329".to_string(),
         ]
     );
 }
@@ -493,6 +558,7 @@ async fn launch_lifecycle_runs_sync_before_launch_writes_success_and_shutdowns_o
             "select-helper:57321",
             "load-settings",
             "provider-sync",
+            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "inject:9229:57321",
@@ -547,6 +613,39 @@ async fn launch_lifecycle_passes_configured_extra_args_to_codex_launch() {
 }
 
 #[tokio::test]
+async fn launch_lifecycle_passes_native_menu_localization_switch_to_codex_launch() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
+        codex_app_native_menu_localization: false,
+        ..BackendSettings::default()
+    });
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"launch:9229:native-menu-off".to_string())
+    );
+}
+
+#[tokio::test]
 async fn launch_lifecycle_keeps_js_injection_in_relay_mode() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
@@ -577,6 +676,7 @@ async fn launch_lifecycle_keeps_js_injection_in_relay_mode() {
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
+            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "inject:9229:57321",
@@ -618,6 +718,7 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
+            "apply-relay",
             "launch:9229",
             "status:running",
             "wait-codex",
@@ -657,6 +758,7 @@ async fn launch_lifecycle_runs_computer_use_guard_when_enabled() {
             "select-helper:57321",
             "load-settings",
             "computer-use-guard",
+            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "computer-use-guard-watchdog",
@@ -697,7 +799,7 @@ async fn launch_lifecycle_skips_computer_use_guard_by_default() {
 }
 
 #[tokio::test]
-async fn launch_lifecycle_does_not_apply_relay_profile_while_launching_codex() {
+async fn launch_lifecycle_applies_relay_profile_before_launching_codex() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -722,7 +824,7 @@ async fn launch_lifecycle_does_not_apply_relay_profile_while_launching_codex() {
     handle.wait_for_codex_exit().await.unwrap();
 
     let events = events.lock().unwrap().clone();
-    assert!(!events.contains(&"apply-relay".to_string()));
+    assert!(events.contains(&"apply-relay".to_string()));
     assert!(events.contains(&"launch:9229".to_string()));
 }
 
@@ -758,7 +860,7 @@ async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabl
 }
 
 #[tokio::test]
-async fn launch_lifecycle_tolerates_duplicate_context_parent_tables_without_applying_relay() {
+async fn launch_lifecycle_tolerates_duplicate_context_parent_tables_and_applies_relay() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -804,7 +906,7 @@ experimental_bearer_token = "sk-test"
     handle.wait_for_codex_exit().await.unwrap();
 
     let events = events.lock().unwrap().clone();
-    assert!(!events.contains(&"apply-relay".to_string()));
+    assert!(events.contains(&"apply-relay".to_string()));
     assert!(!events.contains(&"computer-use-guard".to_string()));
     assert!(events.contains(&"launch:9229".to_string()));
 }
@@ -836,6 +938,7 @@ async fn launch_lifecycle_enters_degraded_mode_and_retries_when_injection_fails(
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
+            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "inject:9229:57321",
@@ -881,6 +984,7 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
+            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "shutdown-helper:57321",
@@ -918,6 +1022,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             auto_compact_limit: String::new(),
             model_insert_mode: codex_plus_core::settings::RelayModelInsertMode::default(),
             model_list: String::new(),
+            model_windows: String::new(),
             user_agent: String::new(),
         }],
         active_relay_id: "relay-chat".to_string(),
@@ -987,6 +1092,7 @@ async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
+            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "inject:9229:57321",
@@ -1075,6 +1181,7 @@ async fn launch_continues_when_plugin_marketplace_config_fails() {
             "select-helper:57321",
             "load-settings",
             "plugin-marketplace",
+            "apply-relay",
             "start-helper:57321",
             "launch:9229",
             "inject:9229:57321",
@@ -1218,7 +1325,10 @@ impl LaunchHooks for FakeHooks {
         Ok(())
     }
 
-    async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
+    async fn apply_active_relay_profile(&self, settings: &BackendSettings) -> anyhow::Result<()> {
+        if !settings.relay_profiles_enabled {
+            return Ok(());
+        }
         self.event("apply-relay");
         Ok(())
     }
@@ -1248,13 +1358,19 @@ impl LaunchHooks for FakeHooks {
         &self,
         app_dir: &Path,
         debug_port: u16,
+        settings: &BackendSettings,
         extra_args: &[String],
     ) -> anyhow::Result<CodexLaunch> {
         assert!(app_dir.ends_with("Codex.app"));
-        if extra_args.is_empty() {
-            self.event(format!("launch:{debug_port}"));
+        let launch_detail = if extra_args.is_empty() {
+            format!("launch:{debug_port}")
         } else {
-            self.event(format!("launch:{debug_port}:{}", extra_args.join(",")));
+            format!("launch:{debug_port}:{}", extra_args.join(","))
+        };
+        if settings.codex_app_native_menu_localization {
+            self.event(launch_detail);
+        } else {
+            self.event(format!("{launch_detail}:native-menu-off"));
         }
         if let Some(message) = &self.launch_error {
             anyhow::bail!(message.clone());

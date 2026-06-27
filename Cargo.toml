@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.2.18"
+version = "1.2.19"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/BigPizzaV3/CodexPlusPlus"

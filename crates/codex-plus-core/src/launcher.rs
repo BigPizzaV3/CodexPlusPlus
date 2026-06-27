@@ -153,6 +153,7 @@ pub trait LaunchHooks: Send + Sync {
         &self,
         app_dir: &Path,
         debug_port: u16,
+        settings: &BackendSettings,
         extra_args: &[String],
     ) -> anyhow::Result<CodexLaunch>;
     async fn bridge_context(
@@ -281,6 +282,28 @@ where
         if settings.computer_use_guard_enabled {
             hooks.ensure_computer_use_config(&settings).await?;
         }
+        hooks.apply_active_relay_profile(&settings).await?;
+        let home = crate::relay_config::default_codex_home_dir();
+        match crate::codex_sqlite::sanitize_historical_model_suffixes(&home) {
+            Ok(result) if result.updated > 0 => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.sanitize_historical_model_suffixes",
+                    serde_json::json!({
+                        "scanned": result.scanned,
+                        "updated": result.updated
+                    }),
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.sanitize_historical_model_suffixes_failed",
+                    serde_json::json!({
+                        "error": error.to_string()
+                    }),
+                );
+            }
+        }
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings);
         if protocol_proxy_enabled {
             helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
@@ -291,7 +314,7 @@ where
         }
 
         let launch = hooks
-            .launch_codex(&app_dir, debug_port, &settings.codex_extra_args)
+            .launch_codex(&app_dir, debug_port, &settings, &settings.codex_extra_args)
             .await?;
         launched = Some(launch.clone());
         keep_launched_on_error = true;
@@ -306,6 +329,12 @@ where
                 .await;
             if injection_ready {
                 keep_launched_on_error = false;
+                // 注入成功后页面已加载，此时可以通过 CDP 清理 Electron Local Storage
+                // 中残留的带后缀模型名，避免模型选择器继续显示废弃项。
+                crate::codex_local_storage::sanitize_local_storage_model_suffixes_nonfatal(
+                    debug_port,
+                )
+                .await;
                 hooks.start_bridge_watchdog(debug_port, helper_port).await?;
             } else {
                 let degraded = launch_status(
@@ -367,6 +396,29 @@ where
 
 fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
     settings.active_relay_uses_protocol_proxy()
+}
+
+fn select_native_menu_inspector_port(debug_port: u16) -> u16 {
+    let requested = debug_port.saturating_add(100);
+    crate::ports::select_platform_loopback_port(requested)
+}
+
+fn start_native_menu_localizer(inspector_port: u16) {
+    if inspector_port == 0 {
+        return;
+    }
+    tokio::spawn(async move {
+        if let Err(error) = crate::native_menu::install_native_menu_localizer(inspector_port).await
+        {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "native_menu.localization_failed",
+                serde_json::json!({
+                    "inspector_port": inspector_port,
+                    "message": error.to_string()
+                }),
+            );
+        }
+    });
 }
 
 pub trait IntoLaunchHooks {
@@ -582,10 +634,24 @@ impl LaunchHooks for DefaultLaunchHooks {
         &self,
         app_dir: &Path,
         debug_port: u16,
+        settings: &BackendSettings,
         extra_args: &[String],
     ) -> anyhow::Result<CodexLaunch> {
+        let native_menu_localization_enabled = settings.codex_app_native_menu_localization;
+        let native_menu_inspector_port =
+            native_menu_localization_enabled.then(|| select_native_menu_inspector_port(debug_port));
         if cfg!(windows) {
-            if let Some(activation) = build_packaged_activation(app_dir, debug_port, extra_args) {
+            let activation = if let Some(inspector_port) = native_menu_inspector_port {
+                build_packaged_activation_with_native_menu_inspector(
+                    app_dir,
+                    debug_port,
+                    inspector_port,
+                    extra_args,
+                )
+            } else {
+                build_packaged_activation(app_dir, debug_port, extra_args)
+            };
+            if let Some(activation) = activation {
                 let CodexLaunch::PackagedActivation {
                     app_user_model_id,
                     arguments,
@@ -595,6 +661,9 @@ impl LaunchHooks for DefaultLaunchHooks {
                     unreachable!();
                 };
                 let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
+                if let Some(inspector_port) = native_menu_inspector_port {
+                    start_native_menu_localizer(inspector_port);
+                }
                 return Ok(match activation {
                     CodexLaunch::PackagedActivation {
                         app_user_model_id,
@@ -616,7 +685,16 @@ impl LaunchHooks for DefaultLaunchHooks {
             } else {
                 MacosCleanupPolicy::QuitIfNotPreviouslyRunning
             };
-            let command = build_macos_open_command(app_dir, debug_port, extra_args);
+            let command = if let Some(inspector_port) = native_menu_inspector_port {
+                build_macos_open_command_with_native_menu_inspector(
+                    app_dir,
+                    debug_port,
+                    inspector_port,
+                    extra_args,
+                )
+            } else {
+                build_macos_open_command(app_dir, debug_port, extra_args)
+            };
             let executable = command
                 .first()
                 .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
@@ -627,6 +705,9 @@ impl LaunchHooks for DefaultLaunchHooks {
                 .spawn()
                 .context("failed to launch macOS Codex app")?;
             *self.child.lock().await = Some(child);
+            if let Some(inspector_port) = native_menu_inspector_port {
+                start_native_menu_localizer(inspector_port);
+            }
             return Ok(CodexLaunch::Process {
                 command,
                 wait_strategy: ProcessWaitStrategy::ExternalWaitCommand,
@@ -634,7 +715,16 @@ impl LaunchHooks for DefaultLaunchHooks {
             });
         }
 
-        let command = build_codex_command(app_dir, debug_port, extra_args);
+        let command = if let Some(inspector_port) = native_menu_inspector_port {
+            build_codex_command_with_native_menu_inspector(
+                app_dir,
+                debug_port,
+                inspector_port,
+                extra_args,
+            )
+        } else {
+            build_codex_command(app_dir, debug_port, extra_args)
+        };
         let executable = command
             .first()
             .ok_or_else(|| anyhow::anyhow!("Codex command is empty"))?;
@@ -649,6 +739,9 @@ impl LaunchHooks for DefaultLaunchHooks {
             .spawn()
             .with_context(|| format!("failed to launch Codex executable {executable}"))?;
         *self.child.lock().await = Some(child);
+        if let Some(inspector_port) = native_menu_inspector_port {
+            start_native_menu_localizer(inspector_port);
+        }
         Ok(CodexLaunch::Process {
             command,
             wait_strategy: ProcessWaitStrategy::TrackedChild,
@@ -659,7 +752,6 @@ impl LaunchHooks for DefaultLaunchHooks {
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         retry_injection(debug_port, helper_port).await
     }
-
     async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -689,16 +781,40 @@ impl LaunchHooks for DefaultLaunchHooks {
         &self,
         settings: &BackendSettings,
     ) -> anyhow::Result<()> {
-        if !settings.computer_use_guard_enabled {
-            return Ok(());
-        }
         #[cfg(windows)]
         {
+            if !settings.computer_use_guard_enabled {
+                return Ok(());
+            }
             let home = crate::relay_config::default_codex_home_dir();
             let artifacts = self.computer_use_guard_artifacts.lock().await.clone();
             let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
             let task = tokio::spawn(async move {
                 run_post_launch_computer_use_guard(home, artifacts, &mut shutdown_rx).await;
+            });
+            if let Some(runtime) = self
+                .computer_use_guard_watchdog
+                .lock()
+                .await
+                .replace(ComputerUseGuardWatchdogRuntime { shutdown, task })
+            {
+                let _ = runtime.shutdown.send(());
+                let _ = runtime.task.await;
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = &settings;
+            let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = &mut shutdown_rx => break,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
+                            crate::computer_use_guard::kill_orphaned_computer_use_processes();
+                        }
+                    }
+                }
             });
             if let Some(runtime) = self
                 .computer_use_guard_watchdog
@@ -3418,6 +3534,19 @@ pub fn build_codex_arguments(debug_port: u16, extra_args: &[String]) -> Vec<Stri
     args
 }
 
+pub fn build_codex_arguments_with_native_menu_inspector(
+    debug_port: u16,
+    inspector_port: u16,
+    extra_args: &[String],
+) -> Vec<String> {
+    let mut args = build_codex_arguments(debug_port, &[]);
+    if inspector_port != 0 {
+        args.push(format!("--inspect=127.0.0.1:{inspector_port}"));
+    }
+    args.extend(normalize_codex_extra_args(extra_args));
+    args
+}
+
 pub fn build_codex_command(app_dir: &Path, debug_port: u16, extra_args: &[String]) -> Vec<String> {
     let mut command = vec![
         crate::app_paths::build_codex_executable(app_dir)
@@ -3425,6 +3554,25 @@ pub fn build_codex_command(app_dir: &Path, debug_port: u16, extra_args: &[String
             .to_string(),
     ];
     command.extend(build_codex_arguments(debug_port, extra_args));
+    command
+}
+
+pub fn build_codex_command_with_native_menu_inspector(
+    app_dir: &Path,
+    debug_port: u16,
+    inspector_port: u16,
+    extra_args: &[String],
+) -> Vec<String> {
+    let mut command = vec![
+        crate::app_paths::build_codex_executable(app_dir)
+            .to_string_lossy()
+            .to_string(),
+    ];
+    command.extend(build_codex_arguments_with_native_menu_inspector(
+        debug_port,
+        inspector_port,
+        extra_args,
+    ));
     command
 }
 
@@ -3436,6 +3584,23 @@ pub fn build_packaged_activation(
     Some(CodexLaunch::PackagedActivation {
         app_user_model_id: crate::app_paths::packaged_app_user_model_id(app_dir)?,
         arguments: command_line_arguments(&build_codex_arguments(debug_port, extra_args)),
+        process_id: None,
+    })
+}
+
+pub fn build_packaged_activation_with_native_menu_inspector(
+    app_dir: &Path,
+    debug_port: u16,
+    inspector_port: u16,
+    extra_args: &[String],
+) -> Option<CodexLaunch> {
+    Some(CodexLaunch::PackagedActivation {
+        app_user_model_id: crate::app_paths::packaged_app_user_model_id(app_dir)?,
+        arguments: command_line_arguments(&build_codex_arguments_with_native_menu_inspector(
+            debug_port,
+            inspector_port,
+            extra_args,
+        )),
         process_id: None,
     })
 }
@@ -3570,6 +3735,27 @@ pub fn build_macos_open_command(
         "--args".to_string(),
     ];
     command.extend(build_codex_arguments(debug_port, extra_args));
+    command
+}
+
+pub fn build_macos_open_command_with_native_menu_inspector(
+    app_dir: &Path,
+    debug_port: u16,
+    inspector_port: u16,
+    extra_args: &[String],
+) -> Vec<String> {
+    let mut command = vec![
+        "open".to_string(),
+        "-W".to_string(),
+        "-a".to_string(),
+        app_dir.to_string_lossy().to_string(),
+        "--args".to_string(),
+    ];
+    command.extend(build_codex_arguments_with_native_menu_inspector(
+        debug_port,
+        inspector_port,
+        extra_args,
+    ));
     command
 }
 

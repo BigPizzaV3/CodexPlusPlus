@@ -86,6 +86,12 @@ pub struct CcsProvidersPayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PendingProviderImportPayload {
+    pub pending: Option<codex_plus_core::provider_import::ProviderImportRequest>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalSessionsPayload {
     pub db_path: String,
     pub db_paths: Vec<String>,
@@ -550,6 +556,53 @@ pub fn import_ccs_providers() -> CommandResult<SettingsPayload> {
         Err(error) => failed(
             &format!("保存 cc-switch 供应商配置失败：{error}"),
             settings_payload_value().unwrap_or_else(|(_, payload)| payload),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn load_pending_provider_import() -> CommandResult<PendingProviderImportPayload> {
+    match codex_plus_core::provider_import::load_pending_provider_import() {
+        Ok(pending) => ok(
+            "待确认供应商导入已读取。",
+            PendingProviderImportPayload { pending },
+        ),
+        Err(error) => failed(
+            &format!("读取待确认供应商导入失败：{error}"),
+            PendingProviderImportPayload { pending: None },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn confirm_pending_provider_import() -> CommandResult<SettingsPayload> {
+    match codex_plus_core::provider_import::confirm_pending_provider_import() {
+        Ok(Some(result)) => {
+            let message = if result.imported {
+                format!("已导入供应商配置：{}。", result.profile_name)
+            } else {
+                format!("供应商配置已存在：{}。", result.profile_name)
+            };
+            settings_payload(&message, "供应商导入后重新读取设置失败")
+        }
+        Ok(None) => settings_payload("没有待确认的供应商导入。", "设置读取失败"),
+        Err(error) => failed(
+            &format!("导入供应商配置失败：{error}"),
+            settings_payload_value().unwrap_or_else(|(_, payload)| payload),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn dismiss_pending_provider_import() -> CommandResult<PendingProviderImportPayload> {
+    match codex_plus_core::provider_import::clear_pending_provider_import() {
+        Ok(()) => ok(
+            "已取消供应商导入。",
+            PendingProviderImportPayload { pending: None },
+        ),
+        Err(error) => failed(
+            &format!("取消供应商导入失败：{error}"),
+            PendingProviderImportPayload { pending: None },
         ),
     }
 }

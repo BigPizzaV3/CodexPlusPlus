@@ -287,7 +287,11 @@ fn is_macos_native_arch_asset(name: &str) -> bool {
         return true;
     }
     // Newer but alternative shape: `..._x64.dmg` (no `macos-` token)
-    let other_token = if native_arch_token == "x64" { "arm64" } else { "x64" };
+    let other_token = if native_arch_token == "x64" {
+        "arm64"
+    } else {
+        "x64"
+    };
     if lower.contains(&format!("_{other_token}.")) || lower.contains(&format!("-{other_token}.")) {
         return false;
     }
