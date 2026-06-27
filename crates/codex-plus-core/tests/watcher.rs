@@ -5,8 +5,7 @@ use codex_plus_core::watcher::{
 };
 
 #[cfg(windows)]
-use codex_plus_core::watcher::{find_codex_processes_from_snapshot, WindowsProcessInfo};
-
+use codex_plus_core::watcher::{WindowsProcessInfo, find_codex_processes_from_snapshot};
 
 #[test]
 fn cdp_listening_returns_true_for_bound_loopback_port() {
@@ -193,4 +192,3 @@ fn find_codex_processes_ignores_unrelated_processes() {
 
     assert!(find_codex_processes_from_snapshot(&processes).is_empty());
 }
-

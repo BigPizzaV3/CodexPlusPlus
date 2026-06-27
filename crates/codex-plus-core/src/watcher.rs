@@ -8,7 +8,6 @@ use std::time::Duration;
 #[cfg(windows)]
 pub use crate::windows_integration::WindowsProcessInfo;
 
-
 pub const WATCHER_INTERVAL_SECONDS: f64 = 3.0;
 pub const CDP_PROBE_TIMEOUT_SECONDS: f64 = 0.5;
 pub const TAKEOVER_FAILURE_BACKOFF_SECONDS: f64 = 30.0;
