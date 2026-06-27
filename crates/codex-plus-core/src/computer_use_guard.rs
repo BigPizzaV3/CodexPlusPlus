@@ -1160,27 +1160,27 @@ mod tests {
         assert_eq!(guard_staging_count, 1);
     }
 }
- 
- /// Kill orphaned SkyComputerUseClient processes on macOS.
- ///
- /// On macOS, Codex spawns a `SkyComputerUseClient` subprocess for each
- /// Computer Use session via the bundled openai-bundled computer-use plugin.
- /// Codex does not reliably clean these up when conversations end — they
- /// accumulate and consume significant memory (~20MB RSS each), eventually
- /// causing swap pressure and UI freezes.
- ///
- /// This function kills all `SkyComputerUseClient` processes it can find.
- /// Codex re-spawns them lazily on the next Computer Use session, so killing
- /// them is safe and does not affect active conversations.
- ///
- /// We intentionally leave `node_repl` processes alone — they are lightweight
- /// (~1MB RSS) and killing them could disrupt in-flight code execution.
- #[cfg(target_os = "macos")]
- pub fn kill_orphaned_computer_use_processes() {
-     let _ = std::process::Command::new("pkill")
-         .arg("-f")
-         .arg("SkyComputerUseClient")
-         .stdout(std::process::Stdio::null())
-         .stderr(std::process::Stdio::null())
-         .status();
- }
+
+/// Kill orphaned SkyComputerUseClient processes on macOS.
+///
+/// On macOS, Codex spawns a `SkyComputerUseClient` subprocess for each
+/// Computer Use session via the bundled openai-bundled computer-use plugin.
+/// Codex does not reliably clean these up when conversations end — they
+/// accumulate and consume significant memory (~20MB RSS each), eventually
+/// causing swap pressure and UI freezes.
+///
+/// This function kills all `SkyComputerUseClient` processes it can find.
+/// Codex re-spawns them lazily on the next Computer Use session, so killing
+/// them is safe and does not affect active conversations.
+///
+/// We intentionally leave `node_repl` processes alone — they are lightweight
+/// (~1MB RSS) and killing them could disrupt in-flight code execution.
+#[cfg(target_os = "macos")]
+pub fn kill_orphaned_computer_use_processes() {
+    let _ = std::process::Command::new("pkill")
+        .arg("-f")
+        .arg("SkyComputerUseClient")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
