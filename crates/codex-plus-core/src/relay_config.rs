@@ -1230,11 +1230,12 @@ fn normalize_duplicate_toml_text(contents: &str) -> String {
         if in_root
             && !trimmed.is_empty()
             && !trimmed.starts_with('#')
-            && let Some((key, _)) = trimmed.split_once('=')
         {
-            let key = key.trim();
-            if !key.is_empty() && !key.contains('.') && !seen_root_keys.insert(key.to_string()) {
-                continue;
+            if let Some((key, _)) = trimmed.split_once('=') {
+                let key = key.trim();
+                if !key.is_empty() && !key.contains('.') && !seen_root_keys.insert(key.to_string()) {
+                    continue;
+                }
             }
         }
 
@@ -1271,10 +1272,12 @@ fn strip_common_config_text_fallback(config_text: &str, common_config: &str) -> 
 
         if !trimmed.is_empty()
             && !trimmed.starts_with('#')
-            && let Some((key, _)) = trimmed.split_once('=')
-            && anchors.root_keys.contains(key.trim())
         {
-            continue;
+            if let Some((key, _)) = trimmed.split_once('=') {
+                if anchors.root_keys.contains(key.trim()) {
+                    continue;
+                }
+            }
         }
 
         kept.push(line);
@@ -1304,11 +1307,12 @@ fn common_config_anchors(common_config: &str) -> CommonConfigAnchors {
         if in_root
             && !trimmed.is_empty()
             && !trimmed.starts_with('#')
-            && let Some((key, _)) = trimmed.split_once('=')
         {
-            let key = key.trim();
-            if !key.is_empty() {
-                root_keys.insert(key.to_string());
+            if let Some((key, _)) = trimmed.split_once('=') {
+                let key = key.trim();
+                if !key.is_empty() {
+                    root_keys.insert(key.to_string());
+                }
             }
         }
     }

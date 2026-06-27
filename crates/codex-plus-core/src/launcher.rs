@@ -753,16 +753,40 @@ impl LaunchHooks for DefaultLaunchHooks {
         &self,
         settings: &BackendSettings,
     ) -> anyhow::Result<()> {
-        if !settings.computer_use_guard_enabled {
-            return Ok(());
-        }
         #[cfg(windows)]
         {
+            if !settings.computer_use_guard_enabled {
+                return Ok(());
+            }
             let home = crate::relay_config::default_codex_home_dir();
             let artifacts = self.computer_use_guard_artifacts.lock().await.clone();
             let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
             let task = tokio::spawn(async move {
                 run_post_launch_computer_use_guard(home, artifacts, &mut shutdown_rx).await;
+            });
+            if let Some(runtime) = self
+                .computer_use_guard_watchdog
+                .lock()
+                .await
+                .replace(ComputerUseGuardWatchdogRuntime { shutdown, task })
+            {
+                let _ = runtime.shutdown.send(());
+                let _ = runtime.task.await;
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = &settings;
+            let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = &mut shutdown_rx => break,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
+                            crate::computer_use_guard::kill_orphaned_computer_use_processes();
+                        }
+                    }
+                }
             });
             if let Some(runtime) = self
                 .computer_use_guard_watchdog
