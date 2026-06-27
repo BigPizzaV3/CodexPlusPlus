@@ -78,12 +78,16 @@ fn remote_defaults_snapshot_script_collects_defaults_with_one_ssh_command() {
 #[test]
 fn remote_defaults_snapshot_script_is_valid_posix_shell() {
     let script = remote_defaults_snapshot_script("/Users/longnv/bin/repo/project");
-    let output = Command::new("sh")
+    let output = match Command::new("sh")
         .arg("-n")
         .arg("-c")
         .arg(&script)
         .output()
-        .expect("sh should parse snapshot script");
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => panic!("sh should parse snapshot script: {error}"),
+    };
 
     assert!(
         output.status.success(),

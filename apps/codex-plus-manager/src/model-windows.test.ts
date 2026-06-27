@@ -1,7 +1,13 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import type { RelayProfile } from "./App.tsx";
-import { buildModelWindows, modelWindowsMapToText, modelWindowsTextToMap } from "./model-windows.ts";
+import {
+  buildModelWindows,
+  modelWindowRowsFromProfile,
+  modelWindowsMapToText,
+  modelWindowsTextToMap,
+  serializeModelWindowRows,
+} from "./model-windows.ts";
 
 // 类型检查：确保 RelayProfile 包含 modelWindows 字段
 const _profileTypeCheck: RelayProfile = {
@@ -70,5 +76,30 @@ describe("model-windows helpers", () => {
       assert.ok(result.error.includes("2"));
       assert.ok(result.error.includes("1"));
     }
+  });
+
+  it("modelWindowRowsFromProfile 把模型和窗口合成同一组行", () => {
+    assert.deepStrictEqual(
+      modelWindowRowsFromProfile("a\nb\nc", '{"a":"1M","c":"200K"}'),
+      [
+        { model: "a", window: "1M" },
+        { model: "b", window: "" },
+        { model: "c", window: "200K" },
+      ],
+    );
+  });
+
+  it("serializeModelWindowRows 从行控件生成 modelList 和 modelWindows", () => {
+    assert.deepStrictEqual(
+      serializeModelWindowRows([
+        { model: "a", window: "1M" },
+        { model: "", window: "400K" },
+        { model: "b", window: "" },
+      ]),
+      {
+        modelList: "a\nb",
+        modelWindows: '{"a":"1M"}',
+      },
+    );
   });
 });
