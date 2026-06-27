@@ -60,6 +60,39 @@ fn codex_session_db_path_accepts_new_automation_runs_schema() {
 }
 
 #[test]
+fn codex_session_db_path_prefers_threads_db_over_codex_dev_inbox_db() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let sqlite_dir = home.join("sqlite");
+    std::fs::create_dir(&sqlite_dir).unwrap();
+
+    let inbox_path = sqlite_dir.join("codex-dev.db");
+    let inbox = rusqlite::Connection::open(&inbox_path).unwrap();
+    inbox
+        .execute(
+            "CREATE TABLE automation_runs (thread_id TEXT PRIMARY KEY)",
+            [],
+        )
+        .unwrap();
+    inbox
+        .execute("CREATE TABLE inbox_items (id TEXT PRIMARY KEY)", [])
+        .unwrap();
+    drop(inbox);
+
+    let threads_path = sqlite_dir.join("state_5.sqlite");
+    let threads = rusqlite::Connection::open(&threads_path).unwrap();
+    threads
+        .execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, cwd TEXT, title TEXT)",
+            [],
+        )
+        .unwrap();
+    drop(threads);
+
+    assert_eq!(codex_session_db_path_from_home(home), threads_path);
+}
+
+#[test]
 fn codex_session_db_path_falls_back_to_legacy_state_db() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
