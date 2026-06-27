@@ -192,8 +192,6 @@ pub struct BackendSettings {
     pub enhancements_enabled: bool,
     #[serde(rename = "computerUseGuardEnabled", default)]
     pub computer_use_guard_enabled: bool,
-    #[serde(rename = "codexAppPluginEntryUnlock", default = "default_true")]
-    pub codex_app_plugin_entry_unlock: bool,
     #[serde(rename = "codexAppPluginMarketplaceUnlock", default = "default_true")]
     pub codex_app_plugin_marketplace_unlock: bool,
     #[serde(rename = "codexAppForcePluginInstall", default = "default_true")]
@@ -208,8 +206,6 @@ pub struct BackendSettings {
     pub codex_app_paste_fix: bool,
     #[serde(rename = "codexAppProjectMove", default = "default_true")]
     pub codex_app_project_move: bool,
-    #[serde(rename = "codexAppConversationTimeline", default = "default_true")]
-    pub codex_app_conversation_timeline: bool,
     #[serde(rename = "codexAppThreadIdBadge", default)]
     pub codex_app_thread_id_badge: bool,
     #[serde(rename = "codexAppConversationView", default)]
@@ -228,6 +224,8 @@ pub struct BackendSettings {
     pub codex_app_upstream_worktree_create: bool,
     #[serde(rename = "codexAppNativeMenuPlacement", default = "default_true")]
     pub codex_app_native_menu_placement: bool,
+    #[serde(rename = "codexAppNativeMenuLocalization", default = "default_true")]
+    pub codex_app_native_menu_localization: bool,
     #[serde(rename = "codexAppServiceTierControls", default)]
     pub codex_app_service_tier_controls: bool,
     #[serde(rename = "codexAppImageOverlayEnabled", default)]
@@ -300,7 +298,6 @@ impl Default for BackendSettings {
             relay_profiles_enabled: true,
             enhancements_enabled: true,
             computer_use_guard_enabled: false,
-            codex_app_plugin_entry_unlock: true,
             codex_app_plugin_marketplace_unlock: true,
             codex_app_force_plugin_install: true,
             codex_app_model_whitelist_unlock: true,
@@ -308,7 +305,6 @@ impl Default for BackendSettings {
             codex_app_markdown_export: true,
             codex_app_paste_fix: false,
             codex_app_project_move: true,
-            codex_app_conversation_timeline: true,
             codex_app_thread_id_badge: false,
             codex_app_conversation_view: false,
             codex_app_thread_scroll_restore: true,
@@ -318,6 +314,7 @@ impl Default for BackendSettings {
             zed_remote_sync_to_zed_settings: false,
             codex_app_upstream_worktree_create: true,
             codex_app_native_menu_placement: true,
+            codex_app_native_menu_localization: true,
             codex_app_service_tier_controls: false,
             codex_app_image_overlay_enabled: false,
             codex_app_image_overlay_path: String::new(),
@@ -646,7 +643,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     {
         target.insert("computerUseGuardEnabled".to_string(), Value::Bool(value));
     }
-    merge_bool_setting(target, source, "codexAppPluginEntryUnlock");
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
     merge_bool_setting(target, source, "codexAppForcePluginInstall");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
@@ -654,7 +650,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppPasteFix");
     merge_bool_setting(target, source, "codexAppProjectMove");
-    merge_bool_setting(target, source, "codexAppConversationTimeline");
     merge_bool_setting(target, source, "codexAppThreadIdBadge");
     merge_bool_setting(target, source, "codexAppConversationView");
     merge_bool_setting(target, source, "codexAppThreadScrollRestore");
@@ -668,6 +663,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "zedRemoteSyncToZedSettings");
     merge_bool_setting(target, source, "codexAppUpstreamWorktreeCreate");
     merge_bool_setting(target, source, "codexAppNativeMenuPlacement");
+    merge_bool_setting(target, source, "codexAppNativeMenuLocalization");
     merge_bool_setting(target, source, "codexAppServiceTierControls");
     merge_bool_setting(target, source, "codexAppImageOverlayEnabled");
     if let Some(value) = source
@@ -1028,7 +1024,6 @@ mod tests {
         assert!(settings.relay_profiles_enabled);
         assert!(settings.enhancements_enabled);
         assert!(!settings.computer_use_guard_enabled);
-        assert!(settings.codex_app_plugin_entry_unlock);
         assert!(settings.codex_app_plugin_marketplace_unlock);
         assert!(settings.codex_app_force_plugin_install);
         assert!(!settings.codex_app_thread_id_badge);
@@ -1041,6 +1036,7 @@ mod tests {
         );
         assert!(settings.zed_remote_project_registry_enabled);
         assert!(!settings.zed_remote_sync_to_zed_settings);
+        assert!(settings.codex_app_native_menu_localization);
         assert_eq!(settings.launch_mode, LaunchMode::Patch);
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.relay_api_key.is_empty());
@@ -1069,29 +1065,25 @@ mod tests {
     }
 
     #[test]
-    fn settings_deserialize_keeps_plugin_unlock_switches_independent() {
+    fn settings_deserialize_keeps_plugin_marketplace_unlock_switch() {
         let settings: BackendSettings = serde_json::from_str(
             r#"{
-                "codexAppPluginEntryUnlock": false,
                 "codexAppPluginMarketplaceUnlock": true,
                 "codexAppForcePluginInstall": false
             }"#,
         )
         .unwrap();
 
-        assert!(!settings.codex_app_plugin_entry_unlock);
         assert!(settings.codex_app_plugin_marketplace_unlock);
         assert!(!settings.codex_app_force_plugin_install);
 
         let legacy_settings: BackendSettings = serde_json::from_str(
             r#"{
-                "codexAppPluginEntryUnlock": false,
                 "codexAppForcePluginInstall": false
             }"#,
         )
         .unwrap();
 
-        assert!(!legacy_settings.codex_app_plugin_entry_unlock);
         assert!(legacy_settings.codex_app_plugin_marketplace_unlock);
         assert!(!legacy_settings.codex_app_force_plugin_install);
     }
@@ -1575,10 +1567,10 @@ experimental_bearer_token = "sk-existing""#
             "providerSyncEnabled": true,
             "codexAppPath": "C:\\Portable\\Codex\\Codex.exe",
             "enhancementsEnabled": false,
-            "codexAppPluginEntryUnlock": false,
             "codexAppSessionDelete": false,
             "codexAppConversationView": true,
             "codexAppThreadIdBadge": true,
+            "codexAppNativeMenuLocalization": false,
             "codexAppServiceTierControls": true,
             "codexGoalsEnabled": true,
             "relayBaseUrl": "https://relay.example.test/v1",
@@ -1592,10 +1584,10 @@ experimental_bearer_token = "sk-existing""#
         assert!(updated.provider_sync_enabled);
         assert_eq!(updated.codex_app_path, r"C:\Portable\Codex\Codex.exe");
         assert!(!updated.enhancements_enabled);
-        assert!(!updated.codex_app_plugin_entry_unlock);
         assert!(!updated.codex_app_session_delete);
         assert!(updated.codex_app_conversation_view);
         assert!(updated.codex_app_thread_id_badge);
+        assert!(!updated.codex_app_native_menu_localization);
         assert!(updated.codex_app_service_tier_controls);
         assert!(updated.codex_goals_enabled);
         assert_eq!(updated.relay_base_url, "https://relay.example.test/v1");

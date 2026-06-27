@@ -118,7 +118,6 @@ type BackendSettings = {
   relayProfilesEnabled: boolean;
   enhancementsEnabled: boolean;
   computerUseGuardEnabled: boolean;
-  codexAppPluginEntryUnlock: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppForcePluginInstall: boolean;
   codexAppModelWhitelistUnlock: boolean;
@@ -126,7 +125,6 @@ type BackendSettings = {
   codexAppMarkdownExport: boolean;
   codexAppPasteFix: boolean;
   codexAppProjectMove: boolean;
-  codexAppConversationTimeline: boolean;
   codexAppThreadIdBadge: boolean;
   codexAppConversationView: boolean;
   codexAppThreadScrollRestore: boolean;
@@ -136,6 +134,7 @@ type BackendSettings = {
   zedRemoteSyncToZedSettings: boolean;
   codexAppUpstreamWorktreeCreate: boolean;
   codexAppNativeMenuPlacement: boolean;
+  codexAppNativeMenuLocalization: boolean;
   codexAppServiceTierControls: boolean;
   codexAppImageOverlayEnabled: boolean;
   codexAppImageOverlayPath: string;
@@ -393,6 +392,20 @@ type CcsProvidersResult = CommandResult<{
   providers: CcsProviderImport[];
 }>;
 
+type ProviderImportRequest = {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  wireApi: string;
+  relayMode: string;
+  configContents: string;
+  authContents: string;
+};
+
+type PendingProviderImportResult = CommandResult<{
+  pending: ProviderImportRequest | null;
+}>;
+
 type EnvConflict = {
   name: string;
   source: "process" | "user" | string;
@@ -588,7 +601,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "mobileControl", label: "手机控制", icon: MessageCircle, badge: "测试版" },
   { id: "sessions", label: "会话管理", icon: MessageCircle },
   { id: "context", label: "工具与插件", icon: Network },
-  { id: "enhance", label: "页面增强", icon: Hammer },
+  { id: "enhance", label: "Codex增强", icon: Hammer },
   { id: "zedRemote", label: "Zed 远程项目", icon: ExternalLink },
   { id: "userScripts", label: "脚本市场", icon: FileCode2 },
   { id: "recommendations", label: "推荐内容", icon: ExternalLink },
@@ -607,7 +620,6 @@ const defaultSettings: BackendSettings = {
   relayProfilesEnabled: true,
   enhancementsEnabled: true,
   computerUseGuardEnabled: false,
-  codexAppPluginEntryUnlock: true,
   codexAppPluginMarketplaceUnlock: true,
   codexAppForcePluginInstall: true,
   codexAppModelWhitelistUnlock: true,
@@ -615,7 +627,6 @@ const defaultSettings: BackendSettings = {
   codexAppMarkdownExport: true,
   codexAppPasteFix: false,
   codexAppProjectMove: true,
-  codexAppConversationTimeline: true,
   codexAppThreadIdBadge: false,
   codexAppConversationView: false,
   codexAppThreadScrollRestore: true,
@@ -625,6 +636,7 @@ const defaultSettings: BackendSettings = {
   zedRemoteSyncToZedSettings: false,
   codexAppUpstreamWorktreeCreate: true,
   codexAppNativeMenuPlacement: true,
+  codexAppNativeMenuLocalization: true,
   codexAppServiceTierControls: false,
   codexAppImageOverlayEnabled: false,
   codexAppImageOverlayPath: "",
@@ -682,6 +694,7 @@ export function App() {
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
   const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
   const [ccsProviders, setCcsProviders] = useState<CcsProvidersResult | null>(null);
+  const [pendingProviderImport, setPendingProviderImport] = useState<ProviderImportRequest | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
   const [zedRemoteProjects, setZedRemoteProjects] = useState<ZedRemoteProjectsResult | null>(null);
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
@@ -857,6 +870,34 @@ export function App() {
       setSettingsForm(normalizeSettings(result.settings));
       showResultNotice("cc-switch 导入", result);
       await refreshCcsProviders(true);
+    }
+  };
+
+  const refreshPendingProviderImport = async (silent = true) => {
+    const result = await run(() => call<PendingProviderImportResult>("load_pending_provider_import"));
+    if (result) {
+      setPendingProviderImport(result.pending);
+      if (!silent && !isSuccessStatus(result.status)) showResultNotice("Codex++ 导入", result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const confirmPendingProviderImport = async () => {
+    const result = await run(() => call<SettingsResult>("confirm_pending_provider_import"));
+    if (result) {
+      setPendingProviderImport(null);
+      setSettings(result);
+      setSettingsForm(normalizeSettings(result.settings));
+      showResultNotice("Codex++ 导入", result);
+      await refreshCcsProviders(true);
+    }
+  };
+
+  const dismissPendingProviderImport = async () => {
+    const result = await run(() => call<PendingProviderImportResult>("dismiss_pending_provider_import"));
+    if (result) {
+      setPendingProviderImport(null);
+      showResultNotice("Codex++ 导入", result, { silentSuccess: true });
     }
   };
 
@@ -1299,7 +1340,7 @@ export function App() {
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
-      if (!silent) showNotice("页面增强模式", result.message, result.status);
+      if (!silent) showNotice("Codex增强模式", result.message, result.status);
     }
     return result;
   };
@@ -1407,14 +1448,14 @@ export function App() {
     const switched = await clearRelayInjection(true);
     if (!switched) return;
     const result = await saveLaunchMode("relay", true);
-    if (result) showNotice("官方登录模式", "已切回官方登录；页面增强已设为兼容增强。", result.status);
+    if (result) showNotice("官方登录模式", "已切回官方登录；Codex增强已设为兼容增强。", result.status);
   };
 
   const switchPureApiMode = async () => {
     const switched = await applyPureApiInjection(true);
     if (!switched) return;
     const result = await saveLaunchMode("patch", true);
-    if (result) showNotice("纯 API 模式", "已切换到纯 API；页面增强已设为完整增强。", result.status);
+    if (result) showNotice("纯 API 模式", "已切换到纯 API；Codex增强已设为完整增强。", result.status);
   };
 
   const switchRelayProfile = async (next: BackendSettings, previousActiveRelayId = settingsForm.activeRelayId) => {
@@ -1567,8 +1608,16 @@ export function App() {
       await refreshRelay(true);
       await refreshEnvConflicts(true);
       await refreshProviderSyncTargets(true);
+      await refreshPendingProviderImport(true);
       await checkPluginMarketplacePrompt();
     })();
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void refreshPendingProviderImport(true);
+    }, 1200);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -1899,6 +1948,13 @@ export function App() {
           status={pluginMarketplacePrompt}
           onClose={() => setPluginMarketplacePrompt(null)}
           onRepair={() => void actions.repairPluginMarketplace()}
+        />
+      ) : null}
+      {pendingProviderImport ? (
+        <PendingProviderImportDialog
+          request={pendingProviderImport}
+          onConfirm={() => void confirmPendingProviderImport()}
+          onDismiss={() => void dismissPendingProviderImport()}
         />
       ) : null}
     </div>
@@ -2557,7 +2613,7 @@ function EnhanceScreen({
   return (
     <>
       <Panel>
-        <CardHead title="页面功能增强" detail="会话删除、导出、项目移动、Timeline 和用户脚本等界面能力" />
+        <CardHead title="Codex增强" detail="会话删除、导出、项目移动和用户脚本等界面能力" />
         <CardContent>
           <label className="switch-row">
             <input
@@ -2566,8 +2622,8 @@ function EnhanceScreen({
               type="checkbox"
             />
             <span>
-              <strong>启用 Codex++ 页面增强</strong>
-              <small>关闭后会停用删除、导出、项目移动、Timeline、插件相关和菜单位置增强。</small>
+              <strong>启用 Codex增强</strong>
+              <small>关闭后会停用删除、导出、项目移动、插件相关和菜单位置增强。</small>
             </span>
           </label>
           <label className="switch-row">
@@ -2585,12 +2641,11 @@ function EnhanceScreen({
           {form.launchMode === "relay" ? (
             <div className="hint-line">
               <ShieldCheck className="h-4 w-4" />
-              <span>当前为兼容增强模式，插件市场解锁、强制解锁入口和特殊插件强制安装不会启用；其他页面功能仍可用。</span>
+              <span>当前为兼容增强模式，插件市场解锁和特殊插件强制安装不会启用；其他页面功能仍可用。</span>
             </div>
           ) : null}
           <div className="feature-switch-grid">
             <FeatureToggle title="插件市场解锁" detail="API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。" checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
-            <FeatureToggle title="强制解锁入口" detail="恢复 1.1.9 的入口解锁方式，强制显示并启用插件入口。" checked={form.codexAppPluginEntryUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginEntryUnlock", value)} />
             <FeatureToggle title="特殊插件强制安装" detail="解除 App unavailable / 应用不可用导致的前端安装禁用。" checked={form.codexAppForcePluginInstall} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppForcePluginInstall", value)} />
             <FeatureToggle title="模型白名单解锁" detail="从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。" checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
             <FeatureToggle title="Fast 按钮" detail="显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。" checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
@@ -2598,7 +2653,6 @@ function EnhanceScreen({
             <FeatureToggle title="Markdown 导出" detail="在会话列表显示导出按钮，导出带时间戳的 Markdown。" checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
             <FeatureToggle title="粘贴修复" detail="从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。" checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
             <FeatureToggle title="会话项目移动" detail="把会话移动到普通对话或其他本地项目。" checked={form.codexAppProjectMove} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppProjectMove", value)} />
-            <FeatureToggle title="对话 Timeline" detail="在对话右侧显示用户提问时间线，支持摘要和跳转。" checked={form.codexAppConversationTimeline} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationTimeline", value)} />
             <FeatureToggle title="会话 ID 标识" detail="在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。" checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
             <FeatureToggle title="对话居中宽度" detail="把主对话和输入框限制到固定最大宽度，适合大屏阅读。" checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
             <FeatureToggle title="切换对话保留位置" detail="切换 thread 时恢复上一次浏览位置。" checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
@@ -2607,6 +2661,7 @@ function EnhanceScreen({
             <FeatureToggle title="同步 Zed settings" detail="高级选项，默认关闭；当前实现不主动改写 Zed settings。" checked={form.zedRemoteSyncToZedSettings} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteSyncToZedSettings", value)} />
             <FeatureToggle title="Upstream worktree" detail="从最新 upstream 分支创建 Git worktree。" checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
             <FeatureToggle title="原生菜单栏位置" detail="把 Codex++ 菜单插入 Codex 顶部原生菜单栏。" checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
+            <FeatureToggle title="原生菜单汉化" detail="启动时通过本地主进程调试端口汉化 Codex 原生菜单；不修改安装包。需重启 Codex 才生效。" checked={form.codexAppNativeMenuLocalization} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuLocalization", value)} />
           </div>
           <div className="hint-line">
             <Wrench className="h-4 w-4" />
@@ -2633,7 +2688,7 @@ function EnhanceScreen({
           </div>
           <div className="hint-line">
             <Info className="h-4 w-4" />
-            <span>如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁、强制解锁入口和特殊插件强制安装。</span>
+            <span>如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁和特殊插件强制安装。</span>
           </div>
           <Toolbar>
             <Button onClick={() => void actions.saveSettings()}>保存增强设置</Button>
@@ -4420,7 +4475,7 @@ function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions
         type="button"
       >
         <strong>兼容增强</strong>
-        <span>适合官方登录或官方混入 API Key；保留会话删除、导出、项目移动、Timeline 和用户脚本，关闭插件入口相关增强。</span>
+        <span>适合官方登录或官方混入 API Key；保留会话删除、导出、项目移动和用户脚本，关闭插件市场相关增强。</span>
       </button>
       <button
         className={`mode-option ${launchMode === "patch" ? "active" : ""}`}
@@ -4428,7 +4483,7 @@ function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions
         type="button"
       >
         <strong>完整增强</strong>
-        <span>适合纯 API；启用插件入口、强制安装、会话删除导出、项目移动等全部页面能力。</span>
+        <span>适合纯 API；启用插件市场、强制安装、会话删除导出、项目移动等全部页面能力。</span>
       </button>
     </div>
   );
@@ -4597,6 +4652,44 @@ function PluginMarketplacePromptDialog({
             {progress.active ? "正在修复…" : "一键修复"}
           </Button>
           <Button disabled={progress.active} onClick={onClose} variant="secondary">稍后处理</Button>
+        </Toolbar>
+      </div>
+    </div>
+  );
+}
+
+function PendingProviderImportDialog({
+  request,
+  onConfirm,
+  onDismiss,
+}: {
+  request: ProviderImportRequest;
+  onConfirm: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card provider-import-modal">
+        <div className="modal-head">
+          <div>
+            <h2>导入 Codex++ 供应商</h2>
+            <p>检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++ 管理工具。</p>
+          </div>
+          <button className="toast-close" onClick={onDismiss} type="button">×</button>
+        </div>
+        <div className="metric-list">
+          <Metric label="名称" value={request.name || "未命名供应商"} />
+          <Metric label="Base URL" value={request.baseUrl || "未填写"} />
+          <Metric label="协议" value={providerImportWireApiLabel(request.wireApi)} />
+          <Metric label="模式" value={providerImportRelayModeLabel(request.relayMode)} />
+          <Metric label="API Key" value={maskSecret(request.apiKey)} />
+        </div>
+        <Toolbar>
+          <Button onClick={onConfirm}>
+            <Download className="h-4 w-4" />
+            确认导入
+          </Button>
+          <Button onClick={onDismiss} variant="secondary">取消</Button>
         </Toolbar>
       </div>
     </div>
@@ -5620,6 +5713,29 @@ function relayModeLabel(mode: RelayMode): string {
   return "官方登录";
 }
 
+function providerImportWireApiLabel(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "chat" || normalized === "chat_completions" || normalized === "chat-completions") {
+    return "Chat Completions";
+  }
+  return "Responses";
+}
+
+function providerImportRelayModeLabel(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "official") return "官方登录";
+  if (normalized === "mixedapi" || normalized === "mixed-api" || normalized === "mixed_api") return "混入 API";
+  if (normalized === "aggregate") return "聚合供应商";
+  return "纯 API";
+}
+
+function maskSecret(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "未填写";
+  if (trimmed.length <= 10) return `${trimmed.slice(0, 2)}…${trimmed.slice(-2)}`;
+  return `${trimmed.slice(0, 6)}…${trimmed.slice(-4)}`;
+}
+
 function relayProfileConfigBrief(profile: RelayProfile): string {
   if (isAggregateRelayProfile(profile)) {
     const aggregate = normalizeAggregateConfig(profile.aggregate, []);
@@ -5635,14 +5751,14 @@ function relayProfileModeHelp(profile: RelayProfile): string {
   }
   if (profile.relayMode === "official") {
     if (profile.officialMixApiKey) {
-      return "此供应商会保留官方登录模式，并把请求混入当前 API Key；页面增强仍使用兼容模式。";
+      return "此供应商会保留官方登录模式，并把请求混入当前 API Key；Codex增强仍使用兼容模式。";
     }
     return "此供应商会切回官方登录模式，使用 ChatGPT 官方账号，不写入 API Key。";
   }
   if (profile.relayMode === "pureApi") {
     return "此供应商会同时写入 config.toml 和 auth.json；API Key 也会注入到 provider bearer token。";
   }
-  return "此供应商会保留官方登录模式，并把请求混入当前 API Key；页面增强仍使用兼容模式。";
+  return "此供应商会保留官方登录模式，并把请求混入当前 API Key；Codex增强仍使用兼容模式。";
 }
 
 function relayProfileReadinessText(profile: RelayProfile, relay: RelayResult | null): string {
@@ -5677,9 +5793,9 @@ function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injectio
 }
 function relayProfileModeSwitchedText(profile: RelayProfile): string {
   if (isAggregateRelayProfile(profile)) return "已切换到聚合供应商；真实对话会按所选策略轮转成员。";
-  if (profile.relayMode === "pureApi") return "已按此供应商切换到纯 API；页面增强已设为完整增强。";
-  if (profile.officialMixApiKey) return "已按此供应商使用官方登录，并混入 API Key；页面增强已设为兼容增强。";
-  return "已按此供应商切回官方登录；页面增强已设为兼容增强。";
+  if (profile.relayMode === "pureApi") return "已按此供应商切换到纯 API；Codex增强已设为完整增强。";
+  if (profile.officialMixApiKey) return "已按此供应商使用官方登录，并混入 API Key；Codex增强已设为兼容增强。";
+  return "已按此供应商切回官方登录；Codex增强已设为兼容增强。";
 }
 
 function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
