@@ -31,8 +31,9 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let image_overlay = image_overlay_config(helper_port, settings);
     let plugin_marketplaces = local_plugin_marketplaces();
     let paste_fix = paste_fix_enabled_config(settings);
+    let force_chinese_locale = force_chinese_locale_config(settings);
     format!(
-        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\n{}",
+        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\n{}",
         serde_json::to_string(&helper_url).expect("helper URL should serialize"),
         serde_json::to_string(&sponsor_images).expect("sponsor images should serialize"),
         serde_json::to_string(crate::version::VERSION).expect("version should serialize"),
@@ -40,6 +41,8 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         serde_json::to_string(&image_overlay).expect("image overlay config should serialize"),
         serde_json::to_string(&plugin_marketplaces).expect("plugin marketplaces should serialize"),
         serde_json::to_string(&paste_fix).expect("paste fix config should serialize"),
+        serde_json::to_string(&force_chinese_locale)
+            .expect("force Chinese locale config should serialize"),
         renderer_script(),
     )
 }
@@ -230,6 +233,10 @@ pub fn image_overlay_config(helper_port: u16, settings: &BackendSettings) -> Val
 
 pub fn paste_fix_enabled_config(settings: &BackendSettings) -> Value {
     json!({ "enabled": settings.codex_app_paste_fix })
+}
+
+pub fn force_chinese_locale_config(settings: &BackendSettings) -> Value {
+    json!({ "enabled": settings.codex_app_force_chinese_locale, "locale": "zh-CN" })
 }
 
 fn image_data_uri(mime_type: &str, bytes: &[u8]) -> String {
