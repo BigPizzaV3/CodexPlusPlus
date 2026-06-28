@@ -804,6 +804,48 @@ impl LaunchHooks for DefaultLaunchHooks {
         }
 
         if app_dir.extension().and_then(|value| value.to_str()) == Some("app") {
+            if let Some(preload) = &service_tier_preload {
+                let command = if let Some(inspector_port) = native_menu_inspector_port {
+                    build_codex_command_with_native_menu_inspector(
+                        app_dir,
+                        debug_port,
+                        inspector_port,
+                        extra_args,
+                    )
+                } else {
+                    build_codex_command(app_dir, debug_port, extra_args)
+                };
+                let executable = command
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("macOS Codex command is empty"))?;
+                let mut child_command = Command::new(executable);
+                child_command
+                    .args(&command[1..])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                apply_service_tier_preload_env(&mut child_command, preload);
+                let child = child_command.spawn().with_context(|| {
+                    format!("failed to launch macOS Codex executable {executable}")
+                })?;
+                *self.child.lock().await = Some(child);
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.service_tier_preload_direct_macos_launch",
+                    serde_json::json!({
+                        "app_dir": app_dir.to_string_lossy(),
+                        "debug_port": debug_port,
+                        "command": &command,
+                    }),
+                );
+                if let Some(inspector_port) = native_menu_inspector_port {
+                    start_native_menu_localizer(inspector_port);
+                }
+                return Ok(CodexLaunch::Process {
+                    command,
+                    wait_strategy: ProcessWaitStrategy::TrackedChild,
+                    macos_cleanup_policy: None,
+                });
+            }
+
             let cleanup_policy = if is_macos_app_running(app_dir).await {
                 MacosCleanupPolicy::SkipQuitBecauseAlreadyRunning
             } else {
