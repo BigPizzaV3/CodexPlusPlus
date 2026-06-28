@@ -139,7 +139,10 @@ async fn settings_get_does_not_expose_stepwise_api_key_to_renderer() {
     let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
 
     assert!(result.get("codexAppStepwiseApiKey").is_none());
-    assert_eq!(result["codexAppStepwiseApiKeyEnv"], json!("CODEX_STEPWISE_API_KEY"));
+    assert_eq!(
+        result["codexAppStepwiseApiKeyEnv"],
+        json!("CODEX_STEPWISE_API_KEY")
+    );
 }
 
 #[tokio::test]
@@ -242,21 +245,28 @@ async fn upstream_worktree_routes_are_dispatched_to_runtime() {
 }
 
 #[tokio::test]
-async fn stepwise_routes_are_dispatched_to_runtime() {
-    let ctx = test_context();
-
-    assert_eq!(
-        handle_bridge_request(ctx.clone(), "/stepwise/settings", json!({})).await,
-        json!({
-            "status": "ok",
-            "settings": {
-                "enabled": true,
-                "directSend": false,
-                "model": "test-stepwise",
-                "maxItems": 6
-            }
-        })
+async fn stepwise_routes_use_settings_service() {
+    let settings = BackendSettings {
+        codex_app_stepwise_enabled: false,
+        codex_app_stepwise_direct_send: true,
+        codex_app_stepwise_model: "settings-service-stepwise".to_string(),
+        codex_app_stepwise_max_items: 3,
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
     );
+
+    let public_settings = handle_bridge_request(ctx.clone(), "/stepwise/settings", json!({})).await;
+    assert_eq!(public_settings["settings"]["enabled"], json!(false));
+    assert_eq!(public_settings["settings"]["directSend"], json!(true));
+    assert_eq!(
+        public_settings["settings"]["model"],
+        json!("settings-service-stepwise")
+    );
+    assert_eq!(public_settings["settings"]["maxItems"], json!(3));
     assert_eq!(
         handle_bridge_request(
             ctx.clone(),
@@ -266,14 +276,16 @@ async fn stepwise_routes_are_dispatched_to_runtime() {
         .await,
         json!({
             "status": "ok",
-            "items": [{"label": "继续", "prompt": "继续排查 Stepwise"}]
+            "disabled": true,
+            "items": []
         })
     );
     assert_eq!(
         handle_bridge_request(ctx, "/stepwise/test", json!({})).await,
         json!({
             "status": "ok",
-            "items": [{"prompt": "测试 Stepwise"}]
+            "disabled": true,
+            "items": []
         })
     );
 }
@@ -1244,33 +1256,6 @@ impl BridgeRuntimeService for FakeRuntime {
             "repoRoot": "/repo",
             "branchName": "feature/demo",
             "worktreePath": "/repo-feature-demo",
-        }))
-    }
-
-    async fn stepwise_settings(&self) -> anyhow::Result<Value> {
-        Ok(json!({
-            "status": "ok",
-            "settings": {
-                "enabled": true,
-                "directSend": false,
-                "model": "test-stepwise",
-                "maxItems": 6
-            }
-        }))
-    }
-
-    async fn stepwise_generate(&self, payload: Value) -> anyhow::Result<Value> {
-        assert_eq!(payload["request"]["lastUserMessage"], json!("请继续"));
-        Ok(json!({
-            "status": "ok",
-            "items": [{"label": "继续", "prompt": "继续排查 Stepwise"}]
-        }))
-    }
-
-    async fn stepwise_test(&self, _payload: Value) -> anyhow::Result<Value> {
-        Ok(json!({
-            "status": "ok",
-            "items": [{"prompt": "测试 Stepwise"}]
         }))
     }
 }

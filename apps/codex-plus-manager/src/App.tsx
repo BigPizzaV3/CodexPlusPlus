@@ -389,6 +389,11 @@ type RelayProfileTestResult = CommandResult<{
   responsePreview: string;
 }>;
 
+type StepwiseTestResult = CommandResult<{
+  itemCount: number;
+  error: string;
+}>;
+
 type RelayProfileModelsResult = CommandResult<{
   models: string[];
   endpoint: string;
@@ -1528,18 +1533,8 @@ export function App() {
   };
 
   const testStepwiseSettings = async (settings: BackendSettings) => {
-    await testRelayProfile({
-      ...defaultSettings.relayProfiles[0],
-      id: "stepwise-test",
-      name: "Stepwise",
-      model: settings.codexAppStepwiseModel,
-      baseUrl: settings.codexAppStepwiseBaseUrl,
-      upstreamBaseUrl: settings.codexAppStepwiseBaseUrl,
-      apiKey: settings.codexAppStepwiseApiKey,
-      protocol: "chatCompletions",
-      relayMode: "pureApi",
-      testModel: settings.codexAppStepwiseModel,
-    });
+    const result = await run(() => call<StepwiseTestResult>("test_stepwise_settings", { settings }));
+    if (result) showNotice("Stepwise 测试", result.message, result.status);
   };
 
   const fetchRelayProfileModels = async (profile: RelayProfile) => {

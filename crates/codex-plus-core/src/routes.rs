@@ -91,9 +91,6 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn upstream_worktree_defaults(&self, payload: Value) -> anyhow::Result<Value>;
     async fn upstream_worktree_prepare(&self, payload: Value) -> anyhow::Result<Value>;
     async fn upstream_worktree_create(&self, payload: Value) -> anyhow::Result<Value>;
-    async fn stepwise_settings(&self) -> anyhow::Result<Value>;
-    async fn stepwise_generate(&self, payload: Value) -> anyhow::Result<Value>;
-    async fn stepwise_test(&self, payload: Value) -> anyhow::Result<Value>;
 }
 
 #[async_trait]
@@ -199,9 +196,13 @@ pub async fn handle_bridge_request(
             ctx.runtime.upstream_worktree_prepare(payload.clone()).await
         }
         "/upstream-worktree/create" => ctx.runtime.upstream_worktree_create(payload.clone()).await,
-        "/stepwise/settings" => ctx.runtime.stepwise_settings().await,
-        "/stepwise/generate" => ctx.runtime.stepwise_generate(payload.clone()).await,
-        "/stepwise/test" => ctx.runtime.stepwise_test(payload.clone()).await,
+        "/stepwise/settings" => stepwise_settings_value(ctx.settings.get_settings().await),
+        "/stepwise/generate" => {
+            stepwise_generate_value(ctx.settings.get_settings().await, payload.clone()).await
+        }
+        "/stepwise/test" => {
+            stepwise_test_value(ctx.settings.get_settings().await, payload.clone()).await
+        }
         "/delete" => result_value(ctx.data.delete(session_from_payload(&payload)).await),
         "/undo" => {
             let undo_token = payload
@@ -525,30 +526,6 @@ impl BridgeRuntimeService for CoreRuntimeService {
     async fn upstream_worktree_create(&self, payload: Value) -> anyhow::Result<Value> {
         Ok(crate::upstream_worktree::create_response(&payload))
     }
-
-    async fn stepwise_settings(&self) -> anyhow::Result<Value> {
-        let settings = SettingsStore::default().load().unwrap_or_default();
-        Ok(json!({
-            "status": "ok",
-            "settings": crate::stepwise::public_settings(&settings),
-        }))
-    }
-
-    async fn stepwise_generate(&self, payload: Value) -> anyhow::Result<Value> {
-        let settings = SettingsStore::default().load().unwrap_or_default();
-        let request = payload.get("request").cloned().unwrap_or(payload);
-        let request =
-            serde_json::from_value::<crate::stepwise::StepwiseRequest>(request).unwrap_or_default();
-        crate::stepwise::generate(request, &settings).await
-    }
-
-    async fn stepwise_test(&self, payload: Value) -> anyhow::Result<Value> {
-        let settings = crate::stepwise::settings_with_payload(
-            SettingsStore::default().load().unwrap_or_default(),
-            &payload,
-        );
-        crate::stepwise::test_connection(&settings).await
-    }
 }
 
 struct UnavailableDataService;
@@ -676,6 +653,33 @@ where
     T: serde::Serialize,
 {
     Ok(serde_json::to_value(result?)?)
+}
+
+fn stepwise_settings_value(result: anyhow::Result<BackendSettings>) -> anyhow::Result<Value> {
+    let settings = result?;
+    Ok(json!({
+        "status": "ok",
+        "settings": crate::stepwise::public_settings(&settings),
+    }))
+}
+
+async fn stepwise_generate_value(
+    result: anyhow::Result<BackendSettings>,
+    payload: Value,
+) -> anyhow::Result<Value> {
+    let settings = result?;
+    let request = payload.get("request").cloned().unwrap_or(payload);
+    let request =
+        serde_json::from_value::<crate::stepwise::StepwiseRequest>(request).unwrap_or_default();
+    crate::stepwise::generate(request, &settings).await
+}
+
+async fn stepwise_test_value(
+    result: anyhow::Result<BackendSettings>,
+    payload: Value,
+) -> anyhow::Result<Value> {
+    let settings = crate::stepwise::settings_with_payload(result?, &payload);
+    crate::stepwise::test_connection(&settings).await
 }
 
 fn diagnostic_log_value(payload: Value) -> anyhow::Result<Value> {
