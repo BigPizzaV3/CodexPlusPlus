@@ -264,7 +264,7 @@
   }
 
   function themeLabel() {
-    return state.theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
+    return state.theme === "dark" ? "切换到浅色主题" : "切换到深色主题";
   }
 
   function iconSvg(name) {
@@ -576,7 +576,7 @@
 
       .csw-form {
         display: grid;
-        gap: 10px;
+        gap: 9px;
       }
 
       .csw-switch {
@@ -668,6 +668,69 @@
         line-height: 1.2;
       }
 
+      .csw-summary {
+        background: linear-gradient(180deg, var(--csw-row), transparent);
+        border: 1px solid var(--csw-border);
+        border-radius: 7px;
+        display: grid;
+        gap: 7px;
+        padding: 9px 10px;
+      }
+
+      .csw-summary-list {
+        display: grid;
+      }
+
+      .csw-summary-row {
+        align-items: center;
+        border-top: 1px solid var(--csw-border);
+        display: grid;
+        gap: 12px;
+        grid-template-columns: minmax(0, 1fr) auto;
+        min-height: 30px;
+      }
+
+      .csw-summary-row:first-child {
+        border-top: 0;
+      }
+
+      .csw-summary-label {
+        color: var(--csw-muted);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .csw-summary-value {
+        color: var(--csw-text);
+        font-size: 12px;
+        font-weight: 700;
+        max-width: 178px;
+        overflow: hidden;
+        text-align: right;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .csw-summary-value[data-tone="good"],
+      .csw-summary-value[data-tone="warn"],
+      .csw-summary-value[data-tone="muted"] {
+        border: 1px solid var(--csw-border);
+        border-radius: 999px;
+        padding: 2px 8px;
+      }
+
+      .csw-summary-value[data-tone="good"] {
+        background: var(--csw-soft);
+      }
+
+      .csw-summary-value[data-tone="warn"] {
+        color: var(--csw-muted);
+      }
+
+      .csw-summary-value[data-tone="muted"] {
+        color: var(--csw-muted);
+      }
+
       .csw-field {
         display: grid;
         gap: 4px;
@@ -733,6 +796,12 @@
         padding-top: 2px;
       }
 
+      .csw-settings-actions {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        padding-top: 0;
+      }
+
       .csw-primary,
       .csw-secondary {
         appearance: none;
@@ -755,6 +824,12 @@
         color: var(--csw-text);
       }
 
+      .csw-secondary:hover,
+      .csw-secondary:focus-visible {
+        background: var(--csw-soft);
+        outline: none;
+      }
+
       .csw-primary:disabled,
       .csw-secondary:disabled {
         cursor: not-allowed;
@@ -765,6 +840,13 @@
         color: var(--csw-muted);
         font-size: 11px;
         min-height: 16px;
+      }
+
+      .csw-notice {
+        color: var(--csw-muted);
+        font-size: 11px;
+        line-height: 1.4;
+        min-height: 15px;
       }
 
     `;
@@ -920,10 +1002,10 @@
 
     state.popover.innerHTML = `
       <div class="csw-head">
-        <div class="csw-title">${state.activeTab === "settings" ? "Settings" : "Stepwise"}</div>
+        <div class="csw-title">Stepwise</div>
         <div class="csw-tabs">
           <button class="csw-icon" type="button" data-action="theme" title="${escapeAttr(themeLabel())}" aria-label="${escapeAttr(themeLabel())}">${themeIcon()}</button>
-          <button class="csw-icon" type="button" data-action="settings-toggle" data-active="${state.activeTab === "settings"}" title="Settings" aria-label="Settings">${iconSvg("settings")}</button>
+          <button class="csw-icon" type="button" data-action="settings-toggle" data-active="${state.activeTab === "settings"}" title="设置" aria-label="设置">${iconSvg("settings")}</button>
           <button class="csw-icon" type="button" data-action="close" aria-label="关闭">×</button>
         </div>
       </div>
@@ -994,23 +1076,45 @@
   function settingsHtml() {
     const settings = state.settings;
     if (!settings) return `<div class="csw-empty">读取中...</div>`;
+    const notice = settingsNotice(settings);
     return `
       <div class="csw-form">
-        <div class="csw-empty">${escapeHtml(statusLine(settings))}</div>
-        <div class="csw-section">
-          <div class="csw-section-title">配置摘要</div>
-          <div class="csw-status">Model: ${escapeHtml(settings.model || "未配置")}</div>
-          <div class="csw-status">最多建议: ${escapeHtml(settings.maxItems ?? 6)}</div>
-          <div class="csw-status">Direct Send: ${settings.directSend ? "开启" : "关闭"}</div>
+        <div class="csw-summary">
+          <div class="csw-section-title">摘要</div>
+          <div class="csw-summary-list">
+            ${summaryRow("Stepwise", settings.enabled ? "已开启" : "已关闭", settings.enabled ? "good" : "muted")}
+            ${summaryRow("直接发送", settings.directSend ? "已开启" : "已关闭", settings.directSend ? "good" : "muted")}
+            ${summaryRow("模型", settings.model || "未配置", settings.model ? "plain" : "warn")}
+            ${summaryRow("最多建议", settings.maxItems ?? 6, "plain")}
+          </div>
         </div>
-        <div class="csw-actions">
-          <button class="csw-primary" type="button" data-action="open-manager">设置</button>
+        <div class="csw-actions csw-settings-actions">
+          <button class="csw-secondary" type="button" data-action="open-manager">设置</button>
           <button class="csw-secondary" type="button" data-action="test-settings" ${settings.enabled ? "" : "disabled"}>测试</button>
-          <button class="csw-secondary" type="button" data-action="reset-position">重置位置</button>
+          <button class="csw-secondary" type="button" data-action="reset-position">归位</button>
         </div>
-        <div class="csw-status">${escapeHtml(state.settingsStatus || "")}</div>
+        ${notice ? `<div class="csw-notice">${escapeHtml(notice)}</div>` : ""}
       </div>
     `;
+  }
+
+  function summaryRow(label, value, tone = "plain") {
+    return `
+      <div class="csw-summary-row">
+        <span class="csw-summary-label">${escapeHtml(label)}</span>
+        <span class="csw-summary-value" data-tone="${escapeAttr(tone)}">${escapeHtml(value)}</span>
+      </div>
+    `;
+  }
+
+  function settingsNotice(settings) {
+    const status = state.settingsStatus || "";
+    const line = statusLine(settings);
+    if (!status || status === line) {
+      if (settings.enabled && settings.baseUrlConfigured && settings.model && settings.apiKeyConfigured) return "";
+      return line;
+    }
+    return status;
   }
 
   function statusLine(settings) {
@@ -1027,7 +1131,7 @@
       localStorage.removeItem(POSITION_KEY);
       state.position = defaultPosition();
       applyPosition();
-      state.settingsStatus = "位置已重置";
+      state.settingsStatus = "位置已归位";
       renderFloat();
     });
   }
@@ -1099,7 +1203,69 @@
 
   function chatRoot() {
     return Array.from(document.querySelectorAll(".thread-scroll-container"))
-      .find((node) => visibleElement(node)) || null;
+      .filter((node) => visibleElement(node) && !state.root?.contains(node))
+      .sort((left, right) => {
+        const leftRect = visibleRect(left);
+        const rightRect = visibleRect(right);
+        return (rightRect.width * rightRect.height) - (leftRect.width * leftRect.height);
+      })[0] || null;
+  }
+
+  function elementCenter(rect) {
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
+  }
+
+  function horizontalOverlapRatio(left, right) {
+    if (!left || !right) return 0;
+    const overlap = Math.max(0, Math.min(left.right, right.right) - Math.max(left.left, right.left));
+    return overlap / Math.max(1, Math.min(left.width, right.width));
+  }
+
+  function ignoredComposerContainer(node) {
+    if (!(node instanceof Element)) return true;
+    if (state.root?.contains(node)) return true;
+    return Boolean(node.closest([
+      `[${ROOT_ATTR}="true"]`,
+      `[${PAYLOAD_ATTR}="true"]`,
+      "aside",
+      "nav",
+      "[role='dialog']",
+      "[aria-modal='true']",
+      "[role='menu']",
+      "[role='listbox']",
+    ].join(",")));
+  }
+
+  function composerCandidateScore(node, rootRect) {
+    const rect = visibleRect(node);
+    if (!rect || !rootRect) return -Infinity;
+    if (rect.width < 120 || rect.height < 20) return -Infinity;
+    if (rect.bottom < window.innerHeight * 0.35) return -Infinity;
+    if (ignoredComposerContainer(node)) return -Infinity;
+
+    const overlap = horizontalOverlapRatio(rect, rootRect);
+    const center = elementCenter(rect);
+    const rootCenter = elementCenter(rootRect);
+    const centerDrift = Math.abs(center.x - rootCenter.x) / Math.max(1, rootRect.width);
+    const centerInsideRoot = center.x >= rootRect.left - 24 && center.x <= rootRect.right + 24;
+    if (overlap < 0.45 && !centerInsideRoot) return -Infinity;
+
+    const lowerScreen = rect.bottom / Math.max(1, window.innerHeight);
+    const widthMatch = Math.min(rect.width, rootRect.width) / Math.max(1, Math.max(rect.width, rootRect.width));
+    return overlap * 100 + lowerScreen * 24 + widthMatch * 18 - centerDrift * 48;
+  }
+
+  function mainComposerCandidate(candidates) {
+    const rootRect = visibleRect(chatRoot());
+    const ranked = candidates
+      .map((node) => ({ node, score: composerCandidateScore(node, rootRect) }))
+      .filter((item) => Number.isFinite(item.score))
+      .sort((left, right) => right.score - left.score);
+    return ranked[0]?.node || null;
   }
 
   function composerCandidates() {
@@ -1114,10 +1280,10 @@
       )
     ).filter((node) => {
       if (!(node instanceof HTMLElement)) return false;
-      if (state.root?.contains(node)) return false;
       const rect = node.getBoundingClientRect();
       if (rect.width < 120 || rect.height < 20) return false;
       if (rect.bottom < window.innerHeight * 0.35) return false;
+      if (ignoredComposerContainer(node)) return false;
       return true;
     });
   }
@@ -1682,7 +1848,7 @@
 
   function fillComposer(prompt, submit = false) {
     const candidates = composerCandidates();
-    const target = candidates[candidates.length - 1];
+    const target = mainComposerCandidate(candidates);
     pushDiagnostic("fill:start", {
       submit,
       candidateCount: candidates.length,
@@ -1690,9 +1856,11 @@
       targetRole: target?.getAttribute?.("role") || "",
       targetClass: String(target?.className || "").slice(0, 120),
       targetRect: rectSummary(target),
+      chatRootRect: rectSummary(chatRoot()),
       promptLength: normalizeText(prompt).length,
     });
     if (!target) {
+      pushDiagnostic("fill:no-main-composer", { candidateCount: candidates.length });
       window.prompt("Copy Stepwise prompt", prompt);
       return false;
     }

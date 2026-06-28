@@ -157,6 +157,18 @@ fn injection_script_menu_exposes_stepwise_switch_and_syncs_panel() {
 }
 
 #[test]
+fn stepwise_direct_send_targets_main_chat_composer() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("function elementCenter("));
+    assert!(script.contains("function horizontalOverlapRatio("));
+    assert!(script.contains("function ignoredComposerContainer("));
+    assert!(script.contains("function mainComposerCandidate("));
+    assert!(script.contains("mainComposerCandidate(candidates)"));
+    assert!(!script.contains("const target = candidates[candidates.length - 1];"));
+}
+
+#[test]
 fn injection_script_defers_backend_mapped_toggles_until_settings_load() {
     let script = assets::injection_script(57321);
 

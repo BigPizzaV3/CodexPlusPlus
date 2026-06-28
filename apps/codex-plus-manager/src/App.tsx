@@ -1527,6 +1527,21 @@ export function App() {
     if (result) showNotice("供应商测试", result.message, result.status);
   };
 
+  const testStepwiseSettings = async (settings: BackendSettings) => {
+    await testRelayProfile({
+      ...defaultSettings.relayProfiles[0],
+      id: "stepwise-test",
+      name: "Stepwise",
+      model: settings.codexAppStepwiseModel,
+      baseUrl: settings.codexAppStepwiseBaseUrl,
+      upstreamBaseUrl: settings.codexAppStepwiseBaseUrl,
+      apiKey: settings.codexAppStepwiseApiKey,
+      protocol: "chatCompletions",
+      relayMode: "pureApi",
+      testModel: settings.codexAppStepwiseModel,
+    });
+  };
+
   const fetchRelayProfileModels = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileModelsResult>("fetch_relay_profile_models", { profile }));
     if (result) showNotice("模型列表", result.message, result.status);
@@ -1854,6 +1869,7 @@ export function App() {
       deleteContextEntry,
       extractRelayCommonConfig,
       testRelayProfile,
+      testStepwiseSettings,
       fetchRelayProfileModels,
       switchRelayProfile,
       relaySwitching,
@@ -2122,6 +2138,7 @@ type Actions = {
   deleteContextEntry: (settings: BackendSettings, kind: ContextKind, id: string) => Promise<BackendSettings | null>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
+  testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
   switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
   relaySwitching: boolean;
@@ -3494,16 +3511,17 @@ function SettingsScreen({
             />
           </Field>
           <div className="settings-block stepwise-settings-block">
-            <div className="section-title">Stepwise API</div>
+            <div className="section-title">Stepwise</div>
+            <div className="stepwise-settings-section">连接</div>
             <div className="form-row">
-              <Field label="Stepwise Base URL">
+              <Field label="Base URL">
                 <Input
                   value={form.codexAppStepwiseBaseUrl}
                   onChange={(event) => onFormChange({ ...form, codexAppStepwiseBaseUrl: event.currentTarget.value })}
                   placeholder="https://api.example.com/v1"
                 />
               </Field>
-              <Field label="Stepwise Model">
+              <Field label="Model">
                 <Input
                   value={form.codexAppStepwiseModel}
                   onChange={(event) => onFormChange({ ...form, codexAppStepwiseModel: event.currentTarget.value })}
@@ -3511,55 +3529,56 @@ function SettingsScreen({
                 />
               </Field>
             </div>
-            <div className="form-row">
-              <Field label="Stepwise API Key">
-                <Input
-                  type="password"
-                  value={form.codexAppStepwiseApiKey}
-                  onChange={(event) => onFormChange({ ...form, codexAppStepwiseApiKey: event.currentTarget.value })}
-                />
-              </Field>
-              <Field label="API Key 环境变量">
-                <Input
-                  value={form.codexAppStepwiseApiKeyEnv}
-                  onChange={(event) => onFormChange({ ...form, codexAppStepwiseApiKeyEnv: event.currentTarget.value })}
-                />
-              </Field>
-            </div>
-            <div className="form-row">
-              <Field label="最多建议数">
-                <Input
-                  max={6}
-                  min={0}
-                  type="number"
-                  value={form.codexAppStepwiseMaxItems}
-                  onChange={(event) =>
-                    onFormChange({ ...form, codexAppStepwiseMaxItems: clampNumber(Number(event.currentTarget.value), 0, 6) })
-                  }
-                />
-              </Field>
-              <Field label="超时毫秒">
-                <Input
-                  min={1000}
-                  type="number"
-                  value={form.codexAppStepwiseTimeoutMs}
-                  onChange={(event) =>
-                    onFormChange({ ...form, codexAppStepwiseTimeoutMs: clampNumber(Number(event.currentTarget.value), 1000, 60000) })
-                  }
-                />
-              </Field>
-            </div>
-            <div className="form-row">
-              <Field label="最大输入字符">
-                <Input
-                  min={1000}
-                  type="number"
-                  value={form.codexAppStepwiseMaxInputChars}
-                  onChange={(event) =>
-                    onFormChange({ ...form, codexAppStepwiseMaxInputChars: clampNumber(Number(event.currentTarget.value), 1000, 24000) })
-                  }
-                />
-              </Field>
+            <Field label="API Key">
+              <Input
+                type="password"
+                value={form.codexAppStepwiseApiKey}
+                onChange={(event) => onFormChange({ ...form, codexAppStepwiseApiKey: event.currentTarget.value })}
+              />
+            </Field>
+            <details className="stepwise-advanced">
+              <summary>高级参数</summary>
+              <div className="form-row">
+                <Field label="API Key 环境变量">
+                  <Input
+                    value={form.codexAppStepwiseApiKeyEnv}
+                    onChange={(event) => onFormChange({ ...form, codexAppStepwiseApiKeyEnv: event.currentTarget.value })}
+                  />
+                </Field>
+                <Field label="最多建议数">
+                  <Input
+                    max={6}
+                    min={0}
+                    type="number"
+                    value={form.codexAppStepwiseMaxItems}
+                    onChange={(event) =>
+                      onFormChange({ ...form, codexAppStepwiseMaxItems: clampNumber(Number(event.currentTarget.value), 0, 6) })
+                    }
+                  />
+                </Field>
+              </div>
+              <div className="form-row">
+                <Field label="超时毫秒">
+                  <Input
+                    min={1000}
+                    type="number"
+                    value={form.codexAppStepwiseTimeoutMs}
+                    onChange={(event) =>
+                      onFormChange({ ...form, codexAppStepwiseTimeoutMs: clampNumber(Number(event.currentTarget.value), 1000, 60000) })
+                    }
+                  />
+                </Field>
+                <Field label="最大输入字符">
+                  <Input
+                    min={1000}
+                    type="number"
+                    value={form.codexAppStepwiseMaxInputChars}
+                    onChange={(event) =>
+                      onFormChange({ ...form, codexAppStepwiseMaxInputChars: clampNumber(Number(event.currentTarget.value), 1000, 24000) })
+                    }
+                  />
+                </Field>
+              </div>
               <Field label="最大输出 tokens">
                 <Input
                   min={100}
@@ -3570,10 +3589,11 @@ function SettingsScreen({
                   }
                 />
               </Field>
-            </div>
-            <Toolbar>
+            </details>
+            <div className="toolbar stepwise-settings-actions">
+              <Button variant="secondary" onClick={() => void actions.testStepwiseSettings(form)}>测试连接</Button>
               <Button onClick={() => void actions.saveSettings()}>保存设置</Button>
-            </Toolbar>
+            </div>
           </div>
           <div className="settings-block">
             <label className="check-row">
