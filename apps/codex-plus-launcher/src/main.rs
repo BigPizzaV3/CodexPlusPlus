@@ -92,7 +92,7 @@ fn acquire_single_instance_guard_with_retry(
             .with_context(|| {
                 format!(
                     "failed to acquire launcher guard port {}",
-                    codex_plus_core::ports::LAUNCHER_GUARD_PORT
+                    codex_plus_core::ports::launcher_guard_port()
                 )
             })
             .map(Some),
@@ -102,7 +102,7 @@ fn acquire_single_instance_guard_with_retry(
 fn try_acquire_single_instance_guard() -> std::io::Result<codex_plus_core::ports::LoopbackPortGuard>
 {
     codex_plus_core::ports::acquire_resilient_loopback_port_guard(
-        codex_plus_core::ports::LAUNCHER_GUARD_PORT,
+        codex_plus_core::ports::launcher_guard_port(),
     )
 }
 
@@ -110,7 +110,7 @@ fn log_launcher_guard_fallback(fallback_lock_path: &Path) {
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "launcher.guard_fallback",
         json!({
-            "requested_guard_port": codex_plus_core::ports::LAUNCHER_GUARD_PORT,
+            "requested_guard_port": codex_plus_core::ports::launcher_guard_port(),
             "fallback_lock_path": fallback_lock_path
         }),
     );
@@ -194,7 +194,7 @@ fn log_launcher_already_running(debug_port: u16) {
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "launcher.already_running",
         json!({
-            "guard_port": codex_plus_core::ports::LAUNCHER_GUARD_PORT,
+            "guard_port": codex_plus_core::ports::launcher_guard_port(),
             "debug_port": debug_port
         }),
     );
@@ -807,7 +807,7 @@ mod tests {
         let source = include_str!("main.rs");
 
         assert!(source.contains("acquire_single_instance_guard(options.debug_port)?"));
-        assert!(source.contains("LAUNCHER_GUARD_PORT"));
+        assert!(source.contains("launcher_guard_port"));
         assert!(source.contains("launcher.already_running"));
     }
 

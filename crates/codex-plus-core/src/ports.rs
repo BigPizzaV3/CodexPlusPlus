@@ -4,8 +4,64 @@ use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
 
-pub const LAUNCHER_GUARD_PORT: u16 = 57320;
-pub const MANAGER_GUARD_PORT: u16 = 57319;
+pub const LAUNCHER_GUARD_PORT_BASE: u16 = 57320;
+pub const MANAGER_GUARD_PORT_BASE: u16 = 57319;
+
+/// Offset applied to guard port base to avoid conflicts in multi-user
+/// environments (Windows RDP, shared servers, etc.).
+///
+/// Resolution order:
+/// 1. `CODEX_PLUS_GUARD_PORT` env var — exact port override
+/// 2. `CODEX_PLUS_GUARD_PORT_OFFSET` env var — explicit numeric offset
+/// 3. Windows: hash of `USERNAME` (mod 1000) for per-user isolation
+/// 4. Other platforms: 0 (backward-compatible default)
+fn guard_port_offset() -> u16 {
+    // env var exact port takes priority (caller handles it via override functions below)
+    #[cfg(windows)]
+    {
+        if let Ok(user) = std::env::var("USERNAME") {
+            let hash: u16 = user.bytes().fold(0u16, |acc, b| acc.wrapping_add(b as u16));
+            return hash % 1000;
+        }
+    }
+    0
+}
+
+/// Effective launcher guard port (base + auto-offset, overridable via env var).
+pub fn launcher_guard_port() -> u16 {
+    if let Some(port) = std::env::var("CODEX_PLUS_GUARD_PORT")
+        .or_else(|_| std::env::var("CODEX_PLUS_LAUNCHER_GUARD_PORT"))
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+    {
+        return port;
+    }
+    if let Some(offset) = std::env::var("CODEX_PLUS_GUARD_PORT_OFFSET")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+    {
+        return LAUNCHER_GUARD_PORT_BASE + offset;
+    }
+    LAUNCHER_GUARD_PORT_BASE + guard_port_offset()
+}
+
+/// Effective manager guard port (base + auto-offset, overridable via env var).
+pub fn manager_guard_port() -> u16 {
+    if let Some(port) = std::env::var("CODEX_PLUS_GUARD_PORT")
+        .or_else(|_| std::env::var("CODEX_PLUS_MANAGER_GUARD_PORT"))
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+    {
+        return port;
+    }
+    if let Some(offset) = std::env::var("CODEX_PLUS_GUARD_PORT_OFFSET")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+    {
+        return MANAGER_GUARD_PORT_BASE + offset;
+    }
+    MANAGER_GUARD_PORT_BASE + guard_port_offset()
+}
 
 pub fn select_platform_loopback_port(requested: u16) -> u16 {
     select_platform_loopback_port_with(
@@ -261,5 +317,70 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(second.kind(), std::io::ErrorKind::WouldBlock);
+    }
+
+    #[test]
+    fn launcher_guard_port_returns_base_when_no_env_override() {
+        _clear_guard_port_env_vars();
+        let port = launcher_guard_port();
+        // On non-Windows: LAUNCHER_GUARD_PORT_BASE + 0
+        // On Windows: LAUNCHER_GUARD_PORT_BASE + USERNAME hash mod 1000
+        assert!(port >= LAUNCHER_GUARD_PORT_BASE);
+        assert!(port < LAUNCHER_GUARD_PORT_BASE + 1000);
+    }
+
+    #[test]
+    fn manager_guard_port_returns_base_when_no_env_override() {
+        _clear_guard_port_env_vars();
+        let port = manager_guard_port();
+        assert!(port >= MANAGER_GUARD_PORT_BASE);
+        assert!(port < MANAGER_GUARD_PORT_BASE + 1000);
+    }
+
+    #[test]
+    fn launcher_guard_port_honors_env_override() {
+        _clear_guard_port_env_vars();
+        unsafe { std::env::set_var("CODEX_PLUS_GUARD_PORT", "9999") };
+        let port = launcher_guard_port();
+        unsafe { std::env::remove_var("CODEX_PLUS_GUARD_PORT") };
+        assert_eq!(port, 9999);
+    }
+
+    #[test]
+    fn launcher_guard_port_honors_specific_env_override() {
+        _clear_guard_port_env_vars();
+        unsafe { std::env::set_var("CODEX_PLUS_LAUNCHER_GUARD_PORT", "8888") };
+        let port = launcher_guard_port();
+        unsafe { std::env::remove_var("CODEX_PLUS_LAUNCHER_GUARD_PORT") };
+        assert_eq!(port, 8888);
+    }
+
+    #[test]
+    fn manager_guard_port_honors_specific_env_override() {
+        _clear_guard_port_env_vars();
+        unsafe { std::env::set_var("CODEX_PLUS_MANAGER_GUARD_PORT", "7777") };
+        let port = manager_guard_port();
+        unsafe { std::env::remove_var("CODEX_PLUS_MANAGER_GUARD_PORT") };
+        assert_eq!(port, 7777);
+    }
+
+    #[test]
+    fn launcher_guard_port_honors_offset_env() {
+        _clear_guard_port_env_vars();
+        unsafe { std::env::set_var("CODEX_PLUS_GUARD_PORT_OFFSET", "50") };
+        let port = launcher_guard_port();
+        unsafe { std::env::remove_var("CODEX_PLUS_GUARD_PORT_OFFSET") };
+        assert_eq!(port, LAUNCHER_GUARD_PORT_BASE + 50);
+    }
+}
+
+/// Clear all guard-port env vars to prevent cross-test contamination
+/// when cargo runs tests in parallel threads.
+fn _clear_guard_port_env_vars() {
+    unsafe {
+        let _ = std::env::remove_var("CODEX_PLUS_GUARD_PORT");
+        let _ = std::env::remove_var("CODEX_PLUS_LAUNCHER_GUARD_PORT");
+        let _ = std::env::remove_var("CODEX_PLUS_MANAGER_GUARD_PORT");
+        let _ = std::env::remove_var("CODEX_PLUS_GUARD_PORT_OFFSET");
     }
 }
