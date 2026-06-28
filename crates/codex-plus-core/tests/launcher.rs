@@ -210,6 +210,18 @@ fn launcher_builds_debug_arguments_and_commands() {
 }
 
 #[test]
+fn launcher_macos_direct_command_targets_bundle_executable() {
+    let command = build_codex_command(Path::new("/Applications/OpenAI Codex.app"), 9229, &[]);
+    let executable = command[0].replace('\\', "/");
+
+    assert_eq!(
+        executable,
+        "/Applications/OpenAI Codex.app/Contents/MacOS/Codex"
+    );
+    assert!(!command.contains(&"open".to_string()));
+}
+
+#[test]
 fn launcher_uses_gated_startup_preload_without_proxy_environment_override() {
     let source = include_str!("../src/launcher.rs");
 
