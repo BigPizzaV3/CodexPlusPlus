@@ -2120,6 +2120,17 @@ body {
   align-items: end;
 }
 
+.settings-block .section-title {
+  margin-bottom: 12px;
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.stepwise-settings-block .form-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .settings-block .toolbar {
   margin-top: 0;
   margin-bottom: 12px;

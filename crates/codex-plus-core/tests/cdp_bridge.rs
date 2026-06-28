@@ -142,6 +142,43 @@ fn injection_script_menu_exposes_marketplace_and_force_install_plugin_switches()
 }
 
 #[test]
+fn injection_script_menu_exposes_stepwise_switch_and_syncs_panel() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("stepwise: false"));
+    assert!(script.contains("stepwise: \"codexAppStepwiseEnabled\""));
+    assert!(script.contains("Stepwise"));
+    assert!(script.contains("data-codex-plus-setting=\"stepwise\""));
+    assert!(script.contains("function syncStepwisePanel"));
+    assert!(script.contains("window.__codexStepwisePanel?.syncSettings"));
+    assert!(script.contains("if (key === \"stepwise\") syncStepwisePanel(value)"));
+    assert!(script.contains("if (patch?.enabled === true)"));
+    assert!(script.contains("activateRuntime();"));
+}
+
+#[test]
+fn injection_script_defers_backend_mapped_toggles_until_settings_load() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("const codexPlusBackendMappedSettings = new Set"));
+    assert!(script.contains("codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded"));
+    assert!(script.contains("button.dataset.pending = String(waitsForBackend)"));
+    assert!(script.contains("button.disabled = waitsForBackend || button.dataset.relayUnneeded === \"true\""));
+    assert!(script.contains("toggle.disabled || toggle.dataset.pending === \"true\""));
+}
+
+#[test]
+fn injection_script_ignores_stale_backend_settings_responses() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("let codexPlusBackendSettingsSeq = 0"));
+    assert!(script.contains("const seq = codexPlusBackendSettingsSeq"));
+    assert!(script.contains("if (seq !== codexPlusBackendSettingsSeq)"));
+    assert!(script.contains("const seq = ++codexPlusBackendSettingsSeq"));
+    assert!(script.contains("if (seq === codexPlusBackendSettingsSeq)"));
+}
+
+#[test]
 fn injection_script_skips_plugin_patch_work_in_relay_mode() {
     let script = assets::injection_script(57321);
 

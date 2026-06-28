@@ -648,6 +648,36 @@ impl BridgeRuntimeService for LauncherRuntimeService {
             &payload,
         ))
     }
+
+    async fn stepwise_settings(&self) -> anyhow::Result<Value> {
+        let settings = codex_plus_core::settings::SettingsStore::default()
+            .load()
+            .unwrap_or_default();
+        Ok(json!({
+            "status": "ok",
+            "settings": codex_plus_core::stepwise::public_settings(&settings),
+        }))
+    }
+
+    async fn stepwise_generate(&self, payload: Value) -> anyhow::Result<Value> {
+        let settings = codex_plus_core::settings::SettingsStore::default()
+            .load()
+            .unwrap_or_default();
+        let request = payload.get("request").cloned().unwrap_or(payload);
+        let request = serde_json::from_value::<codex_plus_core::stepwise::StepwiseRequest>(request)
+            .unwrap_or_default();
+        codex_plus_core::stepwise::generate(request, &settings).await
+    }
+
+    async fn stepwise_test(&self, payload: Value) -> anyhow::Result<Value> {
+        let settings = codex_plus_core::stepwise::settings_with_payload(
+            codex_plus_core::settings::SettingsStore::default()
+                .load()
+                .unwrap_or_default(),
+            &payload,
+        );
+        codex_plus_core::stepwise::test_connection(&settings).await
+    }
 }
 
 async fn inject_with_context(

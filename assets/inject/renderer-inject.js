@@ -789,6 +789,8 @@
       }
       .codex-plus-toggle[data-enabled="true"] { background: #10a37f; }
       .codex-plus-toggle[data-enabled="true"] span { transform: translateX(18px); }
+      .codex-plus-toggle[data-pending="true"],
+      .codex-plus-toggle:disabled { cursor: not-allowed; opacity: .55; }
       .codex-plus-toggle[data-relay-unneeded="true"] { width: 72px; cursor: default; background: rgba(16,163,127,.16); color: #6ee7b7; }
       .codex-plus-toggle[data-relay-unneeded="true"] span { display: none; }
       .codex-plus-toggle[data-relay-unneeded="true"]::after { content: "无需开启"; font-size: 12px; font-weight: 650; line-height: 1; }
@@ -915,7 +917,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, forcePluginInstall: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
+    return { pluginMarketplaceUnlock: true, forcePluginInstall: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, stepwise: false };
   }
 
   const codexPlusBackendSettingMap = {
@@ -933,8 +935,10 @@
     upstreamWorktreeCreate: "codexAppUpstreamWorktreeCreate",
     nativeMenuPlacement: "codexAppNativeMenuPlacement",
     serviceTierControls: "codexAppServiceTierControls",
+    stepwise: "codexAppStepwiseEnabled",
     pasteFix: "codexAppPasteFix",
   };
+  const codexPlusBackendMappedSettings = new Set(Object.keys(codexPlusBackendSettingMap));
 
   function backendCodexPlusSettings() {
     const settings = {};
@@ -966,6 +970,7 @@
         upstreamWorktreeCreate: false,
         nativeMenuPlacement: false,
         serviceTierControls: false,
+        stepwise: false,
       };
     }
     try {
@@ -988,7 +993,12 @@
   function setCodexPlusSetting(key, value) {
     const backendKey = codexPlusBackendSettingMap[key];
     if (backendKey) {
-      setBackendSetting(backendKey, value);
+      if (key === "stepwise") syncStepwisePanel(value);
+      void setBackendSetting(backendKey, value).then(() => {
+        if (key === "stepwise") {
+          Promise.resolve(window.__codexStepwisePanel?.loadSettings?.()).then(() => syncStepwisePanel(value));
+        }
+      });
       return;
     }
     let stored = {};
@@ -1024,8 +1034,20 @@
       window.__codexPluginAutoExpandRunning = false;
       window.__codexPluginAutoExpandLastSignature = "";
     }
+    if (key === "stepwise") syncStepwisePanel(value);
     renderCodexPlusMenu();
     scan();
+  }
+
+  function syncStepwisePanel(enabled = codexPlusSettings().stepwise) {
+    try {
+      window.__codexStepwisePanel?.syncSettings?.({ enabled: !!enabled });
+    } catch (error) {
+      sendCodexPlusDiagnostic("stepwise_sync_failed", {
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+    }
   }
 
   function normalizeConversationViewWidth(value) {
@@ -1058,15 +1080,20 @@
   }
 
   function renderCodexPlusMenu() {
+    const settings = codexPlusSettings();
     document.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-plus-setting");
-      button.dataset.enabled = String(!!codexPlusSettings()[key]);
+      const waitsForBackend = codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded;
+      button.dataset.enabled = String(!!settings[key]);
+      button.dataset.pending = String(waitsForBackend);
+      button.disabled = waitsForBackend || button.dataset.relayUnneeded === "true";
     });
     refreshConversationViewControls();
     refreshCodexServiceTierControls();
   }
 
   let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, launchMode: "patch", codexAppVersion: "" };
+  let codexPlusBackendSettingsSeq = 0;
   const codexPluginLegacyEntryUnlockBeforeVersion = "26.601.2237";
   const codexPluginBridgeRequestUnlockFromVersion = "26.616.0";
 
@@ -1828,10 +1855,14 @@
   }
 
   async function loadBackendSettings() {
+    const seq = codexPlusBackendSettingsSeq;
     try {
       const settings = await postJson("/settings/get", {});
       if (!settings || typeof settings !== "object" || (!("launchMode" in settings) && !("enhancementsEnabled" in settings) && !("providerSyncEnabled" in settings))) {
         throw new Error("invalid backend settings response");
+      }
+      if (seq !== codexPlusBackendSettingsSeq) {
+        return false;
       }
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
@@ -1856,11 +1887,15 @@
   }
 
   async function setBackendSetting(key, value) {
+    const seq = ++codexPlusBackendSettingsSeq;
     codexPlusBackendSettings = { ...codexPlusBackendSettings, [key]: value };
+    codexPlusBackendSettingsLoaded = true;
     refreshCodexPlusBackendToggles();
     try {
       const settings = await postJson("/settings/set", { [key]: value });
-      codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
+      if (seq === codexPlusBackendSettingsSeq) {
+        codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
+      }
     } finally {
       refreshCodexPlusBackendToggles();
     }
@@ -1871,6 +1906,7 @@
       const key = button.getAttribute("data-codex-backend-setting");
       button.dataset.enabled = String(!!codexPlusBackendSettings[key]);
     });
+    syncStepwisePanel();
     renderCodexPlusMenu();
     scan();
   }
@@ -2166,6 +2202,10 @@
               <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
             </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">Stepwise</div><div class="codex-plus-row-description">在当前 Codex 页面显示可拖动的下一步建议浮层，可在设置页配置模型和直接发送。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="stepwise"><span></span></button>
+            </div>
             <div class="codex-plus-row" data-codex-service-tier-controls="true">
               <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承使用 config.toml 的 service tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
               <div class="codex-plus-service-tier-control">
@@ -2404,7 +2444,7 @@
       }
       const toggle = target?.closest("[data-codex-plus-setting]");
       if (toggle) {
-        if (toggle.disabled) return;
+        if (toggle.disabled || toggle.dataset.pending === "true") return;
         const key = toggle.getAttribute("data-codex-plus-setting");
         setCodexPlusSetting(key, !codexPlusSettings()[key]);
         return;
