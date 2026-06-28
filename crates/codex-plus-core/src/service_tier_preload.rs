@@ -43,11 +43,12 @@ const path = require("path");
 const Module = require("module");
 
 const PATCH_MARK = Symbol.for("codex-plus.service-tier-protocol-handle-patched");
-const PATCH_VERSION = "protocol-handle-3";
+const PATCH_VERSION = "protocol-handle-4";
 const SERVICE_TIER_SETTINGS_ASSET_RE = /^use-service-tier-settings-.*\.js$/;
 const READ_SERVICE_TIER_ASSET_RE = /^read-service-tier-for-request-.*\.js$/;
-const LOG_PATH = path.join(process.env.HOME || process.cwd(), ".codex-session-delete", "codex-plus.log");
-const SETTINGS_PATH = path.join(process.env.HOME || process.cwd(), ".codex-session-delete", "settings.json");
+const HOME_DIR = process.env.HOME || process.env.USERPROFILE || process.cwd();
+const LOG_PATH = path.join(HOME_DIR, ".codex-session-delete", "codex-plus.log");
+const SETTINGS_PATH = path.join(HOME_DIR, ".codex-session-delete", "settings.json");
 
 function log(event, detail) {
   try {
@@ -74,6 +75,10 @@ function patchServiceTierSettingsAsset(source) {
         "c=o?.authMethod===`chatgpt`",
         "c=o?.authMethod===`chatgpt`||o?.authMethod===`apikey`",
       ],
+      [
+        "s=a?.authMethod===`chatgpt`",
+        "s=a?.authMethod===`chatgpt`||a?.authMethod===`apikey`",
+      ],
     ],
     "service tier settings auth gate"
   );
@@ -97,6 +102,10 @@ function patchReadServiceTierAsset(source) {
         "return n===`chatgpt`?(await e.query.fetch(c,{authMethod:n,hostId:t})).requirements?.featureRequirements?.fast_mode!==!1:!1",
         "return n===`chatgpt`?(await e.query.fetch(c,{authMethod:n,hostId:t})).requirements?.featureRequirements?.fast_mode!==!1:n===`apikey`",
       ],
+      [
+        "return n===`chatgpt`?(await e.query.fetch(g,{authMethod:n,hostId:t})).requirements?.featureRequirements?.fast_mode!==!1:!1",
+        "return n===`chatgpt`?(await e.query.fetch(g,{authMethod:n,hostId:t})).requirements?.featureRequirements?.fast_mode!==!1:n===`apikey`",
+      ],
     ],
     "read service tier auth gate"
   );
@@ -110,6 +119,10 @@ function patchReadServiceTierAsset(source) {
       [
         "return d.service_tier==null?i(await m(o,c??d.model),d.service_tier,s):i(null,d.service_tier,s)",
         "return d.service_tier==null?i(await m(o,c??d.model),d.service_tier,s):i(await m(o,c??d.model),d.service_tier,s)",
+      ],
+      [
+        "return s.service_tier==null?d(await T(t,i??s.model),s.service_tier,n):d(null,s.service_tier,n)",
+        "return s.service_tier==null?d(await T(t,i??s.model),s.service_tier,n):d(await T(t,i??s.model),s.service_tier,n)",
       ],
     ],
     "read service tier explicit config model lookup"
@@ -293,9 +306,12 @@ mod tests {
         assert!(script.contains("service_tier_preload_asset_patch_failed"));
         assert!(script.contains("handler.call(self, request)"));
         assert!(!script.contains("app.asar\", \"webview\", \"assets"));
+        assert!(script.contains("process.env.USERPROFILE"));
         assert!(script.contains("use-service-tier-settings-"));
         assert!(script.contains("read-service-tier-for-request-"));
         assert!(script.contains("s=o?.authMethod===`chatgpt`||o?.authMethod===`apikey`"));
+        assert!(script.contains("s=a?.authMethod===`chatgpt`||a?.authMethod===`apikey`"));
         assert!(script.contains("n===`apikey`"));
+        assert!(script.contains("return s.service_tier==null?d(await T(t,i??s.model),s.service_tier,n):d(await T(t,i??s.model),s.service_tier,n)"));
     }
 }

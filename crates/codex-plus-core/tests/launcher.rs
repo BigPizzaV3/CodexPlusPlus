@@ -214,6 +214,8 @@ fn launcher_uses_gated_startup_preload_without_proxy_environment_override() {
     let source = include_str!("../src/launcher.rs");
 
     assert!(source.contains("NODE_OPTIONS"));
+    assert!(source.contains("apply_service_tier_preload_env"));
+    assert!(source.contains("service_tier_preload_direct_packaged_launch"));
     assert!(source.contains("ensure_service_tier_preload"));
     assert!(source.contains("ScopedEnvVar::set(\"NODE_OPTIONS\""));
     assert!(source.contains("settings.enhancements_enabled"));

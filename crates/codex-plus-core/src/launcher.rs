@@ -544,6 +544,20 @@ impl Drop for ScopedEnvVar {
     }
 }
 
+fn apply_service_tier_preload_env(command: &mut Command, preload: &ServiceTierPreloadEnv) {
+    command.env("NODE_OPTIONS", &preload.node_options);
+    if env::var_os("HOME").is_none()
+        && let Some(home) = service_tier_preload_home_dir()
+    {
+        command.env("HOME", home);
+    }
+}
+
+fn service_tier_preload_home_dir() -> Option<PathBuf> {
+    let app_state_dir = crate::paths::default_app_state_dir();
+    app_state_dir.parent().map(Path::to_path_buf)
+}
+
 #[async_trait(?Send)]
 impl LaunchHooks for DefaultLaunchHooks {
     fn resolve_app_dir(
@@ -716,6 +730,49 @@ impl LaunchHooks for DefaultLaunchHooks {
                 build_packaged_activation(app_dir, debug_port, extra_args)
             };
             if let Some(activation) = activation {
+                if let Some(preload) = &service_tier_preload {
+                    let command = if let Some(inspector_port) = native_menu_inspector_port {
+                        build_codex_command_with_native_menu_inspector(
+                            app_dir,
+                            debug_port,
+                            inspector_port,
+                            extra_args,
+                        )
+                    } else {
+                        build_codex_command(app_dir, debug_port, extra_args)
+                    };
+                    let executable = command
+                        .first()
+                        .ok_or_else(|| anyhow::anyhow!("Codex command is empty"))?;
+                    let mut child_command = Command::new(executable);
+                    child_command
+                        .args(&command[1..])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null());
+                    apply_service_tier_preload_env(&mut child_command, preload);
+                    #[cfg(windows)]
+                    child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
+                    let child = child_command.spawn().with_context(|| {
+                        format!("failed to launch packaged Codex executable {executable}")
+                    })?;
+                    *self.child.lock().await = Some(child);
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.service_tier_preload_direct_packaged_launch",
+                        serde_json::json!({
+                            "app_dir": app_dir.to_string_lossy(),
+                            "debug_port": debug_port,
+                            "command": &command,
+                        }),
+                    );
+                    if let Some(inspector_port) = native_menu_inspector_port {
+                        start_native_menu_localizer(inspector_port);
+                    }
+                    return Ok(CodexLaunch::Process {
+                        command,
+                        wait_strategy: ProcessWaitStrategy::TrackedChild,
+                        macos_cleanup_policy: None,
+                    });
+                }
                 let CodexLaunch::PackagedActivation {
                     app_user_model_id,
                     arguments,
@@ -771,7 +828,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
             if let Some(preload) = &service_tier_preload {
-                child_command.env("NODE_OPTIONS", &preload.node_options);
+                apply_service_tier_preload_env(&mut child_command, preload);
             }
             let child = child_command
                 .spawn()
@@ -806,7 +863,7 @@ impl LaunchHooks for DefaultLaunchHooks {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         if let Some(preload) = &service_tier_preload {
-            child_command.env("NODE_OPTIONS", &preload.node_options);
+            apply_service_tier_preload_env(&mut child_command, preload);
         }
         #[cfg(windows)]
         child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
