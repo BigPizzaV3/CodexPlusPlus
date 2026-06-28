@@ -9,10 +9,10 @@ members = [
 ]
 
 [workspace.package]
-version = "1.2.21"
+version = "1.2.22"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/BigPizzaV3/CodexPlusPlus"
+repository = "https://github.com/yinsang0910-star/CodexPlusPlus"
 
 [workspace.dependencies]
 aes-gcm = "0.10"
