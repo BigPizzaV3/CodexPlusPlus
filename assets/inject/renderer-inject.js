@@ -1,4 +1,145 @@
 (() => {
+  function installCodexPlusForceChineseLocale() {
+    const config = window.__CODEX_PLUS_FORCE_CHINESE_LOCALE__;
+    if (!config || config.enabled !== true) return;
+    if (window.__codexPlusForceChineseLocaleInstalled === "1") return;
+    window.__codexPlusForceChineseLocaleInstalled = "1";
+    const locale = typeof config.locale === "string" && config.locale ? config.locale : "zh-CN";
+    const languages = [locale, "zh", "en-US", "en"];
+
+    const defineNavigatorGetter = (name, value) => {
+      try {
+        Object.defineProperty(Navigator.prototype, name, {
+          configurable: true,
+          get: () => value,
+        });
+      } catch {
+        try {
+          Object.defineProperty(navigator, name, {
+            configurable: true,
+            get: () => value,
+          });
+        } catch {
+        }
+      }
+    };
+
+    defineNavigatorGetter("language", locale);
+    defineNavigatorGetter("languages", languages);
+
+    const patchI18nConfig = (dynamicConfig) => {
+      if (!dynamicConfig || typeof dynamicConfig !== "object") return dynamicConfig;
+      const value = dynamicConfig.value && typeof dynamicConfig.value === "object" ? dynamicConfig.value : {};
+      const nextValue = {
+        ...value,
+        enable_i18n: true,
+        locale_source: "SYSTEM",
+      };
+      try {
+        dynamicConfig.value = nextValue;
+      } catch {
+      }
+      if (typeof dynamicConfig.get === "function" && !dynamicConfig.__codexPlusForceChineseLocaleGetPatched) {
+        const originalGet = dynamicConfig.get.bind(dynamicConfig);
+        dynamicConfig.get = (key, fallback) => {
+          if (key === "enable_i18n") return true;
+          if (key === "locale_source") return "SYSTEM";
+          return originalGet(key, fallback);
+        };
+        dynamicConfig.__codexPlusForceChineseLocaleGetPatched = true;
+      }
+      return dynamicConfig;
+    };
+
+    const statsigClients = () => {
+      const root = window.__STATSIG__ || globalThis.__STATSIG__;
+      if (!root || typeof root !== "object") return [];
+      const clients = [root.firstInstance, typeof root.instance === "function" ? root.instance() : null];
+      if (root.instances && typeof root.instances === "object") clients.push(...Object.values(root.instances));
+      return clients.filter((client, index, array) => client && typeof client === "object" && array.indexOf(client) === index);
+    };
+
+    const patchStatsigClient = (client) => {
+      if (!client || typeof client !== "object") return;
+      if (typeof client.getDynamicConfig !== "function") return;
+      if (!client.__codexPlusForceChineseLocalePatched) {
+        const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
+        client.getDynamicConfig = (name, options) => {
+          const result = originalGetDynamicConfig(name, options);
+          return name === "72216192" ? patchI18nConfig(result) : result;
+        };
+        client.__codexPlusForceChineseLocalePatched = true;
+      }
+      try {
+        patchI18nConfig(client.getDynamicConfig("72216192", { disableExposureLog: true }));
+      } catch {
+      }
+    };
+
+    const patchStatsigRoot = (root) => {
+      if (!root || typeof root !== "object" || root.__codexPlusForceChineseLocaleRootPatched) return;
+      root.__codexPlusForceChineseLocaleRootPatched = true;
+      ["firstInstance", "instance"].forEach((key) => {
+        let current;
+        try {
+          current = root[key];
+        } catch {
+          return;
+        }
+        patchStatsigClient(typeof current === "function" && key === "instance" ? current.call(root) : current);
+        try {
+          Object.defineProperty(root, key, {
+            configurable: true,
+            get: () => current,
+            set: (next) => {
+              current = next;
+              patchStatsigClient(typeof next === "function" && key === "instance" ? next.call(root) : next);
+            },
+          });
+        } catch {
+        }
+      });
+    };
+
+    const installStatsigRootSetter = () => {
+      const descriptor = Object.getOwnPropertyDescriptor(window, "__STATSIG__");
+      if (descriptor && descriptor.configurable === false) return;
+      let currentRoot = window.__STATSIG__;
+      patchStatsigRoot(currentRoot);
+      try {
+        Object.defineProperty(window, "__STATSIG__", {
+          configurable: true,
+          get: () => currentRoot,
+          set: (next) => {
+            currentRoot = next;
+            patchStatsigRoot(next);
+            statsigClients().forEach(patchStatsigClient);
+          },
+        });
+      } catch {
+      }
+    };
+
+    const patchStatsigI18nConfig = () => {
+      installStatsigRootSetter();
+      const root = window.__STATSIG__ || globalThis.__STATSIG__;
+      patchStatsigRoot(root);
+      statsigClients().forEach((client) => {
+        if (typeof client.getDynamicConfig !== "function") return;
+        patchStatsigClient(client);
+      });
+    };
+
+    patchStatsigI18nConfig();
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      patchStatsigI18nConfig();
+      if (Date.now() - startedAt > 5000) window.clearInterval(timer);
+    }, 50);
+  }
+
+  installCodexPlusForceChineseLocale();
+
   const helperBase = window.__CODEX_SESSION_DELETE_HELPER__ || "http://127.0.0.1:57321";
   const buttonClass = "codex-delete-button";
   const exportButtonClass = "codex-export-button";

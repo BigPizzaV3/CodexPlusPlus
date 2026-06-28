@@ -1040,6 +1040,7 @@ impl BridgeSettingsService for FakeSettings {
             "codexAppModelWhitelistUnlock",
             "codexAppSessionDelete",
             "codexAppMarkdownExport",
+            "codexAppForceChineseLocale",
             "codexAppProjectMove",
             "codexAppThreadIdBadge",
             "codexAppConversationView",

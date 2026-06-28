@@ -13,9 +13,16 @@ pub fn codex_session_db_path() -> PathBuf {
 }
 
 pub fn codex_session_db_path_from_home(home: &Path) -> PathBuf {
-    codex_sqlite_dir_session_dbs(home)
-        .into_iter()
-        .next()
+    let mut paths = codex_sqlite_dir_session_dbs(home);
+    let legacy = legacy_state_db_path(home);
+    if !paths.iter().any(|path| path == &legacy) {
+        paths.push(legacy.clone());
+    }
+    paths
+        .iter()
+        .find(|path| sqlite_has_table(path, "threads"))
+        .cloned()
+        .or_else(|| paths.into_iter().next())
         .unwrap_or_else(|| legacy_state_db_path(home))
 }
 
@@ -80,20 +87,22 @@ fn is_sqlite_candidate(path: &Path) -> bool {
 }
 
 fn has_session_table(path: &Path) -> bool {
+    ["threads", "automation_runs", "inbox_items"]
+        .iter()
+        .any(|table| sqlite_has_table(path, table))
+}
+
+fn sqlite_has_table(path: &Path, table: &str) -> bool {
     let Ok(db) = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
     else {
         return false;
     };
-    ["threads", "automation_runs", "inbox_items"]
-        .iter()
-        .any(|table| {
-            db.query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
-                [table],
-                |_| Ok(()),
-            )
-            .is_ok()
-        })
+    db.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+        [table],
+        |_| Ok(()),
+    )
+    .is_ok()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

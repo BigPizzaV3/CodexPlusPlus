@@ -27,7 +27,7 @@ fn manager_uses_single_instance_guard_before_starting_tauri() {
         .expect("read manager lib.rs");
 
     assert!(lib_rs.contains("acquire_single_instance_guard()"));
-    assert!(lib_rs.contains("MANAGER_GUARD_PORT"));
+    assert!(lib_rs.contains("manager_guard_port"));
     assert!(lib_rs.contains("manager.already_running"));
 }
 
