@@ -3693,6 +3693,22 @@
     }
   }
 
+  function runScheduledCodexPlusMenuRepair() {
+    window.__codexPlusMenuRepairPending = false;
+    clearTimeout(window.__codexPlusMenuRepairTimer);
+    window.__codexPlusMenuRepairTimer = null;
+    const mutations = window.__codexPlusMenuRepairMutations;
+    window.__codexPlusMenuRepairMutations = null;
+    repairCodexPlusMenuNow(mutations);
+  }
+
+  function scheduleCodexPlusMenuRepair(mutations) {
+    window.__codexPlusMenuRepairMutations = mutations;
+    if (window.__codexPlusMenuRepairPending) return;
+    window.__codexPlusMenuRepairPending = true;
+    window.__codexPlusMenuRepairTimer = setTimeout(runScheduledCodexPlusMenuRepair, 50);
+  }
+
   function patchPluginMarketplaceRequestParams(method, params) {
     if (method === "list-plugins") {
       if (!params || typeof params !== "object") return params;
@@ -9654,7 +9670,7 @@
 
   function scheduleScan(mutations) {
     window.__codexSessionDeleteLastMutations = mutations;
-    repairCodexPlusMenuNow(mutations);
+    scheduleCodexPlusMenuRepair(mutations);
     scheduleZedRemoteMenuRefresh(mutations);
     schedulePluginAutoExpand();
     if (!shouldScheduleScan(mutations)) return;
