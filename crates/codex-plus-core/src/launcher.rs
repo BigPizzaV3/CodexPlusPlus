@@ -2,22 +2,15 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Nonce};
 use anyhow::Context;
 use async_trait::async_trait;
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, mpsc};
-use tokio_tungstenite::tungstenite::Message;
+use tokio::sync::Mutex;
 
 use crate::settings::{BackendSettings, SettingsStore, normalize_codex_extra_args};
 use crate::status::{LaunchStatus, StatusStore};
@@ -220,18 +213,12 @@ pub trait LaunchHooks: Send + Sync {
 pub struct DefaultLaunchHooks {
     child: Mutex<Option<Child>>,
     helper: Mutex<Option<HelperRuntime>>,
-    mobile_relay_host: Mutex<Option<MobileRelayHostRuntime>>,
     bridge_watchdog: Mutex<Option<BridgeWatchdogRuntime>>,
     computer_use_guard_watchdog: Mutex<Option<ComputerUseGuardWatchdogRuntime>>,
     computer_use_guard_artifacts: Mutex<Option<crate::computer_use_guard::GuardArtifacts>>,
 }
 
 struct HelperRuntime {
-    shutdown: tokio::sync::oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-struct MobileRelayHostRuntime {
     shutdown: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -420,6 +407,35 @@ fn start_native_menu_localizer(inspector_port: u16) {
     });
 }
 
+#[cfg(windows)]
+fn apply_codexplusplus_window_icon_after_launch(process_id: u32) {
+    let icon_resource_path =
+        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex-plus-plus.exe"));
+    tokio::spawn(async move {
+        for attempt in 1..=30 {
+            if crate::windows_apply_codexplusplus_icon_to_process_window(
+                process_id,
+                icon_resource_path.clone(),
+            ) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if attempt == 30 {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.window_icon.apply_failed",
+                    serde_json::json!({
+                        "process_id": process_id,
+                        "icon_resource_path": icon_resource_path.to_string_lossy()
+                    }),
+                );
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn apply_codexplusplus_window_icon_after_launch(_process_id: u32) {}
+
 pub trait IntoLaunchHooks {
     fn into_launch_hooks(self) -> Arc<dyn LaunchHooks>;
 }
@@ -448,27 +464,6 @@ impl IntoLaunchHooks for DefaultLaunchHooks {
 impl DefaultLaunchHooks {
     pub fn shared() -> Arc<dyn LaunchHooks> {
         Arc::new(Self::default())
-    }
-
-    async fn start_mobile_relay_host(&self, helper_port: u16) -> anyhow::Result<()> {
-        let settings = SettingsStore::default().load().unwrap_or_default();
-        let Some(config) = MobileRelayHostConfig::from_settings_and_env(&settings) else {
-            return Ok(());
-        };
-        let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            run_mobile_relay_host(helper_port, config, &mut shutdown_rx).await;
-        });
-        if let Some(runtime) = self
-            .mobile_relay_host
-            .lock()
-            .await
-            .replace(MobileRelayHostRuntime { shutdown, task })
-        {
-            let _ = runtime.shutdown.send(());
-            let _ = runtime.task.await;
-        }
-        Ok(())
     }
 }
 
@@ -625,7 +620,6 @@ impl LaunchHooks for DefaultLaunchHooks {
             shutdown: shutdown_tx,
             task,
         });
-        self.start_mobile_relay_host(helper_port).await?;
         Ok(())
     }
 
@@ -639,16 +633,17 @@ impl LaunchHooks for DefaultLaunchHooks {
         let native_menu_localization_enabled = settings.codex_app_native_menu_localization;
         let native_menu_inspector_port =
             native_menu_localization_enabled.then(|| select_native_menu_inspector_port(debug_port));
+        let launch_extra_args = codex_extra_args_for_launch(settings, extra_args);
         if cfg!(windows) {
             let activation = if let Some(inspector_port) = native_menu_inspector_port {
                 build_packaged_activation_with_native_menu_inspector(
                     app_dir,
                     debug_port,
                     inspector_port,
-                    extra_args,
+                    &launch_extra_args,
                 )
             } else {
-                build_packaged_activation(app_dir, debug_port, extra_args)
+                build_packaged_activation(app_dir, debug_port, &launch_extra_args)
             };
             if let Some(activation) = activation {
                 let CodexLaunch::PackagedActivation {
@@ -660,6 +655,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                     unreachable!();
                 };
                 let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
+                apply_codexplusplus_window_icon_after_launch(process_id);
                 if let Some(inspector_port) = native_menu_inspector_port {
                     start_native_menu_localizer(inspector_port);
                 }
@@ -689,10 +685,10 @@ impl LaunchHooks for DefaultLaunchHooks {
                     app_dir,
                     debug_port,
                     inspector_port,
-                    extra_args,
+                    &launch_extra_args,
                 )
             } else {
-                build_macos_open_command(app_dir, debug_port, extra_args)
+                build_macos_open_command(app_dir, debug_port, &launch_extra_args)
             };
             let executable = command
                 .first()
@@ -719,10 +715,10 @@ impl LaunchHooks for DefaultLaunchHooks {
                 app_dir,
                 debug_port,
                 inspector_port,
-                extra_args,
+                &launch_extra_args,
             )
         } else {
-            build_codex_command(app_dir, debug_port, extra_args)
+            build_codex_command(app_dir, debug_port, &launch_extra_args)
         };
         let executable = command
             .first()
@@ -859,10 +855,6 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn shutdown_helper(&self, _helper_port: u16) {
-        if let Some(runtime) = self.mobile_relay_host.lock().await.take() {
-            let _ = runtime.shutdown.send(());
-            let _ = runtime.task.await;
-        }
         if let Some(runtime) = self.computer_use_guard_watchdog.lock().await.take() {
             let _ = runtime.shutdown.send(());
             let _ = runtime.task.await;
@@ -912,20 +904,6 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 }
 
-struct AppServerRuntime {
-    port: u16,
-    source: &'static str,
-    child: Option<Mutex<Child>>,
-}
-
-impl AppServerRuntime {
-    async fn process_id(&self) -> Option<u32> {
-        self.child.as_ref()?.lock().await.id()
-    }
-}
-
-static APP_SERVER_RUNTIME: OnceLock<Mutex<Option<Arc<AppServerRuntime>>>> = OnceLock::new();
-
 async fn handle_helper_connection(
     mut stream: tokio::net::TcpStream,
     remote_addr: Option<SocketAddr>,
@@ -951,19 +929,6 @@ async fn handle_helper_connection(
             "body_bytes": request_body.len()
         }),
     );
-
-    if path == "/mobile" && matches!(method, "GET" | "OPTIONS") {
-        return handle_mobile_page_connection(&mut stream, method).await;
-    }
-    if path == "/app-server/ws" && matches!(method, "GET" | "OPTIONS") {
-        return handle_app_server_websocket_proxy_connection(&mut stream, &request, method).await;
-    }
-    if path == "/app-server/rpc" && matches!(method, "POST" | "OPTIONS") {
-        return handle_app_server_rpc_connection(&mut stream, method, request_body).await;
-    }
-    if path == "/app-server/status" && matches!(method, "GET" | "OPTIONS") {
-        return handle_app_server_status_connection(&mut stream, method).await;
-    }
 
     if crate::protocol_proxy::is_responses_proxy_path(path) && method == "POST" {
         return handle_protocol_proxy_connection(
@@ -1094,544 +1059,6 @@ async fn handle_helper_connection(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
-struct MobileRelayHostConfig {
-    relay_url: String,
-    room: String,
-    token: String,
-    encryption_key: String,
-}
-
-struct MobileRelayAppServerSession {
-    sender: mpsc::UnboundedSender<Message>,
-}
-
-impl MobileRelayHostConfig {
-    fn from_settings_and_env(settings: &BackendSettings) -> Option<Self> {
-        if !settings.mobile_control_enabled && std::env::var("CODEX_PLUS_MOBILE_RELAY_URL").is_err()
-        {
-            return None;
-        }
-        let relay_url = env_or_setting(
-            "CODEX_PLUS_MOBILE_RELAY_URL",
-            &settings.mobile_control_relay_url,
-        )?;
-        let room = env_or_setting(
-            "CODEX_PLUS_MOBILE_RELAY_ROOM",
-            &settings.mobile_control_room,
-        )?;
-        let token = std::env::var("CODEX_PLUS_MOBILE_RELAY_TOKEN")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| room.clone());
-        let encryption_key =
-            env_or_setting("CODEX_PLUS_MOBILE_RELAY_KEY", &settings.mobile_control_key)?;
-        Some(Self {
-            relay_url,
-            room,
-            token,
-            encryption_key,
-        })
-    }
-
-    fn cipher(&self) -> Aes256Gcm {
-        mobile_relay_cipher(&self.encryption_key)
-    }
-
-    fn host_url(&self) -> String {
-        let separator = if self.relay_url.contains('?') {
-            '&'
-        } else {
-            '?'
-        };
-        let role_path_url =
-            if self.relay_url.ends_with("/host") || self.relay_url.contains("/host?") {
-                self.relay_url.clone()
-            } else {
-                format!("{}/host", self.relay_url.trim_end_matches('/'))
-            };
-        format!(
-            "{role_path_url}{separator}room={}&token={}",
-            percent_encode_query(&self.room),
-            percent_encode_query(&self.token)
-        )
-    }
-}
-
-fn env_or_setting(env_name: &str, setting: &str) -> Option<String> {
-    std::env::var(env_name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            let value = setting.trim();
-            (!value.is_empty()).then(|| value.to_string())
-        })
-}
-
-async fn run_mobile_relay_host(
-    helper_port: u16,
-    config: MobileRelayHostConfig,
-    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
-) {
-    let mut retry_delay = std::time::Duration::from_secs(1);
-    loop {
-        tokio::select! {
-            _ = &mut *shutdown_rx => break,
-            result = run_mobile_relay_host_once(helper_port, &config) => {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "mobile_relay.host_disconnected",
-                    serde_json::json!({
-                        "helper_port": helper_port,
-                        "relay_url": config.relay_url,
-                        "room": config.room,
-                        "message": result.err().map(|error| error.to_string())
-                    }),
-                );
-            }
-        }
-        tokio::select! {
-            _ = &mut *shutdown_rx => break,
-            _ = tokio::time::sleep(retry_delay) => {}
-        }
-        retry_delay = (retry_delay * 2).min(std::time::Duration::from_secs(30));
-    }
-}
-
-async fn run_mobile_relay_host_once(
-    helper_port: u16,
-    config: &MobileRelayHostConfig,
-) -> anyhow::Result<()> {
-    let host_url = config.host_url();
-    let (mut socket, _) = tokio_tungstenite::connect_async(&host_url)
-        .await
-        .with_context(|| format!("failed to connect mobile relay host {host_url}"))?;
-    let _ = crate::diagnostic_log::append_diagnostic_log(
-        "mobile_relay.host_connected",
-        serde_json::json!({
-            "helper_port": helper_port,
-            "relay_url": config.relay_url,
-            "room": config.room
-        }),
-    );
-    let cipher = config.cipher();
-    let (relay_tx, mut relay_rx) = mpsc::unbounded_channel::<Message>();
-    let mut sessions: std::collections::HashMap<String, MobileRelayAppServerSession> =
-        std::collections::HashMap::new();
-    loop {
-        tokio::select! {
-            relay_message = relay_rx.recv() => {
-                let Some(relay_message) = relay_message else {
-                    break;
-                };
-                socket
-                    .send(relay_message)
-                    .await
-                    .context("failed to send mobile relay async message")?;
-                continue;
-            }
-            inbound = socket.next() => {
-                let Some(inbound) = inbound else {
-                    break;
-                };
-                let message = inbound.context("failed to read mobile relay message")?;
-                if message.is_close() {
-                    break;
-                }
-                let Some(response) = handle_mobile_relay_host_message(
-                    helper_port,
-                    &cipher,
-                    message,
-                    relay_tx.clone(),
-                    &mut sessions,
-                ).await
-                else {
-                    continue;
-                };
-                socket
-                    .send(Message::Text(response.to_string().into()))
-                    .await
-                    .context("failed to send mobile relay response")?;
-            }
-        }
-    }
-    for (_, sender) in sessions {
-        let _ = sender.sender.send(Message::Close(None));
-    }
-    Ok(())
-}
-
-async fn handle_mobile_relay_host_message(
-    helper_port: u16,
-    cipher: &Aes256Gcm,
-    message: Message,
-    relay_tx: mpsc::UnboundedSender<Message>,
-    app_server_sessions: &mut std::collections::HashMap<String, MobileRelayAppServerSession>,
-) -> Option<serde_json::Value> {
-    let text = match message {
-        Message::Text(text) => text.to_string(),
-        Message::Binary(bytes) => String::from_utf8(bytes.to_vec()).ok()?,
-        _ => return None,
-    };
-    let envelope = serde_json::from_str::<serde_json::Value>(&text).ok()?;
-    let plaintext_mode = envelope.get("type").and_then(Value::as_str) == Some("plaintext");
-    let request = decrypt_mobile_relay_request(cipher, &envelope).ok()?;
-    if request.get("type").and_then(Value::as_str) == Some("appServerConnect") {
-        return handle_mobile_relay_app_server_connect(
-            helper_port,
-            cipher,
-            &request,
-            plaintext_mode,
-            relay_tx,
-            app_server_sessions,
-        )
-        .await;
-    }
-    if request.get("type").and_then(Value::as_str) == Some("appServerMessage") {
-        return handle_mobile_relay_app_server_message(&request, app_server_sessions).await;
-    }
-    if request.get("type").and_then(Value::as_str) == Some("appServerClose") {
-        return handle_mobile_relay_app_server_close(&request, app_server_sessions).await;
-    }
-    if request.get("type").and_then(Value::as_str) != Some("httpRequest") {
-        return None;
-    }
-    let id = request.get("id").cloned().unwrap_or(Value::Null);
-    let response = match proxy_mobile_relay_http_request(helper_port, &request).await {
-        Ok(response) => serde_json::json!({
-            "type": "httpResponse",
-            "id": id,
-            "status": response.status,
-            "headers": response.headers,
-            "body": response.body
-        }),
-        Err(error) => serde_json::json!({
-            "type": "httpResponse",
-            "id": id,
-            "status": 502,
-            "headers": {"content-type": "application/json; charset=utf-8"},
-            "body": serde_json::json!({
-                "status": "failed",
-                "message": error.to_string()
-            }).to_string()
-        }),
-    };
-    encode_mobile_relay_payload(cipher, plaintext_mode, &response).ok()
-}
-
-async fn handle_mobile_relay_app_server_connect(
-    _helper_port: u16,
-    cipher: &Aes256Gcm,
-    request: &Value,
-    plaintext_mode: bool,
-    relay_tx: mpsc::UnboundedSender<Message>,
-    app_server_sessions: &mut std::collections::HashMap<String, MobileRelayAppServerSession>,
-) -> Option<Value> {
-    let id = request.get("id").cloned().unwrap_or(Value::Null);
-    let session_id = request
-        .get("sessionId")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    if let Some(previous) = app_server_sessions.remove(&session_id) {
-        let _ = previous.sender.send(Message::Close(None));
-    }
-    let (app_tx, app_rx) = mpsc::unbounded_channel::<Message>();
-    app_server_sessions.insert(
-        session_id.clone(),
-        MobileRelayAppServerSession { sender: app_tx },
-    );
-    let session_cipher = cipher.clone();
-    tokio::spawn(run_mobile_relay_app_server_session(
-        session_cipher,
-        plaintext_mode,
-        relay_tx,
-        session_id.clone(),
-        app_rx,
-    ));
-    encode_mobile_relay_payload(
-        &cipher,
-        plaintext_mode,
-        &serde_json::json!({
-            "type": "appServerConnected",
-            "id": id,
-            "sessionId": session_id
-        }),
-    )
-    .ok()
-}
-
-async fn handle_mobile_relay_app_server_message(
-    request: &Value,
-    app_server_sessions: &mut std::collections::HashMap<String, MobileRelayAppServerSession>,
-) -> Option<Value> {
-    let session_id = request.get("sessionId").and_then(Value::as_str)?;
-    let text = request.get("message").and_then(Value::as_str)?;
-    let session = app_server_sessions.get(session_id)?;
-    let _ = session.sender.send(Message::Text(text.to_string().into()));
-    None
-}
-
-async fn handle_mobile_relay_app_server_close(
-    request: &Value,
-    app_server_sessions: &mut std::collections::HashMap<String, MobileRelayAppServerSession>,
-) -> Option<Value> {
-    let session_id = request.get("sessionId").and_then(Value::as_str)?;
-    if let Some(sender) = app_server_sessions.remove(session_id) {
-        let _ = sender.sender.send(Message::Close(None));
-    }
-    None
-}
-
-async fn run_mobile_relay_app_server_session(
-    cipher: Aes256Gcm,
-    plaintext_mode: bool,
-    relay_tx: mpsc::UnboundedSender<Message>,
-    session_id: String,
-    mut app_rx: mpsc::UnboundedReceiver<Message>,
-) {
-    let result = async {
-        let runtime = ensure_app_server_runtime().await?;
-        let url = format!("ws://127.0.0.1:{}/rpc", runtime.port);
-        let (mut upstream, _) = tokio_tungstenite::connect_async(&url)
-            .await
-            .with_context(|| format!("failed to connect Codex app-server {url}"))?;
-        loop {
-            tokio::select! {
-                outbound = app_rx.recv() => {
-                    let Some(outbound) = outbound else {
-                        break;
-                    };
-                    if outbound.is_close() {
-                        break;
-                    }
-                    upstream
-                        .send(outbound)
-                        .await
-                        .context("failed to send app-server message")?;
-                }
-                inbound = upstream.next() => {
-                    let Some(inbound) = inbound else {
-                        break;
-                    };
-                    let inbound = inbound.context("failed to read app-server message")?;
-                    if inbound.is_close() {
-                        break;
-                    }
-                let message = match inbound {
-                    Message::Text(text) => text.to_string(),
-                    Message::Binary(bytes) => String::from_utf8(bytes.to_vec())
-                        .context("app-server returned non-utf8 binary")?,
-                    Message::Ping(_) | Message::Pong(_) => continue,
-                    Message::Close(_) => break,
-                    Message::Frame(_) => continue,
-                };
-                if let Ok(value) = serde_json::from_str::<Value>(&message) {
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "mobile_relay.app_server_message",
-                        serde_json::json!({
-                            "sessionId": session_id,
-                            "id": value.get("id").cloned().unwrap_or(Value::Null),
-                            "method": value.get("method").and_then(Value::as_str),
-                            "hasError": value.get("error").is_some()
-                        }),
-                    );
-                }
-                    let envelope = encode_mobile_relay_payload(
-                        &cipher,
-                        plaintext_mode,
-                        &serde_json::json!({
-                            "type": "appServerMessage",
-                            "sessionId": session_id,
-                            "message": message
-                        }),
-                    )?;
-                    let _ = relay_tx.send(Message::Text(envelope.to_string().into()));
-                }
-            }
-        }
-        anyhow::Ok(())
-    }
-    .await;
-    let detail = match result {
-        Ok(()) => serde_json::json!({
-            "type": "appServerClosed",
-            "sessionId": session_id
-        }),
-        Err(error) => serde_json::json!({
-            "type": "appServerClosed",
-            "sessionId": session_id,
-            "error": error.to_string()
-        }),
-    };
-    if let Ok(envelope) = encrypt_mobile_relay_payload(&cipher, &detail) {
-        let _ = relay_tx.send(Message::Text(envelope.to_string().into()));
-    }
-}
-
-struct MobileRelayHttpResponse {
-    status: u16,
-    headers: serde_json::Map<String, Value>,
-    body: String,
-}
-
-async fn proxy_mobile_relay_http_request(
-    helper_port: u16,
-    request: &serde_json::Value,
-) -> anyhow::Result<MobileRelayHttpResponse> {
-    let method = request
-        .get("method")
-        .and_then(Value::as_str)
-        .unwrap_or("GET")
-        .to_ascii_uppercase();
-    let path = request
-        .get("path")
-        .and_then(Value::as_str)
-        .filter(|path| path.starts_with('/'))
-        .unwrap_or("/");
-    let body = request.get("body").and_then(Value::as_str).unwrap_or("");
-    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", helper_port))
-        .await
-        .with_context(|| format!("failed to connect helper on 127.0.0.1:{helper_port}"))?;
-    let content_type = request
-        .get("headers")
-        .and_then(Value::as_object)
-        .and_then(|headers| {
-            headers
-                .get("content-type")
-                .or_else(|| headers.get("Content-Type"))
-                .and_then(Value::as_str)
-        })
-        .unwrap_or("application/json; charset=utf-8");
-    let wire = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{helper_port}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.as_bytes().len()
-    );
-    stream.write_all(wire.as_bytes()).await?;
-    stream.shutdown().await?;
-    let mut response_bytes = Vec::new();
-    stream.read_to_end(&mut response_bytes).await?;
-    parse_mobile_relay_http_response(&response_bytes)
-}
-
-fn parse_mobile_relay_http_response(bytes: &[u8]) -> anyhow::Result<MobileRelayHttpResponse> {
-    let text = String::from_utf8_lossy(bytes);
-    let (header_text, body) = text
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| anyhow::anyhow!("helper returned an invalid HTTP response"))?;
-    let mut lines = header_text.lines();
-    let status_line = lines.next().unwrap_or_default();
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(502);
-    let mut headers = serde_json::Map::new();
-    for line in lines {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        headers.insert(
-            name.trim().to_ascii_lowercase(),
-            Value::String(value.trim().to_string()),
-        );
-    }
-    Ok(MobileRelayHttpResponse {
-        status,
-        headers,
-        body: body.to_string(),
-    })
-}
-
-fn percent_encode_query(value: &str) -> String {
-    let mut encoded = String::new();
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                encoded.push(byte as char)
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
-}
-
-fn mobile_relay_cipher(key_text: &str) -> Aes256Gcm {
-    let digest = Sha256::digest(key_text.as_bytes());
-    Aes256Gcm::new_from_slice(&digest).expect("sha256 always returns 32 bytes")
-}
-
-fn mobile_relay_nonce() -> [u8; 12] {
-    let now = now_ms();
-    let mut nonce = [0_u8; 12];
-    nonce[..8].copy_from_slice(&now.to_le_bytes());
-    let random = uuid::Uuid::new_v4();
-    nonce[8..].copy_from_slice(&random.as_bytes()[..4]);
-    nonce
-}
-
-fn encrypt_mobile_relay_payload(cipher: &Aes256Gcm, payload: &Value) -> anyhow::Result<Value> {
-    let nonce = mobile_relay_nonce();
-    let plaintext = serde_json::to_vec(payload)?;
-    let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce), plaintext.as_slice())
-        .map_err(|_| anyhow::anyhow!("手机控制数据加密失败"))?;
-    Ok(serde_json::json!({
-        "type": "encrypted",
-        "nonce": URL_SAFE_NO_PAD.encode(nonce),
-        "payload": URL_SAFE_NO_PAD.encode(ciphertext)
-    }))
-}
-
-fn encode_mobile_relay_payload(
-    cipher: &Aes256Gcm,
-    plaintext_mode: bool,
-    payload: &Value,
-) -> anyhow::Result<Value> {
-    if plaintext_mode {
-        return Ok(serde_json::json!({
-            "type": "plaintext",
-            "payload": payload
-        }));
-    }
-    encrypt_mobile_relay_payload(cipher, payload)
-}
-
-fn decrypt_mobile_relay_request(cipher: &Aes256Gcm, envelope: &Value) -> anyhow::Result<Value> {
-    if envelope.get("type").and_then(Value::as_str) == Some("plaintext") {
-        return envelope
-            .get("payload")
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("手机控制明文数据包缺少 payload"));
-    }
-    decrypt_mobile_relay_envelope(cipher, envelope)
-}
-
-fn decrypt_mobile_relay_envelope(cipher: &Aes256Gcm, envelope: &Value) -> anyhow::Result<Value> {
-    if envelope.get("type").and_then(Value::as_str) != Some("encrypted") {
-        anyhow::bail!("手机控制数据包未加密");
-    }
-    let nonce_text = envelope
-        .get("nonce")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("手机控制数据包缺少 nonce"))?;
-    let payload_text = envelope
-        .get("payload")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("手机控制数据包缺少 payload"))?;
-    let nonce = URL_SAFE_NO_PAD.decode(nonce_text)?;
-    if nonce.len() != 12 {
-        anyhow::bail!("手机控制 nonce 长度无效");
-    }
-    let ciphertext = URL_SAFE_NO_PAD.decode(payload_text)?;
-    let plaintext = cipher
-        .decrypt(Nonce::from_slice(&nonce), ciphertext.as_slice())
-        .map_err(|_| anyhow::anyhow!("手机控制数据解密失败"))?;
-    Ok(serde_json::from_slice(&plaintext)?)
-}
-
 fn overlay_image_response() -> (String, Vec<u8>, String, &'static str) {
     let not_found = || {
         (
@@ -1683,1313 +1110,6 @@ fn overlay_image_content_type(path: &Path) -> Option<&'static str> {
     }
 }
 
-async fn handle_mobile_page_connection(
-    stream: &mut tokio::net::TcpStream,
-    method: &str,
-) -> anyhow::Result<()> {
-    if method == "OPTIONS" {
-        write_options_response(stream).await?;
-        stream.shutdown().await?;
-        return Ok(());
-    }
-    write_http_no_store_response(
-        stream,
-        "200 OK",
-        "text/html; charset=utf-8",
-        mobile_page_html(&serde_json::to_string(&mobile_model_catalog_value())?).as_bytes(),
-    )
-    .await?;
-    stream.shutdown().await?;
-    Ok(())
-}
-
-async fn handle_app_server_status_connection(
-    stream: &mut tokio::net::TcpStream,
-    method: &str,
-) -> anyhow::Result<()> {
-    if method == "OPTIONS" {
-        write_options_response(stream).await?;
-        stream.shutdown().await?;
-        return Ok(());
-    }
-    let body = serde_json::to_vec(&app_server_status_response().await)?;
-    write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body).await?;
-    stream.shutdown().await?;
-    Ok(())
-}
-
-async fn handle_app_server_rpc_connection(
-    stream: &mut tokio::net::TcpStream,
-    method: &str,
-    request_body: &str,
-) -> anyhow::Result<()> {
-    if method == "OPTIONS" {
-        write_options_response(stream).await?;
-        stream.shutdown().await?;
-        return Ok(());
-    }
-    let payload = serde_json::from_str::<Value>(request_body).unwrap_or_else(|error| {
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": null,
-            "error": {"code": -32700, "message": error.to_string()}
-        })
-    });
-    let body = match app_server_rpc_once(payload).await {
-        Ok(response) => serde_json::to_vec(&response)?,
-        Err(error) => serde_json::to_vec(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": null,
-            "error": {"code": -32000, "message": error.to_string()}
-        }))?,
-    };
-    write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body).await?;
-    stream.shutdown().await?;
-    Ok(())
-}
-
-async fn app_server_rpc_once(payload: Value) -> anyhow::Result<Value> {
-    let runtime = ensure_app_server_runtime().await?;
-    let url = format!("ws://127.0.0.1:{}/rpc", runtime.port);
-    let (mut socket, _) = tokio_tungstenite::connect_async(&url)
-        .await
-        .with_context(|| format!("failed to connect Codex app-server {url}"))?;
-    if payload.get("method").and_then(Value::as_str) != Some("initialize") {
-        let init_id = "__codex_plus_mobile_init__";
-        let init_payload = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": init_id,
-            "method": "initialize",
-            "params": {
-                "clientInfo": {"name": "Codex++ Mobile Relay", "version": "1.0.0"},
-                "capabilities": {"experimentalApi": true}
-            }
-        });
-        socket
-            .send(Message::Text(init_payload.to_string().into()))
-            .await
-            .context("failed to send app-server initialize")?;
-        let init_response = read_app_server_rpc_response(
-            &mut socket,
-            Some(Value::String(init_id.to_string())),
-            std::time::Duration::from_secs(20),
-        )
-        .await?;
-        if let Some(error) = init_response.get("error") {
-            anyhow::bail!("app-server initialize failed: {error}");
-        }
-    }
-    socket
-        .send(Message::Text(payload.to_string().into()))
-        .await
-        .context("failed to send app-server rpc")?;
-    let requested_id = payload.get("id").cloned();
-    if payload.get("method").and_then(Value::as_str) == Some("turn/start") {
-        let thread_id = payload
-            .get("params")
-            .and_then(|params| params.get("threadId").or_else(|| params.get("thread_id")))
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let response = read_app_server_rpc_response(
-            &mut socket,
-            requested_id,
-            std::time::Duration::from_secs(60),
-        )
-        .await?;
-        if response.get("error").is_none() {
-            tokio::spawn(async move {
-                drain_app_server_turn_socket(
-                    socket,
-                    thread_id,
-                    std::time::Duration::from_secs(600),
-                )
-                .await;
-            });
-        }
-        Ok(response)
-    } else {
-        read_app_server_rpc_response(
-            &mut socket,
-            requested_id,
-            std::time::Duration::from_secs(60),
-        )
-        .await
-    }
-}
-
-async fn read_app_server_rpc_response(
-    socket: &mut tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
-    requested_id: Option<Value>,
-    timeout: std::time::Duration,
-) -> anyhow::Result<Value> {
-    let deadline = tokio::time::sleep(timeout);
-    tokio::pin!(deadline);
-    loop {
-        tokio::select! {
-            _ = &mut deadline => anyhow::bail!("app-server rpc timed out"),
-            message = socket.next() => {
-                let Some(message) = message else {
-                    anyhow::bail!("app-server rpc connection closed");
-                };
-                let message = message.context("failed to read app-server rpc")?;
-                let response = app_server_message_json(message)?;
-                if response.get("id") == requested_id.as_ref() {
-                    return Ok(response);
-                }
-            }
-        }
-    }
-}
-
-async fn drain_app_server_turn_socket(
-    mut socket: tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
-    thread_id: Option<String>,
-    timeout: std::time::Duration,
-) {
-    let deadline = tokio::time::sleep(timeout);
-    tokio::pin!(deadline);
-    loop {
-        tokio::select! {
-            _ = &mut deadline => {
-                break;
-            }
-            message = socket.next() => {
-                let Some(message) = message else {
-                    break;
-                };
-                let Ok(message) = message else {
-                    break;
-                };
-                if matches!(message, Message::Ping(_) | Message::Pong(_)) {
-                    continue;
-                }
-                let Ok(value) = app_server_message_json(message) else {
-                    continue;
-                };
-                if app_server_turn_finished_for_thread(&value, thread_id.as_deref()) {
-                    break;
-                }
-            }
-        }
-    }
-    let _ = socket.close(None).await;
-}
-
-fn app_server_message_json(message: Message) -> anyhow::Result<Value> {
-    let text = match message {
-        Message::Text(text) => text.to_string(),
-        Message::Binary(bytes) => {
-            String::from_utf8(bytes.to_vec()).context("app-server rpc returned non-utf8 binary")?
-        }
-        Message::Close(_) => anyhow::bail!("app-server rpc connection closed"),
-        _ => anyhow::bail!("app-server rpc returned unsupported websocket frame"),
-    };
-    serde_json::from_str::<Value>(&text).context("app-server rpc returned invalid json")
-}
-
-fn app_server_turn_finished_for_thread(message: &Value, thread_id: Option<&str>) -> bool {
-    let method = message
-        .get("method")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if !matches!(
-        method,
-        "turn/completed" | "turn/failed" | "turn/cancelled" | "thread/status/changed"
-    ) {
-        return false;
-    }
-    if method == "thread/status/changed"
-        && !matches!(
-            message
-                .get("params")
-                .and_then(|params| params.get("status"))
-                .and_then(Value::as_str),
-            Some("idle" | "completed" | "failed" | "cancelled")
-        )
-    {
-        return false;
-    }
-    let Some(expected) = thread_id else {
-        return true;
-    };
-    app_server_event_thread_id(message)
-        .as_deref()
-        .map(|actual| actual == expected)
-        .unwrap_or_else(|| message.to_string().contains(expected))
-}
-
-fn app_server_event_thread_id(message: &Value) -> Option<String> {
-    let params = message.get("params")?;
-    params
-        .get("threadId")
-        .or_else(|| params.get("thread_id"))
-        .or_else(|| params.get("thread").and_then(|thread| thread.get("id")))
-        .or_else(|| params.get("turn").and_then(|turn| turn.get("threadId")))
-        .or_else(|| params.get("turn").and_then(|turn| turn.get("thread_id")))
-        .or_else(|| params.get("item").and_then(|item| item.get("threadId")))
-        .or_else(|| params.get("item").and_then(|item| item.get("thread_id")))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-async fn handle_app_server_websocket_proxy_connection(
-    stream: &mut tokio::net::TcpStream,
-    request: &str,
-    method: &str,
-) -> anyhow::Result<()> {
-    if method == "OPTIONS" {
-        write_options_response(stream).await?;
-        stream.shutdown().await?;
-        return Ok(());
-    }
-    let runtime = match ensure_app_server_runtime().await {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            let body = serde_json::to_vec(&serde_json::json!({
-                "status": "failed",
-                "message": error.to_string()
-            }))?;
-            write_http_response(
-                stream,
-                "502 Bad Gateway",
-                "application/json; charset=utf-8",
-                &body,
-            )
-            .await?;
-            stream.shutdown().await?;
-            return Ok(());
-        }
-    };
-    let upstream_request = rewrite_app_server_ws_request(request, runtime.port);
-    let mut upstream = tokio::net::TcpStream::connect(("127.0.0.1", runtime.port)).await?;
-    upstream.write_all(upstream_request.as_bytes()).await?;
-    let _ = tokio::io::copy_bidirectional(stream, &mut upstream).await?;
-    stream.shutdown().await?;
-    Ok(())
-}
-
-fn rewrite_app_server_ws_request(request: &str, app_server_port: u16) -> String {
-    let mut out = format!("GET /rpc HTTP/1.1\r\nHost: 127.0.0.1:{app_server_port}\r\n");
-    for line in request.lines().skip(1) {
-        if line.is_empty() {
-            break;
-        }
-        let Some((name, _)) = line.split_once(':') else {
-            continue;
-        };
-        let name = name.trim();
-        if name.eq_ignore_ascii_case("host")
-            || name.eq_ignore_ascii_case("origin")
-            || name.eq_ignore_ascii_case("sec-websocket-protocol")
-        {
-            continue;
-        }
-        out.push_str(line);
-        out.push_str("\r\n");
-    }
-    out.push_str("\r\n");
-    out
-}
-
-async fn app_server_status_response() -> Value {
-    match ensure_app_server_runtime().await {
-        Ok(runtime) => serde_json::json!({
-            "status": "ok",
-            "port": runtime.port,
-            "pid": runtime.process_id().await,
-            "source": runtime.source,
-            "rpcUrl": format!("ws://127.0.0.1:{}/rpc", runtime.port),
-            "transport": "codex-app-server"
-        }),
-        Err(error) => serde_json::json!({
-            "status": "failed",
-            "message": error.to_string()
-        }),
-    }
-}
-
-async fn ensure_app_server_runtime() -> anyhow::Result<Arc<AppServerRuntime>> {
-    let runtime_slot = APP_SERVER_RUNTIME.get_or_init(|| Mutex::new(None));
-    let mut guard = runtime_slot.lock().await;
-    if let Some(runtime) = guard.as_ref() {
-        if app_server_ready(runtime.port).await {
-            return Ok(runtime.clone());
-        }
-    }
-    if let Some(runtime) = existing_app_server_runtime().await {
-        *guard = Some(runtime.clone());
-        return Ok(runtime);
-    }
-    let runtime = Arc::new(start_app_server_runtime().await?);
-    *guard = Some(runtime.clone());
-    Ok(runtime)
-}
-
-async fn existing_app_server_runtime() -> Option<Arc<AppServerRuntime>> {
-    for key in ["CODEX_PLUS_APP_SERVER_URL", "CODEX_APP_SERVER_URL"] {
-        let Ok(value) = std::env::var(key) else {
-            continue;
-        };
-        let Some(port) = app_server_port_from_url(&value) else {
-            continue;
-        };
-        if app_server_ready(port).await {
-            return Some(Arc::new(AppServerRuntime {
-                port,
-                source: "external",
-                child: None,
-            }));
-        }
-    }
-    None
-}
-
-fn app_server_port_from_url(value: &str) -> Option<u16> {
-    let trimmed = value.trim();
-    let without_scheme = trimmed
-        .strip_prefix("ws://")
-        .or_else(|| trimmed.strip_prefix("http://"))?;
-    let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
-    let (host, port) = authority.rsplit_once(':')?;
-    matches!(host, "127.0.0.1" | "localhost").then(|| port.parse().ok())?
-}
-
-async fn start_app_server_runtime() -> anyhow::Result<AppServerRuntime> {
-    let port = reserve_app_server_port()?;
-    let codex = resolve_codex_cli_path();
-    let mut command = Command::new(&codex);
-    command
-        .arg("app-server")
-        .arg("--listen")
-        .arg(format!("ws://127.0.0.1:{port}"))
-        .kill_on_drop(true)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
-    let child = command
-        .spawn()
-        .with_context(|| format!("无法启动 Codex app-server：{codex}"))?;
-    wait_for_app_server_ready(port).await?;
-    Ok(AppServerRuntime {
-        port,
-        source: "managed",
-        child: Some(Mutex::new(child)),
-    })
-}
-
-fn resolve_codex_cli_path() -> String {
-    std::env::var("CODEX_CLI_PATH")
-        .ok()
-        .filter(|path| !path.trim().is_empty())
-        .filter(|path| Path::new(path).is_file())
-        .or_else(|| {
-            crate::cli_wrapper::resolve_real_codex().map(|path| path.to_string_lossy().to_string())
-        })
-        .unwrap_or_else(|| "codex".to_string())
-}
-
-fn reserve_app_server_port() -> anyhow::Result<u16> {
-    for _ in 0..20 {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
-        let port = listener.local_addr()?.port();
-        if port != crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT {
-            return Ok(port);
-        }
-    }
-    anyhow::bail!("无法为 Codex app-server 预留端口")
-}
-
-async fn wait_for_app_server_ready(port: u16) -> anyhow::Result<()> {
-    for _ in 0..80 {
-        if app_server_ready(port).await {
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    anyhow::bail!("Codex app-server 启动超时")
-}
-
-async fn app_server_ready(port: u16) -> bool {
-    let Ok(mut stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await else {
-        return false;
-    };
-    let request = "GET /readyz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-    if stream.write_all(request.as_bytes()).await.is_err() {
-        return false;
-    }
-    let Ok(response) = read_http_request(&mut stream).await else {
-        return false;
-    };
-    response.starts_with(b"HTTP/1.1 200") || response.starts_with(b"HTTP/1.0 200")
-}
-
-fn mobile_model_catalog_value() -> Value {
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    let profile = settings.active_relay_profile();
-    let mut models = Vec::new();
-    for value in profile
-        .model_list
-        .split(['\r', '\n', ','])
-        .chain(std::iter::once(profile.model.as_str()))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if !models.iter().any(|existing| existing == value) {
-            models.push(value.to_string());
-        }
-    }
-    let default_model = if models.iter().any(|model| model == &profile.model) {
-        profile.model.trim().to_string()
-    } else {
-        models.first().cloned().unwrap_or_default()
-    };
-    serde_json::json!({
-        "status": if models.is_empty() { "not_configured" } else { "ok" },
-        "model": profile.model.trim(),
-        "model_provider": profile.id.trim(),
-        "provider_name": if profile.name.trim().is_empty() { profile.id.trim() } else { profile.name.trim() },
-        "default_model": default_model,
-        "models": models
-    })
-}
-
-fn mobile_page_html(model_catalog_json: &str) -> String {
-    let html = r#"<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Codex++ Mobile</title>
-  <style>
-    :root {
-      color-scheme: light dark;
-      --bg: #f6f7f8;
-      --panel: #ffffff;
-      --line: #d8dde3;
-      --text: #101418;
-      --muted: #69727d;
-      --accent: #0f766e;
-      --accent-2: #0b5f59;
-      --danger: #b42318;
-      --bubble-user: #e7f4f1;
-      --bubble-agent: #ffffff;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #111315;
-        --panel: #191c20;
-        --line: #2e343b;
-        --text: #f2f4f7;
-        --muted: #a4adb8;
-        --accent: #2dd4bf;
-        --accent-2: #5eead4;
-        --danger: #ff8a80;
-        --bubble-user: #123c38;
-        --bubble-agent: #20242a;
-      }
-    }
-    * { box-sizing: border-box; }
-    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { overflow: hidden; }
-    button, input, select, textarea { font: inherit; }
-    button { border: 1px solid var(--line); color: var(--text); background: var(--panel); border-radius: 8px; padding: 9px 12px; }
-    button.icon { width: 34px; height: 34px; padding: 0; display: inline-grid; place-items: center; font-weight: 700; }
-    button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
-    button:disabled { opacity: .55; }
-    select { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--bg); color: var(--text); outline: none; }
-    .app { height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto 1fr; }
-    .topbar { display: flex; align-items: center; gap: 10px; padding: calc(env(safe-area-inset-top) + 10px) 12px 10px; border-bottom: 1px solid var(--line); background: var(--panel); }
-    .title { font-weight: 700; white-space: nowrap; }
-    .status { min-width: 0; flex: 1; color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .layout { min-height: 0; display: grid; grid-template-columns: 360px 1fr; }
-    .sessions { min-height: 0; border-right: 1px solid var(--line); background: var(--panel); display: grid; grid-template-rows: auto 1fr; }
-    .search { padding: 10px; border-bottom: 1px solid var(--line); }
-    .search input { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--bg); color: var(--text); outline: none; }
-    .list { overflow: auto; }
-    .group { border-bottom: 1px solid var(--line); }
-    .group-title { width: 100%; position: sticky; top: 0; z-index: 1; padding: 8px 10px; background: color-mix(in srgb, var(--panel) 92%, var(--bg)); color: var(--muted); font-size: 12px; font-weight: 700; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 8px; align-items: center; cursor: pointer; }
-    .group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .group-count { color: var(--muted); font-weight: 500; }
-    .group-new { width: 28px; height: 28px; padding: 0; border-radius: 7px; }
-    .chevron { color: var(--muted); width: 12px; text-align: center; }
-    .group.collapsed .item { display: none; }
-    .item { width: 100%; display: block; text-align: left; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 12px; background: transparent; }
-    .group .item:last-child { border-bottom: 0; }
-    .item.active { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-    .preview { font-size: 14px; line-height: 1.38; max-height: 39px; overflow: hidden; }
-    .meta { margin-top: 6px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .detail { min-height: 0; display: grid; grid-template-rows: auto 1fr auto; }
-    .thread-head { padding: 12px; border-bottom: 1px solid var(--line); background: var(--panel); display: grid; gap: 10px; }
-    .thread-title { font-weight: 700; line-height: 1.35; }
-    .thread-meta { margin-top: 6px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
-    .field { min-width: 0; display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
-    .field select { width: 100%; color: var(--text); font-size: 13px; }
-    .messages { overflow: auto; padding: 12px; }
-    .composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 10px; border-top: 1px solid var(--line); background: var(--panel); }
-    .composer textarea { width: 100%; min-height: 42px; max-height: 130px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--bg); color: var(--text); outline: none; line-height: 1.35; }
-    .composer button { align-self: end; min-height: 42px; }
-    .empty { color: var(--muted); padding: 18px; text-align: center; }
-    .turn { margin: 0 0 12px; }
-    .bubble { border: 1px solid var(--line); background: var(--bubble-agent); border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.45; }
-    .bubble.user { background: var(--bubble-user); }
-    .role { margin: 0 0 4px; color: var(--muted); font-size: 12px; }
-    .error { color: var(--danger); }
-    .mobile-back { display: none; }
-    @media (max-width: 760px) {
-      body { overflow: hidden; }
-      .layout { grid-template-columns: 1fr; }
-      .sessions, .detail { min-width: 0; }
-      .sessions.hidden, .detail.hidden { display: none; }
-      .sessions { border-right: 0; }
-      .mobile-back { display: inline-block; }
-    }
-  </style>
-</head>
-<body>
-  <div class="app">
-    <header class="topbar">
-      <strong class="title">Codex++</strong>
-      <span id="status" class="status">正在连接 WebSocket...</span>
-    </header>
-    <main class="layout">
-      <section id="sessionsPane" class="sessions">
-        <div class="search"><input id="filter" placeholder="搜索会话" autocomplete="off" /></div>
-        <div id="sessions" class="list"></div>
-      </section>
-      <section id="detailPane" class="detail hidden">
-        <div class="thread-head">
-          <button id="back" class="mobile-back">返回</button>
-          <div>
-            <div id="threadTitle" class="thread-title">选择一个会话</div>
-            <div id="threadMeta" class="thread-meta"></div>
-          </div>
-          <div class="controls">
-            <label class="field">模型<select id="modelSelect"></select></label>
-            <label class="field">思考<select id="effortSelect">
-              <option value="">继承</option>
-              <option value="low">低</option>
-              <option value="medium">中</option>
-              <option value="high">高</option>
-            </select></label>
-          </div>
-        </div>
-        <div id="messages" class="messages"><div class="empty">从左侧选择会话，或在项目目录里点 + 新建</div></div>
-        <form id="composer" class="composer">
-          <textarea id="messageInput" placeholder="输入消息，新建会话会作为首条消息发送" rows="1"></textarea>
-          <button id="send" class="primary" type="submit">发送</button>
-        </form>
-      </section>
-    </main>
-  </div>
-  <script>
-    const MODEL_CATALOG = __MODEL_CATALOG_JSON__;
-    const state = { sessions: [], selectedId: null, selectedCwd: "", filter: "", expandedProjects: new Set(), pendingMessages: new Map(), socket: null, pendingRpc: new Map(), initialized: false, reconnecting: false, streaming: null, thinking: null, modelOptions: [], selectedModel: "", selectedEffort: "" };
-    let nextId = 1;
-    const $ = (id) => document.getElementById(id);
-    const statusEl = $("status");
-    const sessionsEl = $("sessions");
-    const messagesEl = $("messages");
-    const titleEl = $("threadTitle");
-    const metaEl = $("threadMeta");
-    const sessionsPane = $("sessionsPane");
-    const detailPane = $("detailPane");
-    const modelSelect = $("modelSelect");
-    const effortSelect = $("effortSelect");
-
-    function setStatus(text, error = false) {
-      statusEl.textContent = text;
-      statusEl.classList.toggle("error", error);
-    }
-
-    async function ensureSocket() {
-      if (state.socket?.readyState === WebSocket.OPEN && state.initialized) return state.socket;
-      if (state.reconnecting) {
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        return ensureSocket();
-      }
-      state.reconnecting = true;
-      state.initialized = false;
-      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-      const socket = new WebSocket(`${scheme}//${location.host}/app-server/ws`);
-      state.socket = socket;
-      socket.addEventListener("message", onSocketMessage);
-      socket.addEventListener("close", () => {
-        state.initialized = false;
-        for (const pending of state.pendingRpc.values()) pending.reject(new Error("连接已断开"));
-        state.pendingRpc.clear();
-      });
-      try {
-        await new Promise((resolve, reject) => {
-          socket.addEventListener("open", resolve, { once: true });
-          socket.addEventListener("error", () => reject(new Error("WebSocket 连接失败")), { once: true });
-        });
-        await rpcRaw("initialize", {
-          clientInfo: { name: "Codex++ Mobile", version: "1.0.0" },
-          capabilities: { experimentalApi: true }
-        });
-        state.initialized = true;
-        return socket;
-      } catch (error) {
-        state.initialized = false;
-        try { socket.close(); } catch {}
-        throw error;
-      } finally {
-        state.reconnecting = false;
-      }
-    }
-
-    function onSocketMessage(event) {
-      let message;
-      try { message = JSON.parse(event.data); } catch { return; }
-      if (message.id != null) {
-        const pending = state.pendingRpc.get(String(message.id));
-        if (!pending) return;
-        state.pendingRpc.delete(String(message.id));
-        if (message.error) pending.reject(new Error(message.error.message || "请求失败"));
-        else pending.resolve(message.result);
-        return;
-      }
-      if (!message.method || !state.selectedId) return;
-      const params = message.params || {};
-      const threadId = eventThreadId(params);
-      if (threadId && threadId !== state.selectedId) return;
-      if (!threadId && !JSON.stringify(params).includes(state.selectedId)) return;
-
-      if (message.method === "item/agentMessage/delta") {
-        const delta = extractDeltaText(params);
-        if (delta) {
-          appendAgentDelta(params, delta);
-          setStatus("正在接收回复...");
-        }
-        return;
-      }
-
-      if (message.method === "turn/started") {
-        state.streaming = null;
-        appendThinkingNode();
-        setStatus("正在思考...");
-        return;
-      }
-
-      if (message.method === "item/completed") {
-        handleCompletedItem(params);
-        setStatus("收到完整消息");
-        return;
-      }
-
-      if (message.method === "turn/completed" || message.method === "thread/status/changed") {
-        setStatus(`收到更新：${message.method}`);
-      }
-    }
-
-    function eventThreadId(params) {
-      return params.threadId || params.thread_id || params.thread?.id || params.turn?.threadId || params.item?.threadId || "";
-    }
-
-    function extractDeltaText(params) {
-      const value = params.delta ?? params.text ?? params.chunk ?? params.content ?? params.item?.text ?? "";
-      if (typeof value === "string") return value;
-      if (Array.isArray(value)) {
-        return value.map((part) => part?.text || part?.content || part?.delta || "").filter(Boolean).join("");
-      }
-      if (value && typeof value === "object") {
-        return value.text || value.content || value.delta || value.value || "";
-      }
-      return "";
-    }
-
-    function appendAgentDelta(params, delta) {
-      if (messagesEl.querySelector(".empty")) messagesEl.innerHTML = "";
-      clearThinkingNode();
-      const turnId = params.turnId || params.turn_id || params.turn?.id || "";
-      const itemId = params.itemId || params.item_id || params.item?.id || "";
-      const key = `${turnId}:${itemId}`;
-      if (!state.streaming || state.streaming.key !== key) {
-        const node = appendMessageNode("Codex", "", false);
-        state.streaming = { key, node, bubble: node.querySelector(".bubble"), text: "" };
-      }
-      state.streaming.text += delta;
-      state.streaming.bubble.textContent = state.streaming.text;
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    }
-
-    function handleCompletedItem(params) {
-      const item = params.item || {};
-      const text = itemText(item);
-      if (!text) return;
-      const role = itemRole(item);
-      if (role === "用户") {
-        const confirmedUserTexts = new Map([[text, 1]]);
-        reconcilePendingMessages(state.selectedId, confirmedUserTexts);
-        confirmPendingMessageNode(text);
-        return;
-      }
-      if (role !== "Codex") return;
-      clearThinkingNode();
-      if (state.streaming?.bubble) {
-        state.streaming.text = text;
-        state.streaming.bubble.textContent = text;
-      } else {
-        if (messagesEl.querySelector(".empty")) messagesEl.innerHTML = "";
-        appendMessageNode("Codex", text, false);
-      }
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    }
-
-    async function rpc(method, params = {}) {
-      await ensureSocket();
-      return await rpcRaw(method, params);
-    }
-
-    async function rpcRaw(method, params = {}) {
-      const socket = state.socket;
-      if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("WebSocket 未连接");
-      const id = nextId++;
-      const payload = { jsonrpc: "2.0", id, method, params };
-      const promise = new Promise((resolve, reject) => {
-        state.pendingRpc.set(String(id), { resolve, reject });
-        setTimeout(() => {
-          if (state.pendingRpc.delete(String(id))) reject(new Error(`${method} 超时`));
-        }, 60000);
-      });
-      socket.send(JSON.stringify(payload));
-      return promise;
-    }
-
-    async function sendMessage(threadId, text, options = {}) {
-      if (!options.skipResume) await rpc("thread/resume", { threadId });
-      const params = {
-        threadId,
-        clientUserMessageId: `codex-plus-mobile-${Date.now()}`,
-        input: [{ type: "text", text }]
-      };
-      if (state.selectedModel) params.model = state.selectedModel;
-      if (state.selectedEffort) {
-        params.modelReasoningEffort = state.selectedEffort;
-        params.model_reasoning_effort = state.selectedEffort;
-        params.reasoning = { effort: state.selectedEffort };
-      }
-      return await rpc("turn/start", params);
-    }
-
-    async function createThread(cwd) {
-      const params = {};
-      const cleanCwd = String(cwd || "").trim();
-      if (cleanCwd) params.cwd = cleanCwd;
-      if (state.selectedModel) params.model = state.selectedModel;
-      if (state.selectedEffort) {
-        params.modelReasoningEffort = state.selectedEffort;
-        params.model_reasoning_effort = state.selectedEffort;
-        params.reasoning = { effort: state.selectedEffort };
-      }
-      const result = await rpc("thread/start", params);
-      const thread = result?.thread || result?.data || result;
-      const threadId = thread?.id || result?.threadId || result?.id || "";
-      if (!threadId) throw new Error("新建会话失败：app-server 未返回 thread id");
-      const item = {
-        id: threadId,
-        preview: thread?.preview || thread?.name || "",
-        name: thread?.name || "",
-        cwd: thread?.cwd || result?.cwd || cleanCwd,
-        modelProvider: thread?.modelProvider || result?.modelProvider || "",
-        model: result?.model || thread?.model || "",
-        createdAt: thread?.createdAt || Math.floor(Date.now() / 1000),
-        updatedAt: thread?.updatedAt || Math.floor(Date.now() / 1000)
-      };
-      upsertSession(item);
-      const key = normalizeProjectKey(item.cwd);
-      state.expandedProjects.add(key);
-      state.selectedId = threadId;
-      state.selectedCwd = "";
-      renderSessions();
-      titleEl.textContent = item.preview || item.name || item.id;
-      metaEl.textContent = `${item.modelProvider || ""} · ${item.cwd || ""}`;
-      messagesEl.innerHTML = "";
-      return item;
-    }
-
-    function upsertSession(item) {
-      const index = state.sessions.findIndex((entry) => entry.id === item.id);
-      if (index >= 0) state.sessions[index] = { ...state.sessions[index], ...item };
-      else state.sessions.unshift(item);
-      renderSessions();
-    }
-
-    async function loadSessions() {
-      setStatus("正在加载会话...");
-      const result = await rpc("thread/list", {});
-      state.sessions = Array.isArray(result?.data) ? result.data : [];
-      renderSessions();
-      setStatus(`已加载 ${state.sessions.length} 个会话`);
-    }
-
-    function visibleSessions() {
-      const filter = state.filter.trim().toLowerCase();
-      if (!filter) return state.sessions;
-      return state.sessions.filter((item) => {
-        return [item.preview, item.cwd, item.id, item.modelProvider]
-          .filter(Boolean)
-          .join("\\n")
-          .toLowerCase()
-          .includes(filter);
-      });
-    }
-
-    function renderSessions() {
-      const items = visibleSessions();
-      if (!items.length) {
-        sessionsEl.innerHTML = `<div class="empty">没有会话</div>`;
-        return;
-      }
-      sessionsEl.innerHTML = "";
-      for (const group of groupSessionsByProject(items)) {
-        const section = document.createElement("div");
-        const collapsed = !state.expandedProjects.has(group.key);
-        section.className = "group" + (collapsed ? " collapsed" : "");
-        const title = document.createElement("div");
-        title.className = "group-title";
-        title.innerHTML = `<span class="chevron"></span><span class="group-name"></span><span class="group-count"></span><button class="group-new" type="button" title="新建会话">+</button>`;
-        title.querySelector(".chevron").textContent = collapsed ? ">" : "v";
-        title.querySelector(".group-name").textContent = group.label;
-        title.querySelector(".group-count").textContent = String(group.items.length);
-        title.title = group.cwd || group.label;
-        title.addEventListener("click", () => toggleProject(group.key));
-        title.querySelector(".group-new").addEventListener("click", (event) => {
-          event.stopPropagation();
-          newThreadInProject(group.cwd).catch((error) => setStatus(error.message, true));
-        });
-        section.appendChild(title);
-        for (const item of group.items) {
-          const button = document.createElement("button");
-          button.className = "item" + (item.id === state.selectedId ? " active" : "");
-          button.type = "button";
-          button.innerHTML = `
-            <div class="preview"></div>
-            <div class="meta"></div>
-          `;
-          button.querySelector(".preview").textContent = item.preview || item.name || item.id;
-          button.querySelector(".meta").textContent = `${formatTime(item.updatedAt || item.createdAt)} · ${item.modelProvider || "provider 未记录"}`;
-          button.addEventListener("click", () => selectThread(item.id));
-          section.appendChild(button);
-        }
-        sessionsEl.appendChild(section);
-      }
-    }
-
-    function toggleProject(key) {
-      if (state.expandedProjects.has(key)) state.expandedProjects.delete(key);
-      else state.expandedProjects.add(key);
-      renderSessions();
-    }
-
-    async function newThreadInProject(cwd) {
-      state.selectedId = null;
-      state.selectedCwd = String(cwd || "").trim();
-      renderSessions();
-      titleEl.textContent = "新建会话";
-      metaEl.textContent = state.selectedCwd || "未知目录";
-      messagesEl.innerHTML = `<div class="empty">输入第一条消息后发送</div>`;
-      if (window.matchMedia("(max-width: 760px)").matches) {
-        sessionsPane.classList.add("hidden");
-        detailPane.classList.remove("hidden");
-      }
-      $("messageInput").focus();
-    }
-
-    function groupSessionsByProject(items) {
-      const groups = [];
-      const seen = new Map();
-      for (const item of items) {
-        const key = normalizeProjectKey(item.cwd);
-        let group = seen.get(key);
-        if (!group) {
-          group = { key, label: projectLabel(item.cwd), cwd: item.cwd || "", items: [] };
-          seen.set(key, group);
-          groups.push(group);
-        }
-        group.items.push(item);
-      }
-      return groups;
-    }
-
-    function normalizeProjectKey(cwd) {
-      return String(cwd || "").trim().toLowerCase() || "__unknown__";
-    }
-
-    function projectLabel(cwd) {
-      const value = String(cwd || "").trim();
-      if (!value) return "未知目录";
-      return value.split(/[\\\\/]/).filter(Boolean).pop() || value;
-    }
-
-    async function selectThread(threadId) {
-      state.selectedId = threadId;
-      state.selectedCwd = "";
-      renderSessions();
-      if (window.matchMedia("(max-width: 760px)").matches) {
-        sessionsPane.classList.add("hidden");
-        detailPane.classList.remove("hidden");
-      }
-      const item = state.sessions.find((entry) => entry.id === threadId);
-      titleEl.textContent = item?.preview || item?.name || threadId;
-      metaEl.textContent = `${item?.modelProvider || ""} · ${item?.cwd || ""}`;
-      syncControlsForThread(item);
-      messagesEl.innerHTML = `<div class="empty">正在通过 WebSocket 同步会话...</div>`;
-      await refreshThread(threadId, item);
-    }
-
-    async function refreshThread(threadId, fallbackItem = null) {
-      const item = fallbackItem || state.sessions.find((entry) => entry.id === threadId);
-      const resumePromise = rpc("thread/resume", { threadId });
-      const turnsPromise = rpc("thread/turns/list", { threadId });
-      try {
-        const turnsValue = await turnsPromise;
-        const threadFromTurns = extractThread(turnsValue);
-        const turns = extractTurns(turnsValue) || extractTurns(threadFromTurns);
-        renderThread(threadFromTurns || item, normalizeTurns(turns), threadId);
-        setStatus("会话内容已加载");
-      } catch (error) {
-        messagesEl.innerHTML = `<div class="empty error"></div>`;
-        messagesEl.querySelector(".error").textContent = `消息列表不可用：${error.message}`;
-        setStatus(`消息列表不可用：${error.message}`, true);
-      }
-      try {
-        const resumeValue = await resumePromise;
-        const thread = extractThread(resumeValue);
-        if (thread && threadId === state.selectedId) {
-          titleEl.textContent = thread.preview || thread.name || thread.id || "会话";
-          metaEl.textContent = `${formatTime(thread.updatedAt || thread.createdAt)} · ${thread.cwd || ""}`;
-        }
-        setStatus("会话已打开");
-      } catch (error) {
-        setStatus(`会话内容已加载，打开状态同步失败：${error.message}`, true);
-      }
-    }
-
-    function renderThread(thread, turns, threadId = state.selectedId) {
-      if (thread) {
-        titleEl.textContent = thread.preview || thread.name || thread.id || "会话";
-        metaEl.textContent = `${formatTime(thread.updatedAt || thread.createdAt)} · ${thread.cwd || ""}`;
-      }
-      const pending = pendingMessagesFor(threadId);
-      if (!turns.length) {
-        messagesEl.innerHTML = "";
-        if (pending.length) {
-          for (const message of pending) appendMessageNode("用户", message.text, true);
-          messagesEl.scrollTop = messagesEl.scrollHeight;
-        } else {
-          messagesEl.innerHTML = `<div class="empty">这个会话暂时没有可显示的消息</div>`;
-        }
-        return;
-      }
-      messagesEl.innerHTML = "";
-      const confirmedUserTexts = new Map();
-      for (const turn of turns) {
-        const items = turnItems(turn);
-        for (const item of items) {
-          const text = itemText(item);
-          if (!text) continue;
-          const role = itemRole(item);
-          if (role === "用户") {
-            confirmedUserTexts.set(text, (confirmedUserTexts.get(text) || 0) + 1);
-          }
-          appendMessageNode(role, text, false);
-        }
-      }
-      reconcilePendingMessages(threadId, confirmedUserTexts);
-      for (const message of pendingMessagesFor(threadId)) appendMessageNode("用户", message.text, true);
-      if (!messagesEl.children.length) {
-        messagesEl.innerHTML = `<div class="empty">没有文本消息</div>`;
-      }
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    }
-
-    function turnItems(turn) {
-      if (!turn || typeof turn !== "object") return [turn];
-      if (Array.isArray(turn.items)) return turn.items;
-      if (Array.isArray(turn.messages)) return turn.messages;
-      const items = [];
-      if (turn.input != null) items.push({ type: "userMessage", content: turn.input });
-      if (turn.output != null) items.push({ type: "agentMessage", content: turn.output });
-      if (turn.request != null) items.push({ type: "userMessage", content: turn.request });
-      if (turn.response != null) items.push({ type: "agentMessage", content: turn.response });
-      return items.length ? items : [turn];
-    }
-
-    function extractThread(value) {
-      if (!value || typeof value !== "object") return null;
-      return value.thread || value.data?.thread || value.result?.thread || value.conversation || null;
-    }
-
-    function extractTurns(value) {
-      if (!value) return null;
-      if (Array.isArray(value)) return value;
-      if (Array.isArray(value.data)) return value.data;
-      if (Array.isArray(value.turns)) return value.turns;
-      if (Array.isArray(value.items)) return [{ items: value.items, createdAt: value.createdAt, updatedAt: value.updatedAt }];
-      if (Array.isArray(value.messages)) return value.messages;
-      if (Array.isArray(value.thread?.turns)) return value.thread.turns;
-      if (Array.isArray(value.thread?.items)) return [{ items: value.thread.items, createdAt: value.thread.createdAt, updatedAt: value.thread.updatedAt }];
-      if (Array.isArray(value.data?.turns)) return value.data.turns;
-      if (Array.isArray(value.data?.items)) return [{ items: value.data.items, createdAt: value.data.createdAt, updatedAt: value.data.updatedAt }];
-      if (Array.isArray(value.conversation?.turns)) return value.conversation.turns;
-      if (Array.isArray(value.conversation?.items)) return [{ items: value.conversation.items, createdAt: value.conversation.createdAt, updatedAt: value.conversation.updatedAt }];
-      return null;
-    }
-
-    function normalizeTurns(turns) {
-      if (!Array.isArray(turns)) return [];
-      return [...turns].sort((left, right) => turnTimestamp(left) - turnTimestamp(right));
-    }
-
-    function turnTimestamp(turn) {
-      const value = turn?.startedAt || turn?.createdAt || turn?.completedAt || 0;
-      return value < 100000000000 ? value * 1000 : value;
-    }
-
-    function itemRole(item) {
-      const raw = String(item?.role || item?.author?.role || item?.message?.role || item?.item?.role || item?.type || "").toLowerCase();
-      if (raw === "user" || raw === "usermessage" || raw === "input_text" || raw === "input") return "用户";
-      if (raw === "assistant" || raw === "agent" || raw === "codex" || raw === "agentmessage" || raw === "assistantmessage" || raw === "output_text" || raw === "output") return "Codex";
-      if (raw === "toolcall" || raw === "tool_call" || raw === "function_call") return "工具";
-      if (raw === "toolresult" || raw === "tool_result" || raw === "function_call_output") return "工具结果";
-      return item?.type || item?.role || "消息";
-    }
-
-    function itemText(item) {
-      const text = extractText(item, 0);
-      return typeof text === "string" ? text.trim() : "";
-    }
-
-    function extractText(value, depth) {
-      if (value == null || depth > 6) return "";
-      if (typeof value === "string") return value;
-      if (Array.isArray(value)) return value.map((part) => extractText(part, depth + 1)).filter(Boolean).join("\\n");
-      if (typeof value !== "object") return "";
-      for (const key of ["text", "output_text", "input_text", "markdown", "value", "delta", "content", "message", "output", "input", "parts", "payload", "item", "data"]) {
-        if (value[key] == null) continue;
-        const text = extractText(value[key], depth + 1);
-        if (text) return text;
-      }
-      return "";
-    }
-
-    function formatTime(value) {
-      if (!value) return "未知时间";
-      const ms = value < 100000000000 ? value * 1000 : value;
-      return new Date(ms).toLocaleString();
-    }
-
-    function initControls() {
-      const models = Array.isArray(MODEL_CATALOG?.models) ? MODEL_CATALOG.models.filter(Boolean) : [];
-      state.modelOptions = [...new Set(models.map(String))];
-      state.selectedModel = MODEL_CATALOG?.default_model || MODEL_CATALOG?.model || state.modelOptions[0] || "";
-      renderModelSelect();
-      effortSelect.value = state.selectedEffort;
-    }
-
-    function renderModelSelect() {
-      modelSelect.innerHTML = "";
-      if (!state.modelOptions.length && !state.selectedModel) {
-        const option = document.createElement("option");
-        option.value = "";
-        option.textContent = "继承当前配置";
-        modelSelect.appendChild(option);
-        modelSelect.value = "";
-        return;
-      }
-      const inherit = document.createElement("option");
-      inherit.value = "";
-      inherit.textContent = "继承当前配置";
-      modelSelect.appendChild(inherit);
-      for (const model of state.modelOptions) {
-        const option = document.createElement("option");
-        option.value = model;
-        option.textContent = model;
-        modelSelect.appendChild(option);
-      }
-      if (state.selectedModel && !state.modelOptions.includes(state.selectedModel)) {
-        const option = document.createElement("option");
-        option.value = state.selectedModel;
-        option.textContent = state.selectedModel;
-        modelSelect.appendChild(option);
-      }
-      modelSelect.value = state.selectedModel;
-    }
-
-    function syncControlsForThread(item) {
-      const model = item?.model || item?.modelId || item?.modelName || "";
-      if (model && !state.selectedModel) {
-        state.selectedModel = model;
-        renderModelSelect();
-      }
-    }
-
-    function appendThinkingNode() {
-      if (state.thinking?.isConnected) return state.thinking;
-      if (messagesEl.querySelector(".empty")) messagesEl.innerHTML = "";
-      const node = appendMessageNode("Codex", "正在思考...", false);
-      node.dataset.thinking = "true";
-      state.thinking = node;
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-      return node;
-    }
-
-    function clearThinkingNode() {
-      if (state.thinking?.isConnected) state.thinking.remove();
-      state.thinking = null;
-    }
-
-    modelSelect.addEventListener("change", (event) => {
-      state.selectedModel = event.target.value;
-    });
-    effortSelect.addEventListener("change", (event) => {
-      state.selectedEffort = event.target.value;
-    });
-    $("filter").addEventListener("input", (event) => {
-      state.filter = event.target.value;
-      renderSessions();
-    });
-    $("back").addEventListener("click", () => {
-      detailPane.classList.add("hidden");
-      sessionsPane.classList.remove("hidden");
-    });
-    $("composer").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const input = $("messageInput");
-      const text = input.value.trim();
-      if (!text) return;
-      const button = $("send");
-      button.disabled = true;
-      input.disabled = true;
-      setStatus("正在发送...");
-      let targetThreadId = state.selectedId;
-      let isNewThread = false;
-      try {
-        if (!targetThreadId) {
-          if (!state.selectedCwd) throw new Error("请先选择会话，或在项目目录里点 + 新建");
-          setStatus("正在新建会话...");
-          const thread = await createThread(state.selectedCwd);
-          targetThreadId = thread.id;
-          isNewThread = true;
-        }
-        rememberPendingMessage(targetThreadId, text);
-        appendLocalMessage("用户", text, true);
-        appendThinkingNode();
-        await sendMessage(targetThreadId, text, { skipResume: isNewThread });
-        input.value = "";
-        setStatus("已发送，正在思考...");
-      } catch (error) {
-        forgetPendingMessage(targetThreadId, text);
-        removePendingMessageNode(text);
-        clearThinkingNode();
-        setStatus(error.message, true);
-      } finally {
-        button.disabled = false;
-        input.disabled = false;
-        input.focus();
-      }
-    });
-
-    function appendLocalMessage(role, text, pending = false) {
-      if (messagesEl.querySelector(".empty")) messagesEl.innerHTML = "";
-      appendMessageNode(role, text, pending);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    }
-
-    function appendMessageNode(role, text, pending = false) {
-      const wrap = document.createElement("div");
-      wrap.className = "turn";
-      wrap.innerHTML = `<div class="role"></div><div class="bubble"></div>`;
-      wrap.querySelector(".role").textContent = pending ? `${role} · 待同步` : role;
-      const bubble = wrap.querySelector(".bubble");
-      bubble.classList.toggle("user", role === "用户");
-      bubble.textContent = text;
-      messagesEl.appendChild(wrap);
-      return wrap;
-    }
-
-    function confirmPendingMessageNode(text) {
-      for (const node of messagesEl.querySelectorAll(".turn")) {
-        const role = node.querySelector(".role");
-        const bubble = node.querySelector(".bubble");
-        if (role?.textContent === "用户 · 待同步" && bubble?.textContent === text) {
-          role.textContent = "用户";
-          return;
-        }
-      }
-    }
-
-    function removePendingMessageNode(text) {
-      for (const node of messagesEl.querySelectorAll(".turn")) {
-        const role = node.querySelector(".role");
-        const bubble = node.querySelector(".bubble");
-        if (role?.textContent === "用户 · 待同步" && bubble?.textContent === text) {
-          node.remove();
-          return;
-        }
-      }
-    }
-
-    function rememberPendingMessage(threadId, text) {
-      const list = pendingMessagesFor(threadId);
-      list.push({ text, createdAt: Date.now() });
-      state.pendingMessages.set(threadId, list);
-    }
-
-    function pendingMessagesFor(threadId) {
-      if (!threadId) return [];
-      return state.pendingMessages.get(threadId) || [];
-    }
-
-    function forgetPendingMessage(threadId, text) {
-      const remaining = pendingMessagesFor(threadId).filter((message) => message.text !== text);
-      if (remaining.length) state.pendingMessages.set(threadId, remaining);
-      else state.pendingMessages.delete(threadId);
-    }
-
-    function reconcilePendingMessages(threadId, confirmedUserTexts = new Map()) {
-      const pending = pendingMessagesFor(threadId);
-      if (!pending.length) return;
-      const remaining = pending.filter((message) => {
-        const expired = Date.now() - message.createdAt > 120000;
-        const confirmedCount = confirmedUserTexts.get(message.text) || 0;
-        if (confirmedCount > 0) {
-          confirmedUserTexts.set(message.text, confirmedCount - 1);
-          return false;
-        }
-        return !expired;
-      });
-      if (remaining.length) state.pendingMessages.set(threadId, remaining);
-      else state.pendingMessages.delete(threadId);
-    }
-
-    initControls();
-    loadSessions().catch((error) => setStatus(error.message, true));
-  </script>
-</body>
-</html>"#;
-    html.replace(
-        "__MODEL_CATALOG_JSON__",
-        &script_safe_json(model_catalog_json),
-    )
-}
-
-fn script_safe_json(json: &str) -> String {
-    json.replace('<', "\\u003c")
-        .replace('>', "\\u003e")
-        .replace('&', "\\u0026")
-        .replace('\u{2028}', "\\u2028")
-        .replace('\u{2029}', "\\u2029")
-}
-
 async fn handle_models_proxy_connection(
     stream: &mut tokio::net::TcpStream,
     request_user_agent: Option<&str>,
@@ -3008,15 +1128,13 @@ async fn handle_models_proxy_connection(
         stream.shutdown().await?;
         return Ok(());
     }
-
     let upstream = match crate::protocol_proxy::open_models_proxy_request(request_user_agent).await
     {
         Ok(upstream) => upstream,
         Err(error) => {
-            let body = serde_json::to_vec(&serde_json::json!({
-                "status": "failed",
-                "message": error.to_string()
-            }))?;
+            let body = serde_json::to_vec(
+                &serde_json::json!({                 "status": "failed",                 "message": error.to_string()             }),
+            )?;
             write_http_response(
                 stream,
                 "502 Bad Gateway",
@@ -3035,7 +1153,6 @@ async fn handle_models_proxy_connection(
             return Ok(());
         }
     };
-
     let status = upstream.status();
     let is_success = upstream.is_success();
     let content_type = if upstream.content_type.is_empty() {
@@ -3059,7 +1176,6 @@ async fn handle_models_proxy_connection(
     stream.shutdown().await?;
     Ok(())
 }
-
 async fn handle_protocol_proxy_connection(
     stream: &mut tokio::net::TcpStream,
     request_body: &str,
@@ -3069,35 +1185,35 @@ async fn handle_protocol_proxy_connection(
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
-    let upstream =
-        match crate::protocol_proxy::open_responses_proxy_request(request_body, request_user_agent)
-            .await
-        {
-            Ok(upstream) => upstream,
-            Err(error) => {
-                let body = serde_json::to_vec(&serde_json::json!({
-                    "status": "failed",
-                    "message": error.to_string()
-                }))?;
-                write_http_response(
-                    stream,
-                    "502 Bad Gateway",
-                    "application/json; charset=utf-8",
-                    &body,
-                )
-                .await?;
-                log_helper_response(
-                    "helper.protocol_proxy_failed",
-                    method,
-                    path,
-                    "502 Bad Gateway",
-                    remote_addr_text,
-                );
-                stream.shutdown().await?;
-                return Ok(());
-            }
-        };
-
+    let upstream = match crate::protocol_proxy::open_responses_proxy_request(
+        request_body,
+        request_user_agent,
+    )
+    .await
+    {
+        Ok(upstream) => upstream,
+        Err(error) => {
+            let body = serde_json::to_vec(
+                &serde_json::json!({                     "status": "failed",                     "message": error.to_string()                 }),
+            )?;
+            write_http_response(
+                stream,
+                "502 Bad Gateway",
+                "application/json; charset=utf-8",
+                &body,
+            )
+            .await?;
+            log_helper_response(
+                "helper.protocol_proxy_failed",
+                method,
+                path,
+                "502 Bad Gateway",
+                remote_addr_text,
+            );
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    };
     if !upstream.is_success() {
         let status = upstream.status();
         let upstream_content_type = upstream.content_type.clone();
@@ -3119,7 +1235,6 @@ async fn handle_protocol_proxy_connection(
         stream.shutdown().await?;
         return Ok(());
     }
-
     if upstream.is_stream {
         write_http_stream_headers(stream, "200 OK", "text/event-stream; charset=utf-8").await?;
         if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
@@ -3141,14 +1256,12 @@ async fn handle_protocol_proxy_connection(
             stream.shutdown().await?;
             return Ok(());
         }
-
         let mut converter = request_json
             .as_ref()
             .map(crate::protocol_proxy::ChatSseToResponsesConverter::with_request)
             .unwrap_or_default();
         let mut bytes_stream = upstream.response.bytes_stream();
         let mut stream_failed = false;
-
         while let Some(chunk) = bytes_stream.next().await {
             match chunk {
                 Ok(bytes) => {
@@ -3170,7 +1283,6 @@ async fn handle_protocol_proxy_connection(
                 }
             }
         }
-
         if !stream_failed {
             let tail = converter.finish();
             if !tail.is_empty() {
@@ -3187,7 +1299,6 @@ async fn handle_protocol_proxy_connection(
         stream.shutdown().await?;
         return Ok(());
     }
-
     let upstream_body = upstream.response.bytes().await?;
     if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
         write_http_response(
@@ -3211,7 +1322,6 @@ async fn handle_protocol_proxy_connection(
         stream.shutdown().await?;
         return Ok(());
     }
-
     let chat_json: serde_json::Value = serde_json::from_slice(&upstream_body)?;
     let response_json = if let Some(request_json) = request_json.as_ref() {
         crate::protocol_proxy::chat_completion_to_response_with_request(chat_json, request_json)?
@@ -3230,7 +1340,6 @@ async fn handle_protocol_proxy_connection(
     stream.shutdown().await?;
     Ok(())
 }
-
 async fn handle_chat_completions_proxy_connection(
     stream: &mut tokio::net::TcpStream,
     request_body: &str,
@@ -3247,10 +1356,9 @@ async fn handle_chat_completions_proxy_connection(
     {
         Ok(upstream) => upstream,
         Err(error) => {
-            let body = serde_json::to_vec(&serde_json::json!({
-                "status": "failed",
-                "message": error.to_string()
-            }))?;
+            let body = serde_json::to_vec(
+                &serde_json::json!({                 "status": "failed",                 "message": error.to_string()             }),
+            )?;
             write_http_response(
                 stream,
                 "502 Bad Gateway",
@@ -3269,7 +1377,6 @@ async fn handle_chat_completions_proxy_connection(
             return Ok(());
         }
     };
-
     let status = upstream.status();
     let is_success = upstream.is_success();
     let content_type = if upstream.content_type.is_empty() {
@@ -3277,7 +1384,6 @@ async fn handle_chat_completions_proxy_connection(
     } else {
         upstream.content_type.clone()
     };
-
     if upstream.is_stream && is_success {
         write_http_stream_headers(stream, &status, &content_type).await?;
         let mut bytes_stream = upstream.response.bytes_stream();
@@ -3294,7 +1400,6 @@ async fn handle_chat_completions_proxy_connection(
         stream.shutdown().await?;
         return Ok(());
     }
-
     let body = upstream.response.bytes().await?.to_vec();
     write_http_response(stream, &status, &content_type, &body).await?;
     log_helper_response(
@@ -3324,30 +1429,6 @@ async fn write_http_response(
     );
     stream.write_all(response.as_bytes()).await?;
     stream.write_all(body).await?;
-    Ok(())
-}
-
-async fn write_http_no_store_response(
-    stream: &mut tokio::net::TcpStream,
-    status: &str,
-    content_type: &str,
-    body: &[u8],
-) -> anyhow::Result<()> {
-    let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    stream.write_all(response.as_bytes()).await?;
-    stream.write_all(body).await?;
-    Ok(())
-}
-
-async fn write_options_response(stream: &mut tokio::net::TcpStream) -> anyhow::Result<()> {
-    stream
-        .write_all(
-            b"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        )
-        .await?;
     Ok(())
 }
 
@@ -3383,10 +1464,7 @@ fn log_helper_response(
 
 #[cfg(test)]
 mod computer_use_tests {
-    use super::{
-        MobileRelayHostConfig, header_value_from_request, overlay_image_content_type,
-        percent_encode_query,
-    };
+    use super::{header_value_from_request, overlay_image_content_type};
     use std::path::Path;
 
     #[test]
@@ -3414,25 +1492,6 @@ mod computer_use_tests {
             header_value_from_request(request, "user-agent").as_deref(),
             Some("Codex/26.614")
         );
-    }
-
-    #[test]
-    fn mobile_relay_host_url_appends_host_path_and_credentials() {
-        let config = MobileRelayHostConfig {
-            relay_url: "ws://example.test:57323".to_string(),
-            room: "项目 A".to_string(),
-            token: "a+b&c".to_string(),
-            encryption_key: "test-key".to_string(),
-        };
-        assert_eq!(
-            config.host_url(),
-            "ws://example.test:57323/host?room=%E9%A1%B9%E7%9B%AE%20A&token=a%2Bb%26c"
-        );
-    }
-
-    #[test]
-    fn mobile_relay_percent_encode_keeps_url_safe_bytes() {
-        assert_eq!(percent_encode_query("abc-._~ 1+2"), "abc-._~%201%2B2");
     }
 }
 
@@ -3531,6 +1590,42 @@ pub fn build_codex_arguments(debug_port: u16, extra_args: &[String]) -> Vec<Stri
     ];
     args.extend(normalize_codex_extra_args(extra_args));
     args
+}
+
+pub fn build_codex_arguments_for_settings(
+    debug_port: u16,
+    settings: &BackendSettings,
+) -> Vec<String> {
+    build_codex_arguments(
+        debug_port,
+        &codex_extra_args_for_launch(settings, &settings.codex_extra_args),
+    )
+}
+
+fn codex_extra_args_for_launch(settings: &BackendSettings, extra_args: &[String]) -> Vec<String> {
+    let mut args = Vec::new();
+    if settings.codex_app_fast_startup && !has_host_resolver_rules(extra_args) {
+        args.push(statsig_fast_fail_host_resolver_rule());
+    }
+    args.extend(normalize_codex_extra_args(extra_args));
+    args
+}
+
+fn has_host_resolver_rules(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| arg.trim().starts_with("--host-resolver-rules"))
+}
+
+fn statsig_fast_fail_host_resolver_rule() -> String {
+    [
+        "--host-resolver-rules=MAP ab.chatgpt.com 127.0.0.1",
+        "MAP featureassets.org 127.0.0.1",
+        "MAP prodregistryv2.org 127.0.0.1",
+        "MAP api.statsigcdn.com 127.0.0.1",
+        "MAP statsigapi.net 127.0.0.1",
+        "MAP cloudflare-dns.com 127.0.0.1",
+    ]
+    .join(",")
 }
 
 pub fn build_codex_arguments_with_native_menu_inspector(

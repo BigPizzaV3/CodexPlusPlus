@@ -7,6 +7,7 @@ import {
   modelWindowsMapToText,
   modelWindowsTextToMap,
   serializeModelWindowRows,
+  mergeModelWindowRows,
 } from "./model-windows.ts";
 
 // 类型检查：确保 RelayProfile 包含 modelWindows 字段
@@ -100,6 +101,26 @@ describe("model-windows helpers", () => {
         modelList: "a\nb",
         modelWindows: '{"a":"1M"}',
       },
+    );
+  });
+
+  it("mergeModelWindowRows 追加上游模型时跳过已有模型并保留窗口", () => {
+    assert.deepStrictEqual(
+      mergeModelWindowRows(
+        [
+          { model: "deepseek-v4-flash", window: "1M" },
+          { model: "  ", window: "" },
+        ],
+        [
+          { model: "deepseek-v4-flash", window: "" },
+          { model: "deepseek-v4-pro", window: "" },
+          { model: " deepseek-v4-pro ", window: "200K" },
+        ],
+      ),
+      [
+        { model: "deepseek-v4-flash", window: "1M" },
+        { model: "deepseek-v4-pro", window: "" },
+      ],
     );
   });
 });

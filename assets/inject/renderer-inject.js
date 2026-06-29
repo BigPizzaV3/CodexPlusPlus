@@ -1,4 +1,95 @@
 (() => {
+  function installCodexPlusFastStartup() {
+    const config = window.__CODEX_PLUS_FAST_STARTUP__;
+    if (!config || config.enabled !== true) return;
+    if (window.__codexPlusFastStartupInstalled === "1") return;
+    window.__codexPlusFastStartupInstalled = "1";
+    const timeoutMs = Math.max(100, Math.min(Number(config.statsigTimeoutMs) || 800, 3000));
+    const statsigHosts = new Set([
+      "ab.chatgpt.com",
+      "featureassets.org",
+      "prodregistryv2.org",
+      "api.statsigcdn.com",
+      "statsigapi.net",
+      "cloudflare-dns.com",
+    ]);
+
+    const isStatsigUrl = (input) => {
+      try {
+        const url = new URL(typeof input === "string" ? input : input?.url ?? "", window.location.href);
+        return statsigHosts.has(url.hostname);
+      } catch {
+        return false;
+      }
+    };
+
+    const timeoutSignal = (signal) => {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+      const clear = () => window.clearTimeout(timer);
+      if (signal) {
+        if (signal.aborted) controller.abort();
+        else signal.addEventListener("abort", () => controller.abort(), { once: true });
+      }
+      return { signal: controller.signal, clear };
+    };
+
+    const patchFetch = () => {
+      if (typeof window.fetch !== "function" || window.fetch.__codexPlusFastStartupPatched) return;
+      const originalFetch = window.fetch.bind(window);
+      const patchedFetch = (input, init = undefined) => {
+        if (!isStatsigUrl(input)) return originalFetch(input, init);
+        const { signal, clear } = timeoutSignal(init?.signal);
+        const nextInit = { ...(init || {}), signal };
+        return originalFetch(input, nextInit).finally(clear);
+      };
+      patchedFetch.__codexPlusFastStartupPatched = true;
+      window.fetch = patchedFetch;
+    };
+
+    const markStatsigReady = (client) => {
+      if (!client || typeof client !== "object" || client.__codexPlusFastStartupReadyPatched) return;
+      client.__codexPlusFastStartupReadyPatched = true;
+      const markReady = () => {
+        try {
+          if (client.loadingStatus && client.loadingStatus !== "Ready") client.loadingStatus = "Ready";
+        } catch {
+        }
+        try {
+          if (typeof client.$emt === "function") client.$emt({ name: "values_updated" });
+        } catch {
+        }
+      };
+      if (typeof client.initializeAsync === "function") {
+        const originalInitializeAsync = client.initializeAsync.bind(client);
+        client.initializeAsync = (...args) => Promise.race([
+          originalInitializeAsync(...args).catch(() => null),
+          new Promise((resolve) => window.setTimeout(() => resolve(null), timeoutMs)),
+        ]).finally(markReady);
+      }
+      markReady();
+    };
+
+    const statsigClients = () => {
+      const root = window.__STATSIG__ || globalThis.__STATSIG__;
+      if (!root || typeof root !== "object") return [];
+      const clients = [root.firstInstance, typeof root.instance === "function" ? root.instance() : null];
+      if (root.instances && typeof root.instances === "object") clients.push(...Object.values(root.instances));
+      return clients.filter((client, index, array) => client && typeof client === "object" && array.indexOf(client) === index);
+    };
+
+    const patchStatsigRoot = () => statsigClients().forEach(markStatsigReady);
+
+    patchFetch();
+    patchStatsigRoot();
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      patchFetch();
+      patchStatsigRoot();
+      if (Date.now() - startedAt > 5000) window.clearInterval(timer);
+    }, 50);
+  }
+
   function installCodexPlusForceChineseLocale() {
     const config = window.__CODEX_PLUS_FORCE_CHINESE_LOCALE__;
     if (!config || config.enabled !== true) return;
@@ -138,6 +229,7 @@
     }, 50);
   }
 
+  installCodexPlusFastStartup();
   installCodexPlusForceChineseLocale();
 
   const helperBase = window.__CODEX_SESSION_DELETE_HELPER__ || "http://127.0.0.1:57321";
@@ -2766,9 +2858,14 @@
     }
     const next = { ...params };
     const hadMarketplaceKinds = Object.prototype.hasOwnProperty.call(next, "marketplaceKinds");
-    if (hadMarketplaceKinds) delete next.marketplaceKinds;
+    const nextKinds = Array.isArray(next.marketplaceKinds)
+      ? next.marketplaceKinds.map((kind) => restorePluginMarketplaceName(kind))
+      : ["local"];
+    if (!nextKinds.includes("vertical")) nextKinds.push("vertical");
+    next.marketplaceKinds = Array.from(new Set(nextKinds));
     sendCodexPlusDiagnostic("plugin_marketplace_request_expanded", {
       hadMarketplaceKinds,
+      marketplaceKinds: next.marketplaceKinds,
       cwdCount: Array.isArray(next.cwds) ? next.cwds.length : 0,
     });
     return next;
@@ -2778,6 +2875,8 @@
     if (name === "openai-bundled") return "OpenAI插件1(Codex++)";
     if (name === "openai-curated") return "OpenAI插件2(Codex++)";
     if (name === "openai-primary-runtime") return "OpenAI插件3(Codex++)";
+    if (name === "openai-api-curated") return "OpenAI插件4(Codex++)";
+    if (name === "openai-curated-remote") return "OpenAI插件5(Codex++)";
     return fallback;
   }
 
@@ -2891,12 +2990,14 @@
     if (name === "codex-plus-openai-bundled") return "openai-bundled";
     if (name === "codex-plus-openai-curated") return "openai-curated";
     if (name === "codex-plus-openai-primary-runtime") return "openai-primary-runtime";
+    if (name === "codex-plus-openai-api-curated") return "openai-api-curated";
+    if (name === "codex-plus-openai-curated-remote") return "openai-curated-remote";
     return name;
   }
 
   function codexPluginOfficialMarketplaceName(name) {
     const restored = restorePluginMarketplaceName(name);
-    return restored === "openai-bundled" || restored === "openai-curated" || restored === "openai-primary-runtime";
+    return restored === "openai-bundled" || restored === "openai-curated" || restored === "openai-primary-runtime" || restored === "openai-api-curated" || restored === "openai-curated-remote";
   }
 
   function isCodexPluginBuildFlavorFilter(callback, sample) {

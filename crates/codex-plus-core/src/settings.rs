@@ -215,6 +215,8 @@ pub struct BackendSettings {
     pub codex_app_paste_fix: bool,
     #[serde(rename = "codexAppForceChineseLocale", default = "default_true")]
     pub codex_app_force_chinese_locale: bool,
+    #[serde(rename = "codexAppFastStartup", default = "default_true")]
+    pub codex_app_fast_startup: bool,
     #[serde(rename = "codexAppProjectMove", default = "default_true")]
     pub codex_app_project_move: bool,
     #[serde(rename = "codexAppThreadIdBadge", default)]
@@ -251,14 +253,6 @@ pub struct BackendSettings {
     pub codex_app_image_overlay_opacity: u8,
     #[serde(rename = "codexGoalsEnabled", default)]
     pub codex_goals_enabled: bool,
-    #[serde(rename = "mobileControlEnabled", default)]
-    pub mobile_control_enabled: bool,
-    #[serde(rename = "mobileControlRelayUrl", default)]
-    pub mobile_control_relay_url: String,
-    #[serde(rename = "mobileControlRoom", default)]
-    pub mobile_control_room: String,
-    #[serde(rename = "mobileControlKey", default)]
-    pub mobile_control_key: String,
     #[serde(rename = "launchMode", default)]
     pub launch_mode: LaunchMode,
     #[serde(rename = "relayBaseUrl", default = "default_relay_base_url")]
@@ -293,10 +287,6 @@ pub struct BackendSettings {
     pub cli_wrapper_api_key_env: String,
 }
 
-fn default_mobile_control_relay_url() -> String {
-    "ws://127.0.0.1:57323".to_string()
-}
-
 impl Default for BackendSettings {
     fn default() -> Self {
         Self {
@@ -317,6 +307,7 @@ impl Default for BackendSettings {
             codex_app_markdown_export: true,
             codex_app_paste_fix: false,
             codex_app_force_chinese_locale: true,
+            codex_app_fast_startup: true,
             codex_app_project_move: true,
             codex_app_thread_id_badge: false,
             codex_app_conversation_view: false,
@@ -333,10 +324,6 @@ impl Default for BackendSettings {
             codex_app_image_overlay_path: String::new(),
             codex_app_image_overlay_opacity: default_image_overlay_opacity(),
             codex_goals_enabled: false,
-            mobile_control_enabled: false,
-            mobile_control_relay_url: default_mobile_control_relay_url(),
-            mobile_control_room: String::new(),
-            mobile_control_key: String::new(),
             launch_mode: LaunchMode::Patch,
             relay_base_url: default_relay_base_url(),
             relay_api_key: String::new(),
@@ -666,6 +653,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppPasteFix");
     merge_bool_setting(target, source, "codexAppForceChineseLocale");
+    merge_bool_setting(target, source, "codexAppFastStartup");
     merge_bool_setting(target, source, "codexAppProjectMove");
     merge_bool_setting(target, source, "codexAppThreadIdBadge");
     merge_bool_setting(target, source, "codexAppConversationView");
@@ -704,27 +692,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     if let Some(value) = source.get("codexGoalsEnabled").and_then(Value::as_bool) {
         target.insert("codexGoalsEnabled".to_string(), Value::Bool(value));
-    }
-    if let Some(value) = source.get("mobileControlEnabled").and_then(Value::as_bool) {
-        target.insert("mobileControlEnabled".to_string(), Value::Bool(value));
-    }
-    if let Some(value) = source.get("mobileControlRelayUrl").and_then(Value::as_str) {
-        target.insert(
-            "mobileControlRelayUrl".to_string(),
-            Value::String(value.trim().to_string()),
-        );
-    }
-    if let Some(value) = source.get("mobileControlRoom").and_then(Value::as_str) {
-        target.insert(
-            "mobileControlRoom".to_string(),
-            Value::String(value.trim().to_string()),
-        );
-    }
-    if let Some(value) = source.get("mobileControlKey").and_then(Value::as_str) {
-        target.insert(
-            "mobileControlKey".to_string(),
-            Value::String(value.trim().to_string()),
-        );
     }
     if let Some(value) = source.get("launchMode").and_then(Value::as_str) {
         if matches!(value, "patch" | "relay") {

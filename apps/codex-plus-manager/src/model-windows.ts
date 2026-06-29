@@ -29,6 +29,23 @@ export type ModelWindowRow = {
   window: string;
 };
 
+export function mergeModelWindowRows(
+  currentRows: ModelWindowRow[],
+  incomingRows: ModelWindowRow[],
+): ModelWindowRow[] {
+  const rows: ModelWindowRow[] = [];
+  const seen = new Set<string>();
+  const append = (row: ModelWindowRow) => {
+    const model = row.model.trim();
+    if (!model || seen.has(model)) return;
+    seen.add(model);
+    rows.push({ model, window: row.window.trim() });
+  };
+  currentRows.forEach(append);
+  incomingRows.forEach(append);
+  return rows.length ? rows : [{ model: "", window: "" }];
+}
+
 export function modelWindowRowsFromProfile(modelList: string, modelWindows: string): ModelWindowRow[] {
   let map: Record<string, string> = {};
   try {
@@ -47,7 +64,7 @@ export function modelWindowRowsFromProfile(modelList: string, modelWindows: stri
 export function serializeModelWindowRows(rows: ModelWindowRow[]): { modelList: string; modelWindows: string } {
   const modelList: string[] = [];
   const modelWindows: Record<string, string> = {};
-  rows.forEach((row) => {
+  mergeModelWindowRows(rows, []).forEach((row) => {
     const model = row.model.trim();
     if (!model) return;
     modelList.push(model);

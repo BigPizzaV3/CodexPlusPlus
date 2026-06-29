@@ -9,7 +9,8 @@ use codex_plus_core::app_paths::{
 };
 use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
-    build_codex_arguments, build_codex_arguments_with_native_menu_inspector, build_codex_command,
+    build_codex_arguments, build_codex_arguments_for_settings,
+    build_codex_arguments_with_native_menu_inspector, build_codex_command,
     build_codex_command_with_native_menu_inspector, build_macos_cleanup_command,
     build_macos_open_command, build_macos_open_command_with_native_menu_inspector,
     build_packaged_activation, build_packaged_activation_with_native_menu_inspector,
@@ -259,6 +260,43 @@ fn launcher_appends_extra_codex_arguments_after_debug_arguments() {
 }
 
 #[test]
+fn launcher_fast_startup_adds_statsig_fast_fail_argument_when_enabled() {
+    let settings = BackendSettings::default();
+    let args = build_codex_arguments_for_settings(9229, &settings);
+
+    assert!(args.iter().any(|arg| {
+        arg.starts_with("--host-resolver-rules=")
+            && arg.contains("MAP ab.chatgpt.com 127.0.0.1")
+            && arg.contains("MAP featureassets.org 127.0.0.1")
+            && arg.contains("MAP cloudflare-dns.com 127.0.0.1")
+    }));
+
+    let settings = BackendSettings {
+        codex_app_fast_startup: true,
+        codex_extra_args: vec!["--host-resolver-rules=MAP example.test 127.0.0.1".to_string()],
+        ..BackendSettings::default()
+    };
+    let args = build_codex_arguments_for_settings(9229, &settings);
+    assert_eq!(
+        args.iter()
+            .filter(|arg| arg.starts_with("--host-resolver-rules="))
+            .count(),
+        1
+    );
+
+    let settings = BackendSettings {
+        codex_app_fast_startup: false,
+        ..BackendSettings::default()
+    };
+    let args = build_codex_arguments_for_settings(9229, &settings);
+    assert!(
+        !args
+            .iter()
+            .any(|arg| arg.starts_with("--host-resolver-rules="))
+    );
+}
+
+#[test]
 fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
     let app_dir = PathBuf::from(r"C:\Codex\app");
     let extra_args = vec!["--force_high_performance_gpu".to_string()];
@@ -346,6 +384,28 @@ fn launcher_packaged_activation_can_preserve_process_id() {
     };
 
     assert_eq!(launch.process_id(), Some(4242));
+}
+
+#[test]
+fn launcher_applies_codexplusplus_window_icon_after_packaged_activation() {
+    let source = include_str!("../src/launcher.rs");
+
+    assert!(source.contains("apply_codexplusplus_window_icon_after_launch(process_id);"));
+    assert!(source.contains("windows_apply_codexplusplus_icon_to_process_window"));
+}
+
+#[test]
+fn launcher_no_longer_contains_mobile_control_runtime() {
+    let launcher_source = include_str!("../src/launcher.rs");
+    let settings_source = include_str!("../src/settings.rs");
+    let workspace_toml = include_str!("../../../Cargo.toml");
+
+    assert!(!workspace_toml.contains("apps/codex-plus-mobile-relay"));
+    assert!(!launcher_source.contains("MobileRelay"));
+    assert!(!launcher_source.contains("mobile_relay"));
+    assert!(!launcher_source.contains("\"/mobile\""));
+    assert!(!launcher_source.contains("CODEX_PLUS_MOBILE"));
+    assert!(!settings_source.contains("mobileControl"));
 }
 
 #[test]

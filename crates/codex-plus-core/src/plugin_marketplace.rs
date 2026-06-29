@@ -5,6 +5,7 @@ use anyhow::Context;
 use toml_edit::{DocumentMut, Item, Table};
 
 const OPENAI_CURATED_MARKETPLACE: &str = "openai-curated";
+const OPENAI_API_CURATED_MARKETPLACE: &str = "openai-api-curated";
 const OPENAI_PLUGINS_ZIP_URL: &str =
     "https://codeload.github.com/openai/plugins/zip/refs/heads/main";
 const OPENAI_PLUGINS_DOWNLOAD_LIMIT_BYTES: usize = 128 * 1024 * 1024;
@@ -13,14 +14,21 @@ pub fn ensure_openai_curated_marketplace_config(home: &Path) -> anyhow::Result<b
     let Some(marketplace_root) = local_openai_curated_marketplace_root(home)? else {
         return Ok(false);
     };
-    ensure_marketplace_config(home, OPENAI_CURATED_MARKETPLACE, &marketplace_root)
+    ensure_marketplace_configs(
+        home,
+        &[OPENAI_CURATED_MARKETPLACE, OPENAI_API_CURATED_MARKETPLACE],
+        &marketplace_root,
+    )
 }
 
 pub fn openai_curated_marketplace_status(home: &Path) -> MarketplaceStatus {
     let marketplace_root = local_openai_curated_marketplace_root(home).ok().flatten();
     let config_registered = marketplace_root
         .as_deref()
-        .map(|root| marketplace_config_points_to_root(home, OPENAI_CURATED_MARKETPLACE, root))
+        .map(|root| {
+            marketplace_config_points_to_root(home, OPENAI_CURATED_MARKETPLACE, root)
+                && marketplace_config_points_to_root(home, OPENAI_API_CURATED_MARKETPLACE, root)
+        })
         .unwrap_or(false);
     MarketplaceStatus {
         marketplace_root,
@@ -267,9 +275,9 @@ fn replace_directory(source: &Path, destination: &Path) -> anyhow::Result<()> {
     }
 }
 
-fn ensure_marketplace_config(
+fn ensure_marketplace_configs(
     home: &Path,
-    marketplace_name: &str,
+    marketplace_names: &[&str],
     marketplace_root: &Path,
 ) -> anyhow::Result<bool> {
     let config_path = home.join("config.toml");
@@ -284,16 +292,18 @@ fn ensure_marketplace_config(
     let without_bom = existing.trim_start_matches('\u{feff}');
     let mut doc = parse_toml_document(without_bom)?;
     let marketplaces = table_mut_or_insert(&mut doc, "marketplaces")?;
-    if marketplaces
-        .get(marketplace_name)
-        .and_then(Item::as_table)
-        .is_none()
-    {
-        marketplaces[marketplace_name] = toml_edit::table();
+    for marketplace_name in marketplace_names {
+        if marketplaces
+            .get(marketplace_name)
+            .and_then(Item::as_table)
+            .is_none()
+        {
+            marketplaces[marketplace_name] = toml_edit::table();
+        }
+        marketplaces[marketplace_name]["source_type"] = toml_edit::value("local");
+        marketplaces[marketplace_name]["source"] =
+            toml_edit::value(windows_extended_path(marketplace_root));
     }
-    marketplaces[marketplace_name]["source_type"] = toml_edit::value("local");
-    marketplaces[marketplace_name]["source"] =
-        toml_edit::value(windows_extended_path(marketplace_root));
 
     let updated = ensure_trailing_newline(doc.to_string());
     if updated.as_bytes() == without_bom.as_bytes() {
@@ -407,6 +417,14 @@ mod tests {
             parsed["marketplaces"]["openai-curated"]["source"].as_str(),
             Some(format!(r"\\?\{}", home.join(".tmp").join("plugins").display()).as_str())
         );
+        assert_eq!(
+            parsed["marketplaces"]["openai-api-curated"]["source_type"].as_str(),
+            Some("local")
+        );
+        assert_eq!(
+            parsed["marketplaces"]["openai-api-curated"]["source"].as_str(),
+            Some(format!(r"\\?\{}", home.join(".tmp").join("plugins").display()).as_str())
+        );
     }
 
     #[test]
@@ -425,6 +443,21 @@ mod tests {
         write_marketplace(temp.path());
 
         let status = openai_curated_marketplace_status(temp.path());
+
+        assert!(status.marketplace_root.is_some());
+        assert!(!status.config_registered);
+        assert!(status.needs_repair());
+    }
+
+    #[test]
+    fn openai_curated_marketplace_status_requires_api_marketplace_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let root = home.join(".tmp").join("plugins");
+        write_marketplace(home);
+        ensure_marketplace_configs(home, &[OPENAI_CURATED_MARKETPLACE], &root).unwrap();
+
+        let status = openai_curated_marketplace_status(home);
 
         assert!(status.marketplace_root.is_some());
         assert!(!status.config_registered);
