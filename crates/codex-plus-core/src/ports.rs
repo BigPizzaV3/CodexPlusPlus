@@ -242,6 +242,9 @@ fn normalize_lock_error(error: std::io::Error) -> std::io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static GUARD_PORT_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn resilient_guard_holds_lock_and_listener_when_requested_port_is_available() {
@@ -321,6 +324,7 @@ mod tests {
 
     #[test]
     fn launcher_guard_port_returns_base_when_no_env_override() {
+        let _guard = guard_port_env_lock();
         _clear_guard_port_env_vars();
         let port = launcher_guard_port();
         // On non-Windows: LAUNCHER_GUARD_PORT_BASE + 0
@@ -331,6 +335,7 @@ mod tests {
 
     #[test]
     fn manager_guard_port_returns_base_when_no_env_override() {
+        let _guard = guard_port_env_lock();
         _clear_guard_port_env_vars();
         let port = manager_guard_port();
         assert!(port >= MANAGER_GUARD_PORT_BASE);
@@ -339,6 +344,7 @@ mod tests {
 
     #[test]
     fn launcher_guard_port_honors_env_override() {
+        let _guard = guard_port_env_lock();
         _clear_guard_port_env_vars();
         unsafe { std::env::set_var("CODEX_PLUS_GUARD_PORT", "9999") };
         let port = launcher_guard_port();
@@ -348,6 +354,7 @@ mod tests {
 
     #[test]
     fn launcher_guard_port_honors_specific_env_override() {
+        let _guard = guard_port_env_lock();
         _clear_guard_port_env_vars();
         unsafe { std::env::set_var("CODEX_PLUS_LAUNCHER_GUARD_PORT", "8888") };
         let port = launcher_guard_port();
@@ -357,6 +364,7 @@ mod tests {
 
     #[test]
     fn manager_guard_port_honors_specific_env_override() {
+        let _guard = guard_port_env_lock();
         _clear_guard_port_env_vars();
         unsafe { std::env::set_var("CODEX_PLUS_MANAGER_GUARD_PORT", "7777") };
         let port = manager_guard_port();
@@ -366,11 +374,18 @@ mod tests {
 
     #[test]
     fn launcher_guard_port_honors_offset_env() {
+        let _guard = guard_port_env_lock();
         _clear_guard_port_env_vars();
         unsafe { std::env::set_var("CODEX_PLUS_GUARD_PORT_OFFSET", "50") };
         let port = launcher_guard_port();
         unsafe { std::env::remove_var("CODEX_PLUS_GUARD_PORT_OFFSET") };
         assert_eq!(port, LAUNCHER_GUARD_PORT_BASE + 50);
+    }
+
+    fn guard_port_env_lock() -> MutexGuard<'static, ()> {
+        GUARD_PORT_ENV_LOCK
+            .lock()
+            .expect("guard port env lock should not be poisoned")
     }
 }
 
