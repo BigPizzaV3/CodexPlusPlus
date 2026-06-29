@@ -132,7 +132,7 @@ fn find_codex_processes_finds_local_install_with_capitial_c() {
 
 #[cfg(windows)]
 #[test]
-fn find_codex_processes_finds_local_install_case_insensitively() {
+fn find_codex_processes_ignores_lowercase_local_cli_binary() {
     let processes = [WindowsProcessInfo {
         process_id: 43,
         parent_process_id: 0,
@@ -142,7 +142,37 @@ fn find_codex_processes_finds_local_install_case_insensitively() {
         )),
     }];
 
-    assert_eq!(find_codex_processes_from_snapshot(&processes), vec![43]);
+    assert!(find_codex_processes_from_snapshot(&processes).is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn find_codex_processes_ignores_npm_cli_binary() {
+    let processes = [WindowsProcessInfo {
+        process_id: 44,
+        parent_process_id: 0,
+        exe_file: "codex.exe".to_string(),
+        executable_path: Some(std::path::PathBuf::from(
+            r"C:\Users\me\AppData\Roaming\npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe",
+        )),
+    }];
+
+    assert!(find_codex_processes_from_snapshot(&processes).is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn find_codex_processes_ignores_packaged_resource_cli_binary() {
+    let processes = [WindowsProcessInfo {
+        process_id: 45,
+        parent_process_id: 0,
+        exe_file: "codex.exe".to_string(),
+        executable_path: Some(std::path::PathBuf::from(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0.0_x64__abc\app\resources\codex.exe",
+        )),
+    }];
+
+    assert!(find_codex_processes_from_snapshot(&processes).is_empty());
 }
 
 #[cfg(windows)]

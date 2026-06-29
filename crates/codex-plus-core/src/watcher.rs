@@ -91,12 +91,16 @@ pub fn codex_process_ids<'a>(processes: impl IntoIterator<Item = (u32, &'a str)>
     processes
         .into_iter()
         .filter_map(|(process_id, executable)| {
-            let executable = executable.to_ascii_lowercase();
-            executable
-                .contains("\\windowsapps\\openai.codex_")
-                .then_some(process_id)
+            is_windowsapps_codex_app_process(executable).then_some(process_id)
         })
         .collect()
+}
+
+fn is_windowsapps_codex_app_process(executable: &str) -> bool {
+    let executable = executable.replace('/', "\\").to_ascii_lowercase();
+    executable.contains("\\windowsapps\\openai.codex_")
+        && executable.ends_with("\\app\\codex.exe")
+        && !executable.contains("\\app\\resources\\")
 }
 
 pub fn filter_killable_launcher_processes<'a>(
@@ -200,10 +204,10 @@ pub fn find_codex_processes_from_snapshot(
             .map(|(pid, path)| (*pid, path.as_str())),
     );
 
-    // Local/portable installs use "Codex.exe" (capital C) as the Electron main process.
-    // Keep the launcher alive while that process is still running.
+    // Local/portable installs use Codex.exe as the Electron main process. Do not match
+    // lowercase codex.exe here; that is commonly the CLI binary.
     for process in processes {
-        if process.exe_file.eq_ignore_ascii_case("Codex.exe") {
+        if process.exe_file == "Codex.exe" {
             ids.push(process.process_id);
         }
     }

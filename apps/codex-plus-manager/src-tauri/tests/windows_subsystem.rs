@@ -32,6 +32,32 @@ fn manager_uses_single_instance_guard_before_starting_tauri() {
 }
 
 #[test]
+fn manager_main_window_uses_default_window_icon_explicitly() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+
+    assert!(lib_rs.contains("main_window_builder"));
+    assert!(lib_rs.contains("app.default_window_icon().cloned()"));
+    assert!(lib_rs.contains("main_window_builder = main_window_builder.icon(icon)?"));
+}
+
+#[test]
+fn manager_close_confirmation_is_rendered_in_app() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+
+    assert!(!lib_rs.contains("MessageDialogButtons"));
+    assert!(!lib_rs.contains(".dialog()"));
+    assert!(lib_rs.contains("manager://close-requested"));
+    assert!(app_tsx.contains("CloseConfirmDialog"));
+    assert!(app_tsx.contains("manager_exit_app"));
+    assert!(app_tsx.contains("manager_hide_to_tray"));
+}
+
+#[test]
 fn manager_queues_codexplusplus_provider_urls_for_confirmation_on_startup() {
     let main_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
         .expect("read manager main.rs");
@@ -286,4 +312,16 @@ fn provider_presets_include_runapi() {
     assert!(presets.contains("name: \"RunAPI\""));
     assert!(presets.contains("category: \"aggregator\""));
     assert!(presets.contains("baseUrl: \"https://runapi.co/v1\""));
+}
+
+#[test]
+fn manager_no_longer_exposes_mobile_control() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+
+    assert!(!app_tsx.contains("mobileControl"));
+    assert!(!app_tsx.contains("手机控制"));
+    assert!(!app_tsx.contains("mobileRelayServers"));
+    assert!(!app_tsx.contains("MobileControlScreen"));
 }

@@ -326,7 +326,9 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("message.type === \"fetch\""));
     assert!(script.contains("data?.type === \"fetch-response\""));
     assert!(script.contains("__codexPluginMarketplaceFetchRequestIds"));
-    assert!(script.contains("delete next.marketplaceKinds"));
+    assert!(script.contains("const nextKinds = Array.isArray(next.marketplaceKinds)"));
+    assert!(script.contains("if (!nextKinds.includes(\"vertical\")) nextKinds.push(\"vertical\")"));
+    assert!(script.contains("next.marketplaceKinds = Array.from(new Set(nextKinds))"));
     assert!(script.contains("patchPluginMarketplaceResult"));
     assert!(script.contains("__CODEX_PLUS_PLUGIN_MARKETPLACES__"));
     assert!(script.contains("mergeLocalPluginMarketplaces(result)"));
@@ -340,6 +342,14 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(
         script.contains("if (name === \"openai-primary-runtime\") return \"OpenAI插件3(Codex++)\"")
     );
+    assert!(script.contains("restored === \"openai-api-curated\""));
+    assert!(script.contains("restored === \"openai-curated-remote\""));
+    assert!(
+        script.contains("if (name === \"openai-curated-remote\") return \"OpenAI插件5(Codex++)\"")
+    );
+    assert!(script.contains(
+        "if (name === \"codex-plus-openai-curated-remote\") return \"openai-curated-remote\""
+    ));
     assert!(script.contains("OpenAI插件1(Codex++)"));
     assert!(script.contains("OpenAI插件2(Codex++)"));
     assert!(script.contains("OpenAI插件3(Codex++)"));
@@ -354,14 +364,14 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
 }
 
 #[test]
-fn injection_script_deletes_marketplace_kinds_to_request_default_catalog() {
+fn injection_script_preserves_vertical_marketplace_kind_for_official_plugins() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("delete next.marketplaceKinds"));
     assert!(script.contains("plugin_marketplace_request_expanded"));
+    assert!(script.contains("if (!nextKinds.includes(\"vertical\")) nextKinds.push(\"vertical\")"));
     assert!(!script.contains("codexPluginAllowedMarketplaceKinds"));
     assert!(!script.contains("codexPluginExpandedMarketplaceKinds"));
-    assert!(!script.contains("next.marketplaceKinds = Array.from(new Set"));
+    assert!(!script.contains("delete next.marketplaceKinds"));
 }
 
 #[test]

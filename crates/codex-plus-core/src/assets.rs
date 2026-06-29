@@ -37,8 +37,9 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let plugin_marketplaces = local_plugin_marketplaces();
     let paste_fix = paste_fix_enabled_config(settings);
     let force_chinese_locale = force_chinese_locale_config(settings);
+    let fast_startup = fast_startup_config(settings);
     format!(
-        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\n{}\n{}",
+        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_FAST_STARTUP__ = {};\n{}\n{}",
         serde_json::to_string(&helper_url).expect("helper URL should serialize"),
         serde_json::to_string(&sponsor_images).expect("sponsor images should serialize"),
         serde_json::to_string(crate::version::VERSION).expect("version should serialize"),
@@ -48,6 +49,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         serde_json::to_string(&paste_fix).expect("paste fix config should serialize"),
         serde_json::to_string(&force_chinese_locale)
             .expect("force Chinese locale config should serialize"),
+        serde_json::to_string(&fast_startup).expect("fast startup config should serialize"),
         renderer_script(),
         stepwise_script(),
     )
@@ -55,13 +57,20 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
 
 fn local_plugin_marketplaces() -> Value {
     let home = crate::codex_home::default_codex_home_dir();
+    local_plugin_marketplaces_from_home(&home)
+}
+
+fn local_plugin_marketplaces_from_home(home: &Path) -> Value {
     let installed_plugins = installed_plugins_from_config(&home);
-    let candidates = [home
+    let marketplace_dir = home
         .join(".tmp")
         .join("plugins")
         .join(".agents")
-        .join("plugins")
-        .join("marketplace.json")];
+        .join("plugins");
+    let candidates = [
+        marketplace_dir.join("marketplace.json"),
+        marketplace_dir.join("api_marketplace.json"),
+    ];
     let marketplaces = candidates
         .iter()
         .filter_map(|path| {
@@ -245,6 +254,10 @@ pub fn force_chinese_locale_config(settings: &BackendSettings) -> Value {
     json!({ "enabled": settings.codex_app_force_chinese_locale, "locale": "zh-CN" })
 }
 
+pub fn fast_startup_config(settings: &BackendSettings) -> Value {
+    json!({ "enabled": settings.codex_app_fast_startup, "statsigTimeoutMs": 800 })
+}
+
 fn image_data_uri(mime_type: &str, bytes: &[u8]) -> String {
     format!(
         "data:{mime_type};base64,{}",
@@ -271,5 +284,54 @@ fn image_content_type(path: &Path) -> Option<&'static str> {
         Some("gif") => Some("image/gif"),
         Some("bmp") => Some("image/bmp"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_plugin_marketplaces_includes_api_marketplace_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let marketplace_dir = home
+            .join(".tmp")
+            .join("plugins")
+            .join(".agents")
+            .join("plugins");
+        let api_plugin_dir = home
+            .join(".tmp")
+            .join("plugins")
+            .join("plugins")
+            .join("build-web-apps");
+        std::fs::create_dir_all(&marketplace_dir).unwrap();
+        std::fs::create_dir_all(api_plugin_dir.join(".codex-plugin")).unwrap();
+        std::fs::write(
+            marketplace_dir.join("marketplace.json"),
+            r#"{"name":"openai-curated","plugins":[{"name":"gmail"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            marketplace_dir.join("api_marketplace.json"),
+            r#"{"name":"openai-api-curated","plugins":[{"name":"build-web-apps"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            api_plugin_dir.join(".codex-plugin").join("plugin.json"),
+            r#"{"interface":{"displayName":"Build Web Apps"}}"#,
+        )
+        .unwrap();
+
+        let marketplaces = local_plugin_marketplaces_from_home(home);
+        let array = marketplaces.as_array().unwrap();
+
+        assert_eq!(array.len(), 2);
+        assert_eq!(array[0]["name"].as_str(), Some("openai-curated"));
+        assert_eq!(array[1]["name"].as_str(), Some("openai-api-curated"));
+        assert_eq!(
+            array[1]["plugins"][0]["interface"]["displayName"].as_str(),
+            Some("Build Web Apps")
+        );
     }
 }
