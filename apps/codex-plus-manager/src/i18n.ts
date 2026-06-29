@@ -13,7 +13,7 @@
 // instant for a local Tauri window and guarantees every literal — module-level
 // or render-level — re-evaluates under the new language.
 
-import { EN_PLAIN, EN_TEMPLATE } from "@/i18n-en";
+import { EN_BACKEND, EN_BACKEND_PATTERNS, EN_PLAIN, EN_TEMPLATE } from "@/i18n-en";
 
 export type Language = "zh" | "en";
 
@@ -37,7 +37,12 @@ export function getLanguage(): Language {
 
 /** Translate a plain Chinese literal. Falls back to the source text. */
 export function t(zh: string): string {
-  if (LANG === "en") return EN_PLAIN[zh] ?? zh;
+  if (LANG !== "en") return zh;
+  const plain = EN_PLAIN[zh] ?? EN_BACKEND[zh];
+  if (plain) return plain;
+  for (const [re, replacement] of EN_BACKEND_PATTERNS) {
+    if (re.test(zh)) return zh.replace(re, replacement);
+  }
   return zh;
 }
 

@@ -1644,7 +1644,7 @@ export function App() {
   };
 
   const showNotice = (title: string, message: string, status?: Status) => {
-    setNotice({ title, message, status });
+    setNotice({ title, message: t(message), status });
   };
 
   useEffect(() => {
