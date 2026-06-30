@@ -188,6 +188,13 @@ pub struct RelayProfileTestPayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct StepwiseTestPayload {
+    pub item_count: usize,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RelayProfileModelsPayload {
     pub models: Vec<String>,
     pub endpoint: String,
@@ -2082,6 +2089,44 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
                 http_status: 0,
                 endpoint: String::new(),
                 response_preview: String::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn test_stepwise_settings(
+    settings: BackendSettings,
+) -> CommandResult<StepwiseTestPayload> {
+    match codex_plus_core::stepwise::test_connection(&settings).await {
+        Ok(result) => {
+            let error = result
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let item_count = result
+                .get("items")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or_default();
+            if error.is_empty() {
+                ok(
+                    &format!("Stepwise 连接正常，测试返回 {item_count} 条建议。"),
+                    StepwiseTestPayload { item_count, error },
+                )
+            } else {
+                failed(
+                    &format!("Stepwise 测试失败：{error}"),
+                    StepwiseTestPayload { item_count, error },
+                )
+            }
+        }
+        Err(error) => failed(
+            &format!("Stepwise 测试失败：{error}"),
+            StepwiseTestPayload {
+                item_count: 0,
+                error: error.to_string(),
             },
         ),
     }

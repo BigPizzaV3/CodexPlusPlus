@@ -196,6 +196,13 @@ pub async fn handle_bridge_request(
             ctx.runtime.upstream_worktree_prepare(payload.clone()).await
         }
         "/upstream-worktree/create" => ctx.runtime.upstream_worktree_create(payload.clone()).await,
+        "/stepwise/settings" => stepwise_settings_value(ctx.settings.get_settings().await),
+        "/stepwise/generate" => {
+            stepwise_generate_value(ctx.settings.get_settings().await, payload.clone()).await
+        }
+        "/stepwise/test" => {
+            stepwise_test_value(ctx.settings.get_settings().await, payload.clone()).await
+        }
         "/delete" => result_value(ctx.data.delete(session_from_payload(&payload)).await),
         "/undo" => {
             let undo_token = payload
@@ -623,6 +630,7 @@ fn settings_payload_value(
 ) -> anyhow::Result<Value> {
     let mut value = serde_json::to_value(settings)?;
     if let Some(object) = value.as_object_mut() {
+        object.remove("codexAppStepwiseApiKey");
         object.insert(
             "codexAppVersion".to_string(),
             Value::String(codex_app_version),
@@ -645,6 +653,33 @@ where
     T: serde::Serialize,
 {
     Ok(serde_json::to_value(result?)?)
+}
+
+fn stepwise_settings_value(result: anyhow::Result<BackendSettings>) -> anyhow::Result<Value> {
+    let settings = result?;
+    Ok(json!({
+        "status": "ok",
+        "settings": crate::stepwise::public_settings(&settings),
+    }))
+}
+
+async fn stepwise_generate_value(
+    result: anyhow::Result<BackendSettings>,
+    payload: Value,
+) -> anyhow::Result<Value> {
+    let settings = result?;
+    let request = payload.get("request").cloned().unwrap_or(payload);
+    let request =
+        serde_json::from_value::<crate::stepwise::StepwiseRequest>(request).unwrap_or_default();
+    crate::stepwise::generate(request, &settings).await
+}
+
+async fn stepwise_test_value(
+    result: anyhow::Result<BackendSettings>,
+    payload: Value,
+) -> anyhow::Result<Value> {
+    let settings = crate::stepwise::settings_with_payload(result?, &payload);
+    crate::stepwise::test_connection(&settings).await
 }
 
 fn diagnostic_log_value(payload: Value) -> anyhow::Result<Value> {

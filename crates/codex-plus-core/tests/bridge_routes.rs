@@ -68,6 +68,12 @@ async fn bridge_routes_cover_all_current_paths() {
             "/upstream-worktree/create",
             json!({"repoPath": "/repo", "branchName": "feature/demo"}),
         ),
+        ("/stepwise/settings", json!({})),
+        (
+            "/stepwise/generate",
+            json!({"request": {"lastUserMessage": "请继续", "lastAssistantMessage": "已完成"}}),
+        ),
+        ("/stepwise/test", json!({})),
         ("/delete", json!({"session_id": "s1", "title": "First"})),
         ("/undo", json!({"undo_token": "undo-1"})),
         (
@@ -116,6 +122,27 @@ async fn settings_get_includes_runtime_codex_app_version() {
     assert_eq!(result["codexAppPluginMarketplaceUnlock"], json!(true));
     assert_eq!(result["codexAppForcePluginInstall"], json!(true));
     assert_eq!(result["codexAppThreadIdBadge"], json!(false));
+}
+
+#[tokio::test]
+async fn settings_get_does_not_expose_stepwise_api_key_to_renderer() {
+    let settings = BackendSettings {
+        codex_app_stepwise_api_key: "sk-secret".to_string(),
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
+
+    assert!(result.get("codexAppStepwiseApiKey").is_none());
+    assert_eq!(
+        result["codexAppStepwiseApiKeyEnv"],
+        json!("CODEX_STEPWISE_API_KEY")
+    );
 }
 
 #[tokio::test]
@@ -213,6 +240,52 @@ async fn upstream_worktree_routes_are_dispatched_to_runtime() {
             "repoRoot": "/repo",
             "sourceRef": "upstream/main",
             "qualifiedSourceRef": "refs/remotes/upstream/main",
+        })
+    );
+}
+
+#[tokio::test]
+async fn stepwise_routes_use_settings_service() {
+    let settings = BackendSettings {
+        codex_app_stepwise_enabled: false,
+        codex_app_stepwise_direct_send: true,
+        codex_app_stepwise_model: "settings-service-stepwise".to_string(),
+        codex_app_stepwise_max_items: 3,
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let public_settings = handle_bridge_request(ctx.clone(), "/stepwise/settings", json!({})).await;
+    assert_eq!(public_settings["settings"]["enabled"], json!(false));
+    assert_eq!(public_settings["settings"]["directSend"], json!(true));
+    assert_eq!(
+        public_settings["settings"]["model"],
+        json!("settings-service-stepwise")
+    );
+    assert_eq!(public_settings["settings"]["maxItems"], json!(3));
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/stepwise/generate",
+            json!({"request": {"lastUserMessage": "请继续", "lastAssistantMessage": "已完成"}}),
+        )
+        .await,
+        json!({
+            "status": "ok",
+            "disabled": true,
+            "items": []
+        })
+    );
+    assert_eq!(
+        handle_bridge_request(ctx, "/stepwise/test", json!({})).await,
+        json!({
+            "status": "ok",
+            "disabled": true,
+            "items": []
         })
     );
 }
@@ -930,6 +1003,13 @@ struct FakeSettings {
 }
 
 impl FakeSettings {
+    fn with_settings(settings: BackendSettings) -> Self {
+        Self {
+            settings: Mutex::new(settings),
+            codex_app_version: Mutex::new(String::new()),
+        }
+    }
+
     fn with_codex_app_version(version: &str) -> Self {
         Self {
             settings: Mutex::new(BackendSettings::default()),

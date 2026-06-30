@@ -148,6 +148,16 @@ type BackendSettings = {
   codexAppNativeMenuPlacement: boolean;
   codexAppNativeMenuLocalization: boolean;
   codexAppServiceTierControls: boolean;
+  codexAppStepwiseEnabled: boolean;
+  codexAppStepwiseDirectSend: boolean;
+  codexAppStepwiseBaseUrl: string;
+  codexAppStepwiseApiKey: string;
+  codexAppStepwiseApiKeyEnv: string;
+  codexAppStepwiseModel: string;
+  codexAppStepwiseMaxItems: number;
+  codexAppStepwiseMaxInputChars: number;
+  codexAppStepwiseMaxOutputTokens: number;
+  codexAppStepwiseTimeoutMs: number;
   codexAppImageOverlayEnabled: boolean;
   codexAppImageOverlayPath: string;
   codexAppImageOverlayOpacity: number;
@@ -372,6 +382,11 @@ type RelayProfileTestResult = CommandResult<{
   httpStatus: number;
   endpoint: string;
   responsePreview: string;
+}>;
+
+type StepwiseTestResult = CommandResult<{
+  itemCount: number;
+  error: string;
 }>;
 
 type RelayProfileModelsResult = CommandResult<{
@@ -642,6 +657,16 @@ const defaultSettings: BackendSettings = {
   codexAppNativeMenuPlacement: true,
   codexAppNativeMenuLocalization: true,
   codexAppServiceTierControls: false,
+  codexAppStepwiseEnabled: false,
+  codexAppStepwiseDirectSend: false,
+  codexAppStepwiseBaseUrl: "",
+  codexAppStepwiseApiKey: "",
+  codexAppStepwiseApiKeyEnv: "CODEX_STEPWISE_API_KEY",
+  codexAppStepwiseModel: "",
+  codexAppStepwiseMaxItems: 6,
+  codexAppStepwiseMaxInputChars: 6000,
+  codexAppStepwiseMaxOutputTokens: 500,
+  codexAppStepwiseTimeoutMs: 8000,
   codexAppImageOverlayEnabled: false,
   codexAppImageOverlayPath: "",
   codexAppImageOverlayOpacity: 35,
@@ -1500,6 +1525,11 @@ export function App() {
     if (result) showNotice(t("供应商测试"), result.message, result.status);
   };
 
+  const testStepwiseSettings = async (settings: BackendSettings) => {
+    const result = await run(() => call<StepwiseTestResult>("test_stepwise_settings", { settings }));
+    if (result) showNotice("Stepwise 测试", result.message, result.status);
+  };
+
   const fetchRelayProfileModels = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileModelsResult>("fetch_relay_profile_models", { profile }));
     if (result) showNotice(t("模型列表"), result.message, result.status);
@@ -1865,6 +1895,7 @@ export function App() {
       deleteContextEntry,
       extractRelayCommonConfig,
       testRelayProfile,
+      testStepwiseSettings,
       fetchRelayProfileModels,
       switchRelayProfile,
       relaySwitching,
@@ -2145,6 +2176,7 @@ type Actions = {
   deleteContextEntry: (settings: BackendSettings, kind: ContextKind, id: string) => Promise<BackendSettings | null>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
+  testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
   switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
   relaySwitching: boolean;
@@ -2535,6 +2567,8 @@ function EnhanceScreen({
             <FeatureToggle title={t("插件列表全量展示")} detail={t("进入插件页后自动连续展开“更多”，尽量一次显示完整插件列表。")} checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPluginAutoExpand", value)} />
             <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
             <FeatureToggle title={t("Fast 按钮")} detail={t("显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。")} checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
+            <FeatureToggle title="Stepwise" detail={t("在 Codex 页面显示可拖动的后续建议浮层；建议由单独配置的 Stepwise API 生成。")} checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseEnabled", value)} />
+            <FeatureToggle title={t("Stepwise 直接发送")} detail={t("点击建议后自动发送；关闭时只填入输入框。")} checked={form.codexAppStepwiseDirectSend} disabled={!masterEnabled || !form.codexAppStepwiseEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseDirectSend", value)} />
             <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示删除按钮，并支持撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
             <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
             <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
@@ -3274,6 +3308,91 @@ function SettingsScreen({
               onChange={(event) => onFormChange({ ...form, cliWrapperApiKey: event.currentTarget.value })}
             />
           </Field>
+          <div className="settings-block stepwise-settings-block">
+            <div className="section-title">Stepwise</div>
+            <div className="stepwise-settings-section">{t("连接")}</div>
+            <div className="form-row">
+              <Field label="Base URL">
+                <Input
+                  value={form.codexAppStepwiseBaseUrl}
+                  onChange={(event) => onFormChange({ ...form, codexAppStepwiseBaseUrl: event.currentTarget.value })}
+                  placeholder="https://api.example.com/v1"
+                />
+              </Field>
+              <Field label="Model">
+                <Input
+                  value={form.codexAppStepwiseModel}
+                  onChange={(event) => onFormChange({ ...form, codexAppStepwiseModel: event.currentTarget.value })}
+                  placeholder={t("例如 gpt-5.4-mini")}
+                />
+              </Field>
+            </div>
+            <Field label="API Key">
+              <Input
+                type="password"
+                value={form.codexAppStepwiseApiKey}
+                onChange={(event) => onFormChange({ ...form, codexAppStepwiseApiKey: event.currentTarget.value })}
+              />
+            </Field>
+            <details className="stepwise-advanced">
+              <summary>{t("高级参数")}</summary>
+              <div className="form-row">
+                <Field label={t("API Key 环境变量")}>
+                  <Input
+                    value={form.codexAppStepwiseApiKeyEnv}
+                    onChange={(event) => onFormChange({ ...form, codexAppStepwiseApiKeyEnv: event.currentTarget.value })}
+                  />
+                </Field>
+                <Field label={t("最多建议数")}>
+                  <Input
+                    max={6}
+                    min={0}
+                    type="number"
+                    value={form.codexAppStepwiseMaxItems}
+                    onChange={(event) =>
+                      onFormChange({ ...form, codexAppStepwiseMaxItems: clampNumber(Number(event.currentTarget.value), 0, 6) })
+                    }
+                  />
+                </Field>
+              </div>
+              <div className="form-row">
+                <Field label={t("超时毫秒")}>
+                  <Input
+                    min={1000}
+                    type="number"
+                    value={form.codexAppStepwiseTimeoutMs}
+                    onChange={(event) =>
+                      onFormChange({ ...form, codexAppStepwiseTimeoutMs: clampNumber(Number(event.currentTarget.value), 1000, 60000) })
+                    }
+                  />
+                </Field>
+                <Field label={t("最大输入字符")}>
+                  <Input
+                    min={1000}
+                    type="number"
+                    value={form.codexAppStepwiseMaxInputChars}
+                    onChange={(event) =>
+                      onFormChange({ ...form, codexAppStepwiseMaxInputChars: clampNumber(Number(event.currentTarget.value), 1000, 24000) })
+                    }
+                  />
+                </Field>
+              </div>
+              <Field label={t("最大输出 tokens")}>
+                <Input
+                  min={100}
+                  type="number"
+                  value={form.codexAppStepwiseMaxOutputTokens}
+                  onChange={(event) =>
+                    onFormChange({ ...form, codexAppStepwiseMaxOutputTokens: clampNumber(Number(event.currentTarget.value), 100, 4000) })
+                  }
+                />
+              </Field>
+            </details>
+            <div className="toolbar stepwise-settings-actions">
+              <Button variant="secondary" onClick={() => void actions.testStepwiseSettings(form)}>{t("测试连接")}</Button>
+              <Button onClick={() => void actions.saveSettings()}>{t("保存设置")}</Button>
+            </div>
+          </div>
           <div className="settings-block">
             <label className="check-row">
               <input
@@ -5646,6 +5765,10 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     computerUseGuardEnabled: settings.computerUseGuardEnabled === true,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
+    codexAppStepwiseMaxItems: clampNumber(settings.codexAppStepwiseMaxItems ?? 6, 0, 6),
+    codexAppStepwiseMaxInputChars: clampNumber(settings.codexAppStepwiseMaxInputChars || 6000, 1000, 24000),
+    codexAppStepwiseMaxOutputTokens: clampNumber(settings.codexAppStepwiseMaxOutputTokens || 500, 100, 4000),
+    codexAppStepwiseTimeoutMs: clampNumber(settings.codexAppStepwiseTimeoutMs || 8000, 1000, 60000),
     relayCommonConfigContents,
     relayContextConfigContents,
     relayProfiles: profiles,
