@@ -1033,7 +1033,7 @@
       return `<div class="csw-empty">生成中...</div>`;
     }
     if (!state.prompts.length) {
-      const text = state.bridgeError || "当前没有可用建议";
+      const text = emptyStateText();
       return `<div class="csw-empty">${escapeHtml(text)}</div>`;
     }
     return `<div class="csw-list">${state.prompts.map((item, index) => `
@@ -1042,6 +1042,13 @@
         <span class="csw-row-prompt">${escapeHtml(item.prompt)}</span>
       </button>
     `).join("")}</div>`;
+  }
+
+  function emptyStateText() {
+    if (state.bridgeError) return state.bridgeError;
+    if (state.bridgeStatus === "ok") return "Stepwise API 已返回，但没有解析到可用建议";
+    if (state.bridgeStatus === "disabled") return "Stepwise 已关闭";
+    return "当前没有可用建议";
   }
 
   function attachNextEvents() {
@@ -1361,7 +1368,6 @@
 
   function chatSurfaceReady() {
     if (!chatRoot()) return false;
-    if (!composerCandidates().length) return false;
     return !chatBusy();
   }
 
@@ -1425,7 +1431,7 @@
         const rect = visibleRect(current);
         if (!rect || rect.height > 96) continue;
         const count = Array.from(current.querySelectorAll("button,[role='button']")).filter(actionButton).length;
-        if (count >= 3) return current;
+        if (count >= 2) return current;
       }
     }
     return null;
@@ -1465,7 +1471,7 @@
         const rect = visibleRect(current);
         if (!rect || rect.height > 96) continue;
         const count = Array.from(current.querySelectorAll("button,[role='button']")).filter(actionButton).length;
-        if (count < 3) continue;
+        if (count < 2) continue;
         seen.add(current);
         rows.push(current);
         break;
@@ -1644,13 +1650,31 @@
     return null;
   }
 
+  function payloadItems(payload) {
+    if (!payload) return [];
+    if (Array.isArray(payload)) return payload;
+    for (const key of ["items", "suggestions", "next_steps", "nextSteps", "actions", "prompts"]) {
+      if (Array.isArray(payload[key])) return payload[key];
+    }
+    return [];
+  }
+
   function payloadPrompts(payload) {
-    if (!payload || !Array.isArray(payload.items)) return [];
-    const items = payload.items
+    const rawItems = payloadItems(payload);
+    if (!rawItems.length) return [];
+    const items = rawItems
       .slice(0, MAX_STEPWISE_ITEMS)
       .map((item) => {
-        const prompt = shortText(item?.prompt || "", MAX_PROMPT_LENGTH).replace(/\s+/g, " ");
-        const label = shortText(item?.label || "", 36).replace(/\s+/g, " ");
+        const prompt = shortText(
+          typeof item === "string"
+            ? item
+            : item?.prompt || item?.text || item?.action || item?.content || item?.message || "",
+          MAX_PROMPT_LENGTH
+        ).replace(/\s+/g, " ");
+        const label = shortText(
+          typeof item === "string" ? "" : item?.label || item?.title || item?.name || "",
+          36
+        ).replace(/\s+/g, " ");
         return prompt ? { label: label || labelForPrompt(prompt), prompt } : null;
       })
       .filter(Boolean);
@@ -1693,6 +1717,14 @@
       .then((payload) => {
         if (!isCurrentInstance()) return;
         const prompts = payload?.disabled || payload?.error ? [] : payloadPrompts(payload);
+        pushDiagnostic("bridge:generate-result", {
+          status: payload?.status || "",
+          disabled: Boolean(payload?.disabled),
+          error: normalizeText(payload?.error || ""),
+          rawItemCount: payloadItems(payload).length,
+          promptCount: prompts.length,
+          payloadKeys: payload && typeof payload === "object" ? Object.keys(payload).slice(0, 12) : [],
+        });
         state.bridgeCache.set(key, {
           disabled: Boolean(payload?.disabled),
           error: normalizeText(payload?.error || ""),
@@ -1703,6 +1735,7 @@
       })
       .catch((error) => {
         if (!isCurrentInstance()) return;
+        pushDiagnostic("bridge:generate-failed", { error: error.message });
         state.bridgeCache.set(key, { disabled: true, error: error.message, prompts: [] });
         state.bridgeStatus = "failed";
         state.bridgeError = error.message;
@@ -1895,12 +1928,20 @@
     installFloat();
 
     if (!chatSurfaceReady()) {
+      pushDiagnostic("scan:not-ready", {
+        hasChatRoot: Boolean(chatRoot()),
+        busy: chatBusy(),
+      });
       renderFloat();
       return;
     }
 
     const message = findLatestAssistantMessage();
     if (!message) {
+      pushDiagnostic("scan:no-assistant-message", {
+        messageCandidateCount: messageCandidates().length,
+        actionRowCount: allActionRows().length,
+      });
       renderFloat();
       return;
     }
@@ -1929,7 +1970,15 @@
     const bridgeResult = state.bridgeCache.get(bridgeKey);
     const prompts = bridgeResult?.prompts?.length ? bridgeResult.prompts : stepwisePayload.prompts;
 
-    if (!bridgeResult) requestBridgeStepwise(bridgeKey, userText, assistantText);
+    if (!bridgeResult) {
+      pushDiagnostic("bridge:generate-request", {
+        userTextLength: userText.length,
+        assistantTextLength: assistantText.length,
+        hasInlinePayload: Boolean(stepwisePayload.payload),
+        inlinePromptCount: stepwisePayload.prompts.length,
+      });
+      requestBridgeStepwise(bridgeKey, userText, assistantText);
+    }
 
     const nextHash = hashText(prompts.map((item) => `${item.label}\n${item.prompt}`).join("\n\n"));
     if (state.currentHash !== `${hash}:${nextHash}`) {

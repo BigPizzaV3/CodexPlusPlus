@@ -169,6 +169,23 @@ fn stepwise_direct_send_targets_main_chat_composer() {
 }
 
 #[test]
+fn stepwise_scan_does_not_require_composer_for_suggestions() {
+    let script = assets::stepwise_script();
+
+    assert!(!script.contains("if (!composerCandidates().length) return false;"));
+}
+
+#[test]
+fn stepwise_assistant_detection_accepts_two_action_buttons() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("if (count >= 2) return current;"));
+    assert!(script.contains("if (count < 2) continue;"));
+    assert!(!script.contains("if (count >= 3) return current;"));
+    assert!(!script.contains("if (count < 3) continue;"));
+}
+
+#[test]
 fn injection_script_defers_backend_mapped_toggles_until_settings_load() {
     let script = assets::injection_script(57321);
 

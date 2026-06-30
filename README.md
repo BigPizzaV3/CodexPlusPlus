@@ -177,6 +177,7 @@ Telegram 频道：<https://t.me/CodexPlusPlus>
 - 传统增强模式：插件市场解锁、特殊插件强制安装、会话删除、Markdown 导出、项目移动等。
 - 粘贴修复：从 Word 等富文本来源粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。默认关闭，启用后需重启 Codex 才生效。
   - **使用提示**：管理工具里勾选后需点「保存增强设置」按钮才会写盘，然后重启 Codex++ 才会生效。
+- Stepwise 下一步建议：在 Codex 对话页显示可拖动的 Stepwise 浮层，基于当前用户意图和最新助手回复生成后续操作建议；可配置独立 Base URL、API Key、模型、建议数量和是否点击后直接发送。
 - 用户脚本独立管理，可在启动时注入自定义脚本。
 - Provider 同步：启动前同步本地会话 metadata，切换供应商后旧会话仍可见。
 - Zed 打开入口：识别远程 SSH 上下文后，可从 Codex 直接打开对应文件到 Zed Remote Development。

@@ -210,19 +210,9 @@ pub async fn generate(
 
     let data: Value =
         serde_json::from_str(&text).context("failed to parse Stepwise API response")?;
-    let content = data
-        .get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
-        .and_then(|message| message.get("content"))
-        .and_then(Value::as_str)
-        .unwrap_or("{}");
-    let parsed: Value =
-        serde_json::from_str(content).context("failed to parse Stepwise JSON content")?;
     Ok(json!({
         "status": "ok",
-        "items": clamp_items(parsed.get("items").cloned().unwrap_or(Value::Null), max_items)
+        "items": extract_stepwise_items(&data, max_items)
     }))
 }
 
@@ -256,14 +246,14 @@ pub fn build_messages(request: &StepwiseRequest, settings: &BackendSettings) -> 
         "Return strict JSON only, no markdown.",
         "Schema: {\"items\":[{\"prompt\":\"...\",\"label\":\"optional short label\"}]}",
         &format!(
-            "Generate 0 to {} items.",
+            "Generate 1 to {} items when the assistant result is non-empty.",
             settings.codex_app_stepwise_max_items
         ),
         "Every prompt must be directly sendable by the user.",
         "Use the latest user intent and assistant result. Avoid generic filler.",
         "Language policy: write Stepwise prompts in the dominant natural language of languageInput.",
         "Ignore technical terms, file names, commands, APIs, and product names when detecting language; keep them in their original language when natural.",
-        "If there is no useful next action, return {\"items\":[]}.",
+        "Return {\"items\":[]} only when both the user intent and assistant result are empty or unusable.",
     ]
     .join("\n");
     vec![
@@ -294,21 +284,15 @@ pub fn clamp_items(value: Value, max_items: u8) -> Vec<StepwiseItem> {
     };
 
     for raw in raw_items {
-        let prompt = if let Some(prompt) = raw.get("prompt").and_then(Value::as_str) {
-            prompt
-        } else if let Some(prompt) = raw.as_str() {
-            prompt
-        } else {
-            ""
-        };
+        let prompt = first_string_field(raw, &["prompt", "text", "action", "content", "message"])
+            .or_else(|| raw.as_str())
+            .unwrap_or("");
         let prompt = normalize_spaces(prompt);
         if prompt.is_empty() || seen.contains(&prompt) {
             continue;
         }
         seen.insert(prompt.clone());
-        let label = raw
-            .get("label")
-            .and_then(Value::as_str)
+        let label = first_string_field(raw, &["label", "title", "name"])
             .map(normalize_spaces)
             .unwrap_or_default();
         items.push(StepwiseItem {
@@ -321,6 +305,83 @@ pub fn clamp_items(value: Value, max_items: u8) -> Vec<StepwiseItem> {
     }
 
     items
+}
+
+pub fn extract_stepwise_items(data: &Value, max_items: u8) -> Vec<StepwiseItem> {
+    for candidate in stepwise_payload_candidates(data) {
+        if let Some(items) = stepwise_items_value(&candidate) {
+            let items = clamp_items(items, max_items);
+            if !items.is_empty() {
+                return items;
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn stepwise_payload_candidates(data: &Value) -> Vec<Value> {
+    let mut candidates = Vec::new();
+    candidates.push(data.clone());
+
+    if let Some(content) = data
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+    {
+        candidates.push(content.clone());
+        if let Some(parsed) = parse_json_value(content) {
+            candidates.push(parsed);
+        }
+    }
+
+    for key in ["output", "response", "data", "result"] {
+        if let Some(value) = data.get(key) {
+            candidates.push(value.clone());
+            if let Some(parsed) = parse_json_value(value) {
+                candidates.push(parsed);
+            }
+        }
+    }
+
+    candidates
+}
+
+fn stepwise_items_value(value: &Value) -> Option<Value> {
+    if value.as_array().is_some() {
+        return Some(value.clone());
+    }
+    for key in [
+        "items",
+        "suggestions",
+        "next_steps",
+        "nextSteps",
+        "actions",
+        "prompts",
+    ] {
+        if let Some(items) = value.get(key).filter(|items| items.as_array().is_some()) {
+            return Some(items.clone());
+        }
+    }
+    None
+}
+
+fn parse_json_value(value: &Value) -> Option<Value> {
+    let text = value.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    serde_json::from_str(text).ok()
+}
+
+fn first_string_field<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    for key in keys {
+        if let Some(text) = value.get(key).and_then(Value::as_str) {
+            return Some(text);
+        }
+    }
+    None
 }
 
 fn stepwise_api_key(settings: &BackendSettings) -> String {
@@ -389,6 +450,24 @@ mod tests {
     }
 
     #[test]
+    fn extracts_items_from_common_stepwise_response_shapes() {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": "{\"suggestions\":[{\"title\":\"继续排查\",\"text\":\"请继续检查 Stepwise 返回内容\"},{\"action\":\"补一个解析测试\"}]}"
+                }
+            }]
+        });
+
+        let items = extract_stepwise_items(&response, 6);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].label, "继续排查");
+        assert_eq!(items[0].prompt, "请继续检查 Stepwise 返回内容");
+        assert_eq!(items[1].prompt, "补一个解析测试");
+    }
+
+    #[test]
     fn prompt_contains_language_policy() {
         let settings = BackendSettings {
             codex_app_stepwise_max_items: 4,
@@ -407,7 +486,7 @@ mod tests {
         let user = messages[1].get("content").and_then(Value::as_str).unwrap();
 
         assert!(system.contains("dominant natural language"));
-        assert!(system.contains("Generate 0 to 4 items."));
+        assert!(system.contains("Generate 1 to 4 items when the assistant result is non-empty."));
         assert!(user.contains("directSend"));
         assert!(user.contains("languageInput"));
     }
