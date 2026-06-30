@@ -128,10 +128,10 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
   <tr>
     <td align="center">
       <a href="https://smallice.xyz/register?aff=FSNMGR2THBLN">
-        <img src="docs/images/sponsor-smallice.png" alt="SmallRice" width="150">
+        <img src="docs/images/sponsor-smallice.png" alt="Smallice" width="150">
       </a>
     </td>
-    <td><a href="https://smallice.xyz/register?aff=FSNMGR2THBLN"><strong>SmallRice | AI Relay</strong></a><br>Thanks to SmallRice for sponsoring this project! SmallRice is one key to all the language models worth calling: a unified endpoint that acts as a quiet foundation layer beneath your applications. Whether you call Claude, GPT, Gemini, or DeepSeek, the request shape stays consistent. <a href="https://smallice.xyz/register?aff=FSNMGR2THBLN">Register through this link</a> to get started.</td>
+    <td><a href="https://smallice.xyz/register?aff=FSNMGR2THBLN"><strong>Smallice | AI Relay</strong></a><br>Thanks to Smallice for sponsoring this project! Smallice is one key to all the language models worth calling: a unified endpoint that acts as a quiet foundation layer beneath your applications. Whether you call Claude, GPT, Gemini, or DeepSeek, the request shape stays consistent. <a href="https://smallice.xyz/register?aff=FSNMGR2THBLN">Register through this link</a> to get started.</td>
   </tr>
 </table>
 
