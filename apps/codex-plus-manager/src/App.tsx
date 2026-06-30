@@ -1704,6 +1704,16 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (getLanguage() === "en") {
+      void invoke("update_tray_labels", {
+        showLabel: "Show window",
+        quitLabel: "Quit",
+        windowTitle: "Codex++ Manager",
+      });
+    }
+  }, []);
+
+  useEffect(() => {
     const timer = window.setInterval(() => {
       void refreshPendingProviderImport(true);
     }, 1200);
