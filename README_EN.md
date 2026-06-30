@@ -37,7 +37,7 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 
 <p align="center">
   <a href="https://jojocode.com/">
-    <img src="docs/images/sponsor-jojocode.svg" alt="JOJO Code" width="180">
+    <img src="docs/images/sponsor-jojocode.png" alt="JOJO Code" width="180">
   </a>
 </p>
 <p align="center">
@@ -56,7 +56,7 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
   <tr>
     <td align="center">
       <a href="https://jojocode.com/">
-        <img src="docs/images/sponsor-jojocode.svg" alt="JOJO Code" width="150">
+        <img src="docs/images/sponsor-jojocode.png" alt="JOJO Code" width="150">
       </a>
     </td>
     <td><a href="https://jojocode.com/"><strong>JOJO Code | Official Codex++ Relay</strong></a><br>Thanks to JOJO Code for sponsoring this project. JOJO Code is the official Codex++ relay service with cost-effective pricing and stable, easy-to-configure Codex API access. It supports GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2, and more for daily development, quick setup, team collaboration, and continuous use.</td>
@@ -68,14 +68,6 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
       </a>
     </td>
     <td><a href="https://aigocode.com/invite/CodexPlusPlus"><strong>AIGoCode</strong></a><br>Thanks to AIGoCode for sponsoring this project! AIGoCode is an all-in-one platform integrating the latest Claude Code, Codex, and Gemini models, providing stable, efficient, and cost-effective AI programming services. It offers flexible subscription plans, direct access in China, no extra network setup, and fast responses. AIGoCode provides a special benefit for CodexPlusPlus users: users who <a href="https://aigocode.com/invite/CodexPlusPlus">register through this link</a> can receive an extra 10% bonus credit on their first recharge.</td>
-  </tr>
-  <tr>
-    <td align="center">
-      <a href="https://www.packyapi.com/">
-        <img src="docs/images/sponsor-packycode.png" alt="PackyCode" width="150">
-      </a>
-    </td>
-    <td><a href="https://www.packyapi.com/"><strong>PackyCode</strong></a><br>Thanks to PackyCode for sponsoring this project! PackyCode is a stable and efficient API relay service provider, offering relay services for Claude Code, Codex, Gemini, and more. PackyCode provides a special discount for users of this software: register through this link and enter the "CodexPlusPlus" coupon code when recharging to get 10% off your first recharge.</td>
   </tr>
   <tr>
     <td align="center">
@@ -124,6 +116,22 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
       </a>
     </td>
     <td><a href="https://sui-xiang.com/"><strong>Sui Xiang AI Gateway</strong></a><br>Thanks to Sui Xiang AI Gateway for sponsoring this project! Sui Xiang AI Gateway is a reliable and efficient API relay service provider for Claude, Codex, Gemini, and more. It focuses on privacy, transparent service, fast support, no data resale, and no model dilution. New accounts can receive 0.5 CNY in daily check-in test credit, with 1:1 recharge credit, no subscription, and pay-as-you-go billing.</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://www.byteplus.com/en/product/modelark?utm_campaign=hw&amp;utm_content=CodexPlusPlus&amp;utm_medium=devrel_tool_web&amp;utm_source=OWO&amp;utm_term=CodexPlusPlus">
+        <img src="docs/images/sponsor-byteplus.png" alt="BytePlus" width="150">
+      </a>
+    </td>
+    <td><a href="https://www.byteplus.com/en/product/modelark?utm_campaign=hw&amp;utm_content=CodexPlusPlus&amp;utm_medium=devrel_tool_web&amp;utm_source=OWO&amp;utm_term=CodexPlusPlus"><strong>BytePlus ModelArk | Dola Seed</strong></a><br>Thanks to Dola Seed for sponsoring this project! Dola Seed 2.0 is a full-modal general large model independently developed by ByteDance for the global market. Built on a unified multimodal architecture, it supports joint understanding and generation of text, images, audio, and video. It natively enables agent collaboration, strong reasoning, long-task execution, tool integration, and coding capabilities, and is readily accessible through the ModelArk platform. Register via <a href="https://www.byteplus.com/en/product/modelark?utm_campaign=hw&amp;utm_content=CodexPlusPlus&amp;utm_medium=devrel_tool_web&amp;utm_source=OWO&amp;utm_term=CodexPlusPlus">this link</a> to get 500,000 tokens of free inference quota per model. <a href="https://dis.chatdesks.cn/chatdesk/hsyqCodexPlusPlus.html">Mainland China developers can click here</a>.</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://smallice.xyz/register?aff=FSNMGR2THBLN">
+        <img src="docs/images/sponsor-smallice.png" alt="SmallRice" width="150">
+      </a>
+    </td>
+    <td><a href="https://smallice.xyz/register?aff=FSNMGR2THBLN"><strong>SmallRice | AI Relay</strong></a><br>Thanks to SmallRice for sponsoring this project! SmallRice is one key to all the language models worth calling: a unified endpoint that acts as a quiet foundation layer beneath your applications. Whether you call Claude, GPT, Gemini, or DeepSeek, the request shape stays consistent. <a href="https://smallice.xyz/register?aff=FSNMGR2THBLN">Register through this link</a> to get started.</td>
   </tr>
 </table>
 
