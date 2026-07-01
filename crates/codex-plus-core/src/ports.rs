@@ -208,11 +208,18 @@ fn acquire_resilient_loopback_port_guard_with(
         Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && can_connect(port) => {
             Err(error)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+        Err(error)
+            if error.kind() == std::io::ErrorKind::AddrInUse || port_bind_forbidden(&error) =>
+        {
             Ok(LoopbackPortGuard::fallback_lock(file, path))
         }
         Err(error) => Err(error),
     }
+}
+
+fn port_bind_forbidden(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
+        || matches!(error.raw_os_error(), Some(10013))
 }
 
 fn acquire_lock_guard(port: u16, state_dir: &Path) -> std::io::Result<(File, PathBuf)> {
@@ -320,6 +327,21 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(second.kind(), std::io::ErrorKind::WouldBlock);
+    }
+
+    #[test]
+    fn resilient_guard_uses_lock_fallback_when_port_bind_is_forbidden() {
+        let temp = tempfile::tempdir().unwrap();
+        let guard = acquire_resilient_loopback_port_guard_with(
+            57319,
+            temp.path(),
+            |_| Err(std::io::Error::from_raw_os_error(10013)),
+            |_| false,
+        )
+        .unwrap();
+
+        assert!(guard._listener.is_none());
+        assert!(guard.fallback_path().is_some());
     }
 
     #[test]
