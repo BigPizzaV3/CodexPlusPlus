@@ -1067,6 +1067,179 @@ body {
   animation-delay: 95ms;
 }
 
+.provider-doctor {
+  display: grid;
+  gap: 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--muted) / 0.34);
+  padding: 12px;
+}
+
+.provider-doctor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.provider-doctor-head > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.provider-doctor-head strong {
+  font-size: 14px;
+}
+
+.provider-doctor-head span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.provider-doctor-result {
+  display: grid;
+  gap: 10px;
+}
+
+.provider-doctor-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: hsl(var(--foreground));
+  font-size: 13px;
+}
+
+.provider-doctor-checks {
+  display: grid;
+  gap: 8px;
+}
+
+.provider-doctor-check {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  padding: 10px;
+}
+
+.provider-doctor-check.ok svg {
+  color: hsl(156 64% 42%);
+}
+
+.provider-doctor-check.warning svg {
+  color: hsl(38 92% 50%);
+}
+
+.provider-doctor-check.failed svg {
+  color: hsl(0 72% 55%);
+}
+
+.provider-doctor-check strong {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 13px;
+}
+
+.provider-doctor-check span,
+.provider-doctor-recommendation {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.provider-doctor-recommendation {
+  margin: 0;
+}
+
+.provider-doctor-modal {
+  max-width: 620px;
+}
+
+.provider-doctor-progress {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: hsl(var(--muted));
+}
+
+.provider-doctor-progress > div {
+  height: 100%;
+  border-radius: inherit;
+  background: hsl(var(--primary));
+  transition: width 240ms var(--motion-ease);
+}
+
+.provider-doctor-step-list {
+  display: grid;
+  gap: 10px;
+}
+
+.provider-doctor-step {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  padding: 12px;
+}
+
+.provider-doctor-step-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+}
+
+.provider-doctor-step.running .provider-doctor-step-icon {
+  color: hsl(var(--primary));
+}
+
+.provider-doctor-step.running svg {
+  animation: spin 850ms linear infinite;
+}
+
+.provider-doctor-step.ok .provider-doctor-step-icon {
+  color: hsl(156 64% 42%);
+}
+
+.provider-doctor-step.warning .provider-doctor-step-icon {
+  color: hsl(38 92% 50%);
+}
+
+.provider-doctor-step.failed .provider-doctor-step-icon {
+  color: hsl(0 72% 55%);
+}
+
+.provider-doctor-step strong,
+.provider-doctor-step small {
+  display: block;
+}
+
+.provider-doctor-step small {
+  margin-top: 3px;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .aggregate-fields {
   margin-top: 0;
 }

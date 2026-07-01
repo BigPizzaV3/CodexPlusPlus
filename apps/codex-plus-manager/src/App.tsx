@@ -45,6 +45,7 @@ import {
   Settings,
   ShieldCheck,
   ShieldAlert,
+  Stethoscope,
   Sun,
   TestTube,
   Trash2,
@@ -393,6 +394,21 @@ type RelayProfileModelsResult = CommandResult<{
   endpoint: string;
 }>;
 
+type ProviderDoctorCheck = {
+  id: string;
+  title: string;
+  status: Status;
+  detail: string;
+};
+
+type ProviderDoctorResult = CommandResult<{
+  profileName: string;
+  model: string;
+  summary: string;
+  recommendation: string;
+  checks: ProviderDoctorCheck[];
+}>;
+
 type CcsProviderImport = {
   sourceId: string;
   name: string;
@@ -642,7 +658,7 @@ const defaultSettings: BackendSettings = {
   codexAppMarkdownExport: true,
   codexAppPasteFix: false,
   codexAppForceChineseLocale: true,
-  codexAppFastStartup: true,
+  codexAppFastStartup: false,
   codexAppProjectMove: true,
   codexAppThreadIdBadge: false,
   codexAppConversationView: false,
@@ -1523,6 +1539,12 @@ export function App() {
     if (result) showNotice(t("供应商测试"), result.message, result.status);
   };
 
+  const diagnoseRelayProfile = async (profile: RelayProfile) => {
+    const result = await run(() => call<ProviderDoctorResult>("diagnose_relay_profile", { profile }));
+    if (result) showNotice("Provider Doctor", result.message, result.status);
+    return result ?? null;
+  };
+
   const testStepwiseSettings = async (settings: BackendSettings) => {
     const result = await run(() => call<StepwiseTestResult>("test_stepwise_settings", { settings }));
     if (result) showNotice("Stepwise 测试", result.message, result.status);
@@ -1893,6 +1915,7 @@ export function App() {
       deleteContextEntry,
       extractRelayCommonConfig,
       testRelayProfile,
+      diagnoseRelayProfile,
       testStepwiseSettings,
       fetchRelayProfileModels,
       switchRelayProfile,
@@ -2174,6 +2197,7 @@ type Actions = {
   deleteContextEntry: (settings: BackendSettings, kind: ContextKind, id: string) => Promise<BackendSettings | null>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
+  diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
   testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
   switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
@@ -2581,7 +2605,7 @@ function EnhanceScreen({
             </FeatureGroup>
             <FeatureGroup title={t("界面与启动")} detail={t("控制语言、启动速度和 Codex 原生界面调整。")}>
               <FeatureToggle title={t("强制中文界面")} detail={t("强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。")} checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />
-              <FeatureToggle title={t("快速启动")} detail={t("默认开启；无 VPN 时让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。")} checked={form.codexAppFastStartup} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppFastStartup", value)} />
+              <FeatureToggle title={t("快速启动")} detail={t("默认关闭；无 VPN 时可开启，让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。")} checked={form.codexAppFastStartup} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppFastStartup", value)} />
               <FeatureToggle title={t("原生菜单栏位置")} detail={t("把 Codex++ 菜单插入 Codex 顶部原生菜单栏。")} checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
               <FeatureToggle title={t("原生菜单汉化")} detail={t("启动时通过本地主进程调试端口汉化 Codex 原生菜单；不修改安装包。需重启 Codex 才生效。")} checked={form.codexAppNativeMenuLocalization} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuLocalization", value)} />
             </FeatureGroup>
@@ -3884,6 +3908,9 @@ function RelayProfileEditor({
   setModelWindowRows: (value: ModelWindowRow[]) => void;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
+  const [doctorOpen, setDoctorOpen] = useState(false);
+  const [doctorRunning, setDoctorRunning] = useState(false);
   if (isAggregateRelayProfile(profile)) {
     return (
       <AggregateRelayProfileEditor
@@ -3910,6 +3937,21 @@ function RelayProfileEditor({
   };
   const addModelWindowRows = (rows: ModelWindowRow[]) => {
     setModelWindowRows(mergeModelWindowRows(modelWindowRows, rows));
+  };
+  const runProviderDoctor = async () => {
+    setDoctorOpen(true);
+    setDoctorRunning(true);
+    setDoctorResult(null);
+    const serializedRows = serializeModelWindowRows(modelWindowRows);
+    const result = await actions.diagnoseRelayProfile(
+      deriveRelayProfileFromFiles({
+        ...profile,
+        modelList: serializedRows.modelList,
+        modelWindows: serializedRows.modelWindows,
+      }),
+    );
+    setDoctorResult(result);
+    setDoctorRunning(false);
   };
   return (
     <div className="relay-profile-editor">
@@ -4069,6 +4111,21 @@ function RelayProfileEditor({
           </div>
         ) : null}
         {showApiFields ? (
+          <div className="provider-doctor">
+            <div className="provider-doctor-head">
+              <div>
+                <strong>Provider Doctor</strong>
+                <span>{t("检查配置、模型列表和一次真实请求，定位供应商不可用原因。")}</span>
+              </div>
+              <Button onClick={() => void runProviderDoctor()} size="sm" type="button" variant="secondary">
+                <Stethoscope className="h-4 w-4" />
+                {t("诊断供应商")}
+              </Button>
+            </div>
+            <span>{doctorResult?.summary ?? t("点击后会打开诊断弹框，按步骤检查供应商。")}</span>
+          </div>
+        ) : null}
+        {showApiFields ? (
           <Field className="relay-field-model-list" label={t("模型列表")}>
             <div className="relay-model-row-editor">
               <div className="relay-model-row relay-model-row-head">
@@ -4156,6 +4213,15 @@ function RelayProfileEditor({
         <ShieldCheck className="h-4 w-4" />
         <span>{relayProfileModeHelp(profile)}</span>
       </div>
+      {doctorOpen ? (
+        <ProviderDoctorModal
+          result={doctorResult}
+          running={doctorRunning}
+          onClose={() => {
+            if (!doctorRunning) setDoctorOpen(false);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -4628,6 +4694,115 @@ function RelayFileEditors({
       </div>
     </div>
   );
+}
+
+function ProviderDoctorModal({
+  result,
+  running,
+  onClose,
+}: {
+  result: ProviderDoctorResult | null;
+  running: boolean;
+  onClose: () => void;
+}) {
+  const steps = providerDoctorSteps(result, running);
+  const doneCount = steps.filter((step) => step.state === "ok" || step.state === "warning" || step.state === "failed").length;
+  const progress = Math.round((doneCount / steps.length) * 100);
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card provider-doctor-modal">
+        <div className="modal-head">
+          <div>
+            <h2>Provider Doctor</h2>
+            <p>{running ? t("正在诊断供应商，请稍候。") : result?.summary ?? t("诊断已完成。")}</p>
+          </div>
+          <UiBadge variant={result && !isSuccessStatus(result.status) ? "outline" : "secondary"}>
+            {running ? t("诊断中") : result && !isSuccessStatus(result.status) ? t("异常") : t("完成")}
+          </UiBadge>
+        </div>
+        <div className="provider-doctor-progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} role="progressbar">
+          <div style={{ width: `${progress}%` }} />
+        </div>
+        <div className="provider-doctor-step-list">
+          {steps.map((step) => (
+            <div className={`provider-doctor-step ${step.state}`} key={step.id}>
+              <span className="provider-doctor-step-icon">
+                {step.state === "running" ? (
+                  <RefreshCw className="h-4 w-4" />
+                ) : step.state === "ok" ? (
+                  <CheckCircle2 className="h-4 w-4" />
+                ) : step.state === "warning" ? (
+                  <ShieldAlert className="h-4 w-4" />
+                ) : step.state === "failed" ? (
+                  <Info className="h-4 w-4" />
+                ) : (
+                  <span />
+                )}
+              </span>
+              <div>
+                <strong>{step.title}</strong>
+                <small>{step.detail}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+        {result?.recommendation ? <p className="provider-doctor-recommendation">{result.recommendation}</p> : null}
+        <div className="modal-actions">
+          <Button disabled={running} onClick={onClose} variant="secondary">
+            {running ? t("诊断中") : t("关闭")}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type ProviderDoctorStepState = "pending" | "running" | "ok" | "warning" | "failed";
+
+function providerDoctorSteps(
+  result: ProviderDoctorResult | null,
+  running: boolean,
+): Array<{ id: string; title: string; detail: string; state: ProviderDoctorStepState }> {
+  const base = [
+    { id: "config", title: t("配置完整性"), pending: t("等待检查 Base URL / API Key。") },
+    { id: "models", title: t("模型列表"), pending: t("等待检查 /v1/models。") },
+    { id: "request", title: t("真实请求"), pending: t("等待发送一次测试请求。") },
+    { id: "recommendation", title: t("处理建议"), pending: t("等待生成建议。") },
+  ];
+  if (!result) {
+    return base.map((step, index) => ({
+      id: step.id,
+      title: step.title,
+      detail: index === 0 && running ? t("正在检查配置完整性…") : step.pending,
+      state: index === 0 && running ? "running" : "pending",
+    }));
+  }
+  const checks = new Map(result.checks.map((check) => [check.id, check]));
+  return base.map((step) => {
+    if (step.id === "recommendation") {
+      return {
+        id: step.id,
+        title: step.title,
+        detail: result.recommendation || step.pending,
+        state: result.status === "failed" ? "warning" : "ok",
+      };
+    }
+    const check = checks.get(step.id);
+    if (!check) {
+      return {
+        id: step.id,
+        title: step.title,
+        detail: step.id === "models" || step.id === "request" ? t("该步骤未执行。") : step.pending,
+        state: "pending",
+      };
+    }
+    return {
+      id: step.id,
+      title: check.title || step.title,
+      detail: check.detail,
+      state: check.status === "ok" ? "ok" : check.status === "warning" ? "warning" : "failed",
+    };
+  });
 }
 
 function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions: Actions }) {

@@ -956,7 +956,10 @@ fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
 fn load_projectless_thread_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
     let state = load_global_state(path)?;
     let mut ids = HashSet::new();
-    if let Some(items) = state.get("projectless-thread-ids").and_then(Value::as_array) {
+    if let Some(items) = state
+        .get("projectless-thread-ids")
+        .and_then(Value::as_array)
+    {
         for item in items {
             if let Some(id) = item.as_str().filter(|id| !id.trim().is_empty()) {
                 ids.insert(id.to_string());

@@ -45,6 +45,13 @@ jobs:
           Copy-Item target/release/codex-plus-plus.exe dist/windows/app/
           Copy-Item target/release/codex-plus-plus-manager.exe dist/windows/app/
 
+      - name: Build Windows zip asset
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.release.tag_name }}".TrimStart("v", "V")
+          New-Item -ItemType Directory -Force dist/windows | Out-Null
+          Compress-Archive -Path dist/windows/app/* -DestinationPath "dist/windows/CodexPlusPlus-$version-windows-x64.zip" -Force
+
       - name: Build Windows installer
         shell: pwsh
         run: |
@@ -61,7 +68,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name }}
-          files: dist/windows/*.exe
+          files: |
+            dist/windows/*.exe
+            dist/windows/*.zip
 
   macos-dmg:
     name: macOS DMG (${{ matrix.arch }})
@@ -109,6 +118,16 @@ jobs:
           VERSION="${VERSION#V}"
           BINARY_DIR="$PWD/target/${{ matrix.target }}/release" bash scripts/installer/macos/package-dmg.sh "$VERSION" "${{ matrix.arch }}"
 
+      - name: Build macOS zip asset
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION#V}"
+          mkdir -p dist/macos/app-${{ matrix.arch }}
+          cp "target/${{ matrix.target }}/release/codex-plus-plus" "dist/macos/app-${{ matrix.arch }}/"
+          cp "target/${{ matrix.target }}/release/codex-plus-plus-manager" "dist/macos/app-${{ matrix.arch }}/"
+          (cd dist/macos && zip -r "CodexPlusPlus-${VERSION}-macos-${{ matrix.arch }}.zip" "app-${{ matrix.arch }}")
+
       - name: Verify macOS bundle structure
         run: |
           set -euo pipefail
@@ -127,7 +146,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name }}
-          files: dist/macos/*.dmg
+          files: |
+            dist/macos/*.dmg
+            dist/macos/*.zip
 
   latest-json:
     name: Upload static latest.json

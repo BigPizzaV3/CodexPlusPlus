@@ -1821,7 +1821,7 @@ pub fn relay_profile_model(profile: &RelayProfile) -> String {
         .unwrap_or_else(|| profile.model.trim().to_string())
 }
 
-fn relay_profile_base_url(profile: &RelayProfile) -> String {
+pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
     if profile.relay_mode == crate::settings::RelayMode::Aggregate {
         return crate::protocol_proxy::local_responses_proxy_base_url(
             crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
@@ -1857,7 +1857,7 @@ fn relay_profile_base_url(profile: &RelayProfile) -> String {
     }
 }
 
-fn relay_profile_api_key(profile: &RelayProfile) -> String {
+pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
     if profile.relay_mode == crate::settings::RelayMode::Aggregate {
         return "codex-plus-aggregate".to_string();
     }

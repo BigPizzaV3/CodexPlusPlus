@@ -191,9 +191,14 @@ fn injection_script_defers_backend_mapped_toggles_until_settings_load() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("const codexPlusBackendMappedSettings = new Set"));
-    assert!(script.contains("codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded"));
+    assert!(
+        script
+            .contains("codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded")
+    );
     assert!(script.contains("button.dataset.pending = String(waitsForBackend)"));
-    assert!(script.contains("button.disabled = waitsForBackend || button.dataset.relayUnneeded === \"true\""));
+    assert!(script.contains(
+        "button.disabled = waitsForBackend || button.dataset.relayUnneeded === \"true\""
+    ));
     assert!(script.contains("toggle.disabled || toggle.dataset.pending === \"true\""));
 }
 

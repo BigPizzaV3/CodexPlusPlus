@@ -5,7 +5,7 @@ use codex_plus_core::settings::BackendSettings;
 fn force_chinese_locale_defaults_to_true() {
     let settings = BackendSettings::default();
     assert!(settings.codex_app_force_chinese_locale);
-    assert!(settings.codex_app_fast_startup);
+    assert!(!settings.codex_app_fast_startup);
 
     let json = serde_json::to_value(&settings).expect("serialize default settings");
     assert_eq!(
@@ -16,8 +16,8 @@ fn force_chinese_locale_defaults_to_true() {
     );
     assert_eq!(
         json.get("codexAppFastStartup").and_then(|v| v.as_bool()),
-        Some(true),
-        "default BackendSettings JSON should include codexAppFastStartup = true"
+        Some(false),
+        "default BackendSettings JSON should include codexAppFastStartup = false"
     );
 }
 
@@ -31,7 +31,7 @@ fn force_chinese_locale_missing_from_old_json_defaults_to_true() {
     let parsed: BackendSettings = serde_json::from_value(json)
         .expect("old settings JSON without codexAppForceChineseLocale should still load");
     assert!(parsed.codex_app_force_chinese_locale);
-    assert!(parsed.codex_app_fast_startup);
+    assert!(!parsed.codex_app_fast_startup);
 }
 
 #[test]

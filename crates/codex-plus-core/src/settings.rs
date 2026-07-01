@@ -213,7 +213,7 @@ pub struct BackendSettings {
     pub codex_app_paste_fix: bool,
     #[serde(rename = "codexAppForceChineseLocale", default = "default_true")]
     pub codex_app_force_chinese_locale: bool,
-    #[serde(rename = "codexAppFastStartup", default = "default_true")]
+    #[serde(rename = "codexAppFastStartup", default)]
     pub codex_app_fast_startup: bool,
     #[serde(rename = "codexAppProjectMove", default = "default_true")]
     pub codex_app_project_move: bool,
@@ -344,7 +344,7 @@ impl Default for BackendSettings {
             codex_app_markdown_export: true,
             codex_app_paste_fix: false,
             codex_app_force_chinese_locale: true,
-            codex_app_fast_startup: true,
+            codex_app_fast_startup: false,
             codex_app_project_move: true,
             codex_app_thread_id_badge: false,
             codex_app_conversation_view: false,

@@ -261,7 +261,10 @@ fn launcher_appends_extra_codex_arguments_after_debug_arguments() {
 
 #[test]
 fn launcher_fast_startup_adds_statsig_fast_fail_argument_when_enabled() {
-    let settings = BackendSettings::default();
+    let settings = BackendSettings {
+        codex_app_fast_startup: true,
+        ..BackendSettings::default()
+    };
     let args = build_codex_arguments_for_settings(9229, &settings);
 
     assert!(args.iter().any(|arg| {

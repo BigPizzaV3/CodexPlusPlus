@@ -606,8 +606,8 @@ export const EN_PLAIN: Record<string, string> = {
     "Off by default; when on, launching Codex automatically preserves the config.toml, bundled plugins and notify config required by the official Computer Use plugin.",
   "默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。":
     "The model name used by default when launching Codex; don't include a suffix. Configure context windows per model in the “Model list” below.",
-  "默认开启；无 VPN 时让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。":
-    "On by default; lets Statsig initialization fail fast without a VPN to reduce launch time. Requires restarting Codex.",
+  "默认关闭；无 VPN 时可开启，让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。":
+    "Off by default; enable it without a VPN to let Statsig initialization fail fast and reduce launch time. Requires restarting Codex.",
   "默认打开策略": "Default open strategy",
   "（": " (",
   "）": ")",
