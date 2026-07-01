@@ -42,8 +42,7 @@ pub fn move_codex_thread_workspace_from_paths(
     session: &SessionRef,
     target_cwd: &str,
 ) -> Value {
-    let mut result =
-        json!({"status": "failed", "session_id": session.session_id, "message": "Thread not found in local storage"});
+    let mut result = json!({"status": "failed", "session_id": session.session_id, "message": "Thread not found in local storage"});
     for db_path in db_paths {
         let adapter = SQLiteStorageAdapter::new(db_path, backup_store.clone());
         let candidate_result = adapter.move_codex_thread_workspace(session, target_cwd);
@@ -1038,14 +1037,30 @@ fn detect_file_restore_conflicts(tables: &Map<String, Value>) -> anyhow::Result<
     let Some(files) = tables.get("__files").and_then(Value::as_array) else {
         return Ok(());
     };
+    let allowed_paths = allowed_backup_file_paths(tables);
     for file in files {
         if let Some(path) = file.get("path").and_then(Value::as_str) {
+            if !allowed_paths.contains(path) {
+                anyhow::bail!("unexpected backup file path: {path}");
+            }
             if Path::new(path).exists() {
                 anyhow::bail!("restore conflict: file already exists: {path}");
             }
         }
     }
     Ok(())
+}
+
+fn allowed_backup_file_paths(tables: &Map<String, Value>) -> HashSet<String> {
+    tables
+        .get("threads")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row.get("rollout_path").and_then(Value::as_str))
+        .filter(|path| !path.trim().is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn insert_row(db: &Connection, table: &str, row: &Map<String, Value>) -> anyhow::Result<()> {
