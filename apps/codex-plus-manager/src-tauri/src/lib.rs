@@ -7,6 +7,8 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
+const TRAY_ID: &str = "codex_plus_tray";
+
 static APP_EXITING: AtomicBool = AtomicBool::new(false);
 const TRAY_MENU_SHOW: &str = "tray_show_main";
 const TRAY_MENU_QUIT: &str = "tray_quit_app";
@@ -101,13 +103,15 @@ pub fn run() {
             commands::delete_context_entry,
             commands::extract_relay_common_config,
             commands::test_relay_profile,
+            commands::test_stepwise_settings,
             commands::fetch_relay_profile_models,
             commands::switch_relay_profile,
             commands::apply_relay_injection,
             commands::apply_pure_api_injection,
             commands::clear_relay_injection,
             manager_exit_app,
-            manager_hide_to_tray
+            manager_hide_to_tray,
+            update_tray_labels
         ])
         .run(tauri::generate_context!());
     if let Err(error) = run_result {
@@ -125,7 +129,7 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     let quit_item = MenuItem::with_id(app, TRAY_MENU_QUIT, "退出程序", true, None::<&str>)?;
     let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
-    let mut tray_builder = TrayIconBuilder::new()
+    let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&tray_menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -193,6 +197,27 @@ fn manager_exit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
 #[tauri::command]
 fn manager_hide_to_tray<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
     let _ = window.hide();
+}
+
+#[tauri::command]
+fn update_tray_labels<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    show_label: String,
+    quit_label: String,
+    window_title: String,
+) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let show_item = MenuItem::with_id(&app, TRAY_MENU_SHOW, &show_label, true, None::<&str>);
+        let quit_item = MenuItem::with_id(&app, TRAY_MENU_QUIT, &quit_label, true, None::<&str>);
+        if let (Ok(show), Ok(quit)) = (show_item, quit_item) {
+            if let Ok(menu) = Menu::with_items(&app, &[&show, &quit]) {
+                let _ = tray.set_menu(Some(menu));
+            }
+        }
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_title(&window_title);
+    }
 }
 
 fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {

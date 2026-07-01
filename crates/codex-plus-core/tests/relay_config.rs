@@ -1331,6 +1331,25 @@ fn apply_relay_config_file_switches_config_without_touching_auth_json() {
 }
 
 #[test]
+fn apply_relay_config_file_accepts_utf8_bom_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    std::fs::write(home.join("config.toml"), "\u{feff}model = \"old\"\n").unwrap();
+    std::fs::write(home.join("auth.json"), "{\"auth_mode\":\"chatgpt\"}\n").unwrap();
+
+    let result = apply_relay_config_file_to_home(
+        home,
+        "\u{feff}model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"http://127.0.0.1:57321/v1\"\nexperimental_bearer_token = \"sk-new\"\n",
+    )
+    .unwrap();
+
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(result.configured);
+    assert!(config.contains(r#"model_provider = "custom""#));
+    assert!(config.contains("http://127.0.0.1:57321/v1"));
+}
+
+#[test]
 fn apply_relay_config_does_not_carry_profiles_from_live_config() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(

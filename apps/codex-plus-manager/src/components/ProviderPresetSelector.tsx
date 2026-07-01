@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import type { ProviderPreset, RelayProtocol } from "../presets";
 import { PRESETS } from "../presets";
+import { t, tf } from "@/i18n";
 
 export type RelayProfile = {
   id: string;
@@ -26,10 +27,10 @@ export type RelayProfile = {
 export type PresetPatch = Partial<RelayProfile>;
 
 const categoryLabels: Record<string, string> = {
-  official: "官方",
-  cn_official: "中国官方",
-  aggregator: "聚合/中转",
-  third_party: "第三方",
+  official: t("官方"),
+  cn_official: t("中国官方"),
+  aggregator: t("聚合/中转"),
+  third_party: t("第三方"),
 };
 
 const initialFor = (name: string): string => {
@@ -86,21 +87,21 @@ export function ProviderPresetSelector({
         type="button"
       >
         <span className="preset-toggle-label">
-          从预设模板创建
+          {t("从预设模板创建")}
           <span className="preset-toggle-count">
-            {collapsed ? `${PRESETS.length} 个供应商` : ""}
+            {collapsed ? tf("{0} 个供应商", [PRESETS.length]) : ""}
           </span>
         </span>
         <span className="preset-toggle-arrow">{collapsed ? "▾" : "▴"}</span>
       </button>
 
       {!collapsed && (
-        <div className="preset-grid" role="region" aria-label="供应商预设列表">
+        <div className="preset-grid" role="region" aria-label={t("供应商预设列表")}>
           <div className="preset-search">
             <span className="preset-search-icon">⌕</span>
             <input
               className="preset-search-input"
-              placeholder="搜索供应商…"
+              placeholder={t("搜索供应商…")}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               autoFocus
@@ -109,7 +110,7 @@ export function ProviderPresetSelector({
 
           {filtered.length === 0 && (
             <div className="preset-empty">
-              没有匹配「{query}」的供应商
+              {t("没有匹配「")}{query}{t("」的供应商")}
             </div>
           )}
 

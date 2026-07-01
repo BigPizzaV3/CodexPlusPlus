@@ -1,5 +1,8 @@
 use codex_plus_core::models::{DeleteStatus, SessionRef};
-use codex_plus_data::{BackupStore, SQLiteStorageAdapter, delete_local_from_paths};
+use codex_plus_data::{
+    BackupStore, SQLiteStorageAdapter, delete_local_from_paths,
+    move_codex_thread_workspace_from_paths,
+};
 use rusqlite::Connection;
 use serde_json::json;
 use std::fs;
@@ -280,6 +283,48 @@ fn undo_fails_for_unknown_backup_table_without_executing_it() {
 }
 
 #[test]
+fn undo_rejects_backup_file_paths_outside_thread_rollouts() {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("state_5.sqlite");
+    let rollout_path = tmp.path().join("rollout.jsonl");
+    let outside_path = tmp.path().join("outside.txt");
+    fs::write(&rollout_path, "{\"type\":\"message\"}\n").unwrap();
+    create_codex_thread_db(&db_path, &rollout_path);
+    let backup_store = BackupStore::new(tmp.path().join("backups"));
+    let adapter = SQLiteStorageAdapter::new(&db_path, backup_store.clone());
+    let deleted = adapter.delete_local(&session("t1", "Codex Thread"));
+    let token = deleted.undo_token.as_deref().unwrap();
+    let backup_path = backup_store.path_for(token);
+    let mut backup: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&backup_path).unwrap()).unwrap();
+    backup["tables"]["__files"] = json!([{
+        "path": outside_path.to_string_lossy().to_string(),
+        "content_b64": "b3duZWQ="
+    }]);
+    fs::write(&backup_path, serde_json::to_string_pretty(&backup).unwrap()).unwrap();
+
+    let restored = adapter.undo(token);
+
+    assert_eq!(restored.status, DeleteStatus::Failed);
+    assert_eq!(restored.undo_token.as_deref(), Some(token));
+    assert!(
+        restored
+            .message
+            .to_lowercase()
+            .contains("unexpected backup file path")
+    );
+    assert!(!outside_path.exists());
+    let db = Connection::open(&db_path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM threads WHERE id = 't1'", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn generic_delete_rolls_back_when_later_delete_fails() {
     let tmp = tempdir().unwrap();
     let db_path = tmp.path().join("codex.sqlite");
@@ -404,6 +449,49 @@ fn delete_local_from_paths_removes_duplicate_threads_from_all_databases() {
     assert_eq!(thread_count(&second_db, "t1"), 0);
     assert!(!first_rollout.exists());
     assert!(!second_rollout.exists());
+}
+
+#[test]
+fn move_thread_workspace_from_paths_uses_database_that_contains_thread() {
+    let tmp = tempdir().unwrap();
+    let stale_db = tmp.path().join("stale.sqlite");
+    let live_db = tmp.path().join("live.sqlite");
+    let stale_rollout = tmp.path().join("stale.jsonl");
+    let live_rollout = tmp.path().join("live.jsonl");
+    fs::write(&stale_rollout, "{\"type\":\"message\"}\n").unwrap();
+    fs::write(
+        &live_rollout,
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"t1\",\"cwd\":\"/old/project\",\"title\":\"Codex Thread\"}}\n",
+    )
+    .unwrap();
+    create_codex_thread_db(&stale_db, &stale_rollout);
+    create_codex_thread_db(&live_db, &live_rollout);
+    Connection::open(&stale_db)
+        .unwrap()
+        .execute("DELETE FROM threads WHERE id = 't1'", [])
+        .unwrap();
+
+    let result = move_codex_thread_workspace_from_paths(
+        vec![stale_db.clone(), live_db.clone()],
+        BackupStore::new(tmp.path().join("backups")),
+        &session("local:t1", "Codex Thread"),
+        "/new/project",
+    );
+
+    assert_eq!(result["status"], "moved");
+    assert_eq!(result["target_cwd"], "/new/project");
+    assert_eq!(result["db_path"], live_db.to_string_lossy().to_string());
+    assert_eq!(
+        Connection::open(&live_db)
+            .unwrap()
+            .query_row("SELECT cwd FROM threads WHERE id = 't1'", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+        "/new/project"
+    );
+    assert_eq!(thread_count(&stale_db, "t1"), 0);
 }
 
 #[test]

@@ -201,8 +201,6 @@ pub struct BackendSettings {
     pub computer_use_guard_enabled: bool,
     #[serde(rename = "codexAppPluginMarketplaceUnlock", default = "default_true")]
     pub codex_app_plugin_marketplace_unlock: bool,
-    #[serde(rename = "codexAppForcePluginInstall", default = "default_true")]
-    pub codex_app_force_plugin_install: bool,
     #[serde(rename = "codexAppPluginAutoExpand", default = "default_true")]
     pub codex_app_plugin_auto_expand: bool,
     #[serde(rename = "codexAppModelWhitelistUnlock", default = "default_true")]
@@ -241,6 +239,46 @@ pub struct BackendSettings {
     pub codex_app_native_menu_localization: bool,
     #[serde(rename = "codexAppServiceTierControls", default)]
     pub codex_app_service_tier_controls: bool,
+    #[serde(rename = "codexAppStepwiseEnabled", default)]
+    pub codex_app_stepwise_enabled: bool,
+    #[serde(rename = "codexAppStepwiseDirectSend", default)]
+    pub codex_app_stepwise_direct_send: bool,
+    #[serde(rename = "codexAppStepwiseBaseUrl", default)]
+    pub codex_app_stepwise_base_url: String,
+    #[serde(rename = "codexAppStepwiseApiKey", default)]
+    pub codex_app_stepwise_api_key: String,
+    #[serde(
+        rename = "codexAppStepwiseApiKeyEnv",
+        default = "default_stepwise_api_key_env",
+        deserialize_with = "empty_as_default_stepwise_api_key_env"
+    )]
+    pub codex_app_stepwise_api_key_env: String,
+    #[serde(rename = "codexAppStepwiseModel", default)]
+    pub codex_app_stepwise_model: String,
+    #[serde(
+        rename = "codexAppStepwiseMaxItems",
+        default = "default_stepwise_max_items",
+        deserialize_with = "deserialize_stepwise_max_items"
+    )]
+    pub codex_app_stepwise_max_items: u8,
+    #[serde(
+        rename = "codexAppStepwiseMaxInputChars",
+        default = "default_stepwise_max_input_chars",
+        deserialize_with = "deserialize_stepwise_max_input_chars"
+    )]
+    pub codex_app_stepwise_max_input_chars: u32,
+    #[serde(
+        rename = "codexAppStepwiseMaxOutputTokens",
+        default = "default_stepwise_max_output_tokens",
+        deserialize_with = "deserialize_stepwise_max_output_tokens"
+    )]
+    pub codex_app_stepwise_max_output_tokens: u32,
+    #[serde(
+        rename = "codexAppStepwiseTimeoutMs",
+        default = "default_stepwise_timeout_ms",
+        deserialize_with = "deserialize_stepwise_timeout_ms"
+    )]
+    pub codex_app_stepwise_timeout_ms: u64,
     #[serde(rename = "codexAppImageOverlayEnabled", default)]
     pub codex_app_image_overlay_enabled: bool,
     #[serde(rename = "codexAppImageOverlayPath", default)]
@@ -300,7 +338,6 @@ impl Default for BackendSettings {
             enhancements_enabled: true,
             computer_use_guard_enabled: false,
             codex_app_plugin_marketplace_unlock: true,
-            codex_app_force_plugin_install: true,
             codex_app_plugin_auto_expand: true,
             codex_app_model_whitelist_unlock: true,
             codex_app_session_delete: true,
@@ -320,6 +357,16 @@ impl Default for BackendSettings {
             codex_app_native_menu_placement: true,
             codex_app_native_menu_localization: true,
             codex_app_service_tier_controls: false,
+            codex_app_stepwise_enabled: false,
+            codex_app_stepwise_direct_send: false,
+            codex_app_stepwise_base_url: String::new(),
+            codex_app_stepwise_api_key: String::new(),
+            codex_app_stepwise_api_key_env: default_stepwise_api_key_env(),
+            codex_app_stepwise_model: String::new(),
+            codex_app_stepwise_max_items: default_stepwise_max_items(),
+            codex_app_stepwise_max_input_chars: default_stepwise_max_input_chars(),
+            codex_app_stepwise_max_output_tokens: default_stepwise_max_output_tokens(),
+            codex_app_stepwise_timeout_ms: default_stepwise_timeout_ms(),
             codex_app_image_overlay_enabled: false,
             codex_app_image_overlay_path: String::new(),
             codex_app_image_overlay_opacity: default_image_overlay_opacity(),
@@ -462,12 +509,48 @@ pub fn default_api_key_env() -> String {
     "CUSTOM_OPENAI_API_KEY".to_string()
 }
 
+pub fn default_stepwise_api_key_env() -> String {
+    "CODEX_STEPWISE_API_KEY".to_string()
+}
+
+pub fn default_stepwise_max_items() -> u8 {
+    6
+}
+
+pub fn default_stepwise_max_input_chars() -> u32 {
+    6000
+}
+
+pub fn default_stepwise_max_output_tokens() -> u32 {
+    500
+}
+
+pub fn default_stepwise_timeout_ms() -> u64 {
+    8000
+}
+
 fn default_image_overlay_opacity() -> u8 {
     35
 }
 
 fn clamp_image_overlay_opacity(value: u8) -> u8 {
     value.clamp(1, 100)
+}
+
+pub fn clamp_stepwise_max_items(value: u8) -> u8 {
+    value.min(default_stepwise_max_items())
+}
+
+pub fn clamp_stepwise_max_input_chars(value: u32) -> u32 {
+    value.clamp(1000, 24000)
+}
+
+pub fn clamp_stepwise_max_output_tokens(value: u32) -> u32 {
+    value.clamp(100, 4000)
+}
+
+pub fn clamp_stepwise_timeout_ms(value: u64) -> u64 {
+    value.clamp(1000, 60000)
 }
 
 pub fn default_true() -> bool {
@@ -504,6 +587,16 @@ where
         .unwrap_or_else(default_api_key_env))
 }
 
+pub fn empty_as_default_stepwise_api_key_env<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(value
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(default_stepwise_api_key_env))
+}
+
 fn deserialize_image_overlay_opacity<'de, D>(deserializer: D) -> Result<u8, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -511,6 +604,42 @@ where
     Ok(Option::<u8>::deserialize(deserializer)?
         .map(clamp_image_overlay_opacity)
         .unwrap_or_else(default_image_overlay_opacity))
+}
+
+fn deserialize_stepwise_max_items<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<u8>::deserialize(deserializer)?
+        .map(clamp_stepwise_max_items)
+        .unwrap_or_else(default_stepwise_max_items))
+}
+
+fn deserialize_stepwise_max_input_chars<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<u32>::deserialize(deserializer)?
+        .map(clamp_stepwise_max_input_chars)
+        .unwrap_or_else(default_stepwise_max_input_chars))
+}
+
+fn deserialize_stepwise_max_output_tokens<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<u32>::deserialize(deserializer)?
+        .map(clamp_stepwise_max_output_tokens)
+        .unwrap_or_else(default_stepwise_max_output_tokens))
+}
+
+fn deserialize_stepwise_timeout_ms<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<u64>::deserialize(deserializer)?
+        .map(clamp_stepwise_timeout_ms)
+        .unwrap_or_else(default_stepwise_timeout_ms))
 }
 
 fn deserialize_profile_api_key<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -646,7 +775,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         target.insert("computerUseGuardEnabled".to_string(), Value::Bool(value));
     }
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
-    merge_bool_setting(target, source, "codexAppForcePluginInstall");
     merge_bool_setting(target, source, "codexAppPluginAutoExpand");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
     merge_bool_setting(target, source, "codexAppSessionDelete");
@@ -670,6 +798,85 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppNativeMenuPlacement");
     merge_bool_setting(target, source, "codexAppNativeMenuLocalization");
     merge_bool_setting(target, source, "codexAppServiceTierControls");
+    merge_bool_setting(target, source, "codexAppStepwiseEnabled");
+    merge_bool_setting(target, source, "codexAppStepwiseDirectSend");
+    if let Some(value) = source
+        .get("codexAppStepwiseBaseUrl")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppStepwiseBaseUrl".to_string(),
+            Value::String(value.trim().trim_end_matches('/').to_string()),
+        );
+    }
+    if let Some(value) = source.get("codexAppStepwiseApiKey").and_then(Value::as_str) {
+        target.insert(
+            "codexAppStepwiseApiKey".to_string(),
+            Value::String(value.trim().to_string()),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppStepwiseApiKeyEnv")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppStepwiseApiKeyEnv".to_string(),
+            Value::String(if value.trim().is_empty() {
+                default_stepwise_api_key_env()
+            } else {
+                value.trim().to_string()
+            }),
+        );
+    }
+    if let Some(value) = source.get("codexAppStepwiseModel").and_then(Value::as_str) {
+        target.insert(
+            "codexAppStepwiseModel".to_string(),
+            Value::String(value.trim().to_string()),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppStepwiseMaxItems")
+        .and_then(Value::as_u64)
+        .and_then(|value| u8::try_from(value).ok())
+    {
+        target.insert(
+            "codexAppStepwiseMaxItems".to_string(),
+            Value::Number(serde_json::Number::from(clamp_stepwise_max_items(value))),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppStepwiseMaxInputChars")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+    {
+        target.insert(
+            "codexAppStepwiseMaxInputChars".to_string(),
+            Value::Number(serde_json::Number::from(clamp_stepwise_max_input_chars(
+                value,
+            ))),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppStepwiseMaxOutputTokens")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+    {
+        target.insert(
+            "codexAppStepwiseMaxOutputTokens".to_string(),
+            Value::Number(serde_json::Number::from(clamp_stepwise_max_output_tokens(
+                value,
+            ))),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppStepwiseTimeoutMs")
+        .and_then(Value::as_u64)
+    {
+        target.insert(
+            "codexAppStepwiseTimeoutMs".to_string(),
+            Value::Number(serde_json::Number::from(clamp_stepwise_timeout_ms(value))),
+        );
+    }
     merge_bool_setting(target, source, "codexAppImageOverlayEnabled");
     if let Some(value) = source
         .get("codexAppImageOverlayPath")
@@ -873,12 +1080,13 @@ fn active_provider_id(doc: &DocumentMut) -> Option<String> {
 }
 
 fn parse_toml_document(contents: &str) -> anyhow::Result<DocumentMut> {
+    let contents = contents.trim_start_matches('\u{feff}');
     if contents.trim().is_empty() {
         Ok(DocumentMut::new())
     } else {
         contents
             .parse::<DocumentMut>()
-            .with_context(|| "config.toml TOML 解析失败")
+            .map_err(|error| anyhow::anyhow!("config.toml TOML 解析失败：{error}"))
     }
 }
 
@@ -903,6 +1111,27 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     }
     settings.codex_app_image_overlay_opacity =
         clamp_image_overlay_opacity(settings.codex_app_image_overlay_opacity);
+    settings.codex_app_stepwise_base_url = settings
+        .codex_app_stepwise_base_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    settings.codex_app_stepwise_api_key = settings.codex_app_stepwise_api_key.trim().to_string();
+    settings.codex_app_stepwise_api_key_env =
+        if settings.codex_app_stepwise_api_key_env.trim().is_empty() {
+            default_stepwise_api_key_env()
+        } else {
+            settings.codex_app_stepwise_api_key_env.trim().to_string()
+        };
+    settings.codex_app_stepwise_model = settings.codex_app_stepwise_model.trim().to_string();
+    settings.codex_app_stepwise_max_items =
+        clamp_stepwise_max_items(settings.codex_app_stepwise_max_items);
+    settings.codex_app_stepwise_max_input_chars =
+        clamp_stepwise_max_input_chars(settings.codex_app_stepwise_max_input_chars);
+    settings.codex_app_stepwise_max_output_tokens =
+        clamp_stepwise_max_output_tokens(settings.codex_app_stepwise_max_output_tokens);
+    settings.codex_app_stepwise_timeout_ms =
+        clamp_stepwise_timeout_ms(settings.codex_app_stepwise_timeout_ms);
     settings
 }
 
@@ -1009,7 +1238,6 @@ mod tests {
         assert!(settings.enhancements_enabled);
         assert!(!settings.computer_use_guard_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
-        assert!(settings.codex_app_force_plugin_install);
         assert!(settings.codex_app_plugin_auto_expand);
         assert!(!settings.codex_app_thread_id_badge);
         assert!(settings.codex_app_force_chinese_locale);
@@ -1031,6 +1259,19 @@ mod tests {
         assert_eq!(settings.relay_test_model, default_relay_test_model());
         assert!(!settings.cli_wrapper_enabled);
         assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
+        assert!(!settings.codex_app_stepwise_enabled);
+        assert!(!settings.codex_app_stepwise_direct_send);
+        assert!(settings.codex_app_stepwise_base_url.is_empty());
+        assert!(settings.codex_app_stepwise_api_key.is_empty());
+        assert_eq!(
+            settings.codex_app_stepwise_api_key_env,
+            "CODEX_STEPWISE_API_KEY"
+        );
+        assert!(settings.codex_app_stepwise_model.is_empty());
+        assert_eq!(settings.codex_app_stepwise_max_items, 6);
+        assert_eq!(settings.codex_app_stepwise_max_input_chars, 6000);
+        assert_eq!(settings.codex_app_stepwise_max_output_tokens, 500);
+        assert_eq!(settings.codex_app_stepwise_timeout_ms, 8000);
     }
 
     #[test]
@@ -1055,14 +1296,12 @@ mod tests {
         let settings: BackendSettings = serde_json::from_str(
             r#"{
                 "codexAppPluginMarketplaceUnlock": true,
-                "codexAppForcePluginInstall": false,
                 "codexAppPluginAutoExpand": false
             }"#,
         )
         .unwrap();
 
         assert!(settings.codex_app_plugin_marketplace_unlock);
-        assert!(!settings.codex_app_force_plugin_install);
         assert!(!settings.codex_app_plugin_auto_expand);
 
         let legacy_settings: BackendSettings = serde_json::from_str(
@@ -1073,7 +1312,6 @@ mod tests {
         .unwrap();
 
         assert!(legacy_settings.codex_app_plugin_marketplace_unlock);
-        assert!(!legacy_settings.codex_app_force_plugin_install);
         assert!(legacy_settings.codex_app_plugin_auto_expand);
     }
 
@@ -1615,6 +1853,45 @@ experimental_bearer_token = "sk-existing""#
             r"C:\Users\me\Pictures\overlay.png"
         );
         assert_eq!(updated.codex_app_image_overlay_opacity, 42);
+        assert_eq!(store.load().unwrap(), updated);
+    }
+
+    #[test]
+    fn settings_store_update_persists_stepwise_settings() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "codexAppStepwiseEnabled": true,
+                "codexAppStepwiseDirectSend": true,
+                "codexAppStepwiseBaseUrl": "https://api.example.test/v1/",
+                "codexAppStepwiseApiKey": " sk-stepwise ",
+                "codexAppStepwiseApiKeyEnv": "",
+                "codexAppStepwiseModel": " stepwise-mini ",
+                "codexAppStepwiseMaxItems": 12,
+                "codexAppStepwiseMaxInputChars": 25000,
+                "codexAppStepwiseMaxOutputTokens": 50,
+                "codexAppStepwiseTimeoutMs": 70000
+            }))
+            .unwrap();
+
+        assert!(updated.codex_app_stepwise_enabled);
+        assert!(updated.codex_app_stepwise_direct_send);
+        assert_eq!(
+            updated.codex_app_stepwise_base_url,
+            "https://api.example.test/v1"
+        );
+        assert_eq!(updated.codex_app_stepwise_api_key, "sk-stepwise");
+        assert_eq!(
+            updated.codex_app_stepwise_api_key_env,
+            default_stepwise_api_key_env()
+        );
+        assert_eq!(updated.codex_app_stepwise_model, "stepwise-mini");
+        assert_eq!(updated.codex_app_stepwise_max_items, 6);
+        assert_eq!(updated.codex_app_stepwise_max_input_chars, 24000);
+        assert_eq!(updated.codex_app_stepwise_max_output_tokens, 100);
+        assert_eq!(updated.codex_app_stepwise_timeout_ms, 60000);
         assert_eq!(store.load().unwrap(), updated);
     }
 

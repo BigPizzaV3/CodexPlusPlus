@@ -178,10 +178,13 @@ pub fn run_provider_sync_with_target(
             .filter(|change| change.has_user_event)
             .filter_map(|change| change.thread_id.clone())
             .collect::<HashSet<_>>();
+        let projectless_thread_ids =
+            load_projectless_thread_ids(&home.join(".codex-global-state.json"))?;
         let cwd_by_thread_id = collected
             .changes
             .iter()
             .filter_map(|change| Some((change.thread_id.clone()?, change.cwd.clone()?)))
+            .filter(|(thread_id, _)| !projectless_thread_ids.contains(thread_id))
             .collect::<HashMap<_, _>>();
         let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
         let sqlite_update_count = count_sqlite_updates_for_paths(
@@ -948,6 +951,19 @@ fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
         .as_object()
         .cloned()
         .unwrap_or_default())
+}
+
+fn load_projectless_thread_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
+    let state = load_global_state(path)?;
+    let mut ids = HashSet::new();
+    if let Some(items) = state.get("projectless-thread-ids").and_then(Value::as_array) {
+        for item in items {
+            if let Some(id) = item.as_str().filter(|id| !id.trim().is_empty()) {
+                ids.insert(id.to_string());
+            }
+        }
+    }
+    Ok(ids)
 }
 
 fn normalized_global_state(state: &Map<String, Value>) -> Map<String, Value> {
