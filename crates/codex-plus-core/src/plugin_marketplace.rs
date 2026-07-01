@@ -353,12 +353,13 @@ fn windows_extended_path(path: &Path) -> String {
 }
 
 fn parse_toml_document(contents: &str) -> anyhow::Result<DocumentMut> {
+    let contents = contents.trim_start_matches('\u{feff}');
     if contents.trim().is_empty() {
         Ok(DocumentMut::new())
     } else {
         contents
             .parse::<DocumentMut>()
-            .with_context(|| "config.toml TOML parse failed")
+            .map_err(|error| anyhow::anyhow!("config.toml TOML parse failed: {error}"))
     }
 }
 

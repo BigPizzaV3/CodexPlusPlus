@@ -245,8 +245,8 @@ export const EN_PLAIN: Record<string, string> = {
   "失败": "Failed",
   "失败切换": "Failover",
   "失败切换会保留成员顺序，优先使用第一个可用供应商。": "Failover preserves member order, preferring the first available provider.",
-  "如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁和特殊插件强制安装。":
-    "If you use official mode or official mixed-API mode, you usually don't need plugin marketplace unlock or forced special plugin install.",
+  "如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁。":
+    "If you use official mode or official mixed-API mode, you usually don't need plugin marketplace unlock.",
   "安装": "Install",
   "安装 watcher": "Install watcher",
   "安装入口": "Install entrypoints",
@@ -308,8 +308,8 @@ export const EN_PLAIN: Record<string, string> = {
   "当前不会写入 Codex config.toml / auth.json。打开供应商配置总开关后再切换。":
     "Codex config.toml / auth.json won't be written right now. Turn on the provider configuration master switch before switching.",
   "当前为": "Currently ",
-  "当前为兼容增强模式，插件市场解锁和特殊插件强制安装不会启用；其他页面功能仍可用。":
-    "Currently in compatible enhancement mode; plugin marketplace unlock and forced special plugin install are not enabled, but other page features still work.",
+  "当前为兼容增强模式，插件市场解锁不会启用；其他页面功能仍可用。":
+    "Currently in compatible enhancement mode; plugin marketplace unlock is not enabled, but other page features still work.",
   "当前会话": "Current session",
   "当前使用中：打开时从 ~/.codex/auth.json 回填，保存后会作为此供应商 auth 存档":
     "Currently in use: backfilled from ~/.codex/auth.json when opened; saving stores it as this provider's auth archive",
@@ -486,7 +486,6 @@ export const EN_PLAIN: Record<string, string> = {
   "点击刷新会话读取本地数据库": "Click Refresh Sessions to read the local database",
   "点击刷新市场加载远程脚本。": "Click Refresh Marketplace to load remote scripts.",
   "版本信息、项目链接、GitHub Release 更新、日志与诊断": "Version info, project links, GitHub Release updates, logs and diagnostics",
-  "特殊插件强制安装": "Force special plugin install",
   "状态": "Status",
   "独立管理 Codex 的 MCP、Skills、Plugins；切换任意供应商都会带上。":
     "Manage Codex's MCP, Skills and Plugins independently; they carry over whenever you switch providers.",
@@ -545,7 +544,6 @@ export const EN_PLAIN: Record<string, string> = {
   "自动接管": "Auto-takeover",
   "要退出 Codex++ 管理工具，还是最小化到系统托盘？": "Exit the Codex++ manager, or minimize to the system tray?",
   "覆盖图片": "Overlay image",
-  "解除 App unavailable / 应用不可用导致的前端安装禁用。": "Lift the front-end install block caused by App unavailable / app unavailable.",
   "记录最近打开": "Record recently opened",
   "设为当前": "Set as current",
   "设置": "Settings",
@@ -578,8 +576,8 @@ export const EN_PLAIN: Record<string, string> = {
   "退出程序": "Exit app",
   "适合官方登录或官方混入 API Key；保留会话删除、导出、项目移动和用户脚本，关闭插件市场相关增强。":
     "Suited to official login or official mixed-in API Key; keeps session deletion, export, project move and user scripts, while disabling plugin-marketplace-related enhancements.",
-  "适合纯 API；启用插件市场、强制安装、会话删除导出、项目移动等全部页面能力。":
-    "Suited to pure API; enables all page capabilities including plugin marketplace, forced install, session deletion/export and project move.",
+  "适合纯 API；启用插件市场、会话删除导出、项目移动等全部页面能力。":
+    "Suited to pure API; enables all page capabilities including plugin marketplace, session deletion/export and project move.",
   "选择 Codex 应用目录": "Select Codex app directory",
   "选择 Codex.exe": "Select Codex.exe",
   "选择 Codex.exe 或 Codex.app": "Select Codex.exe or Codex.app",

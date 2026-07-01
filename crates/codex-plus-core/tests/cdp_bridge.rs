@@ -130,13 +130,14 @@ fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
 }
 
 #[test]
-fn injection_script_menu_exposes_marketplace_and_force_install_plugin_switches() {
+fn injection_script_menu_exposes_marketplace_plugin_switch_only() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("插件市场解锁"));
     assert!(script.contains("data-codex-plus-setting=\"pluginMarketplaceUnlock\""));
-    assert!(script.contains("特殊插件强制安装"));
-    assert!(script.contains("data-codex-plus-setting=\"forcePluginInstall\""));
+    assert!(!script.contains("特殊插件强制安装"));
+    assert!(!script.contains("data-codex-plus-setting=\"forcePluginInstall\""));
+    assert!(!script.contains("forcePluginInstall"));
     assert!(!script.contains("强制解锁入口"));
     assert!(!script.contains("data-codex-plus-setting=\"pluginEntryUnlock\""));
 }
@@ -283,16 +284,16 @@ fn injection_script_localizes_codex_menu_commands() {
 }
 
 #[test]
-fn injection_script_unlocks_nested_disabled_plugin_install_buttons() {
+fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("button[aria-disabled=\"true\"]"));
     assert!(script.contains("[role=\"button\"][data-disabled]"));
-    assert!(script.contains("installButtonUnlockNodes"));
-    assert!(script.contains("patchReactDisabledProps"));
-    assert!(script.contains("props[\"data-disabled\"] = undefined"));
-    assert!(script.contains("button.querySelectorAll?.(\"button, [role='button'], [disabled], [aria-disabled], [data-disabled]"));
-    assert!(script.contains("button.dataset.codexForceInstallUnlocked"));
+    assert!(!script.contains("installButtonUnlockNodes"));
+    assert!(!script.contains("patchReactDisabledProps"));
+    assert!(!script.contains("props[\"data-disabled\"] = undefined"));
+    assert!(!script.contains("button.querySelectorAll?.(\"button, [role='button'], [disabled], [aria-disabled], [data-disabled]"));
+    assert!(!script.contains("button.dataset.codexForceInstallUnlocked"));
 }
 
 #[test]
@@ -402,13 +403,13 @@ fn injection_script_logs_marketplace_grouping_diagnostics() {
 }
 
 #[test]
-fn injection_script_keeps_force_install_unlock_visual_state_sticky() {
+fn injection_script_omits_force_install_unlock_loop() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codex-force-install-unlocked"));
-    assert!(script.contains("codexForcePluginInstallRefreshIntervalMs"));
-    assert!(script.contains("refreshForcePluginInstallUnlockLoop"));
-    assert!(script.contains("setInterval(() => {"));
+    assert!(!script.contains("codex-force-install-unlocked"));
+    assert!(!script.contains("codexForcePluginInstallRefreshIntervalMs"));
+    assert!(!script.contains("refreshForcePluginInstallUnlockLoop"));
+    assert!(!script.contains("__codexForcePluginInstallRefreshTimer"));
 }
 
 #[test]
