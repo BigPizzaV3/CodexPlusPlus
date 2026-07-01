@@ -18,6 +18,8 @@ struct LauncherHooks {
     core: Arc<DefaultLaunchHooks>,
     data: Arc<LauncherDataService>,
     runtime: Arc<LauncherRuntimeService>,
+    app_dir: Arc<Mutex<Option<PathBuf>>>,
+    bridge_watchdog: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl Default for LauncherHooks {
@@ -29,6 +31,8 @@ impl Default for LauncherHooks {
                 9229,
                 default_user_script_manager(),
             )),
+            app_dir: Arc::new(Mutex::new(None)),
+            bridge_watchdog: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 }
@@ -333,6 +337,9 @@ impl LaunchHooks for LauncherHooks {
         app_dir: &Path,
     ) -> anyhow::Result<Option<BridgeContext>> {
         self.runtime.set_debug_port(debug_port);
+        if let Ok(mut current) = self.app_dir.lock() {
+            *current = Some(app_dir.to_path_buf());
+        }
         Ok(Some(BridgeContext::core_with_data_and_app_dir(
             self.runtime.clone(),
             self.data.clone(),
@@ -351,6 +358,84 @@ impl LaunchHooks for LauncherHooks {
 
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         self.core.inject(debug_port, helper_port).await
+    }
+
+    async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+        let mut current = self.bridge_watchdog.lock().await;
+        if let Some(task) = current.take() {
+            task.abort();
+        }
+        let hooks = self.clone();
+        let task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                let healthy = match launcher_bridge_health_ok(debug_port).await {
+                    Ok(healthy) => healthy,
+                    Err(error) => {
+                        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                            "bridge.health_check_failed",
+                            json!({
+                                "debug_port": debug_port,
+                                "helper_port": helper_port,
+                                "message": error.to_string()
+                            }),
+                        );
+                        false
+                    }
+                };
+                if healthy {
+                    continue;
+                }
+
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "bridge.reinject_start",
+                    json!({
+                        "debug_port": debug_port,
+                        "helper_port": helper_port
+                    }),
+                );
+                let ctx = match hooks
+                    .app_dir
+                    .lock()
+                    .ok()
+                    .and_then(|app_dir| app_dir.clone())
+                {
+                    Some(app_dir) => BridgeContext::core_with_data_and_app_dir(
+                        hooks.runtime.clone(),
+                        hooks.data.clone(),
+                        app_dir,
+                    ),
+                    None => {
+                        BridgeContext::core_with_data(hooks.runtime.clone(), hooks.data.clone())
+                    }
+                };
+                match inject_with_context(debug_port, helper_port, ctx, hooks.runtime.clone()).await
+                {
+                    Ok(()) => {
+                        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                            "bridge.reinject_ok",
+                            json!({
+                                "debug_port": debug_port,
+                                "helper_port": helper_port
+                            }),
+                        );
+                    }
+                    Err(error) => {
+                        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                            "bridge.reinject_failed",
+                            json!({
+                                "debug_port": debug_port,
+                                "helper_port": helper_port,
+                                "message": error.to_string()
+                            }),
+                        );
+                    }
+                }
+            }
+        });
+        *current = Some(task);
+        Ok(())
     }
 
     async fn start_computer_use_guard_watchdog(
@@ -372,6 +457,9 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn shutdown_helper(&self, helper_port: u16) {
+        if let Some(task) = self.bridge_watchdog.lock().await.take() {
+            task.abort();
+        }
         self.core.shutdown_helper(helper_port).await;
     }
 
@@ -656,6 +744,27 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     }
 }
 
+async fn launcher_bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
+    let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
+    let target = codex_plus_core::cdp::pick_injectable_codex_page_target(&targets)?;
+    let websocket_url = target
+        .web_socket_debugger_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
+    let result = codex_plus_core::bridge::evaluate_script_with_await_promise(
+        websocket_url,
+        codex_plus_core::bridge::bridge_health_check_script(),
+        true,
+    )
+    .await?;
+    Ok(result
+        .get("result")
+        .and_then(|result| result.get("result"))
+        .and_then(|result| result.get("value"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false))
+}
+
 async fn inject_with_context(
     debug_port: u16,
     helper_port: u16,
@@ -828,6 +937,16 @@ mod tests {
         assert!(source.contains("async fn start_computer_use_guard_watchdog"));
         assert!(source.contains("self.core"));
         assert!(source.contains(".start_computer_use_guard_watchdog(settings)"));
+    }
+
+    #[test]
+    fn launcher_hooks_install_bridge_watchdog_for_reinjection() {
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("async fn start_bridge_watchdog"));
+        assert!(source.contains("launcher_bridge_health_ok"));
+        assert!(source.contains("bridge.reinject_start"));
+        assert!(source.contains("inject_with_context(debug_port, helper_port, ctx"));
     }
 
     #[test]

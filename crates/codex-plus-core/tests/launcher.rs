@@ -526,9 +526,36 @@ async fn default_helper_serves_backend_status_over_http() {
         .await
         .unwrap();
     assert!(response.status().is_success());
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-private-network")
+            .and_then(|value| value.to_str().ok()),
+        Some("true")
+    );
     let payload: serde_json::Value = response.json().await.unwrap();
     assert_eq!(payload["status"], "ok");
     assert_eq!(payload["transport"], "http-helper");
+
+    let preflight_response = client
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("http://127.0.0.1:{port}/backend/status"),
+        )
+        .header("Origin", "app://-")
+        .header("Access-Control-Request-Method", "POST")
+        .header("Access-Control-Request-Private-Network", "true")
+        .send()
+        .await
+        .unwrap();
+    assert!(preflight_response.status().is_success());
+    assert_eq!(
+        preflight_response
+            .headers()
+            .get("access-control-allow-private-network")
+            .and_then(|value| value.to_str().ok()),
+        Some("true")
+    );
 
     let repair_response = client
         .post(format!("http://127.0.0.1:{port}/backend/repair"))
