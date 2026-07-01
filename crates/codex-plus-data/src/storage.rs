@@ -36,6 +36,25 @@ pub fn delete_local_from_paths(
     result
 }
 
+pub fn move_codex_thread_workspace_from_paths(
+    db_paths: impl IntoIterator<Item = PathBuf>,
+    backup_store: BackupStore,
+    session: &SessionRef,
+    target_cwd: &str,
+) -> Value {
+    let mut result =
+        json!({"status": "failed", "session_id": session.session_id, "message": "Thread not found in local storage"});
+    for db_path in db_paths {
+        let adapter = SQLiteStorageAdapter::new(db_path, backup_store.clone());
+        let candidate_result = adapter.move_codex_thread_workspace(session, target_cwd);
+        if candidate_result.get("status").and_then(Value::as_str) == Some("moved") {
+            return candidate_result;
+        }
+        result = candidate_result;
+    }
+    result
+}
+
 #[derive(Debug, Clone)]
 pub struct SQLiteStorageAdapter {
     db_path: PathBuf,
@@ -345,6 +364,10 @@ impl SQLiteStorageAdapter {
             });
             if let Some(payload) = payload.as_object_mut() {
                 add_timestamp_payload(payload, &row);
+                payload.insert(
+                    "db_path".to_string(),
+                    json!(self.db_path.to_string_lossy().to_string()),
+                );
             }
             Ok(payload)
         })();

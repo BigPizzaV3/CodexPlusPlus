@@ -498,6 +498,41 @@ fn provider_sync_repairs_sqlite_when_rollout_provider_matches_and_normalizes_pat
 }
 
 #[test]
+fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_rollout(
+        &home.join("sessions/rollout-projectless.jsonl"),
+        "apigather",
+        "thread-1",
+        "C:/old/project",
+    );
+    create_state_db(&home.join("state_5.sqlite"));
+    fs::write(
+        home.join(".codex-global-state.json"),
+        json!({
+            "projectless-thread-ids": ["thread-1"]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.sqlite_cwd_rows_updated, 0);
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    let row: String = db
+        .query_row("SELECT cwd FROM threads WHERE id = 'thread-1'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(row, "C:/old");
+}
+
+#[test]
 fn provider_sync_normalizes_open_in_target_preferences_per_path() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");

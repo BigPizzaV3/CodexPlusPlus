@@ -445,9 +445,15 @@ impl BridgeDataService for LauncherDataService {
         session: SessionRef,
         target_cwd: String,
     ) -> anyhow::Result<Value> {
-        let adapter = self.storage_adapter();
+        let db_paths = self.candidate_db_paths();
+        let backup_store = codex_plus_data::BackupStore::new(self.backup_dir.clone());
         tokio::task::spawn_blocking(move || {
-            adapter.move_codex_thread_workspace(&session, &target_cwd)
+            codex_plus_data::move_codex_thread_workspace_from_paths(
+                db_paths,
+                backup_store,
+                &session,
+                &target_cwd,
+            )
         })
         .await
         .map_err(|error| anyhow::anyhow!("move thread workspace task failed: {error}"))

@@ -620,6 +620,32 @@ fn injection_script_prompts_for_markdown_export_path_when_supported() {
 }
 
 #[test]
+fn injection_script_discovers_vscode_api_asset_without_hardcoded_hash() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("loadCodexAppModule(\"vscode-api-\""));
+    assert!(script.contains("codexAppAssetUrlFromScriptText"));
+    assert!(script.contains("fetch(src"));
+    assert!(!script.contains("vscode-api-Dc9pX2Bc.js"));
+    assert!(!script.contains("import(\"./assets/vscode-api-"));
+}
+
+#[test]
+fn injection_script_clears_project_state_when_moving_to_projectless() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("async function clearThreadWorkspaceHints"));
+    assert!(script.contains("async function clearThreadWritableRoots"));
+    assert!(script.contains("async function clearThreadProjectlessOutputDirectories"));
+    assert!(script.contains("thread-workspace-root-hints"));
+    assert!(script.contains("thread-writable-roots"));
+    assert!(script.contains("thread-projectless-output-directories"));
+    assert!(script.contains("await clearThreadWorkspaceHints(ref)"));
+    assert!(script.contains("await clearThreadWritableRoots(ref)"));
+    assert!(script.contains("await clearThreadProjectlessOutputDirectories(ref)"));
+}
+
+#[test]
 fn injection_script_applies_fast_service_tier_contract() {
     let cases = run_service_tier_contract_harness();
 

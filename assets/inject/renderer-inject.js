@@ -1401,10 +1401,26 @@
     return urls.find((url) => url.includes("/assets/") && url.includes(namePart) && url.split("?")[0].endsWith(".js")) || "";
   }
 
+  async function codexAppAssetUrlFromScriptText(namePart) {
+    const scripts = Array.from(document.scripts || []).map((script) => script.src).filter(Boolean);
+    for (const src of scripts) {
+      if (!src.includes("/assets/") || !src.split("?")[0].endsWith(".js")) continue;
+      try {
+        const text = await fetch(src).then((response) => response.ok ? response.text() : "");
+        const escaped = namePart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const match = text.match(new RegExp(`["'](\\./assets/${escaped}[^"']+\\.js)["']`));
+        if (!match) continue;
+        return new URL(match[1], src).href;
+      } catch {
+      }
+    }
+    return "";
+  }
+
   async function loadCodexAppModule(namePart) {
     if (!codexServiceTierModulePromises.has(namePart)) {
       const promise = Promise.resolve().then(async () => {
-        const url = codexAppAssetUrl(namePart);
+        const url = codexAppAssetUrl(namePart) || await codexAppAssetUrlFromScriptText(namePart);
         if (!url) throw new Error(`未找到 Codex App asset: ${namePart}`);
         return await import(url);
       }).catch((error) => {
@@ -4497,7 +4513,7 @@
   let chatsSortLastFetchAt = 0;
 
   async function codexStateApi() {
-    codexStateApiPromise = codexStateApiPromise || import("./assets/vscode-api-Dc9pX2Bc.js");
+    codexStateApiPromise = codexStateApiPromise || loadCodexAppModule("vscode-api-");
     const api = await codexStateApiPromise;
     if (typeof api.n !== "function") throw new Error("Codex 状态 API 不可用");
     return api.n;
@@ -5821,10 +5837,34 @@
     }
   }
 
+  async function clearThreadWritableRoots(ref) {
+    const variants = threadIdVariants(ref.session_id);
+    if (variants.length === 0) return;
+    const roots = objectGlobalState(await getCodexGlobalState("thread-writable-roots").catch(() => ({})));
+    const rootKeys = variants.filter((id) => Object.prototype.hasOwnProperty.call(roots, id));
+    if (rootKeys.length > 0) {
+      rootKeys.forEach((id) => delete roots[id]);
+      await setCodexGlobalState("thread-writable-roots", roots);
+    }
+  }
+
+  async function clearThreadProjectlessOutputDirectories(ref) {
+    const variants = threadIdVariants(ref.session_id);
+    if (variants.length === 0) return;
+    const dirs = objectGlobalState(await getCodexGlobalState("thread-projectless-output-directories").catch(() => ({})));
+    const dirKeys = variants.filter((id) => Object.prototype.hasOwnProperty.call(dirs, id));
+    if (dirKeys.length > 0) {
+      dirKeys.forEach((id) => delete dirs[id]);
+      await setCodexGlobalState("thread-projectless-output-directories", dirs);
+    }
+  }
+
   async function moveSessionToProjectless(ref) {
     if (!ref.session_id) throw new Error("未找到会话 ID");
     await setProjectlessThreadIds(ref, "add");
     await clearThreadWorkspaceHints(ref);
+    await clearThreadWritableRoots(ref);
+    await clearThreadProjectlessOutputDirectories(ref);
     const sortKey = await postJson("/thread-sort-key", ref).catch(() => ({}));
     return { status: "moved", session_id: ref.session_id, updated_at: sortKey?.updated_at, updated_at_ms: sortKey?.updated_at_ms, created_at_ms: sortKey?.created_at_ms };
   }
