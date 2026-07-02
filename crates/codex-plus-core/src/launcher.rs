@@ -1777,7 +1777,7 @@ pub fn build_packaged_activation_with_native_menu_inspector(
 /// Returns `Ok(())` as soon as the magic line is found, or `Ok(())` on EOF
 /// (the caller falls through to TCP-backoff).  Errors only on actual I/O
 /// failures, which are also non-fatal.
-async fn wait_for_cdp_ready(mut stderr: impl tokio::io::AsyncRead + Unpin) -> anyhow::Result<()> {
+pub async fn wait_for_cdp_ready(mut stderr: impl tokio::io::AsyncRead + Unpin) -> anyhow::Result<()> {
     let mut reader = tokio::io::BufReader::new(&mut stderr);
     let mut line = String::new();
     let magic = "DevTools listening on ws://";

@@ -14,7 +14,7 @@ use codex_plus_core::launcher::{
     build_codex_command_with_native_menu_inspector, build_macos_cleanup_command,
     build_macos_open_command, build_macos_open_command_with_native_menu_inspector,
     build_packaged_activation, build_packaged_activation_with_native_menu_inspector,
-    launch_and_inject_with_hooks,
+    launch_and_inject_with_hooks, wait_for_cdp_ready,
 };
 #[cfg(windows)]
 use codex_plus_core::launcher::{WindowsProcessControlStrategy, windows_process_control_strategy};
@@ -22,6 +22,7 @@ use codex_plus_core::ports::{
     select_packaged_codex_debug_port_with, select_platform_loopback_port_with,
 };
 use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol};
+use tokio::io::AsyncWriteExt;
 use codex_plus_core::status::StatusStore;
 
 #[test]
@@ -1492,4 +1493,34 @@ impl LaunchHooks for FakeHooks {
             self.event("terminate-codex");
         }
     }
+}
+
+#[tokio::test]
+async fn test_wait_for_cdp_ready_detects_magic_line() {
+    let (mut writer, reader) = tokio::io::duplex(1024);
+    writer.write_all(b"some garbage\n").await.unwrap();
+    writer.write_all(b"DevTools listening on ws://127.0.0.1:9222\n").await.unwrap();
+    drop(writer);
+    let result = wait_for_cdp_ready(reader).await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_wait_for_cdp_ready_eof_is_ok() {
+    let (writer, reader) = tokio::io::duplex(1024);
+    drop(writer);
+    let result = wait_for_cdp_ready(reader).await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_wait_for_cdp_ready_ignores_noise_before_magic() {
+    let (mut writer, reader) = tokio::io::duplex(1024);
+    writer.write_all(b"[INFO] Starting process...\n").await.unwrap();
+    writer.write_all(b"[INFO] Loading configuration...\n").await.unwrap();
+    writer.write_all(b"[WARN] Something deprecated\n").await.unwrap();
+    writer.write_all(b"DevTools listening on ws://127.0.0.1:9222\n").await.unwrap();
+    drop(writer);
+    let result = wait_for_cdp_ready(reader).await;
+    assert!(result.is_ok());
 }

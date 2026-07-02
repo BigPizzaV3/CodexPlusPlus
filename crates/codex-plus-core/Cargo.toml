@@ -19,7 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net", "io-util"] }
 tokio-tungstenite.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
