@@ -151,10 +151,13 @@ fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
 
     let result = switch_relay_profile_in_home(&store, &home, next, "api").unwrap();
     let live = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
 
     assert!(result.configured);
     assert_eq!(store.load().unwrap().active_relay_id, "agg");
     assert!(live.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    assert_eq!(auth["OPENAI_API_KEY"], "codex-plus-aggregate");
 }
 
 #[test]

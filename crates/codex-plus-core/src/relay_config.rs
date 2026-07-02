@@ -411,6 +411,14 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
             &profile.auth_contents,
             preserve_computer_use_guard,
         )
+    } else if profile.relay_mode == crate::settings::RelayMode::Aggregate {
+        let auth_contents = aggregate_profile_auth_for_switch()?;
+        apply_relay_files_to_home_with_computer_use_guard(
+            home,
+            &config_with_catalog,
+            &auth_contents,
+            preserve_computer_use_guard,
+        )
     } else {
         let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
         apply_relay_files_to_home_with_computer_use_guard(
@@ -1863,6 +1871,12 @@ fn official_profile_auth_for_switch(home: &Path, auth_contents: &str) -> anyhow:
         auth_contents.to_string()
     };
     remove_openai_api_key_from_auth_contents(&source)
+}
+
+fn aggregate_profile_auth_for_switch() -> anyhow::Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "OPENAI_API_KEY": "codex-plus-aggregate"
+    }))?)
 }
 
 fn codex_auth_api_key(auth_contents: &str) -> Option<String> {

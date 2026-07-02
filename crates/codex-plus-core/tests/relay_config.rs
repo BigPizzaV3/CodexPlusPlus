@@ -359,11 +359,15 @@ fn apply_aggregate_relay_points_codex_to_local_responses_proxy_without_snapshot(
 
     let result = apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
     let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
+            .unwrap();
 
     assert!(result.configured);
     assert!(updated.contains(r#"wire_api = "responses""#));
     assert!(updated.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
     assert!(updated.contains(r#"experimental_bearer_token = "codex-plus-aggregate""#));
+    assert_eq!(auth["OPENAI_API_KEY"], "codex-plus-aggregate");
 }
 
 #[test]
