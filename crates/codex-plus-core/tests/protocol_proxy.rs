@@ -1,5 +1,5 @@
 use codex_plus_core::protocol_proxy::{
-    ChatSseToResponsesConverter, chat_completion_to_response,
+    ChatSseToResponsesConverter, ParsedSseBlock, SseBlockParser, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
     chat_sse_to_responses_sse_with_request, is_chat_completions_proxy_path, is_models_proxy_path,
     is_responses_proxy_path, models_url, open_chat_completions_proxy_request,
@@ -1676,4 +1676,127 @@ fn spawn_chat_server() -> ChatServer {
         ChatRequest { user_agent }
     });
     ChatServer { base_url, handle }
+}
+
+
+// ── SseBlockParser unit tests ─────────────────────────────────────
+
+#[test]
+fn test_sse_parser_single_block() {
+    let mut parser = SseBlockParser::new();
+    let blocks = parser.push_bytes(b"data: hello\n\n");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].data.as_deref(), Some("hello"));
+    assert!(blocks[0].event.is_none());
+}
+
+#[test]
+fn test_sse_parser_multi_line_data() {
+    let mut parser = SseBlockParser::new();
+    let blocks = parser.push_bytes(b"data: line1\ndata: line2\n\n");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].data.as_deref(), Some("line1\nline2"));
+    assert!(blocks[0].event.is_none());
+}
+
+#[test]
+fn test_sse_parser_done_signal() {
+    let mut parser = SseBlockParser::new();
+    let blocks = parser.push_bytes(b"data: [DONE]\n\n");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].data.as_deref(), Some("[DONE]"));
+    assert!(blocks[0].event.is_none());
+}
+
+#[test]
+fn test_sse_parser_empty_blocks_skipped() {
+    let mut parser = SseBlockParser::new();
+    // Leading empty block (just \n\n) should be skipped; only "data: hi" remains.
+    let blocks = parser.push_bytes(b"\n\ndata: hi\n\n");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].data.as_deref(), Some("hi"));
+}
+
+#[test]
+fn test_sse_parser_event_field() {
+    let mut parser = SseBlockParser::new();
+    let blocks = parser.push_bytes(b"event: error\ndata: msg\n\n");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].event.as_deref(), Some("error"));
+    assert_eq!(blocks[0].data.as_deref(), Some("msg"));
+}
+
+// ── feed_chunk unit tests ─────────────────────────────────────────
+
+#[test]
+fn test_feed_content_delta_fast_path() {
+    let mut converter = ChatSseToResponsesConverter::default();
+
+    // First chunk: initial content delta — goes through the full pipeline,
+    // emits response.created + response.in_progress + response.output_item.added
+    // + response.content_part.added + response.output_text.delta.
+    let chunk1 = serde_json::json!({"choices":[{"delta":{"content":"hello"}}]});
+    let output1 = converter.feed_chunk(&chunk1);
+    let out1 = String::from_utf8(output1).unwrap();
+    assert!(out1.contains("event: response.created"));
+    assert!(out1.contains("event: response.in_progress"));
+    assert!(out1.contains("event: response.output_item.added"));
+    assert!(out1.contains("event: response.content_part.added"));
+    assert!(out1.contains(r#""delta":"hello""#));
+
+    // Second chunk: simple content delta — takes the fast path, emits only
+    // response.output_text.delta, no .added events.
+    let chunk2 = serde_json::json!({"choices":[{"delta":{"content":" world"}}]});
+    let output2 = converter.feed_chunk(&chunk2);
+    let out2 = String::from_utf8(output2).unwrap();
+    assert!(out2.contains("event: response.output_text.delta"));
+    assert!(out2.contains(r#""delta":" world""#));
+    assert!(!out2.contains("response.output_item.added"));
+}
+
+// ── Equivalence test ──────────────────────────────────────────────
+
+#[test]
+fn test_push_bytes_equivalent_to_feed() {
+    // A complete streaming conversation: content + tool call + done.
+    let sse_input = concat!(
+        r#"data: {"id":"chatcmpl_eq","created":123,"model":"gpt-5.4","choices":[{"delta":{"content":"Hello"}}]}"#, "\n",
+        "\n",
+        r#"data: {"id":"chatcmpl_eq","created":123,"model":"gpt-5.4","choices":[{"delta":{"content":" world"}}]}"#, "\n",
+        "\n",
+        r#"data: {"id":"chatcmpl_eq","created":123,"model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather"}}]}}]}"#, "\n",
+        "\n",
+        r#"data: {"id":"chatcmpl_eq","created":123,"model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":\"Tokyo\"}"}}]},"finish_reason":"tool_calls"}]}"#, "\n",
+        "\n",
+        "data: [DONE]", "\n",
+        "\n",
+    );
+
+    // Old API: chat_sse_to_responses_sse (push_bytes internally)
+    let output_old = chat_sse_to_responses_sse(sse_input);
+
+    // New API: SseBlockParser + feed_chunk / feed_done
+    let mut parser = SseBlockParser::new();
+    let mut converter = ChatSseToResponsesConverter::default();
+    let blocks = parser.push_bytes(sse_input.as_bytes());
+
+    let mut new_output = String::new();
+    for block in &blocks {
+        if let Some(data) = &block.data {
+            if data.trim() == "[DONE]" {
+                new_output.push_str(&String::from_utf8(converter.feed_done()).unwrap());
+                continue;
+            }
+            // Event-based errors are not expected in this test input.
+            if let Ok(chunk) = serde_json::from_str::<serde_json::Value>(data) {
+                new_output.push_str(&String::from_utf8(converter.feed_chunk(&chunk)).unwrap());
+            }
+        }
+    }
+    new_output.push_str(&String::from_utf8(converter.finish()).unwrap());
+
+    assert_eq!(
+        output_old, new_output,
+        "push_bytes-based and feed_chunk-based outputs must be identical"
+    );
 }
