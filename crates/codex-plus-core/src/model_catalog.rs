@@ -477,8 +477,10 @@ async fn fetch_models_from_source(
 
     let mut request = client
         .get(&endpoint)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .header("User-Agent", user_agent);
+        .header(reqwest::header::ACCEPT, "application/json");
+    if !user_agent.is_empty() {
+        request = request.header("User-Agent", user_agent);
+    }
     if !source.api_key.is_empty() {
         request = request.bearer_auth(&source.api_key);
     }

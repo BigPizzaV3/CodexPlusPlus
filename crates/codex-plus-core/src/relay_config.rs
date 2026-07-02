@@ -544,6 +544,7 @@ pub async fn test_relay_profile(
             .post(&v1_endpoint)
             .bearer_auth(api_key)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header("User-Agent", "CodexPlusPlus/RelayTest")
             .json(&payload)
             .send()
             .await?;

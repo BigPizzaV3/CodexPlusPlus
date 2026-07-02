@@ -532,18 +532,17 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         );
         let ua_value = effective_user_agent(&relay.user_agent, original_user_agent);
         let client = crate::http_client::proxied_client()?;
-        let upstream = match send_upstream_request_for_responses(
-            upstream_request_builder(
-                client,
-                &endpoint,
-                relay.api_key.trim(),
-                is_stream,
-                &upstream_body,
-            )
-            .header("User-Agent", &ua_value),
+        let mut request = upstream_request_builder(
+            client,
+            &endpoint,
+            relay.api_key.trim(),
             is_stream,
-        )
-        .await
+            &upstream_body,
+        );
+        if !ua_value.is_empty() {
+            request = request.header("User-Agent", &ua_value);
+        }
+        let upstream = match send_upstream_request_for_responses(request, is_stream).await
         {
             Ok(upstream) => upstream,
             Err(error) => {
@@ -650,13 +649,13 @@ pub async fn open_models_proxy_request(
     );
     let ua_value = effective_user_agent(&relay.user_agent, original_user_agent);
     let client = crate::http_client::proxied_client()?;
-    let upstream = send_upstream_request(
-        client
-            .get(endpoint)
-            .bearer_auth(relay.api_key.trim())
-            .header("User-Agent", &ua_value),
-    )
-    .await?;
+    let mut request = client
+        .get(endpoint)
+        .bearer_auth(relay.api_key.trim());
+    if !ua_value.is_empty() {
+        request = request.header("User-Agent", &ua_value);
+    }
+    let upstream = send_upstream_request(request).await?;
     let status_code = upstream.status().as_u16();
     let content_type = upstream
         .headers()
@@ -697,14 +696,14 @@ pub async fn open_chat_completions_proxy_request(
         .unwrap_or(false);
     let ua_value = effective_user_agent(&relay.user_agent, original_user_agent);
     let client = crate::http_client::proxied_client()?;
-    let upstream = client
+    let mut request = client
         .post(chat_completions_url(&relay.base_url))
         .bearer_auth(relay.api_key.trim())
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .header("User-Agent", &ua_value)
-        .json(&request_json)
-        .send()
-        .await?;
+        .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if !ua_value.is_empty() {
+        request = request.header("User-Agent", &ua_value);
+    }
+    let upstream = request.json(&request_json).send().await?;
     let status_code = upstream.status().as_u16();
     let content_type = upstream
         .headers()
