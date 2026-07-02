@@ -892,7 +892,7 @@ impl LaunchHooks for DefaultLaunchHooks {
         }
     }
 
-    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, app_dir: &Path) -> bool {
+    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, _app_dir: &Path) -> bool {
         // Phase 1: Event-driven — wait for CDP port readiness signal from stderr.
         let cdp_ready = { self.cdp_ready.lock().await.take() };
 
@@ -928,7 +928,7 @@ impl LaunchHooks for DefaultLaunchHooks {
         // Phase 3: Original 1s-interval polling as ultimate safety net.
         // This matches the original behaviour for systems where injection
         // genuinely takes >30 seconds (very slow disks, heavy load).
-        for attempt in 1..=30u32 {
+        for _attempt in 1..=30u32 {
             if self.inject(debug_port, helper_port).await.is_ok() {
                 return true;
             }
