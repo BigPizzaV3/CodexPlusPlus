@@ -2273,6 +2273,16 @@ body {
   transform: translateY(-1px);
 }
 
+.ad-image {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 5;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: #080808;
+  object-fit: cover;
+}
+
 .ad-card strong {
   display: block;
   margin-bottom: 5px;

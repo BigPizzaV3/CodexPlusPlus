@@ -77,7 +77,6 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn open_devtools(&self) -> anyhow::Result<Value>;
     async fn open_manager(&self) -> anyhow::Result<Value>;
     async fn backend_status(&self) -> anyhow::Result<Value>;
-    async fn repair_backend(&self) -> anyhow::Result<Value>;
     async fn codex_model_catalog(&self) -> anyhow::Result<Value>;
     async fn ads(&self) -> anyhow::Result<Value>;
     async fn zed_remote_status(&self) -> anyhow::Result<Value>;
@@ -165,7 +164,6 @@ pub async fn handle_bridge_request(
         "/devtools/open" => ctx.runtime.open_devtools().await,
         "/manager/open" => ctx.runtime.open_manager().await,
         "/backend/status" => ctx.runtime.backend_status().await,
-        "/backend/repair" => ctx.runtime.repair_backend().await,
         "/codex-model-catalog" | "/codex-config-model" => ctx.runtime.codex_model_catalog().await,
         "/diagnostics/log" => diagnostic_log_value(payload.clone()),
         "/ads" => ctx.runtime.ads().await,
@@ -463,10 +461,6 @@ impl BridgeRuntimeService for CoreRuntimeService {
             }),
         );
         Ok(json!({"status": "ok", "message": "后端已连接", "version": crate::version::VERSION}))
-    }
-
-    async fn repair_backend(&self) -> anyhow::Result<Value> {
-        self.backend_status().await
     }
 
     async fn codex_model_catalog(&self) -> anyhow::Result<Value> {

@@ -117,7 +117,7 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
 
     assert!(script.contains("bridgeWithBackendTimeout"));
     assert!(script.contains("backend_bridge_timeout"));
-    assert!(script.contains("/backend/repair"));
+    assert!(!script.contains("/backend/repair"));
     assert!(script.contains("backend_status_bridge_failed_http_fallback_ok"));
     assert!(script.contains("backend_status_bridge_and_http_failed"));
 }

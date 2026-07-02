@@ -181,10 +181,6 @@ type BackendSettings = {
   relayContextConfigContents: string;
   activeRelayId: string;
   relayTestModel: string;
-  cliWrapperEnabled: boolean;
-  cliWrapperBaseUrl: string;
-  cliWrapperApiKey: string;
-  cliWrapperApiKeyEnv: string;
 };
 
 type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
@@ -547,6 +543,7 @@ type AdItem = {
   title: string;
   description: string;
   url: string;
+  image?: string;
   highlights?: string[];
   expires_at?: string;
 };
@@ -727,10 +724,6 @@ const defaultSettings: BackendSettings = {
   aggregateRelayProfiles: [],
   activeAggregateRelayId: "",
   relayTestModel: "gpt-5.4-mini",
-  cliWrapperEnabled: false,
-  cliWrapperBaseUrl: "",
-  cliWrapperApiKey: "",
-  cliWrapperApiKeyEnv: "CUSTOM_OPENAI_API_KEY",
 };
 
 export function App() {
@@ -758,6 +751,11 @@ export function App() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
   const [watcher, setWatcher] = useState<WatcherResult | null>(null);
   const [update, setUpdate] = useState<UpdateResult | null>(null);
+  const [updateInstallProgress, setUpdateInstallProgress] = useState<TaskProgress>({
+    active: false,
+    percent: 0,
+    message: t("尚未运行安装包更新。"),
+  });
   const [ads, setAds] = useState<AdsResult | null>(null);
   const [scriptMarket, setScriptMarket] = useState<ScriptMarketResult | null>(null);
   const [launchForm, setLaunchForm] = useState({
@@ -778,7 +776,6 @@ export function App() {
     percent: 0,
     message: t("尚未运行插件市场修复。"),
   });
-  const [pluginMarketplacePrompt, setPluginMarketplacePrompt] = useState<PluginMarketplaceStatusResult | null>(null);
   const [remotePluginMarketplace, setRemotePluginMarketplace] = useState<RemotePluginMarketplaceResult | null>(null);
   const [remotePluginMarketplaceProgress, setRemotePluginMarketplaceProgress] = useState<TaskProgress>({
     active: false,
@@ -1189,18 +1186,8 @@ export function App() {
     return result;
   };
 
-  const repairBackend = async () => {
-    const result = await run(() => call<SettingsResult>("repair_backend"));
-    if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
-      showNotice(t("后端修复"), result.message, result.status);
-    }
-  };
-
   const repairPluginMarketplace = async () => {
     if (pluginMarketplaceProgress.active) return;
-    setPluginMarketplacePrompt(null);
     setPluginMarketplaceProgress({ active: true, percent: 8, message: t("正在检查本地插件市场…") });
     const progressTimer = window.setInterval(() => {
       setPluginMarketplaceProgress((current) => {
@@ -1236,12 +1223,6 @@ export function App() {
     } finally {
       window.clearInterval(progressTimer);
     }
-  };
-
-  const checkPluginMarketplacePrompt = async () => {
-    const result = await run(() => call<PluginMarketplaceStatusResult>("plugin_marketplace_status"));
-    if (result?.needsRepair) setPluginMarketplacePrompt(result);
-    return result;
   };
 
   const refreshRemotePluginMarketplace = async (silent = false) => {
@@ -1349,6 +1330,7 @@ export function App() {
   };
 
   const performUpdate = async () => {
+    if (updateInstallProgress.active) return;
     const release =
       update?.latestVersion && update.assetName && update.assetUrl
         ? {
@@ -1359,10 +1341,43 @@ export function App() {
             asset_url: update.assetUrl,
           }
         : null;
-    const result = await run(() => call<UpdateResult>("perform_update", { release }));
-    if (result) {
-      setUpdate(result);
-      showNotice(t("更新安装"), result.message, result.status);
+    setUpdateInstallProgress({
+      active: true,
+      percent: 8,
+      message: t("正在准备安装包下载…"),
+    });
+    const progressTimer = window.setInterval(() => {
+      setUpdateInstallProgress((current) => {
+        if (!current.active) return current;
+        const nextPercent = Math.min(92, current.percent + 10);
+        const message =
+          nextPercent < 32
+            ? t("正在获取 GitHub Release 信息…")
+            : nextPercent < 72
+              ? t("正在下载安装包…")
+              : t("正在启动安装包…");
+        return { ...current, percent: nextPercent, message };
+      });
+    }, 500);
+    try {
+      const result = await run(() => call<UpdateResult>("perform_update", { release }));
+      if (result) {
+        setUpdate(result);
+        setUpdateInstallProgress({
+          active: false,
+          percent: result.progress ?? 100,
+          message: result.message,
+        });
+        showNotice(t("更新安装"), result.message, result.status);
+      } else {
+        setUpdateInstallProgress({
+          active: false,
+          percent: 100,
+          message: t("安装包更新失败，请查看错误提示后重试。"),
+        });
+      }
+    } finally {
+      window.clearInterval(progressTimer);
     }
   };
 
@@ -1801,7 +1816,6 @@ export function App() {
       await refreshEnvConflicts(true);
       await refreshProviderSyncTargets(true);
       await refreshPendingProviderImport(true);
-      await checkPluginMarketplacePrompt();
       await refreshRemotePluginMarketplace(true);
     })();
   }, []);
@@ -1847,9 +1861,7 @@ export function App() {
       refreshCurrent: () => navigate(route),
       launch,
       restart,
-      repairBackend,
       repairPluginMarketplace,
-      checkPluginMarketplacePrompt,
       refreshRemotePluginMarketplace,
       repairRemotePluginMarketplace,
       installEntrypoints,
@@ -1995,7 +2007,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, removeOwnedData, update, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, ccsProviders],
+    [route, launchForm, settingsForm, settings, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, ccsProviders],
   );
   const hasUpdate = update?.updateAvailable === true;
 
@@ -2144,7 +2156,16 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "about" ? <AboutScreen overview={overview} update={update} logs={logs} diagnostics={diagnostics} actions={actions} /> : null}
+          {route === "about" ? (
+            <AboutScreen
+              overview={overview}
+              update={update}
+              updateInstallProgress={updateInstallProgress}
+              logs={logs}
+              diagnostics={diagnostics}
+              actions={actions}
+            />
+          ) : null}
           {route === "settings" ? (
             <SettingsScreen settings={settings} theme={theme} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
           ) : null}
@@ -2170,14 +2191,6 @@ export function App() {
           }}
         />
       ) : null}
-      {pluginMarketplacePrompt ? (
-        <PluginMarketplacePromptDialog
-          progress={pluginMarketplaceProgress}
-          status={pluginMarketplacePrompt}
-          onClose={() => setPluginMarketplacePrompt(null)}
-          onRepair={() => void actions.repairPluginMarketplace()}
-        />
-      ) : null}
       {pendingProviderImport ? (
         <PendingProviderImportDialog
           request={pendingProviderImport}
@@ -2193,9 +2206,7 @@ type Actions = {
   refreshCurrent: () => Promise<void>;
   launch: () => Promise<void>;
   restart: () => Promise<void>;
-  repairBackend: () => Promise<void>;
   repairPluginMarketplace: () => Promise<void>;
-  checkPluginMarketplacePrompt: () => Promise<PluginMarketplaceStatusResult | null>;
   refreshRemotePluginMarketplace: (silent?: boolean) => Promise<RemotePluginMarketplaceResult | null>;
   repairRemotePluginMarketplace: () => Promise<void>;
   installEntrypoints: () => Promise<void>;
@@ -2344,9 +2355,6 @@ function OverviewScreen({
             <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>
               <Wrench className="h-4 w-4" />
               {t("修复入口")}
-            </Button>
-            <Button variant="secondary" onClick={() => void actions.repairBackend()}>
-              {t("修复后端")}
             </Button>
             <Button disabled={pluginMarketplaceProgress.active} variant="secondary" onClick={() => void actions.repairPluginMarketplace()}>
               {pluginMarketplaceProgress.active ? t("正在修复…") : t("修复插件市场")}
@@ -3218,7 +3226,6 @@ function MaintenanceScreen({
           <Toolbar>
             <Button onClick={() => void actions.checkHealth()}>{t("检查")}</Button>
             <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>{t("修复快捷方式")}</Button>
-            <Button variant="secondary" onClick={() => void actions.repairBackend()}>{t("修复后端")}</Button>
           </Toolbar>
         </CardContent>
       </Panel>
@@ -3307,12 +3314,14 @@ function MaintenanceScreen({
 function AboutScreen({
   overview,
   update,
+  updateInstallProgress,
   logs,
   diagnostics,
   actions,
 }: {
   overview: OverviewResult | null;
   update: UpdateResult | null;
+  updateInstallProgress: TaskProgress;
   logs: LogsResult | null;
   diagnostics: DiagnosticsResult | null;
   actions: Actions;
@@ -3357,9 +3366,12 @@ function AboutScreen({
             <Metric label={t("进度")} value={`${update?.progress ?? 0}%`} />
           </div>
           <Textarea className="log-view" readOnly value={update?.releaseSummary || update?.message || t("尚未检查 GitHub Release；更新会下载并启动安装包。")} />
+          <TaskProgressBox completedTitle={t("上次更新结果")} progress={updateInstallProgress} title={t("安装包更新进度")} />
           <Toolbar>
             <Button onClick={() => void actions.checkUpdate()}>{t("检查更新")}</Button>
-            <Button variant="secondary" onClick={() => void actions.performUpdate()}>{t("下载并运行安装包")}</Button>
+            <Button disabled={updateInstallProgress.active} variant="secondary" onClick={() => void actions.performUpdate()}>
+              {updateInstallProgress.active ? t("正在下载安装包…") : t("下载并运行安装包")}
+            </Button>
           </Toolbar>
         </CardContent>
       </Panel>
@@ -3399,35 +3411,6 @@ function SettingsScreen({
               value={form.relayTestModel}
               onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
               placeholder={t("例如 gpt-5.4-mini")}
-            />
-          </Field>
-          <label className="check-row">
-            <input
-              checked={form.cliWrapperEnabled}
-              onChange={(event) => onFormChange({ ...form, cliWrapperEnabled: event.currentTarget.checked })}
-              type="checkbox"
-            />
-            <span>{t("启用 Codex 命令包装器")}</span>
-          </label>
-          <div className="form-row">
-            <Field label={t("包装器 Base URL")}>
-              <Input
-                value={form.cliWrapperBaseUrl}
-                onChange={(event) => onFormChange({ ...form, cliWrapperBaseUrl: event.currentTarget.value })}
-              />
-            </Field>
-            <Field label={t("API Key 环境变量")}>
-              <Input
-                value={form.cliWrapperApiKeyEnv}
-                onChange={(event) => onFormChange({ ...form, cliWrapperApiKeyEnv: event.currentTarget.value })}
-              />
-            </Field>
-          </div>
-          <Field label="API Key">
-            <Input
-              type="password"
-              value={form.cliWrapperApiKey}
-              onChange={(event) => onFormChange({ ...form, cliWrapperApiKey: event.currentTarget.value })}
             />
           </Field>
           <div className="settings-block stepwise-settings-block">
@@ -5058,45 +5041,6 @@ function ConfirmDialog({
   );
 }
 
-function PluginMarketplacePromptDialog({
-  status,
-  progress,
-  onRepair,
-  onClose,
-}: {
-  status: PluginMarketplaceStatusResult;
-  progress: TaskProgress;
-  onRepair: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-card plugin-marketplace-modal">
-        <div className="modal-head">
-          <div>
-            <h2>{t("插件市场需要修复")}</h2>
-            <p>{t("当前 CODEX_HOME 未发现可用的完整插件市场，API Key 模式下可能出现插件安装后不可用。")}</p>
-          </div>
-          <button className="toast-close" onClick={onClose} type="button">×</button>
-        </div>
-        <div className="metric-list">
-          <Metric label="CODEX_HOME" value={status.codexHome} />
-          <Metric label={t("本地插件市场")} value={status.marketplaceRoot ?? t("未发现")} />
-          <Metric label={t("配置状态")} value={status.configRegistered ? t("已注册") : t("未注册")} />
-        </div>
-        <TaskProgressBox progress={progress} title={t("修复进度")} />
-        <Toolbar>
-          <Button disabled={progress.active} onClick={onRepair}>
-            <Download className="h-4 w-4" />
-            {progress.active ? t("正在修复…") : t("一键修复")}
-          </Button>
-          <Button disabled={progress.active} onClick={onClose} variant="secondary">{t("稍后处理")}</Button>
-        </Toolbar>
-      </div>
-    </div>
-  );
-}
-
 function PendingProviderImportDialog({
   request,
   onConfirm,
@@ -5135,12 +5079,12 @@ function PendingProviderImportDialog({
   );
 }
 
-function TaskProgressBox({ progress, title }: { progress: TaskProgress; title: string }) {
+function TaskProgressBox({ progress, title, completedTitle = t("上次修复结果") }: { progress: TaskProgress; title: string; completedTitle?: string }) {
   if (!progress.active && progress.percent <= 0) return null;
   return (
     <div className="provider-sync-progress task-progress" data-active={progress.active}>
       <div className="provider-sync-progress-head">
-        <strong>{progress.active ? title : t("上次修复结果")}</strong>
+        <strong>{progress.active ? title : completedTitle}</strong>
         <span>{progress.percent}%</span>
       </div>
       <div
@@ -5254,6 +5198,7 @@ function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions
     <div className="ad-grid">
       {ads.map((ad) => (
         <button className="ad-card" key={ad.id || `${ad.type}-${ad.title}`} onClick={() => void actions.openExternalUrl(ad.url)} type="button">
+          {ad.image ? <img alt="" className="ad-image" src={ad.image} /> : null}
           <div>
             <strong>{ad.title}</strong>
             <p>{ad.description}</p>
@@ -5297,7 +5242,7 @@ function routeSubtitle(route: Route) {
     recommendations: t("赞助商推荐与普通推荐"),
     maintenance: t("入口安装、修复、Watcher 与手动启动"),
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
-    settings: t("主题、命令包装器和启动参数"),
+    settings: t("主题和启动参数"),
   };
   return subtitles[route];
 }

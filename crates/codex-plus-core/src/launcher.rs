@@ -963,75 +963,68 @@ async fn handle_helper_connection(
         .await;
     }
 
-    let (status, body, content_type, log_event) =
-        if matches!(path, "/backend/status" | "/backend/repair")
-            && matches!(method, "GET" | "POST" | "OPTIONS")
-        {
+    let (status, body, content_type, log_event) = if path == "/backend/status"
+        && matches!(method, "GET" | "POST" | "OPTIONS")
+    {
+        (
+            "200 OK".to_string(),
+            serde_json::to_vec(&serde_json::json!({
+                "status": "ok",
+                "message": "后端已连接",
+                "version": crate::version::VERSION,
+                "transport": "http-helper"
+            }))?,
+            "application/json; charset=utf-8".to_string(),
+            "helper.backend_status_ok",
+        )
+    } else if path == "/diagnostics/log" && matches!(method, "POST" | "OPTIONS") {
+        if method == "POST" {
+            let detail =
+                serde_json::from_str::<serde_json::Value>(request_body).unwrap_or_else(|error| {
+                    serde_json::json!({
+                        "parse_error": error.to_string(),
+                        "raw": request_body
+                    })
+                });
+            let event = detail
+                .get("event")
+                .and_then(serde_json::Value::as_str)
+                .map(sanitize_diagnostic_event)
+                .unwrap_or_else(|| "event".to_string());
+            let _ =
+                crate::diagnostic_log::append_diagnostic_log(&format!("renderer.{event}"), detail);
+        }
+        (
+            "200 OK".to_string(),
+            serde_json::to_vec(&serde_json::json!({
+                "status": "ok",
+                "message": "日志已记录"
+            }))?,
+            "application/json; charset=utf-8".to_string(),
+            "helper.diagnostics_log_ok",
+        )
+    } else if path == "/overlay/image" && matches!(method, "GET" | "OPTIONS") {
+        if method == "OPTIONS" {
             (
                 "200 OK".to_string(),
-                serde_json::to_vec(&serde_json::json!({
-                    "status": "ok",
-                    "message": "后端已连接",
-                    "version": crate::version::VERSION,
-                    "transport": "http-helper"
-                }))?,
-                "application/json; charset=utf-8".to_string(),
-                if path == "/backend/status" {
-                    "helper.backend_status_ok"
-                } else {
-                    "helper.backend_repair_ok"
-                },
+                Vec::new(),
+                "application/octet-stream".to_string(),
+                "helper.overlay_image_options",
             )
-        } else if path == "/diagnostics/log" && matches!(method, "POST" | "OPTIONS") {
-            if method == "POST" {
-                let detail = serde_json::from_str::<serde_json::Value>(request_body)
-                    .unwrap_or_else(|error| {
-                        serde_json::json!({
-                            "parse_error": error.to_string(),
-                            "raw": request_body
-                        })
-                    });
-                let event = detail
-                    .get("event")
-                    .and_then(serde_json::Value::as_str)
-                    .map(sanitize_diagnostic_event)
-                    .unwrap_or_else(|| "event".to_string());
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    &format!("renderer.{event}"),
-                    detail,
-                );
-            }
-            (
-                "200 OK".to_string(),
-                serde_json::to_vec(&serde_json::json!({
-                    "status": "ok",
-                    "message": "日志已记录"
-                }))?,
-                "application/json; charset=utf-8".to_string(),
-                "helper.diagnostics_log_ok",
-            )
-        } else if path == "/overlay/image" && matches!(method, "GET" | "OPTIONS") {
-            if method == "OPTIONS" {
-                (
-                    "200 OK".to_string(),
-                    Vec::new(),
-                    "application/octet-stream".to_string(),
-                    "helper.overlay_image_options",
-                )
-            } else {
-                overlay_image_response()
-            }
         } else {
-            (
-                "404 Not Found".to_string(),
-                serde_json::to_vec(&serde_json::json!({
-                    "status": "failed",
-                    "message": "未知后端路径"
-                }))?,
-                "application/json; charset=utf-8".to_string(),
-                "helper.unknown_path",
-            )
-        };
+            overlay_image_response()
+        }
+    } else {
+        (
+            "404 Not Found".to_string(),
+            serde_json::to_vec(&serde_json::json!({
+                "status": "failed",
+                "message": "未知后端路径"
+            }))?,
+            "application/json; charset=utf-8".to_string(),
+            "helper.unknown_path",
+        )
+    };
     let _ = crate::diagnostic_log::append_diagnostic_log(
         log_event,
         serde_json::json!({

@@ -311,18 +311,6 @@ pub struct BackendSettings {
     pub active_aggregate_relay_id: String,
     #[serde(rename = "relayTestModel", default = "default_relay_test_model")]
     pub relay_test_model: String,
-    #[serde(rename = "cliWrapperEnabled", default)]
-    pub cli_wrapper_enabled: bool,
-    #[serde(rename = "cliWrapperBaseUrl", default)]
-    pub cli_wrapper_base_url: String,
-    #[serde(rename = "cliWrapperApiKey", default)]
-    pub cli_wrapper_api_key: String,
-    #[serde(
-        rename = "cliWrapperApiKeyEnv",
-        default = "default_api_key_env",
-        deserialize_with = "empty_as_default_api_key_env"
-    )]
-    pub cli_wrapper_api_key_env: String,
 }
 
 impl Default for BackendSettings {
@@ -381,10 +369,6 @@ impl Default for BackendSettings {
             aggregate_relay_profiles: Vec::new(),
             active_aggregate_relay_id: String::new(),
             relay_test_model: default_relay_test_model(),
-            cli_wrapper_enabled: false,
-            cli_wrapper_base_url: String::new(),
-            cli_wrapper_api_key: String::new(),
-            cli_wrapper_api_key_env: default_api_key_env(),
         }
     }
 }
@@ -505,10 +489,6 @@ impl BackendSettings {
     }
 }
 
-pub fn default_api_key_env() -> String {
-    "CUSTOM_OPENAI_API_KEY".to_string()
-}
-
 pub fn default_stepwise_api_key_env() -> String {
     "CODEX_STEPWISE_API_KEY".to_string()
 }
@@ -575,16 +555,6 @@ pub fn default_relay_profiles() -> Vec<RelayProfile> {
 
 pub fn default_aggregate_member_weight() -> u32 {
     1
-}
-
-pub fn empty_as_default_api_key_env<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = Option::<String>::deserialize(deserializer)?;
-    Ok(value
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(default_api_key_env))
 }
 
 pub fn empty_as_default_stepwise_api_key_env<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -969,31 +939,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             }),
         );
     }
-    if let Some(value) = source.get("cliWrapperEnabled").and_then(Value::as_bool) {
-        target.insert("cliWrapperEnabled".to_string(), Value::Bool(value));
-    }
-    if let Some(value) = source.get("cliWrapperBaseUrl").and_then(Value::as_str) {
-        target.insert(
-            "cliWrapperBaseUrl".to_string(),
-            Value::String(value.to_string()),
-        );
-    }
-    if let Some(value) = source.get("cliWrapperApiKey").and_then(Value::as_str) {
-        target.insert(
-            "cliWrapperApiKey".to_string(),
-            Value::String(value.to_string()),
-        );
-    }
-    if let Some(value) = source.get("cliWrapperApiKeyEnv").and_then(Value::as_str) {
-        target.insert(
-            "cliWrapperApiKeyEnv".to_string(),
-            Value::String(if value.is_empty() {
-                default_api_key_env()
-            } else {
-                value.to_string()
-            }),
-        );
-    }
 }
 
 fn merge_bool_setting(target: &mut Map<String, Value>, source: &Map<String, Value>, key: &str) {
@@ -1257,8 +1202,6 @@ mod tests {
         assert_eq!(settings.relay_profiles[0].relay_mode, RelayMode::Official);
         assert!(settings.relay_common_config_contents.is_empty());
         assert_eq!(settings.relay_test_model, default_relay_test_model());
-        assert!(!settings.cli_wrapper_enabled);
-        assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert!(!settings.codex_app_stepwise_enabled);
         assert!(!settings.codex_app_stepwise_direct_send);
         assert!(settings.codex_app_stepwise_base_url.is_empty());
@@ -1275,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_deserialize_uses_existing_json_keys() {
+    fn settings_deserialize_ignores_removed_cli_wrapper_keys() {
         let settings: BackendSettings = serde_json::from_str(
             r#"{"codexAppPath":"C:\\Portable\\Codex\\app","providerSyncEnabled":true,"codexGoalsEnabled":true,"cliWrapperEnabled":true,"cliWrapperBaseUrl":"https://example.test","cliWrapperApiKey":"sk-test","cliWrapperApiKeyEnv":""}"#,
         )
@@ -1283,12 +1226,13 @@ mod tests {
         assert_eq!(settings.codex_app_path, r"C:\Portable\Codex\app");
         assert!(settings.provider_sync_enabled);
         assert!(settings.codex_goals_enabled);
-        assert!(settings.cli_wrapper_enabled);
-        assert_eq!(settings.cli_wrapper_base_url, "https://example.test");
-        assert_eq!(settings.cli_wrapper_api_key, "sk-test");
-        assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.codex_extra_args.is_empty());
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert!(saved.get("cliWrapperEnabled").is_none());
+        assert!(saved.get("cliWrapperBaseUrl").is_none());
+        assert!(saved.get("cliWrapperApiKey").is_none());
+        assert!(saved.get("cliWrapperApiKeyEnv").is_none());
     }
 
     #[test]
@@ -1705,10 +1649,6 @@ experimental_bearer_token = "sk-existing""#
         let store = SettingsStore::new(dir.join("nested").join("settings.json"));
         let settings = BackendSettings {
             provider_sync_enabled: true,
-            cli_wrapper_enabled: true,
-            cli_wrapper_base_url: "https://example.test".to_string(),
-            cli_wrapper_api_key: "sk-test".to_string(),
-            cli_wrapper_api_key_env: "CUSTOM_ENV".to_string(),
             codex_extra_args: vec!["--force_high_performance_gpu".to_string()],
             ..BackendSettings::default()
         };
@@ -1782,10 +1722,6 @@ experimental_bearer_token = "sk-existing""#
         let store = SettingsStore::new(dir.join("settings.json"));
         let initial = BackendSettings {
             provider_sync_enabled: false,
-            cli_wrapper_enabled: true,
-            cli_wrapper_base_url: "https://old.test".to_string(),
-            cli_wrapper_api_key: "old-key".to_string(),
-            cli_wrapper_api_key_env: "OLD_ENV".to_string(),
             ..BackendSettings::default()
         };
         store.save(&initial).unwrap();
@@ -1804,7 +1740,6 @@ experimental_bearer_token = "sk-existing""#
             "relayBaseUrl": "https://relay.example.test/v1",
             "relayApiKey": "sk-relay",
             "codexExtraArgs": ["--force_high_performance_gpu", "", "  ", " --enable-gpu "],
-            "cliWrapperApiKeyEnv": "",
             "unknownKey": "ignored"
             }))
             .unwrap();
@@ -1827,10 +1762,6 @@ experimental_bearer_token = "sk-existing""#
                 "--enable-gpu".to_string(),
             ]
         );
-        assert!(updated.cli_wrapper_enabled);
-        assert_eq!(updated.cli_wrapper_base_url, "https://old.test");
-        assert_eq!(updated.cli_wrapper_api_key, "old-key");
-        assert_eq!(updated.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert_eq!(store.load().unwrap(), updated);
     }
 

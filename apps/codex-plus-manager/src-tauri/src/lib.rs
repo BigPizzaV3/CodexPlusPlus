@@ -75,7 +75,6 @@ pub fn run() {
             commands::install_entrypoints,
             commands::uninstall_entrypoints,
             commands::repair_shortcuts,
-            commands::repair_backend,
             commands::plugin_marketplace_status,
             commands::repair_plugin_marketplace,
             commands::remote_plugin_marketplace_status,

@@ -500,13 +500,7 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
 pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
     let settings = normalize_settings_before_save(settings);
     match SettingsStore::default().save(&settings) {
-        Ok(()) => {
-            let wrapper_message = refresh_cli_wrapper_after_settings_save(&settings);
-            settings_payload(
-                &format!("设置已保存。{wrapper_message}"),
-                "设置保存后重新读取失败",
-            )
-        }
+        Ok(()) => settings_payload("设置已保存。", "设置保存后重新读取失败"),
         Err(error) => failed(
             &format!("保存设置失败：{error}"),
             SettingsPayload {
@@ -1378,20 +1372,6 @@ pub async fn repair_shortcuts() -> InstallActionResult {
     tauri::async_runtime::spawn_blocking(install::repair_shortcuts)
         .await
         .unwrap_or_else(|error| install_background_failure("修复快捷方式", error))
-}
-
-#[tauri::command]
-pub fn repair_backend() -> CommandResult<SettingsPayload> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    let message = match codex_plus_core::cli_wrapper::ensure_cli_wrapper(&settings) {
-        Ok(Some(install)) => format!(
-            "后端已修复，命令包装器已指向 {}。",
-            install.real_codex.to_string_lossy()
-        ),
-        Ok(None) => "后端已修复，命令包装器当前未启用。".to_string(),
-        Err(error) => format!("后端修复部分失败：{error}"),
-    };
-    settings_payload(&message, "修复后重新读取设置失败")
 }
 
 #[tauri::command]
@@ -2875,17 +2855,6 @@ fn sanitize_manager_event(event: &str) -> String {
         suffix.to_string()
     } else {
         format!("manager.ui.{suffix}")
-    }
-}
-
-fn refresh_cli_wrapper_after_settings_save(settings: &BackendSettings) -> String {
-    match codex_plus_core::cli_wrapper::ensure_cli_wrapper(settings) {
-        Ok(Some(install)) => format!(
-            " 命令包装器已更新：{}。",
-            install.real_codex.to_string_lossy()
-        ),
-        Ok(None) => String::new(),
-        Err(error) => format!(" 但命令包装器更新失败：{error}。"),
     }
 }
 

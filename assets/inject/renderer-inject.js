@@ -1110,8 +1110,6 @@
       .codex-plus-backend-label { color: #a1a1aa; font-size: 12px; }
       .codex-plus-backend-label[data-status="ok"] { color: #34d399; }
       .codex-plus-backend-label[data-status="failed"] { color: #f87171; }
-      .codex-plus-backend-repair { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
-      .codex-plus-backend-repair[hidden] { display: none; }
       .codex-plus-user-script-warning { margin-top: 4px; color: #fbbf24; font-size: 12px; }
       .codex-plus-user-script-dirs { margin-top: 6px; color: #a1a1aa; font-size: 11px; line-height: 1.4; word-break: break-all; }
       .codex-plus-user-script-list { margin-top: 8px; display: grid; gap: 6px; }
@@ -1127,6 +1125,7 @@
       .codex-plus-ad-section-title { color: #f8fafc; font-size: 15px; margin: 0; }
       .codex-plus-ad-list { display: grid; gap: 14px; }
       .codex-plus-ad-card { border: 1px solid rgba(96,165,250,.26); border-radius: 16px; background: linear-gradient(135deg, rgba(37,99,235,.18), rgba(255,255,255,.05)); box-shadow: 0 14px 36px rgba(0,0,0,.22); }
+      .codex-plus-ad-image { display: block; width: calc(100% - 28px); aspect-ratio: 16 / 5; margin: 14px 14px 0; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; background: #080808; object-fit: cover; }
       .codex-plus-ad-content { padding: 14px; }
       .codex-plus-ad-title { margin: 0; color: #f8fafc; font-size: 17px; line-height: 1.35; }
       .codex-plus-ad-description { margin: 6px 0 10px; color: #dbeafe; font-size: 13px; line-height: 1.55; }
@@ -2196,8 +2195,6 @@
       indicator.dataset.status = status;
       indicator.title = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "未连接";
     });
-    const repair = document.querySelector("[data-codex-backend-repair]");
-    if (repair) repair.hidden = status === "ok" || status === "checking";
     refreshCodexServiceTierControls();
   }
 
@@ -2219,17 +2216,6 @@
         message: nextStatus?.message || "",
         timeout: !!nextStatus?.timeout,
       });
-    }
-    renderBackendStatus();
-  }
-
-  async function repairBackend() {
-    codexPlusBackendStatus = { status: "checking", message: "正在修复后端…" };
-    renderBackendStatus();
-    try {
-      codexPlusBackendStatus = await postJson("/backend/repair", {});
-    } catch (error) {
-      codexPlusBackendStatus = { status: "failed", message: "后端修复失败" };
     }
     renderBackendStatus();
   }
@@ -2304,6 +2290,7 @@
       title: String(ad.title),
       description: String(ad.description),
       url: String(ad.url),
+      image: ad.image ? String(ad.image) : "",
       expires_at: ad.expires_at ? String(ad.expires_at) : "",
       highlights: Array.isArray(ad.highlights) ? ad.highlights.map((item) => String(item)).filter(Boolean) : [],
     }));
@@ -2314,6 +2301,7 @@
     if (!ads.length) return `<div class="codex-plus-ad-empty">${escapeHtml(emptyText)}</div>`;
     return ads.map((ad) => `
       <article class="codex-plus-ad-card">
+        ${ad.image ? `<img class="codex-plus-ad-image" src="${escapeHtml(ad.image)}" alt="">` : ""}
         <div class="codex-plus-ad-content">
           <h3 class="codex-plus-ad-title">${escapeHtml(ad.title)}</h3>
           <p class="codex-plus-ad-description">${escapeHtml(ad.description)}</p>
@@ -2369,7 +2357,9 @@
 
   async function fetchCodexPlusAds() {
     try {
-      codexPlusAds = normalizeCodexPlusAds(await directFetchCodexPlusAds());
+      const localPayload = await postJson(codexPlusAdsUrl, {});
+      codexPlusAds = normalizeCodexPlusAds(localPayload?.ads ? localPayload : localPayload?.payload);
+      if (!codexPlusAds.length) codexPlusAds = normalizeCodexPlusAds(await directFetchCodexPlusAds());
     } catch (error) {
       sendCodexPlusDiagnostic("ads_fetch_failed", {
         errorName: error?.name || "",
@@ -2416,10 +2406,9 @@
         <div class="codex-plus-modal-body">
           <div class="codex-plus-panel" data-codex-plus-panel="home">
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">后端连接</div><div class="codex-plus-row-description">每 5 秒检查一次 launcher 后端状态；断开时可尝试修复后端运行。</div></div>
+              <div><div class="codex-plus-row-title">后端连接</div><div class="codex-plus-row-description">每 5 秒检查一次 launcher 后端状态。</div></div>
               <div class="codex-plus-backend-status">
                 <div class="codex-plus-backend-label" data-codex-backend-status="true" data-status="checking">正在检查后端…</div>
-                <button type="button" class="codex-plus-backend-repair" data-codex-backend-repair="true" hidden>修复后端运行</button>
               </div>
             </div>
             <div class="codex-plus-row">
@@ -2616,10 +2605,6 @@
       }
       if (target?.closest("[data-codex-plus-telegram]")) {
         window.open("https://t.me/CodexPlusPlus", "_blank");
-        return;
-      }
-      if (target?.closest("[data-codex-backend-repair]")) {
-        repairBackend();
         return;
       }
       const issueButton = target?.closest("[data-codex-plus-issue]");
@@ -4384,7 +4369,7 @@
 
   async function postJson(path, payload) {
     if (!window.__codexSessionDeleteBridge) {
-      if (path === "/backend/status" || path === "/backend/repair") {
+      if (path === "/backend/status") {
         try {
           const response = await fetch(`${helperBase}${path}`, {
             method: "POST",
@@ -4418,7 +4403,7 @@
       }
     }
     try {
-      if (path === "/backend/status" || path === "/backend/repair") {
+      if (path === "/backend/status") {
         const result = await bridgeWithBackendTimeout(path, payload);
         if (result?.status === "ok") return result;
         if (result?.timeout) sendCodexPlusDiagnostic("backend_bridge_timeout", { path });
@@ -4445,7 +4430,7 @@
         errorName: error?.name || "",
         errorMessage: error?.message || String(error),
       });
-      if (path === "/backend/status" || path === "/backend/repair") {
+      if (path === "/backend/status") {
         const fallback = await fetchBackendStatusFromHelper(path, payload);
         if (fallback?.status === "ok") {
           sendCodexPlusDiagnostic("backend_status_bridge_failed_http_fallback_ok", {

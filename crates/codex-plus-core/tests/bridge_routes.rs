@@ -32,7 +32,6 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/devtools/open", json!({})),
         ("/manager/open", json!({})),
         ("/backend/status", json!({})),
-        ("/backend/repair", json!({})),
         ("/codex-model-catalog", json!({})),
         ("/codex-config-model", json!({})),
         ("/ads", json!({})),
@@ -316,7 +315,7 @@ async fn settings_routes_use_settings_service() {
     let updated = handle_bridge_request(
         ctx.clone(),
         "/settings/set",
-        json!({"providerSyncEnabled": true, "codexAppSessionDelete": false, "codexAppServiceTierControls": true, "cliWrapperApiKeyEnv": ""}),
+        json!({"providerSyncEnabled": true, "codexAppSessionDelete": false, "codexAppServiceTierControls": true}),
     )
     .await;
     let loaded = handle_bridge_request(ctx, "/settings/get", json!({})).await;
@@ -324,7 +323,6 @@ async fn settings_routes_use_settings_service() {
     assert_eq!(updated["providerSyncEnabled"], true);
     assert_eq!(updated["codexAppSessionDelete"], false);
     assert_eq!(updated["codexAppServiceTierControls"], true);
-    assert_eq!(updated["cliWrapperApiKeyEnv"], "CUSTOM_OPENAI_API_KEY");
     assert_eq!(loaded, updated);
 }
 
@@ -370,10 +368,6 @@ async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/backend/status", json!({})).await,
         json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION})
-    );
-    assert_eq!(
-        handle_bridge_request(ctx.clone(), "/backend/repair", json!({})).await,
-        json!({"status": "ok", "message": "后端已修复", "version": codex_plus_core::version::VERSION})
     );
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/ads", json!({})).await,
@@ -713,15 +707,10 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
     let ctx = BridgeContext::core_with_data(Arc::new(runtime), Arc::new(FakeData::default()));
 
     let status = handle_bridge_request(ctx.clone(), "/backend/status", json!({})).await;
-    let repaired = handle_bridge_request(ctx.clone(), "/backend/repair", json!({})).await;
     let reloaded = handle_bridge_request(ctx, "/user-scripts/reload", json!({})).await;
 
     assert_eq!(
         status,
-        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION})
-    );
-    assert_eq!(
-        repaired,
         json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION})
     );
     assert_eq!(reloaded["scripts"][0]["key"], "builtin:demo.js");
@@ -1062,16 +1051,6 @@ impl BridgeSettingsService for FakeSettings {
         if let Some(value) = payload.get("relayApiKey").and_then(Value::as_str) {
             raw.insert("relayApiKey".to_string(), json!(value));
         }
-        if let Some(value) = payload.get("cliWrapperApiKeyEnv").and_then(Value::as_str) {
-            raw.insert(
-                "cliWrapperApiKeyEnv".to_string(),
-                json!(if value.is_empty() {
-                    "CUSTOM_OPENAI_API_KEY"
-                } else {
-                    value
-                }),
-            );
-        }
         let updated: BackendSettings = serde_json::from_value(Value::Object(raw.clone())).unwrap();
         *self.settings.lock().unwrap() = updated.clone();
         Ok(updated)
@@ -1134,12 +1113,6 @@ impl BridgeRuntimeService for FakeRuntime {
     async fn backend_status(&self) -> anyhow::Result<Value> {
         Ok(
             json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION}),
-        )
-    }
-
-    async fn repair_backend(&self) -> anyhow::Result<Value> {
-        Ok(
-            json!({"status": "ok", "message": "后端已修复", "version": codex_plus_core::version::VERSION}),
         )
     }
 
