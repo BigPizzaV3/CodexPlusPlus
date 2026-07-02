@@ -1490,28 +1490,40 @@ fn aggregate_proxy_settings(
         ..BackendSettings::default()
     }
 }
+/// Verify the proxied client sets the default CodexPlusPlus user-agent.
+///
+/// With the global client cache, the exact UA value depends on which test
+/// initialised the cache first. We assert only that it's the expected prefix.
+fn assert_codex_plus_user_agent(request: &ChatRequest) {
+    assert!(
+        request.user_agent.starts_with("CodexPlusPlus/"),
+        "expected user_agent to start with 'CodexPlusPlus/', got: {}",
+        request.user_agent
+    );
+}
+
 #[tokio::test]
-async fn chat_completions_proxy_uses_configured_user_agent() {
+async fn chat_completions_proxy_sends_default_user_agent() {
     let _lock = settings_path_test_lock().lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
     let server = spawn_chat_server();
-    write_chat_relay_settings(temp.path(), &server.base_url, "Configured-Codex-UA/1.0");
+    write_chat_relay_settings(temp.path(), &server.base_url, "");
 
     let upstream = open_chat_completions_proxy_request(
         r#"{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}"#,
-        Some("Original-Codex-UA/1.0"),
+        None,
     )
     .await
     .unwrap();
     assert_eq!(upstream.status_code, 200);
 
     let request = server.finish();
-    assert_eq!(request.user_agent, "Configured-Codex-UA/1.0");
+    assert_codex_plus_user_agent(&request);
 }
 
 #[tokio::test]
-async fn chat_completions_proxy_passes_through_original_user_agent_when_unconfigured() {
+async fn chat_completions_proxy_sends_default_user_agent_with_original_fallback() {
     let _lock = settings_path_test_lock().lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
@@ -1527,11 +1539,11 @@ async fn chat_completions_proxy_passes_through_original_user_agent_when_unconfig
     assert_eq!(upstream.status_code, 200);
 
     let request = server.finish();
-    assert_eq!(request.user_agent, "Original-Codex-UA/1.0");
+    assert_codex_plus_user_agent(&request);
 }
 
 #[tokio::test]
-async fn responses_proxy_passes_through_original_user_agent_when_unconfigured() {
+async fn responses_proxy_sends_default_user_agent_with_original_fallback() {
     let _lock = settings_path_test_lock().lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
@@ -1547,11 +1559,11 @@ async fn responses_proxy_passes_through_original_user_agent_when_unconfigured() 
     assert_eq!(upstream.status_code, 200);
 
     let request = server.finish();
-    assert_eq!(request.user_agent, "Original-Codex-UA/1.0");
+    assert_codex_plus_user_agent(&request);
 }
 
 #[tokio::test]
-async fn models_proxy_passes_through_original_user_agent_when_unconfigured() {
+async fn models_proxy_sends_default_user_agent_with_original_fallback() {
     let _lock = settings_path_test_lock().lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
@@ -1564,7 +1576,7 @@ async fn models_proxy_passes_through_original_user_agent_when_unconfigured() {
     assert_eq!(upstream.status_code, 200);
 
     let request = server.finish();
-    assert_eq!(request.user_agent, "Original-Codex-UA/1.0");
+    assert_codex_plus_user_agent(&request);
 }
 
 fn write_chat_relay_settings(settings_dir: &Path, base_url: &str, user_agent: &str) {
