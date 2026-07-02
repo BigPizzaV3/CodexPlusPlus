@@ -4969,6 +4969,15 @@
     const originalSendRequest = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
     client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
+      // Short-circuit: 优先从 Codex++ bridge 获取模型列表 (<1ms)，不等 app-server RPC (~34s)
+      // Inspired by PR #620 by @congxb
+      if (codexPlusModelUnlockEnabled() && appServerModelRequestMethod(String(method || ""), params) === "list-models-for-host") {
+        if (!codexPlusModelNames().length) await loadCodexModelCatalog();
+        if (codexPlusModelNames().length > 0) {
+          // 返回空数组让 patchModelArray 自动用 codexPlusModelDescriptor 补全
+          return patchAppServerModelResult("list-models-for-host", { data: [] });
+        }
+      }
       const result = await originalSendRequest(method, params, options);
       if (!codexPlusModelUnlockEnabled()) return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
