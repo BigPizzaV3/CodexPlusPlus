@@ -8,7 +8,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde_json::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
@@ -216,6 +216,9 @@ pub struct DefaultLaunchHooks {
     bridge_watchdog: Mutex<Option<BridgeWatchdogRuntime>>,
     computer_use_guard_watchdog: Mutex<Option<ComputerUseGuardWatchdogRuntime>>,
     computer_use_guard_artifacts: Mutex<Option<crate::computer_use_guard::GuardArtifacts>>,
+    /// Oneshot receiver that fires when Codex's CDP debug port is ready.
+    /// Set up by `launch_codex()` (stderr listener), consumed by `ensure_injection()`.
+    cdp_ready: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
 }
 
 struct HelperRuntime {
@@ -748,12 +751,32 @@ impl LaunchHooks for DefaultLaunchHooks {
         child_command
             .args(&command[1..])
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         #[cfg(windows)]
         child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
-        let child = child_command
+        let mut child = child_command
             .spawn()
             .with_context(|| format!("failed to launch Codex executable {executable}"))?;
+
+        // Read stderr to detect when the CDP port is ready.
+        // Chrome/Electron prints "DevTools listening on ws://..." to stderr.
+        // This is the same pattern used by Playwright (92k★) for Electron apps.
+        if let Some(stderr) = child.stderr.take() {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            *self.cdp_ready.lock().await = Some(rx);
+            tokio::spawn(async move {
+                if let Err(error) = wait_for_cdp_ready(stderr).await {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.cdp_stderr_listener_error",
+                        serde_json::json!({"message": error.to_string()}),
+                    );
+                }
+                // Drop sender: if ensure_injection is still waiting, it gets
+                // Canceled and falls through to the TCP-backoff fallback.
+                drop(tx);
+            });
+        }
+
         *self.child.lock().await = Some(child);
         if let Some(inspector_port) = native_menu_inspector_port {
             start_native_menu_localizer(inspector_port);
@@ -888,6 +911,52 @@ impl LaunchHooks for DefaultLaunchHooks {
             let _ = runtime.shutdown.send(());
             let _ = runtime.task.await;
         }
+    }
+
+    async fn ensure_injection(&self, debug_port: u16, helper_port: u16, _app_dir: &Path) -> bool {
+        // Phase 1: Event-driven — wait for CDP port readiness signal from stderr.
+        let cdp_ready = { self.cdp_ready.lock().await.take() };
+
+        if let Some(rx) = cdp_ready {
+            // Wait for the stderr signal with a moderate timeout.
+            // On a healthy system the line arrives within 2-5 seconds.
+            let signal = tokio::time::timeout(std::time::Duration::from_secs(15), rx).await;
+            match signal {
+                Ok(Ok(())) => {
+                    // CDP ready signal received!  Try injection once; it
+                    // should succeed if the port is genuinely ready.
+                    if try_inject(debug_port, helper_port).await.is_ok() {
+                        return true;
+                    }
+                }
+                _ => {
+                    // Timeout or sender dropped — fall through to backoff.
+                }
+            }
+        }
+
+        // Phase 2: Bounded backoff — TCP connect probing with exponential delay.
+        // This handles edge cases where the stderr line is not printed
+        // (Windows packaged app, macOS `.app` bundle, etc.).
+        let backoff_delays = [100, 200, 400, 800, 1600, 3200, 5000, 10000u64];
+        for delay_ms in &backoff_delays {
+            if try_inject(debug_port, helper_port).await.is_ok() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+        }
+
+        // Phase 3: Original 1s-interval polling as ultimate safety net.
+        // This matches the original behaviour for systems where injection
+        // genuinely takes >30 seconds (very slow disks, heavy load).
+        for _attempt in 1..=30u32 {
+            if try_inject(debug_port, helper_port).await.is_ok() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+
+        false
     }
 
     async fn terminate_codex(&self, launch: &CodexLaunch) {
@@ -1711,6 +1780,37 @@ pub fn build_packaged_activation_with_native_menu_inspector(
         )),
         process_id: None,
     })
+}
+
+/// Detect when Codex's CDP endpoint is ready by reading its stderr.
+///
+/// Chrome/Electron prints "DevTools listening on ws://127.0.0.1:<port>/..."
+/// to stderr when the CDP server is ready.  This is the same pattern used
+/// by Playwright (92k★) for Electron apps.
+///
+/// Returns `Ok(())` as soon as the magic line is found, or `Ok(())` on EOF
+/// (the caller falls through to TCP-backoff).  Errors only on actual I/O
+/// failures, which are also non-fatal.
+pub async fn wait_for_cdp_ready(mut stderr: impl tokio::io::AsyncRead + Unpin) -> anyhow::Result<()> {
+    let mut reader = tokio::io::BufReader::new(&mut stderr);
+    let mut line = String::new();
+    let magic = "DevTools listening on ws://";
+
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).await?;
+        if n == 0 {
+            // EOF — process closed stderr without printing the magic line
+            break;
+        }
+        if line.contains(magic) {
+            return Ok(());
+        }
+    }
+
+    // Fallback: even without the stderr line, the port may still be ready.
+    // Return success so the caller falls through to the TCP-backoff.
+    Ok(())
 }
 
 async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
