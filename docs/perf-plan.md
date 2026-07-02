@@ -9,7 +9,7 @@
 | P0 | 启动慢 54.9s 空白期 | ensure_injection 120×1s 轮询改事件驱动 | 启动 55s → ~0-2s | 中 | ✅ PR #1299 |
 | P1 | 每次请求创建新 HTTP Client | OnceLock 全局缓存 reqwest::Client | TCP 连接复用 | 低 | ✅ PR #1299 |
 | P1 | 模型列表 app-server RPC 阻塞 ~34s | bridge 捷径跳过大模型列表 RPC | −34s 启动时间 | 低 | ✅ PR #1299（启发自 #620） |
-| P1 | 对话卡顿（issues #563, #865, #903）| ChatSseToResponsesConverter 解耦 SSE 解析 | 减少 per-chunk 延迟 | 中 | 📝 计划已写，审查中 |
+| P1 | 对话卡顿（issues #563, #865, #903）| ChatSseToResponsesConverter 解耦 SSE 解析 | 减少 per-chunk 延迟 | 中 | ✅ PR #1299 |
 | P2 | 重复消息耗 token (issue #1231) | Responses SSE 输出加 dedup filter | 省 5-20% token | 中 | 📝 待做 |
 
 ## 启动慢根因

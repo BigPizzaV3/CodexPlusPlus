@@ -904,7 +904,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                 Ok(Ok(())) => {
                     // CDP ready signal received!  Try injection once; it
                     // should succeed if the port is genuinely ready.
-                    if self.inject(debug_port, helper_port).await.is_ok() {
+                    if try_inject(debug_port, helper_port).await.is_ok() {
                         return true;
                     }
                 }
@@ -919,7 +919,7 @@ impl LaunchHooks for DefaultLaunchHooks {
         // (Windows packaged app, macOS `.app` bundle, etc.).
         let backoff_delays = [100, 200, 400, 800, 1600, 3200, 5000, 10000u64];
         for delay_ms in &backoff_delays {
-            if self.inject(debug_port, helper_port).await.is_ok() {
+            if try_inject(debug_port, helper_port).await.is_ok() {
                 return true;
             }
             tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
@@ -929,7 +929,7 @@ impl LaunchHooks for DefaultLaunchHooks {
         // This matches the original behaviour for systems where injection
         // genuinely takes >30 seconds (very slow disks, heavy load).
         for _attempt in 1..=30u32 {
-            if self.inject(debug_port, helper_port).await.is_ok() {
+            if try_inject(debug_port, helper_port).await.is_ok() {
                 return true;
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
