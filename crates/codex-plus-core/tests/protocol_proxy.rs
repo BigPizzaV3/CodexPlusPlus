@@ -1490,6 +1490,8 @@ fn aggregate_proxy_settings(
         ..BackendSettings::default()
     }
 }
+/// Verify the proxied client sets the default CodexPlusPlus user-agent.
+///
 #[tokio::test]
 async fn chat_completions_proxy_uses_configured_user_agent() {
     let _lock = settings_path_test_lock().lock().unwrap();

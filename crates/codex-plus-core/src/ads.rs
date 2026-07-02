@@ -174,7 +174,7 @@ pub async fn fetch_ad_list_from_urls<S>(urls: &[S]) -> anyhow::Result<Value>
 where
     S: AsRef<str>,
 {
-    let client = crate::http_client::proxied_client("CodexPlusPlus")?;
+    let client = crate::http_client::proxied_client()?;
     let cache_bust = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
@@ -183,7 +183,12 @@ where
     for url in urls {
         let url = cache_busted_ad_url(url.as_ref(), cache_bust);
         let result = async {
-            let response = client.get(url).send().await?.error_for_status()?;
+            let response = client
+                .get(url)
+                .header("User-Agent", "CodexPlusPlus")
+                .send()
+                .await?
+                .error_for_status()?;
             let payload = response.json::<Value>().await?;
             Ok::<_, anyhow::Error>(normalize_ad_payload(payload))
         }

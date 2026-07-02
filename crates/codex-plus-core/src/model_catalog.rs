@@ -51,7 +51,7 @@ pub async fn read_codex_model_catalog() -> Value {
         }
     }
     let env = std::env::vars().collect::<HashMap<_, _>>();
-    let client = match crate::http_client::proxied_client("CodexPlusPlus/1.0") {
+    let client = match crate::http_client::proxied_client() {
         Ok(client) => client,
         Err(error) => {
             return json!({
@@ -68,7 +68,7 @@ pub async fn read_codex_model_catalog() -> Value {
             });
         }
     };
-    read_codex_model_catalog_from_home(&home, &env, client).await
+    read_codex_model_catalog_from_home(&home, &env, client, "CodexPlusPlus/1.0").await
 }
 
 fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Value {
@@ -121,6 +121,7 @@ pub async fn read_codex_model_catalog_from_home(
     home: &Path,
     env: &HashMap<String, String>,
     client: reqwest::Client,
+    user_agent: &str,
 ) -> Value {
     let config_path = home.join("config.toml");
     let auth_api_key = read_codex_auth_api_key(&home.join("auth.json"));
@@ -169,7 +170,8 @@ pub async fn read_codex_model_catalog_from_home(
     let mut source_statuses = Vec::new();
     let mut models = Vec::new();
     for source in sources.iter() {
-        let (source_models, mut source_status) = fetch_models_from_source(&client, source).await;
+        let (source_models, mut source_status) =
+            fetch_models_from_source(&client, source, user_agent).await;
         source_status["responses_api"] = responses_api_status("unknown", "", "");
         models.extend(source_models);
         source_statuses.push(source_status);
@@ -455,6 +457,7 @@ fn provider_api_key(
 async fn fetch_models_from_source(
     client: &reqwest::Client,
     source: &ModelSource,
+    user_agent: &str,
 ) -> (Vec<String>, Value) {
     let endpoint = models_endpoint(&source.base_url);
     let mut safe_source = json!({
@@ -474,7 +477,8 @@ async fn fetch_models_from_source(
 
     let mut request = client
         .get(&endpoint)
-        .header(reqwest::header::ACCEPT, "application/json");
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header("User-Agent", user_agent);
     if !source.api_key.is_empty() {
         request = request.bearer_auth(&source.api_key);
     }
@@ -532,8 +536,8 @@ pub async fn fetch_relay_profile_model_ids(
         anyhow::bail!("Base URL 不能为空");
     }
     let endpoint = models_endpoint(&source.base_url);
-    let client = crate::http_client::proxied_client(&profile.user_agent)?;
-    let (models, status) = fetch_models_from_source(&client, &source).await;
+    let client = crate::http_client::proxied_client()?;
+    let (models, status) = fetch_models_from_source(&client, &source, &profile.user_agent).await;
     if models.is_empty() {
         let message = status
             .get("message")

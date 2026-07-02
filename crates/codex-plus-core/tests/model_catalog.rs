@@ -41,6 +41,7 @@ experimental_bearer_token = "relay-key"
         temp.path(),
         &HashMap::new(),
         reqwest::Client::builder().no_proxy().build().unwrap(),
+        "",
     )
     .await;
 
@@ -191,6 +192,7 @@ base_url = "{}/v1"
         temp.path(),
         &HashMap::new(),
         reqwest::Client::builder().no_proxy().build().unwrap(),
+        "",
     )
     .await;
 
@@ -248,6 +250,7 @@ experimental_bearer_token = "relay-key"
         temp.path(),
         &HashMap::new(),
         reqwest::Client::builder().no_proxy().build().unwrap(),
+        "",
     )
     .await;
 
@@ -300,6 +303,7 @@ model_catalog_json = '{}'
         temp.path(),
         &HashMap::new(),
         reqwest::Client::builder().no_proxy().build().unwrap(),
+        "",
     )
     .await;
 
@@ -336,6 +340,7 @@ base_url = "{}"
         temp.path(),
         &HashMap::new(),
         reqwest::Client::builder().no_proxy().build().unwrap(),
+        "",
     )
     .await;
 

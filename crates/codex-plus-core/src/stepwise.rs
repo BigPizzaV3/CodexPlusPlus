@@ -173,7 +173,8 @@ pub async fn generate(
         }));
     }
 
-    let client = crate::http_client::proxied_client("")?;
+    let client = crate::http_client::proxied_client()?;
+    let ua = format!("CodexPlusPlus/{}", env!("CARGO_PKG_VERSION"));
     let timeout = Duration::from_millis(settings.codex_app_stepwise_timeout_ms);
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -186,6 +187,7 @@ pub async fn generate(
     let response = client
         .post(format!("{base_url}/chat/completions"))
         .headers(headers)
+        .header("User-Agent", &ua)
         .timeout(timeout)
         .json(&json!({
             "model": model,

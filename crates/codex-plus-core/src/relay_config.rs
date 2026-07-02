@@ -510,7 +510,7 @@ pub async fn test_relay_profile(
         anyhow::bail!("API Key 不能为空");
     }
 
-    let client = crate::http_client::proxied_client("CodexPlusPlus/RelayTest")?;
+    let client = crate::http_client::proxied_client()?;
     let endpoint = match profile.protocol {
         RelayProtocol::Responses => format!("{base_url}/responses"),
         RelayProtocol::ChatCompletions => format!("{base_url}/chat/completions"),
@@ -525,6 +525,7 @@ pub async fn test_relay_profile(
         .post(&endpoint)
         .bearer_auth(api_key)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header("User-Agent", "CodexPlusPlus/RelayTest")
         .json(&payload)
         .send()
         .await?;

@@ -1,8 +1,19 @@
-pub fn proxied_client(user_agent: &str) -> anyhow::Result<reqwest::Client> {
-    let ua = if user_agent.trim().is_empty() {
-        format!("CodexPlusPlus/{}", env!("CARGO_PKG_VERSION"))
-    } else {
-        user_agent.trim().to_string()
-    };
-    Ok(reqwest::Client::builder().user_agent(ua).build()?)
+use std::sync::OnceLock;
+
+/// Get or create a globally cached `reqwest::Client`.
+///
+/// The client is lazily initialized on the first call and reused for all subsequent
+/// requests. Connection pooling (TCP/TLS) is shared across the process.
+///
+/// NOTE: The client carries NO default User-Agent header.
+/// Callers MUST set the User-Agent on each request builder.
+pub fn proxied_client() -> anyhow::Result<reqwest::Client> {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+    if let Some(client) = CLIENT.get() {
+        return Ok(client.clone());
+    }
+
+    let client = reqwest::Client::builder().build()?;
+    Ok(CLIENT.get_or_init(|| client).clone())
 }
