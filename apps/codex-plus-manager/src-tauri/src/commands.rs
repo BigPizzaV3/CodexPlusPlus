@@ -1470,7 +1470,7 @@ pub fn remote_plugin_marketplace_status() -> CommandResult<RemotePluginMarketpla
         remote_plugin_marketplace_counts(status.marketplace_root.as_deref());
     ok(
         if status.needs_repair() {
-            "官方远端插件缓存需要注册或尚未缓存。"
+            "官方远端插件缓存需要释放或注册。"
         } else {
             "官方远端插件缓存已可用。"
         },
@@ -1491,10 +1491,10 @@ pub fn remote_plugin_marketplace_status() -> CommandResult<RemotePluginMarketpla
 #[tauri::command]
 pub fn repair_remote_plugin_marketplace() -> CommandResult<RemotePluginMarketplacePayload> {
     let home = codex_plus_core::codex_home::default_codex_home_dir();
-    match codex_plus_core::plugin_marketplace::ensure_openai_curated_remote_marketplace_config(
+    match codex_plus_core::plugin_marketplace::ensure_openai_curated_remote_marketplace_available(
         &home,
     ) {
-        Ok(configured) => {
+        Ok(result) => {
             let status =
                 codex_plus_core::plugin_marketplace::openai_curated_remote_marketplace_status(
                     &home,
@@ -1502,9 +1502,9 @@ pub fn repair_remote_plugin_marketplace() -> CommandResult<RemotePluginMarketpla
             let (plugin_count, skill_count) =
                 remote_plugin_marketplace_counts(status.marketplace_root.as_deref());
             ok(
-                if status.marketplace_root.is_none() {
-                    "未发现官方远端插件缓存，请先用官方账号缓存一次。"
-                } else if configured {
+                if result.initialized {
+                    "已释放并注册内置官方远端插件缓存。"
+                } else if result.configured {
                     "已注册官方远端插件缓存。"
                 } else {
                     "官方远端插件缓存已可用，无需修复。"

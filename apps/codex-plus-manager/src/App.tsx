@@ -1265,7 +1265,7 @@ export function App() {
     setRemotePluginMarketplaceProgress({
       active: true,
       percent: 18,
-      message: t("正在检查官方远端插件缓存…"),
+      message: t("正在检查内置官方远端插件缓存…"),
     });
     const progressTimer = window.setInterval(() => {
       setRemotePluginMarketplaceProgress((current) => {
@@ -1273,7 +1273,7 @@ export function App() {
         const nextPercent = Math.min(92, current.percent + 18);
         const message =
           nextPercent < 50
-            ? t("正在读取本地远端插件快照…")
+            ? t("正在释放内置远端插件快照…")
             : nextPercent < 78
               ? t("正在注册官方远端插件市场…")
               : t("正在刷新官方远端插件缓存状态…");
@@ -2615,7 +2615,7 @@ function EnhanceScreen({
         String(remotePluginMarketplace.pluginCount),
         String(remotePluginMarketplace.skillCount),
       ])
-    : t("未发现官方远端插件缓存，请先用官方账号安装或缓存一次。");
+    : t("未发现本地缓存；点击按钮会从 Codex++ 内置快照释放并注册，无需官方账号预缓存。");
   return (
     <>
       <Panel>
@@ -2659,7 +2659,7 @@ function EnhanceScreen({
               <div className="feature-action-row">
                 <div>
                   <strong>{t("官方远端插件缓存")}</strong>
-                  <small>{t("缓存官方账号模式可见但本地快照缺失的插件，API 模式也可显示和安装。")}</small>
+                  <small>{t("使用 Codex++ 内置快照补齐远端插件，API 模式也可显示和安装 Product Design 插件。")}</small>
                   <small>{remoteMarketplaceSummary}</small>
                 </div>
                 <Badge status={remotePluginMarketplace?.configRegistered ? "ok" : "not_checked"} />
@@ -2668,7 +2668,7 @@ function EnhanceScreen({
                   onClick={() => void actions.repairRemotePluginMarketplace()}
                   variant="secondary"
                 >
-                  {remotePluginMarketplaceProgress.active ? t("正在注册…") : t("注册远端插件缓存")}
+                  {remotePluginMarketplaceProgress.active ? t("正在处理…") : t("释放并注册内置缓存")}
                 </Button>
                 <Button
                   disabled={remotePluginMarketplaceProgress.active}
