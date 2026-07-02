@@ -447,6 +447,7 @@ pub fn apply_relay_config_file_to_home(
     home: &Path,
     config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
+    let config_contents = config_contents.strip_prefix('\u{feff}').unwrap_or(config_contents);
     if config_contents.trim().is_empty() {
         anyhow::bail!("config.toml 内容不能为空");
     }
