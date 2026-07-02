@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Manager, WindowEvent};
 
 const TRAY_ID: &str = "codex_plus_tray";
 
@@ -78,6 +78,8 @@ pub fn run() {
             commands::repair_backend,
             commands::plugin_marketplace_status,
             commands::repair_plugin_marketplace,
+            commands::remote_plugin_marketplace_status,
+            commands::repair_remote_plugin_marketplace,
             commands::check_update,
             commands::perform_update,
             commands::load_watcher_state,
@@ -183,7 +185,7 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
             }
 
             api.prevent_close();
-            let _ = close_event_window.emit("manager://close-requested", ());
+            let _ = close_event_window.hide();
         }
         _ => {}
     });

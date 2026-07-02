@@ -42,7 +42,7 @@ fn manager_main_window_uses_default_window_icon_explicitly() {
 }
 
 #[test]
-fn manager_close_confirmation_is_rendered_in_app() {
+fn manager_close_minimizes_to_tray_without_confirmation() {
     let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
         .expect("read manager lib.rs");
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -51,8 +51,9 @@ fn manager_close_confirmation_is_rendered_in_app() {
 
     assert!(!lib_rs.contains("MessageDialogButtons"));
     assert!(!lib_rs.contains(".dialog()"));
-    assert!(lib_rs.contains("manager://close-requested"));
-    assert!(app_tsx.contains("CloseConfirmDialog"));
+    assert!(!lib_rs.contains("manager://close-requested"));
+    assert!(lib_rs.contains("let _ = close_event_window.hide();"));
+    assert!(!app_tsx.contains("CloseConfirmDialog"));
     assert!(app_tsx.contains("manager_exit_app"));
     assert!(app_tsx.contains("manager_hide_to_tray"));
 }

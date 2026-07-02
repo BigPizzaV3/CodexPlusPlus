@@ -6,6 +6,7 @@ use toml_edit::{DocumentMut, Item, Table};
 
 const OPENAI_CURATED_MARKETPLACE: &str = "openai-curated";
 const OPENAI_API_CURATED_MARKETPLACE: &str = "openai-api-curated";
+const OPENAI_CURATED_REMOTE_MARKETPLACE: &str = "openai-curated-remote";
 const OPENAI_PLUGINS_ZIP_URL: &str =
     "https://codeload.github.com/openai/plugins/zip/refs/heads/main";
 const OPENAI_PLUGINS_DOWNLOAD_LIMIT_BYTES: usize = 128 * 1024 * 1024;
@@ -14,20 +15,68 @@ pub fn ensure_openai_curated_marketplace_config(home: &Path) -> anyhow::Result<b
     let Some(marketplace_root) = local_openai_curated_marketplace_root(home)? else {
         return Ok(false);
     };
-    ensure_marketplace_configs(
+    let mut changed = ensure_marketplace_configs(
         home,
         &[OPENAI_CURATED_MARKETPLACE, OPENAI_API_CURATED_MARKETPLACE],
+        &marketplace_root,
+    )?;
+    if let Some(remote_marketplace_root) = local_openai_curated_remote_marketplace_root(home)? {
+        changed |= ensure_marketplace_configs(
+            home,
+            &[OPENAI_CURATED_REMOTE_MARKETPLACE],
+            &remote_marketplace_root,
+        )?;
+    }
+    Ok(changed)
+}
+
+pub fn ensure_openai_curated_remote_marketplace_config(home: &Path) -> anyhow::Result<bool> {
+    let Some(marketplace_root) = local_openai_curated_remote_marketplace_root(home)? else {
+        return Ok(false);
+    };
+    ensure_marketplace_configs(
+        home,
+        &[OPENAI_CURATED_REMOTE_MARKETPLACE],
         &marketplace_root,
     )
 }
 
 pub fn openai_curated_marketplace_status(home: &Path) -> MarketplaceStatus {
     let marketplace_root = local_openai_curated_marketplace_root(home).ok().flatten();
+    let remote_marketplace_root = local_openai_curated_remote_marketplace_root(home)
+        .ok()
+        .flatten();
     let config_registered = marketplace_root
         .as_deref()
         .map(|root| {
             marketplace_config_points_to_root(home, OPENAI_CURATED_MARKETPLACE, root)
                 && marketplace_config_points_to_root(home, OPENAI_API_CURATED_MARKETPLACE, root)
+                && remote_marketplace_root
+                    .as_deref()
+                    .map(|remote_root| {
+                        marketplace_config_points_to_root(
+                            home,
+                            OPENAI_CURATED_REMOTE_MARKETPLACE,
+                            remote_root,
+                        )
+                    })
+                    .unwrap_or(true)
+        })
+        .unwrap_or(false);
+    MarketplaceStatus {
+        marketplace_root,
+        config_registered,
+    }
+}
+
+pub fn openai_curated_remote_marketplace_status(home: &Path) -> MarketplaceStatus {
+    let marketplace_root = local_openai_curated_remote_marketplace_root(home)
+        .ok()
+        .flatten();
+    let config_registered = marketplace_root
+        .as_deref()
+        .map(|root| {
+            marketplace_config_points_to_root(home, OPENAI_CURATED_REMOTE_MARKETPLACE, root)
         })
         .unwrap_or(false);
     MarketplaceStatus {
@@ -84,6 +133,35 @@ fn local_openai_curated_marketplace_root(home: &Path) -> anyhow::Result<Option<P
         .with_context(|| format!("failed to parse {}", marketplace_path.display()))?;
     if marketplace.get("name").and_then(serde_json::Value::as_str)
         != Some(OPENAI_CURATED_MARKETPLACE)
+    {
+        return Ok(None);
+    }
+    let has_plugins = marketplace
+        .get("plugins")
+        .and_then(serde_json::Value::as_array)
+        .map(|plugins| !plugins.is_empty())
+        .unwrap_or(false);
+    if !has_plugins || !root.join("plugins").is_dir() {
+        return Ok(None);
+    }
+    Ok(Some(root))
+}
+
+fn local_openai_curated_remote_marketplace_root(home: &Path) -> anyhow::Result<Option<PathBuf>> {
+    let root = home.join(".tmp").join("plugins-remote");
+    let marketplace_path = root
+        .join(".agents")
+        .join("plugins")
+        .join("marketplace.json");
+    if !marketplace_path.is_file() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&marketplace_path)
+        .with_context(|| format!("failed to read {}", marketplace_path.display()))?;
+    let marketplace: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse {}", marketplace_path.display()))?;
+    if marketplace.get("name").and_then(serde_json::Value::as_str)
+        != Some(OPENAI_CURATED_REMOTE_MARKETPLACE)
     {
         return Ok(None);
     }
@@ -399,11 +477,25 @@ mod tests {
         .unwrap();
     }
 
+    fn write_remote_marketplace(home: &Path) {
+        let root = home.join(".tmp").join("plugins-remote");
+        std::fs::create_dir_all(root.join(".agents").join("plugins")).unwrap();
+        std::fs::create_dir_all(root.join("plugins").join("product-design")).unwrap();
+        std::fs::write(
+            root.join(".agents")
+                .join("plugins")
+                .join("marketplace.json"),
+            r#"{"name":"openai-curated-remote","plugins":[{"name":"product-design","path":"./plugins/product-design"}]}"#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn ensure_openai_curated_marketplace_config_registers_local_marketplace() {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path();
         write_marketplace(home);
+        write_remote_marketplace(home);
 
         let changed = ensure_openai_curated_marketplace_config(home).unwrap();
 
@@ -425,6 +517,20 @@ mod tests {
         assert_eq!(
             parsed["marketplaces"]["openai-api-curated"]["source"].as_str(),
             Some(format!(r"\\?\{}", home.join(".tmp").join("plugins").display()).as_str())
+        );
+        assert_eq!(
+            parsed["marketplaces"]["openai-curated-remote"]["source_type"].as_str(),
+            Some("local")
+        );
+        assert_eq!(
+            parsed["marketplaces"]["openai-curated-remote"]["source"].as_str(),
+            Some(
+                format!(
+                    r"\\?\{}",
+                    home.join(".tmp").join("plugins-remote").display()
+                )
+                .as_str()
+            )
         );
     }
 
@@ -456,6 +562,7 @@ mod tests {
         let home = temp.path();
         let root = home.join(".tmp").join("plugins");
         write_marketplace(home);
+        write_remote_marketplace(home);
         ensure_marketplace_configs(home, &[OPENAI_CURATED_MARKETPLACE], &root).unwrap();
 
         let status = openai_curated_marketplace_status(home);
@@ -463,6 +570,56 @@ mod tests {
         assert!(status.marketplace_root.is_some());
         assert!(!status.config_registered);
         assert!(status.needs_repair());
+    }
+
+    #[test]
+    fn openai_curated_remote_marketplace_status_detects_cached_marketplace() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        write_remote_marketplace(home);
+
+        let status = openai_curated_remote_marketplace_status(home);
+
+        assert_eq!(
+            status.marketplace_root,
+            Some(home.join(".tmp").join("plugins-remote"))
+        );
+        assert!(!status.config_registered);
+        assert!(status.needs_repair());
+    }
+
+    #[test]
+    fn ensure_openai_curated_remote_marketplace_config_registers_remote_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        write_remote_marketplace(home);
+
+        let changed = ensure_openai_curated_remote_marketplace_config(home).unwrap();
+
+        assert!(changed);
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        let parsed = config.parse::<DocumentMut>().unwrap();
+        assert!(
+            parsed
+                .get("marketplaces")
+                .and_then(Item::as_table)
+                .and_then(|marketplaces| marketplaces.get("openai-curated"))
+                .is_none()
+        );
+        assert_eq!(
+            parsed["marketplaces"]["openai-curated-remote"]["source_type"].as_str(),
+            Some("local")
+        );
+        assert_eq!(
+            parsed["marketplaces"]["openai-curated-remote"]["source"].as_str(),
+            Some(
+                format!(
+                    r"\\?\{}",
+                    home.join(".tmp").join("plugins-remote").display()
+                )
+                .as_str()
+            )
+        );
     }
 
     #[test]
