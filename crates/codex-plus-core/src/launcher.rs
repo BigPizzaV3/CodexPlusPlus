@@ -1325,6 +1325,7 @@ async fn handle_protocol_proxy_connection(
             stream.shutdown().await?;
             return Ok(());
         }
+        let mut parser = crate::protocol_proxy::SseBlockParser::new();
         let mut converter = request_json
             .as_ref()
             .map(crate::protocol_proxy::ChatSseToResponsesConverter::with_request)
@@ -1334,13 +1335,42 @@ async fn handle_protocol_proxy_connection(
         while let Some(chunk) = bytes_stream.next().await {
             match chunk {
                 Ok(bytes) => {
-                    let converted = converter.push_bytes(&bytes);
-                    if !converted.is_empty() {
-                        stream.write_all(&converted).await?;
+                    for block in parser.push_bytes(&bytes) {
+                        if let Some(data) = block.data.as_deref() {
+                            if data.trim() == "[DONE]" {
+                                let tail = converter.feed_done();
+                                if !tail.is_empty() {
+                                    stream.write_all(&tail).await?;
+                                }
+                                continue;
+                            }
+                            if let Ok(value) =
+                                serde_json::from_str::<serde_json::Value>(data)
+                            {
+                                if block.event.as_deref() == Some("error")
+                                    || value.get("error").is_some()
+                                {
+                                    let (message, error_type) =
+                                        crate::protocol_proxy::extract_chat_sse_error(
+                                            &value,
+                                        );
+                                    let failed = converter.feed_error(message, error_type);
+                                    if !failed.is_empty() {
+                                        stream.write_all(&failed).await?;
+                                    }
+                                    stream_failed = true;
+                                    break;
+                                }
+                                let converted = converter.feed_chunk(&value);
+                                if !converted.is_empty() {
+                                    stream.write_all(&converted).await?;
+                                }
+                            }
+                        }
                     }
                 }
                 Err(error) => {
-                    let failed = converter.fail(
+                    let failed = converter.feed_error(
                         format!("Stream error: {error}"),
                         Some("stream_error".to_string()),
                     );
@@ -1353,7 +1383,7 @@ async fn handle_protocol_proxy_connection(
             }
         }
         if !stream_failed {
-            let tail = converter.finish();
+            let tail = converter.feed_done();
             if !tail.is_empty() {
                 stream.write_all(&tail).await?;
             }

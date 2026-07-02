@@ -1846,7 +1846,7 @@ fn leading_think_prefix_decision(buffer: &str) -> ThinkPrefixDecision {
     ThinkPrefixDecision::Text
 }
 
-fn extract_chat_sse_error(value: &Value) -> (String, Option<String>) {
+pub fn extract_chat_sse_error(value: &Value) -> (String, Option<String>) {
     let error = value.get("error").unwrap_or(value);
     let message = error
         .as_str()
