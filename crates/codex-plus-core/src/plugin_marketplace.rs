@@ -58,6 +58,20 @@ pub fn ensure_openai_curated_remote_marketplace_available(
     })
 }
 
+pub fn preserve_openai_curated_remote_marketplace_config(
+    home: &Path,
+    config_text: &str,
+) -> anyhow::Result<String> {
+    let Some(marketplace_root) = local_openai_curated_remote_marketplace_root(home)? else {
+        return Ok(config_text.to_string());
+    };
+    merge_marketplace_configs_into_text(
+        config_text,
+        &[OPENAI_CURATED_REMOTE_MARKETPLACE],
+        &marketplace_root,
+    )
+}
+
 pub fn openai_curated_marketplace_status(home: &Path) -> MarketplaceStatus {
     let marketplace_root = local_openai_curated_marketplace_root(home).ok().flatten();
     let remote_marketplace_root = local_openai_curated_remote_marketplace_root(home)
@@ -509,7 +523,21 @@ fn ensure_marketplace_configs(
         }
     };
     let without_bom = existing.trim_start_matches('\u{feff}');
-    let mut doc = parse_toml_document(without_bom)?;
+    let updated =
+        merge_marketplace_configs_into_text(without_bom, marketplace_names, marketplace_root)?;
+    if updated.as_bytes() == without_bom.as_bytes() {
+        return Ok(false);
+    }
+    crate::settings::atomic_write(&config_path, updated.as_bytes())?;
+    Ok(true)
+}
+
+fn merge_marketplace_configs_into_text(
+    config_text: &str,
+    marketplace_names: &[&str],
+    marketplace_root: &Path,
+) -> anyhow::Result<String> {
+    let mut doc = parse_toml_document(config_text)?;
     let marketplaces = table_mut_or_insert(&mut doc, "marketplaces")?;
     for marketplace_name in marketplace_names {
         if marketplaces
@@ -523,13 +551,7 @@ fn ensure_marketplace_configs(
         marketplaces[marketplace_name]["source"] =
             toml_edit::value(windows_extended_path(marketplace_root));
     }
-
-    let updated = ensure_trailing_newline(doc.to_string());
-    if updated.as_bytes() == without_bom.as_bytes() {
-        return Ok(false);
-    }
-    crate::settings::atomic_write(&config_path, updated.as_bytes())?;
-    Ok(true)
+    Ok(ensure_trailing_newline(doc.to_string()))
 }
 
 fn marketplace_config_points_to_root(home: &Path, marketplace_name: &str, root: &Path) -> bool {

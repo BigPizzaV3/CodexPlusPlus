@@ -15,6 +15,32 @@ use codex_plus_core::relay_config::{
 };
 use codex_plus_core::settings::{RelayContextSelection, RelayMode, RelayProfile, RelayProtocol};
 
+fn write_remote_plugin_marketplace_snapshot(home: &std::path::Path) {
+    let root = home.join(".tmp").join("plugins-remote");
+    std::fs::create_dir_all(root.join(".agents").join("plugins")).unwrap();
+    std::fs::create_dir_all(
+        root.join("plugins")
+            .join("product-design")
+            .join(".codex-plugin"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(".agents")
+            .join("plugins")
+            .join("marketplace.json"),
+        r#"{"name":"openai-curated-remote","plugins":[{"name":"product-design","path":"./plugins/product-design"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("plugins")
+            .join("product-design")
+            .join(".codex-plugin")
+            .join("plugin.json"),
+        r#"{"name":"product-design"}"#,
+    )
+    .unwrap();
+}
+
 #[test]
 fn codex_session_db_path_prefers_new_sqlite_directory_threads_db() {
     let temp = tempfile::tempdir().unwrap();
@@ -37,6 +63,27 @@ fn codex_session_db_path_prefers_new_sqlite_directory_threads_db() {
     drop(selected);
 
     assert_eq!(codex_session_db_path_from_home(home), selected_path);
+}
+
+#[test]
+fn apply_relay_config_preserves_cached_remote_plugin_marketplace() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    write_remote_plugin_marketplace_snapshot(home);
+
+    apply_relay_files_to_home(
+        home,
+        r#"model = "gpt-5"
+model_provider = "chatgpt"
+"#,
+        r#"{"auth_mode":"chatgpt"}"#,
+    )
+    .unwrap();
+
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(config.contains("[marketplaces.openai-curated-remote]"));
+    assert!(config.contains(r#"source_type = "local""#));
+    assert!(config.contains(".tmp\\plugins-remote") || config.contains(".tmp/plugins-remote"));
 }
 
 #[test]
