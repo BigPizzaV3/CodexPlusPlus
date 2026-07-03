@@ -4589,8 +4589,25 @@
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
     codexModelCatalogPromise = postJson("/codex-model-catalog", {})
-      .then((result) => {
+      .then(async (result) => {
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+        if ((!codexModelCatalog.models || codexModelCatalog.models.length === 0) && codexModelCatalog.status === "not_configured") {
+          try {
+            const settings = await postJson("/settings/get", {});
+            if (settings && settings.relayProfiles && Array.isArray(settings.relayProfiles)) {
+              const activeId = settings.activeRelayId || "";
+              const profile = settings.relayProfiles.find(p => p.id === activeId) || settings.relayProfiles[0];
+              if (profile && profile.modelList) {
+                const extraModels = profile.modelList.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean);
+                if (extraModels.length > 0) {
+                  codexModelCatalog.models = extraModels;
+                  codexModelCatalog.status = "ok";
+                  codexModelCatalog.default_model = codexModelCatalog.default_model || extraModels[0];
+                }
+              }
+            }
+          } catch (_) {}
+        }
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
         scheduleCodexModelWhitelistRefresh();
