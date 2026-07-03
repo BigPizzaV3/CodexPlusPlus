@@ -2951,6 +2951,8 @@
     if (!name) return null;
     if (!cloned.name) cloned.name = name;
     if (!cloned.id) cloned.id = `${name}@${marketplaceName}`;
+    if (!cloned.marketplaceName) cloned.marketplaceName = marketplaceName;
+    if (!cloned.marketplacePath) cloned.marketplacePath = marketplaceName;
     if (!cloned.interface || typeof cloned.interface !== "object") cloned.interface = {};
     if (!cloned.interface.displayName) cloned.interface.displayName = name;
     if (!Array.isArray(cloned.keywords)) cloned.keywords = [];

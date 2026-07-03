@@ -148,6 +148,12 @@ fn expand_local_plugin_marketplace(
             .entry("id".to_string())
             .or_insert_with(|| Value::String(format!("{plugin_name}@{marketplace_name}")));
         plugin_object
+            .entry("marketplaceName".to_string())
+            .or_insert_with(|| Value::String(marketplace_name.clone()));
+        plugin_object
+            .entry("marketplacePath".to_string())
+            .or_insert_with(|| Value::String(marketplace_name.clone()));
+        plugin_object
             .entry("keywords".to_string())
             .or_insert_with(|| Value::Array(Vec::new()));
         plugin_object.insert(
@@ -364,6 +370,14 @@ mod tests {
         assert_eq!(
             array[2]["plugins"][0]["interface"]["displayName"].as_str(),
             Some("Product Design")
+        );
+        assert_eq!(
+            array[2]["plugins"][0]["marketplaceName"].as_str(),
+            Some("openai-curated-remote")
+        );
+        assert_eq!(
+            array[2]["plugins"][0]["marketplacePath"].as_str(),
+            Some("openai-curated-remote")
         );
     }
 }
