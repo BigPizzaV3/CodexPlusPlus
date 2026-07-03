@@ -187,6 +187,35 @@ fn stepwise_assistant_detection_accepts_two_action_buttons() {
 }
 
 #[test]
+fn stepwise_refreshes_suggestions_for_virtualized_assistant_bubbles() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("function assistantBubbleCandidates("));
+    assert!(script.contains("\".group.flex.min-w-0.flex-col\""));
+    assert!(script.contains("candidates.push(...assistantBubbleCandidates())"));
+    assert!(script.contains("function latestMessageByDocumentOrder("));
+    assert!(script.contains("function clearPromptsForNewAssistant("));
+    assert!(script.contains("if (state.prompts.length || state.currentHash) clearPromptsForNewAssistant(hash);"));
+    assert!(script.contains("function setScanStatus("));
+    assert!(script.contains("setScanStatus(\"not-ready\""));
+    assert!(script.contains("setScanStatus(\"no-assistant-message\""));
+    assert!(!script.contains("setScanStatus(\"surface-not-ready\""));
+    assert!(!script.contains("return fallback[fallback.length - 1] || null;"));
+}
+
+#[test]
+fn stepwise_exposes_manual_refresh_without_refreshing_busy_chats() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("data-action=\"refresh\""));
+    assert!(script.contains("function forceRefreshStepwise("));
+    assert!(script.contains("state.bridgeStatus === \"pending\" || chatBusy()"));
+    assert!(script.contains("setScanStatus(\"manual-refresh-busy\""));
+    assert!(script.contains("state.bridgeCache.delete(bridgeKey)"));
+    assert!(script.contains("requestBridgeStepwise(bridgeKey, userText, assistantText)"));
+}
+
+#[test]
 fn injection_script_defers_backend_mapped_toggles_until_settings_load() {
     let script = assets::injection_script(57321);
 
