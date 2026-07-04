@@ -1743,6 +1743,7 @@ pub fn reset_image_overlay_settings() -> CommandResult<SettingsPayload> {
     settings.codex_app_image_overlay_enabled = defaults.codex_app_image_overlay_enabled;
     settings.codex_app_image_overlay_path = defaults.codex_app_image_overlay_path;
     settings.codex_app_image_overlay_opacity = defaults.codex_app_image_overlay_opacity;
+    settings.codex_app_image_overlay_fit_mode = defaults.codex_app_image_overlay_fit_mode;
     let settings = normalize_settings_before_save(settings);
     match store.save(&settings) {
         Ok(()) => settings_payload("图片覆盖层设置已重置。", "图片覆盖层重置后重新读取失败"),
@@ -3750,6 +3751,7 @@ mod tests {
             codex_app_image_overlay_enabled: true,
             codex_app_image_overlay_path: "C:\\Users\\me\\Pictures\\overlay.png".to_string(),
             codex_app_image_overlay_opacity: 42,
+            codex_app_image_overlay_fit_mode: "fill".to_string(),
             active_relay_id: "supplier-a".to_string(),
             relay_profiles: vec![RelayProfile {
                 id: "supplier-a".to_string(),
@@ -3769,6 +3771,10 @@ mod tests {
         assert!(!result.payload.settings.codex_app_image_overlay_enabled);
         assert_eq!(result.payload.settings.codex_app_image_overlay_path, "");
         assert_eq!(result.payload.settings.codex_app_image_overlay_opacity, 35);
+        assert_eq!(
+            result.payload.settings.codex_app_image_overlay_fit_mode,
+            "fit"
+        );
         assert_eq!(result.payload.settings.active_relay_id, "supplier-a");
         assert_eq!(result.payload.settings.relay_profiles.len(), 1);
         assert_eq!(result.payload.settings.relay_profiles[0].id, "supplier-a");

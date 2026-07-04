@@ -248,6 +248,7 @@ pub fn image_overlay_config(helper_port: u16, settings: &BackendSettings) -> Val
     json!({
         "enabled": enabled && !data_url.is_empty(),
         "opacity": f64::from(settings.codex_app_image_overlay_opacity.clamp(1, 100)) / 100.0,
+        "fitMode": settings.codex_app_image_overlay_fit_mode.as_str(),
         "dataUrl": data_url,
         "imageUrl": if enabled {
             format!("http://127.0.0.1:{helper_port}/overlay/image")
@@ -301,6 +302,17 @@ fn image_content_type(path: &Path) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_overlay_config_includes_fit_mode() {
+        let settings = BackendSettings {
+            codex_app_image_overlay_fit_mode: "fill".to_string(),
+            ..BackendSettings::default()
+        };
+        let config = image_overlay_config(57321, &settings);
+
+        assert_eq!(config["fitMode"].as_str(), Some("fill"));
+    }
 
     #[test]
     fn local_plugin_marketplaces_includes_api_marketplace_snapshot() {

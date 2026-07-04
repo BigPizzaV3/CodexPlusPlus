@@ -170,6 +170,7 @@ type BackendSettings = {
   codexAppImageOverlayEnabled: boolean;
   codexAppImageOverlayPath: string;
   codexAppImageOverlayOpacity: number;
+  codexAppImageOverlayFitMode: ImageOverlayFitMode;
   codexGoalsEnabled: boolean;
   launchMode: LaunchMode;
   relayBaseUrl: string;
@@ -185,6 +186,7 @@ type BackendSettings = {
 
 type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
 type LaunchMode = "patch" | "relay";
+type ImageOverlayFitMode = "fill" | "fit" | "stretch" | "tile" | "center";
 
 export type RelayProfile = {
   id: string;
@@ -690,6 +692,7 @@ const defaultSettings: BackendSettings = {
   codexAppImageOverlayEnabled: false,
   codexAppImageOverlayPath: "",
   codexAppImageOverlayOpacity: 35,
+  codexAppImageOverlayFitMode: "fit",
   codexGoalsEnabled: false,
   launchMode: "patch",
   relayBaseUrl: "",
@@ -3537,6 +3540,24 @@ function SettingsScreen({
                 }
               />
             </Field>
+            <Field label={t("背景适配方式")}>
+              <select
+                className="select-input"
+                value={form.codexAppImageOverlayFitMode}
+                onChange={(event) =>
+                  onFormChange({
+                    ...form,
+                    codexAppImageOverlayFitMode: event.currentTarget.value as ImageOverlayFitMode,
+                  })
+                }
+              >
+                <option value="fill">{t("填充")}</option>
+                <option value="fit">{t("适应")}</option>
+                <option value="stretch">{t("拉伸")}</option>
+                <option value="tile">{t("平铺")}</option>
+                <option value="center">{t("居中")}</option>
+              </select>
+            </Field>
           </div>
           <Toolbar>
             <Button onClick={() => void actions.saveSettings()}>{t("保存设置")}</Button>
@@ -5961,6 +5982,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     computerUseGuardEnabled: settings.computerUseGuardEnabled === true,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
+    codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),
     codexAppStepwiseMaxItems: clampNumber(settings.codexAppStepwiseMaxItems ?? 6, 0, 6),
     codexAppStepwiseMaxInputChars: clampNumber(settings.codexAppStepwiseMaxInputChars || 6000, 1000, 24000),
     codexAppStepwiseMaxOutputTokens: clampNumber(settings.codexAppStepwiseMaxOutputTokens || 500, 100, 4000),
@@ -5975,6 +5997,12 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function normalizeImageOverlayFitMode(value: string | undefined): ImageOverlayFitMode {
+  return value === "fill" || value === "fit" || value === "stretch" || value === "tile" || value === "center"
+    ? value
+    : "fit";
 }
 
 function codexExtraArgsToInput(args: string[] | undefined) {
