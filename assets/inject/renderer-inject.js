@@ -376,26 +376,38 @@
       return;
     }
     const opacity = Math.min(1, Math.max(0.01, Number(config.opacity) || 0.35));
-    const image = existing || document.createElement("img");
-    image.id = codexPlusImageOverlayId;
-    image.src = source;
-    image.alt = "";
-    image.setAttribute("aria-hidden", "true");
-    Object.assign(image.style, {
+    const fitMode = ["fill", "fit", "stretch", "tile", "center"].includes(config.fitMode)
+      ? config.fitMode
+      : "fit";
+    const fitStyles = {
+      fill: { size: "cover", position: "center center", repeat: "no-repeat" },
+      fit: { size: "contain", position: "center center", repeat: "no-repeat" },
+      stretch: { size: "100% 100%", position: "center center", repeat: "no-repeat" },
+      tile: { size: "auto", position: "left top", repeat: "repeat" },
+      center: { size: "auto", position: "center center", repeat: "no-repeat" },
+    }[fitMode];
+    const overlay = existing?.tagName === "DIV" ? existing : document.createElement("div");
+    if (existing && existing !== overlay) existing.remove();
+    overlay.id = codexPlusImageOverlayId;
+    overlay.setAttribute("aria-hidden", "true");
+    Object.assign(overlay.style, {
       position: "fixed",
       inset: "0",
       width: "100vw",
       height: "100vh",
-      objectFit: "contain",
-      objectPosition: "center center",
+      backgroundImage: `url("${source.replace(/"/g, "%22")}")`,
+      backgroundSize: fitStyles.size,
+      backgroundPosition: fitStyles.position,
+      backgroundRepeat: fitStyles.repeat,
       opacity: String(opacity),
       pointerEvents: "none",
       zIndex: "2147483646",
       userSelect: "none",
     });
-    if (!existing) root.appendChild(image);
+    if (!overlay.parentElement) root.appendChild(overlay);
     sendCodexPlusDiagnostic("image_overlay_installed", {
       opacity,
+      fitMode,
       sourceKind: source.startsWith("data:") ? "data-uri" : "unknown",
     });
   }

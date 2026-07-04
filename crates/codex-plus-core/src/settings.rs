@@ -289,6 +289,12 @@ pub struct BackendSettings {
         deserialize_with = "deserialize_image_overlay_opacity"
     )]
     pub codex_app_image_overlay_opacity: u8,
+    #[serde(
+        rename = "codexAppImageOverlayFitMode",
+        default = "default_image_overlay_fit_mode",
+        deserialize_with = "deserialize_image_overlay_fit_mode"
+    )]
+    pub codex_app_image_overlay_fit_mode: String,
     #[serde(rename = "codexGoalsEnabled", default)]
     pub codex_goals_enabled: bool,
     #[serde(rename = "launchMode", default)]
@@ -358,6 +364,7 @@ impl Default for BackendSettings {
             codex_app_image_overlay_enabled: false,
             codex_app_image_overlay_path: String::new(),
             codex_app_image_overlay_opacity: default_image_overlay_opacity(),
+            codex_app_image_overlay_fit_mode: default_image_overlay_fit_mode(),
             codex_goals_enabled: false,
             launch_mode: LaunchMode::Patch,
             relay_base_url: default_relay_base_url(),
@@ -517,6 +524,17 @@ fn clamp_image_overlay_opacity(value: u8) -> u8 {
     value.clamp(1, 100)
 }
 
+pub fn default_image_overlay_fit_mode() -> String {
+    "fit".to_string()
+}
+
+fn normalize_image_overlay_fit_mode(value: &str) -> String {
+    match value {
+        "fill" | "fit" | "stretch" | "tile" | "center" => value.to_string(),
+        _ => default_image_overlay_fit_mode(),
+    }
+}
+
 pub fn clamp_stepwise_max_items(value: u8) -> u8 {
     value.min(default_stepwise_max_items())
 }
@@ -574,6 +592,15 @@ where
     Ok(Option::<u8>::deserialize(deserializer)?
         .map(clamp_image_overlay_opacity)
         .unwrap_or_else(default_image_overlay_opacity))
+}
+
+fn deserialize_image_overlay_fit_mode<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?
+        .map(|value| normalize_image_overlay_fit_mode(&value))
+        .unwrap_or_else(default_image_overlay_fit_mode))
 }
 
 fn deserialize_stepwise_max_items<'de, D>(deserializer: D) -> Result<u8, D::Error>
@@ -867,6 +894,15 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             Value::Number(serde_json::Number::from(clamp_image_overlay_opacity(value))),
         );
     }
+    if let Some(value) = source
+        .get("codexAppImageOverlayFitMode")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppImageOverlayFitMode".to_string(),
+            Value::String(normalize_image_overlay_fit_mode(value)),
+        );
+    }
     if let Some(value) = source.get("codexGoalsEnabled").and_then(Value::as_bool) {
         target.insert("codexGoalsEnabled".to_string(), Value::Bool(value));
     }
@@ -1056,6 +1092,8 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     }
     settings.codex_app_image_overlay_opacity =
         clamp_image_overlay_opacity(settings.codex_app_image_overlay_opacity);
+    settings.codex_app_image_overlay_fit_mode =
+        normalize_image_overlay_fit_mode(&settings.codex_app_image_overlay_fit_mode);
     settings.codex_app_stepwise_base_url = settings
         .codex_app_stepwise_base_url
         .trim()
@@ -1774,7 +1812,8 @@ experimental_bearer_token = "sk-existing""#
             .update(json!({
                 "codexAppImageOverlayEnabled": true,
                 "codexAppImageOverlayPath": "C:\\Users\\me\\Pictures\\overlay.png",
-                "codexAppImageOverlayOpacity": 42
+                "codexAppImageOverlayOpacity": 42,
+                "codexAppImageOverlayFitMode": "fill"
             }))
             .unwrap();
 
@@ -1784,7 +1823,22 @@ experimental_bearer_token = "sk-existing""#
             r"C:\Users\me\Pictures\overlay.png"
         );
         assert_eq!(updated.codex_app_image_overlay_opacity, 42);
+        assert_eq!(updated.codex_app_image_overlay_fit_mode, "fill");
         assert_eq!(store.load().unwrap(), updated);
+    }
+
+    #[test]
+    fn settings_store_defaults_invalid_image_overlay_fit_mode_to_fit() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "codexAppImageOverlayFitMode": "unknown"
+            }))
+            .unwrap();
+
+        assert_eq!(updated.codex_app_image_overlay_fit_mode, "fit");
     }
 
     #[test]

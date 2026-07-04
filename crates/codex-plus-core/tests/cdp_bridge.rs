@@ -68,6 +68,7 @@ fn injection_script_exposes_image_overlay_config() {
         codex_app_image_overlay_enabled: true,
         codex_app_image_overlay_path: image_path.to_string_lossy().to_string(),
         codex_app_image_overlay_opacity: 42,
+        codex_app_image_overlay_fit_mode: "fill".to_string(),
         ..Default::default()
     };
     let script = assets::injection_script_with_settings(57321, &settings);
@@ -75,6 +76,7 @@ fn injection_script_exposes_image_overlay_config() {
     assert!(script.contains("window.__CODEX_PLUS_IMAGE_OVERLAY__"));
     assert!(script.contains("\"enabled\":true"));
     assert!(script.contains("\"opacity\":0.42"));
+    assert!(script.contains("\"fitMode\":\"fill\""));
     assert!(script.contains("\"dataUrl\":\"data:image/png;base64,"));
     assert!(script.contains("http://127.0.0.1:57321/overlay/image"));
 }
@@ -84,7 +86,10 @@ fn injection_script_installs_image_overlay_from_data_uri() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("const source = config.dataUrl || \"\""));
-    assert!(script.contains("image.src = source"));
+    assert!(script.contains("backgroundImage: `url(\"${source.replace(/\"/g, \"%22\")}\")`"));
+    assert!(script.contains(
+        "fit: { size: \"contain\", position: \"center center\", repeat: \"no-repeat\" }"
+    ));
     assert!(script.contains("image_overlay_installed"));
 }
 
@@ -195,7 +200,9 @@ fn stepwise_refreshes_suggestions_for_virtualized_assistant_bubbles() {
     assert!(script.contains("candidates.push(...assistantBubbleCandidates())"));
     assert!(script.contains("function latestMessageByDocumentOrder("));
     assert!(script.contains("function clearPromptsForNewAssistant("));
-    assert!(script.contains("if (state.prompts.length || state.currentHash) clearPromptsForNewAssistant(hash);"));
+    assert!(script.contains(
+        "if (state.prompts.length || state.currentHash) clearPromptsForNewAssistant(hash);"
+    ));
     assert!(script.contains("function setScanStatus("));
     assert!(script.contains("setScanStatus(\"not-ready\""));
     assert!(script.contains("setScanStatus(\"no-assistant-message\""));
