@@ -4992,18 +4992,6 @@
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
     client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
       const reqMethod = appServerModelRequestMethod(String(method || ""), params);
-      // Short-circuit: return model list from Codex++ bridge (<1ms) instead of
-      // waiting for app-server RPC.  Inspired by PR #620 by @congxb.
-      if (codexPlusModelUnlockEnabled() && reqMethod === "list-models-for-host") {
-        if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-        if (codexPlusModelNames().length > 0) {
-          sendCodexPlusDiagnostic("model_list_shortcut", {
-            modelCount: codexPlusModelNames().length,
-          });
-          // Return empty data so patchModelArray fills in codexPlusModelDescriptor models
-          return patchAppServerModelResult("list-models-for-host", { data: [] });
-        }
-      }
       const rpcStart = performance.now();
       const result = await originalSendRequest(method, params, options);
       if (reqMethod === "list-models-for-host") {
