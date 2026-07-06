@@ -83,11 +83,16 @@ pub fn select_packaged_codex_debug_port(requested: u16) -> u16 {
 
 pub fn select_packaged_codex_debug_port_with(
     requested: u16,
-    is_windows: bool,
-    can_bind: impl Fn(u16) -> bool,
-    find_available: impl Fn() -> u16,
+    _is_windows: bool,
+    _can_bind: impl Fn(u16) -> bool,
+    _find_available: impl Fn() -> u16,
 ) -> u16 {
-    select_platform_loopback_port_with(requested, is_windows, can_bind, find_available)
+    // Windows packaged-app activation reuses an existing Codex instance when one
+    // is already running. In that case new command-line arguments are ignored,
+    // so selecting a random free debug port here makes the launcher inject into
+    // a port that Codex will never open. Keep the requested port stable and let
+    // CDP probing handle IPv4/IPv6 availability.
+    requested
 }
 
 pub fn select_platform_loopback_port_with(

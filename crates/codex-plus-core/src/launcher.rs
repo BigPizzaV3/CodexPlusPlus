@@ -385,8 +385,28 @@ fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
 }
 
 fn select_native_menu_inspector_port(debug_port: u16) -> u16 {
+    select_native_menu_inspector_port_with(
+        debug_port,
+        cfg!(windows),
+        crate::ports::select_platform_loopback_port,
+    )
+}
+
+fn select_native_menu_inspector_port_with(
+    debug_port: u16,
+    is_windows: bool,
+    select_loopback_port: impl Fn(u16) -> u16,
+) -> u16 {
     let requested = debug_port.saturating_add(100);
-    crate::ports::select_platform_loopback_port(requested)
+    if is_windows {
+        // Windows packaged-app activation reuses an existing Codex instance and
+        // ignores new command-line arguments. If the existing instance already
+        // listens on the requested inspector port, choosing a random free port
+        // only makes the native-menu localizer retry against a dead port.
+        requested
+    } else {
+        select_loopback_port(requested)
+    }
 }
 
 fn start_native_menu_localizer(inspector_port: u16) {
@@ -2271,5 +2291,19 @@ mod tests {
             3,
             &missing_runtime_package
         ));
+    }
+
+    #[test]
+    fn native_menu_inspector_port_keeps_requested_port_on_windows() {
+        let selected = select_native_menu_inspector_port_with(9229, true, |_| 62528);
+
+        assert_eq!(selected, 9329);
+    }
+
+    #[test]
+    fn native_menu_inspector_port_uses_loopback_selector_off_windows() {
+        let selected = select_native_menu_inspector_port_with(9229, false, |_| 62528);
+
+        assert_eq!(selected, 62528);
     }
 }

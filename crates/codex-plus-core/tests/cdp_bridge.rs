@@ -269,6 +269,15 @@ fn injection_script_disables_plugin_auto_expand_in_relay_mode() {
 }
 
 #[test]
+fn injection_script_does_not_log_plugin_auto_expand_noops() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("if (!currentSignature)"));
+    assert!(script.contains("window.__codexPluginAutoExpandLastSignature = \"\""));
+    assert!(script.contains("if ((window.__codexPluginAutoExpandClicks || 0) > 0 || !!button)"));
+}
+
+#[test]
 fn injection_script_defines_version_gated_plugin_unlock_strategy() {
     let script = assets::injection_script(57321);
 
@@ -612,6 +621,16 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("data-codex-service-tier-controls"));
     assert!(script.contains("removeCodexServiceTierBadges"));
     assert!(script.contains("installCodexServiceTierDispatcherPatch"));
+    assert!(script.contains("installCodexServiceTierAppServerRequestPatch"));
+    assert!(script.contains("patchCodexServiceTierRequestClient"));
+    assert!(script.contains("__codexServiceTierAppServerRequestPatchInstalled"));
+    assert!(script.contains("service_tier_app_server_request_patch_installed"));
+    assert!(script.contains("applyCodexServiceTierRequestClientParams"));
+    assert!(
+        script.contains(
+            "nestedParams === params.params ? params : { ...params, params: nestedParams }"
+        )
+    );
     assert!(script.contains("服务模式"));
     assert!(script.contains("data-codex-service-tier-status"));
     assert!(script.contains("data-codex-service-tier-inherit"));
@@ -1740,4 +1759,30 @@ fn noop_handler() -> bridge::BridgeHandler {
         Box::pin(async { Ok(json!({ "status": "ok" })) })
             as Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>
     })
+}
+
+#[test]
+fn renderer_script_falls_back_to_app_server_manager_hooks_asset() {
+    let script = assets::renderer_script().replace("\r\n", "\n");
+
+    assert!(script.contains("async function loadCodexAppModuleAny(nameParts)"));
+    assert!(script.contains("function codexAppServerRequestCandidates(module)"));
+    assert!(script.contains("function isCodexAppServerRegistryClass(value)"));
+    assert!(script.contains("function codexAppScopeCandidates()"));
+    assert!(script.contains("\"app-server-manager-signals-\""));
+    assert!(script.contains("\"app-server-manager-hooks-\""));
+    assert!(script.contains("loadCodexAppModuleAny([\n          \"app-server-manager-signals-\",\n          \"app-server-manager-hooks-\",\n        ])"));
+    assert!(script.contains(
+        "const Registry = Object.values(module || {}).find(isCodexAppServerRegistryClass);"
+    ));
+    assert!(script.contains("registry.getImplForHostId?.(\"local\")"));
+}
+
+#[test]
+fn renderer_script_rate_limits_repeated_app_server_manager_patch_failures() {
+    let script = assets::renderer_script().replace("\r\n", "\n");
+
+    assert!(script.contains("function sendCodexPlusDiagnosticOnce(key, event, detail)"));
+    assert!(script.contains("plugin-marketplace-request-patch-failed"));
+    assert!(script.contains("model-app-server-request-patch-failed"));
 }

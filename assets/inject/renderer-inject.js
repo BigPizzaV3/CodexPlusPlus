@@ -1445,6 +1445,110 @@
     return await codexServiceTierModulePromises.get(namePart);
   }
 
+  async function loadCodexAppModuleAny(nameParts) {
+    let lastError = null;
+    for (const namePart of nameParts) {
+      try {
+        return await loadCodexAppModule(namePart);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error(`未找到 Codex App asset: ${nameParts.join(", ")}`);
+  }
+
+  function codexAppServerReactKeys(element) {
+    return Object.keys(element || {}).filter((key) => key.startsWith("__reactFiber") || key.startsWith("__reactInternalInstance") || key.startsWith("__reactProps"));
+  }
+
+  function codexAppScopeCandidates() {
+    const roots = [
+      document.getElementById("root"),
+      document.body,
+      ...Array.from(document.querySelectorAll("main, aside, [role='dialog'], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]") || []),
+    ].filter(Boolean);
+    const queue = [];
+    for (const node of roots) {
+      for (const key of codexAppServerReactKeys(node)) {
+        let fiber = node[key];
+        for (let depth = 0; fiber && depth < 80; depth += 1, fiber = fiber.return) {
+          queue.push(fiber);
+          let context = fiber.dependencies?.firstContext;
+          for (let contextDepth = 0; context && contextDepth < 50; contextDepth += 1, context = context.next) {
+            queue.push(context.memoizedValue);
+          }
+        }
+      }
+    }
+
+    const scopes = [];
+    const visited = new WeakSet();
+    for (let index = 0; index < queue.length && index < 12000 && scopes.length < 80; index += 1) {
+      const value = queue[index];
+      if (!value || typeof value !== "object" || visited.has(value)) continue;
+      visited.add(value);
+      let keys = [];
+      try {
+        keys = Object.keys(value);
+      } catch {
+        continue;
+      }
+      if (keys.includes("chain") && keys.includes("node") && typeof value.get === "function" && typeof value.set === "function" && typeof value.watch === "function") {
+        scopes.push(value);
+      }
+      for (const key of keys.slice(0, 80)) {
+        if (key === "ownerDocument" || key === "parentElement" || key === "parentNode" || key === "children" || key === "childNodes") continue;
+        try {
+          const child = value[key];
+          if (child && (typeof child === "object" || typeof child === "function")) queue.push(child);
+        } catch {
+        }
+      }
+    }
+    return scopes;
+  }
+
+  function isCodexAppServerRegistryClass(value) {
+    return typeof value === "function"
+      && typeof value.prototype?.getAll === "function"
+      && typeof value.prototype?.getDefault === "function"
+      && typeof value.prototype?.getForHostId === "function";
+  }
+
+  function pushCodexAppServerCandidate(candidates, visited, value) {
+    if (!value || typeof value !== "object" || visited.has(value)) return;
+    visited.add(value);
+    candidates.push(value);
+    try {
+      if (value.requestClient && typeof value.requestClient === "object") pushCodexAppServerCandidate(candidates, visited, value.requestClient);
+    } catch {
+    }
+  }
+
+  function codexAppServerRequestCandidates(module) {
+    const candidates = [];
+    const visited = new WeakSet();
+    for (const value of Object.values(module || {})) {
+      if (value && typeof value === "object") pushCodexAppServerCandidate(candidates, visited, value);
+    }
+
+    const Registry = Object.values(module || {}).find(isCodexAppServerRegistryClass);
+    if (Registry) {
+      for (const scope of codexAppScopeCandidates()) {
+        try {
+          const registry = new Registry(scope);
+          const all = typeof registry.getAll === "function" ? registry.getAll() : [];
+          if (Array.isArray(all)) all.forEach((manager) => pushCodexAppServerCandidate(candidates, visited, manager));
+          pushCodexAppServerCandidate(candidates, visited, registry.getDefault?.());
+          pushCodexAppServerCandidate(candidates, visited, registry.getForHostId?.("local"));
+          pushCodexAppServerCandidate(candidates, visited, registry.getImplForHostId?.("local"));
+        } catch {
+        }
+      }
+    }
+    return candidates;
+  }
+
   async function codexSettingStorageModule() {
     const module = await loadCodexAppModule("setting-storage-");
     if (typeof module.n !== "function" || typeof module.s !== "function") {
@@ -2074,8 +2178,89 @@
     return message;
   }
 
+  function applyCodexServiceTierRequestClientParams(method, params) {
+    const requestMethod = appServerModelRequestMethod(String(method || ""), params);
+    const directParams = applyCodexServiceTierRequestOverride(requestMethod, params);
+    if (directParams !== params) return directParams;
+
+    if (!params || typeof params !== "object" || !params.params || typeof params.params !== "object") {
+      return params;
+    }
+    const nestedMethod = appServerModelRequestMethod(String(params.method || method || ""), params.params);
+    const nestedParams = applyCodexServiceTierRequestOverride(
+      nestedMethod,
+      params.params,
+      params.conversationId || params.threadId || ""
+    );
+    return nestedParams === params.params ? params : { ...params, params: nestedParams };
+  }
+
+  function patchCodexServiceTierRequestClient(client) {
+    if (!client || typeof client.sendRequest !== "function") return false;
+    if (client.__codexServiceTierRequestPatch === codexServiceTierRequestOverrideVersion) return true;
+    const originalSendRequest = client.__codexServiceTierOriginalSendRequest || client.sendRequest.bind(client);
+    client.__codexServiceTierOriginalSendRequest = originalSendRequest;
+    client.sendRequest = function codexServiceTierPatchedSendRequest(method, params, options) {
+      const nextParams = applyCodexServiceTierRequestClientParams(method, params);
+      return originalSendRequest(method, nextParams, options);
+    };
+    client.__codexServiceTierRequestPatch = codexServiceTierRequestOverrideVersion;
+    return true;
+  }
+
+  function installCodexServiceTierAppServerRequestPatch() {
+    if (window.__codexServiceTierAppServerRequestPatchInstalled === codexServiceTierRequestOverrideVersion) return;
+    const patch = async () => {
+      try {
+        const module = await loadCodexAppModuleAny([
+          "app-server-manager-signals-",
+          "app-server-manager-hooks-",
+        ]);
+        const candidates = codexAppServerRequestCandidates(module);
+        let patchedCount = 0;
+        for (const candidate of candidates) {
+          if (patchCodexServiceTierRequestClient(candidate)) patchedCount += 1;
+          if (typeof candidate.sendRequest !== "function" && typeof candidate.get === "function") {
+            try {
+              if (patchCodexServiceTierRequestClient(candidate.get())) patchedCount += 1;
+            } catch {
+            }
+          }
+        }
+        if (patchedCount > 0) {
+          window.__codexServiceTierAppServerRequestPatchInstalled = codexServiceTierRequestOverrideVersion;
+          window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
+          sendCodexPlusDiagnostic("service_tier_app_server_request_patch_installed", {
+            candidateCount: candidates.length,
+            patchedCount,
+          });
+        } else {
+          sendCodexPlusDiagnosticOnce(
+            "service-tier-app-server-request-patch-not-found",
+            "service_tier_app_server_request_patch_not_found",
+            {
+              exportCount: Object.keys(module || {}).length,
+              candidateCount: candidates.length,
+            }
+          );
+        }
+      } catch (error) {
+        sendCodexPlusDiagnosticOnce(
+          "service-tier-app-server-request-patch-failed",
+          "service_tier_app_server_request_patch_failed",
+          {
+            errorName: error?.name || "",
+            errorMessage: error?.message || String(error),
+          }
+        );
+      }
+    };
+    void patch();
+  }
+
   function installCodexServiceTierDispatcherPatch() {
     if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
+    installCodexServiceTierAppServerRequestPatch();
     const patch = async () => {
       try {
         const module = await loadCodexAppModule("setting-storage-");
@@ -2096,10 +2281,14 @@
         window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
         sendCodexPlusDiagnostic("service_tier_dispatcher_patch_installed", {});
       } catch (error) {
-        sendCodexPlusDiagnostic("service_tier_dispatcher_patch_failed", {
-          errorName: error?.name || "",
-          errorMessage: error?.message || String(error),
-        });
+        sendCodexPlusDiagnosticOnce(
+          "service-tier-dispatcher-patch-failed",
+          "service_tier_dispatcher_patch_failed",
+          {
+            errorName: error?.name || "",
+            errorMessage: error?.message || String(error),
+          }
+        );
       }
     };
     void patch();
@@ -3232,6 +3421,10 @@
   function runPluginAutoExpand(force = false) {
     if (!codexPlusSettings().pluginAutoExpand) return;
     const currentSignature = pluginAutoExpandSignature();
+    if (!currentSignature) {
+      window.__codexPluginAutoExpandLastSignature = "";
+      return;
+    }
     if (!force && currentSignature && currentSignature === window.__codexPluginAutoExpandLastSignature) return;
     window.__codexPluginAutoExpandLastSignature = currentSignature;
     window.__codexPluginAutoExpandRunning = true;
@@ -3244,11 +3437,13 @@
       const button = pluginAutoExpandButtonCandidates()[0];
       if (!button || window.__codexPluginAutoExpandClicks >= codexPluginAutoExpandMaxClicks) {
         window.__codexPluginAutoExpandRunning = false;
-        sendCodexPlusDiagnostic("plugin_auto_expand_finished", {
-          version: codexPluginAutoExpandVersion,
-          clicks: window.__codexPluginAutoExpandClicks || 0,
-          exhausted: !!button,
-        });
+        if ((window.__codexPluginAutoExpandClicks || 0) > 0 || !!button) {
+          sendCodexPlusDiagnostic("plugin_auto_expand_finished", {
+            version: codexPluginAutoExpandVersion,
+            clicks: window.__codexPluginAutoExpandClicks || 0,
+            exhausted: !!button,
+          });
+        }
         return;
       }
       window.__codexPluginAutoExpandClicks = (window.__codexPluginAutoExpandClicks || 0) + 1;
@@ -3505,8 +3700,11 @@
     if (!codexPlusSettings().pluginMarketplaceUnlock) return;
     const patch = async () => {
       try {
-        const module = await loadCodexAppModule("app-server-manager-signals-");
-        const candidates = Object.values(module).filter((value) => value && typeof value === "object");
+        const module = await loadCodexAppModuleAny([
+          "app-server-manager-signals-",
+          "app-server-manager-hooks-",
+        ]);
+        const candidates = codexAppServerRequestCandidates(module);
         let patchedCount = 0;
         for (const candidate of candidates) {
           if (patchPluginMarketplaceRequestClient(candidate)) patchedCount += 1;
@@ -3530,10 +3728,14 @@
           });
         }
       } catch (error) {
-        sendCodexPlusDiagnostic("plugin_marketplace_request_patch_failed", {
-          errorName: error?.name || "",
-          errorMessage: error?.message || String(error),
-        });
+        sendCodexPlusDiagnosticOnce(
+          "plugin-marketplace-request-patch-failed",
+          "plugin_marketplace_request_patch_failed",
+          {
+            errorName: error?.name || "",
+            errorMessage: error?.message || String(error),
+          }
+        );
       }
     };
     void patch();
@@ -3755,6 +3957,13 @@
       body,
       keepalive: true,
     }).catch(() => {});
+  }
+
+  function sendCodexPlusDiagnosticOnce(key, event, detail) {
+    window.__codexPlusDiagnosticOnce = window.__codexPlusDiagnosticOnce || new Set();
+    if (window.__codexPlusDiagnosticOnce.has(key)) return;
+    window.__codexPlusDiagnosticOnce.add(key);
+    sendCodexPlusDiagnostic(event, detail);
   }
 
   sendCodexPlusDiagnostic("script_loaded", {
@@ -4983,8 +5192,11 @@
     if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
     const patch = async () => {
       try {
-        const module = await loadCodexAppModule("app-server-manager-signals-");
-        const candidates = Object.values(module).filter((value) => value && typeof value === "object");
+        const module = await loadCodexAppModuleAny([
+          "app-server-manager-signals-",
+          "app-server-manager-hooks-",
+        ]);
+        const candidates = codexAppServerRequestCandidates(module);
         let patchedCount = 0;
         for (const candidate of candidates) {
           if (patchAppServerModelRequestClient(candidate)) patchedCount += 1;
@@ -5008,10 +5220,14 @@
           });
         }
       } catch (error) {
-        sendCodexPlusDiagnostic("model_app_server_request_patch_failed", {
-          errorName: error?.name || "",
-          errorMessage: error?.message || String(error),
-        });
+        sendCodexPlusDiagnosticOnce(
+          "model-app-server-request-patch-failed",
+          "model_app_server_request_patch_failed",
+          {
+            errorName: error?.name || "",
+            errorMessage: error?.message || String(error),
+          }
+        );
       }
     };
     void patch();
