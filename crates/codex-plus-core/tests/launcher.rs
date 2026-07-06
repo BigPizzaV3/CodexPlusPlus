@@ -412,6 +412,14 @@ fn launcher_no_longer_contains_mobile_control_runtime() {
 }
 
 #[test]
+fn launcher_plugin_marketplace_unlock_repairs_role_specific_plugins() {
+    let launcher_source = include_str!("../src/launcher.rs");
+
+    assert!(launcher_source.contains("ensure_openai_curated_marketplace_config(&home)"));
+    assert!(launcher_source.contains("ensure_role_specific_plugins_marketplace_config(&home)"));
+}
+
+#[test]
 fn app_paths_parse_appx_install_location_from_powershell_output() {
     let output =
         "\r\nC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.611.7849.0_x64__2p2nqsd0c76g0\r\n";
