@@ -1076,6 +1076,12 @@ fn write_codex_live_atomic(
     let config_text = guarded_config_text.as_deref();
 
     let config_text = match config_text {
+        Some(config_text) => Some(preserve_live_marketplace_configs(home, config_text)?),
+        None => None,
+    };
+    let config_text = config_text.as_deref();
+
+    let config_text = match config_text {
         Some(config_text) => Some(
             crate::plugin_marketplace::preserve_openai_curated_remote_marketplace_config(
                 home,
@@ -1116,6 +1122,47 @@ fn write_codex_live_atomic(
     }
 
     Ok(backup_path)
+}
+
+fn preserve_live_marketplace_configs(home: &Path, config_text: &str) -> anyhow::Result<String> {
+    let live_config = read_optional_text(&home.join("config.toml"))?;
+    if live_config.trim().is_empty() {
+        return Ok(config_text.to_string());
+    }
+
+    let mut target = parse_toml_document(config_text)?;
+    let live = parse_toml_document(&live_config)?;
+    let Some(live_marketplaces) = live.get("marketplaces").and_then(Item::as_table_like) else {
+        return Ok(ensure_trailing_newline(target.to_string()));
+    };
+    if live_marketplaces.is_empty() {
+        return Ok(ensure_trailing_newline(target.to_string()));
+    }
+
+    if target.get("marketplaces").is_none() {
+        target["marketplaces"] = toml_edit::table();
+    }
+    if target
+        .get("marketplaces")
+        .and_then(Item::as_table_like)
+        .is_none()
+    {
+        target["marketplaces"] = toml_edit::table();
+    }
+    let Some(target_marketplaces) = target
+        .get_mut("marketplaces")
+        .and_then(Item::as_table_like_mut)
+    else {
+        return Ok(ensure_trailing_newline(target.to_string()));
+    };
+
+    for (name, marketplace) in live_marketplaces.iter() {
+        if target_marketplaces.get(name).is_none() {
+            target_marketplaces.insert(name, marketplace.clone());
+        }
+    }
+
+    Ok(ensure_trailing_newline(target.to_string()))
 }
 
 fn active_provider_id(doc: &DocumentMut) -> Option<String> {

@@ -2487,6 +2487,10 @@ command = "manual-command"
 
 [plugins.manual]
 enabled = true
+
+[marketplaces.role-specific-plugins]
+source_type = "local"
+source = 'C:\Users\me\.codex\.tmp\marketplaces\role-specific-plugins'
 "#,
     )
     .unwrap();
@@ -2518,6 +2522,9 @@ command = "managed-command"
     assert!(config.contains("[plugins.manual]"));
     assert!(config.contains("[mcp_servers.managed]"));
     assert!(config.contains(r#"command = "managed-command""#));
+    assert!(config.contains("[marketplaces.role-specific-plugins]"));
+    assert!(config.contains(r#"source_type = "local""#));
+    assert!(config.contains("role-specific-plugins"));
 }
 
 #[test]

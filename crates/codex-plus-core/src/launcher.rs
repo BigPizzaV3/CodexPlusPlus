@@ -583,6 +583,27 @@ impl LaunchHooks for DefaultLaunchHooks {
                 );
             }
         }
+        match crate::plugin_marketplace::ensure_role_specific_plugins_marketplace_config(&home) {
+            Ok(configured) => {
+                if configured {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.role_specific_plugins_marketplace_configured",
+                        serde_json::json!({
+                            "home": home,
+                        }),
+                    );
+                }
+            }
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.role_specific_plugins_marketplace_config_failed",
+                    serde_json::json!({
+                        "home": home,
+                        "message": error.to_string(),
+                    }),
+                );
+            }
+        }
         Ok(())
     }
 

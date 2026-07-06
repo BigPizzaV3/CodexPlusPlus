@@ -7,6 +7,7 @@ use toml_edit::{DocumentMut, Item, Table};
 const OPENAI_CURATED_MARKETPLACE: &str = "openai-curated";
 const OPENAI_API_CURATED_MARKETPLACE: &str = "openai-api-curated";
 const OPENAI_CURATED_REMOTE_MARKETPLACE: &str = "openai-curated-remote";
+const ROLE_SPECIFIC_PLUGINS_MARKETPLACE: &str = "role-specific-plugins";
 const OPENAI_PLUGINS_ZIP_URL: &str =
     "https://codeload.github.com/openai/plugins/zip/refs/heads/main";
 const OPENAI_PLUGINS_DOWNLOAD_LIMIT_BYTES: usize = 128 * 1024 * 1024;
@@ -40,6 +41,23 @@ pub fn ensure_openai_curated_remote_marketplace_config(home: &Path) -> anyhow::R
         home,
         &[OPENAI_CURATED_REMOTE_MARKETPLACE],
         &marketplace_root,
+    )
+}
+
+pub fn ensure_role_specific_plugins_marketplace_config(home: &Path) -> anyhow::Result<bool> {
+    let Some(marketplace_root) = local_role_specific_plugins_marketplace_root(home)? else {
+        return Ok(false);
+    };
+    let plugin_ids =
+        local_marketplace_plugin_names(&marketplace_root, ROLE_SPECIFIC_PLUGINS_MARKETPLACE)?
+            .into_iter()
+            .map(|name| format!("{name}@{ROLE_SPECIFIC_PLUGINS_MARKETPLACE}"))
+            .collect::<Vec<_>>();
+    ensure_marketplace_configs_with_plugins(
+        home,
+        &[ROLE_SPECIFIC_PLUGINS_MARKETPLACE],
+        &marketplace_root,
+        &plugin_ids,
     )
 }
 
@@ -176,6 +194,74 @@ fn local_openai_curated_marketplace_root(home: &Path) -> anyhow::Result<Option<P
         return Ok(None);
     }
     Ok(Some(root))
+}
+
+fn local_role_specific_plugins_marketplace_root(home: &Path) -> anyhow::Result<Option<PathBuf>> {
+    let root = home
+        .join(".tmp")
+        .join("marketplaces")
+        .join(ROLE_SPECIFIC_PLUGINS_MARKETPLACE);
+    local_marketplace_root_from_root(&root, ROLE_SPECIFIC_PLUGINS_MARKETPLACE)
+}
+
+fn local_marketplace_root_from_root(
+    root: &Path,
+    marketplace_name: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let marketplace_path = root
+        .join(".agents")
+        .join("plugins")
+        .join("marketplace.json");
+    if !marketplace_path.is_file() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&marketplace_path)
+        .with_context(|| format!("failed to read {}", marketplace_path.display()))?;
+    let marketplace: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse {}", marketplace_path.display()))?;
+    if marketplace.get("name").and_then(serde_json::Value::as_str) != Some(marketplace_name) {
+        return Ok(None);
+    }
+    let has_plugins = marketplace
+        .get("plugins")
+        .and_then(serde_json::Value::as_array)
+        .map(|plugins| !plugins.is_empty())
+        .unwrap_or(false);
+    if !has_plugins || !root.join("plugins").is_dir() {
+        return Ok(None);
+    }
+    Ok(Some(root.to_path_buf()))
+}
+
+fn local_marketplace_plugin_names(
+    root: &Path,
+    marketplace_name: &str,
+) -> anyhow::Result<Vec<String>> {
+    let marketplace_path = root
+        .join(".agents")
+        .join("plugins")
+        .join("marketplace.json");
+    let text = std::fs::read_to_string(&marketplace_path)
+        .with_context(|| format!("failed to read {}", marketplace_path.display()))?;
+    let marketplace: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse {}", marketplace_path.display()))?;
+    if marketplace.get("name").and_then(serde_json::Value::as_str) != Some(marketplace_name) {
+        return Ok(Vec::new());
+    }
+    Ok(marketplace
+        .get("plugins")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|plugin| {
+            plugin
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+        })
+        .collect())
 }
 
 fn local_openai_curated_remote_marketplace_root(home: &Path) -> anyhow::Result<Option<PathBuf>> {
@@ -513,6 +599,15 @@ fn ensure_marketplace_configs(
     marketplace_names: &[&str],
     marketplace_root: &Path,
 ) -> anyhow::Result<bool> {
+    ensure_marketplace_configs_with_plugins(home, marketplace_names, marketplace_root, &[])
+}
+
+fn ensure_marketplace_configs_with_plugins(
+    home: &Path,
+    marketplace_names: &[&str],
+    marketplace_root: &Path,
+    plugin_ids: &[String],
+) -> anyhow::Result<bool> {
     let config_path = home.join("config.toml");
     let existing = match std::fs::read(&config_path) {
         Ok(bytes) => String::from_utf8(bytes)
@@ -523,8 +618,12 @@ fn ensure_marketplace_configs(
         }
     };
     let without_bom = existing.trim_start_matches('\u{feff}');
-    let updated =
-        merge_marketplace_configs_into_text(without_bom, marketplace_names, marketplace_root)?;
+    let updated = merge_marketplace_configs_and_plugins_into_text(
+        without_bom,
+        marketplace_names,
+        marketplace_root,
+        plugin_ids,
+    )?;
     if updated.as_bytes() == without_bom.as_bytes() {
         return Ok(false);
     }
@@ -536,6 +635,20 @@ fn merge_marketplace_configs_into_text(
     config_text: &str,
     marketplace_names: &[&str],
     marketplace_root: &Path,
+) -> anyhow::Result<String> {
+    merge_marketplace_configs_and_plugins_into_text(
+        config_text,
+        marketplace_names,
+        marketplace_root,
+        &[],
+    )
+}
+
+fn merge_marketplace_configs_and_plugins_into_text(
+    config_text: &str,
+    marketplace_names: &[&str],
+    marketplace_root: &Path,
+    plugin_ids: &[String],
 ) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(config_text)?;
     let marketplaces = table_mut_or_insert(&mut doc, "marketplaces")?;
@@ -550,6 +663,22 @@ fn merge_marketplace_configs_into_text(
         marketplaces[marketplace_name]["source_type"] = toml_edit::value("local");
         marketplaces[marketplace_name]["source"] =
             toml_edit::value(windows_extended_path(marketplace_root));
+    }
+    if !plugin_ids.is_empty() {
+        let plugins = table_mut_or_insert(&mut doc, "plugins")?;
+        for plugin_id in plugin_ids {
+            let existing_enabled = plugins
+                .get(plugin_id)
+                .and_then(Item::as_table)
+                .and_then(|table| table.get("enabled"))
+                .and_then(Item::as_bool);
+            if plugins.get(plugin_id).and_then(Item::as_table).is_none() {
+                plugins[plugin_id] = toml_edit::table();
+            }
+            if existing_enabled.is_none() {
+                plugins[plugin_id]["enabled"] = toml_edit::value(true);
+            }
+        }
     }
     Ok(ensure_trailing_newline(doc.to_string()))
 }
@@ -653,6 +782,30 @@ mod tests {
         .unwrap();
     }
 
+    fn write_role_specific_marketplace(home: &Path) {
+        let root = home
+            .join(".tmp")
+            .join("marketplaces")
+            .join("role-specific-plugins");
+        std::fs::create_dir_all(root.join(".agents").join("plugins")).unwrap();
+        for plugin in [
+            "sales",
+            "data-analytics",
+            "product-design",
+            "financial-markets",
+            "customer-support",
+        ] {
+            std::fs::create_dir_all(root.join("plugins").join(plugin)).unwrap();
+        }
+        std::fs::write(
+            root.join(".agents")
+                .join("plugins")
+                .join("marketplace.json"),
+            r#"{"name":"role-specific-plugins","plugins":[{"name":"sales"},{"name":"data-analytics"},{"name":"product-design"},{"name":"financial-markets"},{"name":"customer-support"}]}"#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn ensure_openai_curated_marketplace_config_registers_local_marketplace() {
         let temp = tempfile::tempdir().unwrap();
@@ -705,6 +858,80 @@ mod tests {
 
         assert!(!changed);
         assert!(!temp.path().join("config.toml").exists());
+    }
+
+    #[test]
+    fn ensure_role_specific_plugins_marketplace_config_repairs_installed_plugin_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        write_role_specific_marketplace(home);
+        std::fs::write(
+            home.join("config.toml"),
+            "model_provider = \"custom\"\nexperimental_bearer_token = \"sk-redacted\"\n",
+        )
+        .unwrap();
+
+        let changed = ensure_role_specific_plugins_marketplace_config(home).unwrap();
+
+        assert!(changed);
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        let parsed = config.parse::<DocumentMut>().unwrap();
+        assert_eq!(
+            parsed["marketplaces"]["role-specific-plugins"]["source_type"].as_str(),
+            Some("local")
+        );
+        assert_eq!(
+            parsed["marketplaces"]["role-specific-plugins"]["source"].as_str(),
+            Some(
+                format!(
+                    r"\\?\{}",
+                    home.join(".tmp")
+                        .join("marketplaces")
+                        .join("role-specific-plugins")
+                        .display()
+                )
+                .as_str()
+            )
+        );
+        for plugin in [
+            "sales@role-specific-plugins",
+            "data-analytics@role-specific-plugins",
+            "product-design@role-specific-plugins",
+            "financial-markets@role-specific-plugins",
+            "customer-support@role-specific-plugins",
+        ] {
+            assert_eq!(parsed["plugins"][plugin]["enabled"].as_bool(), Some(true));
+        }
+        assert_eq!(
+            parsed["experimental_bearer_token"].as_str(),
+            Some("sk-redacted")
+        );
+    }
+
+    #[test]
+    fn ensure_role_specific_plugins_marketplace_config_preserves_disabled_plugin_choice() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        write_role_specific_marketplace(home);
+        std::fs::write(
+            home.join("config.toml"),
+            "[plugins.\"sales@role-specific-plugins\"]\nenabled = false\n",
+        )
+        .unwrap();
+
+        let changed = ensure_role_specific_plugins_marketplace_config(home).unwrap();
+
+        assert!(changed);
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        let parsed = config.parse::<DocumentMut>().unwrap();
+        assert_eq!(
+            parsed["plugins"]["sales@role-specific-plugins"]["enabled"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            parsed["plugins"]["customer-support@role-specific-plugins"]["enabled"].as_bool(),
+            Some(true)
+        );
     }
 
     #[test]
