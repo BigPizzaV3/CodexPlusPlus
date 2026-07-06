@@ -7,6 +7,7 @@ pub mod cdp;
 pub mod codex_home;
 pub mod codex_local_storage;
 pub mod codex_sqlite;
+pub mod codexradar;
 mod computer_use_guard;
 pub mod diagnostic_log;
 pub mod env_conflicts;
