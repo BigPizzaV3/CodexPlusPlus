@@ -213,6 +213,10 @@ export type RelayProfile = {
   autoCompactLimit: string;
   modelList: string;
   modelWindows: string;
+  modelVlm: string;
+  vlmApiKey: string;
+  vlmModel: string;
+  vlmBaseUrl: string;
   userAgent: string;
   aggregate?: RelayAggregateConfig | null;
 };
@@ -4013,7 +4017,7 @@ function RelayProfileDetail({
 }) {
   const [draft, setDraft] = useState<RelayProfile>(profile);
   const [modelWindowRows, setModelWindowRows] = useState<ModelWindowRow[]>(
-    modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || ""),
+    modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || "", profile.modelVlm),
   );
   const isActive = !isNew && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
@@ -4030,12 +4034,12 @@ function RelayProfileDetail({
             : profile,
         );
     setDraft(nextDraft);
-    setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || ""));
+    setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm));
   }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
   const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
-    return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows };
+    return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows, modelVlm: serializedRows.modelVlm };
   };
   const saveDraft = async () => {
     if (validationError) return;
@@ -4384,6 +4388,14 @@ function RelayProfileEditor({
                     onChange={(event) => updateModelWindowRow(index, { window: event.currentTarget.value })}
                     placeholder="1M"
                   />
+                  <label className="flex items-center gap-1 text-xs whitespace-nowrap">
+                    <input
+                      type="checkbox"
+                      checked={row.vlm}
+                      onChange={(e) => updateModelWindowRow(index, { vlm: e.currentTarget.checked })}
+                    />
+                    Use VLM
+                  </label>
                   <Button
                     aria-label={t("删除模型")}
                     onClick={() => removeModelWindowRow(index)}

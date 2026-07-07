@@ -27,6 +27,7 @@ export function modelWindowsTextToMap(modelList: string, modelWindowsText: strin
 export type ModelWindowRow = {
   model: string;
   window: string;
+  vlm: boolean;
 };
 
 export function mergeModelWindowRows(
@@ -46,7 +47,7 @@ export function mergeModelWindowRows(
   return rows.length ? rows : [{ model: "", window: "" }];
 }
 
-export function modelWindowRowsFromProfile(modelList: string, modelWindows: string): ModelWindowRow[] {
+export function modelWindowRowsFromProfile(modelList: string, modelWindows: string, modelVlm?: string): ModelWindowRow[] {
   let map: Record<string, string> = {};
   try {
     map = JSON.parse(modelWindows || "{}") as Record<string, string>;

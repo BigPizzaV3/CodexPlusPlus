@@ -1,6 +1,6 @@
-//! Codex Responses API 与 OpenAI Chat Completions 的本地协议转换。
+﻿//! Codex Responses API 涓?OpenAI Chat Completions 鐨勬湰鍦板崗璁浆鎹€?
 //!
-//! Codex Chat 与 Responses 协议之间的转换实现。
+//! Codex Chat 涓?Responses 鍗忚涔嬮棿鐨勮浆鎹㈠疄鐜般€?
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -342,8 +342,8 @@ pub async fn send_upstream_request_with_header_timeout(
 ) -> anyhow::Result<reqwest::Response> {
     tokio::time::timeout(timeout, request.send())
         .await
-        .with_context(|| format!("上游请求超过 {} 秒未返回响应头", timeout.as_secs()))?
-        .context("上游请求失败")
+        .with_context(|| format!("涓婃父璇锋眰瓒呰繃 {} 绉掓湭杩斿洖鍝嶅簲澶?, timeout.as_secs()))?
+        .context("涓婃父璇锋眰澶辫触")
 }
 
 pub struct ChatSseToResponsesConverter {
@@ -568,7 +568,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 }
                 return Err(error).with_context(|| {
                     format!(
-                        "供应商「{}」请求上游失败，endpoint: {}",
+                        "渚涘簲鍟嗐€寋}銆嶈姹備笂娓稿け璐ワ紝endpoint: {}",
                         relay.name, endpoint
                     )
                 });
@@ -628,7 +628,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             }),
         );
     }
-    anyhow::bail!("未找到可用的聚合供应商成员")
+    anyhow::bail!("鏈壘鍒板彲鐢ㄧ殑鑱氬悎渚涘簲鍟嗘垚鍛?)
 }
 
 pub async fn open_models_proxy_request(
@@ -681,13 +681,13 @@ pub async fn open_chat_completions_proxy_request(
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
     if relay.protocol != RelayProtocol::ChatCompletions {
-        anyhow::bail!("当前中转未启用 Chat Completions 协议代理");
+        anyhow::bail!("褰撳墠涓浆鏈惎鐢?Chat Completions 鍗忚浠ｇ悊");
     }
     if relay.base_url.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Base URL 不能为空");
+        anyhow::bail!("Chat Completions 涓婃父 Base URL 涓嶈兘涓虹┖");
     }
     if relay.api_key.trim().is_empty() {
-        anyhow::bail!("Chat Completions 上游 Key 不能为空");
+        anyhow::bail!("Chat Completions 涓婃父 Key 涓嶈兘涓虹┖");
     }
 
     let request_json: Value = serde_json::from_str(body)?;
@@ -734,18 +734,44 @@ fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
     request_json: Value,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi)> {
-    match relay.protocol {
-        RelayProtocol::Responses => Ok((
-            responses_url(&relay.base_url),
-            request_json,
-            UpstreamWireApi::Responses,
-        )),
-        RelayProtocol::ChatCompletions => Ok((
-            chat_completions_url(&relay.base_url),
-            responses_to_chat_completions(request_json)?,
-            UpstreamWireApi::ChatCompletions,
-        )),
+    let mut body = match relay.protocol {
+        RelayProtocol::Responses => request_json,
+        RelayProtocol::ChatCompletions => responses_to_chat_completions(request_json)?,
+    };
+
+    // VLM: strip image blocks for models that have Use VLM enabled
+    let model = body.get("model").and_then(Value::as_str).unwrap_or("");
+    if !model.is_empty()
+        && crate::vision::should_process(model, &relay.model_vlm)
+        && !relay.vlm_api_key.is_empty()
+    {
+        let vlm_config = crate::vision::VlmConfig {
+            api_key: relay.vlm_api_key.clone(),
+            model: relay.vlm_model.clone(),
+            base_url: relay.vlm_base_url.clone(),
+        };
+
+        // Strip images from both "messages" (Chat format) and "input" (Responses format)
+        if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+            crate::vision::strip_image_blocks(messages, Some(&vlm_config));
+        }
+        if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
+            crate::vision::strip_image_blocks(input, Some(&vlm_config));
+        }
     }
+
+    let wire_api = match relay.protocol {
+        RelayProtocol::Responses => UpstreamWireApi::Responses,
+        RelayProtocol::ChatCompletions => UpstreamWireApi::ChatCompletions,
+    };
+    Ok((
+        match relay.protocol {
+            RelayProtocol::Responses => responses_url(&relay.base_url),
+            RelayProtocol::ChatCompletions => chat_completions_url(&relay.base_url),
+        },
+        body,
+        wire_api,
+    ))
 }
 
 fn upstream_request_builder(
@@ -769,10 +795,10 @@ fn upstream_request_builder(
 
 fn validate_upstream(relay: &crate::settings::RelayProfile) -> anyhow::Result<()> {
     if relay.base_url.trim().is_empty() {
-        anyhow::bail!("上游 Base URL 不能为空");
+        anyhow::bail!("涓婃父 Base URL 涓嶈兘涓虹┖");
     }
     if relay.api_key.trim().is_empty() {
-        anyhow::bail!("上游 Key 不能为空");
+        anyhow::bail!("涓婃父 Key 涓嶈兘涓虹┖");
     }
     Ok(())
 }
@@ -3953,3 +3979,5 @@ fn is_openai_o_series(model: &str) -> bool {
             .get(1)
             .is_some_and(|byte| byte.is_ascii_digit())
 }
+
+
