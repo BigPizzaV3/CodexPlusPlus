@@ -114,24 +114,34 @@ pub async fn install_bridge(
     let mut session = CdpSession::new(socket).with_handler(handler);
 
     session.send_command(1, "Runtime.enable", json!({})).await?;
+    // Disable the Codex page's Content-Security-Policy for injected code. The
+    // bridge and user scripts run in the page context, so Codex's `connect-src`
+    // policy otherwise blocks their requests to the local helper
+    // (http://127.0.0.1:57321) and to plugin endpoints, surfacing as
+    // "The action has been blocked" during plugin marketplace install. This
+    // mirrors the existing `allowUnsafeEvalBlockedByCSP` relaxation used for
+    // Runtime.evaluate. See issue #1315.
     session
-        .send_command(2, "Runtime.removeBinding", json!({ "name": binding_name }))
+        .send_command(2, "Page.setBypassCSP", json!({ "enabled": true }))
         .await?;
     session
-        .send_command(3, "Runtime.addBinding", json!({ "name": binding_name }))
+        .send_command(3, "Runtime.removeBinding", json!({ "name": binding_name }))
+        .await?;
+    session
+        .send_command(4, "Runtime.addBinding", json!({ "name": binding_name }))
         .await?;
 
     let bridge_script = build_bridge_script(binding_name);
     session
         .send_command(
-            4,
+            5,
             "Page.addScriptToEvaluateOnNewDocument",
             json!({ "source": bridge_script }),
         )
         .await?;
     session
         .send_command(
-            5,
+            6,
             "Runtime.evaluate",
             runtime_evaluate_params(&bridge_script),
         )
