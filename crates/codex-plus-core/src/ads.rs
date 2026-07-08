@@ -1,6 +1,12 @@
 use serde_json::{Map, Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const VOLCENGINE_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-volcengine.png");
+const PACKYCODE_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-packycode.png");
+const TOKEN_BRIDGE_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-0029.svg");
+const APIKEY_FUN_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-apikey-fun.png");
+const RAWCHAT_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-rawchat.svg");
+const RUNAPI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-runapi.png");
 const CUBENCE_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-cubence.png");
 const ERGOU_API_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-ergou-api.png");
 const BUILTIN_SPONSOR_EXPIRES_AT: &str = "2026-08-02T23:59:59+08:00";
@@ -29,8 +35,43 @@ pub fn normalize_ad_payload(payload: Value) -> Value {
         })
         .cloned()
         .collect::<Vec<_>>();
+    fill_known_remote_logos(&mut ads);
     append_builtin_sponsors(&mut ads);
     json!({ "version": version, "ads": ads })
+}
+
+fn fill_known_remote_logos(ads: &mut [Value]) {
+    for ad in ads {
+        let Some(object) = ad.as_object_mut() else {
+            continue;
+        };
+        let has_image = object
+            .get("image")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty());
+        if has_image {
+            continue;
+        }
+        let Some(id) = object.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some((mime, image)) = known_remote_logo(id) else {
+            continue;
+        };
+        object.insert("image".to_string(), json!(data_uri(mime, image)));
+    }
+}
+
+fn known_remote_logo(id: &str) -> Option<(&'static str, &'static [u8])> {
+    match id {
+        "volcengine-ark-agent-plan" => Some(("image/png", VOLCENGINE_IMAGE)),
+        "0029-token-bridge" => Some(("image/png", PACKYCODE_IMAGE)),
+        "0055-token-bridge" => Some(("image/svg+xml", TOKEN_BRIDGE_IMAGE)),
+        "apikey-fun-ai-relay" => Some(("image/png", APIKEY_FUN_IMAGE)),
+        "rawchat-codex-relay" => Some(("image/svg+xml", RAWCHAT_IMAGE)),
+        "runapi-openrouter-alternative" => Some(("image/png", RUNAPI_IMAGE)),
+        _ => None,
+    }
 }
 
 fn append_builtin_sponsors(ads: &mut Vec<Value>) {
@@ -52,7 +93,7 @@ fn append_builtin_sponsors(ads: &mut Vec<Value>) {
             "ergou-api",
             "二狗 API",
             "二狗，稳如老狗的 AI API 中转站。全站 0.1x~0.2x 超低倍率，提供 Claude/GPT/Gemini 等多个国内外 100% 纯血大模型接口，顶级 IPLC 线路 + 住宅双 ISP 冗余，确保全国范围稳定低延迟访问。欢迎各位开发者、工作室注册使用。",
-            "https://ergouapi.com",
+            "https://ergouapi.com/r/gh-codexplusplus",
             ERGOU_API_IMAGE,
             &["0.1x~0.2x", "Claude / GPT / Gemini", "IPLC + 双 ISP"],
         ),
@@ -86,12 +127,13 @@ fn builtin_sponsor(
     sponsor.insert("description".to_string(), json!(description));
     sponsor.insert("url".to_string(), json!(url));
     sponsor.insert("expires_at".to_string(), json!(BUILTIN_SPONSOR_EXPIRES_AT));
-    sponsor.insert(
-        "image".to_string(),
-        json!(format!("data:image/png;base64,{}", base64_encode(image))),
-    );
+    sponsor.insert("image".to_string(), json!(data_uri("image/png", image)));
     sponsor.insert("highlights".to_string(), json!(highlights));
     Value::Object(sponsor)
+}
+
+fn data_uri(mime: &str, bytes: &[u8]) -> String {
+    format!("data:{mime};base64,{}", base64_encode(bytes))
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
