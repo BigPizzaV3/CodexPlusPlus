@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::settings::{RelayProfile, RelayProtocol, RelaySessionProvider};
+use crate::settings::{
+    BedrockAuthMode, BedrockConfig, RelayProfile, RelayProtocol, RelaySessionProvider,
+};
 
 const RELAY_PROVIDER: &str = "custom";
 /// 我们代管的 config.toml 上下文表。
@@ -888,6 +890,8 @@ pub fn backfill_relay_profile_from_home_with_common(
             profile.model = model;
         }
     }
+    // 从回填后的 config_contents 识别 Bedrock 配置，避免切走再切回时丢失 bedrock 字段
+    profile.bedrock = bedrock_config_from_config_text(&profile.config_contents);
     Ok(())
 }
 
@@ -2498,6 +2502,13 @@ pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
 }
 
 fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
+    if let Some(bedrock) = &profile.bedrock {
+        return match bedrock.auth_mode {
+            BedrockAuthMode::BearerToken => complete_bedrock_bearer_token_config(profile, bedrock),
+            BedrockAuthMode::AwsProfile => complete_bedrock_aws_profile_config(profile, bedrock),
+        };
+    }
+
     let mut doc = parse_toml_document(&profile.config_contents)?;
     let session_provider_id = active_session_provider_id(&doc);
     let uses_openai_provider = session_provider_id == "openai";
@@ -2612,6 +2623,15 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
 }
 
 pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    // Secondary validation for Bedrock BearerToken path — last line of defense before persisting.
+    if let Some(bedrock) = &profile.bedrock {
+        if bedrock.auth_mode == BedrockAuthMode::BearerToken {
+            validate_custom_provider_id(&bedrock.provider_id).map_err(|e| anyhow::anyhow!(e))?;
+            require_non_empty(&bedrock.region, "AWS 区域")?;
+            require_non_empty(&relay_profile_api_key(profile), "Bedrock API Key")?;
+        }
+    }
+
     profile.no_auth = profile.relay_mode == crate::settings::RelayMode::PureApi && profile.no_auth;
     if profile.no_auth {
         profile.api_key.clear();
@@ -3086,6 +3106,273 @@ fn account_label_from_jwt(token: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+// ---------------------------------------------------------------------------
+// Bedrock Mantle URL 模板常量
+//
+// 与 TS 端 `apps/codex-plus-manager/src/bedrock-config.ts` 的
+// `BEDROCK_MANTLE_URL_PREFIX` / `BEDROCK_MANTLE_URL_SUFFIX` 保持一致。
+// 修改这里必须同步修改 TS 常量（前后端都在生成与识别端使用）。
+// ---------------------------------------------------------------------------
+pub(crate) const BEDROCK_MANTLE_URL_PREFIX: &str = "https://bedrock-mantle.";
+pub(crate) const BEDROCK_MANTLE_URL_SUFFIX: &str = ".api.aws/openai/v1";
+
+/// 从 `config_text` 识别这是否是一个 Bedrock 供应商配置，以及走哪条鉴权路径。
+/// 返回 `None` 表示这不是 Bedrock 配置（保持现状交给既有非 Bedrock 回填逻辑处理）。
+///
+/// 逻辑：
+/// 1. `model_provider == "amazon-bedrock"` → AWS Profile 路径，回填 region / aws_profile
+/// 2. `requires_openai_auth == true` 且 `base_url` 匹配 bedrock-mantle 正则 → Bearer Token 路径
+/// 3. 其余 → None
+pub(crate) fn bedrock_config_from_config_text(config_text: &str) -> Option<BedrockConfig> {
+    use crate::settings::default_bedrock_iam_key_validity_days;
+
+    let root_provider = root_key_string(config_text, "model_provider");
+
+    // 路径 1：AWS Profile 路径识别
+    if root_provider.as_deref() == Some("amazon-bedrock") {
+        let region = table_values(config_text, "model_providers.amazon-bedrock.aws")
+            .and_then(|values| values.get("region").cloned())
+            .map(|v| unquote_toml_string(&v))
+            .unwrap_or_default();
+        let aws_profile = table_values(config_text, "model_providers.amazon-bedrock.aws")
+            .and_then(|values| values.get("profile").cloned())
+            .map(|v| unquote_toml_string(&v))
+            .unwrap_or_default();
+
+        return Some(BedrockConfig {
+            auth_mode: BedrockAuthMode::AwsProfile,
+            provider_id: String::new(),
+            region,
+            aws_profile,
+            iam_user_name: String::new(),
+            iam_key_validity_days: default_bedrock_iam_key_validity_days(),
+        });
+    }
+
+    // 路径 2：Bearer Token 路径识别
+    // 需要当前活跃 provider 的 requires_openai_auth == true 且 base_url 匹配 bedrock-mantle 模式
+    let active_provider = root_provider.as_deref()?;
+    let provider_values = table_values(config_text, &format!("model_providers.{active_provider}"))?;
+
+    let requires_auth = provider_values
+        .get("requires_openai_auth")
+        .map(|v| v.trim() == "true")
+        .unwrap_or(false);
+    if !requires_auth {
+        return None;
+    }
+
+    let base_url = provider_values
+        .get("base_url")
+        .map(|v| unquote_toml_string(v))
+        .unwrap_or_default();
+
+    // 匹配 ^<PREFIX><region><SUFFIX>$，其中 region 不含 '.' 或 '/'（与 TS 正则 [^./]+ 等价）。
+    if base_url.starts_with(BEDROCK_MANTLE_URL_PREFIX)
+        && base_url.ends_with(BEDROCK_MANTLE_URL_SUFFIX)
+    {
+        let region_start = BEDROCK_MANTLE_URL_PREFIX.len();
+        let region_end = base_url.len() - BEDROCK_MANTLE_URL_SUFFIX.len();
+        if region_start < region_end {
+            let region = &base_url[region_start..region_end];
+            if !region.is_empty() && !region.contains('.') && !region.contains('/') {
+                return Some(BedrockConfig {
+                    auth_mode: BedrockAuthMode::BearerToken,
+                    provider_id: active_provider.to_string(),
+                    region: region.to_string(),
+                    aws_profile: String::new(),
+                    iam_user_name: String::new(),
+                    iam_key_validity_days: default_bedrock_iam_key_validity_days(),
+                });
+            }
+        }
+    }
+
+    None
+}
+
+/// 校验用户填写的自定义 provider 标识符：不能为空，不能与保留标识符冲突。
+pub fn validate_custom_provider_id(provider_id: &str) -> Result<String, String> {
+    let trimmed = provider_id.trim();
+    if trimmed.is_empty() {
+        return Err("provider 标识符不能为空".to_string());
+    }
+    if RESERVED_MODEL_PROVIDER_IDS.contains(&trimmed) {
+        return Err(format!(
+            "「{trimmed}」与保留供应商标识符冲突，请换一个名称"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// 校验字符串非空（trim 后），为空时返回带 label 的错误信息。
+pub(crate) fn require_non_empty(value: &str, label: &str) -> anyhow::Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("{label} 不能为空"));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// 确保已知的根级标量赋值行（model、model_provider 等）出现在任何 `[...]` 表头之前。
+///
+/// 扫描第一个 `[...]` 表头之前的所有行，将匹配已知 key 的赋值行提升到文件最前面，
+/// 保持它们之间的相对顺序，然后跟上其余行；表头之后的所有内容按原样保留，
+/// 不再"提升"任何看起来像根级标量的行——这是因为 TOML 语义下，表段之后的
+/// `key = value` 属于所在 `[section]` 的子字段，与根级同名 key 不是同一个东西。
+///
+/// 该函数用于修补 `toml_edit` 在某些写入顺序下会把新加的根级标量写到表段之后
+/// 的问题；调用方只在自己完全掌控的 config（Codex config.toml）上使用它，
+/// 不承诺对任意 TOML 文本语义正确。
+///
+/// 注释行（`#` 开头）不会被认作根级标量赋值行，避免把 `# model = "foo"` 之类的
+/// 说明性注释误当作真正的赋值抢到最前。
+pub(crate) fn ensure_root_scalars_precede_tables(contents: &str) -> String {
+    const ROOT_SCALAR_KEYS: &[&str] = &[
+        "model",
+        "model_provider",
+        "web_search",
+        "model_context_window",
+        "model_auto_compact_token_limit",
+        "model_catalog_json",
+    ];
+
+    let mut scalar_lines: Vec<&str> = Vec::new();
+    let mut other_lines: Vec<&str> = Vec::new();
+    let mut seen_table = false;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+
+        // 一旦看到 `[...]` 表头，就把当前及之后所有行都归入 other_lines，
+        // 避免把表段内的同名 key（例如 `[foo] \n model = "x"`）误认为是根级标量赋值。
+        if !seen_table && trimmed.starts_with('[') && trimmed.ends_with(']') {
+            seen_table = true;
+        }
+
+        let is_root_scalar = if seen_table || trimmed.starts_with('#') {
+            false
+        } else if let Some((key, _)) = trimmed.split_once('=') {
+            ROOT_SCALAR_KEYS.contains(&key.trim())
+        } else {
+            false
+        };
+
+        if is_root_scalar {
+            scalar_lines.push(line);
+        } else {
+            other_lines.push(line);
+        }
+    }
+
+    let mut result = scalar_lines.join("\n");
+    if !scalar_lines.is_empty() && !other_lines.is_empty() {
+        result.push('\n');
+    }
+    result.push_str(&other_lines.join("\n"));
+    ensure_trailing_newline(result)
+}
+
+/// Bearer Token 鉴权路径的 config.toml 生成。
+///
+/// 校验 provider_id / region / API Key 后，生成包含自定义 provider 表的配置文本。
+/// 任一校验失败即通过 `?` 提前返回 `Err`，不产出任何字符串。
+///
+/// `model_providers.<provider_id>` 采用**整表替换**语义（与 AWS Profile 分支一致）：
+/// 即便先前已存在同名 provider 表并携带 `env_key` / `http_headers` 等杂字段，
+/// 也会被完全丢弃，避免旧字段残留影响 Codex 客户端的行为。
+pub(crate) fn complete_bedrock_bearer_token_config(
+    profile: &RelayProfile,
+    bedrock: &BedrockConfig,
+) -> anyhow::Result<String> {
+    let provider_id = validate_custom_provider_id(&bedrock.provider_id)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let region = require_non_empty(&bedrock.region, "AWS 区域")?;
+    let api_key = require_non_empty(&relay_profile_api_key(profile), "Bedrock API Key")?;
+
+    let mut doc = parse_toml_document(&profile.config_contents)?;
+    set_provider_id(&mut doc, &provider_id);
+
+    // 写入模型（如果非空）
+    let model = relay_profile_model(profile);
+    let (model, _) = crate::model_suffix::parse_model_suffix(&model);
+    if !model.trim().is_empty() {
+        doc["model"] = toml_edit::value(model.trim());
+    }
+
+    // Requirement 3.3：无条件写入 web_search = "disabled"
+    doc["web_search"] = toml_edit::value("disabled");
+
+    // 构建全新的 provider 表——不复用 `retain_only_provider_table` + 字段覆盖的写法，
+    // 因为那样会保留同名旧表下的杂字段（P2 卫生问题）。
+    let base_url = format!("{BEDROCK_MANTLE_URL_PREFIX}{region}{BEDROCK_MANTLE_URL_SUFFIX}");
+    let mut provider_table = toml_edit::Table::new();
+    provider_table.insert("name", toml_edit::value(provider_id.as_str()));
+    provider_table.insert("wire_api", toml_edit::value("responses"));
+    provider_table.insert("requires_openai_auth", toml_edit::value(true));
+    provider_table.insert("base_url", toml_edit::value(base_url.as_str()));
+    provider_table.insert(
+        "experimental_bearer_token",
+        toml_edit::value(api_key.as_str()),
+    );
+
+    // 整表替换 model_providers.<provider_id>，并清空同级其它 provider 兄弟表，
+    // 与 AWS Profile 分支保持一致。
+    let providers = table_mut_or_insert(&mut doc, "model_providers")?;
+    providers.clear();
+    providers.insert(&provider_id, toml_edit::Item::Table(provider_table));
+
+    let rendered = ensure_trailing_newline(doc.to_string());
+    let reordered = move_model_providers_before_profiles(&rendered);
+    Ok(ensure_root_scalars_precede_tables(&reordered))
+}
+
+/// AWS Profile 鉴权路径的配置生成分支。
+/// 使用 Codex 保留的 `amazon-bedrock` provider，配置 `[model_providers.amazon-bedrock.aws]`
+/// 子表（region 必填，profile 可选），不需要 API Key 或 base_url。
+pub(crate) fn complete_bedrock_aws_profile_config(
+    profile: &RelayProfile,
+    bedrock: &BedrockConfig,
+) -> anyhow::Result<String> {
+    const BEDROCK_PROVIDER_ID: &str = "amazon-bedrock";
+
+    let region = require_non_empty(&bedrock.region, "AWS 区域")?;
+
+    let mut doc = parse_toml_document(&profile.config_contents)?;
+    set_provider_id(&mut doc, BEDROCK_PROVIDER_ID);
+
+    // 写入模型（如果非空）
+    let model = relay_profile_model(profile);
+    let (model, _) = crate::model_suffix::parse_model_suffix(&model);
+    if !model.trim().is_empty() {
+        doc["model"] = toml_edit::value(model.trim());
+    }
+
+    // 只保留当前 provider 表，清除其他
+    retain_only_provider_table(&mut doc, BEDROCK_PROVIDER_ID);
+
+    // 构建 model_providers.amazon-bedrock 表，仅包含 aws 子表
+    let aws_profile = bedrock.aws_profile.trim();
+
+    let mut aws_table = toml_edit::Table::new();
+    aws_table.insert("region", toml_edit::value(region.as_str()));
+    if !aws_profile.is_empty() {
+        aws_table.insert("profile", toml_edit::value(aws_profile));
+    }
+
+    let mut provider_table = toml_edit::Table::new();
+    provider_table.insert("aws", toml_edit::Item::Table(aws_table));
+
+    // 整表替换 model_providers.amazon-bedrock
+    // 使用 table_mut_or_insert 确保 model_providers 作为 TOML 表存在
+    let providers = table_mut_or_insert(&mut doc, "model_providers")?;
+    providers.insert(BEDROCK_PROVIDER_ID, toml_edit::Item::Table(provider_table));
+
+    let rendered = ensure_trailing_newline(doc.to_string());
+    let reordered = move_model_providers_before_profiles(&rendered);
+    Ok(ensure_root_scalars_precede_tables(&reordered))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3174,6 +3461,831 @@ mod tests {
             ..RelayProfile::default()
         };
         assert!(relay_profile_model(&empty).trim().is_empty());
+    }
+
+    #[test]
+    fn ensure_root_scalars_precede_tables_does_not_steal_in_table_scalars() {
+        // Regression: 表段之内的 `model = "..."` 属于所在 section 的子字段，
+        // 不应该被误当作根级标量抢走到最前面（会破坏 TOML 语义）。
+        let input = "\
+[custom_section]
+model = \"foo\"
+name = \"bar\"
+
+[another_section]
+model_provider = \"baz\"
+";
+        let output = ensure_root_scalars_precede_tables(input);
+        // 输出的第一行不能是表段内的 `model = "foo"`
+        let first_line = output.lines().next().unwrap_or("");
+        assert!(
+            first_line.trim_start().starts_with('['),
+            "First line should still be a table header, but got: {first_line:?}\nFull output:\n{output}"
+        );
+        // model = "foo" 依然出现在 [custom_section] 之后（未被上提）
+        let model_line_idx = output
+            .lines()
+            .position(|line| line.trim() == "model = \"foo\"")
+            .expect("expected `model = \"foo\"` line in output");
+        let custom_section_idx = output
+            .lines()
+            .position(|line| line.trim() == "[custom_section]")
+            .expect("expected [custom_section] line in output");
+        assert!(
+            model_line_idx > custom_section_idx,
+            "model in [custom_section] must remain after its section header; \
+             model at line {model_line_idx}, section at line {custom_section_idx}\nOutput:\n{output}"
+        );
+    }
+
+    #[test]
+    fn ensure_root_scalars_precede_tables_ignores_commented_scalars() {
+        // Regression: `# model = "foo"` 是注释，不是根级赋值，不应被上提。
+        let input = "\
+# model = \"commented-out\"
+
+[custom_section]
+name = \"bar\"
+
+model_provider = \"real\"
+";
+        let output = ensure_root_scalars_precede_tables(input);
+        // 注释行不会被识别为根级 scalar，因此原地保留
+        // 而 `model_provider = "real"` 出现在 [custom_section] 之后，
+        // 按新语义视作表内字段，不被上提（也不会破坏 TOML 语义）。
+        let first_line = output.lines().next().unwrap_or("");
+        assert!(
+            first_line.starts_with("# model"),
+            "Comment line should remain at the top, but got: {first_line:?}\nOutput:\n{output}"
+        );
+    }
+
+    #[test]
+    fn complete_bedrock_bearer_token_config_drops_stale_provider_fields() {
+        // Regression: Bearer Token 分支采用整表替换语义，
+        // 同名旧 provider 表下的杂字段（如 env_key / http_headers）不应残留。
+        let profile = RelayProfile {
+            config_contents: "\
+model_provider = \"my-bedrock\"
+
+[model_providers.my-bedrock]
+name = \"leftover-name\"
+env_key = \"OLD_KEY\"
+env_http_headers = { X-Trace = \"leftover\" }
+http_headers = { Authorization = \"Bearer stale\" }
+
+[model_providers.other-leftover]
+name = \"should-be-cleared\"
+"
+                .to_string(),
+            api_key: "brk-test-key".to_string(),
+            bedrock: Some(BedrockConfig {
+                auth_mode: BedrockAuthMode::BearerToken,
+                provider_id: "my-bedrock".to_string(),
+                region: "us-east-2".to_string(),
+                aws_profile: String::new(),
+                iam_user_name: String::new(),
+                iam_key_validity_days: crate::settings::default_bedrock_iam_key_validity_days(),
+            }),
+            ..RelayProfile::default()
+        };
+        let bedrock = profile.bedrock.as_ref().unwrap();
+        let output = complete_bedrock_bearer_token_config(&profile, bedrock)
+            .expect("bearer token config should succeed");
+
+        // 5 个 Bedrock 必需字段
+        assert!(output.contains("name = \"my-bedrock\""), "expected fresh name, got:\n{output}");
+        assert!(output.contains("wire_api = \"responses\""), "expected wire_api, got:\n{output}");
+        assert!(output.contains("requires_openai_auth = true"), "expected requires_openai_auth, got:\n{output}");
+        assert!(
+            output.contains("base_url = \"https://bedrock-mantle.us-east-2.api.aws/openai/v1\""),
+            "expected bedrock-mantle base_url, got:\n{output}"
+        );
+        assert!(
+            output.contains("experimental_bearer_token = \"brk-test-key\""),
+            "expected experimental_bearer_token, got:\n{output}"
+        );
+
+        // 旧脏字段不应残留
+        assert!(!output.contains("leftover-name"), "stale name should be dropped, got:\n{output}");
+        assert!(!output.contains("OLD_KEY"), "stale env_key value should be dropped, got:\n{output}");
+        assert!(!output.contains("env_key"), "stale env_key field should be dropped, got:\n{output}");
+        assert!(!output.contains("env_http_headers"), "stale env_http_headers should be dropped, got:\n{output}");
+        assert!(!output.contains("http_headers"), "stale http_headers should be dropped, got:\n{output}");
+        assert!(!output.contains("leftover"), "stale header values should be dropped, got:\n{output}");
+        assert!(!output.contains("should-be-cleared"), "sibling provider should be cleared, got:\n{output}");
+        assert!(!output.contains("[model_providers.other-leftover]"), "sibling provider table should be dropped, got:\n{output}");
+    }
+
+    #[test]
+    fn bedrock_config_from_config_text_returns_none_for_non_bedrock_configs() {
+        // 1. 标准自定义供应商配置
+        let custom_config = "model_provider = \"custom\"\nmodel = \"some-model\"\n\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"https://example.com\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n";
+        assert_eq!(
+            bedrock_config_from_config_text(custom_config),
+            None,
+            "Custom provider config should return None"
+        );
+
+        // 2. Official/OpenAI 风格配置
+        let openai_config = "model_provider = \"openai\"\nmodel = \"gpt-4\"\n\n[model_providers.openai]\nname = \"openai\"\nbase_url = \"https://api.openai.com/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n";
+        assert_eq!(
+            bedrock_config_from_config_text(openai_config),
+            None,
+            "OpenAI-style config should return None"
+        );
+
+        // 3. 不含 model_provider 的配置
+        let no_provider_config = "model = \"some-model\"\n\n[model_providers.foo]\nname = \"foo\"\nbase_url = \"https://foo.example.com\"\n";
+        assert_eq!(
+            bedrock_config_from_config_text(no_provider_config),
+            None,
+            "Config without model_provider should return None"
+        );
+
+        // 4. requires_openai_auth = true 但 base_url 不匹配 bedrock-mantle 模式
+        let non_bedrock_url_config = "model_provider = \"myapi\"\nmodel = \"deepseek-v4\"\n\n[model_providers.myapi]\nname = \"myapi\"\nbase_url = \"https://api.myservice.com/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n";
+        assert_eq!(
+            bedrock_config_from_config_text(non_bedrock_url_config),
+            None,
+            "Non-bedrock-mantle base_url config should return None"
+        );
+
+        // 5. 空字符串
+        assert_eq!(
+            bedrock_config_from_config_text(""),
+            None,
+            "Empty config should return None"
+        );
+    }
+
+    #[test]
+    fn backfill_does_not_set_bedrock_for_non_bedrock_config() {
+        let temp = tempfile::tempdir().unwrap();
+        // 写入一个标准自定义供应商的 config.toml（非 Bedrock 形状）
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "model_provider = \"custom\"\nmodel = \"gpt-4\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"https://example.com\"\n",
+        )
+        .unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{}\n").unwrap();
+
+        let mut profile = RelayProfile {
+            relay_mode: crate::settings::RelayMode::PureApi,
+            protocol: crate::settings::RelayProtocol::Responses,
+            config_contents: "model_provider = \"custom\"\nmodel = \"gpt-4\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"https://example.com\"\n"
+                .to_string(),
+            auth_contents: "{}\n".to_string(),
+            bedrock: None,
+            ..RelayProfile::default()
+        };
+        let mut common = String::new();
+
+        backfill_relay_profile_from_home_with_common(temp.path(), &mut profile, &mut common)
+            .unwrap();
+
+        // 回填后 bedrock 字段应保持 None
+        assert!(
+            profile.bedrock.is_none(),
+            "bedrock should remain None for non-Bedrock config after backfill, got: {:?}",
+            profile.bedrock
+        );
+    }
+
+    mod proptest_property_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        // Feature: amazon-bedrock-provider, Property 10: 保留字冲突校验（通用，不限于 Bedrock）
+        //
+        // *For any* 字符串，`validate_custom_provider_id` 返回 `Err` 当且仅当该字符串（trim 后）为空，
+        // 或该字符串（trim 后）属于 `RESERVED_MODEL_PROVIDER_IDS` 集合；其余情况返回 `Ok`。
+        //
+        // **Validates: Requirements 2.2**
+        proptest! {
+            #[test]
+            fn property_10_reserved_id_conflict_validation(input in ".*") {
+                let trimmed = input.trim();
+                let result = validate_custom_provider_id(&input);
+
+                if trimmed.is_empty() {
+                    // trim 后为空 → 必须返回 Err
+                    prop_assert!(result.is_err(), "Expected Err for empty-after-trim input {:?}, got Ok", input);
+                } else if RESERVED_MODEL_PROVIDER_IDS.contains(&trimmed) {
+                    // trim 后命中保留字 → 必须返回 Err
+                    prop_assert!(result.is_err(), "Expected Err for reserved id {:?}, got Ok", trimmed);
+                } else {
+                    // 其余情况 → 必须返回 Ok(trimmed)
+                    prop_assert!(result.is_ok(), "Expected Ok for non-reserved non-empty id {:?}, got Err: {:?}", trimmed, result);
+                    prop_assert_eq!(result.unwrap(), trimmed.to_string());
+                }
+            }
+        }
+
+        // 补充：显式使用保留字作为输入，确保每一个保留字都被拒绝
+        proptest! {
+            #[test]
+            fn property_10_reserved_ids_explicitly_rejected(
+                idx in 0..RESERVED_MODEL_PROVIDER_IDS.len(),
+                prefix_spaces in "\\s{0,5}",
+                suffix_spaces in "\\s{0,5}",
+            ) {
+                let reserved = RESERVED_MODEL_PROVIDER_IDS[idx];
+                let input = format!("{}{}{}", prefix_spaces, reserved, suffix_spaces);
+                let result = validate_custom_provider_id(&input);
+                prop_assert!(result.is_err(), "Expected Err for reserved id {:?} (with whitespace), got Ok", input);
+            }
+        }
+
+        // Feature: amazon-bedrock-provider, Property 3: 根级标量顺序不变式
+        //
+        // *For any* 任意预先存在的 `config_contents`（用 `proptest` 生成随机根级
+        // `key = "value"` 赋值行 + 随机 `[table.name]` 表头 + 表内字段的 TOML 文本），
+        // 对其调用 `ensure_root_scalars_precede_tables` 后，输出文本中
+        // `model_provider`/`model` 所在行的行号都小于第一个 `[...]` 表头所在行的行号。
+        //
+        // 说明：TOML 语义下，第一个表头之后的 `key = value` 属于所在 `[section]`
+        // 的子字段，与根级同名 key 不是同一个东西。生成器把"根级 scalar 行"限制
+        // 在第一个表头之前，反映这一 TOML 语义约束——`ensure_root_scalars_precede_tables`
+        // 不再"暴力抢走"表段内的同名字段。
+        //
+        // **Validates: Requirements 4.2**
+
+        /// 策略：先生成 0..N 行"表头之前的行"（scalar / 注释 / 空行），再拼接
+        /// 0..M 行"表头及之后的行"（表头 / 表内字段 / 注释 / 空行），保证根级
+        /// scalar 行不会出现在任何 `[...]` 表头之后。
+        fn arb_toml_like_text() -> impl Strategy<Value = String> {
+            // 已知根级标量 key 列表
+            const SCALAR_KEYS: &[&str] = &[
+                "model",
+                "model_provider",
+                "web_search",
+                "model_context_window",
+                "model_auto_compact_token_limit",
+                "model_catalog_json",
+            ];
+
+            let scalar_line = prop::sample::select(SCALAR_KEYS)
+                .prop_flat_map(|key| {
+                    "[a-zA-Z0-9_\\-]{1,20}".prop_map(move |val| {
+                        format!("{} = \"{}\"", key, val)
+                    })
+                });
+
+            let table_header = "[a-zA-Z_][a-zA-Z0-9_]{0,10}(\\.[a-zA-Z_][a-zA-Z0-9_]{0,10}){0,2}"
+                .prop_map(|name| format!("[{}]", name));
+
+            let non_root_scalar_line = prop_oneof![
+                Just(String::new()),                         // 空行
+                Just("# comment line".to_string()),          // 注释
+                "[a-z_]{1,10} = \"[a-z]{1,10}\""             // 非根级 key 的赋值行
+                    .prop_filter("must not be a root scalar key", |line| {
+                        if let Some((key, _)) = line.split_once('=') {
+                            let key = key.trim();
+                            !SCALAR_KEYS.contains(&key)
+                        } else {
+                            true
+                        }
+                    }),
+            ];
+
+            // 表头之前：允许 scalar 与非 scalar 的普通行
+            let pre_header_line = prop_oneof![
+                3 => scalar_line,
+                3 => non_root_scalar_line.clone(),
+            ];
+
+            // 表头及之后：只允许表头与非 scalar 行（表内字段视作 non-scalar）
+            let post_header_line = prop_oneof![
+                3 => table_header,
+                3 => non_root_scalar_line,
+            ];
+
+            (
+                prop::collection::vec(pre_header_line, 0..15),
+                prop::collection::vec(post_header_line, 0..15),
+            )
+                .prop_map(|(pre, post)| {
+                    let mut lines = pre;
+                    lines.extend(post);
+                    lines.join("\n")
+                })
+        }
+
+        proptest! {
+            #[test]
+            fn property_3_root_scalars_precede_tables(input in arb_toml_like_text()) {
+                let output = ensure_root_scalars_precede_tables(&input);
+
+                // 已知根级标量 key 集合
+                const SCALAR_KEYS: &[&str] = &[
+                    "model",
+                    "model_provider",
+                    "web_search",
+                    "model_context_window",
+                    "model_auto_compact_token_limit",
+                    "model_catalog_json",
+                ];
+
+                // 找到输出中第一个表头行的行号（0-based）
+                let first_table_header_line: Option<usize> = output.lines().enumerate()
+                    .find(|(_, line)| {
+                        let trimmed = line.trim();
+                        trimmed.starts_with('[') && trimmed.ends_with(']') && !trimmed.starts_with("[[")
+                    })
+                    .map(|(idx, _)| idx);
+
+                // 检查每个根级标量行是否都出现在第一个表头之前
+                for (line_idx, line) in output.lines().enumerate() {
+                    let trimmed = line.trim();
+                    let is_root_scalar = if let Some((key, _)) = trimmed.split_once('=') {
+                        let key = key.trim();
+                        SCALAR_KEYS.contains(&key)
+                    } else {
+                        false
+                    };
+
+                    if is_root_scalar {
+                        if let Some(first_table) = first_table_header_line {
+                            prop_assert!(
+                                line_idx < first_table,
+                                "Root scalar at line {} ({:?}) is NOT before first table header at line {}.\nOutput:\n{}",
+                                line_idx, trimmed, first_table, output
+                            );
+                        }
+                        // 如果没有表头行，则标量行可以出现在任何位置（属性自动满足）
+                    }
+                }
+            }
+        }
+
+        // Feature: amazon-bedrock-provider, Property 1: Bearer Token 配置生成正确性
+        //
+        // *For any* 非保留的 provider 标识符字符串、任意非空 region 字符串、任意非空
+        // API Key 字符串，生成结果中顶层 `model_provider` 等于该标识符；`base_url` 等于
+        // `https://bedrock-mantle.<region>.api.aws/openai/v1`；`requires_openai_auth`
+        // 为 `true`；`experimental_bearer_token` 等于该 API Key；顶层 `web_search`
+        // 等于 `"disabled"`。
+        //
+        // **Validates: Requirements 2.1, 2.3, 3.1, 3.3**
+        proptest! {
+            #[test]
+            fn property_1_bearer_token_config_correctness(
+                provider_id in "[a-z][a-z0-9]{1,12}",
+                region in "[a-z][a-z0-9\\-]{2,15}",
+                api_key in "[a-zA-Z0-9]{5,30}",
+            ) {
+                // 构造 RelayProfile，设置 api_key 和 bedrock bearer token 配置
+                let profile = RelayProfile {
+                    api_key: api_key.clone(),
+                    bedrock: Some(crate::settings::BedrockConfig {
+                        auth_mode: crate::settings::BedrockAuthMode::BearerToken,
+                        provider_id: provider_id.clone(),
+                        region: region.clone(),
+                        aws_profile: String::new(),
+                        iam_user_name: String::new(),
+                        iam_key_validity_days: crate::settings::default_bedrock_iam_key_validity_days(),
+                    }),
+                    ..RelayProfile::default()
+                };
+
+                let bedrock = profile.bedrock.as_ref().unwrap();
+                let result = complete_bedrock_bearer_token_config(&profile, bedrock);
+
+                // 结果必须为 Ok
+                prop_assert!(result.is_ok(), "Expected Ok, got Err: {:?}", result);
+                let output = result.unwrap();
+
+                // 验证 model_provider = "<provider_id>"
+                let expected_provider = format!("model_provider = \"{}\"", provider_id);
+                prop_assert!(
+                    output.contains(&expected_provider),
+                    "Output should contain {:?}, but got:\n{}",
+                    expected_provider, output
+                );
+
+                // 验证 base_url = "https://bedrock-mantle.<region>.api.aws/openai/v1"
+                let expected_base_url = format!(
+                    "base_url = \"https://bedrock-mantle.{}.api.aws/openai/v1\"",
+                    region
+                );
+                prop_assert!(
+                    output.contains(&expected_base_url),
+                    "Output should contain {:?}, but got:\n{}",
+                    expected_base_url, output
+                );
+
+                // 验证 requires_openai_auth = true
+                prop_assert!(
+                    output.contains("requires_openai_auth = true"),
+                    "Output should contain 'requires_openai_auth = true', but got:\n{}",
+                    output
+                );
+
+                // 验证 experimental_bearer_token = "<api_key>"
+                let expected_token = format!("experimental_bearer_token = \"{}\"", api_key);
+                prop_assert!(
+                    output.contains(&expected_token),
+                    "Output should contain {:?}, but got:\n{}",
+                    expected_token, output
+                );
+
+                // 验证 web_search = "disabled"
+                prop_assert!(
+                    output.contains("web_search = \"disabled\""),
+                    "Output should contain 'web_search = \"disabled\"', but got:\n{}",
+                    output
+                );
+            }
+        }
+
+        // Feature: amazon-bedrock-provider, Property 2: AWS Profile 配置生成正确性
+        //
+        // *For any* 任意非空 region 字符串、任意（可为空）AWS profile 名称字符串，
+        // 生成结果中顶层 `model_provider` 恒等于 `"amazon-bedrock"`；
+        // `model_providers.amazon-bedrock` 表含 `[model_providers.amazon-bedrock.aws]` section
+        // 带 `region = "<region>"`；aws_profile 非空时含 `profile = "<aws_profile>"`，
+        // 为空时不含 `profile =`；不含 `requires_openai_auth`/`base_url`/`experimental_bearer_token`。
+        //
+        // **Validates: Requirements 4.1, 4.3, 5.1, 5.2, 5.3**
+        proptest! {
+            #[test]
+            fn property_2_aws_profile_config_correctness(
+                region in "[a-z][a-z0-9\\-]{2,15}",
+                aws_profile in "(|[a-z][a-z0-9\\-]{1,15})",
+            ) {
+                let profile = RelayProfile {
+                    bedrock: Some(crate::settings::BedrockConfig {
+                        auth_mode: crate::settings::BedrockAuthMode::AwsProfile,
+                        region: region.clone(),
+                        aws_profile: aws_profile.clone(),
+                        provider_id: String::new(),
+                        iam_user_name: String::new(),
+                        iam_key_validity_days: crate::settings::default_bedrock_iam_key_validity_days(),
+                    }),
+                    ..RelayProfile::default()
+                };
+
+                let bedrock = profile.bedrock.as_ref().unwrap();
+                let result = complete_bedrock_aws_profile_config(&profile, bedrock);
+
+                // 结果必须为 Ok
+                prop_assert!(result.is_ok(), "Expected Ok, got Err: {:?}", result);
+                let output = result.unwrap();
+
+                // 验证 model_provider = "amazon-bedrock"
+                prop_assert!(
+                    output.contains("model_provider = \"amazon-bedrock\""),
+                    "Output should contain 'model_provider = \"amazon-bedrock\"', but got:\n{}",
+                    output
+                );
+
+                // 验证 [model_providers.amazon-bedrock.aws] section 含 region = "<region>"
+                let expected_region = format!("region = \"{}\"", region);
+                prop_assert!(
+                    output.contains(&expected_region),
+                    "Output should contain {:?}, but got:\n{}",
+                    expected_region, output
+                );
+
+                // 验证 aws_profile 非空时含 profile = "<aws_profile>"，为空时不含 profile =
+                let trimmed_profile = aws_profile.trim();
+                if !trimmed_profile.is_empty() {
+                    let expected_profile = format!("profile = \"{}\"", trimmed_profile);
+                    prop_assert!(
+                        output.contains(&expected_profile),
+                        "Output should contain {:?} for non-empty aws_profile, but got:\n{}",
+                        expected_profile, output
+                    );
+                } else {
+                    // 在 [model_providers.amazon-bedrock.aws] section 内不应有 profile =
+                    prop_assert!(
+                        !output.contains("profile ="),
+                        "Output should NOT contain 'profile =' for empty aws_profile, but got:\n{}",
+                        output
+                    );
+                }
+
+                // 验证不含 requires_openai_auth / base_url / experimental_bearer_token
+                prop_assert!(
+                    !output.contains("requires_openai_auth"),
+                    "Output should NOT contain 'requires_openai_auth', but got:\n{}",
+                    output
+                );
+                prop_assert!(
+                    !output.contains("base_url"),
+                    "Output should NOT contain 'base_url', but got:\n{}",
+                    output
+                );
+                prop_assert!(
+                    !output.contains("experimental_bearer_token"),
+                    "Output should NOT contain 'experimental_bearer_token', but got:\n{}",
+                    output
+                );
+            }
+        }
+
+        // Feature: amazon-bedrock-provider, Property 4: Region 必填校验
+        //
+        // *For any* 空字符串或全空白字符串作为 region，`require_non_empty` 返回 `Err`；
+        // *for any* 非空非空白字符串返回 `Ok`。
+        // 另外验证 `complete_bedrock_bearer_token_config` 与 `complete_bedrock_aws_profile_config`
+        // 在 region 为空/空白时返回 `Err`，在 region 非空时返回 `Ok`。
+        //
+        // **Validates: Requirements 2.4, 5.4**
+
+        proptest! {
+            #[test]
+            fn property_4_region_required_validation(
+                empty_region in "\\s{0,20}",
+                non_empty_region in "[a-z][a-z0-9\\-]{2,15}",
+            ) {
+                // Part 1: require_non_empty 对空/空白字符串返回 Err
+                let err_result = require_non_empty(&empty_region, "region");
+                prop_assert!(
+                    err_result.is_err(),
+                    "Expected Err for empty/whitespace region {:?}, got Ok",
+                    empty_region
+                );
+
+                // Part 2: require_non_empty 对非空非空白字符串返回 Ok
+                let ok_result = require_non_empty(&non_empty_region, "region");
+                prop_assert!(
+                    ok_result.is_ok(),
+                    "Expected Ok for non-empty region {:?}, got Err: {:?}",
+                    non_empty_region, ok_result
+                );
+                prop_assert_eq!(ok_result.unwrap(), non_empty_region.trim().to_string());
+
+                // Part 3: complete_bedrock_bearer_token_config 在 region 为空/空白时返回 Err
+                let bearer_profile_empty_region = RelayProfile {
+                    api_key: "valid-api-key-12345".to_string(),
+                    bedrock: Some(crate::settings::BedrockConfig {
+                        auth_mode: crate::settings::BedrockAuthMode::BearerToken,
+                        provider_id: "my-bedrock-provider".to_string(),
+                        region: empty_region.clone(),
+                        aws_profile: String::new(),
+                        iam_user_name: String::new(),
+                        iam_key_validity_days: crate::settings::default_bedrock_iam_key_validity_days(),
+                    }),
+                    ..RelayProfile::default()
+                };
+                let bedrock_bearer = bearer_profile_empty_region.bedrock.as_ref().unwrap();
+                let bearer_result = complete_bedrock_bearer_token_config(&bearer_profile_empty_region, bedrock_bearer);
+                prop_assert!(
+                    bearer_result.is_err(),
+                    "Expected Err for bearer token config with empty region {:?}, got Ok",
+                    empty_region
+                );
+
+                // Part 4: complete_bedrock_aws_profile_config 在 region 为空/空白时返回 Err
+                let aws_profile_empty_region = RelayProfile {
+                    bedrock: Some(crate::settings::BedrockConfig {
+                        auth_mode: crate::settings::BedrockAuthMode::AwsProfile,
+                        provider_id: String::new(),
+                        region: empty_region.clone(),
+                        aws_profile: "default".to_string(),
+                        iam_user_name: String::new(),
+                        iam_key_validity_days: crate::settings::default_bedrock_iam_key_validity_days(),
+                    }),
+                    ..RelayProfile::default()
+                };
+                let bedrock_aws = aws_profile_empty_region.bedrock.as_ref().unwrap();
+                let aws_result = complete_bedrock_aws_profile_config(&aws_profile_empty_region, bedrock_aws);
+                prop_assert!(
+                    aws_result.is_err(),
+                    "Expected Err for AWS profile config with empty region {:?}, got Ok",
+                    empty_region
+                );
+
+                // Part 5: 两条路径在 region 非空时返回 Ok
+                let bearer_profile_valid_region = RelayProfile {
+                    api_key: "valid-api-key-12345".to_string(),
+                    bedrock: Some(crate::settings::BedrockConfig {
+                        auth_mode: crate::settings::BedrockAuthMode::BearerToken,
+                        provider_id: "my-bedrock-provider".to_string(),
+                        region: non_empty_region.clone(),
+                        aws_profile: String::new(),
+                        iam_user_name: String::new(),
+                        iam_key_validity_days: crate::settings::default_bedrock_iam_key_validity_days(),
+                    }),
+                    ..RelayProfile::default()
+                };
+                let bedrock_bearer_valid = bearer_profile_valid_region.bedrock.as_ref().unwrap();
+                let bearer_ok_result = complete_bedrock_bearer_token_config(&bearer_profile_valid_region, bedrock_bearer_valid);
+                prop_assert!(
+                    bearer_ok_result.is_ok(),
+                    "Expected Ok for bearer token config with valid region {:?}, got Err: {:?}",
+                    non_empty_region, bearer_ok_result
+                );
+
+                let aws_profile_valid_region = RelayProfile {
+                    bedrock: Some(crate::settings::BedrockConfig {
+                        auth_mode: crate::settings::BedrockAuthMode::AwsProfile,
+                        provider_id: String::new(),
+                        region: non_empty_region.clone(),
+                        aws_profile: "default".to_string(),
+                        iam_user_name: String::new(),
+                        iam_key_validity_days: crate::settings::default_bedrock_iam_key_validity_days(),
+                    }),
+                    ..RelayProfile::default()
+                };
+                let bedrock_aws_valid = aws_profile_valid_region.bedrock.as_ref().unwrap();
+                let aws_ok_result = complete_bedrock_aws_profile_config(&aws_profile_valid_region, bedrock_aws_valid);
+                prop_assert!(
+                    aws_ok_result.is_ok(),
+                    "Expected Ok for AWS profile config with valid region {:?}, got Err: {:?}",
+                    non_empty_region, aws_ok_result
+                );
+            }
+        }
+
+        // Feature: amazon-bedrock-provider, Property 11: Bearer Token 路径生成的 Base URL 与既有测试机制一致
+        //
+        // *For any* 非保留的 provider 标识符字符串与任意非空 region 字符串，对生成后的
+        // `RelayProfile`（`config_contents` 设为 `complete_bedrock_bearer_token_config` 的
+        // 生成结果）调用既有 `relay_profile_base_url`，其返回值恒等于
+        // `https://bedrock-mantle.<region>.api.aws/openai/v1`。
+        //
+        // **Validates: Requirements 9.3**
+        proptest! {
+            #[test]
+            fn property_11_bearer_token_base_url_consistency(
+                provider_id in "[a-z][a-z0-9]{1,12}",
+                region in "[a-z][a-z0-9\\-]{2,15}",
+            ) {
+                // 构造带 BedrockConfig (BearerToken mode) 的 RelayProfile
+                let api_key = "test-api-key-for-property-11".to_string();
+                let profile = RelayProfile {
+                    api_key: api_key.clone(),
+                    bedrock: Some(crate::settings::BedrockConfig {
+                        auth_mode: crate::settings::BedrockAuthMode::BearerToken,
+                        provider_id: provider_id.clone(),
+                        region: region.clone(),
+                        aws_profile: String::new(),
+                        iam_user_name: String::new(),
+                        iam_key_validity_days: crate::settings::default_bedrock_iam_key_validity_days(),
+                    }),
+                    ..RelayProfile::default()
+                };
+
+                // 调用 complete_bedrock_bearer_token_config 生成配置
+                let bedrock = profile.bedrock.as_ref().unwrap();
+                let config_result = complete_bedrock_bearer_token_config(&profile, bedrock);
+                prop_assert!(config_result.is_ok(), "Expected Ok from config generation, got Err: {:?}", config_result);
+                let config_contents = config_result.unwrap();
+
+                // 构造一个新的 RelayProfile，将生成的 config 设为 config_contents
+                let profile_with_config = RelayProfile {
+                    config_contents: config_contents,
+                    ..RelayProfile::default()
+                };
+
+                // 调用既有 relay_profile_base_url 函数
+                let base_url = relay_profile_base_url(&profile_with_config);
+
+                // 断言返回的 base_url 等于期望值
+                let expected_base_url = format!("https://bedrock-mantle.{}.api.aws/openai/v1", region);
+                prop_assert_eq!(
+                    base_url,
+                    expected_base_url,
+                    "relay_profile_base_url should return the Bedrock Mantle URL for region {:?}",
+                    region
+                );
+            }
+        }
+
+        // Feature: amazon-bedrock-provider, Property 9: AWS Profile 生成与识别往返
+        //
+        // *For any* 任意非空 region 字符串与任意（可为空）AWS profile 名称字符串，将
+        // `complete_bedrock_aws_profile_config` 生成的 config.toml 文本交给
+        // `bedrock_config_from_config_text` 解析，得到的 `auth_mode` 恒为 `AwsProfile`，
+        // `region` 等于原始 region，`aws_profile` 等于原始名称（未填写时为空字符串）。
+        //
+        // **Validates: Requirements 10.1**
+        proptest! {
+            #[test]
+            fn property_9_aws_profile_roundtrip(
+                region in "[a-z][a-z0-9\\-]{2,15}",
+                aws_profile in "[a-zA-Z0-9_\\-]{0,20}",
+            ) {
+                // 构造带 BedrockConfig (AwsProfile mode) 的 RelayProfile
+                let profile = RelayProfile {
+                    bedrock: Some(crate::settings::BedrockConfig {
+                        auth_mode: crate::settings::BedrockAuthMode::AwsProfile,
+                        provider_id: String::new(),
+                        region: region.clone(),
+                        aws_profile: aws_profile.clone(),
+                        iam_user_name: String::new(),
+                        iam_key_validity_days: crate::settings::default_bedrock_iam_key_validity_days(),
+                    }),
+                    ..RelayProfile::default()
+                };
+
+                let bedrock = profile.bedrock.as_ref().unwrap();
+
+                // 调用 complete_bedrock_aws_profile_config 生成配置文本
+                let config_result = complete_bedrock_aws_profile_config(&profile, bedrock);
+                prop_assert!(config_result.is_ok(), "Expected Ok from config generation, got Err: {:?}", config_result);
+                let config_text = config_result.unwrap();
+
+                // 将生成的文本交给 bedrock_config_from_config_text 解析
+                let parsed = bedrock_config_from_config_text(&config_text);
+                prop_assert!(parsed.is_some(), "Expected Some(BedrockConfig) from parsing, got None for config:\n{}", config_text);
+                let parsed = parsed.unwrap();
+
+                // 断言 auth_mode 为 AwsProfile
+                prop_assert_eq!(
+                    parsed.auth_mode,
+                    crate::settings::BedrockAuthMode::AwsProfile,
+                    "auth_mode should be AwsProfile"
+                );
+
+                // 断言 region 等于原始 region（trimmed）
+                let expected_region = region.trim().to_string();
+                prop_assert_eq!(
+                    parsed.region,
+                    expected_region,
+                );
+
+                // 断言 aws_profile 等于原始名称（trim 后，空则为空字符串）
+                let expected_profile = if aws_profile.trim().is_empty() {
+                    String::new()
+                } else {
+                    aws_profile.trim().to_string()
+                };
+                prop_assert_eq!(
+                    parsed.aws_profile,
+                    expected_profile,
+                );
+            }
+        }
+
+        // Feature: amazon-bedrock-provider, Property 8: Bearer Token 生成与识别往返
+        //
+        // *For any* 非保留的 provider 标识符字符串与任意非空 region 字符串（API Key 任取一个
+        // 非空字符串），将 complete_bedrock_bearer_token_config 生成的 config.toml 文本交给
+        // `bedrock_config_from_config_text` 解析，得到的 `auth_mode` 恒为 `BearerToken`，
+        // `provider_id` 等于原始标识符，`region` 等于原始 region。
+        //
+        // **Validates: Requirements 10.2**
+        proptest! {
+            #[test]
+            fn property_8_bearer_token_roundtrip(
+                provider_id in "[a-z][a-z0-9]{1,12}",
+                region in "[a-z][a-z0-9\\-]{2,15}",
+            ) {
+                // 使用固定非空 API Key
+                let api_key = "test-api-key-for-roundtrip".to_string();
+
+                // 构造带 BedrockConfig (BearerToken mode) 的 RelayProfile
+                let profile = RelayProfile {
+                    api_key: api_key.clone(),
+                    bedrock: Some(crate::settings::BedrockConfig {
+                        auth_mode: crate::settings::BedrockAuthMode::BearerToken,
+                        provider_id: provider_id.clone(),
+                        region: region.clone(),
+                        aws_profile: String::new(),
+                        iam_user_name: String::new(),
+                        iam_key_validity_days: crate::settings::default_bedrock_iam_key_validity_days(),
+                    }),
+                    ..RelayProfile::default()
+                };
+
+                let bedrock = profile.bedrock.as_ref().unwrap();
+
+                // 调用 complete_bedrock_bearer_token_config 生成配置文本
+                let config_result = complete_bedrock_bearer_token_config(&profile, bedrock);
+                prop_assert!(config_result.is_ok(), "Expected Ok from config generation, got Err: {:?}", config_result);
+                let config_text = config_result.unwrap();
+
+                // 将生成的文本交给 bedrock_config_from_config_text 解析
+                let parsed = bedrock_config_from_config_text(&config_text);
+                prop_assert!(parsed.is_some(), "Expected Some(BedrockConfig) from parsing, got None for config:\n{}", config_text);
+                let parsed = parsed.unwrap();
+
+                // 断言 auth_mode 为 BearerToken
+                prop_assert_eq!(
+                    parsed.auth_mode,
+                    crate::settings::BedrockAuthMode::BearerToken,
+                    "auth_mode should be BearerToken"
+                );
+
+                // 断言 provider_id 等于原始标识符
+                prop_assert_eq!(
+                    parsed.provider_id,
+                    provider_id.clone(),
+                    "provider_id should match the original identifier"
+                );
+
+                // 断言 region 等于原始 region
+                prop_assert_eq!(
+                    parsed.region,
+                    region.clone(),
+                    "region should match the original region"
+                );
+            }
+        }
     }
 }
 

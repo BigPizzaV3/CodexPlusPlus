@@ -789,6 +789,7 @@ export const EN_PLAIN: Record<string, string> = {
   "聚合/中转": "Aggregate/relay",
   "聚合供应商": "Aggregate provider",
   "聚合供应商会在真实对话中轮转成员，请测试成员供应商": "Aggregate providers rotate members in real conversations; test the member providers instead",
+  "AWS Profile 模式下无法在此测试供应商；请在 Codex 会话中验证": "Testing this provider isn't available in AWS Profile mode; verify it inside a Codex session instead",
   "聚合供应商只保存成员和策略配置，成员来自已有 API 供应商；切为当前后会通过本地协议代理轮转请求。":
     "Aggregate providers only store member and strategy config drawn from existing API providers; once active, requests rotate through the local protocol proxy.",
   "聚合供应商至少需要勾选 1 个已填写 Base URL / Key 的 API 供应商。":

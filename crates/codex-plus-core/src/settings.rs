@@ -94,6 +94,37 @@ pub struct RelayProfile {
     pub sub2api_multiplier: String,
     #[serde(rename = "modelRoutes", default, skip_serializing_if = "Vec::is_empty")]
     pub model_routes: Vec<RelayModelRoute>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bedrock: Option<BedrockConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum BedrockAuthMode {
+    #[default]
+    BearerToken,
+    AwsProfile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BedrockConfig {
+    #[serde(default)]
+    pub auth_mode: BedrockAuthMode,
+    #[serde(default)]
+    pub provider_id: String,
+    #[serde(default)]
+    pub region: String,
+    #[serde(default)]
+    pub aws_profile: String,
+    #[serde(default)]
+    pub iam_user_name: String,
+    #[serde(default = "default_bedrock_iam_key_validity_days")]
+    pub iam_key_validity_days: String,
+}
+
+pub fn default_bedrock_iam_key_validity_days() -> String {
+    "90".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -190,6 +221,7 @@ impl Default for RelayProfile {
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
             model_routes: Vec::new(),
+            bedrock: None,
         }
     }
 }
@@ -657,6 +689,7 @@ impl BackendSettings {
                 sub2api_enabled: false,
                 sub2api_multiplier: String::new(),
                 model_routes: Vec::new(),
+                bedrock: None,
             };
         }
 
@@ -709,6 +742,7 @@ impl BackendSettings {
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
             model_routes: Vec::new(),
+            bedrock: None,
         }
     }
 
@@ -3002,5 +3036,72 @@ experimental_bearer_token = "sk-existing""#
 
         assert!(!updated.provider_sync_enabled);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn relay_profile_bedrock_none_does_not_serialize_bedrock_key() {
+        // 当 bedrock 为 None 时，序列化输出不应包含 "bedrock" 键，
+        // 以确保旧的 settings.json 落盘格式不变
+        let profile = RelayProfile::default();
+        assert_eq!(profile.bedrock, None);
+
+        let value = serde_json::to_value(&profile).unwrap();
+        assert!(
+            value.get("bedrock").is_none(),
+            "bedrock: None should be skipped during serialization"
+        );
+
+        let json_str = serde_json::to_string(&profile).unwrap();
+        assert!(
+            !json_str.contains("\"bedrock\""),
+            "serialized JSON should not contain bedrock key when it is None"
+        );
+    }
+
+    #[test]
+    fn relay_profile_bedrock_some_roundtrip_serialization() {
+        // 当 bedrock 为 Some(..) 时，序列化 → 反序列化往返应产生相同的结构
+        let config = BedrockConfig {
+            auth_mode: BedrockAuthMode::AwsProfile,
+            provider_id: "my-bedrock-provider".to_string(),
+            region: "us-east-2".to_string(),
+            aws_profile: "bedrock-dev".to_string(),
+            iam_user_name: "deploy-user".to_string(),
+            iam_key_validity_days: "30".to_string(),
+        };
+
+        let profile = RelayProfile {
+            bedrock: Some(config.clone()),
+            ..RelayProfile::default()
+        };
+
+        let serialized = serde_json::to_string(&profile).unwrap();
+        assert!(
+            serialized.contains("\"bedrock\""),
+            "serialized JSON should contain bedrock key when it is Some"
+        );
+
+        let deserialized: RelayProfile = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.bedrock, Some(config));
+
+        // 验证 BedrockAuthMode::BearerToken（默认值）的往返
+        let config_bearer = BedrockConfig {
+            auth_mode: BedrockAuthMode::BearerToken,
+            provider_id: "bearer-provider".to_string(),
+            region: "us-west-2".to_string(),
+            aws_profile: String::new(),
+            iam_user_name: String::new(),
+            iam_key_validity_days: "90".to_string(),
+        };
+
+        let profile_bearer = RelayProfile {
+            bedrock: Some(config_bearer.clone()),
+            ..RelayProfile::default()
+        };
+
+        let serialized_bearer = serde_json::to_string(&profile_bearer).unwrap();
+        let deserialized_bearer: RelayProfile =
+            serde_json::from_str(&serialized_bearer).unwrap();
+        assert_eq!(deserialized_bearer.bedrock, Some(config_bearer));
     }
 }
