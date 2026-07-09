@@ -68,6 +68,51 @@ experimental_bearer_token = "relay-key"
 }
 
 #[tokio::test]
+async fn model_catalog_appends_models_to_versioned_base_url() {
+    // Volcano Engine ARK (and other providers) expose a versioned base URL such
+    // as `.../api/coding/v3`. The model list must be fetched from
+    // `<base>/models`, not `<base>/v1/models` (which 404s). Regression for #1349.
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server(json!({
+        "data": [
+            {"id": "doubao-seed-code-preview"}
+        ]
+    }));
+    let versioned_base = format!("{}/api/coding/v3", server.base_url);
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "doubao-seed-code-preview"
+model_provider = "ark"
+
+[model_providers.ark]
+name = "ARK"
+base_url = "{versioned_base}"
+experimental_bearer_token = "ark-key"
+"#
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["models"], json!(["doubao-seed-code-preview"]));
+    assert_eq!(
+        result["sources"][0]["endpoint"],
+        format!("{versioned_base}/models")
+    );
+    let requests = server.finish();
+    assert_eq!(requests[0].path, "/api/coding/v3/models");
+    assert_eq!(requests[0].authorization, "Bearer ark-key");
+}
+
+#[tokio::test]
 async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
     let temp = tempfile::tempdir().unwrap();
     let codex_home = temp.path().join("codex-home");
