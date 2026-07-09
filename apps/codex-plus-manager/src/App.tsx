@@ -131,6 +131,7 @@ type BackendSettings = {
   codexAppPath: string;
   codexExtraArgs: string[];
   providerSyncEnabled: boolean;
+  providerSyncMode: "discoveryOnly" | "nonDestructive" | "rewriteProvider";
   providerSyncSavedProviders: string[];
   providerSyncManualProviders: string[];
   providerSyncLastSelectedProvider: string;
@@ -196,6 +197,10 @@ export type RelayProfile = {
   upstreamBaseUrl: string;
   apiKey: string;
   protocol: RelayProtocol;
+  routeMode: RelayRouteMode;
+  visionModel: string;
+  visionBaseUrl: string;
+  blockGptOnMultimodalGateway: boolean;
   relayMode: RelayMode;
   officialMixApiKey: boolean;
   testModel: string;
@@ -256,6 +261,7 @@ type CodexContextEntries = {
 };
 
 type RelayProtocol = "responses" | "chatCompletions";
+type RelayRouteMode = "direct" | "multimodalGatewayCompat";
 type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
 const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
@@ -467,15 +473,19 @@ type RemoveEnvConflictsResult = CommandResult<{
 
 type ProviderSyncPayload = {
   syncStatus?: string;
+  syncMode?: "discovery_only" | "non_destructive" | "rewrite_provider";
   targetProvider?: string;
   changedSessionFiles?: number;
+  wouldRewriteSessionFiles?: number;
   skippedLockedRolloutFiles?: string[];
   sqliteRowsUpdated?: number;
   sqliteProviderRowsUpdated?: number;
+  wouldUpdateProviderRows?: number;
   sqliteUserEventRowsUpdated?: number;
   sqliteCwdRowsUpdated?: number;
   updatedWorkspaceRoots?: number;
   encryptedContentWarning?: string | null;
+  destructiveRewritePerformed?: boolean;
 };
 
 type ProviderSyncTargetSource = "config" | "rollout" | "sqlite" | "manual";
@@ -585,8 +595,20 @@ function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>)
   const changed = result.changedSessionFiles ?? 0;
   const rows = result.sqliteRowsUpdated ?? 0;
   const target = result.targetProvider || t("当前 provider");
+  const mode = result.syncMode || "non_destructive";
   const skipped = result.skippedLockedRolloutFiles?.length ?? 0;
   const skippedText = skipped ? tf("，跳过 {0} 个占用文件", [skipped]) : "";
+  if (mode !== "rewrite_provider") {
+    const wouldRewrite = result.wouldRewriteSessionFiles ?? 0;
+    const wouldUpdateProviders = result.wouldUpdateProviderRows ?? 0;
+    return tf("已安全同步到 {0}：更新 {1} 行索引，未重写历史 provider；发现 {2} 个会话文件和 {3} 行 provider 可显式修复{4}。", [
+      target,
+      rows,
+      wouldRewrite,
+      wouldUpdateProviders,
+      skippedText,
+    ]);
+  }
   return tf("已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行索引{3}。", [target, changed, rows, skippedText]);
 }
 
@@ -653,6 +675,7 @@ const defaultSettings: BackendSettings = {
   codexAppPath: "",
   codexExtraArgs: [],
   providerSyncEnabled: false,
+  providerSyncMode: "nonDestructive",
   providerSyncSavedProviders: [],
   providerSyncManualProviders: [],
   providerSyncLastSelectedProvider: "",
@@ -706,6 +729,10 @@ const defaultSettings: BackendSettings = {
       upstreamBaseUrl: "",
       apiKey: "",
       protocol: "responses",
+      routeMode: "direct",
+      visionModel: "",
+      visionBaseUrl: "",
+      blockGptOnMultimodalGateway: true,
       relayMode: "official",
       officialMixApiKey: false,
       testModel: "",
@@ -1448,12 +1475,14 @@ export function App() {
     return result;
   };
 
-  const syncProvidersNow = async () => {
+  const syncProvidersNow = async (rewriteProvider = false) => {
     if (providerSyncProgress.active) return;
     setProviderSyncProgress({
       active: true,
       percent: 12,
-      message: selectedProviderSyncTarget ? tf("正在同步到 {0}…", [selectedProviderSyncTarget]) : t("正在扫描历史会话与索引…"),
+      message: selectedProviderSyncTarget
+        ? tf("正在安全同步到 {0}…", [selectedProviderSyncTarget])
+        : t("正在扫描历史会话与索引…"),
       result: null,
     });
     const progressTimer = window.setInterval(() => {
@@ -1462,14 +1491,14 @@ export function App() {
         return {
           ...current,
           percent: Math.min(88, current.percent + 8),
-          message: current.percent < 40 ? t("正在检查会话 provider 标记…") : t("正在写入修复与备份…"),
+          message: current.percent < 40 ? t("正在检查会话 provider 标记…") : t("正在写入安全修复与备份…"),
         };
       });
     }, 350);
     try {
       const targetProvider = selectedProviderSyncTarget || undefined;
       const result = await run(() =>
-        call<CommandResult<ProviderSyncPayload>>("sync_providers_now", { targetProvider }),
+        call<CommandResult<ProviderSyncPayload>>("sync_providers_now", { targetProvider, rewriteProvider }),
       );
       if (result) {
         setProviderSyncProgress({
@@ -1489,12 +1518,12 @@ export function App() {
           setSettingsForm(next);
         }
         await refreshProviderSyncTargets(true);
-        showNotice(t("历史会话修复"), result.message, result.status);
+        showNotice(rewriteProvider ? t("历史 provider 重写") : t("历史会话安全同步"), result.message, result.status);
       } else {
         setProviderSyncProgress({
           active: false,
           percent: 100,
-          message: t("历史会话修复失败，请查看错误提示后重试。"),
+          message: t("历史会话同步失败，请查看错误提示后重试。"),
           result: null,
         });
       }
@@ -2226,7 +2255,7 @@ type Actions = {
   clearCodexAppPath: () => Promise<void>;
   chooseImageOverlayPath: () => Promise<void>;
   saveManualCodexAppPath: () => Promise<void>;
-  syncProvidersNow: () => Promise<void>;
+  syncProvidersNow: (rewriteProvider?: boolean) => Promise<void>;
   refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
   setProviderSyncTarget: (provider: string) => void;
   setLaunchMode: (launchMode: LaunchMode) => Promise<void>;
@@ -3056,12 +3085,16 @@ function SessionsScreen({
             </Button>
             <Button disabled={providerSyncProgress.active} onClick={() => void actions.syncProvidersNow()} variant="outline">
               <RefreshCw className="h-4 w-4" />
-              {providerSyncProgress.active ? t("正在修复…") : t("立刻修复历史会话")}
+              {providerSyncProgress.active ? t("正在同步…") : t("安全同步会话索引")}
+            </Button>
+            <Button disabled={providerSyncProgress.active} onClick={() => void actions.syncProvidersNow(true)} variant="outline">
+              <RefreshCw className="h-4 w-4" />
+              {t("重写历史 provider")}
             </Button>
           </Toolbar>
           <div className="provider-sync-progress" data-active={providerSyncProgress.active}>
             <div className="provider-sync-progress-head">
-              <strong>{providerSyncProgress.active ? t("正在修复历史会话") : t("历史会话修复进度")}</strong>
+              <strong>{providerSyncProgress.active ? t("正在同步历史会话") : t("历史会话同步进度")}</strong>
               <span>{providerSyncProgress.percent}%</span>
             </div>
             <div
@@ -3077,7 +3110,7 @@ function SessionsScreen({
           </div>
           <div className="hint-line">
             <Info className="h-4 w-4" />
-            <span>{t("删除会创建本地备份；如果 Codex App 正在使用该会话，建议先关闭对应会话窗口再操作。")}</span>
+            <span>{t("安全同步只修复索引可见性字段，不会改写历史会话 provider；重写历史 provider 会创建备份，但只应作为显式修复操作使用。")}</span>
           </div>
           <label className="switch-row">
             <input
@@ -3086,12 +3119,12 @@ function SessionsScreen({
               type="checkbox"
             />
             <span>
-              <strong>{t("启动前自动修复历史会话")}</strong>
-              <small>{t("开启后，通过 Codex++ 启动 Codex 前自动整理一次旧对话的归属标记。")}</small>
+              <strong>{t("启动前安全同步历史会话")}</strong>
+              <small>{t("开启后，通过 Codex++ 启动 Codex 前自动整理索引可见性，不改写旧对话 provider。")}</small>
             </span>
           </label>
           <Toolbar>
-            <Button onClick={() => void actions.saveSettings()}>{t("保存自动修复设置")}</Button>
+            <Button onClick={() => void actions.saveSettings()}>{t("保存自动同步设置")}</Button>
           </Toolbar>
         </CardContent>
       </Panel>
@@ -4189,7 +4222,7 @@ function RelayProfileEditor({
               <div className="protocol-options">
                 <button
                   className={`protocol-option ${profile.protocol === "responses" ? "active" : ""}`}
-                  onClick={() => updateDraft({ protocol: "responses" })}
+                  onClick={() => updateDraft({ protocol: "responses", routeMode: "direct" })}
                   type="button"
                 >
                   Responses API
@@ -4203,6 +4236,47 @@ function RelayProfileEditor({
                 </button>
               </div>
             </Field>
+            <Field className="relay-field-route-mode" label={t("路由模式")}>
+              <select
+                className="field-select"
+                value={profile.routeMode}
+                onChange={(event) => updateDraft({ routeMode: event.currentTarget.value as RelayRouteMode })}
+              >
+                <option value="direct">{t("直连上游")}</option>
+                <option value="multimodalGatewayCompat">{t("通用多模态网关兼容")}</option>
+              </select>
+              <p className="field-hint">
+                {t("通用多模态网关会把 Responses 请求转换为兼容文本请求，并把图片分析结果注入上下文。")}
+              </p>
+            </Field>
+            {profile.routeMode === "multimodalGatewayCompat" ? (
+              <>
+                <Field className="relay-field-vision-model" label={t("视觉模型")}>
+                  <Input
+                    value={profile.visionModel}
+                    onChange={(event) => updateDraft({ visionModel: event.currentTarget.value })}
+                    placeholder={t("例如 qwen-vl-max")}
+                  />
+                </Field>
+                <Field className="relay-field-vision-base-url" label={t("视觉 Base URL")}>
+                  <Input
+                    value={profile.visionBaseUrl}
+                    onChange={(event) => updateDraft({ visionBaseUrl: event.currentTarget.value })}
+                    placeholder={t("留空则复用上游 Base URL")}
+                  />
+                </Field>
+                <Field className="relay-field-block-gpt" label={t("模型限制")}>
+                  <label className="inline-check">
+                    <input
+                      checked={profile.blockGptOnMultimodalGateway}
+                      onChange={(event) => updateDraft({ blockGptOnMultimodalGateway: event.currentTarget.checked })}
+                      type="checkbox"
+                    />
+                    <span>{t("在多模态网关中阻止 gpt-* 模型")}</span>
+                  </label>
+                </Field>
+              </>
+            ) : null}
           </div>
         ) : null}
         {showApiFields ? (
@@ -5958,6 +6032,10 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             upstreamBaseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
             apiKey: settings.relayApiKey || "",
             protocol: "responses" as RelayProtocol,
+            routeMode: "direct" as RelayRouteMode,
+            visionModel: "",
+            visionBaseUrl: "",
+            blockGptOnMultimodalGateway: true,
             relayMode: "official" as RelayMode,
             officialMixApiKey: false,
             testModel: "",
@@ -6024,6 +6102,10 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         upstreamBaseUrl: "",
         apiKey: "",
         protocol: "responses",
+        routeMode: "direct",
+        visionModel: "",
+        visionBaseUrl: "",
+        blockGptOnMultimodalGateway: true,
         relayMode: "aggregate",
         officialMixApiKey: false,
         testModel: profile.testModel || "",
@@ -6051,6 +6133,10 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl || "",
     apiKey: profile.apiKey || "",
     protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
+    routeMode: profile.routeMode === "multimodalGatewayCompat" ? "multimodalGatewayCompat" : "direct",
+    visionModel: profile.visionModel || "",
+    visionBaseUrl: profile.visionBaseUrl || "",
+    blockGptOnMultimodalGateway: profile.blockGptOnMultimodalGateway !== false,
     relayMode,
     officialMixApiKey,
     testModel: profile.testModel || "",
@@ -6244,10 +6330,14 @@ function buildRelayConfigToml(
   options: { includeBearerToken: boolean },
 ): string {
   const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
+  const upstreamBaseUrl = profile.upstreamBaseUrl.trim() || profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
   const rootLines = [
     profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
     'model_provider = "custom"',
+    profile.protocol === "chatCompletions" && upstreamBaseUrl
+      ? `${CHAT_UPSTREAM_BASE_URL_KEY} = "${tomlString(upstreamBaseUrl)}"`
+      : null,
     "",
   ].filter((line): line is string => line !== null);
   return [
@@ -6315,6 +6405,9 @@ function applyRelayProfilePatchToFiles(
   options: { allowGenerateFiles?: boolean } = {},
 ): RelayProfile {
   let next: RelayProfile = { ...profile, ...patch };
+  if (patch.routeMode === "multimodalGatewayCompat") {
+    next.protocol = "chatCompletions";
+  }
   if (isAggregateRelayProfile(next)) {
     return normalizeAggregateRelayProfile(next, null);
   }
@@ -6345,10 +6438,13 @@ function applyRelayProfilePatchToFiles(
   if ("upstreamBaseUrl" in patch) {
     next.baseUrl = patch.upstreamBaseUrl || "";
   }
-  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch) {
+  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "routeMode" in patch) {
     const baseUrlForConfig = next.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : next.upstreamBaseUrl || next.baseUrl;
     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig);
-    next.configContents = removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
+    const upstreamBaseUrl = next.upstreamBaseUrl || next.baseUrl;
+    next.configContents = next.protocol === "chatCompletions" && upstreamBaseUrl
+      ? setRootTomlStringKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY, upstreamBaseUrl)
+      : removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
   }
   if ("contextWindow" in patch) {
     next.configContents = setRootTomlIntKey(next.configContents, "model_context_window", patch.contextWindow || "");
@@ -6689,6 +6785,10 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     upstreamBaseUrl: defaultSettings.relayBaseUrl,
     apiKey: "",
     protocol: "responses" as RelayProtocol,
+    routeMode: "direct" as RelayRouteMode,
+    visionModel: "",
+    visionBaseUrl: "",
+    blockGptOnMultimodalGateway: true,
     relayMode: "official" as RelayMode,
     officialMixApiKey: false,
     testModel: "",
@@ -6719,6 +6819,10 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       upstreamBaseUrl: "",
       apiKey: "",
       protocol: "responses",
+      routeMode: "direct",
+      visionModel: "",
+      visionBaseUrl: "",
+      blockGptOnMultimodalGateway: true,
       relayMode: "aggregate",
       officialMixApiKey: false,
       testModel: "",
@@ -6848,6 +6952,10 @@ function normalizeAggregateRelayProfile(profile: RelayProfile, settings: Backend
     upstreamBaseUrl: "",
     apiKey: "",
     protocol: "responses",
+    routeMode: "direct",
+    visionModel: "",
+    visionBaseUrl: "",
+    blockGptOnMultimodalGateway: true,
     relayMode: "aggregate",
     officialMixApiKey: false,
     configContents: "",

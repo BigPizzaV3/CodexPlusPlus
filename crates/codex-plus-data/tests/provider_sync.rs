@@ -1,5 +1,6 @@
 use codex_plus_data::{
-    ProviderSyncStatus, ProviderSyncTargetSource, load_provider_sync_targets, run_provider_sync,
+    ProviderSyncMode, ProviderSyncOptions, ProviderSyncStatus, ProviderSyncTargetSource,
+    load_provider_sync_targets, run_provider_sync, run_provider_sync_with_options,
     run_provider_sync_with_target,
 };
 use rusqlite::Connection;
@@ -72,6 +73,140 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
         )
         .unwrap();
     }
+}
+
+fn run_provider_rewrite_sync(home: &Path) -> codex_plus_data::ProviderSyncResult {
+    run_provider_sync_with_options(
+        Some(home),
+        None,
+        ProviderSyncOptions {
+            mode: ProviderSyncMode::RewriteProvider,
+        },
+    )
+}
+
+fn run_provider_rewrite_sync_with_target(
+    home: &Path,
+    target_provider: &str,
+) -> codex_plus_data::ProviderSyncResult {
+    run_provider_sync_with_options(
+        Some(home),
+        Some(target_provider),
+        ProviderSyncOptions {
+            mode: ProviderSyncMode::RewriteProvider,
+        },
+    )
+}
+
+#[test]
+fn provider_sync_non_destructive_does_not_rewrite_rollout_model_provider() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        r#"model_provider = "custom_gateway"
+
+[model_providers.openai]
+name = "OpenAI"
+
+[model_providers.custom_gateway]
+name = "Custom Gateway"
+"#,
+    )
+    .unwrap();
+    let rollout = home.join("sessions/2026/rollout-openai.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    create_state_db(&home.join("state_5.sqlite"));
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.mode, ProviderSyncMode::NonDestructive);
+    assert_eq!(result.changed_session_files, 0);
+    assert_eq!(result.would_rewrite_session_files, 1);
+    assert!(!result.destructive_rewrite_performed);
+    let first: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first["payload"]["model_provider"], "openai");
+}
+
+#[test]
+fn provider_sync_non_destructive_does_not_rewrite_sqlite_provider() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom_gateway\"\n").unwrap();
+    write_rollout(
+        &home.join("sessions/2026/rollout-openai.jsonl"),
+        "openai",
+        "thread-1",
+        "C:/workspace",
+    );
+    create_state_db(&home.join("state_5.sqlite"));
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.sqlite_provider_rows_updated, 0);
+    assert_eq!(result.would_update_provider_rows, 1);
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    let provider: String = db
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'thread-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "old-provider");
+}
+
+#[test]
+fn provider_sync_rewrite_mode_preserves_existing_destructive_behavior() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom_gateway\"\n").unwrap();
+    let rollout = home.join("sessions/2026/rollout-openai.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    create_state_db(&home.join("state_5.sqlite"));
+
+    let result = run_provider_sync_with_options(
+        Some(&home),
+        None,
+        ProviderSyncOptions {
+            mode: ProviderSyncMode::RewriteProvider,
+        },
+    );
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.mode, ProviderSyncMode::RewriteProvider);
+    assert_eq!(result.changed_session_files, 1);
+    assert!(result.destructive_rewrite_performed);
+    let first: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first["payload"]["model_provider"], "custom_gateway");
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    let provider: String = db
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'thread-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "custom_gateway");
 }
 
 #[test]
@@ -174,7 +309,7 @@ experimental_bearer_token = "sk-test"
     write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
     create_state_db(&home.join("state_5.sqlite"));
 
-    let result = run_provider_sync(Some(&home));
+    let result = run_provider_rewrite_sync(&home);
 
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     assert_eq!(result.target_provider, "custom");
@@ -215,7 +350,7 @@ fn provider_sync_rewrites_all_session_meta_model_providers() {
     );
     create_state_db(&home.join("state_5.sqlite"));
 
-    let result = run_provider_sync(Some(&home));
+    let result = run_provider_rewrite_sync(&home);
 
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     assert_eq!(result.target_provider, "apigather");
@@ -271,7 +406,7 @@ fn provider_sync_updates_rollout_sqlite_visibility_and_creates_backup() {
     write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
     create_state_db(&home.join("state_5.sqlite"));
 
-    let result = run_provider_sync(Some(&home));
+    let result = run_provider_rewrite_sync(&home);
 
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     assert_eq!(result.target_provider, "apigather");
@@ -324,7 +459,7 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
     let db_path = sqlite_dir.join("codex-dev.db");
     create_state_db(&db_path);
 
-    let result = run_provider_sync(Some(&home));
+    let result = run_provider_rewrite_sync(&home);
 
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     assert_eq!(result.sqlite_rows_updated, 3);
@@ -364,7 +499,7 @@ fn provider_sync_backup_metadata_contains_reference_fields_and_managed_marker() 
     );
     create_state_db(&home.join("state_5.sqlite"));
 
-    let result = run_provider_sync(Some(&home));
+    let result = run_provider_rewrite_sync(&home);
 
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     let backup_dir = result.backup_dir.unwrap();
@@ -396,7 +531,7 @@ fn provider_sync_explicit_target_overrides_config_without_switching_config() {
     write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
     create_state_db(&home.join("state_5.sqlite"));
 
-    let result = run_provider_sync_with_target(Some(&home), Some("custom"));
+    let result = run_provider_rewrite_sync_with_target(&home, "custom");
 
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     assert_eq!(result.target_provider, "custom");
@@ -467,7 +602,7 @@ fn provider_sync_repairs_sqlite_when_rollout_provider_matches_and_normalizes_pat
     )
     .unwrap();
 
-    let result = run_provider_sync(Some(&home));
+    let result = run_provider_rewrite_sync(&home);
 
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     assert_eq!(result.changed_session_files, 0);
@@ -519,7 +654,7 @@ fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
     )
     .unwrap();
 
-    let result = run_provider_sync(Some(&home));
+    let result = run_provider_rewrite_sync(&home);
 
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     assert_eq!(result.sqlite_cwd_rows_updated, 0);
@@ -562,7 +697,7 @@ fn provider_sync_normalizes_open_in_target_preferences_per_path() {
     )
     .unwrap();
 
-    let result = run_provider_sync(Some(&home));
+    let result = run_provider_rewrite_sync(&home);
 
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     let state: serde_json::Value =
@@ -607,7 +742,7 @@ fn provider_sync_restores_rollout_first_line_when_later_step_fails() {
     .unwrap();
     drop(db);
 
-    let result = run_provider_sync(Some(&home));
+    let result = run_provider_rewrite_sync(&home);
 
     assert_eq!(result.status, ProviderSyncStatus::Skipped);
     assert!(result.message.contains("Provider sync skipped"));
@@ -650,7 +785,7 @@ fn provider_sync_rolls_back_sqlite_provider_update_when_later_update_fails() {
     .unwrap();
     drop(db);
 
-    let result = run_provider_sync(Some(&home));
+    let result = run_provider_rewrite_sync(&home);
 
     assert_eq!(result.status, ProviderSyncStatus::Skipped);
     let db = Connection::open(home.join("state_5.sqlite")).unwrap();
@@ -714,7 +849,7 @@ fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
     fs::create_dir(&home).unwrap();
     fs::create_dir_all(home.join("tmp/provider-sync.lock")).unwrap();
     fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
-    let result = run_provider_sync(Some(&home));
+    let result = run_provider_rewrite_sync(&home);
     assert_eq!(result.status, ProviderSyncStatus::Skipped);
     assert!(result.message.to_lowercase().contains("lock"));
 
@@ -735,7 +870,7 @@ fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
         "thread-1",
         "C:/workspace",
     );
-    let result = run_provider_sync(Some(&home));
+    let result = run_provider_rewrite_sync(&home);
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     let backups = fs::read_dir(&backup_root)
         .unwrap()
@@ -761,7 +896,7 @@ fn provider_sync_preserves_rollout_mtime() {
 
     let mtime_before = fs::metadata(&rollout).unwrap().modified().unwrap();
 
-    let result = run_provider_sync(Some(&home));
+    let result = run_provider_rewrite_sync(&home);
 
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     assert_eq!(result.changed_session_files, 1);

@@ -10,6 +10,7 @@
 export type PresetCategory = "official" | "aggregator" | "third_party" | "cn_official";
 
 export type RelayProtocol = "responses" | "chatCompletions";
+export type RelayRouteMode = "direct" | "multimodalGatewayCompat";
 
 export interface ProviderPreset {
   id: string;
@@ -19,6 +20,10 @@ export interface ProviderPreset {
   category: PresetCategory;
   baseUrl: string;
   protocol: RelayProtocol;
+  routeMode?: RelayRouteMode;
+  visionModel?: string;
+  visionBaseUrl?: string;
+  blockGptOnMultimodalGateway?: boolean;
   model: string;
   modelList?: string[];
 }

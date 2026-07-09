@@ -1,16 +1,18 @@
 use codex_plus_core::protocol_proxy::{
     ChatSseToResponsesConverter, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
-    chat_sse_to_responses_sse_with_request, is_chat_completions_proxy_path, is_models_proxy_path,
-    is_responses_proxy_path, models_url, open_chat_completions_proxy_request,
+    chat_sse_to_responses_sse_with_request, is_chat_completions_proxy_path,
+    is_models_proxy_path, is_responses_proxy_path, models_url,
+    multimodal_gateway_responses_to_chat_completions, open_chat_completions_proxy_request,
     open_models_proxy_request, open_responses_proxy_request,
     open_responses_proxy_request_with_settings, responses_error_from_upstream,
     responses_to_chat_completions, send_upstream_request_with_header_timeout,
     upstream_header_timeout, upstream_http_client, upstream_stream_header_timeout,
+    validate_multimodal_gateway_model,
 };
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
-    RelayMode, RelayProfile,
+    RelayMode, RelayProfile, RelayRouteMode,
 };
 use serde_json::json;
 use std::io::{Read, Write};
@@ -205,6 +207,58 @@ fn responses_request_maps_developer_role_to_system_for_chat_upstream() {
         !serde_json::to_string(&converted)
             .unwrap()
             .contains("\"developer\"")
+    );
+}
+
+#[test]
+fn multimodal_gateway_rejects_openai_gpt_models() {
+    let error = validate_multimodal_gateway_model("gpt-5.5").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Multimodal gateway does not route OpenAI GPT models")
+    );
+
+    validate_multimodal_gateway_model("glm-5.2").unwrap();
+    validate_multimodal_gateway_model("deepseek-v4-pro").unwrap();
+}
+
+#[test]
+fn multimodal_gateway_removes_images_and_injects_analysis_text() {
+    let converted = multimodal_gateway_responses_to_chat_completions(
+        json!({
+            "model": "glm-5.2",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{ "type": "input_text", "text": "Be precise." }]
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        { "type": "input_text", "text": "What is in this image?" },
+                        { "type": "input_image", "image_url": "data:image/png;base64,abc" }
+                    ]
+                }
+            ]
+        }),
+        &["A screenshot of a project sidebar.".to_string()],
+    )
+    .unwrap();
+
+    assert_eq!(converted["messages"][0]["role"], "system");
+    assert_eq!(converted["messages"][0]["content"], "Be precise.");
+    assert_eq!(converted["messages"][1]["role"], "user");
+    assert_eq!(
+        converted["messages"][1]["content"],
+        "What is in this image?\n\n[IMAGE ANALYSIS 1]\nA screenshot of a project sidebar."
+    );
+    assert!(
+        !serde_json::to_string(&converted)
+            .unwrap()
+            .contains("image_url")
     );
 }
 
@@ -1551,6 +1605,115 @@ async fn responses_proxy_passes_through_original_user_agent_when_unconfigured() 
 }
 
 #[tokio::test]
+async fn responses_proxy_uses_multimodal_gateway_route_mode_for_chat_upstream() {
+    let settings = {
+        let server = spawn_chat_server();
+        let settings = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                id: "gateway".to_string(),
+                name: "Gateway".to_string(),
+                base_url: server.base_url.clone(),
+                api_key: "sk-test".to_string(),
+                protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+                relay_mode: RelayMode::MixedApi,
+                route_mode: RelayRouteMode::MultimodalGatewayCompat,
+                ..RelayProfile::default()
+            }],
+            active_relay_id: "gateway".to_string(),
+            ..BackendSettings::default()
+        };
+        (settings, server)
+    };
+    let (settings, server) = settings;
+
+    let upstream = open_responses_proxy_request_with_settings(
+        r#"{"model":"glm-5.2","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"describe"},{"type":"input_image","image_url":"data:image/png;base64,abc"}]}],"stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+
+    let request = server.finish();
+    let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+    assert_eq!(body["messages"][0]["content"], "describe\n\n[IMAGE ANALYSIS 1]\nImage analysis unavailable.");
+    assert!(!request.body.contains("image_url"));
+}
+
+#[tokio::test]
+async fn multimodal_gateway_calls_configured_vision_upstream_before_main_request() {
+    let main_server = spawn_chat_server();
+    let vision_server = spawn_chat_server_with_body(
+        r#"{"id":"chatcmpl-vision","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"Detected screenshot"}}]}"#,
+    );
+    let settings = BackendSettings {
+        relay_profiles: vec![RelayProfile {
+            id: "gateway".to_string(),
+            name: "Gateway".to_string(),
+            base_url: main_server.base_url.clone(),
+            vision_base_url: vision_server.base_url.clone(),
+            vision_model: "qwen-vl-max".to_string(),
+            api_key: "sk-test".to_string(),
+            protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+            relay_mode: RelayMode::MixedApi,
+            route_mode: RelayRouteMode::MultimodalGatewayCompat,
+            ..RelayProfile::default()
+        }],
+        active_relay_id: "gateway".to_string(),
+        ..BackendSettings::default()
+    };
+
+    let upstream = open_responses_proxy_request_with_settings(
+        r#"{"model":"glm-5.2","input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,abc"}]}],"stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+
+    let vision_request = vision_server.finish();
+    assert!(vision_request.body.contains("qwen-vl-max"));
+    assert!(vision_request.body.contains("image_url"));
+    let main_request = main_server.finish();
+    assert!(main_request.body.contains("Detected screenshot"));
+    assert!(!main_request.body.contains("data:image/png"));
+}
+
+#[tokio::test]
+async fn responses_proxy_blocks_gpt_models_in_multimodal_gateway_route_mode() {
+    let settings = BackendSettings {
+        relay_profiles: vec![RelayProfile {
+            id: "gateway".to_string(),
+            name: "Gateway".to_string(),
+            base_url: "http://127.0.0.1:9/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+            relay_mode: RelayMode::MixedApi,
+            route_mode: RelayRouteMode::MultimodalGatewayCompat,
+            ..RelayProfile::default()
+        }],
+        active_relay_id: "gateway".to_string(),
+        ..BackendSettings::default()
+    };
+
+    let error = match open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.5","input":"hello","stream":false}"#,
+        settings,
+    )
+    .await
+    {
+        Ok(_) => panic!("expected multimodal gateway to reject GPT models"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("Multimodal gateway does not route OpenAI GPT models")
+    );
+}
+
+#[tokio::test]
 async fn models_proxy_passes_through_original_user_agent_when_unconfigured() {
     let _lock = settings_path_test_lock().lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
@@ -1623,9 +1786,14 @@ impl ChatServer {
 
 struct ChatRequest {
     user_agent: String,
+    body: String,
 }
 
 fn spawn_chat_server() -> ChatServer {
+    spawn_chat_server_with_body(r#"{"id":"chatcmpl-test","object":"chat.completion","choices":[]}"#)
+}
+
+fn spawn_chat_server_with_body(body: &'static str) -> ChatServer {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let address = listener.local_addr().unwrap();
     let base_url = format!("http://{address}/v1");
@@ -1657,6 +1825,10 @@ fn spawn_chat_server() -> ChatServer {
             }
         };
         let request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+        let request_body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body.to_string())
+            .unwrap_or_default();
         let user_agent = request
             .lines()
             .find_map(|line| {
@@ -1666,14 +1838,16 @@ fn spawn_chat_server() -> ChatServer {
                 })
             })
             .unwrap_or_default();
-        let body = r#"{"id":"chatcmpl-test","object":"chat.completion","choices":[]}"#;
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
             body
         );
         stream.write_all(response.as_bytes()).unwrap();
-        ChatRequest { user_agent }
+        ChatRequest {
+            user_agent,
+            body: request_body,
+        }
     });
     ChatServer { base_url, handle }
 }

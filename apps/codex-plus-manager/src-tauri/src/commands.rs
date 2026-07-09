@@ -1160,13 +1160,25 @@ fn merge_manual_provider_sync_targets(
 }
 
 #[tauri::command]
-pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResult<Value> {
+pub async fn sync_providers_now(
+    target_provider: Option<String>,
+    rewrite_provider: Option<bool>,
+) -> CommandResult<Value> {
     let target_provider = target_provider
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let target_for_settings = target_provider.clone();
+    let mode = if rewrite_provider.unwrap_or(false) {
+        codex_plus_data::ProviderSyncMode::RewriteProvider
+    } else {
+        codex_plus_data::ProviderSyncMode::NonDestructive
+    };
     let result = tauri::async_runtime::spawn_blocking(move || {
-        codex_plus_data::run_provider_sync_with_target(None, target_provider.as_deref())
+        codex_plus_data::run_provider_sync_with_options(
+            None,
+            target_provider.as_deref(),
+            codex_plus_data::ProviderSyncOptions { mode },
+        )
     })
     .await
     .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"));
@@ -1188,17 +1200,21 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
                 ),
                 json!({
                     "syncStatus": sync.status,
+                    "syncMode": sync.mode,
                     "targetProvider": sync.target_provider,
                     "changedSessionFiles": sync.changed_session_files,
+                    "wouldRewriteSessionFiles": sync.would_rewrite_session_files,
                     "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files,
                     "sqliteRowsUpdated": sync.sqlite_rows_updated,
                     "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
+                    "wouldUpdateProviderRows": sync.would_update_provider_rows,
                     "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
                     "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
                     "updatedWorkspaceRoots": sync.updated_workspace_roots,
                     "encryptedContentWarning": sync.encrypted_content_warning,
                     "backupDir": sync.backup_dir,
                     "syncMessage": sync.message,
+                    "destructiveRewritePerformed": sync.destructive_rewrite_performed,
                 }),
             )
         }

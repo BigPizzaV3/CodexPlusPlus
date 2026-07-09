@@ -18,20 +18,43 @@ pub enum ProviderSyncStatus {
     Synced,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderSyncMode {
+    DiscoveryOnly,
+    NonDestructive,
+    RewriteProvider,
+}
+
+impl Default for ProviderSyncMode {
+    fn default() -> Self {
+        Self::NonDestructive
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ProviderSyncOptions {
+    pub mode: ProviderSyncMode,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderSyncResult {
     pub status: ProviderSyncStatus,
     pub message: String,
+    pub mode: ProviderSyncMode,
     pub target_provider: String,
     pub backup_dir: Option<PathBuf>,
     pub changed_session_files: usize,
+    pub would_rewrite_session_files: usize,
     pub skipped_locked_rollout_files: Vec<PathBuf>,
     pub sqlite_rows_updated: usize,
     pub sqlite_provider_rows_updated: usize,
+    pub would_update_provider_rows: usize,
     pub sqlite_user_event_rows_updated: usize,
     pub sqlite_cwd_rows_updated: usize,
     pub updated_workspace_roots: usize,
     pub encrypted_content_warning: Option<String>,
+    pub destructive_rewrite_performed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -124,6 +147,18 @@ pub fn run_provider_sync_with_target(
     codex_home: Option<&Path>,
     explicit_target_provider: Option<&str>,
 ) -> ProviderSyncResult {
+    run_provider_sync_with_options(
+        codex_home,
+        explicit_target_provider,
+        ProviderSyncOptions::default(),
+    )
+}
+
+pub fn run_provider_sync_with_options(
+    codex_home: Option<&Path>,
+    explicit_target_provider: Option<&str>,
+    options: ProviderSyncOptions,
+) -> ProviderSyncResult {
     let home = codex_home
         .map(Path::to_path_buf)
         .unwrap_or_else(|| dirs_home().join(".codex"));
@@ -135,6 +170,7 @@ pub fn run_provider_sync_with_target(
             None,
             0,
             0,
+            options.mode,
         );
     }
     let target_provider =
@@ -148,6 +184,7 @@ pub fn run_provider_sync_with_target(
                     None,
                     0,
                     0,
+                    options.mode,
                 );
             }
         };
@@ -160,6 +197,7 @@ pub fn run_provider_sync_with_target(
             None,
             0,
             0,
+            options.mode,
         );
     }
     let sync_result = (|| -> anyhow::Result<ProviderSyncResult> {
@@ -187,7 +225,7 @@ pub fn run_provider_sync_with_target(
             .filter(|(thread_id, _)| !projectless_thread_ids.contains(thread_id))
             .collect::<HashMap<_, _>>();
         let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
-        let sqlite_update_count = count_sqlite_updates_for_paths(
+        let sqlite_update_counts = count_sqlite_updates_for_paths(
             &sqlite_paths,
             &target_provider,
             &thread_ids_with_user_events,
@@ -195,7 +233,27 @@ pub fn run_provider_sync_with_target(
         )?;
         let global_state_update_count =
             count_global_state_updates(&home.join(".codex-global-state.json"))?;
-        if rewrite_changes.is_empty() && sqlite_update_count == 0 && global_state_update_count == 0
+        let would_rewrite_session_files = rewrite_changes.len();
+        let safe_sqlite_update_count =
+            sqlite_update_counts.user_event_rows + sqlite_update_counts.cwd_rows;
+        let actual_sqlite_update_count = match options.mode {
+            ProviderSyncMode::DiscoveryOnly => 0,
+            ProviderSyncMode::NonDestructive => safe_sqlite_update_count,
+            ProviderSyncMode::RewriteProvider => sqlite_update_counts.total(),
+        };
+        let actual_global_state_update_count = match options.mode {
+            ProviderSyncMode::DiscoveryOnly => 0,
+            ProviderSyncMode::NonDestructive | ProviderSyncMode::RewriteProvider => {
+                global_state_update_count
+            }
+        };
+        let actual_session_rewrite_count = match options.mode {
+            ProviderSyncMode::RewriteProvider => rewrite_changes.len(),
+            ProviderSyncMode::DiscoveryOnly | ProviderSyncMode::NonDestructive => 0,
+        };
+        if actual_session_rewrite_count == 0
+            && actual_sqlite_update_count == 0
+            && actual_global_state_update_count == 0
         {
             let mut synced = result(
                 ProviderSyncStatus::Synced,
@@ -204,22 +262,37 @@ pub fn run_provider_sync_with_target(
                 None,
                 0,
                 0,
+                options.mode,
             );
+            synced.would_rewrite_session_files = would_rewrite_session_files;
+            synced.would_update_provider_rows = sqlite_update_counts.provider_rows;
             synced.skipped_locked_rollout_files = collected.skipped_locked_rollout_files;
             synced.encrypted_content_warning = encrypted_content_warning;
             return Ok(synced);
         }
-        let backup_dir = create_backup(&home, &target_provider, &rewrite_changes)?;
-        let applied = apply_session_changes(&rewrite_changes)?;
+        let session_changes_to_apply = match options.mode {
+            ProviderSyncMode::RewriteProvider => rewrite_changes.as_slice(),
+            ProviderSyncMode::DiscoveryOnly | ProviderSyncMode::NonDestructive => &[],
+        };
+        let backup_dir = if options.mode == ProviderSyncMode::DiscoveryOnly {
+            None
+        } else {
+            Some(create_backup(&home, &target_provider, session_changes_to_apply)?)
+        };
+        let applied = apply_session_changes(session_changes_to_apply)?;
         let apply_result = (|| -> anyhow::Result<(SqliteUpdateCounts, usize)> {
             let sqlite_updates = apply_sqlite_update_for_paths(
                 &sqlite_paths,
                 &target_provider,
                 &thread_ids_with_user_events,
                 &cwd_by_thread_id,
+                options.mode == ProviderSyncMode::RewriteProvider,
             )?;
-            let updated_workspace_roots =
-                apply_global_state_update(&home.join(".codex-global-state.json"))?;
+            let updated_workspace_roots = if options.mode == ProviderSyncMode::DiscoveryOnly {
+                0
+            } else {
+                apply_global_state_update(&home.join(".codex-global-state.json"))?
+            };
             prune_backups(&home)?;
             Ok((sqlite_updates, updated_workspace_roots))
         })();
@@ -234,10 +307,13 @@ pub fn run_provider_sync_with_target(
             ProviderSyncStatus::Synced,
             "Provider sync complete",
             &target_provider,
-            Some(backup_dir),
+            backup_dir,
             applied.changes.len(),
             sqlite_updates.total(),
+            options.mode,
         );
+        synced.would_rewrite_session_files = would_rewrite_session_files;
+        synced.would_update_provider_rows = sqlite_update_counts.provider_rows;
         synced.skipped_locked_rollout_files = collected.skipped_locked_rollout_files;
         synced
             .skipped_locked_rollout_files
@@ -249,6 +325,8 @@ pub fn run_provider_sync_with_target(
         synced.sqlite_cwd_rows_updated = sqlite_updates.cwd_rows;
         synced.updated_workspace_roots = updated_workspace_roots;
         synced.encrypted_content_warning = encrypted_content_warning;
+        synced.destructive_rewrite_performed = options.mode == ProviderSyncMode::RewriteProvider
+            && (applied.changes.len() > 0 || sqlite_updates.provider_rows > 0);
         Ok(synced)
     })();
     let _ = release_lock(&lock_dir);
@@ -260,6 +338,7 @@ pub fn run_provider_sync_with_target(
             None,
             0,
             0,
+            options.mode,
         )
     })
 }
@@ -271,20 +350,25 @@ fn result(
     backup_dir: Option<PathBuf>,
     changed_session_files: usize,
     sqlite_rows_updated: usize,
+    mode: ProviderSyncMode,
 ) -> ProviderSyncResult {
     ProviderSyncResult {
         status,
         message: message.into(),
+        mode,
         target_provider: target_provider.to_string(),
         backup_dir,
         changed_session_files,
+        would_rewrite_session_files: 0,
         skipped_locked_rollout_files: Vec::new(),
         sqlite_rows_updated,
         sqlite_provider_rows_updated: 0,
+        would_update_provider_rows: 0,
         sqlite_user_event_rows_updated: 0,
         sqlite_cwd_rows_updated: 0,
         updated_workspace_roots: 0,
         encrypted_content_warning: None,
+        destructive_rewrite_performed: false,
     }
 }
 
@@ -832,23 +916,24 @@ fn count_sqlite_updates(
     target_provider: &str,
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<SqliteUpdateCounts> {
     if !path.exists() {
-        return Ok(0);
+        return Ok(SqliteUpdateCounts::default());
     }
     let db = Connection::open(path)?;
     let columns = table_columns(&db, "threads")?;
     if !columns.contains("model_provider") {
-        return Ok(0);
+        return Ok(SqliteUpdateCounts::default());
     }
-    let mut total: usize = db.query_row(
+    let mut counts = SqliteUpdateCounts::default();
+    counts.provider_rows = db.query_row(
         "SELECT COUNT(*) FROM threads WHERE COALESCE(model_provider, '') <> ?1",
         [target_provider],
         |row| row.get::<_, i64>(0),
     )? as usize;
     if columns.contains("has_user_event") {
         for thread_id in user_event_thread_ids {
-            total += db.query_row(
+            counts.user_event_rows += db.query_row(
                 "SELECT COUNT(*) FROM threads WHERE id = ?1 AND COALESCE(has_user_event, 0) <> 1",
                 [thread_id],
                 |row| row.get::<_, i64>(0),
@@ -857,14 +942,14 @@ fn count_sqlite_updates(
     }
     if columns.contains("cwd") {
         for (thread_id, cwd) in cwd_by_thread_id {
-            total += db.query_row(
+            counts.cwd_rows += db.query_row(
                 "SELECT COUNT(*) FROM threads WHERE id = ?1 AND COALESCE(cwd, '') <> ?2",
                 (thread_id, cwd),
                 |row| row.get::<_, i64>(0),
             )? as usize;
         }
     }
-    Ok(total)
+    Ok(counts)
 }
 
 fn count_sqlite_updates_for_paths(
@@ -872,15 +957,15 @@ fn count_sqlite_updates_for_paths(
     target_provider: &str,
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
-) -> anyhow::Result<usize> {
-    let mut total = 0;
+) -> anyhow::Result<SqliteUpdateCounts> {
+    let mut total = SqliteUpdateCounts::default();
     for path in paths {
-        total += count_sqlite_updates(
+        total.add(count_sqlite_updates(
             path,
             target_provider,
             user_event_thread_ids,
             cwd_by_thread_id,
-        )?;
+        )?);
     }
     Ok(total)
 }
@@ -890,6 +975,7 @@ fn apply_sqlite_update(
     target_provider: &str,
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
+    rewrite_provider: bool,
 ) -> anyhow::Result<SqliteUpdateCounts> {
     if !path.exists() {
         return Ok(SqliteUpdateCounts::default());
@@ -901,10 +987,12 @@ fn apply_sqlite_update(
     }
     let tx = db.transaction()?;
     let mut counts = SqliteUpdateCounts::default();
-    counts.provider_rows = tx.execute(
-        "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
-        [target_provider],
-    )?;
+    if rewrite_provider {
+        counts.provider_rows = tx.execute(
+            "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
+            [target_provider],
+        )?;
+    }
     if columns.contains("has_user_event") {
         for thread_id in user_event_thread_ids {
             counts.user_event_rows += tx.execute(
@@ -930,6 +1018,7 @@ fn apply_sqlite_update_for_paths(
     target_provider: &str,
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
+    rewrite_provider: bool,
 ) -> anyhow::Result<SqliteUpdateCounts> {
     let mut total = SqliteUpdateCounts::default();
     for path in paths {
@@ -938,6 +1027,7 @@ fn apply_sqlite_update_for_paths(
             target_provider,
             user_event_thread_ids,
             cwd_by_thread_id,
+            rewrite_provider,
         )?);
     }
     Ok(total)

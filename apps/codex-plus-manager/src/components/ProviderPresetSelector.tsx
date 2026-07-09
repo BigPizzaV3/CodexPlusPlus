@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import type { ProviderPreset, RelayProtocol } from "../presets";
+import type { ProviderPreset, RelayProtocol, RelayRouteMode } from "../presets";
 import { PRESETS } from "../presets";
 import { t, tf } from "@/i18n";
 
@@ -11,6 +11,10 @@ export type RelayProfile = {
   upstreamBaseUrl: string;
   apiKey: string;
   protocol: RelayProtocol;
+  routeMode: RelayRouteMode;
+  visionModel: string;
+  visionBaseUrl: string;
+  blockGptOnMultimodalGateway: boolean;
   relayMode: string;
   officialMixApiKey: boolean;
   testModel: string;
@@ -43,6 +47,10 @@ export function createPresetPatch(preset: ProviderPreset): PresetPatch {
     baseUrl: preset.baseUrl,
     upstreamBaseUrl: preset.baseUrl,
     protocol: preset.protocol,
+    routeMode: preset.routeMode ?? "direct",
+    visionModel: preset.visionModel ?? "",
+    visionBaseUrl: preset.visionBaseUrl ?? "",
+    blockGptOnMultimodalGateway: preset.blockGptOnMultimodalGateway ?? true,
     model: preset.model,
     testModel: preset.model,
     modelList: preset.modelList?.join("\n") ?? "",

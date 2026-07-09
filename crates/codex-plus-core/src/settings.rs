@@ -57,6 +57,22 @@ pub struct RelayProfile {
     pub api_key: String,
     #[serde(default)]
     pub protocol: RelayProtocol,
+    #[serde(rename = "routeMode", default)]
+    pub route_mode: RelayRouteMode,
+    #[serde(
+        rename = "visionModel",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub vision_model: String,
+    #[serde(
+        rename = "visionBaseUrl",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub vision_base_url: String,
+    #[serde(rename = "blockGptOnMultimodalGateway", default = "default_true")]
+    pub block_gpt_on_multimodal_gateway: bool,
     #[serde(rename = "relayMode", default)]
     pub relay_mode: RelayMode,
     #[serde(rename = "officialMixApiKey", default)]
@@ -135,6 +151,10 @@ impl Default for RelayProfile {
             upstream_base_url: String::new(),
             api_key: String::new(),
             protocol: RelayProtocol::Responses,
+            route_mode: RelayRouteMode::Direct,
+            vision_model: String::new(),
+            vision_base_url: String::new(),
+            block_gpt_on_multimodal_gateway: true,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
             test_model: String::new(),
@@ -171,12 +191,29 @@ pub enum RelayProtocol {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+pub enum RelayRouteMode {
+    #[default]
+    Direct,
+    MultimodalGatewayCompat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub enum RelayMode {
     Official,
     #[default]
     MixedApi,
     PureApi,
     Aggregate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderSyncMode {
+    DiscoveryOnly,
+    #[default]
+    NonDestructive,
+    RewriteProvider,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -187,6 +224,8 @@ pub struct BackendSettings {
     pub codex_extra_args: Vec<String>,
     #[serde(rename = "providerSyncEnabled", default)]
     pub provider_sync_enabled: bool,
+    #[serde(rename = "providerSyncMode", default)]
+    pub provider_sync_mode: ProviderSyncMode,
     #[serde(rename = "providerSyncSavedProviders", default)]
     pub provider_sync_saved_providers: Vec<String>,
     #[serde(rename = "providerSyncManualProviders", default)]
@@ -325,6 +364,7 @@ impl Default for BackendSettings {
             codex_app_path: String::new(),
             codex_extra_args: Vec::new(),
             provider_sync_enabled: false,
+            provider_sync_mode: ProviderSyncMode::NonDestructive,
             provider_sync_saved_providers: Vec::new(),
             provider_sync_manual_providers: Vec::new(),
             provider_sync_last_selected_provider: String::new(),
@@ -403,6 +443,10 @@ impl BackendSettings {
                 },
                 api_key: self.relay_api_key.clone(),
                 protocol: RelayProtocol::Responses,
+                route_mode: RelayRouteMode::Direct,
+                vision_model: String::new(),
+                vision_base_url: String::new(),
+                block_gpt_on_multimodal_gateway: true,
                 relay_mode: RelayMode::MixedApi,
                 official_mix_api_key: true,
                 test_model: String::new(),
@@ -448,6 +492,10 @@ impl BackendSettings {
             },
             api_key: self.relay_api_key.clone(),
             protocol: RelayProtocol::Responses,
+            route_mode: RelayRouteMode::Direct,
+            vision_model: String::new(),
+            vision_base_url: String::new(),
+            block_gpt_on_multimodal_gateway: true,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
             test_model: String::new(),
@@ -758,6 +806,11 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     if let Some(value) = source.get("providerSyncEnabled").and_then(Value::as_bool) {
         target.insert("providerSyncEnabled".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = source.get("providerSyncMode") {
+        if serde_json::from_value::<ProviderSyncMode>(value.clone()).is_ok() {
+            target.insert("providerSyncMode".to_string(), value.clone());
+        }
     }
     if let Some(value) = source.get("relayProfilesEnabled").and_then(Value::as_bool) {
         target.insert("relayProfilesEnabled".to_string(), Value::Bool(value));
@@ -1217,6 +1270,7 @@ mod tests {
     fn settings_default_matches_expected_behavior() {
         let settings = BackendSettings::default();
         assert!(!settings.provider_sync_enabled);
+        assert_eq!(settings.provider_sync_mode, ProviderSyncMode::NonDestructive);
         assert!(settings.relay_profiles_enabled);
         assert!(settings.enhancements_enabled);
         assert!(!settings.computer_use_guard_enabled);
@@ -1238,6 +1292,7 @@ mod tests {
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.relay_api_key.is_empty());
         assert_eq!(settings.relay_profiles[0].relay_mode, RelayMode::Official);
+        assert_eq!(settings.relay_profiles[0].route_mode, RelayRouteMode::Direct);
         assert!(settings.relay_common_config_contents.is_empty());
         assert_eq!(settings.relay_test_model, default_relay_test_model());
         assert!(!settings.codex_app_stepwise_enabled);
@@ -1263,6 +1318,7 @@ mod tests {
         .unwrap();
         assert_eq!(settings.codex_app_path, r"C:\Portable\Codex\app");
         assert!(settings.provider_sync_enabled);
+        assert_eq!(settings.provider_sync_mode, ProviderSyncMode::NonDestructive);
         assert!(settings.codex_goals_enabled);
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.codex_extra_args.is_empty());
@@ -2100,6 +2156,56 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(saved["providerSyncEnabled"], json!(true));
         assert_eq!(saved["codexExtraArgs"], Value::Null);
         assert_eq!(saved["customField"], json!({"nested": true}));
+    }
+
+    #[test]
+    fn settings_store_update_persists_provider_sync_mode() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        std::fs::write(
+            &path,
+            r#"{"providerSyncEnabled":true,"providerSyncMode":"nonDestructive","customField":{"nested":true}}"#,
+        )
+        .unwrap();
+
+        let updated = store
+            .update(json!({
+                "providerSyncMode": "rewriteProvider"
+            }))
+            .unwrap();
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert_eq!(updated.provider_sync_mode, ProviderSyncMode::RewriteProvider);
+        assert_eq!(saved["providerSyncMode"], json!("rewriteProvider"));
+        assert_eq!(saved["customField"], json!({"nested": true}));
+    }
+
+    #[test]
+    fn relay_profile_deserializes_multimodal_gateway_route_fields() {
+        let settings: BackendSettings = serde_json::from_str(
+            r#"{
+                "relayProfiles": [{
+                    "id": "gateway",
+                    "name": "Gateway",
+                    "baseUrl": "https://gateway.example/v1",
+                    "apiKey": "sk-test",
+                    "protocol": "chatCompletions",
+                    "routeMode": "multimodalGatewayCompat",
+                    "visionModel": "qwen-vl-max",
+                    "visionBaseUrl": "https://vision.example/v1",
+                    "blockGptOnMultimodalGateway": true
+                }],
+                "activeRelayId": "gateway"
+            }"#,
+        )
+        .unwrap();
+
+        let profile = settings.active_relay_profile();
+        assert_eq!(profile.route_mode, RelayRouteMode::MultimodalGatewayCompat);
+        assert_eq!(profile.vision_model, "qwen-vl-max");
+        assert_eq!(profile.vision_base_url, "https://vision.example/v1");
+        assert!(profile.block_gpt_on_multimodal_gateway);
     }
 
     #[test]

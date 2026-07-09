@@ -10,7 +10,7 @@ use anyhow::Context;
 use serde_json::{Value, json};
 
 use crate::relay_rotation::{RotationContext, RotationEvent};
-use crate::settings::{RelayProtocol, SettingsStore};
+use crate::settings::{RelayProtocol, RelayRouteMode, SettingsStore};
 
 pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 57321;
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -215,6 +215,95 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     }
 
     Ok(result)
+}
+
+pub fn validate_multimodal_gateway_model(model: &str) -> anyhow::Result<()> {
+    let normalized = model.trim().to_ascii_lowercase();
+    if normalized.starts_with("gpt-") || normalized.starts_with("openai/gpt-") {
+        anyhow::bail!(
+            "Multimodal gateway does not route OpenAI GPT models; use an official/OpenAI-compatible provider for {model}"
+        );
+    }
+    Ok(())
+}
+
+pub fn multimodal_gateway_responses_to_chat_completions(
+    body: Value,
+    image_analyses: &[String],
+) -> anyhow::Result<Value> {
+    let model = body.get("model").and_then(Value::as_str).unwrap_or("");
+    validate_multimodal_gateway_model(model)?;
+    responses_to_chat_completions(inject_multimodal_gateway_image_analyses(
+        body,
+        image_analyses,
+    ))
+}
+
+async fn multimodal_gateway_image_analyses(
+    relay: &crate::settings::RelayProfile,
+    body: &Value,
+) -> anyhow::Result<Vec<String>> {
+    let image_urls = collect_responses_image_urls(body.get("input").unwrap_or(&Value::Null));
+    if image_urls.is_empty() {
+        return Ok(Vec::new());
+    }
+    if relay.vision_model.trim().is_empty() {
+        return Ok(vec![
+            "Image analysis unavailable.".to_string();
+            image_urls.len()
+        ]);
+    }
+
+    let base_url = relay
+        .vision_base_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let base_url = if base_url.is_empty() {
+        relay.base_url.trim().trim_end_matches('/').to_string()
+    } else {
+        base_url
+    };
+    let endpoint = chat_completions_url(&base_url);
+    let client = upstream_http_client()?;
+    let mut analyses = Vec::with_capacity(image_urls.len());
+    for image_url in image_urls {
+        let request = json!({
+            "model": relay.vision_model.trim(),
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "Describe the image for a coding assistant. Be concise and factual." },
+                    { "type": "image_url", "image_url": image_url }
+                ]
+            }],
+            "stream": false
+        });
+        let response = send_upstream_request_with_header_timeout(
+            client
+                .post(&endpoint)
+                .bearer_auth(relay.api_key.trim())
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .json(&request),
+            UPSTREAM_HEADER_TIMEOUT,
+        )
+        .await?;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let bytes = response.bytes().await?;
+        if !(200..300).contains(&status) {
+            let error = responses_error_from_upstream(status, &content_type, &bytes);
+            anyhow::bail!("vision upstream failed: {}", error);
+        }
+        let value: Value = serde_json::from_slice(&bytes)?;
+        analyses.push(extract_vision_analysis_text(&value));
+    }
+    Ok(analyses)
 }
 
 pub fn chat_completion_to_response(body: Value) -> anyhow::Result<Value> {
@@ -514,7 +603,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     for (attempt, relay) in relays.into_iter().enumerate() {
         validate_upstream(&relay)?;
         let (endpoint, upstream_body, wire_api) =
-            upstream_request_parts(&relay, request_json.clone())?;
+            upstream_request_parts(&relay, request_json.clone()).await?;
         let has_more_candidates = attempt + 1 < relay_count;
         let header_timeout = response_header_timeout(is_stream);
         let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -730,7 +819,7 @@ fn response_header_timeout(is_stream: bool) -> Duration {
     }
 }
 
-fn upstream_request_parts(
+async fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
     request_json: Value,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi)> {
@@ -742,7 +831,12 @@ fn upstream_request_parts(
         )),
         RelayProtocol::ChatCompletions => Ok((
             chat_completions_url(&relay.base_url),
-            responses_to_chat_completions(request_json)?,
+            if relay.route_mode == RelayRouteMode::MultimodalGatewayCompat {
+                let image_analyses = multimodal_gateway_image_analyses(relay, &request_json).await?;
+                multimodal_gateway_responses_to_chat_completions(request_json, &image_analyses)?
+            } else {
+                responses_to_chat_completions(request_json)?
+            },
             UpstreamWireApi::ChatCompletions,
         )),
     }
@@ -2211,6 +2305,130 @@ fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
     }
 
     Value::Array(chat_parts)
+}
+
+fn inject_multimodal_gateway_image_analyses(mut body: Value, image_analyses: &[String]) -> Value {
+    let mut analysis_index = 0usize;
+    if let Some(input) = body.get_mut("input") {
+        inject_image_analyses_into_responses_input(input, image_analyses, &mut analysis_index);
+    }
+    body
+}
+
+fn collect_responses_image_urls(input: &Value) -> Vec<Value> {
+    let mut image_urls = Vec::new();
+    collect_responses_image_urls_into(input, &mut image_urls);
+    image_urls
+}
+
+fn collect_responses_image_urls_into(value: &Value, image_urls: &mut Vec<Value>) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_responses_image_urls_into(item, image_urls);
+            }
+        }
+        Value::Object(object) => {
+            if object.get("type").and_then(Value::as_str) == Some("input_image") {
+                if let Some(image_url) = object.get("image_url") {
+                    let image_url = if image_url.is_object() {
+                        image_url.clone()
+                    } else {
+                        json!({ "url": image_url.as_str().unwrap_or_default() })
+                    };
+                    image_urls.push(image_url);
+                }
+            }
+            if let Some(content) = object.get("content") {
+                collect_responses_image_urls_into(content, image_urls);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn extract_vision_analysis_text(value: &Value) -> String {
+    if let Some(text) = value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+    {
+        return text.trim().to_string();
+    }
+
+    if let Some(output) = value.get("output").and_then(Value::as_array) {
+        let text = output
+            .iter()
+            .filter_map(|item| item.get("content").and_then(Value::as_array))
+            .flat_map(|parts| parts.iter())
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.get("output_text").and_then(Value::as_str))
+            })
+            .filter(|text| !text.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !text.trim().is_empty() {
+            return text.trim().to_string();
+        }
+    }
+
+    "Image analysis unavailable.".to_string()
+}
+
+fn inject_image_analyses_into_responses_input(
+    input: &mut Value,
+    image_analyses: &[String],
+    analysis_index: &mut usize,
+) {
+    match input {
+        Value::Array(items) => {
+            for item in items {
+                inject_image_analyses_into_responses_input(item, image_analyses, analysis_index);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(content) = object.get_mut("content") {
+                inject_image_analyses_into_responses_content(content, image_analyses, analysis_index);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn inject_image_analyses_into_responses_content(
+    content: &mut Value,
+    image_analyses: &[String],
+    analysis_index: &mut usize,
+) {
+    let Some(parts) = content.as_array_mut() else {
+        return;
+    };
+
+    let mut rewritten = Vec::with_capacity(parts.len());
+    for part in std::mem::take(parts) {
+        if part.get("type").and_then(Value::as_str) == Some("input_image") {
+            let label = *analysis_index + 1;
+            let analysis = image_analyses
+                .get(*analysis_index)
+                .map(String::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("Image analysis unavailable.");
+            *analysis_index += 1;
+            rewritten.push(json!({
+                "type": "input_text",
+                "text": format!("\n[IMAGE ANALYSIS {label}]\n{analysis}")
+            }));
+        } else {
+            rewritten.push(part);
+        }
+    }
+    *parts = rewritten;
 }
 
 fn responses_history_function_name(item: &Value) -> String {
