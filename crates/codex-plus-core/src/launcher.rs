@@ -510,7 +510,7 @@ impl LaunchHooks for DefaultLaunchHooks {
         if !settings.relay_profiles_enabled {
             return Ok(());
         }
-        let profile = settings.active_relay_profile();
+        let profile = settings.active_relay_profile_with_aggregate_models();
         let home = crate::relay_config::default_codex_home_dir();
         let common_config = crate::relay_config::normalize_config_text(
             &[

@@ -6630,7 +6630,9 @@ function tomlString(value: string): string {
 
 function syncLegacyRelayFields(settings: BackendSettings): BackendSettings {
   const relayProfiles = settings.relayProfiles.map((profile) =>
-    isAggregateRelayProfile(profile) ? normalizeAggregateRelayProfile(profile, { ...settings, relayProfiles: settings.relayProfiles }) : deriveRelayProfileFromFiles(profile),
+    isAggregateRelayProfile(profile)
+      ? withAggregateModelIntersection(normalizeAggregateRelayProfile(profile, { ...settings, relayProfiles: settings.relayProfiles }), settings)
+      : deriveRelayProfileFromFiles(profile),
   );
   const active = activeRelayProfile({ ...settings, relayProfiles });
   const aggregateRelayProfiles = normalizeAggregateProfilesFromRelayProfiles(relayProfiles);
@@ -6855,6 +6857,93 @@ function normalizeAggregateRelayProfile(profile: RelayProfile, settings: Backend
     authContents: "",
     aggregate,
   };
+}
+
+function withAggregateModelIntersection(profile: RelayProfile, settings: BackendSettings): RelayProfile {
+  if (!isAggregateRelayProfile(profile)) return profile;
+  const aggregate = normalizeAggregateConfig(profile.aggregate, aggregateMemberCandidates(settings, profile.id));
+  const memberProfiles = aggregate.members
+    .map((member) => settings.relayProfiles.find((relay) => relay.id === member.profileId && !isAggregateRelayProfile(relay)))
+    .filter((relay): relay is RelayProfile => !!relay);
+  const intersection = aggregateModelIntersection(memberProfiles);
+  if (!intersection) return profile;
+  return {
+    ...profile,
+    model: intersection.models[0] || "",
+    modelList: intersection.models.join("\n"),
+    modelWindows: Object.keys(intersection.windows).length ? JSON.stringify(intersection.windows) : "",
+  };
+}
+
+function aggregateModelIntersection(profiles: RelayProfile[]): { models: string[]; windows: Record<string, string> } | null {
+  if (!profiles.length) return null;
+  const firstModels = profileModelOrder(profiles[0]);
+  const common = new Set(firstModels);
+  const windows = profileModelWindows(profiles[0]);
+  for (const profile of profiles.slice(1)) {
+    const modelSet = new Set(profileModelOrder(profile));
+    for (const model of Array.from(common)) {
+      if (!modelSet.has(model)) common.delete(model);
+    }
+    for (const model of Object.keys(windows)) {
+      if (!common.has(model)) delete windows[model];
+    }
+    const memberWindows = profileModelWindows(profile);
+    for (const [model, window] of Object.entries(memberWindows)) {
+      if (!common.has(model)) continue;
+      const current = windows[model];
+      if (!current || parseWindowValue(window) < parseWindowValue(current)) {
+        windows[model] = window;
+      }
+    }
+  }
+  const models = firstModels.filter((model) => common.has(model));
+  for (const model of Object.keys(windows)) {
+    if (!common.has(model)) delete windows[model];
+  }
+  return { models, windows };
+}
+
+function profileModelOrder(profile: RelayProfile): string[] {
+  const models: string[] = [];
+  const push = (raw: string) => {
+    const slug = raw.trim().replace(/\[[^\]]+\]$/, "").trim();
+    if (slug && !models.includes(slug)) models.push(slug);
+  };
+  push(profile.model || "");
+  (profile.modelList || "").split(/[\r\n,]+/).forEach(push);
+  return models;
+}
+
+function profileModelWindows(profile: RelayProfile): Record<string, string> {
+  const windows: Record<string, string> = {};
+  try {
+    const parsed = JSON.parse(profile.modelWindows || "{}");
+    if (parsed && typeof parsed === "object") {
+      for (const [model, window] of Object.entries(parsed)) {
+        if (typeof window === "string" && window.trim()) windows[model] = window.trim();
+      }
+    }
+  } catch {}
+  for (const raw of (profile.modelList || "").split(/[\r\n,]+/)) {
+    const match = raw.trim().match(/^(.+?)\[([^\]]+)\]$/);
+    if (!match) continue;
+    const slug = match[1].trim();
+    const window = match[2].trim();
+    if (slug && window && !windows[slug]) windows[slug] = window;
+  }
+  return windows;
+}
+
+function parseWindowValue(value: string): number {
+  const token = value.trim();
+  const match = token.match(/^(\d+)([kKmM])?$/);
+  if (!match) return Number.MAX_SAFE_INTEGER;
+  const amount = Number(match[1]);
+  const unit = match[2]?.toLowerCase();
+  if (unit === "m") return amount * 1_000_000;
+  if (unit === "k") return amount * 1_000;
+  return amount;
 }
 
 function normalizeAggregateConfig(

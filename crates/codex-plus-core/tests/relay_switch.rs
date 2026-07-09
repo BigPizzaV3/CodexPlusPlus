@@ -161,6 +161,71 @@ fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
 }
 
 #[test]
+fn switch_to_aggregate_relay_uses_member_model_intersection_for_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let relay_a = RelayProfile {
+        model: "shared-model".to_string(),
+        model_list: "shared-model\nonly-a".to_string(),
+        model_windows: r#"{"shared-model":"1M","only-a":"1M"}"#.to_string(),
+        ..pure_profile("relay-a", "https://a.example/v1", "sk-a")
+    };
+    let relay_b = RelayProfile {
+        model: "shared-model".to_string(),
+        model_list: "shared-model\nonly-b".to_string(),
+        model_windows: r#"{"shared-model":"200K","only-b":"200K"}"#.to_string(),
+        ..pure_profile("relay-b", "https://b.example/v1", "sk-b")
+    };
+    let aggregate = RelayProfile {
+        id: "agg".to_string(),
+        name: "Aggregate".to_string(),
+        relay_mode: RelayMode::Aggregate,
+        ..RelayProfile::default()
+    };
+    let next = BackendSettings {
+        active_relay_id: "agg".to_string(),
+        relay_profiles: vec![relay_a.clone(), relay_b.clone(), aggregate],
+        aggregate_relay_profiles: vec![AggregateRelayProfile {
+            id: "agg".to_string(),
+            name: "Aggregate".to_string(),
+            strategy: AggregateRelayStrategy::Failover,
+            members: vec![
+                AggregateRelayMember {
+                    relay_id: "relay-a".to_string(),
+                    weight: 1,
+                },
+                AggregateRelayMember {
+                    relay_id: "relay-b".to_string(),
+                    weight: 1,
+                },
+            ],
+        }],
+        active_aggregate_relay_id: "agg".to_string(),
+        ..BackendSettings::default()
+    };
+    store
+        .save(&BackendSettings {
+            active_relay_id: "relay-a".to_string(),
+            relay_profiles: vec![relay_a, relay_b],
+            ..BackendSettings::default()
+        })
+        .unwrap();
+
+    switch_relay_profile_in_home(&store, &home, next, "").unwrap();
+
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(config.contains(r#"model = "shared-model""#));
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/agg.json""#));
+    let catalog = std::fs::read_to_string(home.join("model-catalogs").join("agg.json")).unwrap();
+    assert!(catalog.contains(r#""slug": "shared-model""#));
+    assert!(catalog.contains(r#""context_window": 200000"#));
+    assert!(!catalog.contains("only-a"));
+    assert!(!catalog.contains("only-b"));
+}
+
+#[test]
 fn switch_returns_normalized_previous_official_profile_after_backfill() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("codex");

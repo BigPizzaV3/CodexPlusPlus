@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -465,6 +465,44 @@ impl BackendSettings {
         }
     }
 
+    pub fn active_relay_profile_with_aggregate_models(&self) -> RelayProfile {
+        let profile = self.active_relay_profile();
+        if profile.relay_mode == RelayMode::Aggregate {
+            self.apply_aggregate_model_intersection(profile)
+        } else {
+            profile
+        }
+    }
+
+    pub fn apply_aggregate_model_intersection(&self, mut profile: RelayProfile) -> RelayProfile {
+        if profile.relay_mode != RelayMode::Aggregate {
+            return profile;
+        }
+        let Some(aggregate) = self.active_aggregate_relay_profile_for_id(&profile.id) else {
+            return profile;
+        };
+        let member_profiles: Vec<&RelayProfile> = aggregate
+            .members
+            .iter()
+            .filter_map(|member| {
+                self.relay_profiles.iter().find(|relay| {
+                    relay.id == member.relay_id && relay.relay_mode != RelayMode::Aggregate
+                })
+            })
+            .collect();
+        let Some(intersection) = aggregate_model_intersection(&member_profiles) else {
+            return profile;
+        };
+        profile.model = intersection.models.first().cloned().unwrap_or_default();
+        profile.model_list = intersection.models.join("\n");
+        profile.model_windows = if intersection.windows.is_empty() {
+            String::new()
+        } else {
+            serde_json::to_string(&intersection.windows).unwrap_or_default()
+        };
+        profile
+    }
+
     pub fn active_aggregate_relay_profile(&self) -> Option<AggregateRelayProfile> {
         let active_relay = self
             .relay_profiles
@@ -490,10 +528,137 @@ impl BackendSettings {
             .cloned()
     }
 
+    pub fn active_aggregate_relay_profile_for_id(
+        &self,
+        relay_id: &str,
+    ) -> Option<AggregateRelayProfile> {
+        let active_relay = self
+            .relay_profiles
+            .iter()
+            .find(|profile| profile.id == relay_id)?;
+        if active_relay.relay_mode != RelayMode::Aggregate {
+            return None;
+        }
+        let aggregate_id = if self.active_aggregate_relay_id.trim().is_empty()
+            || self.active_aggregate_relay_id.trim() != active_relay.id
+        {
+            active_relay.id.as_str()
+        } else {
+            self.active_aggregate_relay_id.trim()
+        };
+        self.aggregate_relay_profiles
+            .iter()
+            .find(|profile| profile.id == aggregate_id)
+            .cloned()
+    }
+
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
         self.active_aggregate_relay_profile().is_some()
             || self.active_relay_profile().protocol == RelayProtocol::ChatCompletions
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AggregateModelIntersection {
+    models: Vec<String>,
+    windows: HashMap<String, String>,
+}
+
+fn aggregate_model_intersection(profiles: &[&RelayProfile]) -> Option<AggregateModelIntersection> {
+    let mut iter = profiles.iter();
+    let first = iter.next()?;
+    let first_models = profile_model_order(first);
+    let mut common: HashSet<String> = first_models.iter().cloned().collect();
+    let mut windows = profile_model_windows(first);
+    for profile in iter {
+        let models = profile_model_order(profile);
+        let model_set: HashSet<String> = models.iter().cloned().collect();
+        common.retain(|model| model_set.contains(model));
+        windows.retain(|model, _| common.contains(model));
+        for (model, member_window) in profile_model_windows(profile) {
+            if !common.contains(&model) {
+                continue;
+            }
+            windows
+                .entry(model)
+                .and_modify(|window| {
+                    if parse_window_value(&member_window).unwrap_or(u64::MAX)
+                        < parse_window_value(window).unwrap_or(u64::MAX)
+                    {
+                        *window = member_window.clone();
+                    }
+                })
+                .or_insert(member_window);
+        }
+    }
+    let models = first_models
+        .into_iter()
+        .filter(|model| common.contains(model))
+        .collect::<Vec<_>>();
+    windows.retain(|model, _| common.contains(model));
+    Some(AggregateModelIntersection { models, windows })
+}
+
+fn profile_model_order(profile: &RelayProfile) -> Vec<String> {
+    let mut models = Vec::new();
+    push_model_slug(&mut models, &profile.model);
+    for raw in profile.model_list.split(['\r', '\n', ',']) {
+        push_model_slug(&mut models, raw);
+    }
+    models
+}
+
+fn push_model_slug(models: &mut Vec<String>, raw: &str) {
+    let slug = raw
+        .trim()
+        .split_once('[')
+        .map_or_else(|| raw.trim(), |(slug, _)| slug.trim());
+    if !slug.is_empty() && !models.iter().any(|existing| existing == slug) {
+        models.push(slug.to_string());
+    }
+}
+
+fn profile_model_windows(profile: &RelayProfile) -> HashMap<String, String> {
+    let mut windows =
+        serde_json::from_str::<HashMap<String, String>>(&profile.model_windows).unwrap_or_default();
+    for raw in profile.model_list.split(['\r', '\n', ',']).map(str::trim) {
+        let Some((slug, suffix)) = parse_model_suffix_token(raw) else {
+            continue;
+        };
+        windows.entry(slug).or_insert(suffix);
+    }
+    windows
+}
+
+fn parse_model_suffix_token(raw: &str) -> Option<(String, String)> {
+    let close = raw.rfind(']')?;
+    if close != raw.len() - 1 {
+        return None;
+    }
+    let open = raw[..close].rfind('[')?;
+    let slug = raw[..open].trim();
+    let suffix = raw[open + 1..close].trim();
+    if slug.is_empty() || suffix.is_empty() {
+        return None;
+    }
+    Some((slug.to_string(), suffix.to_string()))
+}
+
+fn parse_window_value(token: &str) -> Option<u64> {
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let (number, multiplier) = match token.chars().last()? {
+        'K' | 'k' => (&token[..token.len() - 1], 1_000),
+        'M' | 'm' => (&token[..token.len() - 1], 1_000_000),
+        _ => (token, 1),
+    };
+    number
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|value| value * multiplier)
 }
 
 pub fn default_stepwise_api_key_env() -> String {
