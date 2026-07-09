@@ -39,7 +39,11 @@ pub async fn read_codex_model_catalog() -> Value {
     let settings_path = crate::paths::default_settings_path();
     if settings_path.exists() {
         if let Ok(settings) = SettingsStore::new(settings_path).load() {
-            return relay_profile_model_catalog_value(&home, &settings.active_relay_profile());
+            let profile = settings.active_relay_profile();
+            let catalog = relay_profile_model_catalog_value(&home, &profile);
+            if catalog.get("models").and_then(Value::as_array).map_or(false, |m| !m.is_empty()) {
+                return catalog;
+            }
         }
     }
     let env = std::env::vars().collect::<HashMap<_, _>>();
