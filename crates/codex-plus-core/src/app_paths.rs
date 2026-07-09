@@ -223,7 +223,13 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
 
 pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
     if app_dir.extension() == Some(OsStr::new("app")) {
-        return app_dir.join("Contents").join("MacOS").join("Codex");
+        let macos_dir = app_dir.join("Contents").join("MacOS");
+        if let Some(executable) = macos_app_plist_value(app_dir, "CFBundleExecutable")
+            .filter(|value| !value.contains('/') && !value.contains('\\'))
+        {
+            return macos_dir.join(executable);
+        }
+        return macos_dir.join("Codex");
     }
     let upper = app_dir.join("Codex.exe");
     if upper.exists() {
@@ -283,9 +289,13 @@ fn codex_package_version(package_dir: &Path) -> Option<String> {
 }
 
 fn macos_app_version(app_dir: &Path) -> Option<String> {
+    macos_app_plist_value(app_dir, "CFBundleShortVersionString")
+        .or_else(|| macos_app_plist_value(app_dir, "CFBundleVersion"))
+}
+
+fn macos_app_plist_value(app_dir: &Path, key: &str) -> Option<String> {
     let plist = std::fs::read_to_string(app_dir.join("Contents").join("Info.plist")).ok()?;
-    plist_string_value(&plist, "CFBundleShortVersionString")
-        .or_else(|| plist_string_value(&plist, "CFBundleVersion"))
+    plist_string_value(&plist, key)
 }
 
 fn plist_string_value(plist: &str, key: &str) -> Option<String> {
@@ -310,7 +320,7 @@ fn macos_app_candidates(root: &Path) -> Vec<PathBuf> {
     if root.extension() == Some(OsStr::new("app")) {
         return vec![root.to_path_buf()];
     }
-    ["Codex.app", "OpenAI Codex.app", "OpenAI.Codex.app"]
+    ["Codex.app", "OpenAI Codex.app", "OpenAI.Codex.app", "ChatGPT.app"]
         .into_iter()
         .map(|name| root.join(name))
         .collect()
