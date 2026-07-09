@@ -1649,15 +1649,15 @@ export function App() {
   const switchOfficialMode = async () => {
     const switched = await clearRelayInjection(true);
     if (!switched) return;
-    const result = await saveLaunchMode("relay", true);
-    if (result) showNotice(t("官方登录模式"), t("已切回官方登录；Codex增强已设为兼容增强。"), result.status);
+    const result = await saveLaunchMode("patch", true);
+    if (result) showNotice(t("官方登录模式"), t("已切回官方登录；Codex增强已设为完全增强。"), result.status);
   };
 
   const switchPureApiMode = async () => {
     const switched = await applyPureApiInjection(true);
     if (!switched) return;
     const result = await saveLaunchMode("patch", true);
-    if (result) showNotice(t("纯 API 模式"), t("已切换到纯 API；Codex增强已设为完整增强。"), result.status);
+    if (result) showNotice(t("纯 API 模式"), t("已切换到纯 API；Codex增强已设为完全增强。"), result.status);
   };
 
   const switchRelayProfile = async (next: BackendSettings, previousActiveRelayId = settingsForm.activeRelayId) => {
@@ -4917,7 +4917,7 @@ function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions
         onClick={() => void actions.setLaunchMode("patch")}
         type="button"
       >
-        <strong>{t("完整增强")}</strong>
+        <strong>{t("完全增强")}</strong>
         <span>{t("适合纯 API；启用插件市场、会话删除导出、项目移动等全部页面能力。")}</span>
       </button>
     </div>
@@ -6216,10 +6216,10 @@ function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injectio
   return profile.officialMixApiKey ? "apply_relay_injection" : "clear_relay_injection";
 }
 function relayProfileModeSwitchedText(profile: RelayProfile): string {
-  if (isAggregateRelayProfile(profile)) return t("已切换到聚合供应商；真实对话会按所选策略轮转成员。");
-  if (profile.relayMode === "pureApi") return t("已按此供应商切换到纯 API；Codex增强已设为完整增强。");
-  if (profile.officialMixApiKey) return t("已按此供应商使用官方登录，并混入 API Key；Codex增强已设为兼容增强。");
-  return t("已按此供应商切回官方登录；Codex增强已设为兼容增强。");
+  if (isAggregateRelayProfile(profile)) return t("已切换到聚合供应商；Codex增强已设为完全增强，真实对话会按所选策略轮转成员。");
+  if (profile.relayMode === "pureApi") return t("已按此供应商切换到纯 API；Codex增强已设为完全增强。");
+  if (profile.officialMixApiKey) return t("已按此供应商使用官方登录，并混入 API Key；Codex增强已设为完全增强。");
+  return t("已按此供应商切回官方登录；Codex增强已设为完全增强。");
 }
 
 function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {

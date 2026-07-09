@@ -247,7 +247,7 @@ export const EN_PLAIN: Record<string, string> = {
   "安装包更新失败，请查看错误提示后重试。": "Installer update failed. Check the error message and retry.",
   "安装包更新进度": "Installer update progress",
   "安装维护": "Install & maintenance",
-  "完整增强": "Full enhancement",
+  "完全增强": "Full enhancement",
   "官方": "Official",
   "官方中转站": "Official relay",
   "官方混入 API Key": "Official mixed-in API Key",
@@ -272,9 +272,10 @@ export const EN_PLAIN: Record<string, string> = {
   "正在刷新官方远端插件缓存状态…": "Refreshing official remote plugin cache status…",
   "正在处理…": "Processing…",
   "工具与插件": "Tools & plugins",
-  "已切回官方登录；Codex增强已设为兼容增强。": "Switched back to official login; Codex enhancements set to compatible.",
-  "已切换到纯 API；Codex增强已设为完整增强。": "Switched to pure API; Codex enhancements set to full.",
-  "已切换到聚合供应商；真实对话会按所选策略轮转成员。": "Switched to aggregate provider; real conversations rotate members per the chosen strategy.",
+  "已切回官方登录；Codex增强已设为完全增强。": "Switched back to official login; Codex enhancements set to full.",
+  "已切换到纯 API；Codex增强已设为完全增强。": "Switched to pure API; Codex enhancements set to full.",
+  "已切换到聚合供应商；Codex增强已设为完全增强，真实对话会按所选策略轮转成员。":
+    "Switched to aggregate provider; Codex enhancements set to full, and real conversations rotate members per the chosen strategy.",
   "已刷新 Codex 应用、入口和 Watcher 状态。": "Refreshed Codex app, entrypoint and watcher status.",
   "已受理": "Accepted",
   "已安装": "Installed",
@@ -282,10 +283,10 @@ export const EN_PLAIN: Record<string, string> = {
   "已打开聚合供应商详情；请先添加或完善至少 1 个普通 API 供应商的 Base URL / Key，再勾选为成员。":
     "Opened aggregate provider details; first add or complete the Base URL / Key of at least 1 regular API provider, then select it as a member.",
   "已找到": "Found",
-  "已按此供应商使用官方登录，并混入 API Key；Codex增强已设为兼容增强。":
-    "Using official login for this provider with the API Key mixed in; Codex enhancements set to compatible.",
-  "已按此供应商切回官方登录；Codex增强已设为兼容增强。": "Switched back to official login for this provider; Codex enhancements set to compatible.",
-  "已按此供应商切换到纯 API；Codex增强已设为完整增强。": "Switched to pure API for this provider; Codex enhancements set to full.",
+  "已按此供应商使用官方登录，并混入 API Key；Codex增强已设为完全增强。":
+    "Using official login for this provider with the API Key mixed in; Codex enhancements set to full.",
+  "已按此供应商切回官方登录；Codex增强已设为完全增强。": "Switched back to official login for this provider; Codex enhancements set to full.",
+  "已按此供应商切换到纯 API；Codex增强已设为完全增强。": "Switched to pure API for this provider; Codex enhancements set to full.",
   "已检测": "Detected",
   "已注册": "Registered",
   "已缓存未注册": "Cached, not registered",

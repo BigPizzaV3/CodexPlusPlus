@@ -156,8 +156,42 @@ fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
 
     assert!(result.configured);
     assert_eq!(store.load().unwrap().active_relay_id, "agg");
+    assert_eq!(store.load().unwrap().launch_mode, LaunchMode::Patch);
     assert!(live.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
     assert_eq!(auth["OPENAI_API_KEY"], "codex-plus-aggregate");
+}
+
+#[test]
+fn switch_relay_profile_forces_full_enhancement_mode() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let relay_a = pure_profile("relay-a", "https://a.example/v1", "sk-a");
+    let relay_b = RelayProfile {
+        model: "shared-model".to_string(),
+        model_list: "shared-model".to_string(),
+        ..pure_profile("relay-b", "https://b.example/v1", "sk-b")
+    };
+    store
+        .save(&BackendSettings {
+            active_relay_id: "relay-a".to_string(),
+            launch_mode: LaunchMode::Relay,
+            relay_profiles: vec![relay_a.clone(), relay_b.clone()],
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let next = BackendSettings {
+        active_relay_id: "relay-b".to_string(),
+        launch_mode: LaunchMode::Relay,
+        relay_profiles: vec![relay_a, relay_b],
+        ..BackendSettings::default()
+    };
+
+    let result = switch_relay_profile_in_home(&store, &home, next, "").unwrap();
+
+    assert_eq!(result.settings.launch_mode, LaunchMode::Patch);
+    assert_eq!(store.load().unwrap().launch_mode, LaunchMode::Patch);
 }
 
 #[test]

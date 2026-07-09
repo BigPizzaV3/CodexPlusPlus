@@ -5,7 +5,7 @@ use anyhow::Context;
 use crate::relay_config::{
     backfill_relay_profile_from_home_with_common, relay_config_status_from_home,
 };
-use crate::settings::{BackendSettings, RelayMode, SettingsStore};
+use crate::settings::{BackendSettings, LaunchMode, RelayMode, SettingsStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelaySwitchResult {
@@ -33,6 +33,7 @@ pub fn switch_relay_profile_in_home(
     }
     sync_active_aggregate_profile_models(&mut selected_settings);
 
+    selected_settings.launch_mode = LaunchMode::Patch;
     store
         .save(&selected_settings)
         .context("保存供应商设置失败")?;
