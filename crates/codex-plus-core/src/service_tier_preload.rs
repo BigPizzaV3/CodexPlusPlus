@@ -43,10 +43,11 @@ const path = require("path");
 const Module = require("module");
 
 const PATCH_MARK = Symbol.for("codex-plus.service-tier-protocol-handle-patched");
-const PATCH_VERSION = "protocol-handle-6";
+const PATCH_VERSION = "protocol-handle-7";
 const SERVICE_TIER_SETTINGS_ASSET_RE = /^use-service-tier-settings-.*\.js$/;
 const READ_SERVICE_TIER_ASSET_RE = /^read-service-tier-for-request-.*\.js$/;
 const MODEL_LIST_FILTER_ASSET_RE = /^model-list-filter-.*\.js$/;
+const DICTATION_SUPPORT_ASSET_RE = /^use-is-dictation-supported-.*\.js$/;
 const HOME_DIR = process.env.HOME || process.env.USERPROFILE || process.cwd();
 const LOG_PATH = path.join(HOME_DIR, ".codex-session-delete", "codex-plus.log");
 const SETTINGS_PATH = path.join(HOME_DIR, ".codex-session-delete", "settings.json");
@@ -169,6 +170,27 @@ function patchModelListFilterAsset(source) {
   return patched;
 }
 
+function patchDictationSupportAsset(source) {
+  return replaceFirstOf(
+    source,
+    [
+      [
+        "a&&t.authMethod===`chatgpt`",
+        "(t.authMethod===`chatgpt`||t.authMethod===`apikey`)",
+      ],
+      [
+        "a&&r.authMethod===`chatgpt`",
+        "(r.authMethod===`chatgpt`||r.authMethod===`apikey`)",
+      ],
+      [
+        "a&&n.authMethod===`chatgpt`",
+        "(n.authMethod===`chatgpt`||n.authMethod===`apikey`)",
+      ],
+    ],
+    "dictation support auth gate"
+  );
+}
+
 function replaceOnce(source, from, to, label) {
   if (source.includes(to)) return source;
   if (!source.includes(from)) throw new Error(`${label} pattern not found`);
@@ -185,11 +207,11 @@ function replaceFirstOf(source, replacements, label) {
   throw new Error(`${label} pattern not found`);
 }
 
-function tryPatchServiceTierAsset(kind, source, url) {
+function tryPatchNativeAsset(kind, source, url) {
   try {
     return {
       ok: true,
-      source: patchServiceTierAsset(kind, source),
+      source: patchNativeAsset(kind, source),
     };
   } catch (error) {
     log("service_tier_preload_asset_patch_failed", {
@@ -220,7 +242,7 @@ function appProtocolAssetName(url) {
 function serviceTierControlsEnabled() {
   try {
     const settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8"));
-    return settings && settings.enhancementsEnabled !== false;
+    return settings && settings.enhancementsEnabled !== false && settings.codexAppServiceTierControls !== false;
   } catch {
     return true;
   }
@@ -228,16 +250,19 @@ function serviceTierControlsEnabled() {
 
 function serviceTierAssetKindFromUrl(url) {
   const name = appProtocolAssetName(url);
+  if (DICTATION_SUPPORT_ASSET_RE.test(name)) return "native-dictation-support";
+  if (!serviceTierControlsEnabled()) return "";
   if (SERVICE_TIER_SETTINGS_ASSET_RE.test(name)) return "native-service-tier-settings";
   if (READ_SERVICE_TIER_ASSET_RE.test(name)) return "native-read-service-tier";
   if (MODEL_LIST_FILTER_ASSET_RE.test(name)) return "native-model-list-filter";
   return "";
 }
 
-function patchServiceTierAsset(kind, source) {
+function patchNativeAsset(kind, source) {
   if (kind === "native-service-tier-settings") return patchServiceTierSettingsAsset(source);
   if (kind === "native-read-service-tier") return patchReadServiceTierAsset(source);
   if (kind === "native-model-list-filter") return patchModelListFilterAsset(source);
+  if (kind === "native-dictation-support") return patchDictationSupportAsset(source);
   return source;
 }
 
@@ -252,7 +277,7 @@ function responseHeadersWithPatchMark(response, source) {
 async function patchedAssetResponse(kind, request, handler, self) {
   const response = await handler.call(self, request);
   const source = await response.text();
-  const result = tryPatchServiceTierAsset(kind, source, request && request.url);
+  const result = tryPatchNativeAsset(kind, source, request && request.url);
   if (result.ok) {
     log("service_tier_preload_asset_patched", { kind, url: request && request.url, version: PATCH_VERSION });
   }
@@ -264,11 +289,20 @@ async function patchedAssetResponse(kind, request, handler, self) {
 }
 
 function shouldInstallProtocolPatch() {
-  if (!serviceTierControlsEnabled()) {
+  if (!enhancementsEnabled()) {
     log("service_tier_preload_disabled_by_settings", {});
     return false;
   }
   return true;
+}
+
+function enhancementsEnabled() {
+  try {
+    const settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8"));
+    return settings && settings.enhancementsEnabled !== false;
+  } catch {
+    return true;
+  }
 }
 
 function installProtocolHandlePatch(electron) {
@@ -341,9 +375,10 @@ mod tests {
         assert!(script.contains("protocol.handle"));
         assert!(script.contains("serviceTierControlsEnabled"));
         assert!(script.contains("settings.enhancementsEnabled !== false"));
+        assert!(script.contains("settings.codexAppServiceTierControls !== false"));
         assert!(script.contains("service_tier_preload_disabled_by_settings"));
         assert!(script.contains("patchedAssetResponse"));
-        assert!(script.contains("tryPatchServiceTierAsset"));
+        assert!(script.contains("tryPatchNativeAsset"));
         assert!(script.contains("service_tier_preload_asset_patch_failed"));
         assert!(script.contains("handler.call(self, request)"));
         assert!(!script.contains("app.asar\", \"webview\", \"assets"));
@@ -351,6 +386,10 @@ mod tests {
         assert!(script.contains("use-service-tier-settings-"));
         assert!(script.contains("read-service-tier-for-request-"));
         assert!(script.contains("model-list-filter-"));
+        assert!(script.contains("use-is-dictation-supported-"));
+        assert!(script.contains("native-dictation-support"));
+        assert!(script.contains("patchDictationSupportAsset"));
+        assert!(script.contains("t.authMethod===`chatgpt`||t.authMethod===`apikey`"));
         assert!(script.contains("s=o?.authMethod===`chatgpt`||o?.authMethod===`apikey`"));
         assert!(script.contains("s=a?.authMethod===`chatgpt`||a?.authMethod===`apikey`"));
         assert!(script.contains("o=a?.authMethod===`chatgpt`||a?.authMethod===`apikey`"));

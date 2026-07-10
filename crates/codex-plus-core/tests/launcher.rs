@@ -253,7 +253,7 @@ fn launcher_uses_gated_startup_preload_without_proxy_environment_override() {
     assert!(source.contains("ensure_service_tier_preload"));
     assert!(source.contains("ScopedEnvVar::set(\"NODE_OPTIONS\""));
     assert!(source.contains("settings.enhancements_enabled"));
-    assert!(source.contains("settings.codex_app_service_tier_controls"));
+    assert!(source.contains("\"service_tier_controls\": settings.codex_app_service_tier_controls"));
     assert!(source.contains("launcher.service_tier_preload_disabled"));
     assert!(!source.contains("activate_packaged_app_with_environment"));
     assert!(!source.contains("with_temporary_proxy_environment"));

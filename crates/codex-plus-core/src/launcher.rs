@@ -490,7 +490,7 @@ struct ServiceTierPreloadEnv {
 fn prepare_service_tier_preload(
     settings: &BackendSettings,
 ) -> anyhow::Result<Option<ServiceTierPreloadEnv>> {
-    if settings.enhancements_enabled && settings.codex_app_service_tier_controls {
+    if settings.enhancements_enabled {
         let preload_path = crate::service_tier_preload::ensure_service_tier_preload()
             .context("failed to prepare service tier preload")?;
         let node_options = crate::service_tier_preload::node_options_with_service_tier_preload(
@@ -502,6 +502,7 @@ fn prepare_service_tier_preload(
             serde_json::json!({
                 "preload_path": preload_path.to_string_lossy(),
                 "node_options": node_options,
+                "service_tier_controls": settings.codex_app_service_tier_controls,
             }),
         );
         Ok(Some(ServiceTierPreloadEnv { node_options }))
