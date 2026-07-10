@@ -2,6 +2,7 @@ use codex_plus_core::codex_sqlite::codex_session_db_path_from_home;
 use codex_plus_core::relay_config::{
     apply_pure_api_config_to_home, apply_relay_config_file_to_home, apply_relay_config_to_home,
     apply_relay_files_to_home, apply_relay_files_to_home_with_common,
+    apply_relay_profile_config_to_home_with_context,
     apply_relay_profile_files_to_home_with_context, apply_relay_profile_to_home_with_switch_rules,
     apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard,
     backfill_relay_profile_from_home, backfill_relay_profile_from_home_with_common,
@@ -3279,6 +3280,152 @@ experimental_bearer_token = "sk-new"
         .unwrap();
     assert_eq!(flash["context_window"].as_u64().unwrap(), 1_000_000);
     assert_eq!(pro["context_window"].as_u64().unwrap(), 200_000);
+}
+
+#[test]
+fn apply_profile_invalid_auth_does_not_change_existing_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog_path = temp.path().join("model-catalogs").join("relay-a.json");
+    std::fs::create_dir_all(catalog_path.parent().unwrap()).unwrap();
+    std::fs::write(&catalog_path, "old catalog").unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        model: "model-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: "model = \"model-a\"\n".to_string(),
+        auth_contents: "not json".to_string(),
+        model_list: "model-a[1M]".to_string(),
+        ..RelayProfile::default()
+    };
+
+    assert!(apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").is_err());
+    assert_eq!(
+        std::fs::read_to_string(catalog_path).unwrap(),
+        "old catalog"
+    );
+    assert!(!temp.path().join("config.toml").exists());
+}
+
+#[test]
+fn apply_profile_without_windows_removes_managed_catalog_pointer() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        model: "model-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents:
+            "model = \"model-a\"\nmodel_catalog_json = \"model-catalogs/relay-old.json\"\n"
+                .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-a"}"#.to_string(),
+        model_list: "model-a".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(!config.contains("model_catalog_json"));
+}
+
+#[test]
+fn apply_profile_without_windows_removes_managed_catalog_pointer_for_default_id() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "default".to_string(),
+        model: "model-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents:
+            "model = \"model-a\"\nmodel_catalog_json = \"model-catalogs/default.json\"\n"
+                .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-a"}"#.to_string(),
+        model_list: "model-a".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(!config.contains("model_catalog_json"));
+}
+
+#[test]
+fn clear_relay_preserves_user_catalog_pointer() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "model_provider = \"custom\"\nmodel_catalog_json = \"C:/catalogs/user.json\"\n",
+    )
+    .unwrap();
+
+    clear_relay_config_to_home(temp.path()).unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains("C:/catalogs/user.json"));
+}
+
+#[test]
+fn config_only_apply_preserves_unmanaged_live_context() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "[mcp_servers.local]\ncommand = \"local-tool\"\n",
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        model: "model-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: "model = \"model-a\"\n".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_config_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains("[mcp_servers.local]"));
+    assert!(config.contains("local-tool"));
+}
+
+#[test]
+fn valid_profile_repairs_malformed_live_config() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("config.toml"), "invalid = [").unwrap();
+    let profile = RelayProfile {
+        model: "model-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: "model = \"model-a\"\n".to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-a"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains("model = \"model-a\""));
+}
+
+#[test]
+fn normalize_profile_new_suffix_overrides_existing_window() {
+    let mut profile = RelayProfile {
+        model_list: "model-a[2M]".to_string(),
+        model_windows: r#"{"model-a":"1M"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+    let windows: serde_json::Value = serde_json::from_str(&profile.model_windows).unwrap();
+    assert_eq!(windows["model-a"], "2000000");
+    assert_eq!(profile.model_list, "model-a");
+}
+
+#[test]
+fn apply_profile_rejects_context_window_above_i64() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        model: "model-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: "model = \"model-a\"\n".to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-a"}"#.to_string(),
+        context_window: u64::MAX.to_string(),
+        ..RelayProfile::default()
+    };
+
+    assert!(apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").is_err());
+    assert!(!temp.path().join("config.toml").exists());
 }
 
 #[test]

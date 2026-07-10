@@ -52,6 +52,14 @@ fn parse_suffix_rejects_zero_and_negative() {
 }
 
 #[test]
+fn parse_suffix_rejects_multiplication_overflow() {
+    assert_eq!(
+        parse_model_suffix("foo[18446744073709551615M]"),
+        ("foo[18446744073709551615M]".to_string(), None)
+    );
+}
+
+#[test]
 fn collect_entries_includes_current_model_and_strips_suffix() {
     let mut windows = HashMap::new();
     windows.insert("deepseek-v4-pro".to_string(), "1M".to_string());
@@ -139,6 +147,18 @@ fn collect_entries_prefers_later_suffix_when_reversed() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].slug, "deepseek/deepseek-v4-flash");
     assert_eq!(entries[0].suffix_window, Some(200_000));
+}
+
+#[test]
+fn collect_entries_prefers_explicit_suffix_over_stale_window_map() {
+    let mut windows = HashMap::new();
+    windows.insert("deepseek-v4-pro".to_string(), "1M".to_string());
+
+    let entries = collect_catalog_entries("deepseek-v4-pro[2M]", &windows, "");
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].slug, "deepseek-v4-pro");
+    assert_eq!(entries[0].suffix_window, Some(2_000_000));
 }
 
 #[test]

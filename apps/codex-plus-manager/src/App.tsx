@@ -63,10 +63,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  createModelWindowRow,
   mergeModelWindowRows,
   modelWindowRowsFromProfile,
   serializeModelWindowRows,
   type ModelWindowRow,
+  validateModelWindowRows,
 } from "./model-windows";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
@@ -1396,13 +1398,13 @@ export function App() {
 
   const saveSettingsValue = async (next: BackendSettings, silent = true) => {
     const normalized = normalizeSettings(next);
-    setSettingsForm(normalized);
     const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
-    if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
-      if (!silent || !isSuccessStatus(result.status)) showNotice(t("设置保存"), result.message, result.status);
-    }
+    if (!result) return false;
+    if (!silent || !isSuccessStatus(result.status)) showNotice(t("设置保存"), result.message, result.status);
+    if (!isSuccessStatus(result.status)) return false;
+    setSettings(result);
+    setSettingsForm(normalizeSettings(result.settings));
+    return true;
   };
 
   const resetSettings = async () => {
@@ -1569,13 +1571,14 @@ export function App() {
 
   const saveRelayFile = async (kind: "config" | "auth", contents: string, silent = false) => {
     const result = await run(() => call<RelayFilesResult>("save_relay_file", { request: { kind, contents } }));
-    if (result) {
-      setRelayFiles(result);
-      if (!silent || !isSuccessStatus(result.status)) {
-        showNotice(kind === "config" ? "config.toml" : "auth.json", result.message, result.status);
-      }
-      await refreshRelay(true);
+    if (!result) return false;
+    if (!silent || !isSuccessStatus(result.status)) {
+      showNotice(kind === "config" ? "config.toml" : "auth.json", result.message, result.status);
     }
+    if (!isSuccessStatus(result.status)) return false;
+    setRelayFiles(result);
+    await refreshRelay(true);
+    return true;
   };
 
   const upsertContextEntry = async (next: BackendSettings, kind: ContextKind, id: string, tomlBody: string) => {
@@ -1663,12 +1666,12 @@ export function App() {
   const switchRelayProfile = async (next: BackendSettings, previousActiveRelayId = settingsForm.activeRelayId) => {
     if (relaySwitching) {
       showNotice(t("供应商切换中"), t("上一次切换还没有完成，请稍后再试。"), "failed");
-      return;
+      return false;
     }
     let switchSettings = normalizeSettings(next);
     if (!switchSettings.relayProfilesEnabled) {
       showNotice(t("供应商配置已关闭"), t("当前不会写入 Codex config.toml / auth.json。打开供应商配置总开关后再切换。"), "failed");
-      return;
+      return false;
     }
     const targetBeforeSnapshot = activeRelayProfile(switchSettings);
     logDiagnostic("switchRelayProfile.start", {
@@ -1686,9 +1689,13 @@ export function App() {
         error: validationError,
       });
       showNotice(t("供应商配置可能不正确"), validationError, "failed");
-      return;
+      return false;
     }
-    switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
+    const snapshottedSettings = previousActiveRelayId === switchSettings.activeRelayId
+      ? switchSettings
+      : await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
+    if (!snapshottedSettings) return false;
+    switchSettings = snapshottedSettings;
     const selectedAfterSave = activeRelayProfile(switchSettings);
     const command = relayProfileSwitchCommand(selectedAfterSave);
 
@@ -1709,9 +1716,19 @@ export function App() {
         logDiagnostic("switchRelayProfile.apply_no_result", {
           targetRelayId: selectedAfterSave.id,
         });
-        return;
+        return false;
       }
       const selectedSettings = normalizeSettings(result.settings);
+      if (!isSuccessStatus(result.status)) {
+        logDiagnostic("switchRelayProfile.apply_failed", {
+          targetRelayId: selectedAfterSave.id,
+          status: result.status,
+          message: result.message,
+          activeRelayId: selectedSettings.activeRelayId,
+        });
+        showNotice(t("供应商切换"), result.message, result.status);
+        return false;
+      }
       setSettings({
         status: result.status,
         message: result.message,
@@ -1726,16 +1743,6 @@ export function App() {
         ...result.relay,
       });
       await refreshRelayFiles(true);
-      if (!isSuccessStatus(result.status)) {
-        logDiagnostic("switchRelayProfile.apply_failed", {
-          targetRelayId: selectedAfterSave.id,
-          status: result.status,
-          message: result.message,
-          activeRelayId: selectedSettings.activeRelayId,
-        });
-        showNotice(t("供应商切换"), result.message, result.status);
-        return;
-      }
       const currentSelected = activeRelayProfile(selectedSettings);
       logDiagnostic("switchRelayProfile.ok", {
         targetRelayId: currentSelected.id,
@@ -1743,6 +1750,7 @@ export function App() {
         status: result.status,
       });
       showNotice(t("供应商切换"), relayProfileModeSwitchedText(currentSelected), result.status);
+      return true;
     } finally {
       setRelaySwitching(false);
     }
@@ -1751,7 +1759,7 @@ export function App() {
   const snapshotActiveRelayFilesBeforeSwitch = async (
     next: BackendSettings,
     previousActiveRelayId: string,
-  ): Promise<BackendSettings> => {
+  ): Promise<BackendSettings | null> => {
     const profileId = previousActiveRelayId.trim();
     if (!profileId) return next;
     const result = await run(() =>
@@ -1759,11 +1767,11 @@ export function App() {
         request: { settings: next, profileId },
       }),
     );
-    if (!result) return next;
+    if (!result) return null;
     const normalized = normalizeSettings(result.settings);
     if (!isSuccessStatus(result.status)) {
       showNotice(t("供应商切换"), result.message, result.status);
-      return next;
+      return null;
     }
     return normalized;
   };
@@ -2218,7 +2226,7 @@ type Actions = {
   checkUpdate: () => Promise<void>;
   performUpdate: () => Promise<void>;
   saveSettings: () => Promise<void>;
-  saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<void>;
+  saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<boolean>;
   refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
   resetSettings: () => Promise<void>;
   resetImageOverlaySettings: () => Promise<void>;
@@ -2253,7 +2261,7 @@ type Actions = {
   applyRelayInjection: () => Promise<boolean>;
   applyPureApiInjection: () => Promise<boolean>;
   clearRelayInjection: () => Promise<boolean>;
-  saveRelayFile: (kind: "config" | "auth", contents: string, silent?: boolean) => Promise<void>;
+  saveRelayFile: (kind: "config" | "auth", contents: string, silent?: boolean) => Promise<boolean>;
   upsertContextEntry: (
     settings: BackendSettings,
     kind: ContextKind,
@@ -2266,7 +2274,7 @@ type Actions = {
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
   testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
-  switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
+  switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<boolean>;
   relaySwitching: boolean;
   switchOfficialMode: () => Promise<void>;
   switchPureApiMode: () => Promise<void>;
@@ -2412,8 +2420,9 @@ function RelayScreen({
     : null);
   const isNewProfile = !!newProfileDraft;
   const saveRelaySettings = async (next: BackendSettings) => {
-    onFormChange(next);
-    await actions.saveSettingsValue(next, true);
+    const saved = await actions.saveSettingsValue(next, true);
+    if (saved) onFormChange(next);
+    return saved;
   };
   const createNewAggregateProfile = () => {
     const draft = createAggregateRelayProfile(normalized);
@@ -3649,7 +3658,7 @@ function RelayProfileList({
   actions,
 }: {
   form: BackendSettings;
-  onFormChange: (value: BackendSettings) => void;
+  onFormChange: (value: BackendSettings) => boolean | Promise<boolean>;
   onEdit: (id: string) => void;
   disabled?: boolean;
   actions: Actions;
@@ -3702,7 +3711,7 @@ function SortableRelayProfileCard({
   form: BackendSettings;
   profile: RelayProfile;
   index: number;
-  onFormChange: (value: BackendSettings) => void;
+  onFormChange: (value: BackendSettings) => boolean | Promise<boolean>;
   onEdit: (id: string) => void;
   disabled?: boolean;
   actions: Actions;
@@ -3799,8 +3808,17 @@ function SortableRelayProfileCard({
           </Button>
           <Button
             disabled={form.relayProfiles.length <= 1}
-            onClick={(event) => {
+            onClick={async (event) => {
               event.stopPropagation();
+              if (active) {
+                const nextProfile = form.relayProfiles.find((item) => item.id !== profile.id);
+                if (!nextProfile) return;
+                const switchedSettings = syncLegacyRelayFields({ ...form, activeRelayId: nextProfile.id });
+                const switched = await actions.switchRelayProfile(switchedSettings, profile.id);
+                if (!switched) return;
+                await onFormChange(removeRelayProfile(switchedSettings, profile.id));
+                return;
+              }
               onFormChange(removeRelayProfile(form, profile.id));
             }}
             size="icon"
@@ -3864,7 +3882,7 @@ function RelayProfileDetail({
   form: BackendSettings;
   isNew?: boolean;
   onBack: () => void;
-  onFormChange: (value: BackendSettings) => void | Promise<void>;
+  onFormChange: (value: BackendSettings) => boolean | Promise<boolean>;
   onSaved?: () => void;
   actions: Actions;
 }) {
@@ -3889,7 +3907,10 @@ function RelayProfileDetail({
     setDraft(nextDraft);
     setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || ""));
   }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
-  const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
+  const modelWindowValidationError = isAggregateRelayProfile(draft) ? null : validateModelWindowRows(modelWindowRows);
+  const validationError = isAggregateRelayProfile(draft)
+    ? aggregateRelayProfileValidation(draft)
+    : modelWindowValidationError;
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
     return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows };
@@ -3901,19 +3922,20 @@ function RelayProfileDetail({
     const next = isNew
       ? addRelayProfile(form, normalizedDraft)
       : updateRelayProfile(form, profile.id, normalizedDraft);
-    await onFormChange(next);
-    if (isActive && relayProfileUsesLiveFiles(normalizedDraft)) {
-      await actions.saveRelayFile(
-        "config",
-        effectiveRelayConfigPreview(normalizedDraft, form, normalizedDraft),
-        true,
-      );
-      await actions.saveRelayFile("auth", normalizedDraft.authContents, true);
+    if (isActive) {
+      const switched = await actions.switchRelayProfile(next, profile.id);
+      if (switched) onSaved?.();
+      return;
     }
+    if (!await onFormChange(next)) return;
     onSaved?.();
   };
-  const switchDraft = () => {
+  const switchDraft = async () => {
     if (isNew || !form.relayProfilesEnabled) return;
+    if (validationError) {
+      await actions.showMessage(t("供应商配置可能不正确"), validationError, "failed");
+      return;
+    }
     const draftWithWindows = draftWithModelRows();
     const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const previousActiveRelayId = form.activeRelayId;
@@ -3922,7 +3944,7 @@ function RelayProfileDetail({
       relayProfiles: form.relayProfiles.map((item) => (item.id === profile.id ? normalizedDraft : item)),
       activeRelayId: profile.id,
     });
-    void actions.switchRelayProfile(next, previousActiveRelayId);
+    await actions.switchRelayProfile(next, previousActiveRelayId);
   };
   return (
     <div className="relay-detail-page" key={profile.id}>
@@ -3998,7 +4020,7 @@ function RelayProfileEditor({
   form: BackendSettings;
   isNew?: boolean;
   onProfileChange: (value: RelayProfile) => void;
-  onSwitch: () => void;
+  onSwitch: () => void | Promise<void>;
   actions: Actions;
   modelWindowRows: ModelWindowRow[];
   setModelWindowRows: (value: ModelWindowRow[]) => void;
@@ -4029,11 +4051,12 @@ function RelayProfileEditor({
   };
   const removeModelWindowRow = (index: number) => {
     const nextRows = modelWindowRows.filter((_, rowIndex) => rowIndex !== index);
-    setModelWindowRows(nextRows.length ? nextRows : [{ model: "", window: "" }]);
+    setModelWindowRows(nextRows.length ? nextRows : [createModelWindowRow()]);
   };
   const addModelWindowRows = (rows: ModelWindowRow[]) => {
     setModelWindowRows(mergeModelWindowRows(modelWindowRows, rows));
   };
+  const modelWindowValidationError = validateModelWindowRows(modelWindowRows);
   const runProviderDoctor = async () => {
     setDoctorOpen(true);
     setDoctorRunning(true);
@@ -4230,7 +4253,7 @@ function RelayProfileEditor({
                 <span />
               </div>
               {modelWindowRows.map((row, index) => (
-                <div className="relay-model-row" key={`${index}-${row.model}`}>
+                <div className="relay-model-row" key={row.id}>
                   <Input
                     value={row.model}
                     onChange={(event) => updateModelWindowRow(index, { model: event.currentTarget.value })}
@@ -4256,7 +4279,7 @@ function RelayProfileEditor({
             </div>
             <div className="relay-model-list-tools">
               <Button
-                onClick={() => setModelWindowRows([...modelWindowRows, { model: "", window: "" }])}
+                onClick={() => setModelWindowRows([...modelWindowRows, createModelWindowRow()])}
                 size="sm"
                 type="button"
                 variant="secondary"
@@ -4273,7 +4296,7 @@ function RelayProfileEditor({
                     modelWindows: serializedRows.modelWindows,
                   });
                   if (models?.length) {
-                    addModelWindowRows(models.map((model) => ({ model, window: "" })));
+                    addModelWindowRows(models.map((model) => createModelWindowRow(model)));
                   }
                 }}
                 size="sm"
@@ -4287,6 +4310,7 @@ function RelayProfileEditor({
             <p className="field-hint">
               {t("每行一个模型；上下文窗口可填")} <code>1M</code>{t("、")}<code>200K</code> {t("或")} <code>1000000</code>{t("，留空表示使用 Codex 默认长度。")}
             </p>
+            {modelWindowValidationError ? <p className="field-error">{modelWindowValidationError}</p> : null}
           </Field>
         ) : null}
         {showApiFields ? (
@@ -6601,6 +6625,10 @@ function relayProfileSwitchValidation(profile: RelayProfile): string | null {
   if (isAggregateRelayProfile(profile)) {
     return aggregateRelayProfileValidation(profile);
   }
+  const modelWindowError = validateModelWindowRows(
+    modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || ""),
+  );
+  if (modelWindowError) return modelWindowError;
   if (profile.relayMode === "official" && !profile.officialMixApiKey) return null;
   if (!profile.configContents.trim()) {
     return tf("供应商「{0}」缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。请先在该供应商详情里保存 config.toml。", [profile.name || profile.id]);

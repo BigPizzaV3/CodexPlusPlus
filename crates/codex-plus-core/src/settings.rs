@@ -699,6 +699,13 @@ impl SettingsStore {
             return self.load();
         };
 
+        // Reject the entire update before touching disk when any profile is malformed.
+        // Falling back to an empty Vec here can silently erase every saved profile.
+        if let Some(profiles) = payload.get("relayProfiles") {
+            serde_json::from_value::<Vec<RelayProfile>>(profiles.clone())
+                .context("invalid relayProfiles payload")?;
+        }
+
         let mut raw = self.load_raw_object()?;
         merge_known_setting_fields(&mut raw, &payload);
         let settings = normalize_settings_config_sections(
@@ -1931,6 +1938,31 @@ experimental_bearer_token = "sk-existing""#
                 .unwrap();
         assert!(saved["relayProfiles"][1].get("baseUrl").is_none());
         assert!(saved["relayProfiles"][1].get("apiKey").is_none());
+    }
+
+    #[test]
+    fn settings_store_update_rejects_malformed_relay_profile_without_writing() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        store
+            .update(json!({
+                "relayProfiles": [{ "id": "relay-a", "name": "Relay A" }],
+                "activeRelayId": "relay-a"
+            }))
+            .unwrap();
+        let original = std::fs::read(&path).unwrap();
+
+        let result = store.update(json!({
+            "relayProfiles": [
+                { "id": "relay-b", "name": "Relay B" },
+                { "name": "missing required id" }
+            ]
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(store.load().unwrap().relay_profiles[0].id, "relay-a");
     }
 
     #[test]

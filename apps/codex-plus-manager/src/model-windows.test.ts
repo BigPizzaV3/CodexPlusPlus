@@ -3,11 +3,14 @@ import { describe, it } from "node:test";
 import type { RelayProfile } from "./App.tsx";
 import {
   buildModelWindows,
+  createModelWindowRow,
   modelWindowRowsFromProfile,
   modelWindowsMapToText,
   modelWindowsTextToMap,
   serializeModelWindowRows,
   mergeModelWindowRows,
+  modelWindowTokenError,
+  validateModelWindowRows,
 } from "./model-windows.ts";
 
 // 类型检查：确保 RelayProfile 包含 modelWindows 字段
@@ -81,21 +84,18 @@ describe("model-windows helpers", () => {
 
   it("modelWindowRowsFromProfile 把模型和窗口合成同一组行", () => {
     assert.deepStrictEqual(
-      modelWindowRowsFromProfile("a\nb\nc", '{"a":"1M","c":"200K"}'),
-      [
-        { model: "a", window: "1M" },
-        { model: "b", window: "" },
-        { model: "c", window: "200K" },
-      ],
+      modelWindowRowsFromProfile("a\nb\nc", '{"a":"1M","c":"200K"}')
+        .map((row) => `${row.model}:${row.window}`),
+      ["a:1M", "b:", "c:200K"],
     );
   });
 
   it("serializeModelWindowRows 从行控件生成 modelList 和 modelWindows", () => {
     assert.deepStrictEqual(
       serializeModelWindowRows([
-        { model: "a", window: "1M" },
-        { model: "", window: "400K" },
-        { model: "b", window: "" },
+        createModelWindowRow("a", "1M"),
+        createModelWindowRow("", "400K"),
+        createModelWindowRow("b", ""),
       ]),
       {
         modelList: "a\nb",
@@ -108,19 +108,31 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       mergeModelWindowRows(
         [
-          { model: "deepseek-v4-flash", window: "1M" },
-          { model: "  ", window: "" },
+          createModelWindowRow("deepseek-v4-flash", "1M"),
+          createModelWindowRow("  ", ""),
         ],
         [
-          { model: "deepseek-v4-flash", window: "" },
-          { model: "deepseek-v4-pro", window: "" },
-          { model: " deepseek-v4-pro ", window: "200K" },
+          createModelWindowRow("deepseek-v4-flash", ""),
+          createModelWindowRow("deepseek-v4-pro", ""),
+          createModelWindowRow(" deepseek-v4-pro ", "200K"),
         ],
-      ),
-      [
-        { model: "deepseek-v4-flash", window: "1M" },
-        { model: "deepseek-v4-pro", window: "" },
-      ],
+      ).map((row) => `${row.model}:${row.window}`),
+      ["deepseek-v4-flash:1M", "deepseek-v4-pro:"],
     );
+  });
+
+  it("严格接受整数和 K/M 后缀，拒绝小数及其他后缀", () => {
+    assert.strictEqual(modelWindowTokenError("200K"), null);
+    assert.strictEqual(modelWindowTokenError("1m"), null);
+    assert.strictEqual(modelWindowTokenError("1000000"), null);
+    assert.ok(modelWindowTokenError("200KB"));
+    assert.ok(modelWindowTokenError("1.5M"));
+    assert.ok(modelWindowTokenError("0"));
+  });
+
+  it("拒绝没有模型名称的窗口，并保留已有行 id", () => {
+    const row = createModelWindowRow("a", "1M");
+    assert.strictEqual(mergeModelWindowRows([row], [])[0].id, row.id);
+    assert.ok(validateModelWindowRows([createModelWindowRow("", "1M")]));
   });
 });

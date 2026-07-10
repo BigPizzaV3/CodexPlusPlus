@@ -1,7 +1,9 @@
 use anyhow::Context;
+use fs2::FileExt;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
@@ -63,6 +65,11 @@ pub struct RelayProfileTestResult {
     pub http_status: u16,
     pub endpoint: String,
     pub response_preview: String,
+}
+
+struct PendingModelCatalog {
+    path: PathBuf,
+    contents: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -365,8 +372,15 @@ pub fn apply_relay_profile_files_to_home_with_context(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
-    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
-    apply_relay_files_to_home(home, &config_with_catalog, &profile.auth_contents)
+    let (config_with_catalog, catalog) =
+        apply_model_catalog_to_config(home, profile, &config_with_limits)?;
+    write_relay_files_to_home_with_catalog(
+        home,
+        &config_with_catalog,
+        &profile.auth_contents,
+        catalog.as_ref(),
+        false,
+    )
 }
 
 pub fn apply_relay_profile_to_home_with_switch_rules(
@@ -402,21 +416,24 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
-    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
+    let (config_with_catalog, catalog) =
+        apply_model_catalog_to_config(home, profile, &config_with_limits)?;
 
     if profile.relay_mode == crate::settings::RelayMode::PureApi {
-        apply_relay_files_to_home_with_computer_use_guard(
+        write_relay_files_to_home_with_catalog(
             home,
             &config_with_catalog,
             &profile.auth_contents,
+            catalog.as_ref(),
             preserve_computer_use_guard,
         )
     } else {
         let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
-        apply_relay_files_to_home_with_computer_use_guard(
+        write_relay_files_to_home_with_catalog(
             home,
             &config_with_catalog,
             &auth_contents,
+            catalog.as_ref(),
             preserve_computer_use_guard,
         )
     }
@@ -434,13 +451,28 @@ pub fn apply_relay_profile_config_to_home_with_context(
     };
     let profile_config = complete_relay_profile_config(profile)?;
     let config_with_common = merge_common_config_into_config(&profile_config, &selected_common)?;
+    let config_with_common =
+        preserve_unmanaged_live_context_entries(home, &config_with_common, common_config_contents)?;
     let config_with_limits = apply_context_limits_to_config(
         &config_with_common,
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
-    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
-    apply_relay_config_file_to_home(home, &config_with_catalog)
+    let (config_with_catalog, catalog) =
+        apply_model_catalog_to_config(home, profile, &config_with_limits)?;
+    let backup_path = write_codex_live_atomic_with_catalog(
+        home,
+        Some(&config_with_catalog),
+        None,
+        false,
+        catalog.as_ref(),
+    )?;
+    let status = relay_config_status_from_home(home);
+    Ok(RelayApplyResult {
+        config_path: status.config_path,
+        backup_path,
+        configured: status.configured,
+    })
 }
 
 pub fn apply_relay_config_file_to_home(
@@ -625,13 +657,13 @@ pub fn clear_relay_config_to_home_with_auth_and_computer_use_guard(
         );
     }
     let mut updated = without_tables;
-    for key in [
-        "OPENAI_API_KEY",
-        "model_provider",
-        "model_catalog_json",
-        "base_url",
-    ] {
+    for key in ["OPENAI_API_KEY", "model_provider", "base_url"] {
         updated = remove_root_key(&updated, key);
+    }
+    if root_key_string(&updated, "model_catalog_json")
+        .is_some_and(|path| is_managed_model_catalog_path(&path))
+    {
+        updated = remove_root_key(&updated, "model_catalog_json");
     }
     let backup_path = write_codex_live_atomic(
         home,
@@ -878,7 +910,9 @@ fn preserve_unmanaged_live_context_entries(
         return Ok(ensure_trailing_newline(config_text.to_string()));
     }
     let mut target_doc = parse_toml_document(config_text)?;
-    let live_doc = parse_toml_document(&live_config)?;
+    let Ok(live_doc) = parse_toml_document(&live_config) else {
+        return Ok(normalize_optional_toml(target_doc));
+    };
     let managed_doc =
         parse_toml_document(&sanitize_common_config_contents(managed_context_config))?;
     preserve_unmanaged_context_tables(
@@ -1049,7 +1083,29 @@ fn write_codex_live_atomic(
     auth_bytes: Option<&[u8]>,
     preserve_computer_use_guard: bool,
 ) -> anyhow::Result<Option<String>> {
+    write_codex_live_atomic_with_catalog(
+        home,
+        config_text,
+        auth_bytes,
+        preserve_computer_use_guard,
+        None,
+    )
+}
+
+fn write_codex_live_atomic_with_catalog(
+    home: &Path,
+    config_text: Option<&str>,
+    auth_bytes: Option<&[u8]>,
+    preserve_computer_use_guard: bool,
+    catalog: Option<&PendingModelCatalog>,
+) -> anyhow::Result<Option<String>> {
     std::fs::create_dir_all(home)?;
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(home.join(".codex-plus-live.lock"))?;
+    lock_file.lock_exclusive()?;
     let config_path = home.join("config.toml");
     let auth_path = home.join("auth.json");
     #[cfg(windows)]
@@ -1099,13 +1155,27 @@ fn write_codex_live_atomic(
         validate_auth_json(auth_bytes, &auth_path)?;
     }
 
+    let old_catalog = catalog
+        .map(|catalog| read_optional_bytes(&catalog.path))
+        .transpose()?
+        .flatten();
     let old_config = read_optional_bytes(&config_path)?;
     let old_auth = read_optional_bytes(&auth_path)?;
     let backup_path = create_live_backup(home, old_config.as_deref(), old_auth.as_deref())?;
+    if let Some(catalog) = catalog {
+        if let Some(parent) = catalog.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        crate::settings::atomic_write(&catalog.path, &catalog.contents)
+            .context("write model catalog failed")?;
+    }
     let mut auth_written = false;
 
     if let Some(auth_bytes) = auth_bytes {
         if let Err(error) = crate::settings::atomic_write(&auth_path, auth_bytes) {
+            if let Some(catalog) = catalog {
+                let _ = restore_optional_file(&catalog.path, old_catalog.as_deref());
+            }
             return Err(error.context("写入 auth.json 失败"));
         }
         auth_written = true;
@@ -1117,11 +1187,39 @@ fn write_codex_live_atomic(
                 let _ = restore_optional_file(&auth_path, old_auth.as_deref());
             }
             let _ = restore_optional_file(&config_path, old_config.as_deref());
+            if let Some(catalog) = catalog {
+                let _ = restore_optional_file(&catalog.path, old_catalog.as_deref());
+            }
             return Err(error.context("写入 config.toml 失败"));
         }
     }
 
     Ok(backup_path)
+}
+
+fn write_relay_files_to_home_with_catalog(
+    home: &Path,
+    config_contents: &str,
+    auth_contents: &str,
+    catalog: Option<&PendingModelCatalog>,
+    preserve_computer_use_guard: bool,
+) -> anyhow::Result<RelayApplyResult> {
+    if config_contents.trim().is_empty() {
+        anyhow::bail!("config.toml must not be empty");
+    }
+    let backup_path = write_codex_live_atomic_with_catalog(
+        home,
+        Some(config_contents.trim_start_matches('\u{feff}')),
+        Some(auth_contents.trim_start_matches('\u{feff}').as_bytes()),
+        preserve_computer_use_guard,
+        catalog,
+    )?;
+    let status = relay_config_status_from_home(home);
+    Ok(RelayApplyResult {
+        config_path: status.config_path,
+        backup_path,
+        configured: status.configured,
+    })
 }
 
 fn preserve_live_marketplace_configs(home: &Path, config_text: &str) -> anyhow::Result<String> {
@@ -1131,7 +1229,9 @@ fn preserve_live_marketplace_configs(home: &Path, config_text: &str) -> anyhow::
     }
 
     let mut target = parse_toml_document(config_text)?;
-    let live = parse_toml_document(&live_config)?;
+    let Ok(live) = parse_toml_document(&live_config) else {
+        return Ok(ensure_trailing_newline(target.to_string()));
+    };
     let Some(live_marketplaces) = live.get("marketplaces").and_then(Item::as_table_like) else {
         return Ok(ensure_trailing_newline(target.to_string()));
     };
@@ -1426,10 +1526,12 @@ fn apply_context_limits_to_config(
 ) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(config_text)?;
     if let Some(value) = parse_optional_positive_u64(context_window, "上下文大小")? {
-        doc["model_context_window"] = toml_edit::value(value as i64);
+        let value = i64::try_from(value).context("model context window exceeds i64")?;
+        doc["model_context_window"] = toml_edit::value(value);
     }
     if let Some(value) = parse_optional_positive_u64(auto_compact_limit, "压缩上下文大小")? {
-        doc["model_auto_compact_token_limit"] = toml_edit::value(value as i64);
+        let value = i64::try_from(value).context("auto compact limit exceeds i64")?;
+        doc["model_auto_compact_token_limit"] = toml_edit::value(value);
     }
     Ok(normalize_optional_toml(doc))
 }
@@ -1438,7 +1540,7 @@ fn apply_model_catalog_to_config(
     home: &Path,
     profile: &RelayProfile,
     config_text: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, Option<PendingModelCatalog>)> {
     let catalog_relative = format!(
         "model-catalogs/{}.json",
         sanitize_catalog_filename(&profile.id)
@@ -1446,8 +1548,8 @@ fn apply_model_catalog_to_config(
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
     if let Some(existing) = root_key_string(config_text, "model_catalog_json") {
-        if existing != catalog_relative {
-            return Ok(config_text.to_string());
+        if existing != catalog_relative && !is_managed_model_catalog_path(&existing) {
+            return Ok((config_text.to_string(), None));
         }
     }
     let (model_list, model_windows): (String, std::collections::HashMap<String, String>) =
@@ -1463,18 +1565,35 @@ fn apply_model_catalog_to_config(
         crate::model_suffix::collect_catalog_entries(&model_list, &model_windows, &profile.model);
     // 无后缀条目则 no-op，保持现有 per-profile 单值行为（保 does_not_write 测试）
     if !entries.iter().any(|entry| entry.suffix_window.is_some()) {
-        return Ok(config_text.to_string());
+        let mut doc = parse_toml_document(config_text)?;
+        if doc
+            .get("model_catalog_json")
+            .and_then(Item::as_str)
+            .is_some_and(is_managed_model_catalog_path)
+        {
+            doc.remove("model_catalog_json");
+        }
+        return Ok((normalize_optional_toml(doc), None));
     }
     let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
     let catalog_path = home.join(&catalog_relative);
-    if let Some(parent) = catalog_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let catalog_json = crate::model_suffix::build_model_catalog_json(&entries, fallback);
-    std::fs::write(&catalog_path, catalog_json)?;
     let mut doc = parse_toml_document(config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
-    Ok(normalize_optional_toml(doc))
+    Ok((
+        normalize_optional_toml(doc),
+        Some(PendingModelCatalog {
+            path: catalog_path,
+            contents: catalog_json.into_bytes(),
+        }),
+    ))
+}
+
+fn is_managed_model_catalog_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized
+        .strip_prefix("model-catalogs/")
+        .is_some_and(|name| name.ends_with(".json") && !name.contains('/'))
 }
 
 fn sanitize_catalog_filename(id: &str) -> String {
@@ -2017,9 +2136,12 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
 }
 
 pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow::Result<()> {
-    if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
-        let (clean_list, windows) =
+    if profile.model_list.contains('[') {
+        let (clean_list, suffix_windows) =
             crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);
+        let mut windows: std::collections::HashMap<String, String> =
+            serde_json::from_str(&profile.model_windows).unwrap_or_default();
+        windows.extend(suffix_windows);
         profile.model_list = clean_list;
         profile.model_windows = serde_json::to_string(&windows).unwrap_or_default();
     }
@@ -2307,10 +2429,25 @@ fn create_live_backup(
         return Ok(None);
     }
 
-    let backup_dir = home
-        .join("backups")
-        .join(format!("codex-plus-live-{}", timestamp_millis()));
-    std::fs::create_dir_all(&backup_dir)?;
+    let backups_dir = home.join("backups");
+    std::fs::create_dir_all(&backups_dir)?;
+    let backup_dir = (0_u32..)
+        .find_map(|sequence| {
+            let suffix = if sequence == 0 {
+                String::new()
+            } else {
+                format!("-{sequence}")
+            };
+            let candidate =
+                backups_dir.join(format!("codex-plus-live-{}{suffix}", timestamp_millis()));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => Some(Ok(candidate)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .transpose()?
+        .context("unable to allocate a unique live backup directory")?;
     if let Some(config) = config {
         std::fs::write(backup_dir.join("config.toml"), config)?;
     }

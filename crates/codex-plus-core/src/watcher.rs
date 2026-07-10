@@ -104,7 +104,7 @@ fn is_windowsapps_codex_app_process(executable: &str) -> bool {
     let Some((package_name, after_package)) = after_windows_apps.split_once('\\') else {
         return false;
     };
-    crate::app_paths::is_supported_windows_app_package_name(package_name)
+    crate::app_paths::is_supported_windows_watcher_package_name(package_name)
         && after_package.starts_with("app\\")
         && !after_package.starts_with("app\\resources\\")
         && after_package

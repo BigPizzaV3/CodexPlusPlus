@@ -376,6 +376,11 @@ pub(crate) fn is_supported_windows_app_package_name(package_name: &str) -> bool 
     codex_package_parts(package_name).is_some()
 }
 
+pub(crate) fn is_supported_windows_watcher_package_name(package_name: &str) -> bool {
+    is_supported_windows_app_package_name(package_name)
+        || package_name_parts(package_name, "OpenAI.ChatGPT-Desktop").is_some()
+}
+
 pub(crate) fn is_supported_app_executable_name(name: &str) -> bool {
     name.eq_ignore_ascii_case("Codex.exe") || name.eq_ignore_ascii_case("ChatGPT.exe")
 }
@@ -435,21 +440,19 @@ fn executable_in_dir(dir: &Path) -> Option<PathBuf> {
 
 fn codex_package_parts(package_name: &str) -> Option<(AppPackageSpec, &str, &str)> {
     for spec in APP_PACKAGE_SPECS {
-        let Some(rest) = strip_prefix_ignore_ascii_case(package_name, spec.identity) else {
-            continue;
-        };
-        let Some(rest) = rest.strip_prefix('_') else {
-            continue;
-        };
-        let Some((version, rest)) = rest.split_once('_') else {
-            continue;
-        };
-        let Some((_, publisher_id)) = rest.rsplit_once("__") else {
+        let Some((version, publisher_id)) = package_name_parts(package_name, spec.identity) else {
             continue;
         };
         return Some((*spec, version, publisher_id));
     }
     None
+}
+
+fn package_name_parts<'a>(package_name: &'a str, identity: &str) -> Option<(&'a str, &'a str)> {
+    let rest = strip_prefix_ignore_ascii_case(package_name, identity)?.strip_prefix('_')?;
+    let (version, rest) = rest.split_once('_')?;
+    let (_, publisher_id) = rest.rsplit_once("__")?;
+    (!version.is_empty() && !publisher_id.is_empty()).then_some((version, publisher_id))
 }
 
 fn strip_prefix_ignore_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {

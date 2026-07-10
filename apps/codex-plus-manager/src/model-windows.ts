@@ -25,9 +25,41 @@ export function modelWindowsTextToMap(modelList: string, modelWindowsText: strin
 }
 
 export type ModelWindowRow = {
+  id: string;
   model: string;
   window: string;
 };
+
+let nextModelWindowRowId = 0;
+
+export function createModelWindowRow(model = "", window = ""): ModelWindowRow {
+  nextModelWindowRowId += 1;
+  return { id: `model-window-${nextModelWindowRowId}`, model, window };
+}
+
+export function modelWindowTokenError(value: string): string | null {
+  const token = value.trim();
+  if (!token) return null;
+  if (!/^[1-9]\d*(?:K|M)?$/i.test(token)) {
+    return `上下文窗口“${value}”格式无效，请填写正整数或 K/M 后缀（例如 200K、1M）。`;
+  }
+  const suffix = token.slice(-1).toUpperCase();
+  const multiplier = suffix === "K" ? 1_000n : suffix === "M" ? 1_000_000n : 1n;
+  const numberText = suffix === "K" || suffix === "M" ? token.slice(0, -1) : token;
+  if (BigInt(numberText) * multiplier > 9_223_372_036_854_775_807n) {
+    return `上下文窗口“${value}”超出支持范围。`;
+  }
+  return null;
+}
+
+export function validateModelWindowRows(rows: ModelWindowRow[]): string | null {
+  for (const row of rows) {
+    const error = modelWindowTokenError(row.window);
+    if (error) return row.model.trim() ? `模型 ${row.model.trim()}：${error}` : error;
+    if (!row.model.trim() && row.window.trim()) return "填写上下文窗口前必须先填写模型名称。";
+  }
+  return null;
+}
 
 export function mergeModelWindowRows(
   currentRows: ModelWindowRow[],
@@ -39,11 +71,11 @@ export function mergeModelWindowRows(
     const model = row.model.trim();
     if (!model || seen.has(model)) return;
     seen.add(model);
-    rows.push({ model, window: row.window.trim() });
+    rows.push({ ...row, model, window: row.window.trim() });
   };
   currentRows.forEach(append);
   incomingRows.forEach(append);
-  return rows.length ? rows : [{ model: "", window: "" }];
+  return rows.length ? rows : [createModelWindowRow()];
 }
 
 export function modelWindowRowsFromProfile(modelList: string, modelWindows: string): ModelWindowRow[] {
@@ -57,8 +89,8 @@ export function modelWindowRowsFromProfile(modelList: string, modelWindows: stri
     .split("\n")
     .map((model) => model.trim())
     .filter(Boolean)
-    .map((model) => ({ model, window: map[model] ?? "" }));
-  return rows.length ? rows : [{ model: "", window: "" }];
+    .map((model) => createModelWindowRow(model, map[model] ?? ""));
+  return rows.length ? rows : [createModelWindowRow()];
 }
 
 export function serializeModelWindowRows(rows: ModelWindowRow[]): { modelList: string; modelWindows: string } {

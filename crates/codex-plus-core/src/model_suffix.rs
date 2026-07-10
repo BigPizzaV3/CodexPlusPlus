@@ -69,7 +69,7 @@ fn parse_window_token(token: &str) -> Option<u64> {
         .trim()
         .parse::<u64>()
         .ok()
-        .map(|value| value * multiplier)
+        .and_then(|value| value.checked_mul(multiplier))
         .filter(|value| *value > 0)
 }
 
@@ -92,16 +92,18 @@ pub fn collect_catalog_entries(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let (slug, _) = parse_model_suffix(raw);
+        let (slug, explicit_window) = parse_model_suffix(raw);
         if slug.is_empty() {
             continue;
         }
         if !seen.insert(slug.clone()) {
             continue;
         }
-        let suffix_window = model_windows
-            .get(&slug)
-            .and_then(|token| parse_window_token(token));
+        let suffix_window = explicit_window.or_else(|| {
+            model_windows
+                .get(&slug)
+                .and_then(|token| parse_window_token(token))
+        });
         list_entries.push(ModelCatalogEntry {
             display_name: slug.clone(),
             slug,
@@ -113,11 +115,13 @@ pub fn collect_catalog_entries(
     let current_model = current_model.trim();
     let mut entries = Vec::new();
     if !current_model.is_empty() {
-        let (slug, _) = parse_model_suffix(current_model);
+        let (slug, explicit_window) = parse_model_suffix(current_model);
         if !slug.is_empty() {
-            let suffix_window = model_windows
-                .get(&slug)
-                .and_then(|token| parse_window_token(token));
+            let suffix_window = explicit_window.or_else(|| {
+                model_windows
+                    .get(&slug)
+                    .and_then(|token| parse_window_token(token))
+            });
             entries.push(ModelCatalogEntry {
                 display_name: slug.clone(),
                 slug: slug.clone(),
