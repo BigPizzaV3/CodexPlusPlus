@@ -204,6 +204,36 @@ fn app_paths_find_macos_codex_app_prefers_first_search_root_and_known_names() {
 }
 
 #[test]
+fn app_paths_prefers_codex_app_over_chatgpt_app() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Applications");
+    let codex = root.join("Codex.app");
+    let chatgpt = root.join("ChatGPT.app");
+    std::fs::create_dir_all(&codex).unwrap();
+    std::fs::create_dir_all(&chatgpt).unwrap();
+
+    assert_eq!(
+        find_macos_codex_app(&[root]).as_deref(),
+        Some(codex.as_path())
+    );
+}
+
+#[test]
+fn app_paths_preserves_legacy_macos_candidates_before_chatgpt_app() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Applications");
+    let legacy = root.join("OpenAI Codex.app");
+    let chatgpt = root.join("ChatGPT.app");
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::create_dir_all(&chatgpt).unwrap();
+
+    assert_eq!(
+        find_macos_codex_app(&[root]).as_deref(),
+        Some(legacy.as_path())
+    );
+}
+
+#[test]
 fn app_paths_build_macos_bundle_executable() {
     let app = PathBuf::from("/Applications/OpenAI Codex.app");
 
@@ -211,6 +241,37 @@ fn app_paths_build_macos_bundle_executable() {
         build_codex_executable(&app),
         PathBuf::from("/Applications/OpenAI Codex.app/Contents/MacOS/Codex")
     );
+}
+
+#[test]
+fn app_paths_finds_chatgpt_bundle_and_uses_its_declared_executable() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Applications");
+    let app = root.join("ChatGPT.app");
+    let contents = app.join("Contents");
+    let macos = contents.join("MacOS");
+    std::fs::create_dir_all(&macos).unwrap();
+    std::fs::write(
+        contents.join("Info.plist"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.openai.codex</string>
+  <key>CFBundleExecutable</key>
+  <string>ChatGPT</string>
+</dict>
+</plist>
+"#,
+    )
+    .unwrap();
+    std::fs::write(macos.join("ChatGPT"), "").unwrap();
+
+    assert_eq!(
+        find_macos_codex_app(&[root]).as_deref(),
+        Some(app.as_path())
+    );
+    assert_eq!(build_codex_executable(&app), macos.join("ChatGPT"));
 }
 
 #[test]
