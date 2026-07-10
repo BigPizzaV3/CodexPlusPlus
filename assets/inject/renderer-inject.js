@@ -233,6 +233,11 @@
   installCodexPlusForceChineseLocale();
 
   const helperBase = window.__CODEX_SESSION_DELETE_HELPER__ || "http://127.0.0.1:57321";
+  const helperAuthToken = window.__CODEX_PLUS_HELPER_TOKEN__ || "";
+  const helperJsonHeaders = () => ({
+    "Content-Type": "application/json",
+    "X-Codex-Plus-Token": helperAuthToken,
+  });
   const buttonClass = "codex-delete-button";
   const exportButtonClass = "codex-export-button";
   const projectMoveButtonClass = "codex-project-move-button";
@@ -3743,15 +3748,9 @@
       window.__codexSessionDeleteBridge("/diagnostics/log", payload).catch(() => {});
     }
     const body = JSON.stringify(payload);
-    try {
-      if (navigator.sendBeacon) {
-        const blob = new Blob([body], { type: "application/json" });
-        if (navigator.sendBeacon(`${helperBase}/diagnostics/log`, blob)) return;
-      }
-    } catch (_) {}
     fetch(`${helperBase}/diagnostics/log`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: helperJsonHeaders(),
       body,
       keepalive: true,
     }).catch(() => {});
@@ -4387,7 +4386,7 @@
         try {
           const response = await fetch(`${helperBase}${path}`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: helperJsonHeaders(),
             body: JSON.stringify(payload || {}),
           });
           return await response.json();
@@ -4408,7 +4407,7 @@
       try {
         const response = await fetch(`${helperBase}${path}`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: helperJsonHeaders(),
           body: JSON.stringify(payload || {}),
         });
         return await response.json();

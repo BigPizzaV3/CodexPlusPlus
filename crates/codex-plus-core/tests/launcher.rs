@@ -14,7 +14,7 @@ use codex_plus_core::launcher::{
     build_codex_command_with_native_menu_inspector, build_macos_cleanup_command,
     build_macos_open_command, build_macos_open_command_with_native_menu_inspector,
     build_packaged_activation, build_packaged_activation_with_native_menu_inspector,
-    launch_and_inject_with_hooks,
+    helper_auth_token, launch_and_inject_with_hooks,
 };
 #[cfg(windows)]
 use codex_plus_core::launcher::{WindowsProcessControlStrategy, windows_process_control_strategy};
@@ -661,8 +661,17 @@ async fn default_helper_serves_backend_status_over_http() {
 
     hooks.start_helper(port).await.unwrap();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let unauthorized = client
+        .post(format!("http://127.0.0.1:{port}/backend/status"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
+
     let response = client
         .post(format!("http://127.0.0.1:{port}/backend/status"))
+        .header("X-Codex-Plus-Token", helper_auth_token())
         .json(&serde_json::json!({}))
         .send()
         .await
@@ -694,11 +703,18 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
     drop(listener);
 
     hooks.start_helper(port).await.unwrap();
-    let response = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .unwrap()
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let unauthorized = client
         .post(format!("http://127.0.0.1:{port}/diagnostics/log"))
+        .json(&serde_json::json!({ "event": "must_not_be_logged" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let response = client
+        .post(format!("http://127.0.0.1:{port}/diagnostics/log"))
+        .header("X-Codex-Plus-Token", helper_auth_token())
         .json(&serde_json::json!({
             "event": "backend_check_failed",
             "message": "fetch failed",
@@ -716,7 +732,51 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
     let contents = std::fs::read_to_string(&log_path).unwrap();
     assert!(contents.contains("renderer.backend_check_failed"));
     assert!(contents.contains("fetch failed"));
+    assert!(!contents.contains("must_not_be_logged"));
     codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+}
+
+#[tokio::test]
+async fn protocol_proxy_rejects_unauthorized_cross_origin_requests() {
+    let hooks = DefaultLaunchHooks::default();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    hooks.start_helper(port).await.unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let response = client
+        .post(format!("http://127.0.0.1:{port}/v1/responses"))
+        .header("Origin", "https://attacker.example")
+        .json(&serde_json::json!({ "model": "gpt-5.6" }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert!(
+        !response
+            .headers()
+            .contains_key("access-control-allow-origin")
+    );
+
+    let preflight = client
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("http://127.0.0.1:{port}/v1/responses"),
+        )
+        .header("Origin", "https://attacker.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preflight.status(), reqwest::StatusCode::METHOD_NOT_ALLOWED);
+    assert!(
+        !preflight
+            .headers()
+            .contains_key("access-control-allow-origin")
+    );
+
+    hooks.shutdown_helper(port).await;
 }
 
 #[tokio::test]

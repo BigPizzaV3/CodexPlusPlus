@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -14,6 +14,15 @@ use tokio::sync::Mutex;
 
 use crate::settings::{BackendSettings, SettingsStore, normalize_codex_extra_args};
 use crate::status::{LaunchStatus, StatusStore};
+
+const HELPER_AUTH_HEADER: &str = "x-codex-plus-token";
+static HELPER_AUTH_TOKEN: OnceLock<String> = OnceLock::new();
+
+pub fn helper_auth_token() -> &'static str {
+    HELPER_AUTH_TOKEN
+        .get_or_init(|| uuid::Uuid::new_v4().simple().to_string())
+        .as_str()
+}
 
 #[cfg(windows)]
 const POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS: &[u64] = &[0, 5, 15, 30, 60, 120, 180, 240, 300];
@@ -939,6 +948,10 @@ async fn handle_helper_connection(
     let request_body = http_request_body(&request);
     let request_user_agent = header_value_from_request(&request, "user-agent");
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
+    let is_responses_proxy = crate::protocol_proxy::is_responses_proxy_path(path);
+    let is_chat_proxy = crate::protocol_proxy::is_chat_completions_proxy_path(path);
+    let is_models_proxy = crate::protocol_proxy::is_models_proxy_path(path);
+    let is_protocol_proxy = is_responses_proxy || is_chat_proxy || is_models_proxy;
 
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "helper.request",
@@ -951,7 +964,36 @@ async fn handle_helper_connection(
         }),
     );
 
-    if crate::protocol_proxy::is_responses_proxy_path(path) && method == "POST" {
+    if is_protocol_proxy && method == "OPTIONS" {
+        write_http_response(
+            &mut stream,
+            "405 Method Not Allowed",
+            "application/json; charset=utf-8",
+            br#"{"status":"failed","message":"CORS preflight is not supported"}"#,
+        )
+        .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    if is_protocol_proxy && !protocol_proxy_request_authorized(&request) {
+        write_http_response(
+            &mut stream,
+            "401 Unauthorized",
+            "application/json; charset=utf-8",
+            br#"{"status":"failed","message":"Unauthorized"}"#,
+        )
+        .await?;
+        log_helper_response(
+            "helper.protocol_proxy_unauthorized",
+            method,
+            path,
+            "401 Unauthorized",
+            remote_addr_text,
+        );
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    if is_responses_proxy && method == "POST" {
         return handle_protocol_proxy_connection(
             &mut stream,
             request_body,
@@ -962,7 +1004,7 @@ async fn handle_helper_connection(
         )
         .await;
     }
-    if crate::protocol_proxy::is_chat_completions_proxy_path(path) && method == "POST" {
+    if is_chat_proxy && method == "POST" {
         return handle_chat_completions_proxy_connection(
             &mut stream,
             request_body,
@@ -973,7 +1015,7 @@ async fn handle_helper_connection(
         )
         .await;
     }
-    if crate::protocol_proxy::is_models_proxy_path(path) && matches!(method, "GET" | "OPTIONS") {
+    if is_models_proxy && method == "GET" {
         return handle_models_proxy_connection(
             &mut stream,
             request_user_agent.as_deref(),
@@ -982,6 +1024,36 @@ async fn handle_helper_connection(
             remote_addr_text,
         )
         .await;
+    }
+    if is_protocol_proxy {
+        write_http_response(
+            &mut stream,
+            "405 Method Not Allowed",
+            "application/json; charset=utf-8",
+            br#"{"status":"failed","message":"Method not allowed"}"#,
+        )
+        .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+
+    let is_renderer_helper_path = matches!(
+        path,
+        "/backend/status" | "/diagnostics/log" | "/overlay/image"
+    );
+    if is_renderer_helper_path
+        && method != "OPTIONS"
+        && !renderer_helper_request_authorized(&request)
+    {
+        write_cors_http_response(
+            &mut stream,
+            "401 Unauthorized",
+            "application/json; charset=utf-8",
+            br#"{"status":"failed","message":"Unauthorized"}"#,
+        )
+        .await?;
+        stream.shutdown().await?;
+        return Ok(());
     }
 
     let (status, body, content_type, log_event) = if path == "/backend/status"
@@ -1057,11 +1129,11 @@ async fn handle_helper_connection(
     );
     let response = if method == "OPTIONS" {
         format!(
-            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, {HELPER_AUTH_HEADER}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         )
     } else {
         format!(
-            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, {HELPER_AUTH_HEADER}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         )
     };
@@ -1131,17 +1203,6 @@ async fn handle_models_proxy_connection(
     path: &str,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
-    if method == "OPTIONS" {
-        write_http_response(
-            stream,
-            "204 No Content",
-            "application/json; charset=utf-8",
-            &[],
-        )
-        .await?;
-        stream.shutdown().await?;
-        return Ok(());
-    }
     let upstream = match crate::protocol_proxy::open_models_proxy_request(request_user_agent).await
     {
         Ok(upstream) => upstream,
@@ -1438,7 +1499,22 @@ async fn write_http_response(
     body: &[u8],
 ) -> anyhow::Result<()> {
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await?;
+    stream.write_all(body).await?;
+    Ok(())
+}
+
+async fn write_cors_http_response(
+    stream: &mut tokio::net::TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &[u8],
+) -> anyhow::Result<()> {
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, {HELPER_AUTH_HEADER}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(response.as_bytes()).await?;
@@ -1452,7 +1528,7 @@ async fn write_http_stream_headers(
     content_type: &str,
 ) -> anyhow::Result<()> {
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n"
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
     );
     stream.write_all(response.as_bytes()).await?;
     Ok(())
@@ -1478,7 +1554,10 @@ fn log_helper_response(
 
 #[cfg(test)]
 mod computer_use_tests {
-    use super::{header_value_from_request, overlay_image_content_type};
+    use super::{
+        bearer_token, header_value_from_request, helper_auth_token, overlay_image_content_type,
+        protocol_proxy_request_authorized_for_key, renderer_helper_request_authorized,
+    };
     use std::path::Path;
 
     #[test]
@@ -1506,6 +1585,41 @@ mod computer_use_tests {
             header_value_from_request(request, "user-agent").as_deref(),
             Some("Codex/26.614")
         );
+    }
+
+    #[test]
+    fn helper_authorization_requires_exact_runtime_token() {
+        let token = helper_auth_token();
+        let authorized =
+            format!("POST /backend/status HTTP/1.1\r\nX-Codex-Plus-Token: {token}\r\n\r\n");
+        let unauthorized = "POST /backend/status HTTP/1.1\r\nX-Codex-Plus-Token: wrong\r\n\r\n";
+
+        assert!(renderer_helper_request_authorized(&authorized));
+        assert!(!renderer_helper_request_authorized(unauthorized));
+    }
+
+    #[test]
+    fn bearer_token_requires_bearer_scheme_and_value() {
+        assert_eq!(bearer_token("Bearer sk-test"), Some("sk-test"));
+        assert_eq!(bearer_token("bearer   sk-test  "), Some("sk-test"));
+        assert_eq!(bearer_token("Basic sk-test"), None);
+        assert_eq!(bearer_token("Bearer"), None);
+    }
+
+    #[test]
+    fn protocol_proxy_authorization_requires_active_relay_key() {
+        let authorized = "POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer sk-active\r\n\r\n";
+        let unauthorized = "POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer sk-other\r\n\r\n";
+
+        assert!(protocol_proxy_request_authorized_for_key(
+            authorized,
+            "sk-active"
+        ));
+        assert!(!protocol_proxy_request_authorized_for_key(
+            unauthorized,
+            "sk-active"
+        ));
+        assert!(!protocol_proxy_request_authorized_for_key(authorized, ""));
     }
 }
 
@@ -1577,6 +1691,33 @@ fn header_value_from_request(request: &str, header_name: &str) -> Option<String>
                 .then(|| value.trim().to_string())
         })
         .filter(|value| !value.is_empty())
+}
+
+fn renderer_helper_request_authorized(request: &str) -> bool {
+    header_value_from_request(request, HELPER_AUTH_HEADER)
+        .is_some_and(|token| token == helper_auth_token())
+}
+
+fn protocol_proxy_request_authorized(request: &str) -> bool {
+    let Ok(settings) = SettingsStore::default().load() else {
+        return false;
+    };
+    let relay = settings.active_relay_profile();
+    let expected = crate::relay_config::relay_profile_api_key(&relay);
+    protocol_proxy_request_authorized_for_key(request, &expected)
+}
+
+fn protocol_proxy_request_authorized_for_key(request: &str, expected: &str) -> bool {
+    !expected.is_empty()
+        && header_value_from_request(request, "authorization")
+            .and_then(|header| bearer_token(&header).map(ToString::to_string))
+            .is_some_and(|provided| provided == expected)
+}
+
+fn bearer_token(header: &str) -> Option<&str> {
+    let (scheme, token) = header.trim().split_once(' ')?;
+    let token = token.trim();
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
 }
 
 fn sanitize_diagnostic_event(event: &str) -> String {

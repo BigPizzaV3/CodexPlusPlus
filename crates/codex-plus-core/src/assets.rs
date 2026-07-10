@@ -31,6 +31,18 @@ pub fn injection_script(helper_port: u16) -> String {
 }
 
 pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettings) -> String {
+    injection_script_with_settings_and_token(
+        helper_port,
+        settings,
+        crate::launcher::helper_auth_token(),
+    )
+}
+
+fn injection_script_with_settings_and_token(
+    helper_port: u16,
+    settings: &BackendSettings,
+    helper_auth_token: &str,
+) -> String {
     let helper_url = format!("http://127.0.0.1:{helper_port}");
     let sponsor_images = sponsor_image_data_uris();
     let image_overlay = image_overlay_config(helper_port, settings);
@@ -39,8 +51,9 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let force_chinese_locale = force_chinese_locale_config(settings);
     let fast_startup = fast_startup_config(settings);
     format!(
-        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_FAST_STARTUP__ = {};\n{}\n{}",
+        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_HELPER_TOKEN__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_FAST_STARTUP__ = {};\n{}\n{}",
         serde_json::to_string(&helper_url).expect("helper URL should serialize"),
+        serde_json::to_string(helper_auth_token).expect("helper auth token should serialize"),
         serde_json::to_string(&sponsor_images).expect("sponsor images should serialize"),
         serde_json::to_string(crate::version::VERSION).expect("version should serialize"),
         serde_json::to_string(DIAGNOSTIC_BUILD_ID).expect("build id should serialize"),
@@ -302,6 +315,17 @@ fn image_content_type(path: &Path) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn injection_script_embeds_helper_auth_token() {
+        let script = injection_script_with_settings_and_token(
+            57321,
+            &BackendSettings::default(),
+            "test-helper-token",
+        );
+
+        assert!(script.contains(r#"window.__CODEX_PLUS_HELPER_TOKEN__ = "test-helper-token";"#));
+    }
 
     #[test]
     fn image_overlay_config_includes_fit_mode() {
