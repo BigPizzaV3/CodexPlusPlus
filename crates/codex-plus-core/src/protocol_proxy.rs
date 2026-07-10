@@ -3845,12 +3845,17 @@ fn apply_chat_reasoning_options(result: &mut Value, body: &Value, model: &str) {
         ChatReasoningStyle::OpenRouter => {
             result["reasoning"] = json!({ "effort": mapped });
         }
-        ChatReasoningStyle::DeepSeek
-        | ChatReasoningStyle::LowHigh
-        | ChatReasoningStyle::Default
+        ChatReasoningStyle::DeepSeek | ChatReasoningStyle::LowHigh
             if supports_reasoning_effort(model) =>
         {
             result["reasoning_effort"] = json!(mapped);
+        }
+        ChatReasoningStyle::Default if supports_reasoning_effort(model) => {
+            if uses_nested_reasoning_effort(model) {
+                result["reasoning"] = json!({ "effort": mapped });
+            } else {
+                result["reasoning_effort"] = json!(mapped);
+            }
         }
         _ => {}
     }
@@ -3936,13 +3941,40 @@ fn map_chat_reasoning_effort(effort: &str, style: ChatReasoningStyle) -> Option<
 
 fn supports_reasoning_effort(model: &str) -> bool {
     is_openai_o_series(model)
-        || model
-            .to_lowercase()
-            .strip_prefix("gpt-")
-            .and_then(|rest| rest.chars().next())
-            .is_some_and(|ch| ch.is_ascii_digit() && ch >= '5')
+        || openai_gpt_version(model).is_some_and(|(major, _)| major >= 5)
         || infer_chat_reasoning_style(model) == ChatReasoningStyle::DeepSeek
         || infer_chat_reasoning_style(model) == ChatReasoningStyle::LowHigh
+}
+
+fn uses_nested_reasoning_effort(model: &str) -> bool {
+    openai_gpt_version(model).is_some_and(|(major, minor)| major > 5 || (major == 5 && minor >= 6))
+}
+
+fn openai_gpt_version(model: &str) -> Option<(u32, u32)> {
+    let model = model.trim().to_ascii_lowercase();
+    model.match_indices("gpt-").find_map(|(index, _)| {
+        if model[..index]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric())
+        {
+            return None;
+        }
+        let version = &model[index + "gpt-".len()..];
+        let major_len = version.bytes().take_while(u8::is_ascii_digit).count();
+        if major_len == 0 {
+            return None;
+        }
+        let major = version[..major_len].parse().ok()?;
+        let remainder = &version[major_len..];
+        let minor = remainder
+            .strip_prefix('.')
+            .map(|minor| minor.bytes().take_while(u8::is_ascii_digit).count())
+            .filter(|length| *length > 0)
+            .and_then(|length| remainder[1..1 + length].parse().ok())
+            .unwrap_or(0);
+        Some((major, minor))
+    })
 }
 
 fn is_openai_o_series(model: &str) -> bool {

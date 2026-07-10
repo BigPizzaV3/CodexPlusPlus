@@ -107,6 +107,51 @@ fn responses_request_matches_ccs_reasoning_and_tool_choice_edges() {
 }
 
 #[test]
+fn responses_request_uses_nested_reasoning_for_gpt_5_6_and_newer() {
+    for (model, effort) in [
+        ("gpt-5.6", "high"),
+        ("openai/gpt-5.6-codex", "xhigh"),
+        ("vendor/gpt-5.7-codex[1M]", "medium"),
+        ("azure/openai/gpt-6", "low"),
+        ("gpt-10.2-codex", "minimal"),
+    ] {
+        let converted = responses_to_chat_completions(json!({
+            "model": model,
+            "reasoning": { "effort": effort },
+            "input": "hi"
+        }))
+        .unwrap();
+
+        assert_eq!(converted["reasoning"]["effort"], effort, "{model}");
+        assert!(converted.get("reasoning_effort").is_none(), "{model}");
+    }
+}
+
+#[test]
+fn responses_request_keeps_legacy_reasoning_effort_through_gpt_5_5() {
+    for model in ["gpt-5", "gpt-5.4-codex", "openai/gpt-5.5"] {
+        let converted = responses_to_chat_completions(json!({
+            "model": model,
+            "reasoning": { "effort": "high" },
+            "input": "hi"
+        }))
+        .unwrap();
+
+        assert_eq!(converted["reasoning_effort"], "high", "{model}");
+        assert!(converted.get("reasoning").is_none(), "{model}");
+    }
+
+    let unrelated = responses_to_chat_completions(json!({
+        "model": "notgpt-5.6",
+        "reasoning": { "effort": "high" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert!(unrelated.get("reasoning").is_none());
+    assert!(unrelated.get("reasoning_effort").is_none());
+}
+
+#[test]
 fn proxy_route_matchers_accept_ccswitch_codex_aliases() {
     for path in [
         "/responses",
