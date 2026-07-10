@@ -104,13 +104,20 @@ fn is_windowsapps_codex_app_process(executable: &str) -> bool {
     let Some((package_name, after_package)) = after_windows_apps.split_once('\\') else {
         return false;
     };
-    crate::app_paths::is_supported_windows_app_package_name(package_name)
+    is_supported_windowsapps_desktop_package_name(package_name)
         && after_package.starts_with("app\\")
         && !after_package.starts_with("app\\resources\\")
         && after_package
             .rsplit('\\')
             .next()
             .is_some_and(crate::app_paths::is_supported_app_executable_name)
+}
+
+fn is_supported_windowsapps_desktop_package_name(package_name: &str) -> bool {
+    crate::app_paths::is_supported_windows_app_package_name(package_name)
+        || package_name
+            .split_once('_')
+            .is_some_and(|(identity, _)| identity.eq_ignore_ascii_case("OpenAI.ChatGPT-Desktop"))
 }
 
 pub fn filter_killable_launcher_processes<'a>(
