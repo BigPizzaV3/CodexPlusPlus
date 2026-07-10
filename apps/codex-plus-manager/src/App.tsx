@@ -2307,13 +2307,15 @@ function OverviewScreen({
                 <span className="eyebrow">{t("官方中转站")}</span>
                 <h2>JOJO Code</h2>
                 <p>
-                  {t("Codex++ 官方中转站，主打稳定接入和划算价格，支持 GPT-5.6 全系列、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。")}
+                  {t("Codex++ 官方中转站，主打稳定接入和划算价格，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。")}
                 </p>
               </div>
             </div>
             <div className="jojocode-overview-side">
               <div className="jojocode-model-tags">
                 <span>GPT-5.6 全系列</span>
+                <span>Fable 5</span>
+                <span>Sonnet 5</span>
                 <span>GPT-5.5</span>
                 <span>GPT-5.4</span>
                 <span>Opus 4.8</span>
