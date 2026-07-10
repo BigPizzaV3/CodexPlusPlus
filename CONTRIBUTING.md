@@ -83,4 +83,4 @@ CodexPlusPlus/
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the project license.
+By contributing, you agree that your contributions will be licensed under the project's [GNU Affero General Public License v3.0](LICENSE), using the SPDX identifier `AGPL-3.0-only`.

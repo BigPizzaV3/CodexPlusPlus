@@ -10,7 +10,7 @@ members = [
 [workspace.package]
 version = "1.2.34"
 edition = "2024"
-license = "MIT"
+license = "AGPL-3.0-only"
 repository = "https://github.com/BigPizzaV3/CodexPlusPlus"
 
 [workspace.dependencies]
