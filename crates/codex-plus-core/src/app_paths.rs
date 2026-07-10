@@ -223,7 +223,12 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
 
 pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
     if app_dir.extension() == Some(OsStr::new("app")) {
-        return app_dir.join("Contents").join("MacOS").join("Codex");
+        // Codex 26.707+ ships the same bundle (id `com.openai.codex`) named
+        // `ChatGPT.app`, whose CFBundleExecutable is `ChatGPT` rather than `Codex`.
+        // Read the executable name from Info.plist so a rename cannot break launch;
+        // fall back to the historical `Codex` name when the plist is unavailable.
+        let exe = macos_bundle_executable(app_dir).unwrap_or_else(|| "Codex".to_string());
+        return app_dir.join("Contents").join("MacOS").join(exe);
     }
     let upper = app_dir.join("Codex.exe");
     if upper.exists() {
@@ -288,6 +293,11 @@ fn macos_app_version(app_dir: &Path) -> Option<String> {
         .or_else(|| plist_string_value(&plist, "CFBundleVersion"))
 }
 
+fn macos_bundle_executable(app_dir: &Path) -> Option<String> {
+    let plist = std::fs::read_to_string(app_dir.join("Contents").join("Info.plist")).ok()?;
+    plist_string_value(&plist, "CFBundleExecutable")
+}
+
 fn plist_string_value(plist: &str, key: &str) -> Option<String> {
     let (_, after_key) = plist.split_once(&format!("<key>{key}</key>"))?;
     let (_, after_string_open) = after_key.split_once("<string>")?;
@@ -310,7 +320,9 @@ fn macos_app_candidates(root: &Path) -> Vec<PathBuf> {
     if root.extension() == Some(OsStr::new("app")) {
         return vec![root.to_path_buf()];
     }
-    ["Codex.app", "OpenAI Codex.app", "OpenAI.Codex.app"]
+    // Codex 26.707+ renamed the desktop bundle to `ChatGPT.app` (bundle id is still
+    // `com.openai.codex`). Keep the historical names first so existing installs win.
+    ["Codex.app", "OpenAI Codex.app", "OpenAI.Codex.app", "ChatGPT.app"]
         .into_iter()
         .map(|name| root.join(name))
         .collect()

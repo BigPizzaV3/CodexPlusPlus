@@ -164,6 +164,59 @@ fn app_paths_build_macos_bundle_executable() {
     );
 }
 
+// Codex 26.707+ ships the same bundle (id `com.openai.codex`) named `ChatGPT.app`,
+// whose CFBundleExecutable is `ChatGPT` instead of `Codex`.
+#[test]
+fn app_paths_finds_renamed_chatgpt_bundle() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("ChatGPT.app");
+    std::fs::create_dir_all(&app).unwrap();
+
+    assert_eq!(
+        find_macos_codex_app(&[temp.path().to_path_buf()]).as_deref(),
+        Some(app.as_path())
+    );
+}
+
+#[test]
+fn app_paths_build_macos_executable_from_bundle_plist() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("ChatGPT.app");
+    let contents = app.join("Contents");
+    std::fs::create_dir_all(&contents).unwrap();
+    std::fs::write(
+        contents.join("Info.plist"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.openai.codex</string>
+  <key>CFBundleExecutable</key>
+  <string>ChatGPT</string>
+</dict>
+</plist>
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        build_codex_executable(&app),
+        contents.join("MacOS").join("ChatGPT")
+    );
+}
+
+#[test]
+fn app_paths_build_macos_executable_falls_back_to_codex_without_plist() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("Codex.app");
+    std::fs::create_dir_all(app.join("Contents")).unwrap();
+
+    assert_eq!(
+        build_codex_executable(&app),
+        app.join("Contents").join("MacOS").join("Codex")
+    );
+}
+
 #[test]
 fn app_paths_normalizes_executable_and_package_paths() {
     let temp = tempfile::tempdir().unwrap();
@@ -1498,3 +1551,4 @@ impl LaunchHooks for FakeHooks {
         }
     }
 }
+
