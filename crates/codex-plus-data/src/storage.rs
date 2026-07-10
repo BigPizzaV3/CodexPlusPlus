@@ -218,43 +218,44 @@ impl SQLiteStorageAdapter {
                 validate_restore_tables(tables)?;
                 detect_restore_conflicts(&db, tables)?;
                 detect_file_restore_conflicts(tables)?;
-                let tx = db.transaction()?;
-                for (table, rows) in tables {
-                    if table.starts_with("__") {
-                        continue;
-                    }
-                    let Some(rows) = rows.as_array() else {
-                        continue;
-                    };
-                    for row in rows {
-                        if let Some(row) = row.as_object() {
-                            if table == "agent_job_items"
-                                && update_existing_agent_job_item(&tx, row)?
-                            {
-                                continue;
+                let file_backups = tables
+                    .get("__files")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let restored_files = restore_file_backups(&file_backups, false)?;
+                let restore_rows = (|| -> anyhow::Result<()> {
+                    let tx = db.transaction()?;
+                    for (table, rows) in tables {
+                        if table.starts_with("__") {
+                            continue;
+                        }
+                        let Some(rows) = rows.as_array() else {
+                            continue;
+                        };
+                        for row in rows {
+                            if let Some(row) = row.as_object() {
+                                if table == "agent_job_items"
+                                    && update_existing_agent_job_item(&tx, row)?
+                                {
+                                    continue;
+                                }
+                                insert_row(&tx, table, row)?;
                             }
-                            insert_row(&tx, table, row)?;
                         }
                     }
-                }
-                tx.commit()?;
-                if let Some(files) = tables.get("__files").and_then(Value::as_array) {
-                    for file in files {
-                        let Some(path) = file.get("path").and_then(Value::as_str) else {
-                            continue;
-                        };
-                        let Some(content) = file.get("content_b64").and_then(Value::as_str) else {
-                            continue;
-                        };
-                        let bytes = base64::Engine::decode(
-                            &base64::engine::general_purpose::STANDARD,
-                            content,
-                        )?;
-                        if let Some(parent) = Path::new(path).parent() {
-                            fs::create_dir_all(parent)?;
-                        }
-                        fs::write(path, bytes)?;
+                    tx.commit()?;
+                    Ok(())
+                })();
+                if let Err(error) = restore_rows {
+                    let cleanup_errors = remove_paths(&restored_files);
+                    if cleanup_errors.is_empty() {
+                        return Err(error);
                     }
+                    anyhow::bail!(
+                        "{error}; restored file cleanup failed: {}",
+                        cleanup_errors.join("; ")
+                    );
                 }
             }
             Ok(DeleteResult {
@@ -560,6 +561,18 @@ impl SQLiteStorageAdapter {
         db: &mut Connection,
         session: &SessionRef,
     ) -> anyhow::Result<DeleteResult> {
+        self.delete_codex_thread_with_file_remover(db, session, |path| fs::remove_file(path))
+    }
+
+    fn delete_codex_thread_with_file_remover<F>(
+        &self,
+        db: &mut Connection,
+        session: &SessionRef,
+        mut remove_file: F,
+    ) -> anyhow::Result<DeleteResult>
+    where
+        F: FnMut(&Path) -> std::io::Result<()>,
+    {
         let thread_id = normalize_codex_thread_id(&session.session_id);
         let thread_rows = select_dicts(db, "SELECT * FROM threads WHERE id = ?1", &[&thread_id])?;
         if thread_rows.is_empty() {
@@ -605,7 +618,7 @@ impl SQLiteStorageAdapter {
             "assigned_thread_id = ?1",
             &[&thread_id],
         )?;
-        let file_backups = rollout_file_backups(tables.get("threads").and_then(Value::as_array));
+        let file_backups = rollout_file_backups(tables.get("threads").and_then(Value::as_array))?;
         if !file_backups.is_empty() {
             tables.insert("__files".to_string(), Value::Array(file_backups.clone()));
         }
@@ -633,38 +646,39 @@ impl SQLiteStorageAdapter {
                 )?;
             }
             tx.execute("DELETE FROM threads WHERE id = ?1", [&thread_id])?;
-            tx.commit()?;
-            Ok(())
-        })();
-        if let Err(err) = delete_result {
-            return Ok(failed_with_undo(
-                &thread_id,
-                err.to_string(),
-                &token,
-                Some(&backup_path),
-            ));
-        }
-        let mut file_errors = Vec::new();
-        for file in file_backups {
-            if let Some(path) = file.get("path").and_then(Value::as_str) {
-                if let Err(err) = fs::remove_file(path) {
+            for file in &file_backups {
+                let Some(path) = file.get("path").and_then(Value::as_str) else {
+                    continue;
+                };
+                if let Err(err) = remove_file(Path::new(path)) {
                     if err.kind() != std::io::ErrorKind::NotFound {
-                        file_errors.push(format!("{path}: {err}"));
+                        anyhow::bail!("{path}: {err}");
                     }
                 }
             }
-        }
-        if !file_errors.is_empty() {
-            return Ok(DeleteResult {
-                status: DeleteStatus::Failed,
-                session_id: thread_id,
-                message: format!(
-                    "本地数据库已删除，但文件删除失败：{}",
-                    file_errors.join("; ")
-                ),
-                undo_token: Some(token.clone()),
-                backup_path: Some(backup_path.to_string_lossy().to_string()),
-            });
+            if let Err(error) = tx.commit() {
+                let compensation = restore_file_backups(&file_backups, true);
+                if let Err(compensation_error) = compensation {
+                    anyhow::bail!("{error}; rollout restore failed: {compensation_error}");
+                }
+                return Err(error.into());
+            }
+            Ok(())
+        })();
+        if let Err(error) = delete_result {
+            let compensation = restore_file_backups(&file_backups, true);
+            let message = match compensation {
+                Ok(_) => error.to_string(),
+                Err(compensation_error) => {
+                    format!("{error}; rollout restore failed: {compensation_error}")
+                }
+            };
+            return Ok(failed_with_undo(
+                &thread_id,
+                message,
+                &token,
+                Some(&backup_path),
+            ));
         }
         Ok(local_deleted(&thread_id, &token, &backup_path))
     }
@@ -1157,19 +1171,100 @@ fn delete_related_rows(
     Ok(())
 }
 
-fn rollout_file_backups(thread_rows: Option<&Vec<Value>>) -> Vec<Value> {
-    thread_rows
+fn rollout_file_backups(thread_rows: Option<&Vec<Value>>) -> anyhow::Result<Vec<Value>> {
+    let mut backups = Vec::new();
+    for path in thread_rows
         .into_iter()
         .flatten()
         .filter_map(|row| row.get("rollout_path").and_then(Value::as_str))
-        .filter_map(|path| {
-            let bytes = fs::read(path).ok()?;
-            Some(json!({
-                "path": path,
-                "content_b64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
-            }))
+        .filter(|path| !path.trim().is_empty())
+    {
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        backups.push(json!({
+            "path": path,
+            "content_b64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
+        }));
+    }
+    Ok(backups)
+}
+
+fn restore_file_backups(
+    file_backups: &[Value],
+    only_missing: bool,
+) -> anyhow::Result<Vec<PathBuf>> {
+    restore_file_backups_with_writer(file_backups, only_missing, |path, bytes| {
+        fs::write(path, bytes)
+    })
+}
+
+fn restore_file_backups_with_writer<F>(
+    file_backups: &[Value],
+    only_missing: bool,
+    mut write_file: F,
+) -> anyhow::Result<Vec<PathBuf>>
+where
+    F: FnMut(&Path, &[u8]) -> std::io::Result<()>,
+{
+    let decoded = file_backups
+        .iter()
+        .map(|file| {
+            let path = file
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|path| !path.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("backup file path is missing"))?;
+            let content = file
+                .get("content_b64")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("backup file content is missing: {path}"))?;
+            let bytes =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, content)?;
+            Ok((PathBuf::from(path), bytes))
         })
-        .collect()
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut restored = Vec::new();
+    for (path, bytes) in decoded {
+        if only_missing && path.exists() {
+            if fs::read(&path)? != bytes {
+                anyhow::bail!(
+                    "rollout restore conflict: file contents changed: {}",
+                    path.to_string_lossy()
+                );
+            }
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        restored.push(path.clone());
+        if let Err(error) = write_file(&path, &bytes) {
+            let cleanup_errors = remove_paths(&restored);
+            if cleanup_errors.is_empty() {
+                return Err(error.into());
+            }
+            anyhow::bail!(
+                "{error}; partial file cleanup failed: {}",
+                cleanup_errors.join("; ")
+            );
+        }
+    }
+    Ok(restored)
+}
+
+fn remove_paths(paths: &[PathBuf]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for path in paths {
+        if let Err(error) = fs::remove_file(path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                errors.push(format!("{}: {error}", path.to_string_lossy()));
+            }
+        }
+    }
+    errors
 }
 
 fn update_rollout_session_meta_cwd(
@@ -1287,5 +1382,80 @@ fn json_to_sql_value(value: &Value) -> SqlValue {
         }
         Value::String(value) => SqlValue::Text(value.clone()),
         other => SqlValue::Text(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_thread_delete_rolls_back_database_when_rollout_remove_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.sqlite");
+        let rollout_path = temp.path().join("rollout.jsonl");
+        fs::write(&rollout_path, "{\"type\":\"message\"}\n").unwrap();
+        let mut db = Connection::open(&db_path).unwrap();
+        db.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, rollout_path TEXT)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO threads (id, title, rollout_path) VALUES ('t1', 'Thread', ?1)",
+            [rollout_path.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        let adapter =
+            SQLiteStorageAdapter::new(&db_path, BackupStore::new(temp.path().join("backups")));
+        let session = SessionRef::new("t1", "Thread").unwrap();
+
+        let result = adapter
+            .delete_codex_thread_with_file_remover(&mut db, &session, |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "rollout is locked",
+                ))
+            })
+            .unwrap();
+
+        assert_eq!(result.status, DeleteStatus::Failed);
+        assert!(rollout_path.exists());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM threads WHERE id = 't1'", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn rollout_restore_cleans_partial_files_when_a_write_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first.jsonl");
+        let second = temp.path().join("second.jsonl");
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"rollout");
+        let files = vec![
+            json!({"path": first, "content_b64": encoded}),
+            json!({"path": second, "content_b64": encoded}),
+        ];
+        let mut writes = 0;
+
+        let result = restore_file_backups_with_writer(&files, false, |path, bytes| {
+            writes += 1;
+            if writes == 2 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "write blocked",
+                ));
+            }
+            fs::write(path, bytes)
+        });
+
+        assert!(result.is_err());
+        assert!(!first.exists());
+        assert!(!second.exists());
     }
 }

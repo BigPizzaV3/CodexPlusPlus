@@ -426,6 +426,39 @@ fn delete_codex_thread_schema_removes_related_rows_file_and_undo_restores_everyt
 }
 
 #[test]
+fn undo_removes_restored_rollout_when_database_restore_fails() {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("state_5.sqlite");
+    let rollout_path = tmp.path().join("rollout.jsonl");
+    fs::write(&rollout_path, "{\"type\":\"message\"}\n").unwrap();
+    create_codex_thread_db(&db_path, &rollout_path);
+    let adapter = SQLiteStorageAdapter::new(&db_path, BackupStore::new(tmp.path().join("backups")));
+    let deleted = adapter.delete_local(&session("t1", "Codex Thread"));
+    assert_eq!(deleted.status, DeleteStatus::LocalDeleted);
+    assert!(!rollout_path.exists());
+    let db = Connection::open(&db_path).unwrap();
+    db.execute(
+        "CREATE TRIGGER fail_thread_restore BEFORE INSERT ON threads BEGIN SELECT RAISE(ABORT, 'boom'); END",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let restored = adapter.undo(deleted.undo_token.as_deref().unwrap());
+
+    assert_eq!(restored.status, DeleteStatus::Failed);
+    assert!(!rollout_path.exists());
+    let db = Connection::open(&db_path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM threads WHERE id = 't1'", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn delete_local_from_paths_removes_duplicate_threads_from_all_databases() {
     let tmp = tempdir().unwrap();
     let first_db = tmp.path().join("first.sqlite");
