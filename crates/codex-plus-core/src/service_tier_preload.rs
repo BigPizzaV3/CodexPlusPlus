@@ -43,9 +43,10 @@ const path = require("path");
 const Module = require("module");
 
 const PATCH_MARK = Symbol.for("codex-plus.service-tier-protocol-handle-patched");
-const PATCH_VERSION = "protocol-handle-4";
+const PATCH_VERSION = "protocol-handle-6";
 const SERVICE_TIER_SETTINGS_ASSET_RE = /^use-service-tier-settings-.*\.js$/;
 const READ_SERVICE_TIER_ASSET_RE = /^read-service-tier-for-request-.*\.js$/;
+const MODEL_LIST_FILTER_ASSET_RE = /^model-list-filter-.*\.js$/;
 const HOME_DIR = process.env.HOME || process.env.USERPROFILE || process.cwd();
 const LOG_PATH = path.join(HOME_DIR, ".codex-session-delete", "codex-plus.log");
 const SETTINGS_PATH = path.join(HOME_DIR, ".codex-session-delete", "settings.json");
@@ -79,6 +80,10 @@ function patchServiceTierSettingsAsset(source) {
         "s=a?.authMethod===`chatgpt`",
         "s=a?.authMethod===`chatgpt`||a?.authMethod===`apikey`",
       ],
+      [
+        "o=a?.authMethod===`chatgpt`",
+        "o=a?.authMethod===`chatgpt`||a?.authMethod===`apikey`",
+      ],
     ],
     "service tier settings auth gate"
   );
@@ -87,6 +92,7 @@ function patchServiceTierSettingsAsset(source) {
     [
       ["s&&!f&&u!=null", "s&&!f"],
       ["c&&!p&&d!=null", "c&&!p"],
+      ["p=o&&!f&&u!=null", "p=o&&!f"],
     ],
     "service tier settings API key config requirement"
   );
@@ -98,6 +104,10 @@ function patchReadServiceTierAsset(source) {
   patched = replaceFirstOf(
     patched,
     [
+      [
+        "if(n!==`chatgpt`)return!1;let r=await v(t,{priority:`critical`});",
+        "if(n===`apikey`)return!0;if(n!==`chatgpt`)return!1;let r=await v(t,{priority:`critical`});",
+      ],
       [
         "return n===`chatgpt`?(await e.query.fetch(c,{authMethod:n,hostId:t})).requirements?.featureRequirements?.fast_mode!==!1:!1",
         "return n===`chatgpt`?(await e.query.fetch(c,{authMethod:n,hostId:t})).requirements?.featureRequirements?.fast_mode!==!1:n===`apikey`",
@@ -124,8 +134,37 @@ function patchReadServiceTierAsset(source) {
         "return s.service_tier==null?d(await T(t,i??s.model),s.service_tier,n):d(null,s.service_tier,n)",
         "return s.service_tier==null?d(await T(t,i??s.model),s.service_tier,n):d(await T(t,i??s.model),s.service_tier,n)",
       ],
+      [
+        "return s.service_tier==null?p(await E(t,i??s.model),s.service_tier,n):p(null,s.service_tier,n)",
+        "return s.service_tier==null?p(await E(t,i??s.model),s.service_tier,n):p(await E(t,i??s.model),s.service_tier,n)",
+      ],
     ],
     "read service tier explicit config model lookup"
+  );
+  return patched;
+}
+
+function patchModelListFilterAsset(source) {
+  let patched = source;
+  patched = replaceFirstOf(
+    patched,
+    [
+      [
+        "f=a&&o.some(e=>e.supportedReasoningEfforts.some(({reasoningEffort:e})=>e===`ultra`))",
+        "f=o.some(e=>e.supportedReasoningEfforts.some(({reasoningEffort:e})=>e===`ultra`))",
+      ],
+    ],
+    "model list ultra capability gate"
+  );
+  patched = replaceFirstOf(
+    patched,
+    [
+      [
+        "let n=a?r.supportedReasoningEfforts:r.supportedReasoningEfforts.filter(({reasoningEffort:e})=>e!==`ultra`),o=",
+        "let n=r.supportedReasoningEfforts,o=",
+      ],
+    ],
+    "model list ultra effort filter"
   );
   return patched;
 }
@@ -191,12 +230,14 @@ function serviceTierAssetKindFromUrl(url) {
   const name = appProtocolAssetName(url);
   if (SERVICE_TIER_SETTINGS_ASSET_RE.test(name)) return "native-service-tier-settings";
   if (READ_SERVICE_TIER_ASSET_RE.test(name)) return "native-read-service-tier";
+  if (MODEL_LIST_FILTER_ASSET_RE.test(name)) return "native-model-list-filter";
   return "";
 }
 
 function patchServiceTierAsset(kind, source) {
   if (kind === "native-service-tier-settings") return patchServiceTierSettingsAsset(source);
   if (kind === "native-read-service-tier") return patchReadServiceTierAsset(source);
+  if (kind === "native-model-list-filter") return patchModelListFilterAsset(source);
   return source;
 }
 
@@ -309,9 +350,14 @@ mod tests {
         assert!(script.contains("process.env.USERPROFILE"));
         assert!(script.contains("use-service-tier-settings-"));
         assert!(script.contains("read-service-tier-for-request-"));
+        assert!(script.contains("model-list-filter-"));
         assert!(script.contains("s=o?.authMethod===`chatgpt`||o?.authMethod===`apikey`"));
         assert!(script.contains("s=a?.authMethod===`chatgpt`||a?.authMethod===`apikey`"));
+        assert!(script.contains("o=a?.authMethod===`chatgpt`||a?.authMethod===`apikey`"));
         assert!(script.contains("n===`apikey`"));
         assert!(script.contains("return s.service_tier==null?d(await T(t,i??s.model),s.service_tier,n):d(await T(t,i??s.model),s.service_tier,n)"));
+        assert!(script.contains("let n=r.supportedReasoningEfforts,o="));
+        assert!(script.contains("native-model-list-filter"));
+        assert!(script.contains("if(n===`apikey`)return!0"));
     }
 }

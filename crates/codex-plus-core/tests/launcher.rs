@@ -182,6 +182,27 @@ fn app_paths_normalizes_executable_and_package_paths() {
 }
 
 #[test]
+fn app_paths_normalizes_new_windows_chatgpt_executable() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp
+        .path()
+        .join("OpenAI.Codex_26.707.3351.0_x64__2p2nqsd0c76g0");
+    let app = package.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("ChatGPT.exe"), "").unwrap();
+
+    assert_eq!(
+        normalize_codex_app_path(&app.join("ChatGPT.exe")).as_deref(),
+        Some(app.as_path())
+    );
+    assert_eq!(
+        normalize_codex_app_path(&package).as_deref(),
+        Some(app.as_path())
+    );
+    assert_eq!(build_codex_executable(&app), app.join("ChatGPT.exe"));
+}
+
+#[test]
 fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
     let temp = tempfile::tempdir().unwrap();
     let app = temp.path().join("Codex.app");

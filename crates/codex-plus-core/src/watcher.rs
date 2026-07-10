@@ -175,7 +175,7 @@ pub fn uninstall_watcher() -> anyhow::Result<()> {
 pub fn find_codex_processes() -> Vec<u32> {
     let processes: Vec<_> = crate::windows_integration::enumerate_processes()
         .into_iter()
-        .filter(|process| process.exe_file.eq_ignore_ascii_case("codex.exe"))
+        .filter(|process| is_codex_main_process_name(&process.exe_file))
         .collect();
     find_codex_processes_from_snapshot(&processes)
 }
@@ -200,10 +200,10 @@ pub fn find_codex_processes_from_snapshot(
             .map(|(pid, path)| (*pid, path.as_str())),
     );
 
-    // Local/portable installs use "Codex.exe" (capital C) as the Electron main process.
+    // Newer official Windows packages use "ChatGPT.exe"; older/local installs use Codex.exe.
     // Keep the launcher alive while that process is still running.
     for process in processes {
-        if process.exe_file.eq_ignore_ascii_case("Codex.exe") {
+        if is_codex_main_process_name(&process.exe_file) {
             ids.push(process.process_id);
         }
     }
@@ -211,6 +211,11 @@ pub fn find_codex_processes_from_snapshot(
     ids.sort_unstable();
     ids.dedup();
     ids
+}
+
+#[cfg(windows)]
+fn is_codex_main_process_name(exe_file: &str) -> bool {
+    exe_file.eq_ignore_ascii_case("ChatGPT.exe") || exe_file.eq_ignore_ascii_case("Codex.exe")
 }
 
 #[cfg(not(windows))]

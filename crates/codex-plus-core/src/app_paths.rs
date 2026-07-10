@@ -187,7 +187,10 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
     }
 
     let file_name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
-    if file_name.eq_ignore_ascii_case("Codex.exe") || file_name.eq_ignore_ascii_case("codex.exe") {
+    if file_name.eq_ignore_ascii_case("ChatGPT.exe")
+        || file_name.eq_ignore_ascii_case("Codex.exe")
+        || file_name.eq_ignore_ascii_case("codex.exe")
+    {
         return path.parent().map(Path::to_path_buf);
     }
 
@@ -199,17 +202,19 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
         return path.parent().map(Path::to_path_buf);
     }
 
-    let upper = path.join("Codex.exe");
-    let lower = path.join("codex.exe");
-    if upper.exists() || lower.exists() {
+    if path.join("ChatGPT.exe").exists()
+        || path.join("Codex.exe").exists()
+        || path.join("codex.exe").exists()
+    {
         return Some(path.to_path_buf());
     }
 
     let nested_app = path.join("app");
     if nested_app.is_dir() {
-        let upper = nested_app.join("Codex.exe");
-        let lower = nested_app.join("codex.exe");
-        if upper.exists() || lower.exists() {
+        if nested_app.join("ChatGPT.exe").exists()
+            || nested_app.join("Codex.exe").exists()
+            || nested_app.join("codex.exe").exists()
+        {
             return Some(nested_app);
         }
     }
@@ -225,12 +230,13 @@ pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
     if app_dir.extension() == Some(OsStr::new("app")) {
         return app_dir.join("Contents").join("MacOS").join("Codex");
     }
-    let upper = app_dir.join("Codex.exe");
-    if upper.exists() {
-        upper
-    } else {
-        app_dir.join("codex.exe")
+    for name in ["ChatGPT.exe", "Codex.exe", "codex.exe"] {
+        let candidate = app_dir.join(name);
+        if candidate.exists() {
+            return candidate;
+        }
     }
+    app_dir.join("Codex.exe")
 }
 
 pub fn codex_app_version(app_dir: &Path) -> Option<String> {
