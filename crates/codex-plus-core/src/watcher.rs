@@ -214,12 +214,11 @@ pub fn find_codex_processes_from_snapshot(
             .map(|(pid, path)| (*pid, path.as_str())),
     );
 
-    // Local/portable installs use Codex.exe as the Electron main process. Do not match
-    // lowercase codex.exe here; that is commonly the CLI binary. ChatGPT.exe is accepted
-    // only for packaged Store apps above, because the standalone ChatGPT app can be a
-    // normal ChatGPT session rather than Codex.
+    // Local/portable installs use Codex.exe or, since Codex was merged into the ChatGPT
+    // desktop app, ChatGPT.exe as the Electron main process. Do not match lowercase
+    // codex.exe here; that is commonly the CLI binary.
     for process in processes {
-        if process.exe_file == "Codex.exe" {
+        if process.exe_file == "Codex.exe" || process.exe_file == "ChatGPT.exe" {
             ids.push(process.process_id);
         }
     }

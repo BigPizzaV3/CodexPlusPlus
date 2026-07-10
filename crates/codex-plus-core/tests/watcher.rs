@@ -156,6 +156,21 @@ fn find_codex_processes_finds_local_install_with_capitial_c() {
 
 #[cfg(windows)]
 #[test]
+fn find_codex_processes_finds_portable_chatgpt_desktop() {
+    let processes = [WindowsProcessInfo {
+        process_id: 46,
+        parent_process_id: 0,
+        exe_file: "ChatGPT.exe".to_string(),
+        executable_path: Some(std::path::PathBuf::from(
+            r"D:\Apps\OpenAI.Codex_1.2026.133.0_x64__abc\app\ChatGPT.exe",
+        )),
+    }];
+
+    assert_eq!(find_codex_processes_from_snapshot(&processes), vec![46]);
+}
+
+#[cfg(windows)]
+#[test]
 fn find_codex_processes_ignores_lowercase_local_cli_binary() {
     let processes = [WindowsProcessInfo {
         process_id: 43,

@@ -283,12 +283,27 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
 }
 
 pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
+    // An unpacked/portable MSIX keeps the package-shaped directory name, but it is
+    // not registered with Windows and therefore cannot be started through
+    // IApplicationActivationManager. Only genuine WindowsApps installs should use
+    // packaged activation; portable copies must launch ChatGPT.exe/Codex.exe
+    // directly.
+    if !path_is_inside_windows_apps(app_dir) {
+        return None;
+    }
     let package_name = package_name_from_app_dir(app_dir)?;
     let (spec, _, publisher_id) = codex_package_parts(&package_name)?;
     if publisher_id.is_empty() {
         return None;
     }
     Some(format!("{}_{publisher_id}!{}", spec.identity, spec.app_id))
+}
+
+fn path_is_inside_windows_apps(path: &Path) -> bool {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .split('/')
+        .any(|part| part.eq_ignore_ascii_case("WindowsApps"))
 }
 
 fn package_name_from_app_dir(app_dir: &Path) -> Option<String> {
