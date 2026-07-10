@@ -54,7 +54,7 @@ pub fn migrate_model_list_with_suffixes(model_list: &str) -> (String, HashMap<St
 }
 
 /// 解析括号内的窗口 token，如 "1M" / "200K" / "1000000"。非法或 0 返回 None。
-fn parse_window_token(token: &str) -> Option<u64> {
+pub(crate) fn parse_window_token(token: &str) -> Option<u64> {
     let token = token.trim();
     if token.is_empty() {
         return None;

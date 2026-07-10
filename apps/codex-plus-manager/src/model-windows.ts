@@ -40,11 +40,11 @@ export function mergeModelWindowRows(
     const model = row.model.trim();
     if (!model || seen.has(model)) return;
     seen.add(model);
-    rows.push({ model, window: row.window.trim() });
+    rows.push({ model, window: row.window.trim(), vlm: row.vlm ?? false });
   };
   currentRows.forEach(append);
   incomingRows.forEach(append);
-  return rows.length ? rows : [{ model: "", window: "" }];
+  return rows.length ? rows : [{ model: "", window: "", vlm: false }];
 }
 
 export function modelWindowRowsFromProfile(modelList: string, modelWindows: string, modelVlm?: string): ModelWindowRow[] {
@@ -54,17 +54,24 @@ export function modelWindowRowsFromProfile(modelList: string, modelWindows: stri
   } catch {
     map = {};
   }
+  let vlmMap: Record<string, boolean> = {};
+  try {
+    vlmMap = JSON.parse(modelVlm || "{}") as Record<string, boolean>;
+  } catch {
+    vlmMap = {};
+  }
   const rows = modelList
     .split("\n")
     .map((model) => model.trim())
     .filter(Boolean)
-    .map((model) => ({ model, window: map[model] ?? "" }));
-  return rows.length ? rows : [{ model: "", window: "" }];
+    .map((model) => ({ model, window: map[model] ?? "", vlm: vlmMap[model] ?? false }));
+  return rows.length ? rows : [{ model: "", window: "", vlm: false }];
 }
 
-export function serializeModelWindowRows(rows: ModelWindowRow[]): { modelList: string; modelWindows: string } {
+export function serializeModelWindowRows(rows: ModelWindowRow[]): { modelList: string; modelWindows: string; modelVlm: string } {
   const modelList: string[] = [];
   const modelWindows: Record<string, string> = {};
+  const modelVlm: Record<string, boolean> = {};
   mergeModelWindowRows(rows, []).forEach((row) => {
     const model = row.model.trim();
     if (!model) return;
@@ -73,10 +80,14 @@ export function serializeModelWindowRows(rows: ModelWindowRow[]): { modelList: s
     if (window) {
       modelWindows[model] = window;
     }
+    if (row.vlm) {
+      modelVlm[model] = true;
+    }
   });
   return {
     modelList: modelList.join("\n"),
     modelWindows: JSON.stringify(modelWindows),
+    modelVlm: JSON.stringify(modelVlm),
   };
 }
 

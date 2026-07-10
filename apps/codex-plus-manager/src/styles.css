@@ -4112,3 +4112,25 @@ select {
     justify-content: flex-start;
   }
 }
+
+.relay-model-row-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.relay-vlm-section {
+  display: grid;
+  gap: 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-sunken));
+  padding: 14px;
+  margin-top: 8px;
+}
+
+.relay-vlm-section-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}

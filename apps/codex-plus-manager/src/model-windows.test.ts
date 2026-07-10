@@ -10,7 +10,7 @@ import {
   mergeModelWindowRows,
 } from "./model-windows.ts";
 
-// 类型检查：确保 RelayProfile 包含 modelWindows 字段
+// 类型检查：确保 RelayProfile 包含 modelWindows 和 modelVlm 字段
 const _profileTypeCheck: RelayProfile = {
   id: "test",
   name: "",
@@ -31,6 +31,10 @@ const _profileTypeCheck: RelayProfile = {
   autoCompactLimit: "",
   modelList: "",
   modelWindows: "",
+  modelVlm: "",
+  vlmApiKey: "",
+  vlmModel: "",
+  vlmBaseUrl: "",
   userAgent: "",
 };
 
@@ -83,43 +87,54 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       modelWindowRowsFromProfile("a\nb\nc", '{"a":"1M","c":"200K"}'),
       [
-        { model: "a", window: "1M" },
-        { model: "b", window: "" },
-        { model: "c", window: "200K" },
+        { model: "a", window: "1M", vlm: false },
+        { model: "b", window: "", vlm: false },
+        { model: "c", window: "200K", vlm: false },
       ],
     );
   });
 
-  it("serializeModelWindowRows 从行控件生成 modelList 和 modelWindows", () => {
+  it("modelWindowRowsFromProfile 解析 modelVlm 中的 vlm 标记", () => {
+    assert.deepStrictEqual(
+      modelWindowRowsFromProfile("a\nb", '{}', '{"a":true}'),
+      [
+        { model: "a", window: "", vlm: true },
+        { model: "b", window: "", vlm: false },
+      ],
+    );
+  });
+
+  it("serializeModelWindowRows 从行控件生成 modelList、modelWindows 和 modelVlm", () => {
     assert.deepStrictEqual(
       serializeModelWindowRows([
-        { model: "a", window: "1M" },
-        { model: "", window: "400K" },
-        { model: "b", window: "" },
+        { model: "a", window: "1M", vlm: true },
+        { model: "", window: "400K", vlm: false },
+        { model: "b", window: "", vlm: false },
       ]),
       {
         modelList: "a\nb",
         modelWindows: '{"a":"1M"}',
+        modelVlm: '{"a":true}',
       },
     );
   });
 
-  it("mergeModelWindowRows 追加上游模型时跳过已有模型并保留窗口", () => {
+  it("mergeModelWindowRows 追加上游模型时跳过已有模型并保留窗口和 vlm", () => {
     assert.deepStrictEqual(
       mergeModelWindowRows(
         [
-          { model: "deepseek-v4-flash", window: "1M" },
-          { model: "  ", window: "" },
+          { model: "deepseek-v4-flash", window: "1M", vlm: true },
+          { model: "  ", window: "", vlm: false },
         ],
         [
-          { model: "deepseek-v4-flash", window: "" },
-          { model: "deepseek-v4-pro", window: "" },
-          { model: " deepseek-v4-pro ", window: "200K" },
+          { model: "deepseek-v4-flash", window: "", vlm: false },
+          { model: "deepseek-v4-pro", window: "", vlm: true },
+          { model: " deepseek-v4-pro ", window: "200K", vlm: false },
         ],
       ),
       [
-        { model: "deepseek-v4-flash", window: "1M" },
-        { model: "deepseek-v4-pro", window: "" },
+        { model: "deepseek-v4-flash", window: "1M", vlm: true },
+        { model: "deepseek-v4-pro", window: "", vlm: true },
       ],
     );
   });
