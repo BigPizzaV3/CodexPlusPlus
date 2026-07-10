@@ -3742,6 +3742,27 @@ mod tests {
     }
 
     #[test]
+    fn normalize_settings_before_save_preserves_manual_relay_mode_for_pure_api_profile() {
+        let settings = BackendSettings {
+            active_relay_id: "api".to_string(),
+            launch_mode: codex_plus_core::settings::LaunchMode::Relay,
+            relay_profiles: vec![RelayProfile {
+                id: "api".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        let normalized = normalize_settings_before_save(settings);
+
+        assert_eq!(
+            normalized.launch_mode,
+            codex_plus_core::settings::LaunchMode::Relay
+        );
+    }
+
+    #[test]
     fn reset_image_overlay_settings_preserves_supplier_settings() {
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");

@@ -102,5 +102,16 @@ pub fn is_codex_page_target(target: &CdpTarget) -> bool {
         return false;
     }
     let haystack = format!("{} {}", target.title, target.url).to_lowercase();
-    haystack.contains("codex")
+    haystack.contains("codex") || is_chatgpt_desktop_page(&target.title, &target.url)
+}
+
+fn is_chatgpt_desktop_page(title: &str, url: &str) -> bool {
+    let title = title.trim().to_ascii_lowercase();
+    let url = url.trim().to_ascii_lowercase();
+    title == "chatgpt"
+        && (url == "https://chatgpt.com"
+            || url.starts_with("https://chatgpt.com/")
+            || url == "https://chat.openai.com"
+            || url.starts_with("https://chat.openai.com/")
+            || url.starts_with("data:text/html"))
 }

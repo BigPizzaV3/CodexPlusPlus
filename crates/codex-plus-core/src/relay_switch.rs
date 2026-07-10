@@ -5,7 +5,7 @@ use anyhow::Context;
 use crate::relay_config::{
     backfill_relay_profile_from_home_with_common, relay_config_status_from_home,
 };
-use crate::settings::{BackendSettings, LaunchMode, RelayMode, SettingsStore};
+use crate::settings::{BackendSettings, RelayMode, SettingsStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelaySwitchResult {
@@ -32,8 +32,6 @@ pub fn switch_relay_profile_in_home(
         backfill_profile_before_switch(home, &mut selected_settings, previous_active_relay_id)?;
     }
 
-    selected_settings.launch_mode =
-        launch_mode_for_relay_profile(&selected_settings.active_relay_profile());
     store
         .save(&selected_settings)
         .context("保存供应商设置失败")?;
@@ -130,14 +128,6 @@ fn validate_switch_profile_files(profile: &crate::settings::RelayProfile) -> any
         );
     }
     Ok(())
-}
-
-fn launch_mode_for_relay_profile(profile: &crate::settings::RelayProfile) -> LaunchMode {
-    if profile.relay_mode == RelayMode::PureApi {
-        LaunchMode::Patch
-    } else {
-        LaunchMode::Relay
-    }
 }
 
 fn relay_combined_common_config(settings: &BackendSettings) -> String {

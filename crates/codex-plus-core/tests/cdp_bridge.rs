@@ -1149,6 +1149,38 @@ fn pick_injectable_codex_page_target_rejects_non_codex_pages() {
 }
 
 #[test]
+fn pick_injectable_codex_page_target_accepts_chatgpt_desktop_page() {
+    let targets = vec![target(
+        "chatgpt",
+        "page",
+        "ChatGPT",
+        "https://chatgpt.com/",
+        Some("ws://chatgpt"),
+    )];
+
+    let picked = pick_injectable_codex_page_target(&targets)
+        .expect("ChatGPT desktop page should be selected");
+
+    assert_eq!(picked.id, "chatgpt");
+}
+
+#[test]
+fn pick_injectable_codex_page_target_accepts_chatgpt_desktop_error_page() {
+    let targets = vec![target(
+        "chatgpt-error",
+        "page",
+        "ChatGPT",
+        "data:text/html;charset=utf-8,%3Ctitle%3EChatGPT%3C/title%3E",
+        Some("ws://chatgpt-error"),
+    )];
+
+    let picked = pick_injectable_codex_page_target(&targets)
+        .expect("ChatGPT desktop error page should be selected");
+
+    assert_eq!(picked.id, "chatgpt-error");
+}
+
+#[test]
 fn pick_injectable_codex_page_target_requires_websocket() {
     let targets = vec![target("codex", "page", "Codex", "https://codex.test", None)];
 

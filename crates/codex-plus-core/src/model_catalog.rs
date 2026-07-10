@@ -41,7 +41,11 @@ pub async fn read_codex_model_catalog() -> Value {
         if let Ok(settings) = SettingsStore::new(settings_path).load() {
             let profile = settings.active_relay_profile();
             let catalog = relay_profile_model_catalog_value(&home, &profile);
-            if catalog.get("models").and_then(Value::as_array).map_or(false, |m| !m.is_empty()) {
+            if catalog
+                .get("models")
+                .and_then(Value::as_array)
+                .map_or(false, |m| !m.is_empty())
+            {
                 return catalog;
             }
         }
