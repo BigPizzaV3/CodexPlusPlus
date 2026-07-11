@@ -1123,6 +1123,11 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("patchStatsigModelDynamicConfig"));
     assert!(script.contains("patchModelJsonResponse"));
     assert!(script.contains("installAppServerModelRequestPatch"));
+    assert!(script.contains("loadAppServerRequestCandidates"));
+    assert!(script.contains("appServerFallbackAssetUrls"));
+    assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"3\""));
+
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
     assert!(script.contains("send-cli-request-for-host"));
@@ -1236,6 +1241,21 @@ fn injection_script_discovers_vscode_api_asset_without_hardcoded_hash() {
     assert!(script.contains("fetch(src"));
     assert!(!script.contains("vscode-api-Dc9pX2Bc.js"));
     assert!(!script.contains("import(\"./assets/vscode-api-"));
+}
+
+
+#[test]
+fn injection_script_discovers_app_server_request_clients_without_hardcoded_hash() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("loadAppServerRequestCandidates"));
+    assert!(script.contains("appServerFallbackAssetUrls"));
+    assert!(script.contains("[\"use-host-config-\", \"app-server-manager-signals-\"]"));
+    assert!(script.contains("loadOptionalCodexAppModule(assetPrefix)"));
+    assert!(script.contains("candidateCount: candidates.length"));
+    assert!(script.contains("discovery:"));
+    // Keep legacy lookup as first attempt, but never hardcode the old hashed filename.
+    assert!(!script.contains("app-server-manager-signals-C1h8B-R-.js") || script.contains("refreshRecentConversationsForHost"));
 }
 
 #[test]
