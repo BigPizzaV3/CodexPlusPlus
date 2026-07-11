@@ -139,6 +139,60 @@ const BUNDLED_TEMPLATE_JSON: &str = include_str!(concat!(
     "/../../assets/codex-models.json"
 ));
 
+const GPT56_METADATA_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/gpt56-model-metadata-compat.json"
+));
+
+pub fn requires_bundled_metadata_catalog(slug: &str) -> bool {
+    gpt56_metadata_entry(slug).is_some()
+}
+
+pub fn model_ui_metadata(slug: &str) -> Option<Value> {
+    let metadata = gpt56_metadata_entry(slug)?;
+    let levels = metadata
+        .get("supported_reasoning_levels")?
+        .as_array()?
+        .iter()
+        .filter_map(|level| {
+            let effort = level.get("effort")?.as_str()?.trim();
+            if effort.is_empty() {
+                return None;
+            }
+            Some(json!({
+                "reasoningEffort": effort,
+                "description": level
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            }))
+        })
+        .collect::<Vec<_>>();
+    Some(json!({
+        "displayName": metadata
+            .get("display_name")
+            .and_then(Value::as_str)
+            .unwrap_or(slug),
+        "description": metadata
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("Custom model"),
+        "defaultReasoningEffort": metadata
+            .get("default_reasoning_level")
+            .and_then(Value::as_str)
+            .unwrap_or("medium"),
+        "supportedReasoningEfforts": levels,
+        "additionalSpeedTiers": metadata
+            .get("additional_speed_tiers")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+        "serviceTiers": metadata
+            .get("service_tiers")
+            .cloned()
+            .unwrap_or_else(|| json!([]))
+    }))
+}
+
 /// 构建 codex model_catalog_json 内容。
 ///
 /// 采用 cc-switch 的 template-clone 思路：取 codex 自带 bundled entry 做模板，
@@ -160,20 +214,25 @@ pub fn build_model_catalog_json_with_template(
     fallback_window: Option<u64>,
     template: Option<&Value>,
 ) -> String {
-    let template = template
-        .cloned()
-        .or_else(|| load_bundled_template_entry())
-        .unwrap_or_else(|| json!({}));
-
     let models: Vec<Value> = entries
         .iter()
         .enumerate()
         .map(|(index, entry)| {
-            let context_window = entry.suffix_window.or(fallback_window).unwrap_or(272_000);
-            let mut model = template.clone();
+            let (mut model, has_model_metadata) = template
+                .cloned()
+                .map(|template| (template, false))
+                .unwrap_or_else(|| model_template_entry(&entry.slug));
+            let metadata_window = model.get("context_window").and_then(Value::as_u64);
+            let context_window = entry
+                .suffix_window
+                .or(fallback_window)
+                .or(metadata_window)
+                .unwrap_or(272_000);
             model["slug"] = json!(entry.slug);
-            model["display_name"] = json!(entry.display_name);
-            model["description"] = json!(entry.display_name);
+            if !has_model_metadata {
+                model["display_name"] = json!(entry.display_name);
+                model["description"] = json!(entry.display_name);
+            }
             model["context_window"] = json!(context_window);
             model["max_context_window"] = json!(context_window);
             // 默认 95 会让 1M 显示为 950K，显式写 100 以显示真实窗口。
@@ -182,8 +241,10 @@ pub fn build_model_catalog_json_with_template(
             model["priority"] = json!(1000 + index);
             model["visibility"] = json!("list");
             model["supported_in_api"] = json!(true);
-            model["additional_speed_tiers"] = json!([]);
-            model["service_tiers"] = json!([]);
+            if !has_model_metadata {
+                model["additional_speed_tiers"] = json!([]);
+                model["service_tiers"] = json!([]);
+            }
             model["availability_nux"] = Value::Null;
             model["upgrade"] = Value::Null;
             model
@@ -192,8 +253,47 @@ pub fn build_model_catalog_json_with_template(
     serde_json::to_string_pretty(&json!({ "models": models })).unwrap_or_default()
 }
 
-/// 加载内置 bundled catalog 模板的第一条 model entry。
-fn load_bundled_template_entry() -> Option<Value> {
+fn model_template_entry(slug: &str) -> (Value, bool) {
+    if let Some(entry) = bundled_template_entry(slug) {
+        return (entry, true);
+    }
+    if let Some(compatibility) = gpt56_metadata_entry(slug) {
+        let mut template = first_bundled_template_entry().unwrap_or_else(|| json!({}));
+        if let (Some(target), Some(source)) = (template.as_object_mut(), compatibility.as_object())
+        {
+            for (key, value) in source {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+        return (template, true);
+    }
+    (
+        first_bundled_template_entry().unwrap_or_else(|| json!({})),
+        false,
+    )
+}
+
+fn bundled_template_entry(slug: &str) -> Option<Value> {
+    let catalog: Value = serde_json::from_str(BUNDLED_TEMPLATE_JSON).ok()?;
+    catalog
+        .get("models")?
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("slug").and_then(Value::as_str) == Some(slug))
+        .cloned()
+}
+
+fn first_bundled_template_entry() -> Option<Value> {
     let catalog: Value = serde_json::from_str(BUNDLED_TEMPLATE_JSON).ok()?;
     catalog.get("models")?.as_array()?.first().cloned()
+}
+
+fn gpt56_metadata_entry(slug: &str) -> Option<Value> {
+    let catalog: Value = serde_json::from_str(GPT56_METADATA_JSON).ok()?;
+    catalog
+        .get("models")?
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("slug").and_then(Value::as_str) == Some(slug))
+        .cloned()
 }
