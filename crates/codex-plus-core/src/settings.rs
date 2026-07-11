@@ -89,7 +89,11 @@ pub struct RelayProfile {
     pub model_windows: String,
     #[serde(rename = "modelVlm", default, skip_serializing_if = "String::is_empty")]
     pub model_vlm: String,
-    #[serde(rename = "vlmApiKey", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "vlmApiKey",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub vlm_api_key: String,
     #[serde(rename = "vlmModel", default)]
     pub vlm_model: String,
@@ -431,10 +435,10 @@ impl BackendSettings {
                 model_insert_mode: RelayModelInsertMode::Patch,
                 model_list: String::new(),
                 model_windows: String::new(),
-            model_vlm: String::new(),
-            vlm_api_key: String::new(),
-            vlm_model: String::new(),
-            vlm_base_url: String::new(),
+                model_vlm: String::new(),
+                vlm_api_key: String::new(),
+                vlm_model: String::new(),
+                vlm_base_url: String::new(),
                 user_agent: String::new(),
             };
         }

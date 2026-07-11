@@ -45,3 +45,4 @@ windows = { version = "0.58", features = [
 
 [dev-dependencies]
 tempfile.workspace = true
+wiremock = "0.6"

@@ -674,6 +674,14 @@ pub async fn open_models_proxy_request(
     })
 }
 
+fn response_header_timeout(is_stream: bool) -> Duration {
+    if is_stream {
+        UPSTREAM_STREAM_HEADER_TIMEOUT
+    } else {
+        UPSTREAM_HEADER_TIMEOUT
+    }
+}
+
 pub async fn open_chat_completions_proxy_request(
     body: &str,
     original_user_agent: Option<&str>,
@@ -690,25 +698,7 @@ pub async fn open_chat_completions_proxy_request(
         anyhow::bail!("Chat Completions 上游 Key 不能为空");
     }
 
-    let mut request_json: Value = serde_json::from_str(body)?;
-
-    // Strip image blocks when VLM is enabled for this model.
-    let model = request_json.get("model").and_then(Value::as_str).unwrap_or("");
-    if !model.is_empty()
-        && crate::vision::should_process(model, &relay.model_vlm)
-        && !relay.vlm_api_key.is_empty()
-        && !relay.vlm_model.is_empty()
-        && !relay.vlm_base_url.is_empty()
-    {
-        let vlm_config = crate::vision::VlmConfig {
-            api_key: relay.vlm_api_key.clone(),
-            model: relay.vlm_model.clone(),
-            base_url: relay.vlm_base_url.clone(),
-        };
-        if let Some(messages) = request_json.get_mut("messages").and_then(Value::as_array_mut) {
-            crate::vision::strip_image_blocks(messages, &vlm_config).await;
-        }
-    }
+    let request_json: Value = serde_json::from_str(body)?;
     let is_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
@@ -740,27 +730,23 @@ pub async fn open_chat_completions_proxy_request(
     })
 }
 
-fn response_header_timeout(is_stream: bool) -> Duration {
-    if is_stream {
-        UPSTREAM_STREAM_HEADER_TIMEOUT
-    } else {
-        UPSTREAM_HEADER_TIMEOUT
-    }
-}
-
 async fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
     request_json: Value,
-) -> anyhow::Result<(String, Value, UpstreamWireApi)>  {
+) -> anyhow::Result<(String, Value, UpstreamWireApi)> {
     let mut body = match relay.protocol {
         RelayProtocol::Responses => request_json,
         RelayProtocol::ChatCompletions => responses_to_chat_completions(request_json)?,
     };
 
     // Strip image blocks when VLM is enabled for this model.
-    let model = body.get("model").and_then(Value::as_str).unwrap_or("");
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     if !model.is_empty()
-        && crate::vision::should_process(model, &relay.model_vlm)
+        && crate::vision::should_process(&model, &relay.model_vlm)
         && !relay.vlm_api_key.is_empty()
         && !relay.vlm_model.is_empty()
         && !relay.vlm_base_url.is_empty()
@@ -773,7 +759,14 @@ async fn upstream_request_parts(
 
         for key in &["messages", "input"] {
             if let Some(arr) = body.get_mut(key).and_then(Value::as_array_mut) {
-                crate::vision::strip_image_blocks(arr, &vlm_config).await;
+                crate::vision::strip_image_blocks(
+                    arr,
+                    &vlm_config,
+                    &relay.model_windows,
+                    &relay.context_window,
+                    &model,
+                )
+                .await;
             }
         }
     }

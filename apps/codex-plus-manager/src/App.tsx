@@ -4158,6 +4158,8 @@ function RelayProfileEditor({
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
+  // 纯 Responses 模式（非聚合）下 VLM 不生效，禁用 checkbox
+  const vlmUnsupportedProtocol = profile.protocol === "responses" && !isAggregateRelayProfile(profile);
   if (isAggregateRelayProfile(profile)) {
     return (
       <AggregateRelayProfileEditor
@@ -4392,16 +4394,6 @@ function RelayProfileEditor({
                       onChange={(event) => updateModelWindowRow(index, { window: event.currentTarget.value })}
                       placeholder="1M"
                     />
-                  </div>
-                  <div className="relay-model-row-actions">
-                    <label className="flex items-center gap-1 text-xs whitespace-nowrap">
-                      <input
-                        type="checkbox"
-                        checked={row.vlm}
-                        onChange={(e) => updateModelWindowRow(index, { vlm: e.currentTarget.checked })}
-                      />
-                      Use VLM
-                    </label>
                     <Button
                       aria-label={t("删除模型")}
                       onClick={() => removeModelWindowRow(index)}
@@ -4412,6 +4404,18 @@ function RelayProfileEditor({
                     >
                       <Trash2 className="h-4 w-4" />
                     </Button>
+                  </div>
+                  <div className="relay-model-row-actions">
+                    <label className="flex items-center gap-1 text-xs whitespace-nowrap">
+                      <input
+                        type="checkbox"
+                        checked={row.vlm}
+                        disabled={vlmUnsupportedProtocol}
+                        onChange={(e) => updateModelWindowRow(index, { vlm: e.currentTarget.checked })}
+                        title={vlmUnsupportedProtocol ? t("VLM 仅支持 Chat Completions 协议和聚合模式") : ""}
+                      />
+                      Use VLM
+                    </label>
                   </div>
                 </div>
               ))}
@@ -4456,6 +4460,7 @@ function RelayProfileEditor({
             <div className="relay-vlm-section-header">{t("Vision Analysis Provider")}</div>
             <Field className="relay-field-vlm-api-key" label={t("VLM API Key")}>
               <Input
+                type="password"
                 value={profile.vlmApiKey}
                 onChange={(event) => updateDraft({ vlmApiKey: event.currentTarget.value })}
                 placeholder="sk-..."
@@ -4478,6 +4483,9 @@ function RelayProfileEditor({
             <p className="field-hint">
               {t("使用 OpenAI 兼容的视觉语言模型分析图片内容，将图片描述注入到不支持视觉的模型中。")}
             </p>
+            {modelWindowRows.some((row) => row.vlm) && (!profile.vlmApiKey || !profile.vlmModel || !profile.vlmBaseUrl) ? (
+              <p className="field-hint warn">{t("VLM 配置不完整：API Key、Model 和 Base URL 为必填项，否则 VLM 不会生效。")}</p>
+            ) : null}
           </div>
         ) : null}
         {showApiFields ? (
