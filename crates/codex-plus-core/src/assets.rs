@@ -6,6 +6,7 @@ use std::path::Path;
 use crate::settings::BackendSettings;
 
 const RENDERER_SCRIPT: &str = include_str!("../../../assets/inject/renderer-inject.js");
+const PET_REAL_MOUSE_SCRIPT: &str = include_str!("../../../assets/inject/pet-real-mouse-inject.js");
 const STEPWISE_SCRIPT: &str = include_str!("../../../assets/inject/stepwise-inject.js");
 const SPONSOR_ALIPAY: &[u8] = include_bytes!("../../../assets/images/sponsor-alipay.jpg");
 const SPONSOR_WECHAT: &[u8] = include_bytes!("../../../assets/images/sponsor-wechat.jpg");
@@ -17,6 +18,69 @@ pub fn renderer_script() -> &'static str {
 
 pub fn stepwise_script() -> &'static str {
     STEPWISE_SCRIPT
+}
+
+pub fn pet_real_mouse_script() -> &'static str {
+    PET_REAL_MOUSE_SCRIPT
+}
+
+pub fn pet_real_mouse_capability_probe_script() -> &'static str {
+    r#"
+(async () => {
+  const mascot = document.querySelector('[data-avatar-mascot="true"]');
+  if (!mascot) return false;
+  const spriteImages = Array.from(mascot.querySelectorAll("img"));
+  const currentSpriteIsV2 = spriteImages.some((image) =>
+    image.naturalWidth === 1536 && image.naturalHeight === 2288
+  );
+  if (!currentSpriteIsV2) return false;
+  const urls = [
+    ...Array.from(document.scripts || []).map((script) => script.src),
+    ...Array.from(document.querySelectorAll("link[href]") || []).map((link) => link.href),
+    ...performance.getEntriesByType("resource").map((entry) => entry.name),
+  ].filter((url) => url && url.includes("/assets/") && url.split("?")[0].endsWith(".js"));
+  let dispatcherUrl = urls.find((url) => url.includes("vscode-api-"));
+  if (!dispatcherUrl) {
+    for (const url of urls) {
+      try {
+        const source = await fetch(url).then((response) => response.ok ? response.text() : "");
+        const match = source.match(/["'](\.\/(?:assets\/)?vscode-api-[^"']+\.js)["']/);
+        if (match) {
+          dispatcherUrl = new URL(match[1], url).href;
+          break;
+        }
+      } catch {
+      }
+    }
+  }
+  if (!dispatcherUrl) return false;
+  try {
+    const module = await import(dispatcherUrl);
+    return Object.values(module || {}).some((value) => value
+      && typeof value.dispatchHostMessage === "function"
+      && typeof value.subscribe === "function");
+  } catch {
+    return false;
+  }
+})()
+"#
+}
+
+pub fn pet_real_mouse_update_script(x: i32, y: i32) -> String {
+    format!(
+        r#"(() => {{
+  const mascot = document.querySelector('[data-avatar-mascot="true"]');
+  const currentSpriteIsV2 = !!mascot && Array.from(mascot.querySelectorAll("img")).some((image) =>
+    image.naturalWidth === 1536 && image.naturalHeight === 2288
+  );
+  return currentSpriteIsV2
+    && window.__codexPlusPetRealMouseLook?.updateScreenPoint?.({{ x: {x}, y: {y} }}) === true;
+}})()"#
+    )
+}
+
+pub fn pet_real_mouse_stop_script() -> &'static str {
+    "window.__codexPlusPetRealMouseLook?.stop?.();"
 }
 
 pub fn sponsor_image_data_uris() -> Value {
