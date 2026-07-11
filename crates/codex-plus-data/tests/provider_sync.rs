@@ -74,6 +74,22 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
     }
 }
 
+fn create_local_thread_catalog_db(path: &Path, rows: &[(&str, &str)]) {
+    let db = Connection::open(path).unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog (host_id TEXT NOT NULL, thread_id TEXT NOT NULL, model_provider TEXT NOT NULL, PRIMARY KEY (host_id, thread_id))",
+        [],
+    )
+    .unwrap();
+    for (thread_id, provider) in rows {
+        db.execute(
+            "INSERT INTO local_thread_catalog VALUES ('local', ?1, ?2)",
+            (thread_id, provider),
+        )
+        .unwrap();
+    }
+}
+
 #[test]
 fn provider_sync_targets_merge_config_rollout_sqlite_and_sort_current_first() {
     let tmp = tempdir().unwrap();
@@ -346,6 +362,43 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
         row,
         ("apigather".to_string(), 1, "C:/workspace".to_string())
     );
+    let backup_dir = result.backup_dir.unwrap();
+    assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
+}
+
+#[test]
+fn provider_sync_updates_and_discovers_local_thread_catalog() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    let db_path = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&db_path, &[("thread-1", "openai"), ("thread-2", "custom")]);
+
+    let targets = load_provider_sync_targets(Some(&home));
+    let ids = targets
+        .targets
+        .iter()
+        .map(|target| target.id.as_str())
+        .collect::<Vec<_>>();
+    assert!(ids.contains(&"openai"));
+    assert!(ids.contains(&"custom"));
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.sqlite_rows_updated, 2);
+    assert_eq!(result.sqlite_provider_rows_updated, 2);
+    let db = Connection::open(&db_path).unwrap();
+    let remaining = db
+        .query_row(
+            "SELECT COUNT(*) FROM local_thread_catalog WHERE model_provider <> 'apigather'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0);
     let backup_dir = result.backup_dir.unwrap();
     assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
 }
@@ -668,6 +721,60 @@ fn provider_sync_rolls_back_sqlite_provider_update_when_later_update_fails() {
         )
         .unwrap();
     assert_eq!(row, ("old-provider".to_string(), 1, "C:/old".to_string()));
+}
+
+#[test]
+fn provider_sync_rolls_back_threads_when_local_catalog_update_fails() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_rollout(
+        &home.join("sessions/rollout-current.jsonl"),
+        "apigather",
+        "thread-1",
+        "C:/workspace",
+    );
+    let db_path = home.join("state_5.sqlite");
+    create_state_db(&db_path);
+    let db = Connection::open(&db_path).unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog (host_id TEXT NOT NULL, thread_id TEXT NOT NULL, model_provider TEXT NOT NULL, PRIMARY KEY (host_id, thread_id))",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog VALUES ('local', 'thread-1', 'catalog-provider')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TRIGGER fail_catalog_provider_update BEFORE UPDATE OF model_provider ON local_thread_catalog BEGIN SELECT RAISE(ABORT, 'boom'); END",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Skipped);
+    let db = Connection::open(&db_path).unwrap();
+    let thread_provider = db
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'thread-1'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    let catalog_provider = db
+        .query_row(
+            "SELECT model_provider FROM local_thread_catalog WHERE thread_id = 'thread-1'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    assert_eq!(thread_provider, "old-provider");
+    assert_eq!(catalog_provider, "catalog-provider");
 }
 
 #[test]

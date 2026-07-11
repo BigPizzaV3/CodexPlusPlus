@@ -810,18 +810,20 @@ fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
         return Ok(Vec::new());
     }
     let db = Connection::open(path)?;
-    let columns = table_columns(&db, "threads")?;
-    if !columns.contains("model_provider") {
-        return Ok(Vec::new());
-    }
-    let mut stmt = db.prepare(
-        "SELECT DISTINCT COALESCE(model_provider, '') FROM threads WHERE COALESCE(model_provider, '') <> ''",
-    )?;
     let mut ids = HashSet::new();
-    for item in stmt.query_map([], |row| row.get::<_, String>(0))? {
-        let id = item?;
-        if is_valid_provider_id_for_discovery(&id) {
-            ids.insert(id);
+    for table in ["threads", "local_thread_catalog"] {
+        let columns = table_columns(&db, table)?;
+        if !columns.contains("model_provider") {
+            continue;
+        }
+        let mut stmt = db.prepare(&format!(
+            "SELECT DISTINCT COALESCE(model_provider, '') FROM {table} WHERE COALESCE(model_provider, '') <> ''"
+        ))?;
+        for item in stmt.query_map([], |row| row.get::<_, String>(0))? {
+            let id = item?;
+            if is_valid_provider_id_for_discovery(&id) {
+                ids.insert(id);
+            }
         }
     }
     Ok(sorted_provider_ids(ids))
@@ -838,14 +840,22 @@ fn count_sqlite_updates(
     }
     let db = Connection::open(path)?;
     let columns = table_columns(&db, "threads")?;
-    if !columns.contains("model_provider") {
-        return Ok(0);
+    let catalog_columns = table_columns(&db, "local_thread_catalog")?;
+    let mut total = 0;
+    if columns.contains("model_provider") {
+        total += db.query_row(
+            "SELECT COUNT(*) FROM threads WHERE COALESCE(model_provider, '') <> ?1",
+            [target_provider],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
     }
-    let mut total: usize = db.query_row(
-        "SELECT COUNT(*) FROM threads WHERE COALESCE(model_provider, '') <> ?1",
-        [target_provider],
-        |row| row.get::<_, i64>(0),
-    )? as usize;
+    if catalog_columns.contains("model_provider") {
+        total += db.query_row(
+            "SELECT COUNT(*) FROM local_thread_catalog WHERE COALESCE(model_provider, '') <> ?1",
+            [target_provider],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+    }
     if columns.contains("has_user_event") {
         for thread_id in user_event_thread_ids {
             total += db.query_row(
@@ -896,15 +906,24 @@ fn apply_sqlite_update(
     }
     let mut db = Connection::open(path)?;
     let columns = table_columns(&db, "threads")?;
-    if !columns.contains("model_provider") {
+    let catalog_columns = table_columns(&db, "local_thread_catalog")?;
+    if !columns.contains("model_provider") && !catalog_columns.contains("model_provider") {
         return Ok(SqliteUpdateCounts::default());
     }
     let tx = db.transaction()?;
     let mut counts = SqliteUpdateCounts::default();
-    counts.provider_rows = tx.execute(
-        "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
-        [target_provider],
-    )?;
+    if columns.contains("model_provider") {
+        counts.provider_rows += tx.execute(
+            "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
+            [target_provider],
+        )?;
+    }
+    if catalog_columns.contains("model_provider") {
+        counts.provider_rows += tx.execute(
+            "UPDATE local_thread_catalog SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
+            [target_provider],
+        )?;
+    }
     if columns.contains("has_user_event") {
         for thread_id in user_event_thread_ids {
             counts.user_event_rows += tx.execute(
