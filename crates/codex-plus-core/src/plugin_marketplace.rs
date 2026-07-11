@@ -687,9 +687,7 @@ fn marketplace_table_points_to_root(table: &Table, root: &Path) -> bool {
         .get("source")
         .and_then(Item::as_str)
         .unwrap_or_default();
-    source_type == "local"
-        && normalize_windows_extended_path(source)
-            == normalize_windows_extended_path(&root.to_string_lossy())
+    source_type == "local" && managed_marketplace_path_matches(source, root)
 }
 
 fn merge_marketplace_configs_into_text(
@@ -723,7 +721,7 @@ fn merge_marketplace_configs_and_plugins_into_text(
         }
         marketplaces[marketplace_name]["source_type"] = toml_edit::value("local");
         marketplaces[marketplace_name]["source"] =
-            toml_edit::value(windows_extended_path(marketplace_root));
+            toml_edit::value(marketplace_config_path(marketplace_root));
     }
     if !plugin_ids.is_empty() {
         let plugins = table_mut_or_insert(&mut doc, "plugins")?;
@@ -767,16 +765,21 @@ fn marketplace_config_points_to_root(home: &Path, marketplace_name: &str, root: 
         .get("source")
         .and_then(Item::as_str)
         .unwrap_or_default();
-    source_type == "local" && normalize_windows_extended_path(source) == root.to_string_lossy()
+    source_type == "local" && marketplace_config_path_matches(source, root)
 }
 
-fn normalize_windows_extended_path(value: &str) -> String {
-    value.strip_prefix(r"\\?\").unwrap_or(value).to_string()
+fn marketplace_config_path_matches(value: &str, path: &Path) -> bool {
+    value == marketplace_config_path(path)
 }
 
-fn windows_extended_path(path: &Path) -> String {
+fn managed_marketplace_path_matches(value: &str, path: &Path) -> bool {
+    let native = path.to_string_lossy();
+    value == native || value.strip_prefix(r"\\?\") == Some(native.as_ref())
+}
+
+fn marketplace_config_path(path: &Path) -> String {
     let value = path.to_string_lossy();
-    if value.starts_with(r"\\?\") {
+    if !cfg!(windows) || value.starts_with(r"\\?\") {
         value.into_owned()
     } else {
         format!(r"\\?\{value}")
@@ -816,6 +819,14 @@ fn ensure_trailing_newline(mut contents: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn expected_marketplace_path(path: &Path) -> String {
+        if cfg!(windows) {
+            format!(r"\\?\{}", path.display())
+        } else {
+            path.to_string_lossy().into_owned()
+        }
+    }
 
     fn write_marketplace(home: &Path) {
         let root = home.join(".tmp").join("plugins");
@@ -903,13 +914,7 @@ source = '{}'
         );
         assert_eq!(
             parsed["marketplaces"]["openai-curated-remote"]["source"].as_str(),
-            Some(
-                format!(
-                    r"\\?\{}",
-                    home.join(".tmp").join("plugins-remote").display()
-                )
-                .as_str()
-            )
+            Some(expected_marketplace_path(&home.join(".tmp").join("plugins-remote")).as_str())
         );
     }
 
@@ -966,14 +971,13 @@ source = "/opt/user-marketplace"
         assert_eq!(
             parsed["marketplaces"]["role-specific-plugins"]["source"].as_str(),
             Some(
-                format!(
-                    r"\\?\{}",
-                    home.join(".tmp")
+                expected_marketplace_path(
+                    &home
+                        .join(".tmp")
                         .join("marketplaces")
-                        .join("role-specific-plugins")
-                        .display()
+                        .join("role-specific-plugins"),
                 )
-                .as_str()
+                .as_str(),
             )
         );
         for plugin in [
@@ -1014,6 +1018,50 @@ source = "/opt/user-marketplace"
         assert_eq!(
             parsed["plugins"]["customer-support@role-specific-plugins"]["enabled"].as_bool(),
             Some(true)
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn ensure_marketplace_configs_migrate_legacy_windows_paths_on_unix() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        write_remote_marketplace(home);
+        write_role_specific_marketplace(home);
+        let remote_root = home.join(".tmp").join("plugins-remote");
+        let role_root = home
+            .join(".tmp")
+            .join("marketplaces")
+            .join("role-specific-plugins");
+        std::fs::write(
+            home.join("config.toml"),
+            format!(
+                r#"[marketplaces.openai-curated-remote]
+source_type = "local"
+source = '\\?\{}'
+
+[marketplaces.role-specific-plugins]
+source_type = "local"
+source = '\\?\{}'
+"#,
+                remote_root.display(),
+                role_root.display(),
+            ),
+        )
+        .unwrap();
+
+        assert!(ensure_openai_curated_remote_marketplace_config(home).unwrap());
+        assert!(ensure_role_specific_plugins_marketplace_config(home).unwrap());
+
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        let parsed = config.parse::<DocumentMut>().unwrap();
+        assert_eq!(
+            parsed["marketplaces"]["openai-curated-remote"]["source"].as_str(),
+            Some(remote_root.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            parsed["marketplaces"]["role-specific-plugins"]["source"].as_str(),
+            Some(role_root.to_string_lossy().as_ref())
         );
     }
 
@@ -1084,13 +1132,7 @@ source = "/opt/user-marketplace"
         );
         assert_eq!(
             parsed["marketplaces"]["openai-curated-remote"]["source"].as_str(),
-            Some(
-                format!(
-                    r"\\?\{}",
-                    home.join(".tmp").join("plugins-remote").display()
-                )
-                .as_str()
-            )
+            Some(expected_marketplace_path(&home.join(".tmp").join("plugins-remote")).as_str())
         );
     }
 
@@ -1125,13 +1167,7 @@ source = "/opt/user-marketplace"
         );
         assert_eq!(
             parsed["marketplaces"]["openai-curated-remote"]["source"].as_str(),
-            Some(
-                format!(
-                    r"\\?\{}",
-                    home.join(".tmp").join("plugins-remote").display()
-                )
-                .as_str()
-            )
+            Some(expected_marketplace_path(&home.join(".tmp").join("plugins-remote")).as_str())
         );
     }
 
