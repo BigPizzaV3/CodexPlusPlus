@@ -133,6 +133,14 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
     </td>
     <td><a href="https://smallice.xyz/register?aff=FSNMGR2THBLN"><strong>Smallice | AI Relay</strong></a><br>Thanks to Smallice for sponsoring this project! Smallice is one key to all the language models worth calling: a unified endpoint that acts as a quiet foundation layer beneath your applications. Whether you call Claude, GPT, Gemini, or DeepSeek, the request shape stays consistent. <a href="https://smallice.xyz/register?aff=FSNMGR2THBLN">Register through this link</a> to get started.</td>
   </tr>
+  <tr>
+    <td align="center">
+      <a href="https://hb-api.online/register?aff=8KA2ZKWNHND8">
+        <img src="docs/images/sponsor-baikewei-ai.jpg" alt="Baikewei AI" width="150">
+      </a>
+    </td>
+    <td><a href="https://hb-api.online/register?aff=8KA2ZKWNHND8"><strong>Baikewei AI</strong></a><br>Baikewei AI is an all-in-one large-model API platform for developers, teams, and AI tool users. It supports Claude, OpenAI, Gemini, Codex, and other mainstream model capabilities, with stable relay access, flexible billing, usage statistics, balance management, and APIs for Claude Code, Codex, image generation, automation scripts, and intelligent applications. New users can claim free credit and start integrating immediately.</td>
+  </tr>
 </table>
 
 
