@@ -175,6 +175,13 @@ fn normalizes_known_remote_sponsors_with_local_logos() {
                 "url": "https://example.test/runapi"
             },
             {
+                "id": "baikewei-ai",
+                "type": "sponsor",
+                "title": "百可为AI",
+                "description": "远端推荐内容",
+                "url": "https://example.test/baikewei"
+            },
+            {
                 "id": "jojocode-codex-relay",
                 "type": "sponsor",
                 "title": "JOJO Code",
@@ -201,6 +208,16 @@ fn normalizes_known_remote_sponsors_with_local_logos() {
             "{id}"
         );
     }
+    let baikewei = ads
+        .iter()
+        .find(|ad| ad["id"] == json!("baikewei-ai"))
+        .unwrap();
+    assert!(
+        baikewei["image"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/jpeg;base64,")
+    );
     for id in ["0055-token-bridge", "rawchat-codex-relay"] {
         let ad = ads.iter().find(|ad| ad["id"] == json!(id)).unwrap();
         assert!(
