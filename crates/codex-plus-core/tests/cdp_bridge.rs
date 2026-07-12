@@ -55,6 +55,15 @@ fn injection_script_prefixes_helper_url_and_sponsor_images() {
 }
 
 #[test]
+fn pet_real_mouse_settings_are_gated_to_windows_in_injected_ui() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("codexPlusIsWindowsPlatform"));
+    assert!(script.contains(r#"/\bWindows\b/i.test(navigator.userAgent || "")"#));
+    assert!(script.contains("codexPlusIsWindowsPlatform ? `<div"));
+}
+
+#[test]
 fn pet_real_mouse_script_uses_cdp_push_and_native_avatar_event() {
     let script = assets::pet_real_mouse_script();
 
