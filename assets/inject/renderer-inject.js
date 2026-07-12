@@ -1466,6 +1466,25 @@
     }
   }
 
+  async function loadCodexDispatcherClass() {
+    const moduleNameParts = ["setting-storage-", "vscode-api-"];
+    const errors = [];
+    for (const namePart of moduleNameParts) {
+      try {
+        const module = await loadCodexAppModule(namePart);
+        const dispatcherClass = Object.values(module).find((value) => (
+          typeof value === "function"
+          && typeof value.getInstance === "function"
+          && String(value).includes("dispatchMessage")
+        ));
+        if (dispatcherClass) return dispatcherClass;
+      } catch (error) {
+        errors.push(`${namePart}: ${error?.message || String(error)}`);
+      }
+    }
+    throw new Error(`Codex dispatcher unavailable: ${errors.join("; ")}`);
+  }
+
   function isFastServiceTierValue(value) {
     const normalized = String(value || "").trim().toLowerCase();
     return normalized === "fast" || normalized === "priority";
@@ -2078,8 +2097,7 @@
     if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
     const patch = async () => {
       try {
-        const module = await loadCodexAppModule("setting-storage-");
-        const dispatcherClass = typeof module.v === "function" && String(module.v).includes("dispatchMessage") ? module.v : null;
+        const dispatcherClass = await loadCodexDispatcherClass();
         const dispatcher = dispatcherClass?.getInstance?.();
         if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
         if (dispatcher.__codexServiceTierOriginalDispatchMessage) {
@@ -6723,8 +6741,7 @@
     if (window.__codexUpstreamPendingWorktreeDispatcherPatch === patchVersion) return;
     const patch = async () => {
       try {
-        const module = await loadCodexAppModule("setting-storage-");
-        const dispatcherClass = typeof module.v === "function" && String(module.v).includes("dispatchMessage") ? module.v : null;
+        const dispatcherClass = await loadCodexDispatcherClass();
         const dispatcher = dispatcherClass?.getInstance?.();
         if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
         if (!dispatcher.__codexUpstreamWorktreeOriginalDispatchMessage) {
@@ -7706,12 +7723,29 @@
       });
   }
 
+  function codexServiceTierIsModernComposerFooter(node) {
+    if (!(node instanceof HTMLElement)) return false;
+    const className = String(node.className || "");
+    if (!className.includes("_footer_") && !className.includes("grid-cols-")) return false;
+    return !!node.closest?.(".composer-surface-chrome") && codexServiceTierBadgeVisibleElement(node);
+  }
+
+  function codexServiceTierModernComposerFooters(root = document) {
+    const footers = [];
+    if (codexServiceTierIsModernComposerFooter(root)) footers.push(root);
+    root?.querySelectorAll?.(".composer-surface-chrome [class*='_footer_'], .composer-surface-chrome [class*='grid-cols-']")?.forEach((node) => {
+      if (codexServiceTierIsModernComposerFooter(node)) footers.push(node);
+    });
+    return footers;
+  }
+
   function codexServiceTierVisibleComposerFooters(root = document) {
     const footers = [
       ...(root?.matches?.(".composer-footer") ? [root] : []),
       ...Array.from(root?.querySelectorAll?.(".composer-footer") || []),
+      ...codexServiceTierModernComposerFooters(root),
     ];
-    return footers
+    return Array.from(new Set(footers))
       .filter(codexServiceTierBadgeVisibleElement)
       .sort((left, right) => {
         const leftRect = left.getBoundingClientRect();
@@ -7728,7 +7762,10 @@
     if (/完全访问权限|full access|model|超高|high|sub2api|provider/i.test(text)) score += 20;
     if (/本地模式|local mode|worktree|branch|codex\//i.test(text)) score -= 30;
     if (composer.matches?.(".composer-footer")) score += 4;
+    if (composer.matches?.(".composer-surface-chrome")) score += 12;
+    if (codexServiceTierIsModernComposerFooter(composer)) score += 8;
     if (composer.querySelector?.(".composer-footer")) score += 8;
+    if (composer.querySelector?.(".composer-surface-chrome [class*='_footer_'], .composer-surface-chrome [class*='grid-cols-']")) score += 8;
     const buttons = Array.from(composer.querySelectorAll?.("button, [role='button']") || []).filter(codexServiceTierBadgeVisibleElement);
     if (buttons.some((button) => codexServiceTierLooksLikeProviderButton(button, providerNames))) score += 30;
     score += Math.min(10, buttons.length);
@@ -7739,6 +7776,9 @@
     const candidates = new Set();
     const threadComposer = conversationViewFindComposerEl();
     if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)) candidates.add(threadComposer);
+    document.querySelectorAll(".composer-surface-chrome").forEach((surface) => {
+      if (codexServiceTierBadgeVisibleElement(surface)) candidates.add(surface);
+    });
     codexServiceTierVisibleComposerFooters().forEach((footer) => {
       candidates.add(footer);
       let node = footer.parentElement;
