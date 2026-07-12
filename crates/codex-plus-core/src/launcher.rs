@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -19,6 +20,8 @@ use crate::status::{LaunchStatus, StatusStore};
 const POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS: &[u64] = &[0, 5, 15, 30, 60, 120, 180, 240, 300];
 #[cfg_attr(not(windows), allow(dead_code))]
 const POST_LAUNCH_COMPUTER_USE_GUARD_STABLE_ATTEMPTS: usize = 3;
+static PET_OVERLAY_SYNC_FAILED: AtomicBool = AtomicBool::new(false);
+static PET_CURSOR_DRIVER_FAILED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexLaunch {
@@ -771,14 +774,25 @@ impl LaunchHooks for DefaultLaunchHooks {
     async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
+            #[cfg(windows)]
+            let pet_cursor_task = tokio::spawn(run_pet_real_mouse_cursor_driver(debug_port));
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => break,
                     _ = interval.tick() => {
-                        let _ = check_and_reinject_bridge(debug_port, helper_port).await;
+                        let (pet_result, _) = tokio::join!(
+                            sync_pet_real_mouse_overlay(debug_port, helper_port),
+                            check_and_reinject_bridge(debug_port, helper_port),
+                        );
+                        record_pet_overlay_sync_result(debug_port, helper_port, pet_result);
                     }
                 }
+            }
+            #[cfg(windows)]
+            {
+                pet_cursor_task.abort();
+                let _ = pet_cursor_task.await;
             }
         });
         if let Some(runtime) = self
@@ -1106,6 +1120,27 @@ fn overlay_image_response() -> (String, Vec<u8>, String, &'static str) {
         ),
         Err(_) => not_found(),
     }
+}
+
+#[cfg(windows)]
+fn windows_logical_cursor_position() -> anyhow::Result<(i32, i32)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_UNAWARE_GDISCALED, SetThreadDpiAwarenessContext,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let previous = unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE_GDISCALED) };
+    if previous.0.is_null() {
+        anyhow::bail!("SetThreadDpiAwarenessContext failed");
+    }
+    let mut point = POINT::default();
+    let result = unsafe { GetCursorPos(&mut point) };
+    unsafe {
+        SetThreadDpiAwarenessContext(previous);
+    }
+    result.ok().context("GetCursorPos failed")?;
+    Ok((point.x, point.y))
 }
 
 fn overlay_image_content_type(path: &Path) -> Option<&'static str> {
@@ -1828,6 +1863,200 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         &[script],
     )
     .await
+}
+
+async fn confirmed_pet_overlay_targets(
+    debug_port: u16,
+) -> anyhow::Result<Vec<crate::cdp::CdpTarget>> {
+    let targets = crate::cdp::list_targets(debug_port).await?;
+    let mut confirmed = Vec::new();
+    for target in targets
+        .into_iter()
+        .filter(crate::cdp::is_avatar_overlay_page_target)
+    {
+        let Some(websocket_url) = target.web_socket_debugger_url.as_deref() else {
+            continue;
+        };
+        if pet_overlay_supports_v2_cursor(websocket_url).await {
+            confirmed.push(target);
+        }
+    }
+    Ok(confirmed)
+}
+
+async fn pet_overlay_supports_v2_cursor(websocket_url: &str) -> bool {
+    crate::bridge::evaluate_script_with_await_promise(
+        websocket_url,
+        crate::assets::pet_real_mouse_capability_probe_script(),
+        true,
+    )
+    .await
+    .as_ref()
+    .is_ok_and(runtime_evaluate_result_is_true)
+}
+
+async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyhow::Result<()> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let enabled = settings.enhancements_enabled && settings.codex_app_pet_real_mouse_look;
+    let targets = crate::cdp::list_targets(debug_port).await?;
+    for target in targets
+        .iter()
+        .filter(|target| crate::cdp::is_avatar_overlay_page_target(target))
+    {
+        let Some(websocket_url) = target.web_socket_debugger_url.as_deref() else {
+            continue;
+        };
+        let supports_v2 = enabled && pet_overlay_supports_v2_cursor(websocket_url).await;
+        let script = if supports_v2 {
+            crate::assets::pet_real_mouse_script()
+        } else {
+            crate::assets::pet_real_mouse_stop_script()
+        };
+        crate::bridge::evaluate_script(websocket_url, script)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to evaluate pet overlay script in target {} ({})",
+                    target.id, target.url
+                )
+            })?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn run_pet_real_mouse_cursor_driver(debug_port: u16) {
+    loop {
+        let settings = SettingsStore::default().load().unwrap_or_default();
+        if !settings.enhancements_enabled || !settings.codex_app_pet_real_mouse_look {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            continue;
+        }
+
+        let targets = confirmed_pet_overlay_targets(debug_port)
+            .await
+            .unwrap_or_default();
+        if targets.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            continue;
+        }
+        let mut drivers = tokio::task::JoinSet::new();
+        for target in targets.iter().cloned() {
+            drivers.spawn(run_pet_real_mouse_target_driver(debug_port, target));
+        }
+        if let Some(result) = drivers.join_next().await {
+            if let Err(error) = result {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "pet.real_mouse_cursor_driver_join_failed",
+                    serde_json::json!({
+                        "debug_port": debug_port,
+                        "message": error.to_string()
+                    }),
+                );
+            }
+        }
+        for target in &targets {
+            if let Some(websocket_url) = target.web_socket_debugger_url.as_deref() {
+                let _ = crate::bridge::evaluate_script(
+                    websocket_url,
+                    crate::assets::pet_real_mouse_stop_script(),
+                )
+                .await;
+            }
+        }
+        drivers.abort_all();
+        while drivers.join_next().await.is_some() {}
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+}
+
+#[cfg(windows)]
+async fn run_pet_real_mouse_target_driver(debug_port: u16, target: crate::cdp::CdpTarget) {
+    let Some(websocket_url) = target.web_socket_debugger_url.as_deref() else {
+        return;
+    };
+    if let Err(error) =
+        crate::bridge::evaluate_script(websocket_url, crate::assets::pet_real_mouse_script()).await
+    {
+        record_pet_cursor_driver_failure(debug_port, &target, error);
+        return;
+    }
+
+    let mut ticks_until_settings_check = 10_u8;
+    let result = crate::bridge::run_periodic_evaluations(
+        websocket_url,
+        std::time::Duration::from_millis(100),
+        || {
+            if ticks_until_settings_check == 0 {
+                let settings = SettingsStore::default().load().unwrap_or_default();
+                if !settings.enhancements_enabled || !settings.codex_app_pet_real_mouse_look {
+                    return Ok(None);
+                }
+                ticks_until_settings_check = 10;
+            }
+            ticks_until_settings_check -= 1;
+            let (x, y) = windows_logical_cursor_position()?;
+            Ok(Some(crate::assets::pet_real_mouse_update_script(x, y)))
+        },
+    )
+    .await;
+
+    let _ =
+        crate::bridge::evaluate_script(websocket_url, crate::assets::pet_real_mouse_stop_script())
+            .await;
+    match result {
+        Ok(()) => {
+            PET_CURSOR_DRIVER_FAILED.store(false, Ordering::Relaxed);
+        }
+        Err(error) => record_pet_cursor_driver_failure(debug_port, &target, error),
+    }
+}
+
+#[cfg(windows)]
+fn record_pet_cursor_driver_failure(
+    debug_port: u16,
+    target: &crate::cdp::CdpTarget,
+    error: anyhow::Error,
+) {
+    if !PET_CURSOR_DRIVER_FAILED.swap(true, Ordering::Relaxed) {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "pet.real_mouse_cursor_driver_disconnected",
+            serde_json::json!({
+                "debug_port": debug_port,
+                "target_id": target.id,
+                "target_url": target.url,
+                "message": format!("{error:#}")
+            }),
+        );
+    }
+}
+
+fn record_pet_overlay_sync_result(debug_port: u16, helper_port: u16, result: anyhow::Result<()>) {
+    match result {
+        Ok(()) => {
+            if PET_OVERLAY_SYNC_FAILED.swap(false, Ordering::Relaxed) {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "pet.real_mouse_overlay_sync_recovered",
+                    serde_json::json!({
+                        "debug_port": debug_port,
+                        "helper_port": helper_port
+                    }),
+                );
+            }
+        }
+        Err(error) => {
+            if !PET_OVERLAY_SYNC_FAILED.swap(true, Ordering::Relaxed) {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "pet.real_mouse_overlay_sync_failed",
+                    serde_json::json!({
+                        "debug_port": debug_port,
+                        "helper_port": helper_port,
+                        "message": format!("{error:#}")
+                    }),
+                );
+            }
+        }
+    }
 }
 
 pub fn build_macos_open_command(

@@ -2,7 +2,8 @@ use base64::Engine;
 use codex_plus_core::assets;
 use codex_plus_core::bridge::{self, BRIDGE_BINDING_NAME};
 use codex_plus_core::cdp::{
-    CdpTarget, list_targets, pick_injectable_codex_page_target, pick_page_target,
+    CdpTarget, is_avatar_overlay_page_target, is_primary_codex_page_target, list_targets,
+    pick_injectable_codex_page_target, pick_page_target,
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -51,6 +52,72 @@ fn injection_script_prefixes_helper_url_and_sponsor_images() {
     assert!(script.contains(codex_plus_core::version::VERSION));
     assert!(script.contains("https://discord.gg/y96kX7A76v"));
     assert!(script.contains("data-codex-plus-discord"));
+}
+
+#[test]
+fn pet_real_mouse_settings_are_gated_to_windows_in_injected_ui() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("codexPlusIsWindowsPlatform"));
+    assert!(script.contains(r#"/\bWindows\b/i.test(navigator.userAgent || "")"#));
+    assert!(script.contains("codexPlusIsWindowsPlatform ? `<div"));
+}
+
+#[test]
+fn pet_real_mouse_script_uses_cdp_push_and_native_avatar_event() {
+    let script = assets::pet_real_mouse_script();
+
+    assert!(script.contains("avatar-overlay-computer-use-cursor-changed"));
+    assert!(script.contains("data-avatar-mascot"));
+    assert!(script.contains("nativeCursorActive"));
+    assert!(script.contains("transport: \"cdp-push\""));
+    assert!(script.contains("updateScreenPoint(point)"));
+    assert!(script.contains("mascot.matches(\":hover\")"));
+    assert!(script.contains("document.elementFromPoint(localPoint.x, localPoint.y)"));
+    assert!(script.contains("if (mascotHovered)"));
+    assert!(
+        script
+            .contains("document.visibilityState !== \"visible\" || dragging || nativeCursorActive")
+    );
+    assert!(script.contains("sendPoint(null).catch(disableUpdates)"));
+    assert!(script.contains("void cleared.catch(disableUpdates)"));
+    assert!(script.contains("dispatcher.dispatchHostMessage({ type: eventType, point: null })"));
+    assert!(script.contains("movementHoldMs = 1400"));
+    assert!(script.contains("activationRadius = 480"));
+    assert!(!script.contains("/pet/cursor-position"));
+    assert!(!script.contains("X-Codex-Plus-Pet-Token"));
+    assert!(script.contains("delete window.__codexPlusPetRealMouseLook"));
+}
+
+#[test]
+fn pet_real_mouse_capability_probe_rejects_v1_without_explicit_v2_evidence() {
+    let probe = assets::pet_real_mouse_capability_probe_script();
+
+    assert!(probe.contains("data-avatar-mascot"));
+    assert!(probe.contains("image.naturalWidth === 1536"));
+    assert!(probe.contains("image.naturalHeight === 2288"));
+    assert!(!probe.contains("new Image()"));
+    assert!(probe.contains("if (!currentSpriteIsV2) return false"));
+    assert!(!probe.contains("spriteVersionNumber"));
+    assert!(probe.contains("dispatchHostMessage"));
+    assert!(probe.contains("typeof value.subscribe === \"function\""));
+    assert!(!probe.contains("__codexPlusPetRealMouseLook"));
+    assert!(!probe.contains("runtimeVersion"));
+}
+
+#[test]
+fn pet_real_mouse_update_script_stops_when_runtime_capability_is_missing() {
+    let script = assets::pet_real_mouse_update_script(-125, 640);
+
+    assert!(script.contains("data-avatar-mascot"));
+    assert!(script.contains("image.naturalWidth === 1536"));
+    assert!(script.contains("image.naturalHeight === 2288"));
+    assert!(script.contains("updateScreenPoint?.({ x: -125, y: 640 }) === true"));
+}
+
+#[test]
+fn pet_real_mouse_stop_script_retires_existing_runtime() {
+    assert!(assets::pet_real_mouse_stop_script().contains("__codexPlusPetRealMouseLook?.stop?.()"));
 }
 
 #[test]
@@ -1178,6 +1245,67 @@ fn pick_injectable_codex_page_target_accepts_chatgpt_desktop_error_page() {
         .expect("ChatGPT desktop error page should be selected");
 
     assert_eq!(picked.id, "chatgpt-error");
+}
+
+#[test]
+fn avatar_overlay_target_detection_is_narrow() {
+    let overlay = target(
+        "avatar",
+        "page",
+        "ChatGPT Avatar Overlay",
+        "app://-/index.html?initialRoute=%2Favatar-overlay",
+        Some("ws://avatar"),
+    );
+    let main = target(
+        "main",
+        "page",
+        "ChatGPT",
+        "https://chatgpt.com/",
+        Some("ws://main"),
+    );
+
+    assert!(is_avatar_overlay_page_target(&overlay));
+    assert!(!is_primary_codex_page_target(&overlay));
+    assert!(!is_avatar_overlay_page_target(&main));
+    assert!(is_primary_codex_page_target(&main));
+    assert!(!is_avatar_overlay_page_target(&target(
+        "external",
+        "page",
+        "avatar-overlay",
+        "https://example.test/avatar-overlay",
+        Some("ws://external"),
+    )));
+}
+
+#[test]
+fn primary_target_selection_skips_v1_and_v2_overlay_candidates() {
+    let targets = vec![
+        target(
+            "v1-overlay",
+            "page",
+            "Codex",
+            "app://-/index.html?initialRoute=%2Favatar-overlay",
+            Some("ws://v1"),
+        ),
+        target(
+            "v2-overlay",
+            "page",
+            "Codex",
+            "app://-/index.html?initialRoute=/avatar-overlay",
+            Some("ws://v2"),
+        ),
+        target(
+            "main",
+            "page",
+            "Codex",
+            "app://-/index.html",
+            Some("ws://main"),
+        ),
+    ];
+
+    let selected = pick_injectable_codex_page_target(&targets).unwrap();
+
+    assert_eq!(selected.id, "main");
 }
 
 #[test]
