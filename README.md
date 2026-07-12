@@ -103,22 +103,6 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
   <tr>
     <td align="center">
-      <a href="https://api.icreat.ai">
-        <img src="docs/images/sponsor-icreat-api.jpg" alt="iCreat API" height="80">
-      </a>
-    </td>
-    <td><a href="https://api.icreat.ai"><strong>iCreat API</strong></a><br>感谢 iCreat API 赞助了本项目！iCreat API 是面向个人开发者、团队和企业的高性能 AI 模型 API 中转平台，稳定接入官方渠道，覆盖谷歌、火山、昆仑万维、腾讯云等开白名单资源。平台集成 Anthropic、ByteDance、OpenAI、DeepSeek、Google、Minimax、Kwai 等主流供应商，提供超 60 款模型调用，并通过统一控制台支持多维度模型筛选、计费类型管理和分组权限控制。支持 Pay as you go 与余额计费，企业用户可正常开票并获得专属对接服务。</td>
-  </tr>
-  <tr>
-    <td align="center">
-      <a href="https://github.com/Liuchun-oss/codelf-agent">
-        <img src="docs/images/sponsor-codelf.png" alt="Codelf" height="80">
-      </a>
-    </td>
-    <td><a href="https://github.com/Liuchun-oss/codelf-agent"><strong>Codelf</strong></a><br>Codelf 是内置自主式 AI Agent 的桌面应用，也是一款完整编辑器。它支持用自然语言开发项目、整理资料、操作电脑和调用本地程序，国内可直接使用，支持多家大模型，并通过高上下文缓存命中降低使用成本。</td>
-  </tr>
-  <tr>
-    <td align="center">
       <a href="https://xc.y1yun.net/">
         <img src="docs/images/sponsor-yiyun-tech.jpg" alt="屹芸科技" height="80">
       </a>
@@ -173,14 +157,35 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
     </td>
     <td><a href="https://hb-api.online/register?aff=8KA2ZKWNHND8"><strong>百可为AI</strong></a><br>百可为AI 是面向开发者、团队和 AI 工具用户的一站式大模型 API 服务平台，支持 Claude、OpenAI、Gemini、Codex 等主流模型能力接入。平台提供稳定中转、灵活计费、用量统计、余额管理和多场景 API 调用能力，适合 Claude Code、Codex、AI 生图、自动化脚本和各类智能应用长期使用。新用户注册可领取免费额度，开发者可快速接入、即开即用，让 AI 能力更稳定、更高效、更省心。</td>
   </tr>
+  <tr>
+    <td align="center">
+      <a href="https://api.sublyx.org/register?aff=JMNUFYR8XAH6">
+        <img src="docs/images/sponsor-sublyx.png" alt="Sublyx" width="220">
+      </a>
+    </td>
+    <td><a href="https://api.sublyx.org/register?aff=JMNUFYR8XAH6"><strong>Sublyx｜AI API Gateway</strong></a><br>感谢 Sublyx 赞助本项目！Sublyx 是面向开发者与团队的 AI API 聚合网关，一个 API Key 即可统一接入 OpenAI、Claude、Gemini 等主流模型服务，支持 OpenAI compatible 和 Anthropic Messages 等兼容接口，可用于 Codex、Claude Code、Cherry Studio、OpenAI SDK 等常见开发工具。平台提供统一控制台、用量管理、稳定线路与按需付费能力，适合个人开发、团队协作和 Agent 工作流。Codex++ 用户通过<a href="https://api.sublyx.org/register?aff=JMNUFYR8XAH6">此链接注册 Sublyx</a>并使用优惠码 <code>CDXPP</code>，可额外领取 $10 使用额度。</td>
+  </tr>
 </table>
 
-## 支持项目
+## 支持与交流
 
-<p align="center">
-  <img src="docs/images/sponsor-alipay.jpg" alt="支付宝赞赏码" width="220">
-  <img src="docs/images/sponsor-wechat.jpg" alt="微信赞赏码" width="220">
-</p>
+<table>
+  <tr>
+    <td align="center" width="55%">
+      <strong>支持项目</strong><br><br>
+      <img src="docs/images/sponsor-alipay.jpg" alt="支付宝赞赏码" width="180">
+      <img src="docs/images/sponsor-wechat.jpg" alt="微信赞赏码" width="180">
+    </td>
+    <td align="center" width="45%">
+      <strong>加入交流群</strong><br><br>
+      <img src="docs/images/discussion-group-qr.jpg" alt="Codex++ 微信群二维码" width="220"><br><br>
+      QQ 群：<code>830629290</code><br>
+      微信群：<a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">获取最新二维码</a><br>
+      Telegram：<a href="https://t.me/CodexPlusPlus">CodexPlusPlus</a><br>
+      友情链接：<a href="https://linux.do">LINUX DO</a>
+    </td>
+  </tr>
+</table>
 
 ## 当前功能
 
@@ -307,15 +312,6 @@ scripts/installer/
   windows/CodexPlusPlus.nsi     Windows NSIS 安装包
   macos/package-dmg.sh          macOS DMG 打包
 ```
-
-## 交流与支持
-
-- QQ 群：`830629290`
-- 微信群：<a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">获取最新二维码</a>
-- Telegram：<https://t.me/CodexPlusPlus>
-- 友情链接：[LINUX DO](https://linux.do)
-
-<img src="docs/images/discussion-group-qr.jpg" alt="Codex++ 微信群二维码" width="260">
 
 ## 开源协议
 

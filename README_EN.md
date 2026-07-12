@@ -95,14 +95,6 @@ For first-time setup, open the manager, verify the detected app path, configure 
   </tr>
   <tr>
     <td align="center">
-      <a href="https://github.com/Liuchun-oss/codelf-agent">
-        <img src="docs/images/sponsor-codelf.png" alt="Codelf" width="110">
-      </a>
-    </td>
-    <td><a href="https://github.com/Liuchun-oss/codelf-agent"><strong>Codelf</strong></a><br>Codelf is a desktop app with an autonomous AI Agent and a full editor. It can help users build projects, organize materials, operate local apps, and work with multiple AI model providers through natural language, with direct access in China and high context-cache efficiency.</td>
-  </tr>
-  <tr>
-    <td align="center">
       <a href="https://xc.y1yun.net/">
         <img src="docs/images/sponsor-yiyun-tech.jpg" alt="Yiyun Technology" width="150">
       </a>
@@ -141,14 +133,35 @@ For first-time setup, open the manager, verify the detected app path, configure 
     </td>
     <td><a href="https://hb-api.online/register?aff=8KA2ZKWNHND8"><strong>Baikewei AI</strong></a><br>Baikewei AI is an all-in-one large-model API platform for developers, teams, and AI tool users. It supports Claude, OpenAI, Gemini, Codex, and other mainstream model capabilities, with stable relay access, flexible billing, usage statistics, balance management, and APIs for Claude Code, Codex, image generation, automation scripts, and intelligent applications. New users can claim free credit and start integrating immediately.</td>
   </tr>
+  <tr>
+    <td align="center">
+      <a href="https://api.sublyx.org/register?aff=JMNUFYR8XAH6">
+        <img src="docs/images/sponsor-sublyx.png" alt="Sublyx" width="220">
+      </a>
+    </td>
+    <td><a href="https://api.sublyx.org/register?aff=JMNUFYR8XAH6"><strong>Sublyx | AI API Gateway</strong></a><br>Thanks to Sublyx for sponsoring this project! Sublyx is an AI API aggregation gateway for developers and teams. One API Key provides unified access to OpenAI, Claude, Gemini, and other leading model services through OpenAI-compatible and Anthropic Messages-compatible APIs. It works with Codex, Claude Code, Cherry Studio, the OpenAI SDK, and other common development tools. The platform provides a unified console, usage management, stable routes, and pay-as-you-go billing for individual development, team collaboration, and Agent workflows. Codex++ users who <a href="https://api.sublyx.org/register?aff=JMNUFYR8XAH6">register through this link</a> and use promo code <code>CDXPP</code> receive an additional $10 in usage credit.</td>
+  </tr>
 </table>
 
-## Support the Project
+## Support and Community
 
-<p align="center">
-  <img src="docs/images/sponsor-alipay.jpg" alt="Alipay sponsor QR code" width="220">
-  <img src="docs/images/sponsor-wechat.jpg" alt="WeChat sponsor QR code" width="220">
-</p>
+<table>
+  <tr>
+    <td align="center" width="55%">
+      <strong>Support the Project</strong><br><br>
+      <img src="docs/images/sponsor-alipay.jpg" alt="Alipay sponsor QR code" width="180">
+      <img src="docs/images/sponsor-wechat.jpg" alt="WeChat sponsor QR code" width="180">
+    </td>
+    <td align="center" width="45%">
+      <strong>Join the Community</strong><br><br>
+      <img src="docs/images/discussion-group-qr.jpg" alt="Codex++ WeChat group QR code" width="220"><br><br>
+      QQ group: <code>830629290</code><br>
+      WeChat: <a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">latest group QR code</a><br>
+      Telegram: <a href="https://t.me/CodexPlusPlus">CodexPlusPlus</a><br>
+      Friendly link: <a href="https://linux.do">LINUX DO</a>
+    </td>
+  </tr>
+</table>
 
 ## Current Features
 
@@ -262,15 +275,6 @@ scripts/installer/
   windows/CodexPlusPlus.nsi     Windows NSIS installer
   macos/package-dmg.sh          macOS DMG packager
 ```
-
-## Community and Support
-
-- QQ group: `830629290`
-- WeChat: [latest group QR code](https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#)
-- Telegram: <https://t.me/CodexPlusPlus>
-- Friendly link: [LINUX DO](https://linux.do)
-
-<img src="docs/images/discussion-group-qr.jpg" alt="Codex++ WeChat group QR code" width="260">
 
 ## License
 
