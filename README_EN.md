@@ -149,8 +149,8 @@ For first-time setup, open the manager, verify the detected app path, configure 
   <tr>
     <td align="center" width="55%">
       <strong>Support the Project</strong><br><br>
-      <img src="docs/images/sponsor-alipay.jpg" alt="Alipay sponsor QR code" width="180">
-      <img src="docs/images/sponsor-wechat.jpg" alt="WeChat sponsor QR code" width="180">
+      <img src="docs/images/sponsor-alipay.jpg" alt="Alipay sponsor QR code" width="220">
+      <img src="docs/images/sponsor-wechat.jpg" alt="WeChat sponsor QR code" width="220">
     </td>
     <td align="center" width="45%">
       <strong>Join the Community</strong><br><br>

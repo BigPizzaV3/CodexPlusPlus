@@ -173,8 +173,8 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   <tr>
     <td align="center" width="55%">
       <strong>支持项目</strong><br><br>
-      <img src="docs/images/sponsor-alipay.jpg" alt="支付宝赞赏码" width="180">
-      <img src="docs/images/sponsor-wechat.jpg" alt="微信赞赏码" width="180">
+      <img src="docs/images/sponsor-alipay.jpg" alt="支付宝赞赏码" width="220">
+      <img src="docs/images/sponsor-wechat.jpg" alt="微信赞赏码" width="220">
     </td>
     <td align="center" width="45%">
       <strong>加入交流群</strong><br><br>
