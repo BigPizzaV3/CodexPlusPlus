@@ -1,7 +1,8 @@
 /// VLM (Vision Language Model) analysis for text-only models.
 /// Batches images into groups, sends each batch as one API call.
 /// Includes image-description cache, retry, concurrency limits,
-/// round-depth control, and dynamic context-window overflow protection.
+/// round-depth control, dynamic context-window overflow protection,
+/// and two-phase (sync + background) analysis with X-governed injection.
 use serde_json::Value;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -10,11 +11,12 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 const BATCH_SIZE: usize = 5;
-/// 每次请求最多分析多少张历史图片（缓存命中不占配额，当前轮不限）。
-/// 未覆盖的图片在后续请求中靠缓存逐次推进补齐。
-const MAX_HISTORICAL_IMAGES_PER_REQUEST: usize = 10;
-/// 仅分析最近 N 条含图 user 消息内的图片，超过的直接 strip 且永不分析。
-const ANALYZE_DEPTH_LIMIT: usize = 20;
+/// 黄金窗口：Phase 1 同步补全的最近 N 轮 user 消息。
+const GOLDEN_WINDOW_DEPTH: usize = 10;
+/// Phase 2 后台可推进的最大深度（user 消息轮数）。
+const ANALYZE_DEPTH_LIMIT: usize = 50;
+/// 每条描述的平均 token 预算（~200 chars → estimate_tokens = 200/2 = 100）。
+const AVG_DESC_BUDGET: u64 = 100;
 /// per-batch 最大重试次数（共 3 次尝试）。
 const MAX_RETRIES: u32 = 2;
 /// 全局 VLM 并发上限（跨请求）。
@@ -23,6 +25,8 @@ const MAX_GLOBAL_VLM_CONCURRENCY: usize = 5;
 const ANALYZE_ALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// VLM 返回的错误文本截断长度。
 const ERROR_BODY_TRUNCATE: usize = 256;
+/// 上下文窗口安全余量（0.9 = 留 10% 给上游 tokenizer 差异）。
+const CONTEXT_SAFETY_MARGIN: f64 = 0.9;
 
 // ── Global state ──────────────────────────────────────────────────────
 
@@ -79,6 +83,7 @@ fn cache_insert(key: String, value: String) {
 }
 
 /// 判断 key 是否在缓存中且未过期。
+#[allow(dead_code)]
 fn cache_contains(key: &str) -> bool {
     let cache = VLM_CACHE.lock().unwrap();
     cache
@@ -139,22 +144,27 @@ fn collect_urls(msg: &Value) -> Vec<String> {
     urls
 }
 
-/// 收集最近 `depth_limit` 条含图 user 消息（最新优先），返回 `(message_index, Vec<url>)`。
+/// 收集最近 `depth_limit` 轮对话（所有 user 消息，无论是否带图）中的带图消息（最新优先），
+/// 返回 `(message_index, Vec<url>)`。
 fn collect_recent_image_messages(
     messages: &[Value],
     depth_limit: usize,
 ) -> Vec<(usize, Vec<String>)> {
-    let mut image_msgs: Vec<(usize, Vec<String>)> = messages
+    // 1. 取最近 depth_limit 条 user 消息（全部，不限是否带图）
+    let user_indices: Vec<usize> = messages
         .iter()
         .enumerate()
         .filter(|(_, m)| m.get("role").and_then(Value::as_str) == Some("user"))
-        .map(|(i, m)| (i, collect_urls(m)))
-        .filter(|(_, urls)| !urls.is_empty())
+        .map(|(i, _)| i)
+        .rev()
+        .take(depth_limit)
         .collect();
-    // 最新优先
-    image_msgs.reverse();
-    image_msgs.truncate(depth_limit);
-    image_msgs
+    // 2. 在其中找出带图消息（已按最新优先排序）
+    user_indices
+        .into_iter()
+        .map(|i| (i, collect_urls(&messages[i])))
+        .filter(|(_, urls)| !urls.is_empty())
+        .collect()
 }
 
 // ── Image stripping ───────────────────────────────────────────────────
@@ -207,9 +217,10 @@ fn resolve_context_window(
     272_000
 }
 
-/// chars/4 粗估 token 数。对中文会高估，导致截断更保守——安全侧偏差。
+/// bytes/2 粗估 token 数。主流 tokenizer 对中英文混合内容的压缩比约 1.5-2 bytes/token，
+/// 用 bytes/2 确保估计值偏向保守，避免注入描述后实际 token 数超出模型窗口。
 fn estimate_tokens(messages: &[Value]) -> usize {
-    serde_json::to_string(messages).unwrap_or_default().len() / 4
+    serde_json::to_string(messages).unwrap_or_default().len() / 2
 }
 
 // ── VLM API call ──────────────────────────────────────────────────────
@@ -375,6 +386,33 @@ pub async fn analyze_all(
     Ok(results)
 }
 
+// ── Phase 2 后台分析 ────────────────────────────────────────────────────
+
+/// 后台分析图片并写入缓存（不注入到消息中）。
+/// 失败静默跳过，缓存保持未命中状态供后续请求重试。
+async fn background_analyze_and_cache(urls: &[String], config: &VlmConfig) {
+    if urls.is_empty() {
+        return;
+    }
+    match analyze_all(urls, config).await {
+        Ok(batch_results) => {
+            let mut url_offset = 0usize;
+            for batch_opt in &batch_results {
+                let batch_end = (url_offset + BATCH_SIZE).min(urls.len());
+                if let Some(text) = batch_opt {
+                    for url in &urls[url_offset..batch_end] {
+                        cache_insert(url_hash(url), text.clone());
+                    }
+                }
+                url_offset = batch_end;
+            }
+        }
+        Err(_) => {
+            // 后台失败 → 静默跳过，缓存保持未命中。
+        }
+    }
+}
+
 // ── Description injection ─────────────────────────────────────────────
 
 /// 向指定 user 消息末尾注入分析文本。
@@ -429,87 +467,115 @@ pub async fn strip_image_blocks(
     // 0. 上下文溢出保护：基于剥离图片后的纯文本预估，因为图片最终会被删掉。
     let context_window =
         resolve_context_window(model_windows_json, context_window_str, request_model);
+    // 留 10% 安全余量给上游 tokenizer 差异。
+    let effective_window = (context_window as f64 * CONTEXT_SAFETY_MARGIN) as u64;
     let current_tokens = {
         let mut stripped = messages.to_vec();
         strip_all_images(&mut stripped);
         estimate_tokens(&stripped)
     };
-    let available = context_window.saturating_sub(current_tokens as u64);
+    let available = effective_window.saturating_sub(current_tokens as u64);
     // 1 token 安全余量，防止零宽窗口。
     if available <= 1 {
+        // 上下文已满：剥离图片释放空间，注入占位符告知模型图片被跳过（而非静默丢弃）。
+        let image_count: usize = messages
+            .iter()
+            .rev()
+            .filter(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+            .take(1)
+            .flat_map(|m| collect_urls(m))
+            .count();
+        strip_all_images(messages);
+        if image_count > 0 {
+            inject_text_into_user_message(
+                messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+                    .expect("at least one user message exists"),
+                &format!(
+                    "\n[系统：当前轮次有 {} 张图片因上下文已满未完成 VLM 分析，图片已被清理以释放空间]",
+                    image_count
+                ),
+            );
+        }
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "vlm_context_overflow",
             json!({
                 "context_window": context_window,
                 "text_only_estimated_tokens": current_tokens,
+                "skipped_images": image_count,
             }),
         );
-        // 不注入、不删图，让上游自己处理。
         return;
     }
 
-    // 1. 收集最近 ANALYZE_DEPTH_LIMIT 条含图 user 消息（最新优先）。
-    let image_msgs = collect_recent_image_messages(messages, ANALYZE_DEPTH_LIMIT);
-    if image_msgs.is_empty() {
-        // 无图可用 → 仍需 strip 历史残留（如果有的话），但不调 VLM。
+    // 1. 计算注入预算 X = available / AVG_DESC_BUDGET。
+    let x_budget = (available / AVG_DESC_BUDGET) as usize;
+
+    // 2. 收集 50 轮对话中的带图消息（最新优先）。
+    let all_image_msgs = collect_recent_image_messages(messages, ANALYZE_DEPTH_LIMIT);
+    if all_image_msgs.is_empty() {
         strip_all_images(messages);
         return;
     }
 
-    // 2. 分离当前轮 vs 历史。当前轮 = 最后一条 user 消息中的图片（不限量）。
-    let last_user_index = messages
+    // 3. 确定黄金窗口边界（最近 GOLDEN_WINDOW_DEPTH 轮 user 消息中最早一条的 index）。
+    let golden_user_cutoff = {
+        let user_indices: Vec<usize> = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.get("role").and_then(Value::as_str) == Some("user"))
+            .map(|(i, _)| i)
+            .rev()
+            .take(GOLDEN_WINDOW_DEPTH)
+            .collect();
+        user_indices.last().copied().unwrap_or(0)
+    };
+    let golden_total: usize = all_image_msgs
+        .iter()
+        .filter(|(idx, _)| *idx >= golden_user_cutoff)
+        .map(|(_, urls)| urls.len())
+        .sum(); // N
+    let deep_total: usize = all_image_msgs
+        .iter()
+        .filter(|(idx, _)| *idx < golden_user_cutoff)
+        .map(|(_, urls)| urls.len())
+        .sum(); // M
+
+    // 4. 分离当前轮（最后一条 user 消息）。
+    let current_round_msg_idx: Option<usize> = messages
         .iter()
         .rev()
         .position(|m| m.get("role").and_then(Value::as_str) == Some("user"))
         .map(|pos| messages.len() - 1 - pos);
-    let current_round_index: Option<usize> =
-        last_user_index.and_then(|li| image_msgs.iter().position(|(idx, _)| *idx == li));
 
-    // 诊断：记录本请求的含图轮次信息
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "vlm_strip_entry",
         json!({
-            "image_rounds": image_msgs.len(),
-            "current_round_idx": current_round_index,
-            "total_historical_urls": image_msgs.iter()
-                .enumerate()
-                .filter(|(i, _)| Some(*i) != current_round_index)
-                .map(|(_, (_, urls))| urls.len())
-                .sum::<usize>(),
+            "image_rounds": all_image_msgs.len(),
+            "golden_total": golden_total,   // N
+            "deep_total": deep_total,       // M
+            "x_budget": x_budget,           // X
         }),
     );
 
-    // 3. 全局历史图片上限：每请求最多分析 MAX_HISTORICAL_IMAGES_PER_REQUEST 张历史图片。
-    // 缓存命中不占配额。当前轮不限量。URL 收集从近到远，跨轮计数。
+    // 5. Phase 1 同步分析 + 注入。
     let mut descriptions: std::collections::BTreeMap<usize, String> =
-        std::collections::BTreeMap::new(); // message_index → description text
-    let mut analyzed_set: std::collections::HashSet<String> = std::collections::HashSet::new(); // 本轮已发送 VLM 分析的 URL (key)，用于后续占位符统计
+        std::collections::BTreeMap::new();
+    let mut historical_injected: usize; // 黄金窗口 + 深层缓存命中合计，≤ X（延后赋值）
 
-    for (pos_in_list, (msg_idx, urls)) in image_msgs.iter().enumerate() {
-        let is_current = Some(pos_in_list) == current_round_index;
-
-        let mut round_urls: Vec<String> = Vec::new();
-        for url in urls {
-            let key = url_hash(url);
-            if let Some(cached) = cache_get(&key) {
-                descriptions
-                    .entry(*msg_idx)
-                    .or_default()
-                    .push_str(&format!("\n[图片描述] {cached}"));
-            } else if is_current || analyzed_set.len() < MAX_HISTORICAL_IMAGES_PER_REQUEST {
-                round_urls.push(url.clone());
-                if !is_current {
-                    analyzed_set.insert(key);
-                }
-            }
-        }
-
+    // ── 辅助函数：对一批 URL 调 VLM 并注入描述 ──
+    async fn analyze_and_inject(
+        round_urls: &[String],
+        vlm_config: &VlmConfig,
+        descriptions: &mut std::collections::BTreeMap<usize, String>,
+        msg_idx: usize,
+    ) -> Result<(), ()> {
         if round_urls.is_empty() {
-            continue;
+            return Ok(());
         }
-
-        // 4. 本轮 VLM 分析（batch 仅在本轮 URL 内切分，永不跨轮）。
-        match analyze_all(&round_urls, vlm_config).await {
+        match analyze_all(round_urls, vlm_config).await {
             Ok(batch_results) => {
                 let mut url_offset = 0usize;
                 for batch_opt in &batch_results {
@@ -523,77 +589,175 @@ pub async fn strip_image_blocks(
                             cache_insert(url_hash(url), batch_text.clone());
                         }
                         descriptions
-                            .entry(*msg_idx)
+                            .entry(msg_idx)
                             .or_default()
                             .push_str(&format!("\n[图片描述] {batch_text}"));
                     }
                     url_offset = batch_end;
                 }
+                Ok(())
             }
-            Err(_) => {
-                if is_current {
-                    // 当前轮全部失败 → fail-closed：不删图，原样返回。
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "vlm_current_round_fail_closed",
-                        json!({
-                            "round_url_count": round_urls.len(),
-                            "is_current": true,
-                        }),
-                    );
-                    return;
-                }
-                // 历史轮失败 → 静默跳过，不影响当前轮。
-            }
+            Err(_) => Err(()),
         }
     }
 
-    // 5. 标记本轮未覆盖的历史图片（超全局配额或超出 depth）。
-    for (pos_in_list, (msg_idx, urls)) in image_msgs.iter().enumerate() {
-        if Some(pos_in_list) == current_round_index {
+    // 5a. 当前轮：不限量 VLM 同步分析，不计入 X 预算。
+    for (_, (msg_idx, urls)) in all_image_msgs.iter().enumerate() {
+        if Some(*msg_idx) != current_round_msg_idx {
             continue;
         }
-        // URL 既没有缓存也未发送 VLM → 本轮未覆盖，需后续请求补齐。
-        let unanalyzed = urls
-            .iter()
-            .filter(|u| {
-                let key = url_hash(u);
-                !cache_contains(&key) && !analyzed_set.contains(&key)
-            })
-            .count();
-        if unanalyzed > 0 {
-            descriptions
-                .entry(*msg_idx)
-                .or_default()
-                .push_str(&format!("\n[{}张历史图片需后续请求加载]", unanalyzed));
+        let mut round_urls: Vec<String> = Vec::new();
+        for url in urls {
+            let key = url_hash(url);
+            if let Some(cached) = cache_get(&key) {
+                descriptions
+                    .entry(*msg_idx)
+                    .or_default()
+                    .push_str(&format!("\n[图片描述] {cached}"));
+            } else {
+                round_urls.push(url.clone());
+            }
+        }
+        if analyze_and_inject(&round_urls, vlm_config, &mut descriptions, *msg_idx).await.is_err() {
+            // 当前轮 VLM 全部失败 → fail-closed。
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "vlm_current_round_fail_closed",
+                json!({
+                    "round_url_count": round_urls.len(),
+                    "is_current": true,
+                }),
+            );
+            return;
         }
     }
 
-    // 6. 超出 depth 的图片统一标记。
-    let depth_cutoff = image_msgs.last().map(|(idx, _)| *idx).unwrap_or(0);
-    let mut out_of_depth: Vec<(usize, usize)> = Vec::new();
-    for (i, msg) in messages.iter().enumerate() {
-        if msg.get("role").and_then(Value::as_str) == Some("user") {
-            let urls = collect_urls(msg);
-            if !urls.is_empty() && i < depth_cutoff {
-                out_of_depth.push((i, urls.len()));
+    // 5b. 黄金窗口：Phase 1 同步处理，计入 X 预算。
+    let cap = if x_budget <= 10 {
+        golden_total.min(x_budget)
+    } else {
+        golden_total.min(GOLDEN_WINDOW_DEPTH)
+    };
+    let mut golden_injected: usize = 0;
+
+    for (_, (msg_idx, urls)) in all_image_msgs.iter().enumerate() {
+        if Some(*msg_idx) == current_round_msg_idx || *msg_idx < golden_user_cutoff {
+            continue;
+        }
+        if golden_injected >= cap {
+            break;
+        }
+        let mut round_urls: Vec<String> = Vec::new();
+        for url in urls {
+            if golden_injected >= cap {
+                break;
             }
-            if !urls.is_empty() && i >= depth_cutoff {
-                let covered = image_msgs.iter().any(|(idx, _)| *idx == i);
-                if !covered {
-                    out_of_depth.push((i, urls.len()));
+            let key = url_hash(url);
+            if let Some(cached) = cache_get(&key) {
+                descriptions
+                    .entry(*msg_idx)
+                    .or_default()
+                    .push_str(&format!("\n[图片描述] {cached}"));
+                golden_injected += 1;
+            } else {
+                round_urls.push(url.clone());
+                golden_injected += 1;
+            }
+        }
+        if round_urls.is_empty() {
+            continue;
+        }
+        // 历史轮 VLM 失败 → 静默跳过，已计数的 golden_injected 不减（窗口已占用）。
+        let _ = analyze_and_inject(&round_urls, vlm_config, &mut descriptions, *msg_idx).await;
+    }
+    historical_injected = golden_injected;
+
+    // 5c. 深层缓存命中注入（计入 X 预算余量）。
+    // 从近到远填充：越靠近当前轮的消息相关性越高，优先注入。
+    if historical_injected < x_budget {
+        let mut remaining = x_budget - historical_injected;
+        for (msg_idx, urls) in all_image_msgs.iter() {
+            if Some(*msg_idx) == current_round_msg_idx || *msg_idx >= golden_user_cutoff {
+                continue;
+            }
+            if remaining == 0 {
+                break;
+            }
+            for url in urls {
+                if remaining == 0 {
+                    break;
+                }
+                let key = url_hash(url);
+                if let Some(cached) = cache_get(&key) {
+                    descriptions
+                        .entry(*msg_idx)
+                        .or_default()
+                        .push_str(&format!("\n[图片描述] {cached}"));
+                    remaining -= 1;
+                    historical_injected += 1;
                 }
             }
         }
     }
-    for (msg_idx, count) in &out_of_depth {
-        descriptions
-            .entry(*msg_idx)
-            .or_default()
-            .push_str(&format!("\n[{}张早期图片超出分析范围]", count));
-    }
+
+    // 6. Phase 2 后台准备：在 strip 之前收集未缓存的 URL 列表。
+    // Phase 2 仅当 X > 10 时触发，分析 50 轮深度内未缓存的图片，写入缓存供后续请求使用。
+    let bg_config_opt = if x_budget > 10 {
+        let bg_target = x_budget.saturating_sub(golden_injected);
+        if bg_target > 0 {
+            let mut bg_urls: Vec<String> = Vec::new();
+            // 6a. 黄金窗口中未被 Phase 1 覆盖的未缓存 URL（N > cap 场景）。
+            for (_, (msg_idx, urls)) in all_image_msgs.iter().enumerate() {
+                if Some(*msg_idx) == current_round_msg_idx || *msg_idx < golden_user_cutoff {
+                    continue;
+                }
+                if bg_urls.len() >= bg_target {
+                    break;
+                }
+                for url in urls {
+                    if bg_urls.len() >= bg_target {
+                        break;
+                    }
+                    let key = url_hash(url);
+                    if !cache_contains(&key) {
+                        bg_urls.push(url.clone());
+                    }
+                }
+            }
+            // 6b. 深层历史中未缓存的 URL（N ≤ X 场景，推进到 50 轮边界）。
+            if bg_urls.len() < bg_target {
+                for (msg_idx, urls) in all_image_msgs.iter() {
+                    if Some(*msg_idx) == current_round_msg_idx || *msg_idx >= golden_user_cutoff {
+                        continue;
+                    }
+                    if bg_urls.len() >= bg_target {
+                        break;
+                    }
+                    for url in urls {
+                        if bg_urls.len() >= bg_target {
+                            break;
+                        }
+                        let key = url_hash(url);
+                        if !cache_contains(&key) {
+                            bg_urls.push(url.clone());
+                        }
+                    }
+                }
+            }
+            if !bg_urls.is_empty() {
+                Some((vlm_config.clone(), bg_urls))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // 7. 截断注入以适配上下文窗口。
-    let available_chars = available.saturating_mul(4) as usize;
+    // estimate_tokens = bytes/2，故 available × 2 = 可用字节预算。
+    let available_chars = available.saturating_mul(2) as usize;
     let mut total_chars = 0usize;
     let mut truncated = false;
     for (_msg_idx, desc) in descriptions.iter_mut().rev() {
@@ -625,6 +789,8 @@ pub async fn strip_image_blocks(
         "vlm_strip_done",
         json!({
             "descriptions_injected": descriptions.len(),
+            "historical_injected": historical_injected,
+            "x_budget": x_budget,
         }),
     );
 
@@ -633,6 +799,19 @@ pub async fn strip_image_blocks(
         if *msg_idx < messages.len() {
             inject_text_into_user_message(&mut messages[*msg_idx], desc);
         }
+    }
+
+    // 10. Phase 2 后台：异步分析未缓存图片写入缓存（X > 10 时触发）。
+    if let Some((bg_config, bg_urls)) = bg_config_opt {
+        tokio::spawn(async move {
+            let _ = background_analyze_and_cache(&bg_urls, &bg_config).await;
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "vlm_phase2_done",
+                json!({
+                    "urls_analyzed": bg_urls.len(),
+                }),
+            );
+        });
     }
 }
 
@@ -963,8 +1142,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn strip_image_blocks_context_overflow_preserves_images() {
-        // 上下文已满（available <= 1）时，原样放行。
+    async fn strip_image_blocks_context_overflow_strips_images() {
+        // 上下文已满（available <= 1）时，剥离图片释放空间，注入占位符告知模型图片被跳过。
         let mut messages = vec![serde_json::json!({
             "role": "user",
             "content": [
@@ -988,12 +1167,17 @@ mod tests {
         )
         .await;
 
-        // 图片未被删除（fail-closed）
+        // 图片已被剥离（防止图片叠加纯文本导致溢出更严重）
         let parts = messages[0]["content"].as_array().unwrap();
         let has_image = parts
             .iter()
             .any(|p| p.get("type").and_then(Value::as_str) == Some("image_url"));
-        assert!(has_image, "image should be preserved on overflow");
+        assert!(!has_image, "image should be stripped on overflow to free space");
+        // 注入跳过占位符
+        let texts: Vec<&str> = parts.iter().filter_map(|p| p["text"].as_str()).collect();
+        let joined = texts.join(" ");
+        assert!(joined.contains("上下文已满"), "should contain overflow placeholder: {joined}");
+        assert!(joined.contains("1 张图片"), "should mention image count: {joined}");
     }
 
     #[tokio::test]
@@ -1106,8 +1290,12 @@ mod tests {
 
     // ── multi-round history test ─────────────────────────────────
 
-    /// 25 轮对话（每轮 15 张图），全部预填充缓存。
-    /// 验证：深度限制（20 轮）、per-round 限制标记、上下文溢出截断。
+    /// 25 轮对话（每轮 15 张图），全部预填充缓存。context_window=900000 → X=8093。
+    /// 验证 plan_v2 X-governed 注入：
+    /// - 当前轮（round 24）：不限量，15 张全注入
+    /// - 黄金窗口（rounds 15-23）：cap=min(N,10)=10，仅 round 23 的前 10 张注入
+    /// - 深层（rounds 0-14）：缓存命中注入，15×15=225 张全注入（远小于 X 余量）
+    /// - 截断未触发（描述总字符数远小于 available×2）
     #[tokio::test]
     async fn strip_image_blocks_multi_round_depth_and_per_round_limit() {
         const ROUNDS: usize = 25;
@@ -1166,7 +1354,7 @@ mod tests {
                 .join(" ")
         };
 
-        // Round 24（当前轮）：全部 15 张图片描述注入，无 overflow 标记
+        // Round 24（当前轮）：不限量，全部 15 张图片描述注入
         let current = collect_text(24);
         for img in 0..IMGS_PER_ROUND {
             assert!(
@@ -1174,36 +1362,126 @@ mod tests {
                 "current round missing desc for img {img}"
             );
         }
-        assert!(
-            !current.contains("需后续轮次加载"),
-            "current round should not have overflow marker"
-        );
 
-        // Rounds 5-23（历史，深度内）：全部 15 张描述注入（缓存命中不消耗配额），无 overflow 标记
-        for round in 5..24 {
+        // Rounds 15-23（黄金窗口）：cap=min(135,10)=10，仅 round 23 的前 10 张注入
+        // round 23 最先处理（最新优先），10 张后达到 cap，rounds 22-15 无注入
+        for round in 15..=22 {
+            let text = collect_text(round);
+            for img in 0..IMGS_PER_ROUND {
+                assert!(
+                    !text.contains(&format!("round{round}-img{img}-desc")),
+                    "round {round} img {img}: golden cap exhausted, should NOT be injected"
+                );
+            }
+        }
+        // round 23: 前 10 张注入
+        let r23_text = collect_text(23);
+        for img in 0..10 {
+            assert!(
+                r23_text.contains(&format!("round23-img{img}-desc")),
+                "round 23 img {img}: within golden cap, should be injected"
+            );
+        }
+        for img in 10..IMGS_PER_ROUND {
+            assert!(
+                !r23_text.contains(&format!("round23-img{img}-desc")),
+                "round 23 img {img}: beyond golden cap, should NOT be injected"
+            );
+        }
+
+        // Rounds 0-14（深层）：全部缓存命中注入（225 张 < X 余量 8083）
+        for round in 0..=14 {
             let text = collect_text(round);
             for img in 0..IMGS_PER_ROUND {
                 assert!(
                     text.contains(&format!("round{round}-img{img}-desc")),
-                    "round {round}: cached descriptions should all be injected"
+                    "round {round} img {img}: deep cache hit, should be injected"
                 );
             }
-            assert!(
-                !text.contains("需后续请求加载"),
-                "round {round}: all cached, should not have overflow marker, got: {text}"
+        }
+    }
+
+    /// X ≤ 10 场景：context_window=800 → X=6。黄金窗口有 12 张缓存图。
+    /// 验证：golden capped at min(N, X)=6，深层 0 张，后台不触发。
+    #[tokio::test]
+    async fn strip_image_blocks_tight_window_x_lte_10_golden_capped() {
+        // 预填充缓存：12 张历史 + 1 张当前
+        for i in 0..12 {
+            cache_insert(
+                url_hash(&format!("https://tight.example.com/hist-{i}.png")),
+                format!("hist-desc-{i}"),
             );
         }
+        cache_insert(
+            url_hash("https://tight.example.com/curr.png"),
+            "curr-desc".to_string(),
+        );
 
-        // Rounds 0-4（超出 20 轮深度）：标记但不注入描述
-        for round in 0..5 {
-            let text = collect_text(round);
+        let mut history_parts = vec![serde_json::json!({"type": "text", "text": "history"})];
+        for i in 0..12 {
+            history_parts.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": {"url": format!("https://tight.example.com/hist-{i}.png")}
+            }));
+        }
+
+        let mut messages = vec![
+            serde_json::json!({"role": "user", "content": history_parts}),
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "current"},
+                    {"type": "image_url", "image_url": {"url": "https://tight.example.com/curr.png"}},
+                ]
+            }),
+        ];
+
+        let vlm_config = VlmConfig {
+            api_key: String::new(),
+            model: String::new(),
+            base_url: String::new(),
+        };
+
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "800", "gpt-4").await;
+
+        // 所有图片已删除
+        for msg in &messages {
+            let parts = msg["content"].as_array().unwrap();
+            assert!(!parts
+                .iter()
+                .any(|p| p.get("type").and_then(Value::as_str) == Some("image_url")));
+        }
+
+        let collect_text = |idx: usize| -> String {
+            messages[idx]["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|p| p["text"].as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+
+        // 当前轮：1 张缓存命中 → 注入（不计入 X）
+        let curr_text = collect_text(1);
+        assert!(
+            curr_text.contains("curr-desc"),
+            "current round cached desc should be injected"
+        );
+
+        // 黄金窗口（X=6 ≤ 10）：cap = min(12, 6) = 6
+        // 图片按 content 顺序处理（img0→img11），前 6 张注入
+        let hist_text = collect_text(0);
+        for i in 0..6 {
             assert!(
-                text.contains(&format!("{IMGS_PER_ROUND}张早期图片超出分析范围")),
-                "round {round}: expected out-of-depth marker, got: {text}"
+                hist_text.contains(&format!("hist-desc-{i}")),
+                "history img {i}: within X cap, should be injected"
             );
+        }
+        for i in 6..12 {
             assert!(
-                !text.contains("round0-img0-desc"),
-                "round {round}: should not have descriptions"
+                !hist_text.contains(&format!("hist-desc-{i}")),
+                "history img {i}: beyond X cap, should NOT be injected"
             );
         }
     }
