@@ -143,25 +143,24 @@ For first-time setup, open the manager, verify the detected app path, configure 
   </tr>
 </table>
 
-## Support and Community
+## Community and Support
 
-<table>
-  <tr>
-    <td align="center" width="55%">
-      <strong>Support the Project</strong><br><br>
-      <img src="docs/images/sponsor-alipay.jpg" alt="Alipay sponsor QR code" width="220">
-      <img src="docs/images/sponsor-wechat.jpg" alt="WeChat sponsor QR code" width="220">
-    </td>
-    <td align="center" width="45%">
-      <strong>Join the Community</strong><br><br>
-      <img src="docs/images/discussion-group-qr.jpg" alt="Codex++ WeChat group QR code" width="220"><br><br>
-      QQ group: <code>830629290</code><br>
-      WeChat: <a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">latest group QR code</a><br>
-      Telegram: <a href="https://t.me/CodexPlusPlus">CodexPlusPlus</a><br>
-      Friendly link: <a href="https://linux.do">LINUX DO</a>
-    </td>
-  </tr>
-</table>
+Join the Codex++ community (QQ group: 830629290) to report issues, share feedback, or suggest features.
+
+WeChat: <a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">get the latest group QR code</a>.
+
+<img src="docs/images/discussion-group-qr.jpg" alt="Codex++ WeChat group QR code" width="260">
+
+Telegram: <https://t.me/CodexPlusPlus>
+
+Friendly link: <a href="https://linux.do">LINUX DO</a>
+
+If Codex++ helps you, you can support its continued maintenance.
+
+<p align="center">
+  <img src="docs/images/sponsor-alipay.jpg" alt="Alipay sponsor QR code" width="220">
+  <img src="docs/images/sponsor-wechat.jpg" alt="WeChat sponsor QR code" width="220">
+</p>
 
 ## Current Features
 

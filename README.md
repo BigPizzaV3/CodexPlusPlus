@@ -167,25 +167,24 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
 </table>
 
-## 支持与交流
+## 交流与支持
 
-<table>
-  <tr>
-    <td align="center" width="55%">
-      <strong>支持项目</strong><br><br>
-      <img src="docs/images/sponsor-alipay.jpg" alt="支付宝赞赏码" width="220">
-      <img src="docs/images/sponsor-wechat.jpg" alt="微信赞赏码" width="220">
-    </td>
-    <td align="center" width="45%">
-      <strong>加入交流群</strong><br><br>
-      <img src="docs/images/discussion-group-qr.jpg" alt="Codex++ 微信群二维码" width="220"><br><br>
-      QQ 群：<code>830629290</code><br>
-      微信群：<a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">获取最新二维码</a><br>
-      Telegram：<a href="https://t.me/CodexPlusPlus">CodexPlusPlus</a><br>
-      友情链接：<a href="https://linux.do">LINUX DO</a>
-    </td>
-  </tr>
-</table>
+欢迎加入 Codex++ 交流群（QQ群：830629290），反馈问题、交流使用体验或提出新功能建议。
+
+微信群：<a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">点击这里获取最新微信群二维码</a>。
+
+<img src="docs/images/discussion-group-qr.jpg" alt="Codex++ 微信群二维码" width="260">
+
+Telegram 频道：<https://t.me/CodexPlusPlus>
+
+友情链接：<a href="https://linux.do">LINUX DO</a>
+
+如果 Codex++ 帮到了你，可以请我喝杯咖啡，或者随手赞赏支持一下继续维护。
+
+<p align="center">
+  <img src="docs/images/sponsor-alipay.jpg" alt="支付宝赞赏码" width="220">
+  <img src="docs/images/sponsor-wechat.jpg" alt="微信赞赏码" width="220">
+</p>
 
 ## 当前功能
 
