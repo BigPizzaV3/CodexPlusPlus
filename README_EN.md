@@ -16,7 +16,7 @@
   <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8DB">
 </p>
 
-Codex++ is an external enhancement launcher and manager for the Codex App. It does not modify the original Codex installation. Instead, it starts Codex externally and injects enhancements through the Chromium DevTools Protocol.
+Codex++ is an external launcher and manager for the OpenAI Codex / ChatGPT desktop app. It uses the Chromium DevTools Protocol and a local helper for provider switching, protocol conversion, session management, and UI enhancements without modifying the official app's `app.asar` or installation files.
 
 ## Quick Start
 
@@ -28,10 +28,10 @@ Download the latest installer from [GitHub Releases](https://github.com/BigPizza
 
 After installation, two entry points are available:
 
-- `Codex++`: a silent launcher. It does not show the manager UI and only starts Codex with Codex++ injection.
-- `Codex++ Manager`: a Tauri control panel for launch, diagnostics, repair, updates, relay injection, enhancements, and user scripts.
+- `Codex++`: silently starts the official desktop app with saved provider settings and enhancements.
+- `Codex++ Manager`: manages providers, models, tools, sessions, enhancements, scripts, updates, and diagnostics.
 
-The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG installs `/Applications/Codex++.app` and `/Applications/Codex++ 管理工具.app`.
+For first-time setup, open the manager, verify the detected app path, configure a provider and optional enhancements, then launch through `Codex++`. The Windows installer creates Desktop and Start Menu shortcuts. The macOS DMG installs `/Applications/Codex++.app` and `/Applications/Codex++ 管理工具.app`.
 
 ## Sponsors
 
@@ -143,82 +143,53 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
   </tr>
 </table>
 
+## Support the Project
 
-## Highlights
+<p align="center">
+  <img src="docs/images/sponsor-alipay.jpg" alt="Alipay sponsor QR code" width="220">
+  <img src="docs/images/sponsor-wechat.jpg" alt="WeChat sponsor QR code" width="220">
+</p>
 
-- Rust backend and silent launcher with no extra runtime requirement.
-- Tauri + React manager with dark/light theme support.
-- External CDP injection. No `app.asar` patching and no DLL writes into the Codex installation.
-- Relay injection mode with multiple relay profiles, `CodexPlusPlus` provider configuration, and a one-click switch back to official ChatGPT login mode.
-- Traditional enhancement mode with plugin marketplace unlock, session delete, Markdown export, project move, and more.
-- Paste fix: when pasting from Word or other rich-text sources into the Codex composer, only keep the plain text so Codex does not treat the clipboard content as an image or file attachment. Off by default; requires a Codex relaunch to take effect.
-  - **Usage note**: after toggling in the manager, click the "保存增强设置" / "Save enhancement settings" button to persist, then restart Codex++ for the change to take effect.
-- Independent user script management with startup injection.
-- Provider Sync to keep historical sessions visible after switching providers.
-- Zed open entry detects remote SSH context and opens the matching remote file in Zed Remote Development from Codex.
-- Per-model context window configuration: the "Model list" is split into two columns, model name on the left and context window (e.g. `1M`, `200K`, or `1000000`) on the right. Codex++ auto-generates `model_catalog_json` and injects it into `config.toml`; the matching window is applied when you switch models. Leave the window empty to use Codex's default length.
-- Upstream worktree creation: create new worktrees from `upstream/<base-branch>` after fetching the remote branch, reducing conflicts caused by stale local HEAD state.
-- GitHub Release updates. Both the manager and silent launcher can detect available updates.
-- Windows single instance, no console window, administrator manifest, and system Desktop path detection.
-- Separate macOS x64 and arm64 DMGs. The silent launcher hides its Dock icon.
+## Current Features
 
-## Relay Injection
+| Area | Capabilities |
+| --- | --- |
+| Provider configuration | Official login, official login plus API, pure API, and aggregate providers; Responses / Chat Completions; model tests, model discovery, Provider Doctor, cc-switch and deep-link imports |
+| Models and context | Per-model context windows, auto-compact limits, `model_catalog_json`, shared config, and per-provider MCP, Skill, and Plugin selection |
+| Session management | Local session scanning, bulk deletion, Markdown export, token usage history, Provider metadata sync, and backups |
+| Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, Chinese locale, fast startup, conversation width and scroll restore, service-tier controls, Goals, Stepwise, and image overlay |
+| Development workflow | Project move, Upstream worktree creation, thread IDs, and Zed Remote project discovery and opening |
+| Scripts and maintenance | User script installation and toggles, app detection, shortcuts, Watcher, environment cleanup, logs, diagnostics, health checks, and Release updates |
 
-Relay injection is for users who are already logged in with an official ChatGPT account in Codex/ChatGPT and want model requests to go through a custom compatible API.
+Every UI enhancement is independently configurable. Disabling the global enhancement switch still leaves Codex++ available as a provider and launch manager.
 
-The boundary of this hybrid mode is:
+## Provider Modes
 
-- The official ChatGPT/Codex login state still owns Codex App account features and the plugin entry.
-- The relay profile only controls the Base URL, key, and model names used for model requests.
-- The compatible API provider is not tied to any specific vendor; it only needs to match the selected upstream protocol and Codex configuration.
-- Clearing API mode should return Codex to the official login mode so the official account and plugins keep working.
+Official login, mixed API, and pure API are stored and switched separately:
 
-Before applying relay injection, run a minimal preflight:
+| Mode | Purpose | Authentication boundary |
+| --- | --- | --- |
+| Official login | Use only the official ChatGPT / Codex account | Removes custom providers and API keys while preserving official login state |
+| Official login + API | Keep official account features and plugins while routing model requests to a compatible API | Stores the key as a provider bearer token, not in pure API `auth.json` |
+| Pure API | Use a custom Base URL and key without an official account | Maintains independent `config.toml` and API-key auth without mixing official credentials |
+| Aggregate provider | Route across multiple ordinary API providers | Supports failover, conversation round-robin, request round-robin, and weighted round-robin |
 
-1. Make sure Codex has detected the ChatGPT login state and the plugin entry is available.
-2. Confirm the custom Base URL is reachable and supports the selected upstream protocol, such as a Responses-compatible endpoint.
-3. Test the target key with the smallest useful auth probe, such as a model-list request or a short message request.
-4. Only record whether the key exists and whether auth passed. Do not paste real keys into logs, screenshots, or issues.
-5. Make sure `~/.codex/config.toml` has a backup so clearing API mode can safely roll back.
+Each provider can configure Responses or Chat Completions, model lists, a test model, User-Agent, context windows, auto-compact limits, and enabled MCP servers, Skills, and Plugins. Chat Completions can be converted locally into the Responses protocol used by Codex.
 
-In the manager's Relay Injection page:
+Per-model windows accept values such as `1M`, `200K`, or plain integers. Codex++ generates a dedicated `model_catalog_json` for Codex.
 
-1. Make sure ChatGPT login status is detected.
-2. Add one or more relay profiles with Base URL and Key.
-3. Select the active profile and apply relay injection.
-4. Launch `Codex++`.
+Provider switching saves the current profile before applying the target profile. Real API keys remain local and should never be posted in logs, screenshots, or issues.
 
-Codex++ writes configuration similar to this into `~/.codex/config.toml`:
+## Codex Enhancements
 
-```toml
-model_provider = "CodexPlusPlus"
+- Session delete, bulk delete, Markdown export, and project move actions.
+- Plugin marketplace unlock, plugin auto-expand, and model whitelist handling.
+- Plain-text paste, forced Chinese locale, startup acceleration, and native menu localization.
+- Conversation width, scroll restoration, thread IDs, service-tier controls, and Goals.
+- Stepwise suggestions with a separate API, model, item count, and timeout.
+- Upstream worktrees, Zed Remote, custom image overlays, and user scripts.
 
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
-wire_api = "responses"
-requires_openai_auth = true
-base_url = "https://example.com/v1"
-experimental_bearer_token = "sk-..."
-```
-
-To return to the official login mode, use the clear API mode button in the Relay Injection page. This removes `OPENAI_API_KEY` related configuration and switches Codex back to official ChatGPT authentication.
-
-## Enhancements
-
-Enhancements are controlled in the manager. Enhancement injection is enabled by default. When disabled, Codex++ will not inject its menu or scripts.
-
-When relay injection mode is active, plugin marketplace unlock is unnecessary, and the UI will say so. Other enhancements, including session delete, export, move, paste fix, recommendations, and user scripts, can still be used.
-
-## Recommendations
-
-Recommended content is loaded from:
-
-```text
-https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json
-https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json
-```
-
-Requests automatically append a `?v=timestamp` cache buster to avoid stale CDN content. Slow recommendation loading does not mark the backend connection as failed.
+Settings that depend on renderer injection generally require saving and restarting Codex++.
 
 ## Updates and Packages
 
@@ -238,17 +209,11 @@ The manager's About page can check and start updates. When the silent launcher f
 
 ### The Codex++ menu does not appear
 
-Make sure Codex was launched from the `Codex++` entry instead of the original Codex entry. You can also inspect the Diagnostics and Logs pages in the manager.
+Launch through the `Codex++` entry instead of opening the official app directly. Check the detected app path, launch status, and diagnostic logs in the manager's Maintenance and About pages.
 
-### The plugin says the backend is disconnected
+### Requests fail after switching providers
 
-First test the helper endpoint:
-
-```powershell
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:57321/backend/status -Body "{}" -ContentType "application/json"
-```
-
-If the endpoint works but the plugin still times out, it is usually a Codex page CDP bridge or script cache issue. Restart Codex++, or check manager logs for `renderer.script_loaded`, `bridge.request`, and `bridge.response`.
+Run the model test or Provider Doctor from the provider detail page. Verify that the protocol, Base URL, key, and test model match. Pure API and official-login-plus-API use different authentication locations; do not manually copy `auth.json` between them.
 
 ### How is Upstream worktree different from Codex native creation?
 
@@ -271,15 +236,13 @@ Yes. Releases provide both `macos-x64.dmg` and `macos-arm64.dmg`. Intel Macs sho
 ## Development
 
 ```bash
-# Frontend checks
 cd apps/codex-plus-manager
-npm install
+npm ci
 npm run check
 npm run vite:build
 
-# Rust checks
 cd ../..
-cargo fmt --check
+cargo fmt --all -- --check
 cargo test
 cargo build --release
 ```
@@ -302,29 +265,21 @@ scripts/installer/
 
 ## Community and Support
 
-Join the Codex++ discussion group to report issues, share usage notes, or suggest features:
+- QQ group: `830629290`
+- WeChat: [latest group QR code](https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#)
+- Telegram: <https://t.me/CodexPlusPlus>
+- Friendly link: [LINUX DO](https://linux.do)
 
-WeChat group: [get the latest QR code](https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#).
-
-If Codex++ has helped you, you can buy me a coffee or send a small tip to support continued maintenance.
-
-<p align="center">
-  <img src="docs/images/sponsor-alipay.jpg" alt="Alipay sponsor QR code" width="220">
-  <img src="docs/images/sponsor-wechat.jpg" alt="WeChat sponsor QR code" width="220">
-</p>
-
-## Friendly Links
-
-- [LINUX DO](https://linux.do)
+<img src="docs/images/discussion-group-qr.jpg" alt="Codex++ WeChat group QR code" width="260">
 
 ## License
 
 Copyright (C) 2026 BigPizzaV3
 
-Starting with versions published after this license change, CodexPlusPlus is licensed under the [GNU Affero General Public License v3.0](LICENSE), using the SPDX identifier `AGPL-3.0-only`.
+CodexPlusPlus is licensed under the [GNU Affero General Public License v3.0](LICENSE), SPDX identifier `AGPL-3.0-only`. Modified versions that are distributed or offered to users over a network must provide the corresponding source code as required by AGPLv3.
 
-If you modify and distribute this project, or make a modified version available to users over a network, you must provide the complete corresponding source code to those users as required by AGPLv3. This license covers only CodexPlusPlus's own code. It does not grant rights to OpenAI, ChatGPT, or Codex trademarks, application assets, or other third-party materials. Versions previously received under another license are not retroactively affected by this change.
+The license covers CodexPlusPlus code only. It does not grant rights to OpenAI, ChatGPT, Codex trademarks, application assets, or other third-party content.
 
-## Notes
+## Compatibility
 
-Codex++ is an external enhancement tool and does not modify original Codex App files. If a future Codex App update changes page structure, the injection script may need updates.
+Codex++ depends on the official desktop app's page structure, CDP behavior, and local data formats. Official app updates may require injection updates. Keep backups before changing provider configuration or local session data.

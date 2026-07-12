@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use codex_plus_core::install::SILENT_BINARY;
 use codex_plus_core::models::{DeleteResult, SessionRef};
+use codex_plus_core::relay_environment::RelayEnvironmentReport;
 use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
 use codex_plus_core::settings::{BackendSettings, RelayProfile, SettingsStore};
 use codex_plus_core::status::{LaunchStatus, StatusStore};
@@ -195,6 +196,13 @@ pub struct RelayProfileTestPayload {
     pub http_status: u16,
     pub endpoint: String,
     pub response_preview: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayLatencyPayload {
+    pub latency_ms: Option<u64>,
+    pub http_status: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1800,6 +1808,17 @@ pub fn check_env_conflicts() -> CommandResult<EnvConflictsPayload> {
 }
 
 #[tauri::command]
+pub fn check_relay_environment() -> CommandResult<RelayEnvironmentReport> {
+    let report = codex_plus_core::relay_environment::inspect_relay_environment();
+    let message = if report.all_passed() {
+        "中转站环境配置检测全部通过。"
+    } else {
+        "检测到可能影响中转站配置的环境问题。"
+    };
+    ok(message, report)
+}
+
+#[tauri::command]
 pub fn remove_env_conflicts(
     request: RemoveEnvConflictsRequest,
 ) -> CommandResult<RemoveEnvConflictsPayload> {
@@ -2224,6 +2243,26 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
                 http_status: 0,
                 endpoint: String::new(),
                 response_preview: String::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn measure_relay_latency(url: String) -> CommandResult<RelayLatencyPayload> {
+    match codex_plus_core::relay_latency::measure_relay_latency(&url).await {
+        Ok(measurement) => ok(
+            "目标 URL 延迟检测完成。",
+            RelayLatencyPayload {
+                latency_ms: Some(measurement.latency_ms),
+                http_status: Some(measurement.http_status),
+            },
+        ),
+        Err(error) => failed(
+            &format!("目标 URL 延迟检测失败：{error}"),
+            RelayLatencyPayload {
+                latency_ms: None,
+                http_status: None,
             },
         ),
     }

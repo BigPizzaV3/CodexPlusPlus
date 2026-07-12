@@ -776,7 +776,7 @@ body {
 
 .relay-profile-card {
   display: grid;
-  grid-template-columns: 32px 32px minmax(0, 1fr) auto;
+  grid-template-columns: 32px 32px minmax(0, 1fr) 84px auto;
   gap: 10px;
   align-items: center;
   width: 100%;
@@ -1156,6 +1156,101 @@ body {
 
 .provider-doctor-recommendation {
   margin: 0;
+}
+
+.relay-latency {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 84px;
+  height: 32px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--background) / 0.65);
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.relay-latency.ok {
+  border-color: hsl(156 64% 42% / 0.35);
+  color: hsl(156 64% 42%);
+}
+
+.relay-latency.failed {
+  border-color: hsl(0 72% 55% / 0.35);
+  color: hsl(0 72% 55%);
+}
+
+.relay-latency:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.relay-latency.loading svg {
+  animation: spin 1s linear infinite;
+}
+
+.relay-environment-checks {
+  display: grid;
+  gap: 8px;
+}
+
+.relay-environment-check {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 74px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  padding: 12px;
+}
+
+.relay-environment-check.ok {
+  border-color: hsl(156 64% 42% / 0.35);
+}
+
+.relay-environment-check.failed {
+  border-color: hsl(0 72% 55% / 0.4);
+}
+
+.relay-environment-check-icon {
+  display: grid;
+  place-items: center;
+}
+
+.relay-environment-check.ok .relay-environment-check-icon {
+  color: hsl(156 64% 42%);
+}
+
+.relay-environment-check.failed .relay-environment-check-icon {
+  color: hsl(0 72% 55%);
+}
+
+.relay-environment-check.pending .relay-environment-check-icon {
+  color: hsl(var(--muted-foreground));
+}
+
+.relay-environment-check-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.relay-environment-check-copy strong {
+  font-size: 14px;
+}
+
+.relay-environment-check-copy span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .provider-doctor-modal {
@@ -2963,6 +3058,11 @@ body {
     grid-column: 3;
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+
+  .relay-latency {
+    grid-column: 3;
+    justify-self: start;
   }
 
   .table-row {

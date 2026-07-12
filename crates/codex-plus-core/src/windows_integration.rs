@@ -24,8 +24,9 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 #[cfg(windows)]
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_EXPAND_SZ, REG_SZ, RegCloseKey,
-    RegCreateKeyW, RegDeleteKeyW, RegDeleteValueW, RegEnumValueW, RegOpenKeyExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_SET_VALUE, REG_EXPAND_SZ, REG_SZ,
+    RegCloseKey, RegCreateKeyW, RegDeleteKeyW, RegDeleteValueW, RegEnumValueW, RegOpenKeyExW,
+    RegSetValueExW,
 };
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
@@ -218,19 +219,24 @@ pub fn delete_current_user_value(subkey: &str, name: &str) -> anyhow::Result<()>
 pub fn read_current_user_string_values(
     subkey: &str,
 ) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    read_registry_string_values(HKEY_CURRENT_USER, subkey)
+}
+
+#[cfg(windows)]
+pub fn read_local_machine_string_values(
+    subkey: &str,
+) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    read_registry_string_values(HKEY_LOCAL_MACHINE, subkey)
+}
+
+#[cfg(windows)]
+fn read_registry_string_values(
+    root: HKEY,
+    subkey: &str,
+) -> anyhow::Result<Vec<(String, Option<String>)>> {
     let subkey = wide_null(subkey);
     let mut key = HKEY::default();
-    if unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR(subkey.as_ptr()),
-            0,
-            KEY_READ,
-            &mut key,
-        )
-    }
-    .is_err()
-    {
+    if unsafe { RegOpenKeyExW(root, PCWSTR(subkey.as_ptr()), 0, KEY_READ, &mut key) }.is_err() {
         return Ok(Vec::new());
     }
     let _guard = RegistryKeyGuard(key);
