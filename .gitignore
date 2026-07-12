@@ -28,4 +28,5 @@ pnpm-workspace.yaml
 # project-specific
 .trae/
 plan.md
+plan_v2.md
 
