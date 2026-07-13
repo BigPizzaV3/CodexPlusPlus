@@ -21,8 +21,6 @@ use crate::settings::{RelayProtocol, VisionRelayConfig};
 
 /// 单次请求中 VL 处理的图片数量上限。超出部分直接 strip，不调 VL API。
 const VL_IMAGE_LIMIT: usize = 10;
-/// 单次 VL API 调用的超时时间。
-const VL_SINGLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// 多图一批调用（Bug 4.3）：每批最多 5 张图，一个 messages 含 5 个 image_url + 1 个 prompt。
 const BATCH_SIZE: usize = 5;
 /// 并发上限（Bug 4.2）：最多 5 个 VL 调用同时飞（Semaphore 零新依赖）。
@@ -31,6 +29,34 @@ static VL_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(MAX_C
 /// 混合重试（Bug 4.6）：批量 2 次（治瞬时故障）-> 失败拆单张 3 次（隔离坏图）。
 const BATCH_MAX_ATTEMPTS: u32 = 2;
 const SINGLE_MAX_ATTEMPTS: u32 = 3;
+/// 总超时硬截断（Bug 4.5）：120s 兜底，避免 10 图 × 重试拖死请求。超时降级 strip。
+const VL_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
+/// 描述 char-safe 截断上限（Bug 4.7 廉价兜底）：>2000 字符截断，避免重蹈 Bug 3 覆辙。
+const DESC_MAX_CHARS: usize = 2000;
+
+/// 测试用总超时覆盖（生产 120s 太慢，测试设短值验证降级）。
+static VL_TOTAL_TIMEOUT_OVERRIDE: Mutex<Option<Duration>> = Mutex::new(None);
+#[doc(hidden)]
+pub fn set_vl_total_timeout_for_tests(d: Option<Duration>) {
+    *VL_TOTAL_TIMEOUT_OVERRIDE.lock().unwrap() = d;
+}
+fn vl_total_timeout() -> Duration {
+    VL_TOTAL_TIMEOUT_OVERRIDE
+        .lock()
+        .unwrap()
+        .or(Some(VL_TOTAL_TIMEOUT))
+        .unwrap_or(VL_TOTAL_TIMEOUT)
+}
+
+/// 单批次超时（Bug 4.5）：15 + 8n 秒（n=批内图数）。reqwest `.timeout` 应用。
+fn per_batch_timeout(n: usize) -> Duration {
+    Duration::from_secs(15 + 8 * n as u64)
+}
+
+/// char-safe 截断（Bug 4.7）：按字符数取前 `max` 个，避免字节截断在汉字中间 panic。
+fn truncate_char_safe(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
 
 /// 指数退避（Bug 4.6）：0.3 / 0.6 / 1.2s ... + 简单 hash 抖动（±20%，免 rand 依赖）。
 /// `attempt` 为重试序号（1=第 2 次尝试前的等待）。
@@ -281,7 +307,7 @@ async fn call_vlm_batch_once(
         .post(&endpoint)
         .bearer_auth(&config.api_key)
         .json(&body)
-        .timeout(VL_SINGLE_TIMEOUT)
+        .timeout(per_batch_timeout(urls.len()))
         .send()
         .await?;
     let status = response.status();
@@ -330,9 +356,45 @@ async fn call_vlm_batch(
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("max_attempts 为 0")))
 }
 
+/// VL 入口（公开）：总超时硬截断兜底（Bug 4.5）。超时或内部错误 -> strip 剩余图片，
+/// 返回 Ok（不阻断用户）。
+pub async fn analyze_images_with_vl(
+    body: &mut Value,
+    vl_config: &VisionRelayConfig,
+    client: &reqwest::Client,
+) -> anyhow::Result<()> {
+    if !vl_config.enabled {
+        return Ok(());
+    }
+    let outcome = tokio::time::timeout(
+        vl_total_timeout(),
+        analyze_images_with_vl_inner(body, vl_config, client),
+    )
+    .await;
+    match outcome {
+        Ok(Ok(())) => Ok(()),
+        // 内部错误或总超时：降级 strip 剩余 input_image，不阻断用户
+        Ok(Err(_)) | Err(_) => {
+            strip_all_input_images(body);
+            Ok(())
+        }
+    }
+}
+
+/// 移除 body 中所有 input_image 块（超时/失败降级 strip 用）。
+fn strip_all_input_images(body: &mut Value) {
+    if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
+        for item in input.iter_mut() {
+            if let Some(parts) = item.get_mut("content").and_then(Value::as_array_mut) {
+                parts.retain(|p| p.get("type").and_then(Value::as_str) != Some("input_image"));
+            }
+        }
+    }
+}
+
 /// 遍历 input 中的 input_image 块，调 VL API 翻译为文字描述替换为 input_text。
 /// context_window=0 不限制窗口；>0 时窗口外的图片直接 strip。
-pub async fn analyze_images_with_vl(
+async fn analyze_images_with_vl_inner(
     body: &mut Value,
     vl_config: &VisionRelayConfig,
     client: &reqwest::Client,
@@ -460,8 +522,8 @@ pub async fn analyze_images_with_vl(
                 descs
             }
         };
-        for (t, desc) in chunk_tasks.iter().zip(descriptions.iter()) {
-            if desc.is_empty() {
+        for (t, raw_desc) in chunk_tasks.iter().zip(descriptions.iter()) {
+            if raw_desc.is_empty() {
                 // 描述为空 -> 标记 strip（空对象，Phase 4 清理）
                 if let Some(part) = input
                     .get_mut(t.item_idx)
@@ -473,6 +535,8 @@ pub async fn analyze_images_with_vl(
                 }
                 continue;
             }
+            // Bug 4.7：char-safe 截断（>2000 字符），避免重蹈 Bug 3 字节截断 panic 覆辙
+            let desc = truncate_char_safe(raw_desc, DESC_MAX_CHARS);
             cache_put(t.key, desc.clone());
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "protocol_proxy.vl_described",

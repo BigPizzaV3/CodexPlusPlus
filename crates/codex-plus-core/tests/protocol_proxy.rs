@@ -1581,6 +1581,15 @@ async fn mock_vl_server_counted_bad_marker(
     }
 }
 
+/// mock VL 服务端变体：接受连接后永不回写（模拟上游挂起）。用于总超时降级测试。
+async fn mock_vl_server_hang(listener: tokio::net::TcpListener) {
+    let Ok((_stream, _)) = listener.accept().await else {
+        return;
+    };
+    // 不回写，让 reqwest 等到总超时
+    std::future::pending::<()>().await;
+}
+
 fn vl_response(description: &str) -> String {
     format!(
         r#"{{"id":"vl-1","object":"chat.completion","model":"qwen-vl-plus","choices":[{{"index":0,"message":{{"role":"assistant","content":"{}"}},"finish_reason":"stop"}}]}}"#,
@@ -2181,6 +2190,105 @@ async fn apply_vl_with_fallback_returns_preprocessed_body_when_vl_succeeds() {
     let content = returned_body["input"][0]["content"][0].clone();
     assert_eq!(content["type"], "input_text");
     assert!(content["text"].as_str().unwrap().contains("橘猫"));
+}
+
+#[tokio::test]
+async fn vl_total_timeout_degrades_to_strip() {
+    let _vl_guard = vl_test_isolate();
+    // Bug 4.5：上游永久挂起 -> 总超时（测试设 2s）后降级 strip，不卡死，返回 Ok。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let mock_task = tokio::spawn(mock_vl_server_hang(listener));
+
+    codex_plus_core::vision::set_vl_total_timeout_for_tests(Some(std::time::Duration::from_secs(
+        2,
+    )));
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "qwen-vl-plus".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut body = json!({
+        "model": "deepseek-v4-flash",
+        "input": [{"type":"message","role":"user","content":[
+            {"type":"input_image","image_url":"https://example.com/bug4-hang-aaaa.png"}
+        ]}]
+    });
+    let started = std::time::Instant::now();
+    let result = analyze_images_with_vl(&mut body, &config, &client).await;
+    let elapsed = started.elapsed();
+    codex_plus_core::vision::set_vl_total_timeout_for_tests(None);
+    mock_task.abort();
+
+    assert!(result.is_ok(), "总超时应降级 strip 返回 Ok，不阻断，实际：{result:?}");
+    assert!(
+        elapsed < std::time::Duration::from_secs(6),
+        "总超时应 ~2s 降级，远早于 per-batch 23s，实际：{elapsed:?}"
+    );
+    let serialized = serde_json::to_string(&body).unwrap();
+    assert!(
+        !serialized.contains("bug4-hang-aaaa.png"),
+        "超时降级后图片应被 strip，实际：{serialized}"
+    );
+    assert!(!serialized.contains("input_image"), "input_image 应被移除");
+}
+
+#[tokio::test]
+async fn vl_description_truncated_char_safe() {
+    let _vl_guard = vl_test_isolate();
+    // Bug 4.7：VL 返回 5000 字符 -> char-safe 截断为 ≤2000 字符（不 panic）。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let response = vl_response(&"X".repeat(5000));
+    let _server = tokio::spawn(async move {
+        mock_vl_server(
+            listener,
+            Box::leak(response.into_boxed_str()),
+            std::sync::Arc::new(std::sync::Mutex::new(String::new())),
+        )
+        .await;
+    });
+
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "qwen-vl-plus".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut body = json!({
+        "model": "deepseek-v4-flash",
+        "input": [{"type":"message","role":"user","content":[
+            {"type":"input_image","image_url":"https://example.com/bug4-trunc-aaaa.png"}
+        ]}]
+    });
+    analyze_images_with_vl(&mut body, &config, &client)
+        .await
+        .unwrap();
+
+    let text = body["input"][0]["content"][0]["text"].as_str().unwrap();
+    let x_count = text.chars().filter(|c| *c == 'X').count();
+    assert_eq!(
+        x_count, 2000,
+        "5000 字符应被 char-safe 截断为 2000，实际 {x_count}"
+    );
+    assert!(
+        text.chars().count() <= 2000 + 20,
+        "含前缀总长应 ≤2000+前缀，实际 {}",
+        text.chars().count()
+    );
 }
 
 #[tokio::test]
