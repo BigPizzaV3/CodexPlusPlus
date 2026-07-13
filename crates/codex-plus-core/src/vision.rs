@@ -382,11 +382,15 @@ pub async fn analyze_images_with_vl(
 }
 
 /// 移除 body 中所有 input_image 块（超时/失败降级 strip 用）。
+/// 同时清理 Phase 1 超限标记的空对象（{}），避免超时时残留畸形 part 上游。
 fn strip_all_input_images(body: &mut Value) {
     if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
         for item in input.iter_mut() {
             if let Some(parts) = item.get_mut("content").and_then(Value::as_array_mut) {
-                parts.retain(|p| p.get("type").and_then(Value::as_str) != Some("input_image"));
+                parts.retain(|p| {
+                    p.get("type").and_then(Value::as_str) != Some("input_image")
+                        && !p.as_object().map_or(false, |o| o.is_empty())
+                });
             }
         }
     }
