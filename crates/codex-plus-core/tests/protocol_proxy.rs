@@ -1448,6 +1448,139 @@ async fn mock_vl_server_counted_delayed(
     }
 }
 
+/// mock VL 服务端变体：前 `fail_first_n` 个连接回 500（瞬时故障），之后回 200。
+/// 用于重试测试（验证批量重试成功）。
+async fn mock_vl_server_counted_fail_first(
+    listener: tokio::net::TcpListener,
+    response_body: &'static str,
+    counter: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    fail_first_n: u32,
+) {
+    use std::sync::atomic::Ordering;
+    loop {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            break;
+        };
+        let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut header_buf = Vec::with_capacity(512);
+        let mut tmp = [0u8; 1];
+        loop {
+            let m = stream.read(&mut tmp).await.unwrap();
+            if m == 0 {
+                break;
+            }
+            header_buf.push(tmp[0]);
+            if header_buf.ends_with(b"\r\n\r\n") {
+                break;
+            }
+            if header_buf.len() > 16384 {
+                break;
+            }
+        }
+        let header_str = String::from_utf8_lossy(&header_buf).to_string();
+        let mut body_len: Option<usize> = None;
+        if let Some(cl_line) = header_str
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+        {
+            body_len = cl_line
+                .split(':')
+                .nth(1)
+                .and_then(|s| s.trim().parse::<usize>().ok());
+        }
+        if let Some(len) = body_len {
+            let mut body_buf = Vec::new();
+            while body_buf.len() < len {
+                let need = len - body_buf.len();
+                let mut chunk = vec![0u8; need.min(4096)];
+                let m = stream.read(&mut chunk).await.unwrap();
+                if m == 0 {
+                    break;
+                }
+                body_buf.extend_from_slice(&chunk[..m]);
+            }
+        }
+        let response = if n <= fail_first_n {
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_string()
+        } else {
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body,
+            )
+        };
+        stream.write_all(response.as_bytes()).await.unwrap();
+        let _ = stream.shutdown().await;
+    }
+}
+
+/// mock VL 服务端变体：请求体含 `bad_marker` 则回 500（坏图），否则回 200。
+/// 用于坏图隔离测试（批量含坏图失败 -> 拆单张 -> 好图成功坏图 strip）。
+async fn mock_vl_server_counted_bad_marker(
+    listener: tokio::net::TcpListener,
+    response_body: &'static str,
+    counter: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    bad_marker: &'static str,
+) {
+    use std::sync::atomic::Ordering;
+    loop {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            break;
+        };
+        counter.fetch_add(1, Ordering::SeqCst);
+        let mut header_buf = Vec::with_capacity(512);
+        let mut body_len: Option<usize> = None;
+        let mut tmp = [0u8; 1];
+        loop {
+            let m = stream.read(&mut tmp).await.unwrap();
+            if m == 0 {
+                break;
+            }
+            header_buf.push(tmp[0]);
+            if header_buf.ends_with(b"\r\n\r\n") {
+                break;
+            }
+            if header_buf.len() > 16384 {
+                break;
+            }
+        }
+        let header_str = String::from_utf8_lossy(&header_buf).to_string();
+        if let Some(cl_line) = header_str
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+        {
+            body_len = cl_line
+                .split(':')
+                .nth(1)
+                .and_then(|s| s.trim().parse::<usize>().ok());
+        }
+        let mut body_buf = Vec::new();
+        if let Some(len) = body_len {
+            while body_buf.len() < len {
+                let need = len - body_buf.len();
+                let mut chunk = vec![0u8; need.min(4096)];
+                let m = stream.read(&mut chunk).await.unwrap();
+                if m == 0 {
+                    break;
+                }
+                body_buf.extend_from_slice(&chunk[..m]);
+            }
+        }
+        let body_str = String::from_utf8_lossy(&body_buf);
+        let response = if body_str.contains(bad_marker) {
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_string()
+        } else {
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body,
+            )
+        };
+        stream.write_all(response.as_bytes()).await.unwrap();
+        let _ = stream.shutdown().await;
+    }
+}
+
 fn vl_response(description: &str) -> String {
     format!(
         r#"{{"id":"vl-1","object":"chat.completion","model":"qwen-vl-plus","choices":[{{"index":0,"message":{{"role":"assistant","content":"{}"}},"finish_reason":"stop"}}]}}"#,
@@ -2048,6 +2181,132 @@ async fn apply_vl_with_fallback_returns_preprocessed_body_when_vl_succeeds() {
     let content = returned_body["input"][0]["content"][0].clone();
     assert_eq!(content["type"], "input_text");
     assert!(content["text"].as_str().unwrap().contains("橘猫"));
+}
+
+#[tokio::test]
+async fn vl_batch_retries_on_transient_failure() {
+    let _vl_guard = vl_test_isolate();
+    // Bug 4.6：批量第 1 次 500（瞬时故障）-> 重试第 2 次 200 成功。
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let counter = std::sync::Arc::new(AtomicU32::new(0));
+    let counter_clone = counter.clone();
+    let response = vl_response("重试后成功描述");
+    let mock_task = tokio::spawn(async move {
+        mock_vl_server_counted_fail_first(
+            listener,
+            Box::leak(response.into_boxed_str()),
+            counter_clone,
+            1, // 前 1 次 500
+        )
+        .await;
+    });
+
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "qwen-vl-plus".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut body = json!({
+        "model": "deepseek-v4-flash",
+        "input": [{"type":"message","role":"user","content":[
+            {"type":"input_image","image_url":"https://example.com/bug4-retry-aaaa.png"}
+        ]}]
+    });
+    analyze_images_with_vl(&mut body, &config, &client)
+        .await
+        .unwrap();
+    mock_task.abort();
+
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        2,
+        "瞬时故障应重试：第 1 次 500 + 第 2 次 200 = 2 次调用"
+    );
+    assert!(
+        body["input"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("重试后成功描述"),
+        "重试成功后应回填描述"
+    );
+}
+
+#[tokio::test]
+async fn vl_isolates_bad_image_via_single_fallback() {
+    let _vl_guard = vl_test_isolate();
+    // Bug 4.6：2 张图（1 好 1 坏）。批量含坏图 -> 500 重试 2 次失败 -> 拆单张：
+    // 好图 200 成功，坏图 500 重试 3 次失败 -> strip。好图不拖累。
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let counter = std::sync::Arc::new(AtomicU32::new(0));
+    let counter_clone = counter.clone();
+    let response = vl_response("好图描述");
+    let mock_task = tokio::spawn(async move {
+        mock_vl_server_counted_bad_marker(
+            listener,
+            Box::leak(response.into_boxed_str()),
+            counter_clone,
+            "bug4-bad.png",
+        )
+        .await;
+    });
+
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "qwen-vl-plus".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut body = json!({
+        "model": "deepseek-v4-flash",
+        "input": [{"type":"message","role":"user","content":[
+            {"type":"input_image","image_url":"https://example.com/bug4-good.png"},
+            {"type":"input_image","image_url":"https://example.com/bug4-bad.png"}
+        ]}]
+    });
+    analyze_images_with_vl(&mut body, &config, &client)
+        .await
+        .unwrap();
+    mock_task.abort();
+
+    let serialized = serde_json::to_string(&body).unwrap();
+    // 好图：被描述替换（含"好图描述"）
+    assert!(
+        serialized.contains("好图描述"),
+        "好图应被 VL 描述替换，实际：{serialized}"
+    );
+    // 坏图：被 strip（不残留 URL，不残留 input_image）
+    assert!(
+        !serialized.contains("bug4-bad.png"),
+        "坏图应被 strip，实际：{serialized}"
+    );
+    assert!(
+        !serialized.contains("bug4-good.png"),
+        "好图 URL 应已被描述替换（不残留），实际：{serialized}"
+    );
+    // 调用次数：批量 2 次（含坏图都 500）+ 好图单张 1 次（200）+ 坏图单张 3 次（500）= 6
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        6,
+        "批量 2 + 好图单张 1 + 坏图单张 3 = 6 次调用，实际 {}",
+        counter.load(Ordering::SeqCst)
+    );
 }
 
 #[tokio::test]

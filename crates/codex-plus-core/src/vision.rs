@@ -28,6 +28,20 @@ const BATCH_SIZE: usize = 5;
 /// 并发上限（Bug 4.2）：最多 5 个 VL 调用同时飞（Semaphore 零新依赖）。
 const MAX_CONCURRENCY: usize = 5;
 static VL_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(MAX_CONCURRENCY));
+/// 混合重试（Bug 4.6）：批量 2 次（治瞬时故障）-> 失败拆单张 3 次（隔离坏图）。
+const BATCH_MAX_ATTEMPTS: u32 = 2;
+const SINGLE_MAX_ATTEMPTS: u32 = 3;
+
+/// 指数退避（Bug 4.6）：0.3 / 0.6 / 1.2s ... + 简单 hash 抖动（±20%，免 rand 依赖）。
+/// `attempt` 为重试序号（1=第 2 次尝试前的等待）。
+fn backoff_delay(attempt: u32, salt: &str) -> Duration {
+    let base = 0.3 * 2u32.pow(attempt.saturating_sub(1)) as f64;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    attempt.hash(&mut h);
+    salt.hash(&mut h);
+    let jitter = (h.finish() % 20) as f64 / 100.0; // [0, 0.2)
+    Duration::from_secs_f64(base * (0.8 + jitter))
+}
 
 // ── 两层缓存（Bug 4.4）──────────────────────────────────────────
 //
@@ -248,10 +262,10 @@ fn parse_batch_descriptions(text: &str, n: usize) -> Option<Vec<String>> {
     Some(result)
 }
 
-/// 批量调 VL（Bug 4.2/4.3）：一组同 tier 图片（≤BATCH_SIZE）一次 API 调用，
+/// 单次批量调 VL（不含重试）：一组同 tier 图片（≤BATCH_SIZE）一次 API 调用，
 /// Semaphore 限并发，返回每图描述（按 urls 顺序）。1 张图直接取整段文本；
 /// >1 张图按 `[[图片K]]` 标注拆分；拆分失败返回 Err（调用方回退单张）。
-async fn call_vlm_batch(
+async fn call_vlm_batch_once(
     urls: &[String],
     prompt: &str,
     config: &VisionRelayConfig,
@@ -290,6 +304,30 @@ async fn call_vlm_batch(
             urls.len()
         )
     })
+}
+
+/// 带混合重试的批量调 VL（Bug 4.6）：失败按指数退避重试 `max_attempts` 次。
+/// 批量用 BATCH_MAX_ATTEMPTS（治瞬时故障）；单张回退用 SINGLE_MAX_ATTEMPTS（隔离坏图）。
+/// 每次重试前 sleep `backoff_delay`（0.3/0.6s + 抖动）。
+async fn call_vlm_batch(
+    urls: &[String],
+    prompt: &str,
+    config: &VisionRelayConfig,
+    client: &reqwest::Client,
+    max_attempts: u32,
+) -> anyhow::Result<Vec<String>> {
+    let salt = urls.first().map(String::as_str).unwrap_or("");
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 0..max_attempts {
+        if attempt > 0 {
+            tokio::time::sleep(backoff_delay(attempt, salt)).await;
+        }
+        match call_vlm_batch_once(urls, prompt, config, client).await {
+            Ok(v) => return Ok(v),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("max_attempts 为 0")))
 }
 
 /// 遍历 input 中的 input_image 块，调 VL API 翻译为文字描述替换为 input_text。
@@ -386,8 +424,9 @@ pub async fn analyze_images_with_vl(
             let cl = client.clone();
             let p = prompt.clone();
             let chunk_owned = chunk.to_vec();
+            let max_att = BATCH_MAX_ATTEMPTS;
             set.spawn(async move {
-                let r = call_vlm_batch(&urls, &p, &cfg, &cl).await;
+                let r = call_vlm_batch(&urls, &p, &cfg, &cl, max_att).await;
                 (chunk_owned, r)
             });
         }
@@ -411,7 +450,9 @@ pub async fn analyze_images_with_vl(
                 let mut descs = Vec::with_capacity(chunk_tasks.len());
                 for t in &chunk_tasks {
                     let p = prompt_for(t.is_tier2);
-                    match call_vlm_batch(&[t.url.clone()], &p, vl_config, client).await {
+                    match call_vlm_batch(&[t.url.clone()], &p, vl_config, client, SINGLE_MAX_ATTEMPTS)
+                        .await
+                    {
                         Ok(d) if !d.is_empty() => descs.push(d[0].clone()),
                         _ => descs.push(String::new()),
                     }
