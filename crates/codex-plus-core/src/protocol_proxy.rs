@@ -770,11 +770,24 @@ fn upstream_request_parts(
             request_json,
             UpstreamWireApi::Responses,
         )),
-        RelayProtocol::ChatCompletions => Ok((
-            chat_completions_url(&relay.base_url),
-            responses_to_chat_completions_with_image_support(request_json, supports_image)?,
-            UpstreamWireApi::ChatCompletions,
-        )),
+        RelayProtocol::ChatCompletions => {
+            let mut body = request_json;
+            // Bug 2：Chat 路径转换前剥离 reasoning（不支持 reasoning 的模型）。
+            // 与图片剥离同位置；放在转换前，避免转换阶段 apply_chat_reasoning_options
+            // 重新注入 thinking/reasoning_effort 等派生字段。Responses 透传不剥离。
+            let model = body
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let supports_reasoning = model_supports_reasoning(relay, &model);
+            strip_reasoning_in_place(&mut body, supports_reasoning);
+            Ok((
+                chat_completions_url(&relay.base_url),
+                responses_to_chat_completions_with_image_support(body, supports_image)?,
+                UpstreamWireApi::ChatCompletions,
+            ))
+        }
     }
 }
 
@@ -856,31 +869,6 @@ pub fn model_supports_image(relay: &crate::settings::RelayProfile, model: &str) 
 /// per-model 推理能力查询。map 命中 -> 用 map 值；未命中 -> 默认 `true`（支持 reasoning）。
 pub fn model_supports_reasoning(relay: &crate::settings::RelayProfile, model: &str) -> bool {
     lookup_model_bool_support(&relay.model_reasoning_support, model).unwrap_or(true)
-}
-
-/// 移除 Responses body `input` 中所有的 `input_image` 块。
-/// supports_image=true 时 no-op；false 时遍历所有 input items，
-/// 保留 type != "input_image" 的 part。
-/// input 为字符串、content 为字符串时为 no-op（不崩）。
-pub fn strip_input_images_in_place(body: &mut Value, supports_image: bool) {
-    if supports_image {
-        return;
-    }
-    let Some(input) = body.get_mut("input") else {
-        return;
-    };
-    let Some(items) = input.as_array_mut() else {
-        return;
-    };
-    for item in items.iter_mut() {
-        let Some(content) = item.get_mut("content") else {
-            continue;
-        };
-        let Some(parts) = content.as_array_mut() else {
-            continue;
-        };
-        parts.retain(|part| part.get("type").and_then(Value::as_str) != Some("input_image"));
-    }
 }
 
 /// 移除 body 顶层的 `reasoning` 字段。

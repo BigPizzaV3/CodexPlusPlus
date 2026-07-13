@@ -7,7 +7,7 @@ use codex_plus_core::protocol_proxy::{
     open_chat_completions_proxy_request, open_models_proxy_request, open_responses_proxy_request,
     open_responses_proxy_request_with_settings, responses_error_from_upstream,
     responses_to_chat_completions, responses_to_chat_completions_with_image_support,
-    send_upstream_request_with_header_timeout, strip_input_images_in_place,
+    send_upstream_request_with_header_timeout,
     strip_reasoning_in_place, upstream_header_timeout, upstream_http_client,
     upstream_request_parts_with_image_decision, upstream_stream_header_timeout,
 };
@@ -1016,147 +1016,6 @@ fn model_supports_image_per_model_map_handles_empty_and_invalid_gracefully() {
 }
 
 // ==========================================================================
-// 路径 A 续：Responses 透传分支的 input_image 过滤
-// (修复 spec 已知限制：透传路径不 strip)
-//
-// 上游使用 Responses API（DeepSeek/Ark 等）时，request_json 原样转发。
-// 当 stripImages=true 时，必须在转发前移除 input_image 块，否则纯文本
-// 模型上游会返回 "Model do not support image input"。
-// ==========================================================================
-
-#[test]
-fn responses_passthrough_preserves_input_image_for_multimodal_model() {
-    // supports_image=true：input_image 必须原样保留（透传语义）
-    let mut body = json!({
-        "model": "gpt-5.5",
-        "input": [
-            {
-                "type": "message",
-                "role": "user",
-                "content": [
-                    { "type": "input_text", "text": "看下这张图" },
-                    { "type": "input_image", "image_url": "https://example.com/cat.png" }
-                ]
-            }
-        ]
-    });
-    strip_input_images_in_place(&mut body, true);
-    let serialized = serde_json::to_string(&body).unwrap();
-    assert!(serialized.contains("input_image"));
-    assert!(serialized.contains("https://example.com/cat.png"));
-}
-
-#[test]
-fn responses_passthrough_strips_input_image_for_text_only_model() {
-    // 支持 #1194 的 Responses 透传场景：纯文本模型必须不再看到 input_image
-    let mut body = json!({
-        "model": "deepseek-v4-flash",
-        "input": [
-            {
-                "type": "message",
-                "role": "user",
-                "content": [
-                    { "type": "input_text", "text": "总结这个图片" },
-                    { "type": "input_image", "image_url": "https://example.com/cat.png" }
-                ]
-            }
-        ]
-    });
-    strip_input_images_in_place(&mut body, false);
-    let content = &body["input"][0]["content"];
-    let parts = content
-        .as_array()
-        .expect("content 应保持为数组（仅移除 input_image）");
-    assert_eq!(parts.len(), 1);
-    assert_eq!(parts[0]["type"], "input_text");
-    assert_eq!(parts[0]["text"], "总结这个图片");
-    let serialized = serde_json::to_string(&body).unwrap();
-    assert!(
-        !serialized.contains("input_image"),
-        "strip 后不得残留 input_image 字段"
-    );
-    assert!(!serialized.contains("cat.png"), "strip 后不得残留图片 URL");
-}
-
-#[test]
-fn responses_passthrough_keeps_other_part_types_intact() {
-    // input_image 之外的所有 part 类型必须原样保留
-    let mut body = json!({
-        "model": "deepseek-v4-flash",
-        "input": [
-            {
-                "type": "message",
-                "role": "user",
-                "content": [
-                    { "type": "input_text", "text": "你好" },
-                    { "type": "output_text", "text": "上一轮回复" },
-                    { "type": "refusal", "refusal": "已拒绝" },
-                    { "type": "input_image", "image_url": "https://x.com/a.png" }
-                ]
-            }
-        ]
-    });
-    strip_input_images_in_place(&mut body, false);
-    let parts = body["input"][0]["content"].as_array().unwrap();
-    let types: Vec<&str> = parts
-        .iter()
-        .map(|p| {
-            p.get("type")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-        })
-        .collect();
-    assert_eq!(types, vec!["input_text", "output_text", "refusal"]);
-}
-
-#[test]
-fn responses_passthrough_handles_string_input_and_content_gracefully() {
-    // 边界：input 是字符串，或 content 是字符串（spec 历史：只见过数组），
-    // 不能因 strip 调用崩溃
-    let mut body = json!({
-        "model": "deepseek-v4-flash",
-        "input": "纯文本提问",
-        "instructions": "你是助手"
-    });
-    strip_input_images_in_place(&mut body, false);
-    assert_eq!(body["input"], "纯文本提问");
-    assert_eq!(body["instructions"], "你是助手");
-
-    // content 为字符串的旧式 message
-    let mut body2 = json!({
-        "model": "deepseek-v4-flash",
-        "input": [
-            { "type": "message", "role": "user", "content": "再问一个" }
-        ]
-    });
-    strip_input_images_in_place(&mut body2, false);
-    assert_eq!(body2["input"][0]["content"], "再问一个");
-}
-
-#[test]
-fn responses_passthrough_strips_image_only_message_leaves_empty_array() {
-    // 边界：整条消息只有一张图，strip 后 content 数组为空。
-    // 这里不强行改成空字符串（那是 ChatCompletions 转换的逻辑），
-    // Responses 透传保持空数组即可，上游允许空 content。
-    let mut body = json!({
-        "model": "deepseek-v4-flash",
-        "input": [
-            {
-                "type": "message",
-                "role": "user",
-                "content": [
-                    { "type": "input_image", "image_url": "https://x.com/a.png" }
-                ]
-            }
-        ]
-    });
-    strip_input_images_in_place(&mut body, false);
-    let content = &body["input"][0]["content"];
-    assert!(content.is_array());
-    assert_eq!(content.as_array().unwrap().len(), 0);
-}
-
-// ==========================================================================
 // 路径 A 续：Responses 透传剥离 reasoning（不支持推理的模型）
 //
 // 用户反馈：kimi-2.6 在 Ark 走 Responses 透传，Codex 默认带 reasoning 参数，
@@ -1234,6 +1093,71 @@ fn strip_reasoning_in_place_noop_when_reasoning_absent() {
     // 无 reasoning 字段时不崩，body 不变
     assert!(body.get("reasoning").is_none());
     assert_eq!(body["input"][0]["content"][0]["text"], "hi");
+}
+
+#[test]
+fn chat_path_strips_reasoning_when_model_unsupported() {
+    // Bug 2：Chat 路径转换前剥离 reasoning（模型不支持时）。
+    // kimi-k2.6 走 Thinking 风格；未剥离时转换会注入 thinking 字段，剥离后不注入。
+    let mut profile = RelayProfile::default();
+    profile.protocol = codex_plus_core::settings::RelayProtocol::ChatCompletions;
+    profile.model_reasoning_support = r#"{"kimi-k2.6": false}"#.to_string();
+    let body = json!({
+        "model": "kimi-k2.6",
+        "reasoning": { "effort": "high" },
+        "input": []
+    });
+    let (_endpoint, upstream_body, wire_api) =
+        upstream_request_parts_with_image_decision(&profile, body, true).unwrap();
+    assert_eq!(
+        wire_api,
+        codex_plus_core::protocol_proxy::UpstreamWireApi::ChatCompletions
+    );
+    assert!(upstream_body.get("reasoning").is_none(), "reasoning 应被剥离");
+    assert!(
+        upstream_body.get("thinking").is_none(),
+        "reasoning 剥离后不应注入 thinking，实际：{upstream_body}"
+    );
+    assert!(upstream_body.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn chat_path_preserves_reasoning_when_supported() {
+    // Bug 2 回归保护：模型支持 reasoning（map 显式 true）时不误伤，转换正常注入。
+    let mut profile = RelayProfile::default();
+    profile.protocol = codex_plus_core::settings::RelayProtocol::ChatCompletions;
+    profile.model_reasoning_support = r#"{"kimi-k2.6": true}"#.to_string();
+    let body = json!({
+        "model": "kimi-k2.6",
+        "reasoning": { "effort": "high" },
+        "input": []
+    });
+    let (_e, upstream_body, _w) =
+        upstream_request_parts_with_image_decision(&profile, body, true).unwrap();
+    // kimi Thinking 风格 + reasoning effort high -> 注入 thinking
+    assert!(
+        upstream_body.get("thinking").is_some(),
+        "支持 reasoning 时应保留并注入 thinking，实际：{upstream_body}"
+    );
+}
+
+#[test]
+fn responses_path_preserves_reasoning_passthrough() {
+    // Bug 2 边界：Responses 协议纯透传，不剥离 reasoning（已知局限，用户接受）。
+    let mut profile = RelayProfile::default();
+    profile.protocol = codex_plus_core::settings::RelayProtocol::Responses;
+    profile.model_reasoning_support = r#"{"kimi-k2.6": false}"#.to_string();
+    let body = json!({
+        "model": "kimi-k2.6",
+        "reasoning": { "effort": "high" },
+        "input": []
+    });
+    let (_e, upstream_body, _w) =
+        upstream_request_parts_with_image_decision(&profile, body, true).unwrap();
+    assert!(
+        upstream_body.get("reasoning").is_some(),
+        "Responses 透传应保留 reasoning，实际：{upstream_body}"
+    );
 }
 
 #[test]
