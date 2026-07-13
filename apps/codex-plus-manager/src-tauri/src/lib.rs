@@ -232,6 +232,28 @@ fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
     }
 }
 
+/// Restores and focuses an existing manager window on Windows.
+///
+/// This is a no-op on other platforms.
+pub fn focus_existing_manager_window() {
+    #[cfg(windows)]
+    {
+        let current_process_id = std::process::id();
+        for process in codex_plus_core::windows_enumerate_processes() {
+            if process.process_id == current_process_id {
+                continue;
+            }
+            if process
+                .exe_file
+                .eq_ignore_ascii_case("codex-plus-plus-manager.exe")
+            {
+                let _ = codex_plus_core::windows_activate_process_window(process.process_id);
+                break;
+            }
+        }
+    }
+}
+
 fn install_panic_logger() {
     std::panic::set_hook(Box::new(|panic_info| {
         let payload = panic_info
@@ -273,22 +295,19 @@ fn acquire_single_instance_guard() -> Option<codex_plus_core::ports::LoopbackPor
             }
             Some(guard)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::AddrInUse | std::io::ErrorKind::WouldBlock
+            ) =>
+        {
             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                 "manager.already_running",
                 serde_json::json!({
                     "guard_port": codex_plus_core::ports::manager_guard_port()
                 }),
             );
-            None
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-                "manager.already_running",
-                serde_json::json!({
-                    "guard_port": codex_plus_core::ports::manager_guard_port()
-                }),
-            );
+            focus_existing_manager_window();
             None
         }
         Err(error) => {

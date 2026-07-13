@@ -12,7 +12,7 @@ struct AppPackageSpec {
 }
 
 const CODEX_PACKAGE_EXECUTABLES: &[&str] = &["ChatGPT.exe", "Codex.exe", "codex.exe"];
-const STANDALONE_CODEX_EXECUTABLES: &[&str] = &["Codex.exe", "ChatGPT.exe", "codex.exe"];
+const STANDALONE_CODEX_EXECUTABLES: &[&str] = &["ChatGPT.exe", "Codex.exe", "codex.exe"];
 
 const APP_PACKAGE_SPECS: &[AppPackageSpec] = &[
     AppPackageSpec {
@@ -280,6 +280,10 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
         app_dir
     };
     codex_package_version(package_dir)
+        .or_else(|| codex_directory_version(package_dir))
+        .or_else(|| codex_directory_version(app_dir))
+        .or_else(|| codex_version_file(package_dir))
+        .or_else(|| codex_version_file(app_dir))
 }
 
 pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
@@ -308,6 +312,52 @@ fn codex_package_version(package_dir: &Path) -> Option<String> {
         .rev()
         .find(|part| codex_package_parts(part).is_some())?;
     let (_, version, _) = codex_package_parts(name)?;
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
+}
+
+fn codex_directory_version(app_dir: &Path) -> Option<String> {
+    directory_version(app_dir).or_else(|| {
+        app_dir
+            .canonicalize()
+            .ok()
+            .and_then(|path| directory_version(&path))
+    })
+}
+
+fn directory_version(path: &Path) -> Option<String> {
+    let version = path.file_name()?.to_str()?;
+    if is_version_like(version) {
+        Some(version.to_string())
+    } else {
+        None
+    }
+}
+
+fn is_version_like(version: &str) -> bool {
+    let mut parts = version.split('.');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if first.is_empty() || !first.chars().all(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
+    let mut count = 1;
+    for part in parts {
+        if part.is_empty() || !part.chars().all(|ch| ch.is_ascii_digit()) {
+            return false;
+        }
+        count += 1;
+    }
+    count >= 2
+}
+
+fn codex_version_file(app_dir: &Path) -> Option<String> {
+    let version = std::fs::read_to_string(app_dir.join("version")).ok()?;
+    let version = version.trim();
     if version.is_empty() {
         None
     } else {

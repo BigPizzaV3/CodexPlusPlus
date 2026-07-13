@@ -138,6 +138,49 @@ fn app_paths_extracts_codex_version_from_windows_package_app_dir() {
 }
 
 #[test]
+fn app_paths_extracts_codex_version_from_portable_version_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("versions").join("current");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("Codex.exe"), "").unwrap();
+    std::fs::write(app_dir.join("version"), "42.1.0\n").unwrap();
+
+    assert_eq!(codex_app_version(&app_dir).as_deref(), Some("42.1.0"));
+}
+
+#[test]
+fn app_paths_prefers_portable_directory_version_over_internal_version_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("versions").join("26.519.2736.0");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("Codex.exe"), "").unwrap();
+    std::fs::write(app_dir.join("version"), "42.1.0\n").unwrap();
+
+    assert_eq!(
+        codex_app_version(&app_dir).as_deref(),
+        Some("26.519.2736.0")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn app_paths_resolves_portable_current_link_to_directory_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let versions = temp.path().join("versions");
+    let target = versions.join("26.519.2736.0");
+    let current = versions.join("current");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("Codex.exe"), "").unwrap();
+    std::fs::write(target.join("version"), "42.1.0\n").unwrap();
+    std::os::windows::fs::symlink_dir(&target, &current).unwrap();
+
+    assert_eq!(
+        codex_app_version(&current).as_deref(),
+        Some("26.519.2736.0")
+    );
+}
+
+#[test]
 fn app_paths_extracts_codex_version_from_macos_bundle_plist() {
     let temp = tempfile::tempdir().unwrap();
     let app = temp.path().join("OpenAI Codex.app");
@@ -290,6 +333,17 @@ fn app_paths_normalizes_executable_and_package_paths() {
         normalize_codex_app_path(&portable).as_deref(),
         Some(app.as_path())
     );
+}
+
+#[test]
+fn app_paths_prefers_chatgpt_entrypoint_when_portable_bundle_contains_codex_shim() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("current");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("Codex.exe"), "").unwrap();
+    std::fs::write(app.join("ChatGPT.exe"), "").unwrap();
+
+    assert_eq!(build_codex_executable(&app), app.join("ChatGPT.exe"));
 }
 
 #[test]
