@@ -4,10 +4,8 @@ pub fn proxied_client(user_agent: &str) -> anyhow::Result<reqwest::Client> {
     } else {
         user_agent.trim().to_string()
     };
-    // 关闭系统代理：避免 macOS 系统代理拦截 127.0.0.1 测试请求
-    // 真实生产请求 base_url 通常是公网域名，不受 no_proxy 影响
-    Ok(reqwest::Client::builder()
-        .user_agent(ua)
-        .no_proxy()
-        .build()?)
+    // 生产 client 尊重系统代理（HTTP_PROXY/HTTPS_PROXY/NO_PROXY env）。
+    // 此前为绕过 macOS 系统代理拦截 127.0.0.1 测试请求而加的 .no_proxy() 会全断
+    // 系统代理，影响所有靠代理上网的生产请求（Bug 1）；测试改用 NO_PROXY env 绕 localhost。
+    Ok(reqwest::Client::builder().user_agent(ua).build()?)
 }

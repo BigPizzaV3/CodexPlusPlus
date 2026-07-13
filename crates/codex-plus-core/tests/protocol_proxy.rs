@@ -24,6 +24,21 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// 确保测试运行期间 `NO_PROXY` 含 127.0.0.1/localhost。
+///
+/// Bug 1 修复撤回了 `proxied_client()` 的 `.no_proxy()`，生产 client 恢复尊重系统代理。
+/// 测试打 127.0.0.1 mock，需用 `NO_PROXY` env 绕过系统代理（只绕 localhost，公网照常）。
+/// reqwest 在 client 构建时读 env，故须在构建 client 前设置。`Once` 保证全进程只设一次。
+static NO_PROXY_INIT: std::sync::Once = std::sync::Once::new();
+fn ensure_no_proxy_for_localhost() {
+    NO_PROXY_INIT.call_once(|| {
+        if std::env::var("NO_PROXY").is_err() {
+            // SAFETY: 测试单线程初始化阶段设置；NO_PROXY 只增 localhost 绕过，不影响公网
+            unsafe { std::env::set_var("NO_PROXY", "127.0.0.1,localhost") };
+        }
+    });
+}
+
 #[test]
 fn responses_request_converts_to_chat_completions() {
     let converted = responses_to_chat_completions(json!({
@@ -1872,6 +1887,7 @@ async fn apply_vl_with_fallback_returns_supports_image_false_when_vl_disabled() 
 #[tokio::test]
 async fn apply_vl_with_fallback_falls_back_to_strip_when_vl_fails() {
     // 纯文本模型 + VL 启用 + VL 不可达：返回 (false, 原 body) 让 strip 处理
+    ensure_no_proxy_for_localhost();
     let mut relay = RelayProfile::default();
     relay.strip_images = true;
     let mut config = VisionRelayConfig::default();
@@ -1896,6 +1912,7 @@ async fn apply_vl_with_fallback_falls_back_to_strip_when_vl_fails() {
 #[tokio::test]
 async fn apply_vl_with_fallback_returns_preprocessed_body_when_vl_succeeds() {
     // 纯文本模型 + VL 启用 + VL 可用：返回 (true, 预处理后 body)
+    ensure_no_proxy_for_localhost();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .unwrap();
@@ -2115,6 +2132,67 @@ async fn vl_log_does_not_panic_on_chinese_description_and_omits_body() {
     assert!(
         vl_line.contains(r#""description_chars":115"#),
         "实际：{vl_line}"
+    );
+}
+
+#[tokio::test]
+async fn proxied_client_respects_http_proxy_after_no_proxy_revert() {
+    // Bug 1：撤回 .no_proxy() 后，proxied_client 应尊重 HTTP_PROXY env，
+    // 把非 NO_PROXY 主机的请求转发给代理（而非直连）。
+    // 区分性：若仍带 .no_proxy()，HTTP_PROXY 被忽略 -> 请求直连 .invalid 主机 ->
+    // DNS 失败 -> 代理 mock 收不到任何请求 -> 断言失败（RED）。
+    //
+    // 并行安全：先调 ensure_no_proxy_for_localhost 设置 NO_PROXY=127.0.0.1,localhost，
+    // 再设 HTTP_PROXY；故并发测试的 127.0.0.1 请求始终被 NO_PROXY 绕过，不受影响。
+    ensure_no_proxy_for_localhost();
+
+    // 代理 mock：接受连接，读请求行，回 502（只需验证请求到达代理）
+    let proxy_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured_clone = captured.clone();
+    let proxy_task = tokio::spawn(async move {
+        let Ok((mut stream, _)) = proxy_listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 4096];
+        let n = stream.read(&mut buf).await.unwrap_or(0);
+        if n > 0 {
+            *captured_clone.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_string();
+        }
+        let _ = stream
+            .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await;
+    });
+
+    // 临时设置 HTTP_PROXY 指向代理 mock（NO_PROXY 已含 127.0.0.1，不影响并发 localhost 测试）
+    let saved_http_proxy = std::env::var("HTTP_PROXY").ok();
+    // SAFETY: HTTP_PROXY 仅在本次测试窗口内设置，结束后立即恢复；并发 localhost 测试受 NO_PROXY 保护
+    unsafe { std::env::set_var("HTTP_PROXY", format!("http://{proxy_addr}")) };
+    let client = codex_plus_core::http_client::proxied_client("test").unwrap();
+    // .invalid TLD（RFC 6761）不解析；带代理时 reqwest 把请求转给代理 mock，不解析 DNS
+    let _ = client
+        .get("http://bug1-test.invalid/")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
+    // 立即恢复 HTTP_PROXY
+    match saved_http_proxy {
+        Some(v) => unsafe { std::env::set_var("HTTP_PROXY", v) },
+        None => unsafe { std::env::remove_var("HTTP_PROXY") },
+    }
+    proxy_task.abort();
+
+    let raw = captured.lock().unwrap().clone();
+    assert!(
+        !raw.is_empty(),
+        "proxied_client 应尊重 HTTP_PROXY 把请求转发给代理；若仍带 .no_proxy() 则请求直连 .invalid 失败，代理收不到"
+    );
+    assert!(
+        raw.contains("bug1-test.invalid"),
+        "代理应收到转发请求行，实际：{raw}"
     );
 }
 
