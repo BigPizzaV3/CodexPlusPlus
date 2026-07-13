@@ -1354,7 +1354,12 @@ async fn mock_vl_server(
             body_buf.extend_from_slice(&chunk[..n]);
         }
     }
-    *captured.lock().unwrap() = String::from_utf8_lossy(&body_buf).to_string();
+    // 捕获完整原始请求（请求行 + 头 + 体），便于断言 endpoint path 等请求级细节；
+    // 现有测试按 body 内容 `.contains(...)` 断言依然成立（body 仍包含在内）。
+    let mut raw = String::new();
+    raw.push_str(&header_str);
+    raw.push_str(&String::from_utf8_lossy(&body_buf));
+    *captured.lock().unwrap() = raw;
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         response_body.len(),
@@ -1935,6 +1940,102 @@ async fn apply_vl_with_fallback_returns_preprocessed_body_when_vl_succeeds() {
     let content = returned_body["input"][0]["content"][0].clone();
     assert_eq!(content["type"], "input_text");
     assert!(content["text"].as_str().unwrap().contains("橘猫"));
+}
+
+#[tokio::test]
+async fn vl_endpoint_normalizes_bare_domain_with_v1() {
+    // Bug 5：裸域名 base_url（无 /v1）-> VL 请求应打到 /v1/chat/completions
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured_clone = captured.clone();
+    let response = vl_response("一只猫");
+    let _server = tokio::spawn(async move {
+        mock_vl_server(
+            listener,
+            Box::leak(response.into_boxed_str()),
+            captured_clone,
+        )
+        .await;
+    });
+
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "qwen-vl-plus".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}"), // 裸域名，无 /v1
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut body = json!({
+        "model": "deepseek-v4-flash",
+        "input": [{"type":"message","role":"user","content":[
+            {"type":"input_image","image_url":"https://example.com/a.png"}
+        ]}]
+    });
+    analyze_images_with_vl(&mut body, &config, &client)
+        .await
+        .unwrap();
+
+    let raw = captured.lock().unwrap().clone();
+    assert!(
+        raw.contains("POST /v1/chat/completions"),
+        "裸域名应补 /v1，实际请求行：{raw}"
+    );
+}
+
+#[tokio::test]
+async fn vl_endpoint_does_not_duplicate_path() {
+    // Bug 5：完整 endpoint base_url -> 不重复拼 /chat/completions
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured_clone = captured.clone();
+    let response = vl_response("一只猫");
+    let _server = tokio::spawn(async move {
+        mock_vl_server(
+            listener,
+            Box::leak(response.into_boxed_str()),
+            captured_clone,
+        )
+        .await;
+    });
+
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "qwen-vl-plus".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}/v1/chat/completions"), // 完整 endpoint
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut body = json!({
+        "model": "deepseek-v4-flash",
+        "input": [{"type":"message","role":"user","content":[
+            {"type":"input_image","image_url":"https://example.com/a.png"}
+        ]}]
+    });
+    analyze_images_with_vl(&mut body, &config, &client)
+        .await
+        .unwrap();
+
+    let raw = captured.lock().unwrap().clone();
+    assert!(
+        raw.contains("POST /v1/chat/completions "),
+        "完整 endpoint 不应重复拼路径，实际请求行：{raw}"
+    );
+    assert!(
+        !raw.contains("/chat/completions/chat/completions"),
+        "不应出现重复路径，实际请求行：{raw}"
+    );
 }
 
 #[test]

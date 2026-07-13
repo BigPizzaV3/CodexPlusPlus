@@ -1036,11 +1036,9 @@ async fn describe_image_with_vl(
 
     let endpoint = match vl_config.protocol {
         crate::settings::RelayProtocol::ChatCompletions => {
-            format!("{}/chat/completions", vl_config.base_url.trim_end_matches('/'))
+            chat_completions_url(&vl_config.base_url)
         }
-        crate::settings::RelayProtocol::Responses => {
-            format!("{}/responses", vl_config.base_url.trim_end_matches('/'))
-        }
+        crate::settings::RelayProtocol::Responses => responses_url(&vl_config.base_url),
     };
 
     let response = client
