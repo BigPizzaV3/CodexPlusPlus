@@ -29,17 +29,19 @@ Codex App -> Proxy (127.0.0.1:57321) -> 上游
               └─ Responses 协议：纯透传（pureApi），代理不干预
 ```
 
-| 路径 | 图片处理 | reasoning 剥离 | VL 中转 |
-|------|---------|---------------|---------|
-| Chat（转换路径） | ✅ 支持（VL 描述 / strip 二选一） | ✅（Bug 2 修复后） | ✅ |
-| Responses（透传） | ❌ 不处理 | ❌ 不处理 | ❌ |
+| 路径              | 图片处理                          | reasoning 剥离     | VL 中转 |
+| ----------------- | --------------------------------- | ------------------ | ------- |
+| Chat（转换路径）  | ✅ 支持（VL 描述 / strip 二选一） | ✅（Bug 2 修复后） | ✅      |
+| Responses（透传） | ❌ 不处理                         | ❌ 不处理          | ❌      |
 
 **Chat 路径图片处理的三种情况**（VL 与 strip 是替代关系，非顺序）：
+
 - 模型支持图片 -> 保留（转 Chat `image_url`），不 strip、不 VL
 - 模型不支持图片 + VL 启用 -> VL 描述成文字替换图片，不 strip
 - 模型不支持图片 + VL 未启用 / VL 失败 -> strip 丢弃图片，不报错
 
 **关键代码位置**：
+
 - `apply_vl_with_fallback`（`protocol_proxy.rs:1163`，在 `:536` 被调）：VL 预处理入口，返回 `(supports_image, body)`
 - `upstream_request_parts`（`protocol_proxy.rs:758`，在 `:544` 被调）：协议转换边界，Chat 分支做 strip + 转换，Responses 分支纯透传
 - `responses_to_chat_completions_with_image_support`（`:149`）：Chat 转换，`supports_image=false` 时丢弃 `input_image`
@@ -57,6 +59,7 @@ Codex App -> Proxy (127.0.0.1:57321) -> 上游
 **历史**：`handoff` 文档阶段 5 记录，当时是为修测试 502（macOS 系统代理拦截 127.0.0.1 mock server 请求），但用了"核弹级"方案。
 
 **修复**：
+
 1. 撤回 `proxied_client()` 的 `.no_proxy()`，恢复成 `main` 的样子：
    ```rust
    Ok(reqwest::Client::builder().user_agent(ua).build()?)
@@ -64,6 +67,7 @@ Codex App -> Proxy (127.0.0.1:57321) -> 上游
 2. 测试环境的 127.0.0.1 拦截问题用 `NO_PROXY=127.0.0.1,localhost` 环境变量解决（reqwest 会读 `NO_PROXY`，只对 localhost 绕过代理，公网域名照常走系统代理）。在 `tests/protocol_proxy.rs` 测试入口（`#[ctor]` 或首个测试 setup）设置该 env。
 
 **测试**：
+
 - 验证 `proxied_client()` 构建的 client 不再强制 no_proxy（可通过检查 builder 行为或集成测试：有系统代理时公网域名走代理、127.0.0.1 走直连）。
 - 验证 6 个原 pre-existing 测试（`chat_completions_proxy_*` / `aggregate_*` / `responses_proxy_*`）在 `NO_PROXY` env 下仍通过。
 
@@ -72,16 +76,19 @@ Codex App -> Proxy (127.0.0.1:57321) -> 上游
 ### Bug 2（阻塞）：reasoning 剥离是死代码
 
 **位置**：
+
 - 定义：`protocol_proxy.rs:857`（`model_supports_reasoning`）、`:888`（`strip_reasoning_in_place`）
 - 调用点：仅 `tests/protocol_proxy.rs:1155-1218`，生产零调用
 
 **根因**：图片剥离已接入生产（`apply_vl_with_fallback` -> `model_supports_image` -> `responses_to_chat_completions_with_image_support`），但 reasoning 这对函数只写了测试，转发链路从不调用。UI 勾选"不支持 reasoning"后配置能存（reviewer 已确认存配置无问题），但请求照带 `reasoning` 发上游。
 
 **为什么放 `upstream_request_parts` 而非 `apply_vl_with_fallback`**：
+
 - `apply_vl_with_fallback` 在 `:1173-1174` 有提前返回：`if base_supports_image || !vision_relay.enabled { return }`。VL 未启用时（多数用户的常见情况）直接返回，放在这里的 reasoning 剥离不会执行。reasoning 剥离必须与 VL 无关地独立运行。
 - `upstream_request_parts` 是每个走代理请求的必经之路，不受 VL 开关影响；图片剥离就在其 Chat 分支（`:775`）；`match` 的两个分支天然对应"Responses 不剥离 / Chat 剥离"的决策。
 
 **修复**：在 `upstream_request_parts` 的 Chat 分支内、转换之前剥离 reasoning：
+
 ```rust
 RelayProtocol::ChatCompletions => {
     let mut body = request_json;
@@ -101,6 +108,7 @@ RelayProtocol::ChatCompletions => {
 **死代码清理**：`strip_input_images_in_place`（`:865`）也是死代码（仅测试调用）。它当初为"Responses 透传 strip 图片"而写，但当前 Responses 分支纯透传不调它。按"Responses 不剥离图片"决策，它无生产用途，**清除**（连同其测试）。清除安全：当前是死的，删除不改变生产行为。
 
 **测试**：
+
 - 集成测试：Chat 路径，模型不支持 reasoning 时，转发上游的 body 不含 `reasoning` 字段。
 - 集成测试：Chat 路径，模型支持 reasoning 时，`reasoning` 字段保留。
 - 集成测试：Responses 路径，`reasoning` 字段原样透传（不剥离）。
@@ -119,9 +127,11 @@ RelayProtocol::ChatCompletions => {
 **根因**：`[..N]` 是字节切片。中文 UTF-8 占 3 字节，200 字节极可能落在汉字中间 -> `panic: byte index 200 is not a char boundary`。VL 描述以中文为主，几乎必现。
 
 **修复**：改为 Unicode 字符截断，永不 panic：
+
 ```rust
 "description_preview": description.chars().take(200).collect::<String>()
 ```
+
 语义从"前 200 字节"变"前 200 字符"，对调试预览完全够用。
 
 **测试**：新增用例，构造 201+ 中文字符的 VL 描述，验证不 panic 且预览被正确截断为 200 字符。
@@ -133,16 +143,18 @@ RelayProtocol::ChatCompletions => {
 ### Bug 4（改进）：VL 串行 + 无缓存 + 无并发 + 无重试
 
 **位置**：
+
 - 常量：`protocol_proxy.rs:13`（`VL_IMAGE_LIMIT=10`）、`:15`（`VL_SINGLE_TIMEOUT=30s`）
 - 串行循环：`:1140-1165`，`for &idx in &window_indices { ... describe_image_with_vl(...).await? }`
 
 **根因**：10 张图 × 30s = 最坏 300s；failover 重跑、后续轮次重发历史图片都重复调 VL，已成功的调用费用浪费。
 
-**修复**：抽 `vision.rs` 模块，重度参考 PR #1405 的 `vision.rs` 但用零新依赖方案。
+**修复**：抽 `vision.rs` 模块，重度参考 PR #1405 的 `vision.rs` 但用轻量方案。
 
 #### 4.1 模块抽取
 
 将 VL 相关逻辑从 `protocol_proxy.rs` 抽到 `crates/codex-plus-core/src/vision.rs`：
+
 - `describe_image_with_vl` / `analyze_images_with_vl` / `apply_vl_with_fallback` / `items_within_vl_window` / `collect_input_text` / `estimate_item_tokens` / VL 常量
 - `protocol_proxy.rs` 保留 `upstream_request_parts` 对 `apply_vl_with_fallback` 的调用（`:536`）
 - 跨模块访问的 helper（`chat_completions_url` / `responses_url` / `diagnostic_log`）已是 `pub`
@@ -161,16 +173,35 @@ RelayProtocol::ChatCompletions => {
 - 新增 `call_vlm_batch(urls, config) -> Result<Vec<String>>`：一次调多图，返回每张图的描述。
 - 5 张是效率 vs 风险的平衡点（PR #1405 验证过的经验值），保守安全。
 
-#### 4.4 缓存
+#### 4.4 缓存（两层，架构 A+）
 
-- key：图片 URL 经 `std::collections::hash_map::DefaultHasher` 哈希为 `u64`（std 自带，无新依赖；500 条缓存碰撞概率 ~10⁻¹⁴，可忽略）。
-- value：`(String 描述, Instant 写入时刻)`。
-- 结构：`LazyLock<Mutex<HashMap<u64, (String, Instant)>>>`（全 std）。
-- 容量上限：500 条。满时淘汰最旧（按 `Instant` 排序删最旧）。
-- TTL：24 小时，过期条目在写入时顺带清理。
-- 作用：failover 重跑 / 下一轮重发同一张图时命中缓存，不重复调 VL，不浪费费用。
+两层缓存，分别服务"历史图"和"最新/重发图"，是省调用的大头：
 
-**澄清**：缓存容量（条数，500）与 `VisionRelayConfig.context_window`（token 预算，控制哪些历史图片参与 VL）是**两个不同概念**，互不相关。
+**Tier 1 - 历史图缓存（URL key，comprehensive 描述）**
+- 触发：图片从"最新消息"变为"历史"（下一轮不再重发）时，生成一次 comprehensive 描述。
+- key：图片 URL 哈希（`DefaultHasher` -> `u64`）。
+- value：`(String comprehensive 描述, Instant)`。
+- 命中：之后每轮该图在 context_window 内被重新处理时，URL 命中 -> 0 调用。
+- 价值：历史图（占大多数轮次）全靠这层命中，是缓存省调用的大头。
+
+**Tier 2 - 最新/重发图缓存（(URL, 问题) key，question-aware 描述）**
+- 触发：图片在最新 user 消息中（首次发送或重发）。
+- key：图片 URL 哈希 + 当前问题哈希（`DefaultHasher`，两者都 hash）。
+- value：`(String question-aware 描述, Instant)`。
+- 命中：重发图 + 重复同一问题 -> 命中 -> 0 调用；failover 重试同一 (图,问题) -> 命中。
+- 未命中（入口）：重发图 + 新问题 -> 新调用 -> 拿到新侧重描述（能提取旧描述没有的元素）。这是入口的本意，不是缓存失效。
+
+**共用结构**
+- `LazyLock<Mutex<HashMap<CacheKey, (String, Instant)>>>`（全 std）。
+- 容量上限：500 条（两层合计）。满时淘汰最旧（按 `Instant`）。TTL 24h，写入时顺带清理。
+- 内存：500 条 × ~500 字符 ≈ 250KB，可忽略。
+- `DefaultHasher` 是 std 自带，比 SHA256 更快（缓存 key 不需密码学强度）；`sha2` 已是项目依赖，但此处不必用。
+
+**澄清：缓存容量 vs context_window（两者独立）**
+- 缓存容量（500 条）：控制**记住多少描述**（内存）。命中 = 不消耗 token（不调 VL）。
+- `context_window`（token 预算）：控制**哪些图被处理**（visibility）。窗口内的图被描述+注入文字 -> 底座模型"看见"；窗口外的图被 **strip（直接删除）** -> 底座模型**完全看不见**，即使缓存里有描述也不注入。
+- 二者独立：缓存是 **COST** 优化（命中省调用），context_window 是 **EFFECT** 决策（控制底座模型能看到多远的视觉历史）。
+- 缓存让**大窗口可负担**（窗口内命中的图免费），但窗口仍决定可见范围。窗口设小 -> 老图被 strip -> 底座模型丢失早期视觉上下文（影响实际效果，不是只影响成本）。
 
 #### 4.5 超时（双层）
 
@@ -183,10 +214,12 @@ RelayProtocol::ChatCompletions => {
 两阶段，专治不同故障类型：
 
 **第 1 阶段：批量重试（治瞬时故障）**
+
 - 一批 5 张，最多 2 次尝试（1 + 1 重试），退避 0.3s + 抖动 ±20%。
 - 瞬时故障（网络抖动、429、5xx）重试整批即可全过，享批量效率。
 
 **第 2 阶段：拆单张（隔离坏图）**
+
 - 批量 2 次仍失败 -> 拆成 5 个单张调用并发跑，每张各自 3 次尝试，退避 0.3s / 0.6s + 抖动。
 - 好图各自 1 次成功；坏图自己重试自己的，最后只丢坏图，不拖累好图。
 - 持久故障（坏图：损坏 / 格式不支持）在这里被隔离。
@@ -196,6 +229,7 @@ RelayProtocol::ChatCompletions => {
 **总超时兜底**：所有重试受 120s 总超时硬截断，到点即停。
 
 **时间线示例**（5 张含 1 张坏图 img3）：
+
 ```
 t=0s     批量尝试1: 5张 -> 失败(img3坏)
 t=0.3s   批量尝试2: 5张 -> 失败
@@ -211,12 +245,43 @@ t=0.6s   拆单张, 并发5个:
 - 理由：主模型服务端 tokenizer 自动把 VL 描述（文字）计入上下文窗口，正常情况主模型自管；`VisionRelayConfig.max_tokens` 已从源头限 VL 描述长度；溢出是边缘场景（很多图 + 超长历史 + 小上下文模型），多数用户上下文 128k/1M。
 - **廉价兜底**：VL 描述文本 > 2000 字符时截断（防单条描述失控）。
 
+#### 4.8 VL prompt 与入口（架构 A+）
+
+采用 proxy 驱动两层架构（非 tool-call），提供实用入口：
+
+**两层处理规则**
+- 历史图（不在最新 user 消息）：Tier 1 comprehensive 描述（URL 缓存，稳定便宜）。
+- 最新/重发图（在最新 user 消息）：Tier 2 question-aware 描述（(URL, 问题) 缓存）。
+
+**入口机制**
+- 用户**重发图片 + 问新问题** -> 图片成为"最新" -> 触发 Tier 2 question-aware 新调用 -> 拿到新侧重描述（旧 comprehensive 没覆盖的元素）。
+- 入口天然：重发即触发，无需额外机制。
+- 限制（坦诚）：文本追问（不重发图）时，历史图用缓存 comprehensive，若没覆盖追问点，基座答不出--需重发图触发。tool-call 架构（基座自主决定何时新调）留作未来增强（需工具调用基础设施，宜独立 PR）。
+
+**VL prompt（全面 + 侧重，非过滤）**
+
+```
+用户当前问题：{question}
+请详细描述这张图片，涵盖所有视觉信息：文字（逐字 OCR）、UI 元素、颜色、形状、布局结构、错误信息等。
+在全面描述基础上，对与上述问题相关的内容做更详细说明。请用中文回复。
+```
+
+- "涵盖所有视觉信息" -> 不漏（解决"全面描述也会漏主要情节"的顾虑）。
+- "对问题相关处加深" -> 侧重当前问题，深度足够。
+- `{question}` = 最新 user 消息文本（保留 `collect_input_text`，取最后一条 input_text）。
+- 不发多轮历史给 VLM（底座模型自持完整对话上下文）。
+
+**数字对比**（5 张图 × 10 轮）：无缓存 ~50 调用；A+ 两层 ~10 调用（省 ~80%）。
+
 **测试**：
+
 - 并发：5+ 张图，验证并发执行（总耗时 << 串行）。
-- 缓存命中：同一 URL 二次处理不重复调 VL（mock VL API 计数）。
+- Tier 1 命中：历史图 URL 二次处理不重复调 VL（mock VL API 计数）。
+- Tier 2 入口：重发图 + 新问题 -> 新调用；重发图 + 重复问题 -> 命中 0 调用。
 - 批量重试：VL API 前 1 次失败、第 2 次成功，验证整批重试成功。
 - 坏图隔离：1 张坏图 + 4 张好图，验证好图描述成功、坏图 strip。
 - 总超时：mock VL API 永久挂起，验证 120s 后降级 strip 不卡死。
+- context_window：窗口外图被 strip（底座看不见），窗口内图被描述注入。
 - 回归：现有 VL 测试（`apply_vl_with_fallback` / `analyze_images_with_vl`）在抽模块后仍通过。
 
 ---
@@ -233,6 +298,7 @@ Responses       => format!("{}/responses",       vl_config.base_url.trim_end_mat
 **根因**：本文件 `:1257` 已有 `chat_completions_url()`、`:1277` 已有 `responses_url()`，处理了 `/v1` 补全、`/v1/v1` 去重、`#` 跳过、origin-only 判断。裸拼会：裸域名缺 `/v1`；完整 endpoint 重复拼路径。
 
 **修复**：复用现有 helper：
+
 ```rust
 ChatCompletions => chat_completions_url(&vl_config.base_url),
 Responses       => responses_url(&vl_config.base_url),
@@ -251,6 +317,7 @@ Responses       => responses_url(&vl_config.base_url),
 **根因**：`description_preview` 记录 VL 描述正文前 200 字节，可能含截图中的密钥、PII、代码等敏感内容，写进 `diagnostic_log` 落盘。
 
 **修复**：只记元数据，去掉正文：
+
 ```rust
 "description_len": description.len(),
 "description_chars": description.chars().count(),
@@ -274,14 +341,14 @@ Responses       => responses_url(&vl_config.base_url),
 
 ## 五、测试计划
 
-| Bug | 新增测试 | 回归测试 |
-|-----|---------|---------|
-| 1 | `proxied_client()` 不强制 no_proxy；`NO_PROXY` env 下 6 个原测试通过 | 现有 http_client 相关测试 |
-| 2 | Chat 路径剥离 reasoning（不支持时）/ 保留（支持时）；Responses 透传不剥离 | `model_supports_reasoning` / `strip_reasoning_in_place` 单元测试 |
-| 3 | 201+ 中文字符描述不 panic、截断为 200 字符 | 现有 VL 日志测试 |
-| 4 | 并发、缓存命中、批量重试、坏图隔离、总超时 | `apply_vl_with_fallback` / `analyze_images_with_vl` 现有测试 |
-| 5 | 裸域名加 `/v1`；完整 endpoint 不重复 | 现有 url helper 测试 |
-| 6 | 日志不含描述正文 | 现有 VL 日志测试 |
+| Bug | 新增测试                                                                  | 回归测试                                                             |
+| --- | ------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| 1   | `proxied_client()` 不强制 no_proxy；`NO_PROXY` env 下 6 个原测试通过  | 现有 http_client 相关测试                                            |
+| 2   | Chat 路径剥离 reasoning（不支持时）/ 保留（支持时）；Responses 透传不剥离 | `model_supports_reasoning` / `strip_reasoning_in_place` 单元测试 |
+| 3   | 201+ 中文字符描述不 panic、截断为 200 字符                                | 现有 VL 日志测试                                                     |
+| 4   | 并发、两层缓存(Tier1 URL命中/Tier2 重发入口)、批量重试、坏图隔离、总超时、context_window strip | `apply_vl_with_fallback` / `analyze_images_with_vl` 现有测试     |
+| 5   | 裸域名加`/v1`；完整 endpoint 不重复                                     | 现有 url helper 测试                                                 |
+| 6   | 日志不含描述正文                                                          | 现有 VL 日志测试                                                     |
 
 **全套件回归**：`cargo test --workspace --no-fail-fast` + 前端 `npx tsx --test src/model-windows.test.ts` + `npx tsc --noEmit`。
 
@@ -289,13 +356,13 @@ Responses       => responses_url(&vl_config.base_url),
 
 ## 六、风险与回滚
 
-| 风险 | 缓解 |
-|------|------|
-| Bug 1 撤回 no_proxy 后测试 502 复现 | `NO_PROXY=127.0.0.1,localhost` env 已覆盖；若仍复现，单独给测试 client 加 no_proxy（不动生产 `proxied_client()`） |
-| Bug 2 reasoning 剥离误伤支持 reasoning 的模型 | `model_supports_reasoning` 默认返回 `true`（未命中 map 时），保守不误伤 |
-| Bug 4 抽模块引入回归 | 逐函数迁移 + 每步跑现有 VL 测试；`vision.rs` 公开 API 与原内联函数签名一致 |
-| Bug 4 缓存无界增长 | 500 条上限 + 24h TTL + 写入时淘汰最旧 |
-| Bug 4 重试拖慢请求 | 120s 总超时硬截断兜底 |
+| 风险                                          | 缓解                                                                                                                  |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Bug 1 撤回 no_proxy 后测试 502 复现           | `NO_PROXY=127.0.0.1,localhost` env 已覆盖；若仍复现，单独给测试 client 加 no_proxy（不动生产 `proxied_client()`） |
+| Bug 2 reasoning 剥离误伤支持 reasoning 的模型 | `model_supports_reasoning` 默认返回 `true`（未命中 map 时），保守不误伤                                           |
+| Bug 4 抽模块引入回归                          | 逐函数迁移 + 每步跑现有 VL 测试；`vision.rs` 公开 API 与原内联函数签名一致                                          |
+| Bug 4 缓存无界增长                            | 500 条上限 + 24h TTL + 写入时淘汰最旧                                                                                 |
+| Bug 4 重试拖慢请求                            | 120s 总超时硬截断兜底                                                                                                 |
 
 **回滚**：每个 bug 独立 commit，可单独 revert。Bug 4 抽模块单独 commit，回滚不影响前 5 个。
 
@@ -304,14 +371,18 @@ Responses       => responses_url(&vl_config.base_url),
 ## 七、与 PR #1405 的关系
 
 PR #1405（VLM vision analysis）是同类方案，本设计借鉴其：
+
 - 独立 `vlm_http_client()` 不碰 `proxied_client()`（Bug 1 思路）
 - `upstream_request_parts` 接入 strip 的模式（Bug 2 思路）
 - `vision.rs` 独立模块 + 并发批次 + 缓存 + 总超时 + 重试（Bug 4 思路）
 
 本设计与 PR #1405 的差异：
-- 缓存 key 用 `DefaultHasher`（u64，std）而非 SHA256（无 `sha2` 依赖）
-- 不做 golden window / 两阶段同步+后台分析 / 上下文溢出动态保护
-- 重试用混合策略（批量 2 次 + 拆单张 3 次），PR #1405 仅 per-batch 重试
-- Bug 5（endpoint 裸拼）PR #1405 有同样问题，本设计修复后可反向提醒
+
+- 缓存 key 用 `DefaultHasher`（u64，std）而非 SHA256。`sha2` 已是项目依赖（PR #1405 也未加运行依赖，仅加 `wiremock` 测试依赖），故非"省依赖"优势；DefaultHasher 更简单更快，缓存 key 不需密码学强度。
+- 缓存采用两层（历史图 URL 缓存 + 最新图 (URL,问题) 缓存），提供重发入口；PR #1405 用 SHA256 URL 缓存 + 后台静默补齐（两阶段）。
+- VL prompt 用"全面+侧重"（保留问题引导），PR #1405 用纯描述（不引用用户问题）。
+- 不做 golden window / 两阶段同步+后台分析 / 上下文溢出动态保护。
+- 重试用混合策略（批量 2 次 + 拆单张 3 次），PR #1405 仅 per-batch 重试。
+- Bug 5（endpoint 裸拼）PR #1405 有同样问题，本设计修复后可反向提醒。
 
 PR #1405 也有 Bug 5 相同的 endpoint 裸拼问题，不作为借鉴来源。
