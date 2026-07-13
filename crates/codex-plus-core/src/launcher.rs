@@ -1887,7 +1887,7 @@ async fn confirmed_pet_overlay_targets(
 async fn pet_overlay_supports_v2_cursor(websocket_url: &str) -> bool {
     crate::bridge::evaluate_script_with_await_promise(
         websocket_url,
-        crate::assets::pet_real_mouse_capability_probe_script(),
+        &crate::assets::pet_real_mouse_capability_probe_script(),
         true,
     )
     .await

@@ -96,8 +96,10 @@ fn pet_real_mouse_capability_probe_rejects_v1_without_explicit_v2_evidence() {
     assert!(probe.contains("data-avatar-mascot"));
     assert!(probe.contains("image.naturalWidth === 1536"));
     assert!(probe.contains("image.naturalHeight === 2288"));
+    assert!(probe.contains("getComputedStyle(element).backgroundImage"));
+    assert!(probe.contains("data:image\\/png;base64"));
     assert!(!probe.contains("new Image()"));
-    assert!(probe.contains("if (!currentSpriteIsV2) return false"));
+    assert!(probe.contains("if (!isV2Sprite(mascot)) return false"));
     assert!(!probe.contains("spriteVersionNumber"));
     assert!(probe.contains("dispatchHostMessage"));
     assert!(probe.contains("typeof value.subscribe === \"function\""));
@@ -112,7 +114,76 @@ fn pet_real_mouse_update_script_stops_when_runtime_capability_is_missing() {
     assert!(script.contains("data-avatar-mascot"));
     assert!(script.contains("image.naturalWidth === 1536"));
     assert!(script.contains("image.naturalHeight === 2288"));
+    assert!(script.contains("getComputedStyle(element).backgroundImage"));
+    assert!(script.contains("uint32(16) === 1536 && uint32(20) === 2288"));
     assert!(script.contains("updateScreenPoint?.({ x: -125, y: 640 }) === true"));
+}
+
+#[test]
+fn pet_real_mouse_update_script_accepts_css_background_v2_and_rejects_v1() {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("pet-update.js");
+    let harness_path = temp.path().join("pet-update-harness.cjs");
+    std::fs::write(&script_path, assets::pet_real_mouse_update_script(120, 240))
+        .expect("pet update script should be written");
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    write!(
+        harness,
+        r#"
+const fs = require("fs");
+const vm = require("vm");
+const script = fs.readFileSync({script_path}, "utf8");
+function pngDataUri(width, height) {{
+  const bytes = Buffer.alloc(24);
+  bytes.set([137, 80, 78, 71, 13, 10, 26, 10], 0);
+  bytes.writeUInt32BE(width, 16);
+  bytes.writeUInt32BE(height, 20);
+  return `url("data:image/png;base64,${{bytes.toString("base64")}}")`;
+}}
+function run({{ image = null, background = "none" }} = {{}}) {{
+  let calls = 0;
+  const element = {{ querySelectorAll: () => [] }};
+  const mascot = {{
+    querySelectorAll: (selector) => selector === "img" ? (image ? [image] : []) : [element],
+  }};
+  const context = {{
+    document: {{ querySelector: () => mascot }},
+    getComputedStyle: (target) => ({{ backgroundImage: target === element ? background : "none" }}),
+    atob: (value) => Buffer.from(value, "base64").toString("latin1"),
+    window: {{ __codexPlusPetRealMouseLook: {{ updateScreenPoint: () => {{ calls += 1; return true; }} }} }},
+  }};
+  const result = vm.runInNewContext(script, context);
+  return {{ result, calls }};
+}}
+process.stdout.write(JSON.stringify({{
+  cssV2: run({{ background: pngDataUri(1536, 2288) }}),
+  cssV1: run({{ background: pngDataUri(1536, 1872) }}),
+  imgV2: run({{ image: {{ naturalWidth: 1536, naturalHeight: 2288 }} }}),
+  missing: run(),
+}}));
+"#,
+        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+            .expect("script path should serialize")
+    )
+    .expect("harness should be written");
+    drop(harness);
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should run pet update harness");
+    assert!(
+        output.status.success(),
+        "node harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cases: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("harness stdout should be JSON");
+    assert_eq!(cases["cssV2"], json!({ "result": true, "calls": 1 }));
+    assert_eq!(cases["imgV2"], json!({ "result": true, "calls": 1 }));
+    assert_eq!(cases["cssV1"], json!({ "result": false, "calls": 0 }));
+    assert_eq!(cases["missing"], json!({ "result": false, "calls": 0 }));
 }
 
 #[test]
