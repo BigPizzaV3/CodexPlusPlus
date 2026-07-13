@@ -7,7 +7,10 @@
 //! 本模块从 `protocol_proxy.rs` 抽出（PR #1468 Bug 4.1），行为保持不变；后续
 //! 两层缓存 / 并发批次 / 重试 / 超时 / 两 prompt 在此模块内迭代。
 
-use std::time::Duration;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -18,6 +21,84 @@ use crate::settings::{RelayProtocol, VisionRelayConfig};
 const VL_IMAGE_LIMIT: usize = 10;
 /// 单次 VL API 调用的超时时间。
 const VL_SINGLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+// ── 两层缓存（Bug 4.4）──────────────────────────────────────────
+//
+// Tier 1（历史图）：URL key + 全面描述 prompt（不含问题）。图从"最新"变"历史"后
+//   每轮命中，question-invariant -> URL 缓存稳定。省调用大头。
+// Tier 2（最新/重发图）：(URL, 问题) key + 全面+侧重 prompt（含问题）。重发图+新问题
+//   = 入口，触发新调用拿新信息；重复问题命中。
+//
+// 检测：最新 user 消息里的图 + 非空问题 -> Tier 2；其余（历史图 / 无问题最新图）-> Tier 1。
+// 容量 500 / TTL 24h / 写入时淘汰最旧；DefaultHasher（u64，std，快，缓存 key 不需密码学强度）。
+
+const CACHE_CAPACITY: usize = 500;
+const CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
+
+type CacheEntry = (String, Instant);
+static VL_CACHE: LazyLock<Mutex<HashMap<u64, CacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn url_hash(url: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    url.hash(&mut h);
+    h.finish()
+}
+
+fn url_question_hash(url: &str, question: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    url.hash(&mut h);
+    question.hash(&mut h);
+    h.finish()
+}
+
+/// 取缓存（TTL 未过期）；过期则剔除返回 None。
+fn cache_get(key: u64) -> Option<String> {
+    let mut cache = VL_CACHE.lock().unwrap();
+    if let Some((desc, written)) = cache.get(&key).cloned() {
+        if written.elapsed() < CACHE_TTL {
+            return Some(desc);
+        }
+        cache.remove(&key);
+    }
+    None
+}
+
+/// 写缓存；满容量时淘汰最旧条目。
+fn cache_put(key: u64, desc: String) {
+    let mut cache = VL_CACHE.lock().unwrap();
+    if cache.len() >= CACHE_CAPACITY {
+        if let Some((&oldest_key, _)) = cache.iter().min_by_key(|(_, (_, t))| *t) {
+            cache.remove(&oldest_key);
+        }
+    }
+    cache.insert(key, (desc, Instant::now()));
+}
+
+/// 清空 VL 缓存（测试隔离用）。生产代码不应调用。
+#[doc(hidden)]
+pub fn cache_clear() {
+    VL_CACHE.lock().unwrap().clear();
+}
+
+/// Tier 1 prompt：全面描述（不含问题），question-invariant 保证 URL 缓存稳定。
+const TIER1_PROMPT: &str = "请详细描述这张图片，涵盖所有视觉信息：文字（逐字 OCR）、UI 元素、颜色、形状、布局结构、错误信息等。请用中文回复。";
+
+/// Tier 2 prompt：全面描述 + 针对用户当前问题做更详细说明（侧重深度，入口语义）。
+fn tier2_prompt(question: &str) -> String {
+    format!("{TIER1_PROMPT}\n用户当前问题：{question}\n在全面描述基础上，对与上述问题相关的内容做更详细说明。")
+}
+
+/// 判断 `item_idx` 是否为最新一条 role=user 消息（用于 Tier 2 检测）。
+fn is_latest_message_image(input: &[Value], item_idx: usize) -> bool {
+    let latest_user = input
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, it)| it.get("role").and_then(Value::as_str) == Some("user"))
+        .map(|(i, _)| i);
+    latest_user == Some(item_idx)
+}
 
 /// 估算 input item 的 token 数（粗估：文本字符数 / 4，跳过图片 base64 数据）。
 fn estimate_item_tokens(item: &Value) -> usize {
@@ -93,21 +174,14 @@ fn extract_image_url(part: &Value) -> Option<String> {
 }
 
 /// 调用 VL API 描述单张图。
-/// 按 vl_config.protocol 适配 image_url 格式和 token 参数名。
+/// 按 vl_config.protocol 适配 image_url 格式和 token 参数名；prompt 由调用方按
+/// Tier 1/Tier 2 预计算后传入（Bug 4.8 两 prompt）。
 async fn describe_image_with_vl(
     image_url: &str,
-    user_text: &str,
+    prompt: &str,
     vl_config: &crate::settings::VisionRelayConfig,
     client: &reqwest::Client,
 ) -> anyhow::Result<String> {
-    let prompt = if user_text.is_empty() {
-        "简要描述这张图片".to_string()
-    } else {
-        format!(
-            "用户想了解：{user_text}\n请根据图片详细描述与用户问题相关的内容，包括文字、UI 元素、错误信息、布局结构。请用中文回复。"
-        )
-    };
-
     let body = match vl_config.protocol {
         RelayProtocol::ChatCompletions => json!({
             "model": vl_config.model,
@@ -194,6 +268,7 @@ pub async fn analyze_images_with_vl(
     // VL 处理窗口内的图（最多 VL_IMAGE_LIMIT 张）
     let mut vl_count = 0;
     for &idx in &window_indices {
+        let is_latest = is_latest_message_image(input, idx);
         let Some(item) = input.get_mut(idx) else {
             continue;
         };
@@ -215,7 +290,27 @@ pub async fn analyze_images_with_vl(
                 continue;
             }
 
-            let description = describe_image_with_vl(&img_url, &user_text, vl_config, client).await?;
+            // 两层缓存检测（Bug 4.4/4.8）：
+            //   最新消息里的图 + 非空问题 -> Tier 2（(URL,问题) key，含问题 prompt，入口）
+            //   其余（历史图 / 无问题最新图）-> Tier 1（URL key，无问题 prompt）
+            let (cache_key, prompt): (u64, String) =
+                if is_latest && !user_text.is_empty() {
+                    (
+                        url_question_hash(&img_url, &user_text),
+                        tier2_prompt(&user_text),
+                    )
+                } else {
+                    (url_hash(&img_url), TIER1_PROMPT.to_string())
+                };
+
+            let description = if let Some(cached) = cache_get(cache_key) {
+                cached
+            } else {
+                let desc =
+                    describe_image_with_vl(&img_url, &prompt, vl_config, client).await?;
+                cache_put(cache_key, desc.clone());
+                desc
+            };
 
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "protocol_proxy.vl_described",

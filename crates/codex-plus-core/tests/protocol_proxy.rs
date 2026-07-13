@@ -40,6 +40,21 @@ fn ensure_no_proxy_for_localhost() {
     });
 }
 
+/// VL 测试隔离：清空全局 VL 缓存 + 持锁串行化 VL 测试。
+///
+/// VL 缓存是进程级全局（LazyLock<Mutex<HashMap>>），并行测试若共用图片 URL 会
+/// 互相命中缓存（缓存命中则不调 VL -> mock 收不到请求 -> 测试失败）。返回的 guard
+/// 持有锁直到测试结束，保证 VL 测试串行执行；配合 `cache_clear` 起步即空缓存。
+static VL_TEST_LOCK: Mutex<()> = Mutex::new(());
+fn vl_test_isolate() -> std::sync::MutexGuard<'static, ()> {
+    // 先持锁再清缓存：清缓存必须发生在临界区内，否则本测试清完后、拿到锁前，
+    // 上一个测试可能已把缓存重新填满，导致本测试命中陈旧缓存 -> 不调 VL -> mock
+    // 收不到请求 -> server.await 死等。
+    let guard = VL_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    codex_plus_core::vision::cache_clear();
+    guard
+}
+
 #[test]
 fn responses_request_converts_to_chat_completions() {
     let converted = responses_to_chat_completions(json!({
@@ -1309,6 +1324,68 @@ async fn mock_vl_server(
     let _ = stream.shutdown().await;
 }
 
+/// mock VL 服务端变体：循环接受多个连接并计数（用于缓存命中测试，验证 VL 调用次数）。
+/// 每个连接回写同一 `response_body`。任务需由调用方 abort。
+async fn mock_vl_server_counted(
+    listener: tokio::net::TcpListener,
+    response_body: &'static str,
+    counter: std::sync::Arc<std::sync::atomic::AtomicU32>,
+) {
+    use std::sync::atomic::Ordering;
+    loop {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            break;
+        };
+        counter.fetch_add(1, Ordering::SeqCst);
+        let mut header_buf = Vec::with_capacity(512);
+        let mut body_len: Option<usize> = None;
+        let mut tmp = [0u8; 1];
+        loop {
+            let n = stream.read(&mut tmp).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            header_buf.push(tmp[0]);
+            if header_buf.ends_with(b"\r\n\r\n") {
+                break;
+            }
+            if header_buf.len() > 16384 {
+                break;
+            }
+        }
+        let header_str = String::from_utf8_lossy(&header_buf).to_string();
+        if let Some(cl_line) = header_str
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+        {
+            body_len = cl_line
+                .split(':')
+                .nth(1)
+                .and_then(|s| s.trim().parse::<usize>().ok());
+        }
+        let mut body_buf = Vec::new();
+        if let Some(len) = body_len {
+            while body_buf.len() < len {
+                let need = len - body_buf.len();
+                let mut chunk = vec![0u8; need.min(4096)];
+                let n = stream.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                body_buf.extend_from_slice(&chunk[..n]);
+            }
+        }
+        let _ = body_buf; // 不捕获请求体，仅计数
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body,
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        let _ = stream.shutdown().await;
+    }
+}
+
 fn vl_response(description: &str) -> String {
     format!(
         r#"{{"id":"vl-1","object":"chat.completion","model":"qwen-vl-plus","choices":[{{"index":0,"message":{{"role":"assistant","content":"{}"}},"finish_reason":"stop"}}]}}"#,
@@ -1357,6 +1434,7 @@ async fn analyze_images_with_vl_is_noop_when_no_images() {
 
 #[tokio::test]
 async fn analyze_images_with_vl_replaces_input_image_with_description() {
+    let _vl_guard = vl_test_isolate();
     // 核心场景：input_image 被 VL 描述替换为 input_text
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -1424,6 +1502,7 @@ async fn analyze_images_with_vl_replaces_input_image_with_description() {
 
 #[tokio::test]
 async fn analyze_images_with_vl_forwards_user_question_as_prompt() {
+    let _vl_guard = vl_test_isolate();
     // 用户提问文字应作为 prompt 传给 VL 模型，带问题识图
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -1475,6 +1554,7 @@ async fn analyze_images_with_vl_forwards_user_question_as_prompt() {
 
 #[tokio::test]
 async fn analyze_images_with_vl_uses_configured_max_tokens() {
+    let _vl_guard = vl_test_isolate();
     // max_tokens 应从 config 读取，不硬编码 256
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -1528,6 +1608,7 @@ async fn analyze_images_with_vl_uses_configured_max_tokens() {
 
 #[tokio::test]
 async fn analyze_images_with_vl_falls_back_to_generic_prompt_without_user_text() {
+    let _vl_guard = vl_test_isolate();
     // 消息只有图片没有文字时，退回固定提示词（不崩）
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -1569,15 +1650,20 @@ async fn analyze_images_with_vl_falls_back_to_generic_prompt_without_user_text()
     server.await.unwrap();
 
     let vl_request_body = captured.lock().unwrap().clone();
-    // 无用户文字时应用固定提示词
+    // 无用户文字时：最新图但无问题 -> Tier 1，使用全面描述 prompt（不含问题）
     assert!(
-        vl_request_body.contains("简要描述这张图片"),
-        "无用户文字时应退回固定提示词，实际：{vl_request_body}"
+        vl_request_body.contains("涵盖所有视觉信息"),
+        "无用户文字时应使用 Tier 1 全面描述 prompt，实际：{vl_request_body}"
+    );
+    assert!(
+        !vl_request_body.contains("用户当前问题"),
+        "Tier 1 prompt 不应含问题行，实际：{vl_request_body}"
     );
 }
 
 #[tokio::test]
 async fn analyze_images_with_vl_uses_responses_api_when_protocol_is_responses() {
+    let _vl_guard = vl_test_isolate();
     // protocol=Responses：请求体用 `input` 数组 + input_text/input_image，
     // 响应解析 `output[*].content[*].text`
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -1656,6 +1742,7 @@ async fn analyze_images_with_vl_uses_responses_api_when_protocol_is_responses() 
 
 #[tokio::test]
 async fn analyze_images_with_vl_strips_old_images_outside_context_window() {
+    let _vl_guard = vl_test_isolate();
     // context_window 限制：超出窗口的老图直接 strip，不调 VL（省成本）
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -1727,6 +1814,7 @@ async fn analyze_images_with_vl_strips_old_images_outside_context_window() {
 
 #[tokio::test]
 async fn analyze_images_with_vl_returns_error_when_vl_call_fails() {
+    let _vl_guard = vl_test_isolate();
     // VL 不可用时必须返回 Err（让上游决定是否降级为 strip）
     let config = VisionRelayConfig {
         enabled: true,
@@ -1811,6 +1899,7 @@ async fn apply_vl_with_fallback_returns_supports_image_false_when_vl_disabled() 
 
 #[tokio::test]
 async fn apply_vl_with_fallback_falls_back_to_strip_when_vl_fails() {
+    let _vl_guard = vl_test_isolate();
     // 纯文本模型 + VL 启用 + VL 不可达：返回 (false, 原 body) 让 strip 处理
     ensure_no_proxy_for_localhost();
     let mut relay = RelayProfile::default();
@@ -1836,6 +1925,7 @@ async fn apply_vl_with_fallback_falls_back_to_strip_when_vl_fails() {
 
 #[tokio::test]
 async fn apply_vl_with_fallback_returns_preprocessed_body_when_vl_succeeds() {
+    let _vl_guard = vl_test_isolate();
     // 纯文本模型 + VL 启用 + VL 可用：返回 (true, 预处理后 body)
     ensure_no_proxy_for_localhost();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -1885,7 +1975,252 @@ async fn apply_vl_with_fallback_returns_preprocessed_body_when_vl_succeeds() {
 }
 
 #[tokio::test]
+async fn tier1_history_image_cached_by_url_no_recall() {
+    let _vl_guard = vl_test_isolate();
+    // Bug 4.4：历史图（非最新 user 消息）走 Tier 1（URL key，无问题 prompt）。
+    // 同一历史图第二次处理时命中缓存，不重复调 VL。
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let counter = std::sync::Arc::new(AtomicU32::new(0));
+    let counter_clone = counter.clone();
+    let response = vl_response("历史图的描述内容");
+    let mock_task = tokio::spawn(async move {
+        mock_vl_server_counted(
+            listener,
+            Box::leak(response.into_boxed_str()),
+            counter_clone,
+        )
+        .await;
+    });
+
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "qwen-vl-plus".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let url = "https://example.com/bug4-tier1-aaaa.png";
+
+    // 第一次：历史图（item 0），最新消息是 item 1 的纯文本 -> Tier 1，缓存未命中 -> 调 VL
+    let mut body1 = json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            {"type":"message","role":"user","content":[{"type":"input_image","image_url":url}]},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"看看"}]}
+        ]
+    });
+    analyze_images_with_vl(&mut body1, &config, &client)
+        .await
+        .unwrap();
+    // 第二次：同一历史图 -> 命中 Tier 1 缓存，不调 VL
+    let mut body2 = json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            {"type":"message","role":"user","content":[{"type":"input_image","image_url":url}]},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"再看看"}]}
+        ]
+    });
+    analyze_images_with_vl(&mut body2, &config, &client)
+        .await
+        .unwrap();
+    mock_task.abort();
+
+    let calls = counter.load(Ordering::SeqCst);
+    assert_eq!(
+        calls, 1,
+        "历史图第二次应命中 Tier 1 缓存，VL 应只调 1 次，实际 {calls} 次"
+    );
+    assert!(body1["input"][0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("历史图"));
+    assert!(body2["input"][0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("历史图"));
+}
+
+#[tokio::test]
+async fn tier2_resend_new_question_triggers_new_call() {
+    let _vl_guard = vl_test_isolate();
+    // Bug 4.4/4.8：最新图走 Tier 2（(URL,问题) key）。重发图+新问题 -> 新调用（入口）；
+    // 重复问题 -> 命中缓存。
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let counter = std::sync::Arc::new(AtomicU32::new(0));
+    let counter_clone = counter.clone();
+    let response = vl_response("最新图的描述");
+    let mock_task = tokio::spawn(async move {
+        mock_vl_server_counted(
+            listener,
+            Box::leak(response.into_boxed_str()),
+            counter_clone,
+        )
+        .await;
+    });
+
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "qwen-vl-plus".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let url = "https://example.com/bug4-tier2-bbbb.png";
+    let mk_body = |q: &str| {
+        json!({
+            "model": "deepseek-v4-flash",
+            "input": [{"type":"message","role":"user","content":[
+                {"type":"input_text","text":q},
+                {"type":"input_image","image_url":url}
+            ]}]
+        })
+    };
+
+    // (URL, Q1) 未命中 -> VL
+    let mut b1 = mk_body("Q1_unique");
+    analyze_images_with_vl(&mut b1, &config, &client)
+        .await
+        .unwrap();
+    // (URL, Q2) 新问题=入口 -> 未命中 -> VL
+    let mut b2 = mk_body("Q2_unique");
+    analyze_images_with_vl(&mut b2, &config, &client)
+        .await
+        .unwrap();
+    // (URL, Q1) 重复问题 -> 命中 -> 不调 VL
+    let mut b3 = mk_body("Q1_unique");
+    analyze_images_with_vl(&mut b3, &config, &client)
+        .await
+        .unwrap();
+    mock_task.abort();
+
+    let calls = counter.load(Ordering::SeqCst);
+    assert_eq!(
+        calls, 2,
+        "新问题触发新调用、重复问题命中缓存，VL 应调 2 次，实际 {calls} 次"
+    );
+}
+
+#[tokio::test]
+async fn tier1_prompt_has_no_question() {
+    let _vl_guard = vl_test_isolate();
+    // Bug 4.8：历史图 Tier 1 prompt 不含用户问题（question-invariant，URL 缓存稳定）。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured_clone = captured.clone();
+    let response = vl_response("历史图描述");
+    let _server = tokio::spawn(async move {
+        mock_vl_server(
+            listener,
+            Box::leak(response.into_boxed_str()),
+            captured_clone,
+        )
+        .await;
+    });
+
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "qwen-vl-plus".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut body = json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            {"type":"message","role":"user","content":[{"type":"input_image","image_url":"https://example.com/bug4-tier1-prompt-cccc.png"}]},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"BUG4_TIER1_SECRET_QUESTION"}]}
+        ]
+    });
+    analyze_images_with_vl(&mut body, &config, &client)
+        .await
+        .unwrap();
+
+    let raw = captured.lock().unwrap().clone();
+    assert!(
+        raw.contains("涵盖所有视觉信息"),
+        "Tier 1 prompt 应含全面描述指令，实际：{raw}"
+    );
+    assert!(
+        !raw.contains("BUG4_TIER1_SECRET_QUESTION"),
+        "Tier 1 prompt 不应含用户问题，实际：{raw}"
+    );
+}
+
+#[tokio::test]
+async fn tier2_prompt_includes_question() {
+    let _vl_guard = vl_test_isolate();
+    // Bug 4.8：最新图 + 问题 -> Tier 2 prompt 含用户问题（侧重深度，入口语义）。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured_clone = captured.clone();
+    let response = vl_response("最新图描述");
+    let _server = tokio::spawn(async move {
+        mock_vl_server(
+            listener,
+            Box::leak(response.into_boxed_str()),
+            captured_clone,
+        )
+        .await;
+    });
+
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "qwen-vl-plus".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut body = json!({
+        "model": "deepseek-v4-flash",
+        "input": [{"type":"message","role":"user","content":[
+            {"type":"input_text","text":"BUG4_TIER2_UNIQUE_QUESTION"},
+            {"type":"input_image","image_url":"https://example.com/bug4-tier2-prompt-dddd.png"}
+        ]}]
+    });
+    analyze_images_with_vl(&mut body, &config, &client)
+        .await
+        .unwrap();
+
+    let raw = captured.lock().unwrap().clone();
+    assert!(
+        raw.contains("BUG4_TIER2_UNIQUE_QUESTION"),
+        "Tier 2 prompt 应含用户问题，实际：{raw}"
+    );
+    assert!(
+        raw.contains("涵盖所有视觉信息"),
+        "Tier 2 prompt 应以全面描述为基础，实际：{raw}"
+    );
+}
+
+#[tokio::test]
 async fn vl_endpoint_normalizes_bare_domain_with_v1() {
+    let _vl_guard = vl_test_isolate();
     // Bug 5：裸域名 base_url（无 /v1）-> VL 请求应打到 /v1/chat/completions
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -1932,6 +2267,7 @@ async fn vl_endpoint_normalizes_bare_domain_with_v1() {
 
 #[tokio::test]
 async fn vl_endpoint_does_not_duplicate_path() {
+    let _vl_guard = vl_test_isolate();
     // Bug 5：完整 endpoint base_url -> 不重复拼 /chat/completions
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -1982,6 +2318,7 @@ async fn vl_endpoint_does_not_duplicate_path() {
 
 #[tokio::test]
 async fn vl_log_does_not_panic_on_chinese_description_and_omits_body() {
+    let _vl_guard = vl_test_isolate();
     // Bug 3 + Bug 6：VL 返回 >200 字节的中文描述（含唯一标记）。
     // 旧代码 `&description[..200]` 字节截断在汉字中间会 panic；且 description_preview
     // 把描述正文写进 diagnostic_log（泄露截图内容）。修复后：不 panic + 日志只记元数据。
