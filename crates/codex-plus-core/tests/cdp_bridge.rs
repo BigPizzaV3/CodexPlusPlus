@@ -97,9 +97,9 @@ fn pet_real_mouse_capability_probe_rejects_v1_without_explicit_v2_evidence() {
     assert!(probe.contains("image.naturalWidth === 1536"));
     assert!(probe.contains("image.naturalHeight === 2288"));
     assert!(probe.contains("getComputedStyle(element).backgroundImage"));
-    assert!(probe.contains("data:image\\/png;base64"));
-    assert!(!probe.contains("new Image()"));
-    assert!(probe.contains("if (!isV2Sprite(mascot)) return false"));
+    assert!(probe.contains("const image = new Image()"));
+    assert!(probe.contains("await image.decode()"));
+    assert!(probe.contains("if (!await isV2Sprite(mascot)) return false"));
     assert!(!probe.contains("spriteVersionNumber"));
     assert!(probe.contains("dispatchHostMessage"));
     assert!(probe.contains("typeof value.subscribe === \"function\""));
@@ -115,12 +115,13 @@ fn pet_real_mouse_update_script_stops_when_runtime_capability_is_missing() {
     assert!(script.contains("image.naturalWidth === 1536"));
     assert!(script.contains("image.naturalHeight === 2288"));
     assert!(script.contains("getComputedStyle(element).backgroundImage"));
-    assert!(script.contains("uint32(16) === 1536 && uint32(20) === 2288"));
+    assert!(script.contains("await image.decode()"));
+    assert!(script.contains("__codexPlusPetV2SpriteProbe"));
     assert!(script.contains("updateScreenPoint?.({ x: -125, y: 640 }) === true"));
 }
 
 #[test]
-fn pet_real_mouse_update_script_accepts_css_background_v2_and_rejects_v1() {
+fn pet_real_mouse_update_script_accepts_png_webp_and_blob_v2_but_rejects_v1() {
     let temp = tempfile::tempdir().expect("temp dir should be created");
     let script_path = temp.path().join("pet-update.js");
     let harness_path = temp.path().join("pet-update-harness.cjs");
@@ -133,34 +134,106 @@ fn pet_real_mouse_update_script_accepts_css_background_v2_and_rejects_v1() {
 const fs = require("fs");
 const vm = require("vm");
 const script = fs.readFileSync({script_path}, "utf8");
-function pngDataUri(width, height) {{
-  const bytes = Buffer.alloc(24);
-  bytes.set([137, 80, 78, 71, 13, 10, 26, 10], 0);
-  bytes.writeUInt32BE(width, 16);
-  bytes.writeUInt32BE(height, 20);
-  return `url("data:image/png;base64,${{bytes.toString("base64")}}")`;
-}}
-function run({{ image = null, background = "none" }} = {{}}) {{
+const sources = {{
+  pngV2: "data:image/png;base64,png-v2",
+  webpV2: "data:image/webp;base64,webp-v2",
+  webpV1: "data:image/webp;base64,webp-v1",
+  blobV2: "blob:codex-plus-pet-v2",
+  unknown: "data:image/webp;base64,unknown",
+}};
+const dimensions = new Map([
+  [sources.pngV2, [1536, 2288]],
+  [sources.webpV2, [1536, 2288]],
+  [sources.webpV1, [1536, 1872]],
+  [sources.blobV2, [1536, 2288]],
+]);
+async function run({{ image = null, source = null }} = {{}}) {{
   let calls = 0;
+  let decodes = 0;
   const element = {{ querySelectorAll: () => [] }};
   const mascot = {{
-    querySelectorAll: (selector) => selector === "img" ? (image ? [image] : []) : [element],
+    querySelectorAll: (selector) => selector === "img" && image ? [image] : [element],
   }};
+  class MockImage {{
+    set src(value) {{ this.source = value; }}
+    async decode() {{
+      decodes += 1;
+      const size = dimensions.get(this.source);
+      if (!size) throw new Error("unsupported image");
+      [this.naturalWidth, this.naturalHeight] = size;
+    }}
+  }}
   const context = {{
     document: {{ querySelector: () => mascot }},
-    getComputedStyle: (target) => ({{ backgroundImage: target === element ? background : "none" }}),
-    atob: (value) => Buffer.from(value, "base64").toString("latin1"),
+    getComputedStyle: (target) => ({{ backgroundImage: target === element && source ? `url("${{source}}")` : "none" }}),
+    Image: MockImage,
     window: {{ __codexPlusPetRealMouseLook: {{ updateScreenPoint: () => {{ calls += 1; return true; }} }} }},
   }};
-  const result = vm.runInNewContext(script, context);
-  return {{ result, calls }};
+  const result = await vm.runInNewContext(script, context);
+  return {{ result, calls, decodes }};
 }}
-process.stdout.write(JSON.stringify({{
-  cssV2: run({{ background: pngDataUri(1536, 2288) }}),
-  cssV1: run({{ background: pngDataUri(1536, 1872) }}),
-  imgV2: run({{ image: {{ naturalWidth: 1536, naturalHeight: 2288 }} }}),
-  missing: run(),
-}}));
+async function runSwitchSequence() {{
+  let calls = 0;
+  let decodes = 0;
+  let source = sources.webpV2;
+  const element = {{ querySelectorAll: () => [] }};
+  const mascot = {{ querySelectorAll: () => [element] }};
+  class MockImage {{
+    set src(value) {{ this.source = value; }}
+    async decode() {{
+      decodes += 1;
+      [this.naturalWidth, this.naturalHeight] = dimensions.get(this.source);
+    }}
+  }}
+  const context = {{
+    document: {{ querySelector: () => mascot }},
+    getComputedStyle: (target) => ({{ backgroundImage: target === element ? `url("${{source}}")` : "none" }}),
+    Image: MockImage,
+    window: {{ __codexPlusPetRealMouseLook: {{ updateScreenPoint: () => {{ calls += 1; return true; }} }} }},
+  }};
+  const first = await vm.runInNewContext(script, context);
+  const cached = await vm.runInNewContext(script, context);
+  source = sources.webpV1;
+  const afterV1Switch = await vm.runInNewContext(script, context);
+  return {{ first, cached, afterV1Switch, calls, decodes }};
+}}
+async function runDecodeRace() {{
+  let calls = 0;
+  let source = sources.webpV2;
+  let finishDecode;
+  const element = {{ querySelectorAll: () => [] }};
+  const mascot = {{ querySelectorAll: () => [element] }};
+  class MockImage {{
+    set src(value) {{ this.source = value; }}
+    async decode() {{
+      await new Promise((resolve) => {{ finishDecode = resolve; }});
+      [this.naturalWidth, this.naturalHeight] = dimensions.get(this.source);
+    }}
+  }}
+  const context = {{
+    document: {{ querySelector: () => mascot }},
+    getComputedStyle: (target) => ({{ backgroundImage: target === element ? `url("${{source}}")` : "none" }}),
+    Image: MockImage,
+    window: {{ __codexPlusPetRealMouseLook: {{ updateScreenPoint: () => {{ calls += 1; return true; }} }} }},
+  }};
+  const pending = vm.runInNewContext(script, context);
+  source = sources.webpV1;
+  finishDecode();
+  return {{ result: await pending, calls }};
+}}
+(async () => {{
+  process.stdout.write(JSON.stringify({{
+    pngV2: await run({{ source: sources.pngV2 }}),
+    webpV2: await run({{ source: sources.webpV2 }}),
+    blobV2: await run({{ source: sources.blobV2 }}),
+    webpV1: await run({{ source: sources.webpV1 }}),
+    imgV2: await run({{ image: {{ naturalWidth: 1536, naturalHeight: 2288 }} }}),
+    unknown: await run({{ source: sources.unknown }}),
+    missing: await run(),
+    switchSequence: await runSwitchSequence(),
+    decodeRace: await runDecodeRace(),
+  }}));
+}})().catch((error) => {{ console.error(error); process.exitCode = 1; }});
 "#,
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
             .expect("script path should serialize")
@@ -180,10 +253,45 @@ process.stdout.write(JSON.stringify({{
     );
     let cases: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("harness stdout should be JSON");
-    assert_eq!(cases["cssV2"], json!({ "result": true, "calls": 1 }));
-    assert_eq!(cases["imgV2"], json!({ "result": true, "calls": 1 }));
-    assert_eq!(cases["cssV1"], json!({ "result": false, "calls": 0 }));
-    assert_eq!(cases["missing"], json!({ "result": false, "calls": 0 }));
+    assert_eq!(
+        cases["pngV2"],
+        json!({ "result": true, "calls": 1, "decodes": 1 })
+    );
+    assert_eq!(
+        cases["webpV2"],
+        json!({ "result": true, "calls": 1, "decodes": 1 })
+    );
+    assert_eq!(
+        cases["blobV2"],
+        json!({ "result": true, "calls": 1, "decodes": 1 })
+    );
+    assert_eq!(
+        cases["imgV2"],
+        json!({ "result": true, "calls": 1, "decodes": 0 })
+    );
+    assert_eq!(
+        cases["webpV1"],
+        json!({ "result": false, "calls": 0, "decodes": 1 })
+    );
+    assert_eq!(
+        cases["unknown"],
+        json!({ "result": false, "calls": 0, "decodes": 1 })
+    );
+    assert_eq!(
+        cases["missing"],
+        json!({ "result": false, "calls": 0, "decodes": 0 })
+    );
+    assert_eq!(
+        cases["switchSequence"],
+        json!({
+            "first": true,
+            "cached": true,
+            "afterV1Switch": false,
+            "calls": 2,
+            "decodes": 2
+        })
+    );
+    assert_eq!(cases["decodeRace"], json!({ "result": false, "calls": 0 }));
 }
 
 #[test]

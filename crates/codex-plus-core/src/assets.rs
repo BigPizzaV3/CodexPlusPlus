@@ -25,27 +25,44 @@ pub fn pet_real_mouse_script() -> &'static str {
 }
 
 const PET_V2_SPRITE_DETECTION_SCRIPT: &str = r#"
-  const isV2Sprite = (mascot) => {
+  const isV2Sprite = async (mascot) => {
     if (!mascot) return false;
     if (Array.from(mascot.querySelectorAll("img")).some((image) =>
       image.naturalWidth === 1536 && image.naturalHeight === 2288
     )) return true;
     for (const element of [mascot, ...mascot.querySelectorAll("*")]) {
       const background = getComputedStyle(element).backgroundImage || "";
-      const match = background.match(/url\(["']?data:image\/png;base64,([^"')]+)/i);
+      const match = background.match(/url\(["']?([^"')]+)/i);
       if (!match) continue;
-      try {
-        const header = atob(match[1].slice(0, 48));
-        if (header.length < 24) continue;
-        const uint32 = (offset) => (
-          ((header.charCodeAt(offset) << 24) >>> 0)
-          + (header.charCodeAt(offset + 1) << 16)
-          + (header.charCodeAt(offset + 2) << 8)
-          + header.charCodeAt(offset + 3)
-        );
-        if (uint32(16) === 1536 && uint32(20) === 2288) return true;
-      } catch {
+      const source = match[1];
+      const cacheKey = "__codexPlusPetV2SpriteProbe";
+      let probe = window[cacheKey];
+      if (!probe || probe.source !== source) {
+        probe = { source, valid: false, pending: true };
+        probe.promise = (async () => {
+          try {
+            const image = new Image();
+            image.src = source;
+            await image.decode();
+            return image.naturalWidth === 1536 && image.naturalHeight === 2288;
+          } catch {
+            return false;
+          }
+        })().then((valid) => {
+          probe.valid = valid;
+          probe.pending = false;
+          return valid;
+        });
+        window[cacheKey] = probe;
       }
+      const wasPending = probe.pending;
+      const valid = wasPending ? await probe.promise : probe.valid;
+      if (wasPending) {
+        const currentBackground = getComputedStyle(element).backgroundImage || "";
+        const currentMatch = currentBackground.match(/url\(["']?([^"')]+)/i);
+        if (currentMatch?.[1] !== source) continue;
+      }
+      if (window[cacheKey] === probe && valid) return true;
     }
     return false;
   };
@@ -61,7 +78,7 @@ pub fn pet_real_mouse_capability_probe_script() -> String {
     script.push_str(PET_V2_SPRITE_DETECTION_SCRIPT);
     script.push_str(
         r#"
-  if (!isV2Sprite(mascot)) return false;
+  if (!await isV2Sprite(mascot)) return false;
   const urls = [
     ...Array.from(document.scripts || []).map((script) => script.src),
     ...Array.from(document.querySelectorAll("link[href]") || []).map((link) => link.href),
@@ -98,14 +115,14 @@ pub fn pet_real_mouse_capability_probe_script() -> String {
 
 pub fn pet_real_mouse_update_script(x: i32, y: i32) -> String {
     let mut script = String::from(
-        r#"(() => {
+        r#"(async () => {
   const mascot = document.querySelector('[data-avatar-mascot="true"]');
 "#,
     );
     script.push_str(PET_V2_SPRITE_DETECTION_SCRIPT);
     script.push_str(&format!(
         r#"
-  return isV2Sprite(mascot)
+  return await isV2Sprite(mascot)
     && window.__codexPlusPetRealMouseLook?.updateScreenPoint?.({{ x: {x}, y: {y} }}) === true;
 }})()"#
     ));
