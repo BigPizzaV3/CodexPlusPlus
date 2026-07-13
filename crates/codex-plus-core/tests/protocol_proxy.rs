@@ -1,6 +1,6 @@
 use codex_plus_core::protocol_proxy::{
-    ChatSseToResponsesConverter, analyze_images_with_vl, apply_vl_with_fallback,
-    chat_completion_to_response, chat_completion_to_response_with_request, chat_completions_url,
+    ChatSseToResponsesConverter, chat_completion_to_response,
+    chat_completion_to_response_with_request, chat_completions_url,
     chat_sse_to_responses_sse, chat_sse_to_responses_sse_with_request,
     is_chat_completions_proxy_path, is_models_proxy_path, is_responses_proxy_path,
     model_supports_image, model_supports_reasoning, models_url,
@@ -11,6 +11,7 @@ use codex_plus_core::protocol_proxy::{
     strip_reasoning_in_place, upstream_header_timeout, upstream_http_client,
     upstream_request_parts_with_image_decision, upstream_stream_header_timeout,
 };
+use codex_plus_core::vision::{analyze_images_with_vl, apply_vl_with_fallback};
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
     RelayMode, RelayProfile, VisionRelayConfig,
