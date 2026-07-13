@@ -1386,6 +1386,68 @@ async fn mock_vl_server_counted(
     }
 }
 
+/// mock VL 服务端变体：循环接受连接、计数、响应前 sleep `delay`（用于并发/批次计时测试）。
+async fn mock_vl_server_counted_delayed(
+    listener: tokio::net::TcpListener,
+    response_body: &'static str,
+    counter: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    delay: std::time::Duration,
+) {
+    use std::sync::atomic::Ordering;
+    loop {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            break;
+        };
+        counter.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(delay).await;
+        let mut header_buf = Vec::with_capacity(512);
+        let mut tmp = [0u8; 1];
+        loop {
+            let n = stream.read(&mut tmp).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            header_buf.push(tmp[0]);
+            if header_buf.ends_with(b"\r\n\r\n") {
+                break;
+            }
+            if header_buf.len() > 16384 {
+                break;
+            }
+        }
+        let header_str = String::from_utf8_lossy(&header_buf).to_string();
+        let mut body_len: Option<usize> = None;
+        if let Some(cl_line) = header_str
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+        {
+            body_len = cl_line
+                .split(':')
+                .nth(1)
+                .and_then(|s| s.trim().parse::<usize>().ok());
+        }
+        if let Some(len) = body_len {
+            let mut body_buf = Vec::new();
+            while body_buf.len() < len {
+                let need = len - body_buf.len();
+                let mut chunk = vec![0u8; need.min(4096)];
+                let n = stream.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                body_buf.extend_from_slice(&chunk[..n]);
+            }
+        }
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body,
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        let _ = stream.shutdown().await;
+    }
+}
+
 fn vl_response(description: &str) -> String {
     format!(
         r#"{{"id":"vl-1","object":"chat.completion","model":"qwen-vl-plus","choices":[{{"index":0,"message":{{"role":"assistant","content":"{}"}},"finish_reason":"stop"}}]}}"#,
@@ -1813,9 +1875,10 @@ async fn analyze_images_with_vl_strips_old_images_outside_context_window() {
 }
 
 #[tokio::test]
-async fn analyze_images_with_vl_returns_error_when_vl_call_fails() {
+async fn analyze_images_with_vl_strips_image_when_vl_unreachable() {
     let _vl_guard = vl_test_isolate();
-    // VL 不可用时必须返回 Err（让上游决定是否降级为 strip）
+    // VL 不可达时：降级为 strip（不阻断用户，返回 Ok）--Bug 4.6 坏图隔离语义，
+    // 单张坏图自己 strip，不拖累好图、不让整批返回 Err。
     let config = VisionRelayConfig {
         enabled: true,
         model: "qwen-vl-plus".to_string(),
@@ -1839,7 +1902,13 @@ async fn analyze_images_with_vl_returns_error_when_vl_call_fails() {
         ]
     });
     let result = analyze_images_with_vl(&mut body, &config, &client).await;
-    assert!(result.is_err(), "VL 不可达时必须返回 Err 让上游降级");
+    assert!(
+        result.is_ok(),
+        "VL 不可达应降级 strip 返回 Ok（不阻断用户），实际：{result:?}"
+    );
+    let serialized = serde_json::to_string(&body).unwrap();
+    assert!(!serialized.contains("cat.png"), "不可达时图片应被 strip");
+    assert!(!serialized.contains("input_image"), "input_image 应被移除");
 }
 
 #[test]
@@ -1916,10 +1985,17 @@ async fn apply_vl_with_fallback_falls_back_to_strip_when_vl_fails() {
     let (supports_image, returned_body) = apply_vl_with_fallback(&relay, body.clone(), &config, "")
         .await
         .unwrap();
-    assert!(!supports_image, "VL 失败时必须降级为 strip，不能阻断用户");
-    assert_eq!(
-        returned_body, body,
-        "VL 失败时 body 必须是原版（让 strip 处理）"
+    // VL 不可达 -> 图片被 strip（降级，不阻断）。supports_image=true：VL 已处理（strip），
+    // 转换层无需再 strip。Bug 4.6 语义：坏图隔离，不返回 (false, 原 body)。
+    let serialized = serde_json::to_string(&returned_body).unwrap();
+    assert!(
+        !serialized.contains("x.com/a.png"),
+        "VL 不可达时图片应被 strip，实际：{serialized}"
+    );
+    assert!(!serialized.contains("input_image"), "input_image 应被移除");
+    assert!(
+        supports_image,
+        "VL 降级 strip 后 supports_image=true（转换层 no-op），实际：{supports_image}"
     );
 }
 
@@ -1972,6 +2048,141 @@ async fn apply_vl_with_fallback_returns_preprocessed_body_when_vl_succeeds() {
     let content = returned_body["input"][0]["content"][0].clone();
     assert_eq!(content["type"], "input_text");
     assert!(content["text"].as_str().unwrap().contains("橘猫"));
+}
+
+#[tokio::test]
+async fn vl_batches_multiple_images_per_call() {
+    let _vl_guard = vl_test_isolate();
+    // Bug 4.3：5 张同 tier 图 -> 1 次 VL 调用（1 个请求含 5 个 image_url），
+    // 响应按 [[图片K]] 标注拆分为 5 段描述，分别回填。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured_clone = captured.clone();
+    let response = vl_response(
+        "[[图片1]]第一张图描述[[图片2]]第二张图描述[[图片3]]第三张图描述[[图片4]]第四张图描述[[图片5]]第五张图描述",
+    );
+    let _server = tokio::spawn(async move {
+        mock_vl_server(
+            listener,
+            Box::leak(response.into_boxed_str()),
+            captured_clone,
+        )
+        .await;
+    });
+
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "qwen-vl-plus".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    // 5 张图都在最新 user 消息、无问题 -> 全部 Tier 1 -> 1 批 5 张
+    let mut body = json!({
+        "model": "deepseek-v4-flash",
+        "input": [{"type":"message","role":"user","content":[
+            {"type":"input_image","image_url":"https://example.com/bug4-batch-1.png"},
+            {"type":"input_image","image_url":"https://example.com/bug4-batch-2.png"},
+            {"type":"input_image","image_url":"https://example.com/bug4-batch-3.png"},
+            {"type":"input_image","image_url":"https://example.com/bug4-batch-4.png"},
+            {"type":"input_image","image_url":"https://example.com/bug4-batch-5.png"}
+        ]}]
+    });
+    analyze_images_with_vl(&mut body, &config, &client)
+        .await
+        .unwrap();
+
+    let raw = captured.lock().unwrap().clone();
+    // 一次调用含全部 5 个图片 URL（证明 5 张图合并在 1 个请求里）
+    for i in 1..=5 {
+        assert!(
+            raw.contains(&format!("bug4-batch-{i}.png")),
+            "VL 请求应含第 {i} 张图 URL，实际：{raw}"
+        );
+    }
+    // 5 张图都被替换为按序号对应的描述
+    let content = body["input"][0]["content"].as_array().unwrap();
+    assert_eq!(content.len(), 5, "5 张图都应被替换为 input_text");
+    let names = ["第一张", "第二张", "第三张", "第四张", "第五张"];
+    for (i, part) in content.iter().enumerate() {
+        assert_eq!(part["type"], "input_text", "第 {i} 张应替换为 input_text");
+        assert!(
+            part["text"].as_str().unwrap().contains(names[i]),
+            "第 {i} 张描述应含 {}，实际：{}",
+            names[i],
+            part["text"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn vl_processes_images_concurrently_faster_than_serial() {
+    let _vl_guard = vl_test_isolate();
+    // Bug 4.2/4.3：5 张图 + 每调用 200ms 延迟。批次合并 -> 1 次调用 ~200ms，
+    // 远快于串行 5×200ms=1000ms。
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let counter = std::sync::Arc::new(AtomicU32::new(0));
+    let counter_clone = counter.clone();
+    let response = vl_response(
+        "[[图片1]]d1[[图片2]]d2[[图片3]]d3[[图片4]]d4[[图片5]]d5",
+    );
+    let mock_task = tokio::spawn(async move {
+        mock_vl_server_counted_delayed(
+            listener,
+            Box::leak(response.into_boxed_str()),
+            counter_clone,
+            std::time::Duration::from_millis(200),
+        )
+        .await;
+    });
+
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "qwen-vl-plus".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut body = json!({
+        "model": "deepseek-v4-flash",
+        "input": [{"type":"message","role":"user","content":[
+            {"type":"input_image","image_url":"https://example.com/bug4-conc-1.png"},
+            {"type":"input_image","image_url":"https://example.com/bug4-conc-2.png"},
+            {"type":"input_image","image_url":"https://example.com/bug4-conc-3.png"},
+            {"type":"input_image","image_url":"https://example.com/bug4-conc-4.png"},
+            {"type":"input_image","image_url":"https://example.com/bug4-conc-5.png"}
+        ]}]
+    });
+    let started = std::time::Instant::now();
+    analyze_images_with_vl(&mut body, &config, &client)
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    mock_task.abort();
+
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "5 张图应合并为 1 次 VL 调用（批次），实际 {} 次",
+        counter.load(Ordering::SeqCst)
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(800),
+        "批次合并应远快于串行 5×200ms=1000ms，实际：{elapsed:?}"
+    );
 }
 
 #[tokio::test]
