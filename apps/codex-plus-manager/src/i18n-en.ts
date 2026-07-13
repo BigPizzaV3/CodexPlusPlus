@@ -699,8 +699,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "已删除 {0} 个会话。": "Deleted {0} session(s).",
   "已删除 {0} 个，失败 {1} 个：{2}": "Deleted {0}, failed {1}: {2}",
   "已加载 {0} 条推荐": "Loaded {0} recommendation(s)",
-  "已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行索引{3}。":
-    "Synced to {0}: repaired {1} session file(s), updated {2} index row(s){3}.",
+  "已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引，清理 {3} 条失效任务索引{4}。":
+    "Synced to {0}: repaired {1} session file(s), updated {2} database index row(s), and pruned {3} stale task index entry/entries{4}.",
   "已安装 {0}": "Installed {0}",
   "已缓存 {0} 个插件 / {1} 个技能。": "Cached {0} plugin(s) / {1} skill(s).",
   "已运行 {0} 分钟": "Running for {0} minute(s)",

@@ -589,6 +589,12 @@ fn provider_sync_restores_rollout_first_line_when_later_step_fails() {
         .next()
         .unwrap()
         .to_string();
+    let stale_id = "019f4e36-490e-7ae0-8e78-a8b3ab33a428";
+    let original_index = format!(
+        "{{\"id\":\"thread-1\",\"thread_name\":\"仍在使用\"}}\n\
+         {{\"id\":\"{stale_id}\",\"thread_name\":\"确认在线状态\"}}\n"
+    );
+    fs::write(home.join("session_index.jsonl"), &original_index).unwrap();
     let db = Connection::open(home.join("state_5.sqlite")).unwrap();
     db.execute(
         "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER, cwd TEXT)",
@@ -618,6 +624,10 @@ fn provider_sync_restores_rollout_first_line_when_later_step_fails() {
         .unwrap()
         .to_string();
     assert_eq!(restored_first_line, original_first_line);
+    assert_eq!(
+        fs::read_to_string(home.join("session_index.jsonl")).unwrap(),
+        original_index
+    );
 }
 
 #[test]
@@ -774,5 +784,72 @@ fn provider_sync_preserves_rollout_mtime() {
     assert!(
         drift < Duration::from_secs(2),
         "mtime drifted by {drift:?}, expected < 2s"
+    );
+}
+
+#[test]
+fn provider_sync_prunes_only_index_entries_without_sqlite_or_rollout_sources() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let kept_rollout_id = "019f480d-bbc6-7b62-8a46-99597db8bde7";
+    let kept_sqlite_id = "019f4844-43aa-7862-b51c-e04d5686700e";
+    let stale_id = "019f4e36-490e-7ae0-8e78-a8b3ab33a428";
+    let rollout = home.join(format!(
+        "sessions/2026/07/rollout-2026-07-10T02-04-47-{kept_rollout_id}.jsonl"
+    ));
+    write_rollout(&rollout, "custom", kept_rollout_id, "C:/workspace");
+    let db_path = home.join("state_5.sqlite");
+    create_state_db_with_providers(&db_path, &[(kept_sqlite_id, "custom", 0)]);
+    let malformed = "not-json\n";
+    let original_index = format!(
+        "{{\"id\":\"{kept_rollout_id}\",\"thread_name\":\"回复在吗\"}}\n\
+         {{\"id\":\"{kept_sqlite_id}\",\"thread_name\":\"确认在线\"}}\n\
+         {{\"id\":\"{stale_id}\",\"thread_name\":\"回应问候\"}}\n{malformed}"
+    );
+    fs::write(home.join("session_index.jsonl"), &original_index).unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.pruned_session_index_entries, 1);
+    let next_index = fs::read_to_string(home.join("session_index.jsonl")).unwrap();
+    assert!(next_index.contains(kept_rollout_id));
+    assert!(next_index.contains(kept_sqlite_id));
+    assert!(!next_index.contains(stale_id));
+    assert!(next_index.contains(malformed));
+    let backup = result.backup_dir.expect("provider sync backup");
+    assert_eq!(
+        fs::read_to_string(backup.join("session_index.jsonl")).unwrap(),
+        original_index
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(backup.join("metadata.json")).unwrap()).unwrap();
+    assert_eq!(metadata["prunedSessionIndexEntries"], 1);
+}
+
+#[test]
+fn provider_sync_keeps_index_entry_for_rollout_without_parseable_session_meta() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let thread_id = "019f52f8-7c7e-7bd3-91f0-d662451867be";
+    let rollout = home.join(format!(
+        "sessions/rollout-2026-07-12T04-57-28-{thread_id}.jsonl"
+    ));
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    fs::write(&rollout, "{\"type\":\"event_msg\"}\n").unwrap();
+    let index = format!("{{\"id\":\"{thread_id}\",\"thread_name\":\"确认在线状态\"}}\n");
+    fs::write(home.join("session_index.jsonl"), &index).unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.pruned_session_index_entries, 0);
+    assert_eq!(
+        fs::read_to_string(home.join("session_index.jsonl")).unwrap(),
+        index
     );
 }

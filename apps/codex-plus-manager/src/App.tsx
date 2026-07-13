@@ -501,6 +501,7 @@ type ProviderSyncPayload = {
   sqliteUserEventRowsUpdated?: number;
   sqliteCwdRowsUpdated?: number;
   updatedWorkspaceRoots?: number;
+  prunedSessionIndexEntries?: number;
   encryptedContentWarning?: string | null;
 };
 
@@ -610,10 +611,17 @@ type ScriptMarketResult = CommandResult<{
 function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>): string {
   const changed = result.changedSessionFiles ?? 0;
   const rows = result.sqliteRowsUpdated ?? 0;
+  const pruned = result.prunedSessionIndexEntries ?? 0;
   const target = result.targetProvider || t("当前 provider");
   const skipped = result.skippedLockedRolloutFiles?.length ?? 0;
   const skippedText = skipped ? tf("，跳过 {0} 个占用文件", [skipped]) : "";
-  return tf("已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行索引{3}。", [target, changed, rows, skippedText]);
+  return tf("已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引，清理 {3} 条失效任务索引{4}。", [
+    target,
+    changed,
+    rows,
+    pruned,
+    skippedText,
+  ]);
 }
 
 const providerSyncSourceLabels: Record<ProviderSyncTargetSource, string> = {

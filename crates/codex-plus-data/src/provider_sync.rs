@@ -31,6 +31,7 @@ pub struct ProviderSyncResult {
     pub sqlite_user_event_rows_updated: usize,
     pub sqlite_cwd_rows_updated: usize,
     pub updated_workspace_roots: usize,
+    pub pruned_session_index_entries: usize,
     pub encrypted_content_warning: Option<String>,
 }
 
@@ -95,6 +96,14 @@ struct SessionChanges {
 struct AppliedSessionChanges {
     changes: Vec<SessionChange>,
     skipped_locked_rollout_files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct SessionIndexCleanup {
+    path: PathBuf,
+    original_text: String,
+    next_text: String,
+    removed_entries: usize,
 }
 
 #[derive(Debug, Default)]
@@ -187,6 +196,9 @@ pub fn run_provider_sync_with_target(
             .filter(|(thread_id, _)| !projectless_thread_ids.contains(thread_id))
             .collect::<HashMap<_, _>>();
         let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+        let live_thread_ids = collect_live_thread_ids(&home, &collected, &sqlite_paths)?;
+        let session_index_cleanup =
+            plan_session_index_cleanup(&home.join("session_index.jsonl"), &live_thread_ids)?;
         let sqlite_update_count = count_sqlite_updates_for_paths(
             &sqlite_paths,
             &target_provider,
@@ -195,7 +207,10 @@ pub fn run_provider_sync_with_target(
         )?;
         let global_state_update_count =
             count_global_state_updates(&home.join(".codex-global-state.json"))?;
-        if rewrite_changes.is_empty() && sqlite_update_count == 0 && global_state_update_count == 0
+        if rewrite_changes.is_empty()
+            && sqlite_update_count == 0
+            && global_state_update_count == 0
+            && session_index_cleanup.is_none()
         {
             let mut synced = result(
                 ProviderSyncStatus::Synced,
@@ -209,8 +224,29 @@ pub fn run_provider_sync_with_target(
             synced.encrypted_content_warning = encrypted_content_warning;
             return Ok(synced);
         }
-        let backup_dir = create_backup(&home, &target_provider, &rewrite_changes)?;
-        let applied = apply_session_changes(&rewrite_changes)?;
+        let backup_dir = create_backup(
+            &home,
+            &target_provider,
+            &rewrite_changes,
+            session_index_cleanup.as_ref(),
+        )?;
+        let session_index_applied = if let Some(cleanup) = session_index_cleanup.as_ref() {
+            fs::write(&cleanup.path, &cleanup.next_text)?;
+            true
+        } else {
+            false
+        };
+        let applied = match apply_session_changes(&rewrite_changes) {
+            Ok(applied) => applied,
+            Err(error) => {
+                if session_index_applied {
+                    if let Some(cleanup) = session_index_cleanup.as_ref() {
+                        let _ = fs::write(&cleanup.path, &cleanup.original_text);
+                    }
+                }
+                return Err(error);
+            }
+        };
         let apply_result = (|| -> anyhow::Result<(SqliteUpdateCounts, usize)> {
             let sqlite_updates = apply_sqlite_update_for_paths(
                 &sqlite_paths,
@@ -227,6 +263,11 @@ pub fn run_provider_sync_with_target(
             Ok(counts) => counts,
             Err(err) => {
                 let _ = restore_session_changes(&applied.changes);
+                if session_index_applied {
+                    if let Some(cleanup) = session_index_cleanup.as_ref() {
+                        let _ = fs::write(&cleanup.path, &cleanup.original_text);
+                    }
+                }
                 return Err(err);
             }
         };
@@ -248,6 +289,10 @@ pub fn run_provider_sync_with_target(
         synced.sqlite_user_event_rows_updated = sqlite_updates.user_event_rows;
         synced.sqlite_cwd_rows_updated = sqlite_updates.cwd_rows;
         synced.updated_workspace_roots = updated_workspace_roots;
+        synced.pruned_session_index_entries = session_index_cleanup
+            .as_ref()
+            .map(|cleanup| cleanup.removed_entries)
+            .unwrap_or_default();
         synced.encrypted_content_warning = encrypted_content_warning;
         Ok(synced)
     })();
@@ -284,6 +329,7 @@ fn result(
         sqlite_user_event_rows_updated: 0,
         sqlite_cwd_rows_updated: 0,
         updated_workspace_roots: 0,
+        pruned_session_index_entries: 0,
         encrypted_content_warning: None,
     }
 }
@@ -594,6 +640,100 @@ fn rollout_files(home: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+fn collect_live_thread_ids(
+    home: &Path,
+    collected: &SessionChanges,
+    sqlite_paths: &[PathBuf],
+) -> anyhow::Result<HashSet<String>> {
+    let mut ids = collected
+        .changes
+        .iter()
+        .filter_map(|change| change.thread_id.clone())
+        .collect::<HashSet<_>>();
+    for path in rollout_files(home)? {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if let Some(id) = rollout_thread_id_from_filename(name) {
+            ids.insert(id);
+        }
+    }
+    for path in sqlite_paths {
+        ids.extend(sqlite_thread_ids(path)?);
+    }
+    Ok(ids)
+}
+
+fn rollout_thread_id_from_filename(name: &str) -> Option<String> {
+    let stem = name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
+    let bytes = stem.as_bytes();
+    if bytes.len() < 36 {
+        return None;
+    }
+    let candidate = &stem[stem.len() - 36..];
+    let valid = candidate
+        .chars()
+        .enumerate()
+        .all(|(index, ch)| match index {
+            8 | 13 | 18 | 23 => ch == '-',
+            _ => ch.is_ascii_hexdigit(),
+        });
+    valid.then(|| candidate.to_string())
+}
+
+fn sqlite_thread_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
+    if !path.exists() {
+        return Ok(HashSet::new());
+    }
+    let db = Connection::open(path)?;
+    if !table_columns(&db, "threads")?.contains("id") {
+        return Ok(HashSet::new());
+    }
+    let mut stmt = db.prepare("SELECT id FROM threads WHERE COALESCE(id, '') <> ''")?;
+    Ok(stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?)
+}
+
+fn plan_session_index_cleanup(
+    path: &Path,
+    live_thread_ids: &HashSet<String>,
+) -> anyhow::Result<Option<SessionIndexCleanup>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let original_text = fs::read_to_string(path)?;
+    let mut next_text = String::with_capacity(original_text.len());
+    let mut removed_entries = 0;
+    for segment in original_text.split_inclusive('\n') {
+        let (line, line_ending) = split_line_ending(segment);
+        let stale = serde_json::from_str::<Value>(line)
+            .ok()
+            .and_then(|record| {
+                record
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            })
+            .is_some_and(|id| !id.trim().is_empty() && !live_thread_ids.contains(&id));
+        if stale {
+            removed_entries += 1;
+        } else {
+            next_text.push_str(line);
+            next_text.push_str(line_ending);
+        }
+    }
+    if removed_entries == 0 {
+        return Ok(None);
+    }
+    Ok(Some(SessionIndexCleanup {
+        path: path.to_path_buf(),
+        original_text,
+        next_text,
+        removed_entries,
+    }))
+}
+
 fn rollout_provider_ids(home: &Path) -> anyhow::Result<Vec<String>> {
     let mut ids = HashSet::new();
     for path in rollout_files(home)? {
@@ -695,6 +835,7 @@ fn create_backup(
     home: &Path,
     target_provider: &str,
     changes: &[SessionChange],
+    session_index_cleanup: Option<&SessionIndexCleanup>,
 ) -> anyhow::Result<PathBuf> {
     let backup_root = home.join("backups_state/provider-sync");
     let mut backup_dir = backup_root.join(timestamp_name());
@@ -708,6 +849,7 @@ fn create_backup(
         "config.toml",
         ".codex-global-state.json",
         ".codex-global-state.json.bak",
+        "session_index.jsonl",
     ] {
         let source = home.join(name);
         if source.exists() {
@@ -753,6 +895,9 @@ fn create_backup(
             "createdAt": chrono::Utc::now().to_rfc3339(),
             "dbFiles": db_files,
             "changedSessionFiles": changes.len(),
+            "prunedSessionIndexEntries": session_index_cleanup
+                .map(|cleanup| cleanup.removed_entries)
+                .unwrap_or_default(),
             "managedBy": "Codex++ provider sync"
         }))?,
     )?;
