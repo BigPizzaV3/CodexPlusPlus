@@ -259,10 +259,26 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
         .and_then(|values| values.get("base_url"))
         .map(|value| !unquote_toml_string(value).trim().is_empty())
         .unwrap_or(false);
+
+    // OpenAI 兼容型 provider（`base_url` + Bearer/API Key，或显式声明免鉴权）走严格路径。
+    let openai_compat_configured = root_provider.is_some()
+        && (has_bearer_token || has_auth_api_key || explicitly_disables_auth)
+        && has_base_url;
+    // 原生 provider 没有 `base_url`，也不需要 Bearer/API Key（例如 Amazon Bedrock 的
+    // AWS Profile 形态只写 `[model_providers.amazon-bedrock.aws]` 子表，凭据由 AWS SDK
+    // 自行解析），走"子表段存在即视为已配置"的通用兜底，避免 relay_switch 里针对某个
+    // 供应商做特判。两道守卫：
+    // 1. `!has_base_url` —— 一旦声明了 `base_url` 就属于 OpenAI 兼容形状，必须走上面的
+    //    严格路径，不能被表段存在救回，否则缺失 Key 的兼容型 provider 会被误判为已配置。
+    // 2. 只认子表段 —— 空的 `[model_providers.<id>]` 表头不算已配置。
+    let native_provider_configured = !has_base_url
+        && root_provider
+            .as_ref()
+            .map(|provider| has_model_provider_child_section(&contents, provider))
+            .unwrap_or(false);
+
     RelayConfigStatus {
-        configured: root_provider.is_some()
-            && (has_bearer_token || has_auth_api_key || explicitly_disables_auth)
-            && has_base_url,
+        configured: openai_compat_configured || native_provider_configured,
         requires_openai_auth,
         has_bearer_token,
         config_path: config_path.to_string_lossy().to_string(),
@@ -297,6 +313,25 @@ pub fn responses_proxy_configured_in_home(home: &Path) -> bool {
             )
             .as_str(),
         )
+}
+
+/// 判断 config.toml 里是否存在与指定 `provider` 关联的 `[model_providers.<provider>]`
+/// 表段，或任何以 `[model_providers.<provider>.` 开头的子表段。
+///
+/// 这个通用检查用于识别不走 OpenAI 兼容形状的原生 provider（例如 Amazon Bedrock
+/// 的 AWS Profile 模式只提供 `[model_providers.amazon-bedrock.aws]` 子表段）；调
+/// 用方无需关心具体供应商即可判定 "config 是否已完成写入"。
+/// provider 表下是否存在子表段（例如 `[model_providers.amazon-bedrock.aws]`）。
+///
+/// 只认子表段、不认空的 `[model_providers.<id>]` 表头：原生 provider 把凭据/区域
+/// 这类必填参数写在子表里，而一个空表头（例如 codex 默认写下的
+/// `[model_providers.openai]`）并不代表配置完整。
+fn has_model_provider_child_section(contents: &str, provider: &str) -> bool {
+    let child_prefix = format!("[model_providers.{provider}.");
+    contents.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.starts_with(&child_prefix)
+    })
 }
 
 pub fn apply_relay_config_to_home(

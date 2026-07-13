@@ -6,7 +6,7 @@ use anyhow::Context;
 use crate::relay_config::{
     backfill_relay_profile_from_home_with_common, relay_config_status_from_home,
 };
-use crate::settings::{BackendSettings, BedrockAuthMode, RelayMode, SettingsStore};
+use crate::settings::{BackendSettings, RelayMode, SettingsStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelaySwitchResult {
@@ -147,16 +147,12 @@ fn apply_selected_relay_profile(
         )?
     };
     let status = relay_config_status_from_home(home);
-    // Bedrock AWS Profile 模式的 config.toml 形状（顶层 `model_provider = "amazon-bedrock"` +
-    // `[model_providers.amazon-bedrock.aws]` 子表）不带 `requires_openai_auth`/`base_url`/
-    // `experimental_bearer_token`，因此 `relay_config_status_from_home` 的 `configured`
-    // 恒为 false。这里显式绕过检查，避免把合法的 AWS Profile 配置误判为"未检测到完整 custom provider"。
-    let is_bedrock_aws_profile = relay
-        .bedrock
-        .as_ref()
-        .map(|bedrock| bedrock.auth_mode == BedrockAuthMode::AwsProfile)
-        .unwrap_or(false);
-    if relay.relay_mode == RelayMode::PureApi && !status.configured && !is_bedrock_aws_profile {
+    // `configured` 判定在 `relay_config_status_from_home` 里已经做了通用化：
+    // OpenAI 兼容形状走严格路径（`base_url` + Bearer/API Key），原生 provider
+    //（例如 Amazon Bedrock AWS Profile 只写 `[model_providers.<id>.<sub>]` 子表段、
+    // 没有 `base_url` 的形态）走"表段存在即视为已配置"的兜底。因此这里不需要对
+    // 特定供应商做特判，`relay_switch` 保持对所有 provider 一视同仁。
+    if relay.relay_mode == RelayMode::PureApi && !status.configured {
         anyhow::bail!(
             "纯 API 配置写入后未检测到完整 custom provider，请检查 config.toml 和供应商 API Key。"
         );

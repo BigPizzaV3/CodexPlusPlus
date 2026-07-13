@@ -482,6 +482,52 @@ base_url = "http://127.0.0.1:57321/v1"
     assert!(!status.has_bearer_token);
 }
 
+/// 通用兜底：只要 config.toml 里存在与顶层 `model_provider` 对应的
+/// `[model_providers.<id>]` 或 `[model_providers.<id>.<sub>]` 表段，
+/// 无论 provider 是否符合 OpenAI 兼容形状（`requires_openai_auth`/`base_url`/
+/// `experimental_bearer_token`），都应视为 configured。
+///
+/// 这条测试覆盖 Amazon Bedrock AWS Profile 生成的 config.toml 形态：
+/// 顶层只有 `model_provider = "amazon-bedrock"` 与 `[model_providers.amazon-bedrock.aws]`
+/// 子表段，此前会被误判为 "未检测到完整 custom provider"。改动后 relay_switch 无
+/// 需针对 Bedrock 特判也能正确通过写入校验。
+#[test]
+fn reports_native_provider_configured_via_child_table_only() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model_provider = "amazon-bedrock"
+
+[model_providers.amazon-bedrock.aws]
+region = "us-east-2"
+"#,
+    )
+    .unwrap();
+
+    let status = relay_config_status_from_home(temp.path());
+
+    assert!(status.configured);
+    // 未声明 `requires_openai_auth`/`experimental_bearer_token`，字段保持 false。
+    assert!(!status.requires_openai_auth);
+    assert!(!status.has_bearer_token);
+}
+
+/// 与上一条互为对照：仅有顶层 `model_provider` 而缺失任何 `[model_providers.*]`
+/// 表段时，仍应判为未 configured（防止过度放宽兜底）。
+#[test]
+fn reports_not_configured_when_provider_section_missing() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "model_provider = \"amazon-bedrock\"\n",
+    )
+    .unwrap();
+
+    let status = relay_config_status_from_home(temp.path());
+
+    assert!(!status.configured);
+}
+
 #[test]
 fn reports_internal_no_auth_proxy_provider_configured() {
     let temp = tempfile::tempdir().unwrap();
