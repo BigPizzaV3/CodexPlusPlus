@@ -87,9 +87,21 @@ fn is_sqlite_candidate(path: &Path) -> bool {
 }
 
 fn has_session_table(path: &Path) -> bool {
-    ["threads", "automation_runs", "inbox_items"]
-        .iter()
-        .any(|table| sqlite_has_table(path, table))
+    [
+        "threads",
+        "local_thread_catalog",
+        "automation_runs",
+        "inbox_items",
+        "sessions",
+        "messages",
+        "thread_dynamic_tools",
+        "thread_goals",
+        "thread_spawn_edges",
+        "stage1_outputs",
+        "agent_job_items",
+    ]
+    .iter()
+    .any(|table| sqlite_has_table(path, table))
 }
 
 fn sqlite_has_table(path: &Path, table: &str) -> bool {

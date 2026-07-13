@@ -231,7 +231,31 @@ pub fn find_codex_processes_from_snapshot(
     ids
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn find_codex_processes() -> Vec<u32> {
+    let mut ids = ["Codex", "ChatGPT"]
+        .into_iter()
+        .flat_map(|name| {
+            std::process::Command::new("pgrep")
+                .args(["-x", name])
+                .output()
+                .ok()
+                .into_iter()
+                .flat_map(|output| {
+                    String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+        })
+        .filter_map(|value| value.trim().parse::<u32>().ok())
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn find_codex_processes() -> Vec<u32> {
     Vec::new()
 }

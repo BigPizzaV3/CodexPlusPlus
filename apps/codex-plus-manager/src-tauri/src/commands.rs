@@ -1168,6 +1168,65 @@ fn merge_manual_provider_sync_targets(
 }
 
 #[tauri::command]
+pub async fn preview_session_index_cleanup() -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        codex_plus_data::preview_session_index_cleanup(None)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("session index cleanup preview task failed: {error}"))
+    .and_then(|result| result);
+    match result {
+        Ok(preview) => ok(
+            &format!(
+                "发现 {} 条仅存在于任务索引中的候选记录。",
+                preview.candidates.len()
+            ),
+            json!({
+                "snapshotSha256": preview.snapshot_sha256,
+                "candidates": preview.candidates,
+            }),
+        ),
+        Err(error) => failed(&format!("预览失效任务索引失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn apply_session_index_cleanup(
+    snapshot_sha256: String,
+    thread_ids: Vec<String>,
+) -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_data::apply_session_index_cleanup(None, &snapshot_sha256, &thread_ids)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("session index cleanup task failed: {error}"));
+    match result {
+        Ok(Ok(cleanup)) => ok(
+            &format!(
+                "已清理 {} 条失效任务索引；原索引已完整备份。",
+                cleanup.pruned_entries
+            ),
+            json!({
+                "prunedEntries": cleanup.pruned_entries,
+                "backupDir": cleanup.backup_dir,
+            }),
+        ),
+        Ok(Err(error)) => {
+            let backup_hint = error
+                .backup_dir
+                .as_ref()
+                .map(|path| format!(" 备份目录：{}。", path.to_string_lossy()))
+                .unwrap_or_default();
+            failed(
+                &format!("清理失效任务索引失败：{}{backup_hint}", error.message),
+                json!({ "backupDir": error.backup_dir }),
+            )
+        }
+        Err(error) => failed(&format!("清理失效任务索引失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
 pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResult<Value> {
     let target_provider = target_provider
         .map(|value| value.trim().to_string())
@@ -1204,7 +1263,6 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
                     "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
                     "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
                     "updatedWorkspaceRoots": sync.updated_workspace_roots,
-                    "prunedSessionIndexEntries": sync.pruned_session_index_entries,
                     "encryptedContentWarning": sync.encrypted_content_warning,
                     "backupDir": sync.backup_dir,
                     "syncMessage": sync.message,

@@ -493,6 +493,7 @@ export const EN_PLAIN: Record<string, string> = {
   "添加聚合供应商": "Add aggregate provider",
   "清空选择": "Clear selection",
   "清除保存路径": "Clear saved path",
+  "清理幽灵任务索引": "Clean up ghost task index",
   "点击刷新会话读取本地数据库": "Click Refresh Sessions to read the local database",
   "点击刷新市场加载远程脚本。": "Click Refresh Marketplace to load remote scripts.",
   "版本信息、项目链接、GitHub Release 更新、日志与诊断": "Version info, project links, GitHub Release updates, logs and diagnostics",
@@ -601,6 +602,8 @@ export const EN_PLAIN: Record<string, string> = {
     "Automatically keep expanding 'More' on the plugins page to show the full plugin list at once.",
   "进度": "Progress",
   "远程 SSH 文件引用可直接用 Zed Remote Development 打开。": "Remote SSH file references can be opened directly with Zed Remote Development.",
+  "选择全部候选记录": "Select all candidate records",
+  "未命名任务": "Untitled task",
   "远程脚本": "Remote scripts",
   "适合官方登录或官方混入 API Key；保留会话删除、导出、项目移动和用户脚本，关闭插件市场相关增强。":
     "Suited to official login or official mixed-in API Key; keeps session deletion, export, project move and user scripts, while disabling plugin-marketplace-related enhancements.",
@@ -664,6 +667,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "，清理 {0} 条失效任务索引": ", pruned {0} stale task index entry/entries",
   "\n...以及另外 {0} 个会话": "\n...and {0} more session(s)",
   "{0}（{1}）": "{0} ({1})",
   "{0} ms": "{0} ms",
@@ -699,8 +703,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "已删除 {0} 个会话。": "Deleted {0} session(s).",
   "已删除 {0} 个，失败 {1} 个：{2}": "Deleted {0}, failed {1}: {2}",
   "已加载 {0} 条推荐": "Loaded {0} recommendation(s)",
-  "已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引，清理 {3} 条失效任务索引{4}。":
-    "Synced to {0}: repaired {1} session file(s), updated {2} database index row(s), and pruned {3} stale task index entry/entries{4}.",
+  "已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引{3}{4}。":
+    "Synced to {0}: repaired {1} session file(s) and updated {2} database index row(s){3}{4}.",
   "已安装 {0}": "Installed {0}",
   "已缓存 {0} 个插件 / {1} 个技能。": "Cached {0} plugin(s) / {1} skill(s).",
   "已运行 {0} 分钟": "Running for {0} minute(s)",
@@ -709,6 +713,9 @@ export const EN_TEMPLATE: Record<string, string> = {
   "当前版本 {0}": "Current version {0}",
   "打开选择器失败：{0}": "Failed to open the picker: {0}",
   "正在同步到 {0}…": "Syncing to {0}…",
+  "发现 {0} 条仅存在于 session_index.jsonl、未在本地数据库或 rollout 中找到来源的候选记录。它们也可能是云端或尚未落盘的任务，请逐项核对。任务标题仅用于预览，实际按 thread ID 与数据来源判断。清理前请先完全退出 Codex App / ChatGPT。":
+    "Found {0} candidate record(s) that exist only in session_index.jsonl and have no source in the local databases or rollout files. They may still represent cloud-only or not-yet-persisted tasks, so review each item. Titles are shown only for preview; cleanup is decided by thread ID and data sources. Fully exit Codex App / ChatGPT before cleanup.",
+  "确认清理 {0} 条": "Confirm cleanup of {0}",
   "清单更新时间：{0}": "Manifest updated at: {0}",
   "留空使用默认：{0}": "Leave empty to use the default: {0}",
   "聚合供应商 {0}": "Aggregate provider {0}",

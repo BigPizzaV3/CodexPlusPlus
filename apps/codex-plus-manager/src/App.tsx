@@ -505,6 +505,22 @@ type ProviderSyncPayload = {
   encryptedContentWarning?: string | null;
 };
 
+type SessionIndexCleanupCandidate = {
+  id: string;
+  threadName: string;
+  updatedAt: string;
+};
+
+type SessionIndexCleanupPreviewPayload = {
+  snapshotSha256: string;
+  candidates: SessionIndexCleanupCandidate[];
+};
+
+type SessionIndexCleanupApplyPayload = {
+  prunedEntries?: number;
+  backupDir?: string | null;
+};
+
 type ProviderSyncTargetSource = "config" | "rollout" | "sqlite" | "manual";
 
 type ProviderSyncTargetOption = {
@@ -614,12 +630,13 @@ function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>)
   const pruned = result.prunedSessionIndexEntries ?? 0;
   const target = result.targetProvider || t("当前 provider");
   const skipped = result.skippedLockedRolloutFiles?.length ?? 0;
+  const prunedText = pruned ? tf("，清理 {0} 条失效任务索引", [pruned]) : "";
   const skippedText = skipped ? tf("，跳过 {0} 个占用文件", [skipped]) : "";
-  return tf("已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引，清理 {3} 条失效任务索引{4}。", [
+  return tf("已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引{3}{4}。", [
     target,
     changed,
     rows,
-    pruned,
+    prunedText,
     skippedText,
   ]);
 }
@@ -775,6 +792,10 @@ export function App() {
     confirmText: string;
     cancelText: string;
     resolve: (confirmed: boolean) => void;
+  } | null>(null);
+  const [sessionIndexCleanupDialog, setSessionIndexCleanupDialog] = useState<{
+    candidates: SessionIndexCleanupCandidate[];
+    resolve: (selectedIds: string[] | null) => void;
   } | null>(null);
   const [overview, setOverview] = useState<OverviewResult | null>(null);
   const [settings, setSettings] = useState<SettingsResult | null>(null);
@@ -1068,6 +1089,14 @@ export function App() {
         message,
         confirmText: t("确认删除"),
         cancelText: t("取消"),
+        resolve,
+      });
+    });
+
+  const selectSessionIndexCleanupCandidates = (candidates: SessionIndexCleanupCandidate[]) =>
+    new Promise<string[] | null>((resolve) => {
+      setSessionIndexCleanupDialog({
+        candidates,
         resolve,
       });
     });
@@ -1519,11 +1548,38 @@ export function App() {
         call<CommandResult<ProviderSyncPayload>>("sync_providers_now", { targetProvider }),
       );
       if (result) {
+        let finalResult = result;
+        if (isSuccessStatus(result.status)) {
+          const preview = await run(() =>
+            call<CommandResult<SessionIndexCleanupPreviewPayload>>("preview_session_index_cleanup"),
+          );
+          if (preview && isSuccessStatus(preview.status) && preview.candidates.length > 0) {
+            const selectedIds = await selectSessionIndexCleanupCandidates(preview.candidates);
+            if (selectedIds?.length) {
+              const cleanup = await run(() =>
+                call<CommandResult<SessionIndexCleanupApplyPayload>>("apply_session_index_cleanup", {
+                  snapshotSha256: preview.snapshotSha256,
+                  threadIds: selectedIds,
+                }),
+              );
+              if (cleanup && isSuccessStatus(cleanup.status)) {
+                finalResult = {
+                  ...result,
+                  prunedSessionIndexEntries: cleanup.prunedEntries ?? 0,
+                };
+              } else if (cleanup) {
+                showNotice(t("清理幽灵任务索引"), cleanup.message, cleanup.status);
+              }
+            }
+          } else if (preview && !isSuccessStatus(preview.status)) {
+            showNotice(t("清理幽灵任务索引"), preview.message, preview.status);
+          }
+        }
         setProviderSyncProgress({
           active: false,
           percent: 100,
-          message: providerSyncProgressMessage(result),
-          result,
+          message: providerSyncProgressMessage(finalResult),
+          result: finalResult,
         });
         if (targetProvider) {
           const next = {
@@ -1536,7 +1592,7 @@ export function App() {
           setSettingsForm(next);
         }
         await refreshProviderSyncTargets(true);
-        showNotice(t("历史会话修复"), result.message, result.status);
+        showNotice(t("历史会话修复"), finalResult.message, finalResult.status);
       } else {
         setProviderSyncProgress({
           active: false,
@@ -2246,6 +2302,19 @@ export function App() {
           onConfirm={() => {
             confirmDialog.resolve(true);
             setConfirmDialog(null);
+          }}
+        />
+      ) : null}
+      {sessionIndexCleanupDialog ? (
+        <SessionIndexCleanupDialog
+          request={sessionIndexCleanupDialog}
+          onCancel={() => {
+            sessionIndexCleanupDialog.resolve(null);
+            setSessionIndexCleanupDialog(null);
+          }}
+          onConfirm={(selectedIds) => {
+            sessionIndexCleanupDialog.resolve(selectedIds);
+            setSessionIndexCleanupDialog(null);
           }}
         />
       ) : null}
@@ -5257,6 +5326,76 @@ function ConfirmDialog({
             {confirm.confirmText}
           </Button>
           <Button onClick={onCancel} variant="secondary">{confirm.cancelText}</Button>
+        </Toolbar>
+      </div>
+    </div>
+  );
+}
+
+function SessionIndexCleanupDialog({
+  request,
+  onConfirm,
+  onCancel,
+}: {
+  request: { candidates: SessionIndexCleanupCandidate[] };
+  onConfirm: (selectedIds: string[]) => void;
+  onCancel: () => void;
+}) {
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const allSelected = request.candidates.length > 0 && selectedIds.size === request.candidates.length;
+  const toggleCandidate = (id: string, selected: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (selected) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card session-index-cleanup-modal">
+        <div className="modal-head">
+          <div>
+            <h2>{t("清理幽灵任务索引")}</h2>
+            <p className="modal-message">
+              {tf("发现 {0} 条仅存在于 session_index.jsonl、未在本地数据库或 rollout 中找到来源的候选记录。它们也可能是云端或尚未落盘的任务，请逐项核对。任务标题仅用于预览，实际按 thread ID 与数据来源判断。清理前请先完全退出 Codex App / ChatGPT。", [request.candidates.length])}
+            </p>
+          </div>
+          <button className="toast-close" onClick={onCancel} type="button">×</button>
+        </div>
+        <label className="session-index-cleanup-select-all">
+          <input
+            checked={allSelected}
+            onChange={(event) => {
+              setSelectedIds(event.target.checked ? new Set(request.candidates.map((candidate) => candidate.id)) : new Set());
+            }}
+            type="checkbox"
+          />
+          <span>{t("选择全部候选记录")}</span>
+        </label>
+        <div className="session-index-cleanup-list">
+          {request.candidates.map((candidate) => (
+            <label className="session-index-cleanup-item" key={candidate.id}>
+              <input
+                checked={selectedIds.has(candidate.id)}
+                onChange={(event) => toggleCandidate(candidate.id, event.target.checked)}
+                type="checkbox"
+              />
+              <span>
+                <strong>{candidate.threadName || t("未命名任务")}</strong>
+                <code>{candidate.id}</code>
+                <small>{candidate.updatedAt}</small>
+              </span>
+            </label>
+          ))}
+        </div>
+        <Toolbar>
+          <Button disabled={selectedIds.size === 0} onClick={() => onConfirm(Array.from(selectedIds))}>
+            <Trash2 className="h-4 w-4" />
+            {tf("确认清理 {0} 条", [selectedIds.size])}
+          </Button>
+          <Button onClick={onCancel} variant="secondary">{t("取消")}</Button>
         </Toolbar>
       </div>
     </div>

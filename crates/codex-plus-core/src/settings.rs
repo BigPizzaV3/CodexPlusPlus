@@ -1170,7 +1170,7 @@ fn normalize_text_config(contents: String) -> String {
     }
 }
 
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create directory {}", parent.display()))?;
@@ -1179,13 +1179,50 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let temp_path = temp_path_for(path);
     fs::write(&temp_path, bytes)
         .with_context(|| format!("failed to write temp file {}", temp_path.display()))?;
-    fs::rename(&temp_path, path).with_context(|| {
-        format!(
-            "failed to replace {} with {}",
-            path.display(),
-            temp_path.display()
-        )
-    })?;
+    if let Err(error) = replace_file(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error).with_context(|| {
+            format!(
+                "failed to replace {} with {}",
+                path.display(),
+                temp_path.display()
+            )
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, target: &Path) -> anyhow::Result<()> {
+    fs::rename(source, target)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, target: &Path) -> anyhow::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    use windows::core::PCWSTR;
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    unsafe {
+        MoveFileExW(
+            PCWSTR(source.as_ptr()),
+            PCWSTR(target.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )?;
+    }
     Ok(())
 }
 
@@ -1215,6 +1252,19 @@ mod tests {
         ));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_file_and_removes_temp_file() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, b"old").unwrap();
+
+        atomic_write(&path, b"new").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert!(!dir.join("settings.json.tmp").exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

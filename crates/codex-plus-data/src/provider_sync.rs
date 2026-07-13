@@ -1,6 +1,7 @@
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,8 +32,36 @@ pub struct ProviderSyncResult {
     pub sqlite_user_event_rows_updated: usize,
     pub sqlite_cwd_rows_updated: usize,
     pub updated_workspace_roots: usize,
-    pub pruned_session_index_entries: usize,
     pub encrypted_content_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionIndexCleanupCandidate {
+    pub id: String,
+    pub thread_name: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionIndexCleanupPreview {
+    pub snapshot_sha256: String,
+    pub candidates: Vec<SessionIndexCleanupCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionIndexCleanupResult {
+    pub pruned_entries: usize,
+    pub backup_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct SessionIndexCleanupApplyError {
+    pub message: String,
+    pub backup_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -99,11 +128,12 @@ struct AppliedSessionChanges {
 }
 
 #[derive(Debug, Clone)]
-struct SessionIndexCleanup {
+struct SessionIndexPlan {
     path: PathBuf,
+    original_bytes: Vec<u8>,
     original_text: String,
-    next_text: String,
-    removed_entries: usize,
+    snapshot_sha256: String,
+    candidates: Vec<SessionIndexCleanupCandidate>,
 }
 
 #[derive(Debug, Default)]
@@ -196,9 +226,6 @@ pub fn run_provider_sync_with_target(
             .filter(|(thread_id, _)| !projectless_thread_ids.contains(thread_id))
             .collect::<HashMap<_, _>>();
         let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
-        let live_thread_ids = collect_live_thread_ids(&home, &collected, &sqlite_paths)?;
-        let session_index_cleanup =
-            plan_session_index_cleanup(&home.join("session_index.jsonl"), &live_thread_ids)?;
         let sqlite_update_count = count_sqlite_updates_for_paths(
             &sqlite_paths,
             &target_provider,
@@ -207,10 +234,7 @@ pub fn run_provider_sync_with_target(
         )?;
         let global_state_update_count =
             count_global_state_updates(&home.join(".codex-global-state.json"))?;
-        if rewrite_changes.is_empty()
-            && sqlite_update_count == 0
-            && global_state_update_count == 0
-            && session_index_cleanup.is_none()
+        if rewrite_changes.is_empty() && sqlite_update_count == 0 && global_state_update_count == 0
         {
             let mut synced = result(
                 ProviderSyncStatus::Synced,
@@ -224,29 +248,8 @@ pub fn run_provider_sync_with_target(
             synced.encrypted_content_warning = encrypted_content_warning;
             return Ok(synced);
         }
-        let backup_dir = create_backup(
-            &home,
-            &target_provider,
-            &rewrite_changes,
-            session_index_cleanup.as_ref(),
-        )?;
-        let session_index_applied = if let Some(cleanup) = session_index_cleanup.as_ref() {
-            fs::write(&cleanup.path, &cleanup.next_text)?;
-            true
-        } else {
-            false
-        };
-        let applied = match apply_session_changes(&rewrite_changes) {
-            Ok(applied) => applied,
-            Err(error) => {
-                if session_index_applied {
-                    if let Some(cleanup) = session_index_cleanup.as_ref() {
-                        let _ = fs::write(&cleanup.path, &cleanup.original_text);
-                    }
-                }
-                return Err(error);
-            }
-        };
+        let backup_dir = create_backup(&home, &target_provider, &rewrite_changes)?;
+        let applied = apply_session_changes(&rewrite_changes)?;
         let apply_result = (|| -> anyhow::Result<(SqliteUpdateCounts, usize)> {
             let sqlite_updates = apply_sqlite_update_for_paths(
                 &sqlite_paths,
@@ -263,11 +266,6 @@ pub fn run_provider_sync_with_target(
             Ok(counts) => counts,
             Err(err) => {
                 let _ = restore_session_changes(&applied.changes);
-                if session_index_applied {
-                    if let Some(cleanup) = session_index_cleanup.as_ref() {
-                        let _ = fs::write(&cleanup.path, &cleanup.original_text);
-                    }
-                }
                 return Err(err);
             }
         };
@@ -289,10 +287,6 @@ pub fn run_provider_sync_with_target(
         synced.sqlite_user_event_rows_updated = sqlite_updates.user_event_rows;
         synced.sqlite_cwd_rows_updated = sqlite_updates.cwd_rows;
         synced.updated_workspace_roots = updated_workspace_roots;
-        synced.pruned_session_index_entries = session_index_cleanup
-            .as_ref()
-            .map(|cleanup| cleanup.removed_entries)
-            .unwrap_or_default();
         synced.encrypted_content_warning = encrypted_content_warning;
         Ok(synced)
     })();
@@ -329,7 +323,6 @@ fn result(
         sqlite_user_event_rows_updated: 0,
         sqlite_cwd_rows_updated: 0,
         updated_workspace_roots: 0,
-        pruned_session_index_entries: 0,
         encrypted_content_warning: None,
     }
 }
@@ -642,20 +635,39 @@ fn rollout_files(home: &Path) -> anyhow::Result<Vec<PathBuf>> {
 
 fn collect_live_thread_ids(
     home: &Path,
-    collected: &SessionChanges,
     sqlite_paths: &[PathBuf],
 ) -> anyhow::Result<HashSet<String>> {
-    let mut ids = collected
-        .changes
-        .iter()
-        .filter_map(|change| change.thread_id.clone())
-        .collect::<HashSet<_>>();
+    let mut ids = HashSet::new();
     for path in rollout_files(home)? {
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if let Some(id) = rollout_thread_id_from_filename(name) {
+        if let Some(id) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(rollout_thread_id_from_filename)
+        {
             ids.insert(id);
+        }
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if is_locked_io_error(&error) => continue,
+            Err(error) => return Err(error.into()),
+        };
+        for segment in text.split_inclusive('\n') {
+            let (line, _) = split_line_ending(segment);
+            let Ok(record) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if record.get("type").and_then(Value::as_str) != Some("session_meta") {
+                continue;
+            }
+            if let Some(id) = record
+                .get("payload")
+                .and_then(Value::as_object)
+                .and_then(|payload| payload.get("id"))
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+            {
+                ids.insert(id.to_string());
+            }
         }
     }
     for path in sqlite_paths {
@@ -686,52 +698,244 @@ fn sqlite_thread_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
         return Ok(HashSet::new());
     }
     let db = Connection::open(path)?;
-    if !table_columns(&db, "threads")?.contains("id") {
-        return Ok(HashSet::new());
+    let mut ids = HashSet::new();
+    for (table, column) in [
+        ("threads", "id"),
+        ("local_thread_catalog", "thread_id"),
+        ("automation_runs", "thread_id"),
+        ("inbox_items", "thread_id"),
+        ("sessions", "id"),
+        ("messages", "session_id"),
+        ("thread_dynamic_tools", "thread_id"),
+        ("thread_goals", "thread_id"),
+        ("thread_spawn_edges", "parent_thread_id"),
+        ("thread_spawn_edges", "child_thread_id"),
+        ("stage1_outputs", "thread_id"),
+        ("agent_job_items", "assigned_thread_id"),
+    ] {
+        if !table_columns(&db, table)?.contains(column) {
+            continue;
+        }
+        let mut stmt = db.prepare(&format!(
+            "SELECT DISTINCT {column} FROM {table} WHERE COALESCE({column}, '') <> ''"
+        ))?;
+        ids.extend(
+            stmt.query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<HashSet<_>>>()?,
+        );
     }
-    let mut stmt = db.prepare("SELECT id FROM threads WHERE COALESCE(id, '') <> ''")?;
-    Ok(stmt
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<HashSet<_>>>()?)
+    Ok(ids)
 }
 
 fn plan_session_index_cleanup(
     path: &Path,
     live_thread_ids: &HashSet<String>,
-) -> anyhow::Result<Option<SessionIndexCleanup>> {
+) -> anyhow::Result<Option<SessionIndexPlan>> {
     if !path.exists() {
         return Ok(None);
     }
-    let original_text = fs::read_to_string(path)?;
-    let mut next_text = String::with_capacity(original_text.len());
-    let mut removed_entries = 0;
+    let original_bytes = fs::read(path)?;
+    let original_text = String::from_utf8(original_bytes.clone())?;
+    let mut candidates = Vec::new();
     for segment in original_text.split_inclusive('\n') {
+        let (line, _) = split_line_ending(segment);
+        if let Some(candidate) = known_session_index_candidate(line)
+            && !live_thread_ids.contains(&candidate.id)
+        {
+            candidates.push(candidate);
+        }
+    }
+    Ok(Some(SessionIndexPlan {
+        path: path.to_path_buf(),
+        snapshot_sha256: sha256_hex(&original_bytes),
+        original_bytes,
+        original_text,
+        candidates,
+    }))
+}
+
+fn known_session_index_candidate(line: &str) -> Option<SessionIndexCleanupCandidate> {
+    let record = serde_json::from_str::<Value>(line).ok()?;
+    let object = record.as_object()?;
+    if object.len() != 3
+        || !["id", "thread_name", "updated_at"]
+            .iter()
+            .all(|key| object.contains_key(*key))
+    {
+        return None;
+    }
+    let id = object.get("id")?.as_str()?.trim();
+    let thread_name = object.get("thread_name")?.as_str()?;
+    let updated_at = object.get("updated_at")?.as_str()?;
+    if id.is_empty() || updated_at.trim().is_empty() {
+        return None;
+    }
+    Some(SessionIndexCleanupCandidate {
+        id: id.to_string(),
+        thread_name: thread_name.to_string(),
+        updated_at: updated_at.to_string(),
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn filtered_session_index_text(
+    plan: &SessionIndexPlan,
+    selected_ids: &HashSet<String>,
+) -> (String, usize) {
+    let mut next_text = String::with_capacity(plan.original_text.len());
+    let mut removed_entries = 0;
+    for segment in plan.original_text.split_inclusive('\n') {
         let (line, line_ending) = split_line_ending(segment);
-        let stale = serde_json::from_str::<Value>(line)
-            .ok()
-            .and_then(|record| {
-                record
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string)
-            })
-            .is_some_and(|id| !id.trim().is_empty() && !live_thread_ids.contains(&id));
-        if stale {
+        let remove = known_session_index_candidate(line)
+            .is_some_and(|candidate| selected_ids.contains(&candidate.id));
+        if remove {
             removed_entries += 1;
         } else {
             next_text.push_str(line);
             next_text.push_str(line_ending);
         }
     }
-    if removed_entries == 0 {
-        return Ok(None);
+    (next_text, removed_entries)
+}
+
+pub fn preview_session_index_cleanup(
+    codex_home: Option<&Path>,
+) -> anyhow::Result<SessionIndexCleanupPreview> {
+    let home = codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dirs_home().join(".codex"));
+    let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+    let live_thread_ids = collect_live_thread_ids(&home, &sqlite_paths)?;
+    let plan = plan_session_index_cleanup(&home.join("session_index.jsonl"), &live_thread_ids)?;
+    Ok(match plan {
+        Some(plan) => SessionIndexCleanupPreview {
+            snapshot_sha256: plan.snapshot_sha256,
+            candidates: plan.candidates,
+        },
+        None => SessionIndexCleanupPreview {
+            snapshot_sha256: sha256_hex(&[]),
+            candidates: Vec::new(),
+        },
+    })
+}
+
+pub fn apply_session_index_cleanup(
+    codex_home: Option<&Path>,
+    expected_snapshot_sha256: &str,
+    confirmed_thread_ids: &[String],
+) -> Result<SessionIndexCleanupResult, SessionIndexCleanupApplyError> {
+    let require_stopped_app = codex_home.is_none();
+    if require_stopped_app {
+        ensure_codex_app_stopped(None)?;
     }
-    Ok(Some(SessionIndexCleanup {
-        path: path.to_path_buf(),
-        original_text,
-        next_text,
-        removed_entries,
-    }))
+    let home = codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dirs_home().join(".codex"));
+    let lock_dir = home.join("tmp/provider-sync.lock");
+    acquire_lock(&lock_dir).map_err(|error| cleanup_apply_error(error, None))?;
+    let result = (|| {
+        let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+        let live_thread_ids = collect_live_thread_ids(&home, &sqlite_paths)
+            .map_err(|error| cleanup_apply_error(error, None))?;
+        let plan = plan_session_index_cleanup(&home.join("session_index.jsonl"), &live_thread_ids)
+            .map_err(|error| cleanup_apply_error(error, None))?
+            .ok_or_else(|| cleanup_apply_error("session_index.jsonl 不存在，无法清理", None))?;
+        if plan.snapshot_sha256 != expected_snapshot_sha256 {
+            return Err(cleanup_apply_error(
+                "session_index.jsonl 已在预览后发生变化；为避免覆盖 Codex 新内容，本次清理已中止，请重新预览",
+                None,
+            ));
+        }
+        let candidate_ids = plan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.id.as_str())
+            .collect::<HashSet<_>>();
+        let selected_ids = confirmed_thread_ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .map(ToString::to_string)
+            .collect::<HashSet<_>>();
+        if selected_ids
+            .iter()
+            .any(|id| !candidate_ids.contains(id.as_str()))
+        {
+            return Err(cleanup_apply_error(
+                "确认列表已过期或包含非候选任务；本次清理未执行，请重新预览",
+                None,
+            ));
+        }
+        let (next_text, removed_entries) = filtered_session_index_text(&plan, &selected_ids);
+        if removed_entries == 0 {
+            return Ok(SessionIndexCleanupResult {
+                pruned_entries: 0,
+                backup_dir: None,
+            });
+        }
+        let backup_dir = create_session_index_cleanup_backup(&home, &plan, removed_entries)?;
+        if require_stopped_app {
+            ensure_codex_app_stopped(Some(backup_dir.clone()))?;
+        }
+        let current_bytes = fs::read(&plan.path)
+            .map_err(|error| cleanup_apply_error(error, Some(backup_dir.clone())))?;
+        if current_bytes != plan.original_bytes {
+            return Err(cleanup_apply_error(
+                "session_index.jsonl 在写入前再次发生变化；未覆盖 Codex 新内容，请重新预览",
+                Some(backup_dir),
+            ));
+        }
+        codex_plus_core::settings::atomic_write(&plan.path, next_text.as_bytes()).map_err(
+            |error| {
+                cleanup_apply_error(
+                    format!(
+                        "原子写入 session_index.jsonl 失败；原文件未被主动覆盖，可从备份目录手动恢复：{error}"
+                    ),
+                    Some(backup_dir.clone()),
+                )
+            },
+        )?;
+        let _ = prune_backups(&home);
+        Ok(SessionIndexCleanupResult {
+            pruned_entries: removed_entries,
+            backup_dir: Some(backup_dir),
+        })
+    })();
+    let _ = release_lock(&lock_dir);
+    result
+}
+
+fn ensure_codex_app_stopped(
+    backup_dir: Option<PathBuf>,
+) -> Result<(), SessionIndexCleanupApplyError> {
+    let running_processes = codex_plus_core::watcher::find_codex_processes();
+    if running_processes.is_empty() {
+        return Ok(());
+    }
+    Err(cleanup_apply_error(
+        format!(
+            "Codex App / ChatGPT 仍在运行（进程：{}）；请完全退出 App 后重新预览并确认清理",
+            running_processes
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        backup_dir,
+    ))
+}
+
+fn cleanup_apply_error(
+    message: impl std::fmt::Display,
+    backup_dir: Option<PathBuf>,
+) -> SessionIndexCleanupApplyError {
+    SessionIndexCleanupApplyError {
+        message: message.to_string(),
+        backup_dir,
+    }
 }
 
 fn rollout_provider_ids(home: &Path) -> anyhow::Result<Vec<String>> {
@@ -835,7 +1039,6 @@ fn create_backup(
     home: &Path,
     target_provider: &str,
     changes: &[SessionChange],
-    session_index_cleanup: Option<&SessionIndexCleanup>,
 ) -> anyhow::Result<PathBuf> {
     let backup_root = home.join("backups_state/provider-sync");
     let mut backup_dir = backup_root.join(timestamp_name());
@@ -849,7 +1052,6 @@ fn create_backup(
         "config.toml",
         ".codex-global-state.json",
         ".codex-global-state.json.bak",
-        "session_index.jsonl",
     ] {
         let source = home.join(name);
         if source.exists() {
@@ -895,12 +1097,39 @@ fn create_backup(
             "createdAt": chrono::Utc::now().to_rfc3339(),
             "dbFiles": db_files,
             "changedSessionFiles": changes.len(),
-            "prunedSessionIndexEntries": session_index_cleanup
-                .map(|cleanup| cleanup.removed_entries)
-                .unwrap_or_default(),
             "managedBy": "Codex++ provider sync"
         }))?,
     )?;
+    Ok(backup_dir)
+}
+
+fn create_session_index_cleanup_backup(
+    home: &Path,
+    plan: &SessionIndexPlan,
+    removed_entries: usize,
+) -> Result<PathBuf, SessionIndexCleanupApplyError> {
+    let backup_root = home.join("backups_state/provider-sync");
+    let mut backup_dir = backup_root.join(timestamp_name());
+    let mut suffix = 0;
+    while backup_dir.exists() {
+        suffix += 1;
+        backup_dir = backup_root.join(format!("{}-{suffix}", timestamp_name()));
+    }
+    fs::create_dir_all(&backup_dir).map_err(|error| cleanup_apply_error(error, None))?;
+    fs::write(backup_dir.join("session_index.jsonl"), &plan.original_bytes)
+        .map_err(|error| cleanup_apply_error(error, Some(backup_dir.clone())))?;
+    let metadata = serde_json::to_string_pretty(&json!({
+        "version": 1,
+        "namespace": "provider-sync-session-index-cleanup",
+        "codexHome": home.to_string_lossy(),
+        "createdAt": chrono::Utc::now().to_rfc3339(),
+        "snapshotSha256": plan.snapshot_sha256,
+        "prunedSessionIndexEntries": removed_entries,
+        "managedBy": "Codex++ provider sync"
+    }))
+    .map_err(|error| cleanup_apply_error(error, Some(backup_dir.clone())))?;
+    fs::write(backup_dir.join("metadata.json"), metadata)
+        .map_err(|error| cleanup_apply_error(error, Some(backup_dir.clone())))?;
     Ok(backup_dir)
 }
 
