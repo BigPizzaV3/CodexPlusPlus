@@ -24,16 +24,44 @@ pub fn pet_real_mouse_script() -> &'static str {
     PET_REAL_MOUSE_SCRIPT
 }
 
-pub fn pet_real_mouse_capability_probe_script() -> &'static str {
-    r#"
+const PET_V2_SPRITE_DETECTION_SCRIPT: &str = r#"
+  const isV2Sprite = (mascot) => {
+    if (!mascot) return false;
+    if (Array.from(mascot.querySelectorAll("img")).some((image) =>
+      image.naturalWidth === 1536 && image.naturalHeight === 2288
+    )) return true;
+    for (const element of [mascot, ...mascot.querySelectorAll("*")]) {
+      const background = getComputedStyle(element).backgroundImage || "";
+      const match = background.match(/url\(["']?data:image\/png;base64,([^"')]+)/i);
+      if (!match) continue;
+      try {
+        const header = atob(match[1].slice(0, 48));
+        if (header.length < 24) continue;
+        const uint32 = (offset) => (
+          ((header.charCodeAt(offset) << 24) >>> 0)
+          + (header.charCodeAt(offset + 1) << 16)
+          + (header.charCodeAt(offset + 2) << 8)
+          + header.charCodeAt(offset + 3)
+        );
+        if (uint32(16) === 1536 && uint32(20) === 2288) return true;
+      } catch {
+      }
+    }
+    return false;
+  };
+"#;
+
+pub fn pet_real_mouse_capability_probe_script() -> String {
+    let mut script = String::from(
+        r#"
 (async () => {
   const mascot = document.querySelector('[data-avatar-mascot="true"]');
-  if (!mascot) return false;
-  const spriteImages = Array.from(mascot.querySelectorAll("img"));
-  const currentSpriteIsV2 = spriteImages.some((image) =>
-    image.naturalWidth === 1536 && image.naturalHeight === 2288
-  );
-  if (!currentSpriteIsV2) return false;
+"#,
+    );
+    script.push_str(PET_V2_SPRITE_DETECTION_SCRIPT);
+    script.push_str(
+        r#"
+  if (!isV2Sprite(mascot)) return false;
   const urls = [
     ...Array.from(document.scripts || []).map((script) => script.src),
     ...Array.from(document.querySelectorAll("link[href]") || []).map((link) => link.href),
@@ -63,20 +91,25 @@ pub fn pet_real_mouse_capability_probe_script() -> &'static str {
     return false;
   }
 })()
-"#
+"#,
+    );
+    script
 }
 
 pub fn pet_real_mouse_update_script(x: i32, y: i32) -> String {
-    format!(
-        r#"(() => {{
+    let mut script = String::from(
+        r#"(() => {
   const mascot = document.querySelector('[data-avatar-mascot="true"]');
-  const currentSpriteIsV2 = !!mascot && Array.from(mascot.querySelectorAll("img")).some((image) =>
-    image.naturalWidth === 1536 && image.naturalHeight === 2288
-  );
-  return currentSpriteIsV2
+"#,
+    );
+    script.push_str(PET_V2_SPRITE_DETECTION_SCRIPT);
+    script.push_str(&format!(
+        r#"
+  return isV2Sprite(mascot)
     && window.__codexPlusPetRealMouseLook?.updateScreenPoint?.({{ x: {x}, y: {y} }}) === true;
 }})()"#
-    )
+    ));
+    script
 }
 
 pub fn pet_real_mouse_stop_script() -> &'static str {
