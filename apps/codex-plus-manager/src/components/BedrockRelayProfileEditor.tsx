@@ -38,6 +38,20 @@ function BedrockField({ label, children }: { label: string; children: ReactNode 
   );
 }
 
+/**
+ * CLI 示例区分隔线：一条横线中间嵌一句说明，把下方"命令行生成示例"与上方的实际
+ * 配置字段在视觉上隔开。这些命令仅用于在本机生成 / 获取凭据（Long-Term Key、
+ * AWS SSO 登录等），本工具不会代为调用 AWS API，对已保存的 profile 配置没有直接
+ * 影响；分隔线用来提醒用户不要把它们误当成需要填写的配置项。
+ */
+function BedrockCliExamplesDivider() {
+  return (
+    <div className="bedrock-cli-divider" role="separator">
+      <span>{t("以下为命令行生成示例，不影响实际配置")}</span>
+    </div>
+  );
+}
+
 export function BedrockRelayProfileEditor({ profile, onChange }: BedrockRelayProfileEditorProps) {
   const bedrock = profile.bedrock ?? {
     authMode: null as BedrockAuthMode | null,
@@ -153,63 +167,28 @@ export function BedrockRelayProfileEditor({ profile, onChange }: BedrockRelayPro
               placeholder={t("从 AWS IAM 生成的 Long-Term 或 Short-Term Key")}
             />
           </BedrockField>
-          <BedrockField label={t("IAM 用户名")}>
-            <Input
-              type="text"
-              value={bedrock.iamUserName}
-              onChange={(e) => setBedrock({ iamUserName: e.target.value })}
-              placeholder="my-iam-user"
-              autoCapitalize="off"
-              autoCorrect="off"
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <p className="field-hint">
-              {t("用于下方 Long-Term Key 示例命令的 --user-name 参数；留空时会渲染成 <IAM_USER_NAME> 占位符。")}
-            </p>
-          </BedrockField>
-          <BedrockField label={t("Long-Term Key 有效期（天）")}>
-            <Input
-              type="text"
-              value={bedrock.iamKeyValidityDays}
-              onChange={(e) => setBedrock({ iamKeyValidityDays: e.target.value })}
-              placeholder="90"
-            />
-          </BedrockField>
-          <div className="bedrock-cli-hint">
-            <h4>{t("Long-Term API Key 生成命令")}</h4>
-            <pre>{bedrockLongTermApiKeyCommand(bedrock.iamUserName, bedrock.iamKeyValidityDays)}</pre>
-          </div>
-          <div className="bedrock-cli-hint">
-            <h4>{t("Short-Term API Key 说明")}</h4>
-            <p>{bedrockShortTermApiKeyGuidanceText()}</p>
-          </div>
         </>
       )}
 
       {/* AWS Profile 分支 */}
       {bedrock.authMode === "awsProfile" && (
-        <>
-          <BedrockField label={t("AWS Profile 名称（可选）")}>
-            <Input
-              type="text"
-              value={bedrock.awsProfile}
-              onChange={(e) => setBedrock({ awsProfile: e.target.value })}
-              placeholder="default"
-              autoCapitalize="off"
-              autoCorrect="off"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </BedrockField>
-          <div className="bedrock-cli-hint">
-            <h4>{t("AWS SSO 配置/登录命令")}</h4>
-            <pre>{bedrockAwsProfileCommandBlock(bedrock.awsProfile)}</pre>
-          </div>
-        </>
+        <BedrockField label={t("AWS Profile 名称（可选）")}>
+          <Input
+            type="text"
+            value={bedrock.awsProfile}
+            onChange={(e) => setBedrock({ awsProfile: e.target.value })}
+            placeholder="default"
+            autoCapitalize="off"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </BedrockField>
       )}
 
-      {/* 模型字段（Bedrock Mantle 的 /v1/responses endpoint 只暴露 GPT-5.x 系列） */}
+      {/* 模型字段（Bedrock Mantle 的 /v1/responses endpoint 只暴露 GPT-5.x 系列）。
+       * `model` 会写入 config.toml，属于影响实际配置的字段，因此放在配置字段区、
+       * CLI 示例分隔线的上方，不与"命令行生成示例"混在一起。 */}
       <BedrockField label={t("模型")}>
         <Input
           type="text"
@@ -230,6 +209,61 @@ export function BedrockRelayProfileEditor({ profile, onChange }: BedrockRelayPro
           </p>
         )}
       </BedrockField>
+
+      {/* CLI 示例区：统一放在模型等实际配置字段的下方，用分隔线与配置区隔开。
+       * 这些命令仅用于在本机生成 / 获取凭据（Long-Term Key、AWS SSO 登录等），
+       * 工具不会代为调用 AWS API，对已保存的 profile 配置没有直接影响。 */}
+      {bedrock.authMode === "bearerToken" && (
+        <>
+          <BedrockCliExamplesDivider />
+          {/* IAM 用户名 / 有效期只作为下方示例命令的参数，不参与 config.toml 生成，
+           * 因此放在分隔线下方的示例区，随输入实时刷新命令文本。 */}
+          <BedrockField label={t("IAM 用户名")}>
+            <Input
+              type="text"
+              value={bedrock.iamUserName}
+              onChange={(e) => setBedrock({ iamUserName: e.target.value })}
+              placeholder="my-iam-user"
+              autoCapitalize="off"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <p className="field-hint">
+              {t("仅用于拼接下方 Long-Term Key 示例命令的 --user-name 参数，不写入配置；留空时渲染成 <IAM_USER_NAME> 占位符。")}
+            </p>
+          </BedrockField>
+          <BedrockField label={t("Long-Term Key 有效期（天）")}>
+            <Input
+              type="text"
+              value={bedrock.iamKeyValidityDays}
+              onChange={(e) => setBedrock({ iamKeyValidityDays: e.target.value })}
+              placeholder="90"
+            />
+            <p className="field-hint">
+              {t("仅用于拼接下方 Long-Term Key 示例命令的 --credential-age-days 参数，不写入配置。")}
+            </p>
+          </BedrockField>
+          <div className="bedrock-cli-hint">
+            <h4>{t("Long-Term API Key 生成命令")}</h4>
+            <pre>{bedrockLongTermApiKeyCommand(bedrock.iamUserName, bedrock.iamKeyValidityDays)}</pre>
+          </div>
+          <div className="bedrock-cli-hint">
+            <h4>{t("Short-Term API Key 说明")}</h4>
+            <p>{bedrockShortTermApiKeyGuidanceText()}</p>
+          </div>
+        </>
+      )}
+
+      {bedrock.authMode === "awsProfile" && (
+        <>
+          <BedrockCliExamplesDivider />
+          <div className="bedrock-cli-hint">
+            <h4>{t("AWS SSO 配置/登录命令")}</h4>
+            <pre>{bedrockAwsProfileCommandBlock(bedrock.awsProfile)}</pre>
+          </div>
+        </>
+      )}
 
       {/* 底部聚合的校验提示（region / providerId / apiKey 空缺）。
        * 保留字冲突已经由 Provider ID 字段下方的 inline `<p>` 展示，此处刻意跳过

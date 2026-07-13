@@ -7959,6 +7959,31 @@ select {
   margin: 0;
 }
 
+/* CLI 示例区分隔线：横线 + 居中说明，用来把"命令行生成示例"和上方实际配置字段隔开。
+ * 两侧的 1px 横线通过 ::before / ::after 伪元素用 flex:1 撑满剩余宽度实现。 */
+.bedrock-cli-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 2px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.bedrock-cli-divider::before,
+.bedrock-cli-divider::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: hsl(var(--border));
+}
+
+.bedrock-cli-divider span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .bedrock-cli-hint {
   display: grid;
   gap: 6px;
