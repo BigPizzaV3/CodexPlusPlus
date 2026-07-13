@@ -169,7 +169,34 @@ fn responses_request_applies_ccswitch_reasoning_dialects() {
     }))
     .unwrap();
     assert_eq!(kimi["thinking"]["type"], "enabled");
-    assert!(kimi.get("reasoning_effort").is_none());
+    assert_eq!(kimi["reasoning_effort"], "high");
+
+    let glm = responses_to_chat_completions(json!({
+        "model": "glm-5.2",
+        "reasoning": { "effort": "xhigh" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(glm["thinking"]["type"], "enabled");
+    assert_eq!(glm["reasoning_effort"], "xhigh");
+
+    let qwen = responses_to_chat_completions(json!({
+        "model": "qwen3.7-plus",
+        "reasoning": { "effort": "xhigh" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(qwen["enable_thinking"], true);
+    assert_eq!(qwen["reasoning_effort"], "xhigh");
+
+    let minimax = responses_to_chat_completions(json!({
+        "model": "MiniMax-M2.7",
+        "reasoning": { "effort": "xhigh" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(minimax["reasoning_split"], true);
+    assert_eq!(minimax["reasoning_effort"], "xhigh");
 }
 
 #[test]
@@ -1551,6 +1578,49 @@ async fn responses_proxy_passes_through_original_user_agent_when_unconfigured() 
 }
 
 #[tokio::test]
+async fn responses_proxy_preserves_xhigh_reasoning_for_responses_upstream() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let server = spawn_chat_server();
+    write_relay_settings(temp.path(), &server.base_url, "responses", "");
+
+    let upstream = open_responses_proxy_request(
+        r#"{"model":"glm-5.2","input":"hello","reasoning":{"effort":"xhigh"},"stream":false}"#,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+
+    let request = server.finish();
+    let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+    assert_eq!(body["reasoning"]["effort"], "xhigh");
+}
+
+#[tokio::test]
+async fn responses_proxy_preserves_xhigh_reasoning_for_chat_upstream() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let server = spawn_chat_server();
+    write_relay_settings(temp.path(), &server.base_url, "chatCompletions", "");
+
+    let upstream = open_responses_proxy_request(
+        r#"{"model":"glm-5.2","input":"hello","reasoning":{"effort":"xhigh"},"stream":false}"#,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+
+    let request = server.finish();
+    let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+    assert_eq!(body["thinking"]["type"], "enabled");
+    assert_eq!(body["reasoning_effort"], "xhigh");
+}
+
+#[tokio::test]
 async fn models_proxy_passes_through_original_user_agent_when_unconfigured() {
     let _lock = settings_path_test_lock().lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
@@ -1568,6 +1638,10 @@ async fn models_proxy_passes_through_original_user_agent_when_unconfigured() {
 }
 
 fn write_chat_relay_settings(settings_dir: &Path, base_url: &str, user_agent: &str) {
+    write_relay_settings(settings_dir, base_url, "chatCompletions", user_agent);
+}
+
+fn write_relay_settings(settings_dir: &Path, base_url: &str, protocol: &str, user_agent: &str) {
     let settings = json!({
         "relayProfiles": [{
             "id": "chat",
@@ -1575,7 +1649,7 @@ fn write_chat_relay_settings(settings_dir: &Path, base_url: &str, user_agent: &s
             "baseUrl": base_url,
             "upstreamBaseUrl": base_url,
             "apiKey": "sk-test",
-            "protocol": "chatCompletions",
+            "protocol": protocol,
             "relayMode": "mixedApi",
             "userAgent": user_agent
         }],
@@ -1623,6 +1697,7 @@ impl ChatServer {
 
 struct ChatRequest {
     user_agent: String,
+    body: String,
 }
 
 fn spawn_chat_server() -> ChatServer {
@@ -1666,14 +1741,21 @@ fn spawn_chat_server() -> ChatServer {
                 })
             })
             .unwrap_or_default();
-        let body = r#"{"id":"chatcmpl-test","object":"chat.completion","choices":[]}"#;
+        let request_body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body.to_string())
+            .unwrap_or_default();
+        let response_body = r#"{"id":"chatcmpl-test","object":"chat.completion","choices":[]}"#;
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
+            response_body.len(),
+            response_body
         );
         stream.write_all(response.as_bytes()).unwrap();
-        ChatRequest { user_agent }
+        ChatRequest {
+            user_agent,
+            body: request_body,
+        }
     });
     ChatServer { base_url, handle }
 }

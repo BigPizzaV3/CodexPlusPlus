@@ -3852,6 +3852,11 @@ fn apply_chat_reasoning_options(result: &mut Value, body: &Value, model: &str) {
         {
             result["reasoning_effort"] = json!(mapped);
         }
+        ChatReasoningStyle::Thinking
+        | ChatReasoningStyle::EnableThinking
+        | ChatReasoningStyle::ReasoningSplit => {
+            result["reasoning_effort"] = json!(mapped);
+        }
         _ => {}
     }
 }
