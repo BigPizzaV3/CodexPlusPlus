@@ -1126,7 +1126,8 @@ pub async fn analyze_images_with_vl(
                     "vlModel": vl_config.model,
                     "image_url_len": img_url.len(),
                     "image_url_is_data": img_url.starts_with("data:"),
-                    "description_preview": &description[..description.len().min(200)]
+                    "description_len": description.len(),
+                    "description_chars": description.chars().count()
                 }),
             );
 

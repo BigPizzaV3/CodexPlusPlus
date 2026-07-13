@@ -2038,6 +2038,86 @@ async fn vl_endpoint_does_not_duplicate_path() {
     );
 }
 
+#[tokio::test]
+async fn vl_log_does_not_panic_on_chinese_description_and_omits_body() {
+    // Bug 3 + Bug 6：VL 返回 >200 字节的中文描述（含唯一标记）。
+    // 旧代码 `&description[..200]` 字节截断在汉字中间会 panic；且 description_preview
+    // 把描述正文写进 diagnostic_log（泄露截图内容）。修复后：不 panic + 日志只记元数据。
+    use codex_plus_core::diagnostic_log;
+
+    let marker = "VL_BODY_SECRET_";
+    let description = format!("{marker}{}", "中".repeat(100)); // 15 + 300 = 315 字节
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured_clone = captured.clone();
+    let response = vl_response(&description);
+    let _server = tokio::spawn(async move {
+        mock_vl_server(
+            listener,
+            Box::leak(response.into_boxed_str()),
+            captured_clone,
+        )
+        .await;
+    });
+
+    // 重定向 diagnostic_log 到临时文件，便于断言日志内容
+    let log_file = tempfile::NamedTempFile::new().unwrap();
+    let log_path = log_file.path().to_path_buf();
+    diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
+
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "vl-bug36-unique-marker".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut body = json!({
+        "model": "deepseek-v4-flash",
+        "input": [{"type":"message","role":"user","content":[
+            {"type":"input_image","image_url":"https://example.com/a.png"}
+        ]}]
+    });
+    // 不应 panic（旧代码在此会 panic: byte index 200 is not a char boundary）
+    analyze_images_with_vl(&mut body, &config, &client)
+        .await
+        .unwrap();
+    // 立即恢复默认日志路径，避免影响其他测试
+    diagnostic_log::set_diagnostic_log_path_for_tests(None);
+
+    let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
+    // 用唯一 vlModel 定位本测试的 vl_described 行（并行测试可能共享临时日志文件）
+    let vl_line = log_content
+        .lines()
+        .find(|l| {
+            l.contains(r#""event":"protocol_proxy.vl_described""#)
+                && l.contains(r#""vlModel":"vl-bug36-unique-marker""#)
+        })
+        .expect("应有本测试的 vl_described 日志记录");
+    // Bug 6：日志只记元数据，不含描述正文标记
+    assert!(
+        !vl_line.contains(marker),
+        "日志不应含描述正文标记，实际：{vl_line}"
+    );
+    assert!(
+        vl_line.contains("description_len") && vl_line.contains("description_chars"),
+        "日志应记 description_len/description_chars 元数据，实际：{vl_line}"
+    );
+    // 元数据值正确：315 字节、115 字符（15 ASCII + 100 中文）
+    assert!(vl_line.contains(r#""description_len":315"#), "实际：{vl_line}");
+    assert!(
+        vl_line.contains(r#""description_chars":115"#),
+        "实际：{vl_line}"
+    );
+}
+
 #[test]
 fn chat_completion_response_converts_to_responses_response() {
     let converted = chat_completion_to_response(json!({
