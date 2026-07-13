@@ -13,8 +13,8 @@
         { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" },
         { "effort": "ultra", "description": "Maximum reasoning with automatic task delegation" }
       ],
-      "context_window": 372000,
-      "max_context_window": 372000,
+      "context_window": 272000,
+      "max_context_window": 272000,
       "effective_context_window_percent": 100,
       "additional_speed_tiers": ["fast"],
       "service_tiers": [
@@ -42,8 +42,8 @@
         { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" },
         { "effort": "ultra", "description": "Maximum reasoning with automatic task delegation" }
       ],
-      "context_window": 372000,
-      "max_context_window": 372000,
+      "context_window": 272000,
+      "max_context_window": 272000,
       "effective_context_window_percent": 100,
       "additional_speed_tiers": ["fast"],
       "service_tiers": [
@@ -70,8 +70,8 @@
         { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" },
         { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" }
       ],
-      "context_window": 372000,
-      "max_context_window": 372000,
+      "context_window": 272000,
+      "max_context_window": 272000,
       "effective_context_window_percent": 100,
       "additional_speed_tiers": ["fast"],
       "service_tiers": [

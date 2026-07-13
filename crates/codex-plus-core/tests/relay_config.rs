@@ -3150,7 +3150,7 @@ experimental_bearer_token = "sk-new"
         .iter()
         .find(|model| model["slug"] == "gpt-5.6-sol")
         .unwrap();
-    assert_eq!(sol["context_window"], 372_000);
+    assert_eq!(sol["context_window"], 272_000);
     assert_eq!(sol["default_reasoning_level"], "low");
     assert_eq!(sol["service_tiers"][0]["id"], "priority");
 }

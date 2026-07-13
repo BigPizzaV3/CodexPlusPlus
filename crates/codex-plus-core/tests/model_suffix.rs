@@ -134,8 +134,8 @@ fn build_catalog_json_uses_runtime_compatible_gpt56_metadata() {
             .iter()
             .filter_map(|entry| entry["effort"].as_str())
             .collect::<Vec<_>>();
-        assert_eq!(model["context_window"], 372_000);
-        assert_eq!(model["max_context_window"], 372_000);
+        assert_eq!(model["context_window"], 272_000);
+        assert_eq!(model["max_context_window"], 272_000);
         assert_eq!(model["default_reasoning_level"], default_reasoning);
         assert_eq!(efforts, expected_efforts);
         assert!(!efforts.contains(&"minimal"));
