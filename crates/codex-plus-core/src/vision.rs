@@ -48,9 +48,10 @@ fn vl_total_timeout() -> Duration {
         .unwrap_or(VL_TOTAL_TIMEOUT)
 }
 
-/// 单批次超时（Bug 4.5）：15 + 8n 秒（n=批内图数）。reqwest `.timeout` 应用。
+/// 单批次超时（Bug 4.5）：35 + 10n 秒（n=批内图数）。reqwest `.timeout` 应用。
+/// 实测 VL 上游（mimo-v2.5）响应 ≈32s，原 15+8n=23s 偏紧致全超时 strip。
 fn per_batch_timeout(n: usize) -> Duration {
-    Duration::from_secs(15 + 8 * n as u64)
+    Duration::from_secs(35 + 10 * n as u64)
 }
 
 /// char-safe 截断（Bug 4.7）：按字符数取前 `max` 个，避免字节截断在汉字中间 panic。
