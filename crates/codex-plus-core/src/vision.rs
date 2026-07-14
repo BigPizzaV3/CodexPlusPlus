@@ -539,7 +539,7 @@ fn inject_image_strip_note(input: &mut Vec<Value>, stripped_count: usize, reason
 /// 文本追问时注入提示：历史图已有描述，能答直接答，需要细节让用户重发图+问题。
 fn inject_followup_note(input: &mut Vec<Value>, n_history_images: usize) {
     let note = format!(
-        "[系统提示：用户之前发送了 {n_history_images} 张图片，这些图片的文字描述已在上面（# 图片内容描述）。请优先从这些描述回答用户的问题。如果用户追问的是描述中没有覆盖的细节，请告知用户需要重新发送图片并附上问题，因为你无法自行重新分析图片。]"
+        "[系统提示：用户之前发送了 {n_history_images} 张图片，这些图片的文字描述已在上面（# 图片内容描述）。\n请优先从这些描述回答用户的问题。\n\n⚠️ 重要限制：如果你认为用户追问的是描述中没有明确覆盖的细节，必须如实告知用户「你的问题需要我重新查看原始图片，请重新发送图片并附上问题」。\n绝对不要猜测或编造图片中未描述的细节。]"
     );
     input.insert(
         0,

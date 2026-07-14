@@ -2792,14 +2792,26 @@ async fn tier1_history_image_cached_by_url_no_recall() {
         calls, 1,
         "历史图第二次应命中 Tier 1 缓存，VL 应只调 1 次，实际 {calls} 次"
     );
-    assert!(body1["input"][0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("历史图"));
-    assert!(body2["input"][0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("历史图"));
+    // 方案 3 注入的 system 提示在 input[0]，用户消息后移；
+    // 通过 role==user 找到含图片描述的用户消息
+    fn find_user_text(input: &serde_json::Value, keyword: &str) -> bool {
+        input.as_array().unwrap().iter().any(|item| {
+            item["role"].as_str() == Some("user")
+                && item["content"].as_array().map_or(false, |parts| {
+                    parts.iter().any(|p| {
+                        p["text"].as_str().map_or(false, |t| t.contains(keyword))
+                    })
+                })
+        })
+    }
+    assert!(
+        find_user_text(&body1["input"], "历史图"),
+        "body1 应含描述历史图的 user 消息"
+    );
+    assert!(
+        find_user_text(&body2["input"], "历史图"),
+        "body2 应含描述历史图的 user 消息"
+    );
 }
 
 #[tokio::test]
