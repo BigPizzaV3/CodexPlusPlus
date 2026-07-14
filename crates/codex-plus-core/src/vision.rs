@@ -1,4 +1,4 @@
-/// VLM (Vision Language Model) analysis for text-only models.
+/// VLM (Vision Language Model) analysis for send-as-is models.
 /// Batches images into groups, sends each batch as one API call.
 /// Includes image-description cache, retry, concurrency limits,
 /// round-depth control, dynamic context-window overflow protection,
@@ -103,12 +103,62 @@ pub struct VlmConfig {
 
 // ── Public helpers ────────────────────────────────────────────────────
 
-pub fn should_process(model: &str, model_vlm_json: &str) -> bool {
-    let Ok(map) = serde_json::from_str::<std::collections::BTreeMap<String, bool>>(model_vlm_json)
-    else {
-        return false;
-    };
-    map.get(model).copied().unwrap_or(false)
+/// 图片处理模式（per-model）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImageHandling {
+    /// 图片原样保留，不做任何处理（默认）。
+    #[serde(rename = "send-as-is")]
+    SendAsIs,
+    /// 剥离图片块，替换为占位符，不调 VLM。
+    #[serde(rename = "strip")]
+    Strip,
+    /// VLM 分析管线（两阶段：同步当前+黄金窗口，后台补深层）。
+    #[serde(rename = "vlm")]
+    Vlm,
+}
+
+/// 解析 model_vlm JSON，返回该模型的图片处理模式。
+pub fn image_handling_mode(model: &str, model_vlm_json: &str) -> ImageHandling {
+    if let Ok(map) =
+        serde_json::from_str::<std::collections::BTreeMap<String, ImageHandling>>(model_vlm_json)
+    {
+        if let Some(mode) = map.get(model) {
+            return *mode;
+        }
+    }
+    ImageHandling::SendAsIs
+}
+
+/// 纯剥离模式：删除所有消息中的图片块，替换为 "[图片已省略]"。
+/// 不调 VLM，不入缓存，不注入描述。
+pub fn strip_images_only(messages: &mut [Value]) {
+    for msg in messages.iter_mut() {
+        let Some(content) = msg.get_mut("content") else { continue };
+
+        match &content {
+            Value::Array(parts) => {
+                let mut new_content: Vec<Value> = Vec::new();
+                for part in parts.iter() {
+                    let is_image = part
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .map_or(false, |t| t == "image_url" || t == "input_image");
+                    if is_image {
+                        new_content.push(serde_json::json!({"type": "text", "text": "[图片已省略]"}));
+                    } else {
+                        new_content.push(part.clone());
+                    }
+                }
+                *content = Value::Array(new_content);
+            }
+            Value::String(s) => {
+                // 字符串 content 场景不会有图片，跳过
+                let _ = s;
+            }
+            _ => {}
+        }
+    }
 }
 
 // ── URL hashing ───────────────────────────────────────────────────────
@@ -821,34 +871,105 @@ pub async fn strip_image_blocks(
 mod tests {
     use super::*;
 
+    // ── image_handling_mode ───────────────────────────────────────
+
     #[test]
-    fn should_process_returns_true_when_model_in_vlm_json() {
-        assert!(should_process("gpt-4", r#"{"gpt-4":true}"#));
+    fn handling_mode_vlm_when_string_value() {
+        assert_eq!(
+            image_handling_mode("gpt-4", r#"{"gpt-4":"vlm"}"#),
+            ImageHandling::Vlm
+        );
     }
 
     #[test]
-    fn should_process_returns_false_when_model_not_in_vlm_json() {
-        assert!(!should_process("claude-3", r#"{"gpt-4":true}"#));
+    fn handling_mode_strip_when_string_value() {
+        assert_eq!(
+            image_handling_mode("gpt-4", r#"{"gpt-4":"strip"}"#),
+            ImageHandling::Strip
+        );
     }
 
     #[test]
-    fn should_process_returns_false_when_model_marked_false() {
-        assert!(!should_process("gpt-4", r#"{"gpt-4":false}"#));
+    fn handling_mode_defaults_to_send_as_is_when_model_not_in_json() {
+        assert_eq!(
+            image_handling_mode("claude-3", r#"{"gpt-4":"vlm"}"#),
+            ImageHandling::SendAsIs
+        );
     }
 
     #[test]
-    fn should_process_returns_false_for_empty_json() {
-        assert!(!should_process("gpt-4", "{}"));
+    fn handling_mode_defaults_to_send_as_is_for_empty_json() {
+        assert_eq!(
+            image_handling_mode("gpt-4", "{}"),
+            ImageHandling::SendAsIs
+        );
     }
 
     #[test]
-    fn should_process_returns_false_for_invalid_json() {
-        assert!(!should_process("gpt-4", "not-json"));
+    fn handling_mode_defaults_to_send_as_is_for_invalid_json() {
+        assert_eq!(
+            image_handling_mode("gpt-4", "not-json"),
+            ImageHandling::SendAsIs
+        );
     }
 
     #[test]
-    fn should_process_returns_false_for_empty_string() {
-        assert!(!should_process("gpt-4", ""));
+    fn handling_mode_defaults_to_send_as_is_for_empty_string() {
+        assert_eq!(
+            image_handling_mode("gpt-4", ""),
+            ImageHandling::SendAsIs
+        );
+    }
+
+    // ── strip_images_only ─────────────────────────────────────────
+
+    #[test]
+    fn strip_images_only_removes_image_url_block() {
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hello"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+            ]
+        })];
+        strip_images_only(&mut messages);
+        let parts = messages[0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "hello");
+        assert_eq!(parts[1]["type"], "text");
+        assert_eq!(parts[1]["text"], "[图片已省略]");
+    }
+
+    #[test]
+    fn strip_images_only_removes_input_image_block() {
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+            ]
+        })];
+        strip_images_only(&mut messages);
+        let parts = messages[0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "[图片已省略]");
+    }
+
+    #[test]
+    fn strip_images_only_does_not_affect_send_as_is_messages() {
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hello"},
+                {"type": "text", "text": "world"},
+            ]
+        })];
+        strip_images_only(&mut messages);
+        let parts = messages[0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["text"], "hello");
+        assert_eq!(parts[1]["text"], "world");
     }
 
     #[test]

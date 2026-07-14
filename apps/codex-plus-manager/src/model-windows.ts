@@ -24,10 +24,13 @@ export function modelWindowsTextToMap(modelList: string, modelWindowsText: strin
   return JSON.stringify(map);
 }
 
+/// 图片处理模式。
+export type ImageHandling = "" | "send-as-is" | "strip" | "vlm";
+
 export type ModelWindowRow = {
   model: string;
   window: string;
-  vlm: boolean;
+  imageHandling: ImageHandling;
 };
 
 export function mergeModelWindowRows(
@@ -40,11 +43,11 @@ export function mergeModelWindowRows(
     const model = row.model.trim();
     if (!model || seen.has(model)) return;
     seen.add(model);
-    rows.push({ model, window: row.window.trim(), vlm: row.vlm ?? false });
+    rows.push({ model, window: row.window.trim(), imageHandling: row.imageHandling ?? "send-as-is" });
   };
   currentRows.forEach(append);
   incomingRows.forEach(append);
-  return rows.length ? rows : [{ model: "", window: "", vlm: false }];
+  return rows.length ? rows : [{ model: "", window: "", imageHandling: "send-as-is" }];
 }
 
 export function modelWindowRowsFromProfile(modelList: string, modelWindows: string, modelVlm?: string): ModelWindowRow[] {
@@ -54,9 +57,18 @@ export function modelWindowRowsFromProfile(modelList: string, modelWindows: stri
   } catch {
     map = {};
   }
-  let vlmMap: Record<string, boolean> = {};
+  // 解析 modelVlm JSON：`{"model": "vlm"/"strip"}`
+  let vlmMap: Record<string, ImageHandling> = {};
   try {
-    vlmMap = JSON.parse(modelVlm || "{}") as Record<string, boolean>;
+    const raw = JSON.parse(modelVlm || "{}") as Record<string, unknown>;
+    for (const [model, value] of Object.entries(raw)) {
+      if (value === "vlm") {
+        vlmMap[model] = "vlm";
+      } else if (value === "strip") {
+        vlmMap[model] = "strip";
+      }
+      // 其他值 → 不记录
+    }
   } catch {
     vlmMap = {};
   }
@@ -64,14 +76,14 @@ export function modelWindowRowsFromProfile(modelList: string, modelWindows: stri
     .split("\n")
     .map((model) => model.trim())
     .filter(Boolean)
-    .map((model) => ({ model, window: map[model] ?? "", vlm: vlmMap[model] ?? false }));
-  return rows.length ? rows : [{ model: "", window: "", vlm: false }];
+    .map((model) => ({ model, window: map[model] ?? "", imageHandling: vlmMap[model] ?? "send-as-is" }));
+  return rows.length ? rows : [{ model: "", window: "", imageHandling: "send-as-is" }];
 }
 
 export function serializeModelWindowRows(rows: ModelWindowRow[]): { modelList: string; modelWindows: string; modelVlm: string } {
   const modelList: string[] = [];
   const modelWindows: Record<string, string> = {};
-  const modelVlm: Record<string, boolean> = {};
+  const modelVlm: Record<string, string> = {};
   mergeModelWindowRows(rows, []).forEach((row) => {
     const model = row.model.trim();
     if (!model) return;
@@ -80,8 +92,9 @@ export function serializeModelWindowRows(rows: ModelWindowRow[]): { modelList: s
     if (window) {
       modelWindows[model] = window;
     }
-    if (row.vlm) {
-      modelVlm[model] = true;
+    // 只持久化非默认值
+    if (row.imageHandling === "vlm" || row.imageHandling === "strip") {
+      modelVlm[model] = row.imageHandling;
     }
   });
   return {

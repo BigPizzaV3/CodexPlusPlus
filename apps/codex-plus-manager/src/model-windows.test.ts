@@ -87,19 +87,20 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       modelWindowRowsFromProfile("a\nb\nc", '{"a":"1M","c":"200K"}'),
       [
-        { model: "a", window: "1M", vlm: false },
-        { model: "b", window: "", vlm: false },
-        { model: "c", window: "200K", vlm: false },
+        { model: "a", window: "1M", imageHandling: "send-as-is" },
+        { model: "b", window: "", imageHandling: "send-as-is" },
+        { model: "c", window: "200K", imageHandling: "send-as-is" },
       ],
     );
   });
 
-  it("modelWindowRowsFromProfile 解析 modelVlm 中的 vlm 标记", () => {
+  it("modelWindowRowsFromProfile 解析 modelVlm 标记", () => {
     assert.deepStrictEqual(
-      modelWindowRowsFromProfile("a\nb", '{}', '{"a":true}'),
+      modelWindowRowsFromProfile("a\nb\nc", '{}', '{"a":"vlm","b":"strip"}'),
       [
-        { model: "a", window: "", vlm: true },
-        { model: "b", window: "", vlm: false },
+        { model: "a", window: "", imageHandling: "vlm" },
+        { model: "b", window: "", imageHandling: "strip" },
+        { model: "c", window: "", imageHandling: "send-as-is" },
       ],
     );
   });
@@ -107,34 +108,34 @@ describe("model-windows helpers", () => {
   it("serializeModelWindowRows 从行控件生成 modelList、modelWindows 和 modelVlm", () => {
     assert.deepStrictEqual(
       serializeModelWindowRows([
-        { model: "a", window: "1M", vlm: true },
-        { model: "", window: "400K", vlm: false },
-        { model: "b", window: "", vlm: false },
+        { model: "a", window: "1M", imageHandling: "vlm" },
+        { model: "", window: "400K", imageHandling: "send-as-is" },
+        { model: "b", window: "", imageHandling: "send-as-is" },
       ]),
       {
         modelList: "a\nb",
         modelWindows: '{"a":"1M"}',
-        modelVlm: '{"a":true}',
+        modelVlm: '{"a":"vlm"}',
       },
     );
   });
 
-  it("mergeModelWindowRows 追加上游模型时跳过已有模型并保留窗口和 vlm", () => {
+  it("mergeModelWindowRows 追加上游模型时跳过已有模型并保留窗口和图片处理", () => {
     assert.deepStrictEqual(
       mergeModelWindowRows(
         [
-          { model: "deepseek-v4-flash", window: "1M", vlm: true },
-          { model: "  ", window: "", vlm: false },
+          { model: "deepseek-v4-flash", window: "1M", imageHandling: "vlm" },
+          { model: "  ", window: "", imageHandling: "send-as-is" },
         ],
         [
-          { model: "deepseek-v4-flash", window: "", vlm: false },
-          { model: "deepseek-v4-pro", window: "", vlm: true },
-          { model: " deepseek-v4-pro ", window: "200K", vlm: false },
+          { model: "deepseek-v4-flash", window: "", imageHandling: "send-as-is" },
+          { model: "deepseek-v4-pro", window: "", imageHandling: "vlm" },
+          { model: " deepseek-v4-pro ", window: "200K", imageHandling: "send-as-is" },
         ],
       ),
       [
-        { model: "deepseek-v4-flash", window: "1M", vlm: true },
-        { model: "deepseek-v4-pro", window: "", vlm: true },
+        { model: "deepseek-v4-flash", window: "1M", imageHandling: "vlm" },
+        { model: "deepseek-v4-pro", window: "", imageHandling: "vlm" },
       ],
     );
   });

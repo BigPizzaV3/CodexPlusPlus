@@ -739,34 +739,47 @@ async fn upstream_request_parts(
         RelayProtocol::ChatCompletions => responses_to_chat_completions(request_json)?,
     };
 
-    // Strip image blocks when VLM is enabled for this model.
+    // Image handling (per-model): send-as-is / strip / VLM analysis
     let model = body
         .get("model")
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    if !model.is_empty()
-        && crate::vision::should_process(&model, &relay.model_vlm)
-        && !relay.vlm_api_key.is_empty()
-        && !relay.vlm_model.is_empty()
-        && !relay.vlm_base_url.is_empty()
-    {
-        let vlm_config = crate::vision::VlmConfig {
-            api_key: relay.vlm_api_key.clone(),
-            model: relay.vlm_model.clone(),
-            base_url: relay.vlm_base_url.clone(),
-        };
+    if !model.is_empty() {
+        use crate::vision::ImageHandling;
+        match crate::vision::image_handling_mode(&model, &relay.model_vlm) {
+            ImageHandling::SendAsIs => { /* 不做任何处理 */ }
+            ImageHandling::Strip => {
+                for key in &["messages", "input"] {
+                    if let Some(arr) = body.get_mut(key).and_then(Value::as_array_mut) {
+                        crate::vision::strip_images_only(arr);
+                    }
+                }
+            }
+            ImageHandling::Vlm => {
+                if !relay.vlm_api_key.is_empty()
+                    && !relay.vlm_model.is_empty()
+                    && !relay.vlm_base_url.is_empty()
+                {
+                    let vlm_config = crate::vision::VlmConfig {
+                        api_key: relay.vlm_api_key.clone(),
+                        model: relay.vlm_model.clone(),
+                        base_url: relay.vlm_base_url.clone(),
+                    };
 
-        for key in &["messages", "input"] {
-            if let Some(arr) = body.get_mut(key).and_then(Value::as_array_mut) {
-                crate::vision::strip_image_blocks(
-                    arr,
-                    &vlm_config,
-                    &relay.model_windows,
-                    &relay.context_window,
-                    &model,
-                )
-                .await;
+                    for key in &["messages", "input"] {
+                        if let Some(arr) = body.get_mut(key).and_then(Value::as_array_mut) {
+                            crate::vision::strip_image_blocks(
+                                arr,
+                                &vlm_config,
+                                &relay.model_windows,
+                                &relay.context_window,
+                                &model,
+                            )
+                            .await;
+                        }
+                    }
+                }
             }
         }
     }
