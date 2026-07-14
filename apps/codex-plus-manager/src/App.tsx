@@ -4373,7 +4373,7 @@ function RelayProfileEditor({
                 <span />
               </div>
               {modelWindowRows.map((row, index) => (
-                <div className="relay-model-row" key={`${index}-${row.model}`}>
+                <div className="relay-model-row" key={index}>
                   <Input
                     value={row.model}
                     onChange={(event) => updateModelWindowRow(index, { model: event.currentTarget.value })}
