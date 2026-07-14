@@ -303,33 +303,94 @@ async fn call_vlm_batch_once(
         RelayProtocol::Responses => responses_url(&config.base_url),
     };
     let body = build_vl_batch_body(urls, prompt, config);
-    let response = client
+    let started = Instant::now();
+    let n = urls.len();
+
+    let response = match client
         .post(&endpoint)
         .bearer_auth(&config.api_key)
         .json(&body)
-        .timeout(per_batch_timeout(urls.len()))
+        .timeout(per_batch_timeout(n))
         .send()
-        .await?;
-    let status = response.status();
-    let response_body: Value = response.json().await?;
-    if !status.is_success() {
-        anyhow::bail!(
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            // 区分超时 vs 其他网络错误（reqwest is_timeout）
+            let status = if e.is_timeout() { "timeout" } else { "send_error" };
+            log_vl_call(config, n, started, status, None, Some(&e.to_string()));
+            return Err(e.into());
+        }
+    };
+    let http_code = response.status().as_u16();
+    let response_body: Value = match response.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            log_vl_call(config, n, started, "json_error", Some(http_code), Some(&e.to_string()));
+            return Err(e.into());
+        }
+    };
+    if !status_is_success(http_code) {
+        let msg = format!(
             "VL API returned {}: {}",
-            status.as_u16(),
+            http_code,
             serde_json::to_string(&response_body).unwrap_or_default()
         );
+        log_vl_call(config, n, started, "http_error", Some(http_code), Some(&msg));
+        anyhow::bail!(msg);
     }
-    let text = extract_vl_text(&response_body, config.protocol)?;
-    if urls.len() <= 1 {
+    let text = match extract_vl_text(&response_body, config.protocol) {
+        Ok(t) => t,
+        Err(e) => {
+            log_vl_call(config, n, started, "no_text", Some(http_code), Some(&e.to_string()));
+            return Err(e);
+        }
+    };
+    if n <= 1 {
+        log_vl_call(config, n, started, "ok", Some(http_code), None);
         return Ok(vec![text]);
     }
-    parse_batch_descriptions(&text, urls.len()).ok_or_else(|| {
-        anyhow::anyhow!(
-            "VL 批量响应未按 [[图片K]] 标注返回 {} 段（期望 {} 段）",
-            text.matches("[[图片").count(),
-            urls.len()
-        )
-    })
+    match parse_batch_descriptions(&text, n) {
+        Some(descs) => {
+            log_vl_call(config, n, started, "ok", Some(http_code), None);
+            Ok(descs)
+        }
+        None => {
+            let msg = format!(
+                "VL 批量响应未按 [[图片K]] 标注返回 {} 段（期望 {} 段）",
+                text.matches("[[图片").count(),
+                n
+            );
+            log_vl_call(config, n, started, "parse_error", Some(http_code), Some(&msg));
+            Err(anyhow::anyhow!(msg))
+        }
+    }
+}
+
+fn status_is_success(code: u16) -> bool {
+    (200..300).contains(&code)
+}
+
+/// 记单次 VL HTTP 调用（取证用）：状态(ok/timeout/http_error/...)/耗时/错误。
+fn log_vl_call(
+    config: &VisionRelayConfig,
+    n_urls: usize,
+    started: Instant,
+    status: &str,
+    http_code: Option<u16>,
+    error: Option<&str>,
+) {
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.vl_call",
+        json!({
+            "vlModel": config.model,
+            "n_urls": n_urls,
+            "duration_ms": started.elapsed().as_millis() as u64,
+            "status": status,
+            "http_code": http_code,
+            "error": error,
+        }),
+    );
 }
 
 /// 带混合重试的批量调 VL（Bug 4.6）：失败按指数退避重试 `max_attempts` 次。
@@ -373,9 +434,31 @@ pub async fn analyze_images_with_vl(
     .await;
     match outcome {
         Ok(Ok(())) => Ok(()),
-        // 内部错误或总超时：降级 strip 剩余 input_image，不阻断用户
-        Ok(Err(_)) | Err(_) => {
-            strip_all_input_images(body);
+        // 内部错误或总超时：降级 strip 剩余 input_image，不阻断用户。
+        // 记 vl_strip（区分 strip 与 vl_described 成功）+ 注入「看不到图」系统提示防胡说。
+        Ok(Err(e)) => {
+            let n = count_input_images(body);
+            let err_msg = e.to_string();
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.vl_strip",
+                json!({ "reason": "inner_error", "n_images": n, "error": err_msg }),
+            );
+            let stripped = strip_all_input_images(body);
+            if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
+                inject_image_strip_note(input, stripped, "VL 内部错误");
+            }
+            Ok(())
+        }
+        Err(_) => {
+            let n = count_input_images(body);
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.vl_strip",
+                json!({ "reason": "total_timeout", "n_images": n, "timeout_sec": VL_TOTAL_TIMEOUT.as_secs() }),
+            );
+            let stripped = strip_all_input_images(body);
+            if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
+                inject_image_strip_note(input, stripped, "VL 总超时");
+            }
             Ok(())
         }
     }
@@ -383,17 +466,59 @@ pub async fn analyze_images_with_vl(
 
 /// 移除 body 中所有 input_image 块（超时/失败降级 strip 用）。
 /// 同时清理 Phase 1 超限标记的空对象（{}），避免超时时残留畸形 part 上游。
-fn strip_all_input_images(body: &mut Value) {
+fn strip_all_input_images(body: &mut Value) -> usize {
+    let mut stripped = 0;
     if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
         for item in input.iter_mut() {
             if let Some(parts) = item.get_mut("content").and_then(Value::as_array_mut) {
+                let before = parts.len();
                 parts.retain(|p| {
                     p.get("type").and_then(Value::as_str) != Some("input_image")
                         && !p.as_object().map_or(false, |o| o.is_empty())
                 });
+                stripped += before - parts.len();
             }
         }
     }
+    stripped
+}
+
+/// 统计 body 中剩余 input_image 数量。
+fn count_input_images(body: &Value) -> usize {
+    body.get("input")
+        .and_then(Value::as_array)
+        .map(|input| {
+            input
+                .iter()
+                .filter_map(|it| it.get("content").and_then(Value::as_array))
+                .map(|parts| {
+                    parts
+                        .iter()
+                        .filter(|p| p.get("type").and_then(Value::as_str) == Some("input_image"))
+                        .count()
+                })
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// strip 发生时往 input 数组注入系统提示，告知模型看不到图片（防胡说误导用户）。
+/// role:"system" 在 input 数组里，Chat 路径转 system 消息、Responses 透传均支持。
+fn inject_image_strip_note(input: &mut Vec<Value>, stripped_count: usize, reason: &str) {
+    if stripped_count == 0 {
+        return;
+    }
+    let note = format!(
+        "[系统提示：用户发送了 {stripped_count} 张图片，但视觉模型当前不可用（{reason}），图片内容未被处理。你无法看到这些图片。请如实告知用户你暂时无法查看图片，不要猜测或编造图片内容。]"
+    );
+    input.insert(
+        0,
+        json!({
+            "type": "message",
+            "role": "system",
+            "content": [{"type": "input_text", "text": note}]
+        }),
+    );
 }
 
 /// 遍历 input 中的 input_image 块，调 VL API 翻译为文字描述替换为 input_text。
@@ -499,7 +624,8 @@ async fn analyze_images_with_vl_inner(
     }
 
     // Phase 3：join 各批结果。批次成功 -> 缓存 + 回填；批次失败 -> 回退单张逐个调
-    // （Task 8 会在此加重试；此处单张失败则该图描述为空，Phase 4 strip）。
+    // （单张重试 3 次；单张仍失败则该图描述为空，Phase 4 strip + 计入 vl_failed_count）。
+    let mut vl_failed_count: usize = 0;
     while let Some(joined) = set.join_next().await {
         let (chunk_tasks, result) = joined.expect("VL 批次任务 panic");
         let descriptions: Vec<String> = match result {
@@ -528,7 +654,18 @@ async fn analyze_images_with_vl_inner(
         };
         for (t, raw_desc) in chunk_tasks.iter().zip(descriptions.iter()) {
             if raw_desc.is_empty() {
-                // 描述为空 -> 标记 strip（空对象，Phase 4 清理）
+                // 单张重试仍失败 -> 标记 strip（空对象，Phase 4 清理）+ 记日志 + 计数
+                vl_failed_count += 1;
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "protocol_proxy.vl_strip",
+                    json!({
+                        "reason": "vl_failed",
+                        "scope": "image",
+                        "vlModel": vl_config.model,
+                        "image_url_len": t.url.len(),
+                        "image_url_is_data": t.url.starts_with("data:")
+                    }),
+                );
                 if let Some(part) = input
                     .get_mut(t.item_idx)
                     .and_then(|it| it.get_mut("content"))
@@ -574,6 +711,12 @@ async fn analyze_images_with_vl_inner(
         {
             parts.retain(|p| !p.as_object().map_or(false, |o| o.is_empty()));
         }
+    }
+
+    // 防御纵深：若有图片因 VL 调用失败被 strip，注入「看不到图」系统提示，
+    // 避免基座模型拿不到图片信息却胡编（用户被误导）。窗口外 strip 不注入（本就不该见）。
+    if vl_failed_count > 0 {
+        inject_image_strip_note(input, vl_failed_count, "VL 调用失败");
     }
 
     // 窗口外的图片 strip 掉

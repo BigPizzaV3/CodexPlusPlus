@@ -2241,6 +2241,69 @@ async fn vl_total_timeout_degrades_to_strip() {
 }
 
 #[tokio::test]
+async fn vl_strip_injects_cannot_see_image_note_on_timeout() {
+    let _vl_guard = vl_test_isolate();
+    // 防御纵深：VL 超时降级 strip 时，注入「看不到图」系统提示，防基座模型胡说误导用户。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let mock_task = tokio::spawn(mock_vl_server_hang(listener));
+
+    codex_plus_core::vision::set_vl_total_timeout_for_tests(Some(std::time::Duration::from_secs(
+        2,
+    )));
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "qwen-vl-plus".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut body = json!({
+        "model": "deepseek-v4-flash",
+        "input": [{"type":"message","role":"user","content":[
+            {"type":"input_text","text":"看这张图"},
+            {"type":"input_image","image_url":"https://example.com/bug4-inject-aaaa.png"}
+        ]}]
+    });
+    analyze_images_with_vl(&mut body, &config, &client)
+        .await
+        .unwrap();
+    codex_plus_core::vision::set_vl_total_timeout_for_tests(None);
+    mock_task.abort();
+
+    // 注入的系统提示应在 input[0]（role=system），告知模型看不到图、别胡编
+    let input = body["input"].as_array().unwrap();
+    assert_eq!(input[0]["role"], "system", "应注入 system 消息，实际：{}", input[0]);
+    let text = input[0]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("无法看到这些图片"),
+        "应含「看不到图」提示，实际：{text}"
+    );
+    assert!(
+        text.contains("不要猜测或编造"),
+        "应告知模型别胡编，实际：{text}"
+    );
+    assert!(
+        text.contains("1 张图片"),
+        "应注明被 strip 的图片数，实际：{text}"
+    );
+    // 原用户消息保留，图片被 strip
+    assert!(
+        input
+            .iter()
+            .any(|it| it["role"].as_str() == Some("user")),
+        "原用户消息应保留"
+    );
+    let serialized = serde_json::to_string(&body).unwrap();
+    assert!(!serialized.contains("input_image"), "图片应被 strip");
+}
+
+#[tokio::test]
 async fn vl_description_truncated_char_safe() {
     let _vl_guard = vl_test_isolate();
     // Bug 4.7：VL 返回 5000 字符 -> char-safe 截断为 ≤2000 字符（不 panic）。
