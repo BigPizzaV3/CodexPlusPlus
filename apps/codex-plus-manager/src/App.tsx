@@ -2750,7 +2750,7 @@ function EnhanceScreen({
     : t("未发现本地缓存；点击按钮会从 Codex++ 内置快照释放并注册，无需官方账号预缓存。");
   return (
     <>
-      <Panel>
+      <Panel className="enhance-panel">
         <CardHead title={t("Codex增强")} detail={t("会话删除、导出、项目移动和用户脚本等界面能力")} />
         <CardContent>
           <label className="switch-row">

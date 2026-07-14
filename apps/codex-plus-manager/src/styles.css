@@ -337,7 +337,9 @@ body {
   gap: 12px;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 16px 20px 24px;
   scrollbar-gutter: stable;
   animation: screen-enter 260ms var(--motion-ease) both;
@@ -3618,11 +3620,15 @@ select {
 }
 
 .panel {
-  overflow: clip;
+  overflow: visible;
   border-color: hsl(var(--border));
   border-radius: 10px;
   background: hsl(var(--card));
   box-shadow: none;
+}
+
+.enhance-panel {
+  min-height: max-content;
 }
 
 .panel:hover {
