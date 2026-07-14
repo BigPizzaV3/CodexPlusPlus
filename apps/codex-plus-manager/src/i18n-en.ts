@@ -687,6 +687,7 @@ export const EN_TEMPLATE: Record<string, string> = {
     "Delete the {0} selected session(s)? This deletes the local database records and rollout files, and creates a backup for each session.\n\n{1}{2}",
   "发现 {0} 个 Codex 供应商": "Found {0} Codex provider(s)",
   "发现新版本 {0}": "New version {0} available",
+  "在 GitHub 上支持作者：{0}": "Support the author on GitHub: {0}",
   "检测到 TUN 模式已开启，请在 Clash Verge Rev 中关闭。配置：{0}":
     "TUN mode is enabled. Disable it in Clash Verge Rev. Configuration: {0}",
   "TUN 模式已关闭。配置：{0}": "TUN mode is disabled. Configuration: {0}",

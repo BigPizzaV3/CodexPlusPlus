@@ -46,6 +46,7 @@ import {
   Settings,
   ShieldCheck,
   ShieldAlert,
+  Star,
   Stethoscope,
   Sun,
   TestTube,
@@ -63,6 +64,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { isGitHubRepositoryHomepage } from "./github-repository";
 import {
   mergeModelWindowRows,
   modelWindowRowsFromProfile,
@@ -4009,6 +4011,8 @@ function SortableRelayProfileCard({
 
 function MarketScriptCard({ script, actions }: { script: ScriptMarketItem; actions: Actions }) {
   const status = script.updateAvailable ? t("可更新") : script.installed ? tf("已安装 {0}", [script.installedVersion]) : t("未安装");
+  const isGitHubHomepage = script.homepage ? isGitHubRepositoryHomepage(script.homepage) : false;
+  const githubSupportLabel = isGitHubHomepage ? tf("在 GitHub 上支持作者：{0}", [script.name]) : undefined;
   return (
     <div className="script-market-card">
       <div className="script-market-title">
@@ -4031,9 +4035,25 @@ function MarketScriptCard({ script, actions }: { script: ScriptMarketItem; actio
           {script.updateAvailable ? t("更新") : script.installed ? t("重新安装") : t("安装")}
         </Button>
         {script.homepage ? (
-          <Button onClick={() => void actions.openExternalUrl(script.homepage)} size="sm" variant="secondary">
-            <ExternalLink className="h-4 w-4" />
-            {t("主页")}
+          <Button
+            aria-label={githubSupportLabel}
+            onClick={() => void actions.openExternalUrl(script.homepage)}
+            size="sm"
+            title={githubSupportLabel}
+            variant="secondary"
+          >
+            {isGitHubHomepage ? (
+              <>
+                <Star className="h-4 w-4" />
+                Star
+                <ExternalLink className="h-3 w-3" />
+              </>
+            ) : (
+              <>
+                <ExternalLink className="h-4 w-4" />
+                {t("主页")}
+              </>
+            )}
           </Button>
         ) : null}
       </div>
