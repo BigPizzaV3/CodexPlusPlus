@@ -978,6 +978,18 @@ fn session_index_preview_preserves_relation_only_sqlite_thread_references() {
     db.execute("INSERT INTO agent_job_items VALUES (?1)", [ids[7]])
         .unwrap();
     drop(db);
+
+    let relation_db = sqlite_dir.join("codex-related.db");
+    assert!(
+        !codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home)
+            .contains(&relation_db),
+        "relation-only databases must not enter the shared local-session path list"
+    );
+    assert!(
+        codex_plus_core::codex_sqlite::codex_thread_reference_db_paths_from_home(&home)
+            .contains(&relation_db),
+        "ghost-index cleanup must still discover relation-only thread references"
+    );
     let index = ids
         .iter()
         .map(|id| session_index_line(id, "related"))

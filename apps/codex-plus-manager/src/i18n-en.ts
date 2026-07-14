@@ -494,6 +494,7 @@ export const EN_PLAIN: Record<string, string> = {
   "清空选择": "Clear selection",
   "清除保存路径": "Clear saved path",
   "清理幽灵任务索引": "Clean up ghost task index",
+  "幽灵任务索引处理失败，请查看错误提示后重试。": "Ghost task index processing failed. Check the error message and retry.",
   "点击刷新会话读取本地数据库": "Click Refresh Sessions to read the local database",
   "点击刷新市场加载远程脚本。": "Click Refresh Marketplace to load remote scripts.",
   "版本信息、项目链接、GitHub Release 更新、日志与诊断": "Version info, project links, GitHub Release updates, logs and diagnostics",

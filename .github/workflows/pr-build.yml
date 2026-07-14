@@ -32,6 +32,10 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm install --package-lock=false
 
+      - name: Frontend tests
+        working-directory: apps/codex-plus-manager
+        run: npm test
+
       - name: TypeScript check
         working-directory: apps/codex-plus-manager
         run: npm run check

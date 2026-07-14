@@ -3701,6 +3701,40 @@ mod tests {
     }
 
     #[test]
+    fn list_local_sessions_ignores_relation_only_thread_reference_dbs() {
+        let temp = tempfile::tempdir().unwrap();
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        let codex_home = temp.path().join("codex-home");
+        let sqlite_dir = codex_home.join("sqlite");
+        std::fs::create_dir_all(&sqlite_dir).unwrap();
+        let session_db = sqlite_dir.join("state_5.sqlite");
+        let relation_db = sqlite_dir.join("codex-related.db");
+        create_minimal_thread_db(&session_db, "t1", "Current Thread", 100);
+        let relation = rusqlite::Connection::open(&relation_db).unwrap();
+        relation
+            .execute(
+                "CREATE TABLE local_thread_catalog (thread_id TEXT PRIMARY KEY)",
+                [],
+            )
+            .unwrap();
+        relation
+            .execute("INSERT INTO local_thread_catalog VALUES ('t1')", [])
+            .unwrap();
+        drop(relation);
+
+        unsafe {
+            std::env::set_var("CODEX_HOME", &codex_home);
+        }
+        let result = list_local_sessions();
+        restore_codex_home(previous_codex_home);
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.payload.sessions.len(), 1);
+        assert_eq!(result.payload.sessions[0].id, "t1");
+        assert_eq!(result.payload.sessions[0].title, "Current Thread");
+    }
+
+    #[test]
     fn delete_local_session_removes_duplicate_threads_from_all_candidate_dbs() {
         let temp = tempfile::tempdir().unwrap();
         let previous_codex_home = std::env::var_os("CODEX_HOME");

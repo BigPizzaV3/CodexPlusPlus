@@ -69,6 +69,7 @@ import {
   serializeModelWindowRows,
   type ModelWindowRow,
 } from "./model-windows";
+import { resolveProviderSyncCompletion } from "./provider-sync-flow";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
@@ -1549,11 +1550,17 @@ export function App() {
       );
       if (result) {
         let finalResult = result;
+        let cleanupFailure: { status: Status; message: string } | null = null;
         if (isSuccessStatus(result.status)) {
           const preview = await run(() =>
             call<CommandResult<SessionIndexCleanupPreviewPayload>>("preview_session_index_cleanup"),
           );
-          if (preview && isSuccessStatus(preview.status) && preview.candidates.length > 0) {
+          if (!preview) {
+            cleanupFailure = {
+              status: "failed",
+              message: t("幽灵任务索引处理失败，请查看错误提示后重试。"),
+            };
+          } else if (isSuccessStatus(preview.status) && preview.candidates.length > 0) {
             const selectedIds = await selectSessionIndexCleanupCandidates(preview.candidates);
             if (selectedIds?.length) {
               const cleanup = await run(() =>
@@ -1567,19 +1574,27 @@ export function App() {
                   ...result,
                   prunedSessionIndexEntries: cleanup.prunedEntries ?? 0,
                 };
-              } else if (cleanup) {
-                showNotice(t("清理幽灵任务索引"), cleanup.message, cleanup.status);
+              } else {
+                cleanupFailure = cleanup ?? {
+                  status: "failed",
+                  message: t("幽灵任务索引处理失败，请查看错误提示后重试。"),
+                };
               }
             }
-          } else if (preview && !isSuccessStatus(preview.status)) {
-            showNotice(t("清理幽灵任务索引"), preview.message, preview.status);
+          } else if (!isSuccessStatus(preview.status)) {
+            cleanupFailure = preview;
           }
         }
+        const completion = resolveProviderSyncCompletion(finalResult, cleanupFailure);
         setProviderSyncProgress({
           active: false,
           percent: 100,
-          message: providerSyncProgressMessage(finalResult),
-          result: finalResult,
+          message:
+            completion.progressMessage ??
+            (isSuccessStatus(completion.result.status)
+              ? providerSyncProgressMessage(completion.result)
+              : completion.result.message),
+          result: completion.result,
         });
         if (targetProvider) {
           const next = {
@@ -1592,7 +1607,13 @@ export function App() {
           setSettingsForm(next);
         }
         await refreshProviderSyncTargets(true);
-        showNotice(t("历史会话修复"), finalResult.message, finalResult.status);
+        const noticeTitle =
+          completion.noticeKind === "cleanup" ? t("清理幽灵任务索引") : t("历史会话修复");
+        showNotice(
+          noticeTitle,
+          completion.result.message,
+          completion.result.status,
+        );
       } else {
         setProviderSyncProgress({
           active: false,

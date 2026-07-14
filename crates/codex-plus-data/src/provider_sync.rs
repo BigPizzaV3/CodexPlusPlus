@@ -807,7 +807,8 @@ pub fn preview_session_index_cleanup(
     let home = codex_home
         .map(Path::to_path_buf)
         .unwrap_or_else(|| dirs_home().join(".codex"));
-    let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+    let sqlite_paths =
+        codex_plus_core::codex_sqlite::codex_thread_reference_db_paths_from_home(&home);
     let live_thread_ids = collect_live_thread_ids(&home, &sqlite_paths)?;
     let plan = plan_session_index_cleanup(&home.join("session_index.jsonl"), &live_thread_ids)?;
     Ok(match plan {
@@ -837,7 +838,8 @@ pub fn apply_session_index_cleanup(
     let lock_dir = home.join("tmp/provider-sync.lock");
     acquire_lock(&lock_dir).map_err(|error| cleanup_apply_error(error, None))?;
     let result = (|| {
-        let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+        let sqlite_paths =
+            codex_plus_core::codex_sqlite::codex_thread_reference_db_paths_from_home(&home);
         let live_thread_ids = collect_live_thread_ids(&home, &sqlite_paths)
             .map_err(|error| cleanup_apply_error(error, None))?;
         let plan = plan_session_index_cleanup(&home.join("session_index.jsonl"), &live_thread_ids)
