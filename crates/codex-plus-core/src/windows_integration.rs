@@ -44,8 +44,9 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWMINNOACTIVE;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE,
-    SetForegroundWindow, ShowWindow,
+    EnumWindows, GWL_EXSTYLE, GetClassNameW, GetWindowLongPtrW, GetWindowTextLengthW,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOW, SetForegroundWindow,
+    ShowWindow, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -346,24 +347,16 @@ pub fn terminate_process(process_id: u32) -> bool {
 
 #[cfg(windows)]
 pub fn activate_process_window(process_id: u32) -> bool {
-    let mut state = ActivateWindowState {
-        process_id,
-        hwnd: HWND::default(),
+    let Some(hwnd) = process_window(process_id, false) else {
+        return false;
     };
     unsafe {
-        let _ = EnumWindows(
-            Some(find_process_window_proc),
-            LPARAM((&mut state as *mut ActivateWindowState) as isize),
-        );
-    }
-    if state.hwnd.is_invalid() {
-        return false;
-    }
-    unsafe {
-        if IsIconic(state.hwnd).as_bool() {
-            let _ = ShowWindow(state.hwnd, SW_RESTORE);
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        } else if !IsWindowVisible(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_SHOW);
         }
-        SetForegroundWindow(state.hwnd).as_bool()
+        SetForegroundWindow(hwnd).as_bool()
     }
 }
 
@@ -408,9 +401,16 @@ fn query_process_image_path(process_id: u32) -> Option<PathBuf> {
 
 #[cfg(windows)]
 fn visible_window_for_process(process_id: u32) -> Option<HWND> {
+    process_window(process_id, true)
+}
+
+#[cfg(windows)]
+fn process_window(process_id: u32, visible_only: bool) -> Option<HWND> {
     let mut state = ActivateWindowState {
         process_id,
         hwnd: HWND::default(),
+        visible_only,
+        score: ProcessWindowScore::None,
     };
     unsafe {
         let _ = EnumWindows(
@@ -429,12 +429,24 @@ fn visible_window_for_process(process_id: u32) -> Option<HWND> {
 struct ActivateWindowState {
     process_id: u32,
     hwnd: HWND,
+    visible_only: bool,
+    score: ProcessWindowScore,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ProcessWindowScore {
+    None,
+    Fallback,
+    Titled,
+    AppWindow,
+    TauriWindow,
 }
 
 #[cfg(windows)]
 unsafe extern "system" fn find_process_window_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let state = unsafe { &mut *(lparam.0 as *mut ActivateWindowState) };
-    if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+    if state.visible_only && !unsafe { IsWindowVisible(hwnd) }.as_bool() {
         return BOOL(1);
     }
     let mut window_process_id = 0;
@@ -442,10 +454,50 @@ unsafe extern "system" fn find_process_window_proc(hwnd: HWND, lparam: LPARAM) -
         GetWindowThreadProcessId(hwnd, Some(&mut window_process_id));
     }
     if window_process_id == state.process_id {
-        state.hwnd = hwnd;
-        return BOOL(0);
+        let title_length = unsafe { GetWindowTextLengthW(hwnd) };
+        let extended_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+        let mut class_name = [0u16; 256];
+        let class_name_length = unsafe { GetClassNameW(hwnd, &mut class_name) }.max(0) as usize;
+        let class_name = String::from_utf16_lossy(&class_name[..class_name_length]);
+        let score = process_window_score(title_length > 0, extended_style, &class_name);
+        if score > state.score {
+            state.hwnd = hwnd;
+            state.score = score;
+        }
+        if score == ProcessWindowScore::TauriWindow {
+            return BOOL(0);
+        }
     }
     BOOL(1)
+}
+
+#[cfg(windows)]
+fn process_window_score(
+    has_title: bool,
+    extended_style: u32,
+    class_name: &str,
+) -> ProcessWindowScore {
+    let is_app_window = extended_style & WS_EX_APPWINDOW.0 != 0;
+    let is_tool_window = extended_style & WS_EX_TOOLWINDOW.0 != 0;
+    if is_tool_window || is_auxiliary_window_class(class_name) {
+        ProcessWindowScore::Fallback
+    } else if class_name.eq_ignore_ascii_case("Tauri Window") {
+        ProcessWindowScore::TauriWindow
+    } else if is_app_window && !is_tool_window {
+        ProcessWindowScore::AppWindow
+    } else if has_title {
+        ProcessWindowScore::Titled
+    } else {
+        ProcessWindowScore::Fallback
+    }
+}
+
+#[cfg(windows)]
+fn is_auxiliary_window_class(class_name: &str) -> bool {
+    matches!(
+        class_name.to_ascii_lowercase().as_str(),
+        "ime" | "msctfime ui" | "tray_icon_app" | "tao thread event target"
+    )
 }
 
 #[cfg(windows)]
@@ -608,5 +660,24 @@ struct RegistryKeyGuard(HKEY);
 impl Drop for RegistryKeyGuard {
     fn drop(&mut self) {
         let _ = unsafe { RegCloseKey(self.0) };
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn application_window_outranks_titled_ime_and_tool_windows() {
+        let ime_score = process_window_score(true, 0, "IME");
+        let tool_score = process_window_score(false, WS_EX_TOOLWINDOW.0, "Tao Thread Event Target");
+        let app_score = process_window_score(true, WS_EX_APPWINDOW.0, "Chrome_WidgetWin_1");
+        let tauri_score = process_window_score(true, 0, "Tauri Window");
+        let auxiliary_app_score = process_window_score(true, WS_EX_APPWINDOW.0, "tray_icon_app");
+
+        assert!(tauri_score > app_score);
+        assert!(app_score > ime_score);
+        assert_eq!(ime_score, tool_score);
+        assert_eq!(auxiliary_app_score, ProcessWindowScore::Fallback);
     }
 }

@@ -32,6 +32,15 @@ fn manager_uses_single_instance_guard_before_starting_tauri() {
 }
 
 #[test]
+fn manager_repeated_launch_activates_existing_window() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+
+    assert!(lib_rs.contains("focus_existing_manager_window();"));
+    assert!(lib_rs.contains("windows_activate_process_window"));
+}
+
+#[test]
 fn manager_main_window_uses_default_window_icon_explicitly() {
     let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
         .expect("read manager lib.rs");
