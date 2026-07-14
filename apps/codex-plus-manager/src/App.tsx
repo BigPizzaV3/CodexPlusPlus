@@ -551,6 +551,11 @@ type ProviderSyncPayload = {
   sqliteUserEventRowsUpdated?: number;
   sqliteCwdRowsUpdated?: number;
   sqliteCatalogRowsInserted?: number;
+  wslSqliteRowsUpdated?: number;
+  wslSqliteProviderRowsUpdated?: number;
+  wslSqliteUserEventRowsUpdated?: number;
+  wslSqliteCwdRowsUpdated?: number;
+  wslSqliteDatabasesUpdated?: number;
   updatedWorkspaceRoots?: number;
   prunedSessionIndexEntries?: number;
   encryptedContentWarning?: string | null;
@@ -572,7 +577,7 @@ type SessionIndexCleanupApplyPayload = {
   backupDir?: string | null;
 };
 
-type ProviderSyncTargetSource = "config" | "rollout" | "sqlite" | "manual";
+type ProviderSyncTargetSource = "config" | "rollout" | "sqlite" | "wsl_sqlite" | "manual";
 
 type ProviderSyncTargetOption = {
   id: string;
@@ -678,19 +683,28 @@ type ScriptMarketResult = CommandResult<{
 }>;
 
 function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>): string {
+  if (!isSuccessStatus(result.status)) {
+    return result.message || t("历史会话修复失败，请查看错误提示后重试。");
+  }
   const changed = result.changedSessionFiles ?? 0;
   const rows = result.sqliteRowsUpdated ?? 0;
   const insertedCatalogRows = result.sqliteCatalogRowsInserted ?? 0;
   const pruned = result.prunedSessionIndexEntries ?? 0;
   const target = result.targetProvider || t("当前 provider");
   const skipped = result.skippedLockedRolloutFiles?.length ?? 0;
+  const wslRows = result.wslSqliteRowsUpdated ?? 0;
+  const wslDatabases = result.wslSqliteDatabasesUpdated ?? 0;
+  const wslText = wslRows || wslDatabases
+    ? tf("，其中 WSL 正本更新 {0} 行（{1} 个数据库）", [wslRows, wslDatabases])
+    : "";
   const prunedText = pruned ? tf("，清理 {0} 条失效任务索引", [pruned]) : "";
   const skippedText = skipped ? tf("，跳过 {0} 个占用文件", [skipped]) : "";
   const catalogText = insertedCatalogRows ? tf("，补齐 {0} 条侧边栏索引", [insertedCatalogRows]) : "";
-  return tf("已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引{3}{4}{5}。", [
+  return tf("已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引{3}{4}{5}{6}。", [
     target,
     changed,
     rows,
+    wslText,
     catalogText,
     prunedText,
     skippedText,
@@ -701,6 +715,7 @@ const providerSyncSourceLabels: Record<ProviderSyncTargetSource, string> = {
   config: t("配置"),
   rollout: t("会话"),
   sqlite: t("索引"),
+  wsl_sqlite: t("WSL 索引"),
   manual: t("手动"),
 };
 
@@ -1996,7 +2011,7 @@ export function App() {
               : completion.result.message),
           result: completion.result,
         });
-        if (targetProvider) {
+        if (targetProvider && isSuccessStatus(result.status)) {
           const next = {
             ...settingsForm,
             providerSyncLastSelectedProvider: targetProvider,

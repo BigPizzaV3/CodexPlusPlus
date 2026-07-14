@@ -7,6 +7,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::wsl_sqlite::{
+    WslSqliteBackup, WslSqliteContext, WslSqliteUpdateCounts, WslSqliteUpdateResult,
+};
+
 const DEFAULT_PROVIDER: &str = "openai";
 const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
 const BACKUP_KEEP_COUNT: usize = 5;
@@ -36,6 +40,11 @@ pub struct ProviderSyncResult {
     pub sqlite_user_event_rows_updated: usize,
     pub sqlite_cwd_rows_updated: usize,
     pub sqlite_catalog_rows_inserted: usize,
+    pub wsl_sqlite_rows_updated: usize,
+    pub wsl_sqlite_provider_rows_updated: usize,
+    pub wsl_sqlite_user_event_rows_updated: usize,
+    pub wsl_sqlite_cwd_rows_updated: usize,
+    pub wsl_sqlite_databases_updated: usize,
     pub updated_workspace_roots: usize,
     pub encrypted_content_warning: Option<String>,
 }
@@ -75,6 +84,7 @@ pub enum ProviderSyncTargetSource {
     Config,
     Rollout,
     Sqlite,
+    WslSqlite,
     Manual,
 }
 
@@ -139,6 +149,12 @@ struct SessionIndexPlan {
     original_text: String,
     snapshot_sha256: String,
     candidates: Vec<SessionIndexCleanupCandidate>,
+}
+
+#[derive(Debug)]
+struct ProviderSyncBackup {
+    dir: PathBuf,
+    wsl_sqlite: Vec<WslSqliteBackup>,
 }
 
 #[derive(Debug, Default)]
@@ -255,11 +271,22 @@ pub fn run_provider_sync_with_target(
         )?;
         let catalog_insert_count =
             count_missing_local_thread_catalog_rows(&sqlite_paths, &target_provider)?;
+        let wsl_sqlite = WslSqliteContext::discover_if_enabled(&home.join("config.toml"))?;
+        let wsl_sqlite_update_counts = if let Some(context) = &wsl_sqlite {
+            context.count_updates(
+                &target_provider,
+                &thread_ids_with_user_events,
+                &cwd_by_thread_id,
+            )?
+        } else {
+            WslSqliteUpdateCounts::default()
+        };
         let global_state_update_count =
             count_global_state_updates(&home.join(".codex-global-state.json"))?;
         if rewrite_changes.is_empty()
             && sqlite_update_count == 0
             && catalog_insert_count == 0
+            && wsl_sqlite_update_counts.total() == 0
             && global_state_update_count == 0
         {
             let mut synced = result(
@@ -274,8 +301,46 @@ pub fn run_provider_sync_with_target(
             synced.encrypted_content_warning = encrypted_content_warning;
             return Ok(synced);
         }
-        let backup_dir = create_backup(&home, &target_provider, &rewrite_changes)?;
+        if wsl_sqlite_update_counts.total() > 0 {
+            wsl_sqlite
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("WSL SQLite 上下文意外丢失"))?
+                .preflight_write()?;
+        }
+        let backup = create_backup(
+            &home,
+            &target_provider,
+            &rewrite_changes,
+            if wsl_sqlite_update_counts.total() > 0 {
+                wsl_sqlite.as_ref()
+            } else {
+                None
+            },
+        )?;
         let applied = apply_session_changes(&rewrite_changes)?;
+        let wsl_updates = if wsl_sqlite_update_counts.total() > 0 {
+            let context = wsl_sqlite
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("WSL SQLite 上下文意外丢失"))?;
+            match context.apply_updates(
+                &target_provider,
+                &thread_ids_with_user_events,
+                &cwd_by_thread_id,
+                &backup.wsl_sqlite,
+            ) {
+                Ok(updates) => updates,
+                Err(error) => {
+                    if let Err(restore_error) = restore_session_changes(&applied.changes) {
+                        return Err(anyhow::anyhow!(
+                            "{error}; 会话文件回滚也失败：{restore_error}"
+                        ));
+                    }
+                    return Err(error);
+                }
+            }
+        } else {
+            WslSqliteUpdateResult::default()
+        };
         let apply_result = (|| -> anyhow::Result<(SqliteUpdateCounts, usize)> {
             let sqlite_updates = apply_sqlite_update_for_paths(
                 &sqlite_paths,
@@ -294,17 +359,38 @@ pub fn run_provider_sync_with_target(
         let (sqlite_updates, updated_workspace_roots) = match apply_result {
             Ok(counts) => counts,
             Err(err) => {
-                let _ = restore_session_changes(&applied.changes);
-                return Err(err);
+                let mut rollback_errors = Vec::new();
+                if wsl_updates.counts.total() > 0 {
+                    if let Some(context) = wsl_sqlite.as_ref() {
+                        if let Err(error) = context.restore_backups(&backup.wsl_sqlite) {
+                            rollback_errors.push(format!("WSL 索引回滚失败：{error}"));
+                        }
+                    } else {
+                        rollback_errors.push("WSL 索引回滚失败：同步上下文丢失".to_string());
+                    }
+                }
+                if let Err(error) = restore_session_changes(&applied.changes) {
+                    rollback_errors.push(format!("会话文件回滚失败：{error}"));
+                }
+                if rollback_errors.is_empty() {
+                    return Err(err);
+                }
+                return Err(anyhow::anyhow!("{err}; {}", rollback_errors.join("；")));
             }
+        };
+        let combined_sqlite_updates = SqliteUpdateCounts {
+            provider_rows: sqlite_updates.provider_rows + wsl_updates.counts.provider_rows,
+            user_event_rows: sqlite_updates.user_event_rows + wsl_updates.counts.user_event_rows,
+            cwd_rows: sqlite_updates.cwd_rows + wsl_updates.counts.cwd_rows,
+            catalog_insert_rows: sqlite_updates.catalog_insert_rows,
         };
         let mut synced = result(
             ProviderSyncStatus::Synced,
             "Provider sync complete",
             &target_provider,
-            Some(backup_dir),
+            Some(backup.dir),
             applied.changes.len(),
-            sqlite_updates.total(),
+            combined_sqlite_updates.total(),
         );
         synced.skipped_locked_rollout_files = collected.skipped_locked_rollout_files;
         synced
@@ -312,10 +398,15 @@ pub fn run_provider_sync_with_target(
             .extend(applied.skipped_locked_rollout_files);
         synced.skipped_locked_rollout_files.sort();
         synced.skipped_locked_rollout_files.dedup();
-        synced.sqlite_provider_rows_updated = sqlite_updates.provider_rows;
-        synced.sqlite_user_event_rows_updated = sqlite_updates.user_event_rows;
-        synced.sqlite_cwd_rows_updated = sqlite_updates.cwd_rows;
+        synced.sqlite_provider_rows_updated = combined_sqlite_updates.provider_rows;
+        synced.sqlite_user_event_rows_updated = combined_sqlite_updates.user_event_rows;
+        synced.sqlite_cwd_rows_updated = combined_sqlite_updates.cwd_rows;
         synced.sqlite_catalog_rows_inserted = sqlite_updates.catalog_insert_rows;
+        synced.wsl_sqlite_rows_updated = wsl_updates.counts.total();
+        synced.wsl_sqlite_provider_rows_updated = wsl_updates.counts.provider_rows;
+        synced.wsl_sqlite_user_event_rows_updated = wsl_updates.counts.user_event_rows;
+        synced.wsl_sqlite_cwd_rows_updated = wsl_updates.counts.cwd_rows;
+        synced.wsl_sqlite_databases_updated = wsl_updates.databases_updated;
         synced.updated_workspace_roots = updated_workspace_roots;
         synced.encrypted_content_warning = encrypted_content_warning;
         Ok(synced)
@@ -353,6 +444,11 @@ fn result(
         sqlite_user_event_rows_updated: 0,
         sqlite_cwd_rows_updated: 0,
         sqlite_catalog_rows_inserted: 0,
+        wsl_sqlite_rows_updated: 0,
+        wsl_sqlite_provider_rows_updated: 0,
+        wsl_sqlite_user_event_rows_updated: 0,
+        wsl_sqlite_cwd_rows_updated: 0,
+        wsl_sqlite_databases_updated: 0,
         updated_workspace_roots: 0,
         encrypted_content_warning: None,
     }
@@ -405,6 +501,11 @@ pub fn load_provider_sync_targets(codex_home: Option<&Path>) -> ProviderSyncTarg
         if let Ok(ids) = sqlite_provider_ids(&db_path) {
             add_sources(&mut sources, ids, ProviderSyncTargetSource::Sqlite);
         }
+    }
+    if let Ok(Some(context)) = WslSqliteContext::discover_if_enabled(&home.join("config.toml"))
+        && let Ok(ids) = context.provider_ids()
+    {
+        add_sources(&mut sources, ids, ProviderSyncTargetSource::WslSqlite);
     }
 
     let mut targets = sources
@@ -1076,7 +1177,8 @@ fn create_backup(
     home: &Path,
     target_provider: &str,
     changes: &[SessionChange],
-) -> anyhow::Result<PathBuf> {
+    wsl_sqlite: Option<&WslSqliteContext>,
+) -> anyhow::Result<ProviderSyncBackup> {
     let backup_root = home.join("backups_state/provider-sync");
     let mut backup_dir = backup_root.join(timestamp_name());
     let mut suffix = 0;
@@ -1124,6 +1226,20 @@ fn create_backup(
         backup_dir.join("session-meta-backup.json"),
         serde_json::to_string_pretty(&manifest)?,
     )?;
+    let wsl_sqlite_backups = if let Some(context) = wsl_sqlite {
+        context.create_backups(&backup_dir)?
+    } else {
+        Vec::new()
+    };
+    let wsl_db_files = wsl_sqlite_backups
+        .iter()
+        .map(|backup| {
+            json!({
+                "source": backup.source_path,
+                "backup": backup.relative_path.to_string_lossy().replace('\\', "/"),
+            })
+        })
+        .collect::<Vec<_>>();
     fs::write(
         backup_dir.join("metadata.json"),
         serde_json::to_string_pretty(&json!({
@@ -1133,11 +1249,15 @@ fn create_backup(
             "targetProvider": target_provider,
             "createdAt": chrono::Utc::now().to_rfc3339(),
             "dbFiles": db_files,
+            "wslDbFiles": wsl_db_files,
             "changedSessionFiles": changes.len(),
             "managedBy": "Codex++ provider sync"
         }))?,
     )?;
-    Ok(backup_dir)
+    Ok(ProviderSyncBackup {
+        dir: backup_dir,
+        wsl_sqlite: wsl_sqlite_backups,
+    })
 }
 
 fn create_session_index_cleanup_backup(

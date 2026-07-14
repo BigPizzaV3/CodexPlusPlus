@@ -1960,7 +1960,8 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
     .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"));
     match result {
         Ok(sync) => {
-            if is_success_sync_status(&sync.status) {
+            let succeeded = is_success_sync_status(&sync.status);
+            if succeeded {
                 persist_provider_sync_selection(
                     target_for_settings
                         .as_deref()
@@ -1971,29 +1972,40 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
                     "manager.sync_providers_now.after",
                 );
             }
-            ok(
-                &format!(
-                    "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。",
-                    sync.changed_session_files,
-                    sync.sqlite_rows_updated,
-                    sync.skipped_locked_rollout_files.len()
-                ),
-                json!({
-                    "syncStatus": sync.status,
-                    "targetProvider": sync.target_provider,
-                    "changedSessionFiles": sync.changed_session_files,
-                    "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files,
-                    "sqliteRowsUpdated": sync.sqlite_rows_updated,
-                    "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
-                    "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
-                    "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
-                    "sqliteCatalogRowsInserted": sync.sqlite_catalog_rows_inserted,
-                    "updatedWorkspaceRoots": sync.updated_workspace_roots,
-                    "encryptedContentWarning": sync.encrypted_content_warning,
-                    "backupDir": sync.backup_dir,
-                    "syncMessage": sync.message,
-                }),
-            )
+            let summary = format!(
+                "供应商已同步一次：{} 个会话文件，{} 行索引，其中 WSL 正本更新 {} 行（{} 个数据库），跳过 {} 个占用文件。",
+                sync.changed_session_files,
+                sync.sqlite_rows_updated,
+                sync.wsl_sqlite_rows_updated,
+                sync.wsl_sqlite_databases_updated,
+                sync.skipped_locked_rollout_files.len()
+            );
+            let failure_message = format!("供应商同步未完成：{}", sync.message);
+            let payload = json!({
+                "syncStatus": sync.status,
+                "targetProvider": sync.target_provider,
+                "changedSessionFiles": sync.changed_session_files,
+                "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files,
+                "sqliteRowsUpdated": sync.sqlite_rows_updated,
+                "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
+                "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
+                "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
+                "sqliteCatalogRowsInserted": sync.sqlite_catalog_rows_inserted,
+                "wslSqliteRowsUpdated": sync.wsl_sqlite_rows_updated,
+                "wslSqliteProviderRowsUpdated": sync.wsl_sqlite_provider_rows_updated,
+                "wslSqliteUserEventRowsUpdated": sync.wsl_sqlite_user_event_rows_updated,
+                "wslSqliteCwdRowsUpdated": sync.wsl_sqlite_cwd_rows_updated,
+                "wslSqliteDatabasesUpdated": sync.wsl_sqlite_databases_updated,
+                "updatedWorkspaceRoots": sync.updated_workspace_roots,
+                "encryptedContentWarning": sync.encrypted_content_warning,
+                "backupDir": sync.backup_dir,
+                "syncMessage": sync.message,
+            });
+            if succeeded {
+                ok(&summary, payload)
+            } else {
+                failed(&failure_message, payload)
+            }
         }
         Err(error) => failed(&format!("供应商同步失败：{error}"), json!({})),
     }

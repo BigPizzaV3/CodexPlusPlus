@@ -32,6 +32,7 @@ export const EN_PLAIN: Record<string, string> = {
     "MCP, Skills and Plugins are managed independently as global config and merged in whenever you switch providers.",
   "Markdown 导出": "Markdown export",
   "Provider 同步目标": "Provider sync target",
+  "WSL 索引": "WSL index",
   "Stepwise 直接发送": "Stepwise direct send",
   "基于当前对话生成下一步建议，使用独立 API 配置。": "Generate next-step suggestions from the current conversation using a separate API configuration.",
   "VLM API Key": "VLM API Key",
@@ -864,8 +865,11 @@ export const EN_TEMPLATE: Record<string, string> = {
   "已删除 {0} 个会话。": "Deleted {0} session(s).",
   "已删除 {0} 个，失败 {1} 个：{2}": "Deleted {0}, failed {1}: {2}",
   "已加载 {0} 条推荐": "Loaded {0} recommendation(s)",
-  "已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引{3}{4}。":
-    "Synced to {0}: repaired {1} session file(s) and updated {2} database index row(s){3}{4}.",
+  "已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引{3}{4}{5}{6}。":
+    "Synced to {0}: repaired {1} session file(s) and updated {2} database index row(s){3}{4}{5}{6}.",
+  "，其中 WSL 正本更新 {0} 行（{1} 个数据库）":
+    ", including {0} row(s) in {1} authoritative WSL database(s)",
+  "，补齐 {0} 条侧边栏索引": ", restored {0} sidebar index row(s)",
   "已安装 {0}": "Installed {0}",
   "已缓存 {0} 个插件 / {1} 个技能。": "Cached {0} plugin(s) / {1} skill(s).",
   "已运行 {0} 分钟": "Running for {0} minute(s)",
@@ -1005,6 +1009,8 @@ export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
   [/^无法在 Zed Remote 打开项目。$/, "Cannot open project in Zed Remote."],
   [/^移除 Zed 远程项目失败。$/, "Failed to remove Zed remote project."],
   [/^供应商已同步一次：(\d+) 个会话文件，(\d+) 行索引，跳过 (\d+) 个占用文件。$/, "Provider synced: $1 session file(s), $2 index row(s), skipped $3 locked file(s)."],
+  [/^供应商已同步一次：(\d+) 个会话文件，(\d+) 行索引，其中 WSL 正本更新 (\d+) 行（(\d+) 个数据库），跳过 (\d+) 个占用文件。$/, "Provider synced: $1 session file(s), $2 index row(s), including $3 row(s) in $4 authoritative WSL database(s), skipped $5 locked file(s)."],
+  [/^供应商同步未完成：(.+)$/, "Provider sync did not complete: $1"],
   [/^供应商同步失败：(.+)$/, "Provider sync failed: $1"],
   [/^推荐内容加载失败：(.+)$/, "Failed to load recommendations: $1"],
   [/^脚本市场加载失败：(.+)$/, "Failed to load script marketplace: $1"],

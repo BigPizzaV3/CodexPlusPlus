@@ -304,10 +304,14 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
-        let _ = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
+        let result = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
             .await
             .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"))?;
-        Ok(())
+        if matches!(result.status, codex_plus_data::ProviderSyncStatus::Synced) {
+            Ok(())
+        } else {
+            anyhow::bail!(result.message)
+        }
     }
 
     async fn apply_active_relay_profile(

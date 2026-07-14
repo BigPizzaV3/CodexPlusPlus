@@ -1269,3 +1269,89 @@ fn session_index_cleanup_write_failure_reports_backup_and_preserves_original() {
         original
     );
 }
+
+#[cfg(windows)]
+#[test]
+#[ignore = "需要由专项端到端验证准备隔离的 WSL SQLite 数据库"]
+fn provider_sync_public_entry_updates_windows_and_wsl_indexes() {
+    let expected_wsl_db = std::env::var("CODEX_PLUS_WSL_TEST_DB")
+        .expect("CODEX_PLUS_WSL_TEST_DB 必须指向隔离测试数据库");
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        r#"model_provider = "old-provider"
+
+[desktop]
+runCodexInWindowsSubsystemForLinux = true
+"#,
+    )
+    .unwrap();
+    let rollout = home.join("sessions/2026/rollout-wsl-integration.jsonl");
+    write_rollout(&rollout, "old-provider", "thread-1", "C:/workspace");
+    create_state_db(&home.join("state_5.sqlite"));
+
+    let targets = load_provider_sync_targets(Some(&home));
+    let old_provider = targets
+        .targets
+        .iter()
+        .find(|target| target.id == "old-provider")
+        .unwrap();
+    assert!(
+        old_provider
+            .sources
+            .contains(&ProviderSyncTargetSource::WslSqlite)
+    );
+
+    let result = run_provider_sync_with_target(Some(&home), Some("future-provider"));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.changed_session_files, 1);
+    assert_eq!(result.sqlite_rows_updated, 6);
+    assert_eq!(result.sqlite_provider_rows_updated, 2);
+    assert_eq!(result.sqlite_user_event_rows_updated, 2);
+    assert_eq!(result.sqlite_cwd_rows_updated, 2);
+    assert_eq!(result.wsl_sqlite_rows_updated, 3);
+    assert_eq!(result.wsl_sqlite_provider_rows_updated, 1);
+    assert_eq!(result.wsl_sqlite_user_event_rows_updated, 1);
+    assert_eq!(result.wsl_sqlite_cwd_rows_updated, 1);
+    assert_eq!(result.wsl_sqlite_databases_updated, 1);
+
+    let first: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first["payload"]["model_provider"], "future-provider");
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    let local_row = db
+        .query_row(
+            "SELECT model_provider, has_user_event, cwd FROM threads WHERE id = 'thread-1'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        local_row,
+        ("future-provider".to_string(), 1, "C:/workspace".to_string())
+    );
+
+    let backup_dir = result.backup_dir.unwrap();
+    let metadata: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(backup_dir.join("metadata.json")).unwrap())
+            .unwrap();
+    assert_eq!(metadata["wslDbFiles"].as_array().unwrap().len(), 1);
+    assert_eq!(metadata["wslDbFiles"][0]["source"], expected_wsl_db);
+    let relative_backup = metadata["wslDbFiles"][0]["backup"].as_str().unwrap();
+    assert!(backup_dir.join(relative_backup).is_file());
+}

@@ -2,6 +2,7 @@ pub mod backup;
 pub mod markdown;
 pub mod provider_sync;
 pub mod storage;
+mod wsl_sqlite;
 
 pub use backup::BackupStore;
 pub use markdown::{MarkdownExportService, export_markdown_from_paths};
