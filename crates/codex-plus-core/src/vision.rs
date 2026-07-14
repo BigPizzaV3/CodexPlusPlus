@@ -521,6 +521,18 @@ fn inject_image_strip_note(input: &mut Vec<Value>, stripped_count: usize, reason
     );
 }
 
+/// 若 body 含 input_image，注入「看不到图」系统提示（用于 VL 未启用等 strip 路径）。
+/// 返回被 strip 的图片数（0 表示无图、不注入）。供 protocol_proxy 转换层 strip 路径调用。
+pub fn inject_strip_note_if_images(body: &mut Value, reason: &str) -> usize {
+    let count = count_input_images(body);
+    if count > 0 {
+        if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
+            inject_image_strip_note(input, count, reason);
+        }
+    }
+    count
+}
+
 /// 遍历 input 中的 input_image 块，调 VL API 翻译为文字描述替换为 input_text。
 /// context_window=0 不限制窗口；>0 时窗口外的图片直接 strip。
 async fn analyze_images_with_vl_inner(
@@ -551,6 +563,7 @@ async fn analyze_images_with_vl_inner(
     }
     let mut tasks: Vec<VlTask> = Vec::new();
     let mut vl_count = 0;
+    let mut over_limit_count: usize = 0;
     for &idx in &window_indices {
         let is_latest = is_latest_message_image(input, idx);
         let Some(parts) = input
@@ -568,7 +581,12 @@ async fn analyze_images_with_vl_inner(
             };
             vl_count += 1;
             if vl_count > VL_IMAGE_LIMIT {
-                // 超出上限：标记为空对象，Phase 4 统一清理
+                // 超出上限：标记为空对象，Phase 4 统一清理；计数 + 记日志用于注入提示
+                over_limit_count += 1;
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "protocol_proxy.vl_strip",
+                    json!({ "reason": "over_limit", "scope": "image", "limit": VL_IMAGE_LIMIT }),
+                );
                 *part = json!({});
                 continue;
             }
@@ -713,10 +731,16 @@ async fn analyze_images_with_vl_inner(
         }
     }
 
-    // 防御纵深：若有图片因 VL 调用失败被 strip，注入「看不到图」系统提示，
+    // 防御纵深：若有图片被 strip（超限 / VL 调用失败），注入「看不到图」系统提示，
     // 避免基座模型拿不到图片信息却胡编（用户被误导）。窗口外 strip 不注入（本就不该见）。
-    if vl_failed_count > 0 {
-        inject_image_strip_note(input, vl_failed_count, "VL 调用失败");
+    let total_stripped = over_limit_count + vl_failed_count;
+    if total_stripped > 0 {
+        let reason = match (over_limit_count, vl_failed_count) {
+            (o, 0) if o > 0 => format!("超出单次处理上限({VL_IMAGE_LIMIT}张)"),
+            (0, v) if v > 0 => "视觉模型调用失败".to_string(),
+            (o, v) => format!("{o} 张超出上限、{v} 张视觉模型调用失败"),
+        };
+        inject_image_strip_note(input, total_stripped, &reason);
     }
 
     // 窗口外的图片 strip 掉

@@ -2303,6 +2303,120 @@ async fn vl_strip_injects_cannot_see_image_note_on_timeout() {
     assert!(!serialized.contains("input_image"), "图片应被 strip");
 }
 
+#[test]
+fn vl_disabled_chat_path_strips_image_and_injects_note() {
+    // 路径 A：VL 没开 + 纯文本模型 + Chat 协议 -> 转换层 strip input_image，
+    // 注入「看不到图」系统提示（防基座模型胡说）。用 upstream_request_parts 入口。
+    let mut profile = RelayProfile::default();
+    profile.protocol = codex_plus_core::settings::RelayProtocol::ChatCompletions;
+    profile.strip_images = true;
+    profile.model_image_support = r#"{"deepseek-v4-flash": false}"#.to_string();
+    // vision_relay 默认 enabled=false（VL 未启用）
+    let body = json!({
+        "model": "deepseek-v4-flash",
+        "input": [{"type":"message","role":"user","content":[
+            {"type":"input_text","text":"看这张图"},
+            {"type":"input_image","image_url":"https://example.com/vl-disabled-aaaa.png"}
+        ]}]
+    });
+    let (_e, upstream_body, _w) =
+        upstream_request_parts_with_image_decision(&profile, body, false).unwrap();
+
+    let serialized = serde_json::to_string(&upstream_body).unwrap();
+    // 图片被 strip
+    assert!(!serialized.contains("input_image"), "input_image 应被 strip");
+    assert!(
+        !serialized.contains("vl-disabled-aaaa.png"),
+        "图片 URL 不应残留，实际：{serialized}"
+    );
+    // 注入「看不到图」系统提示 + 原因
+    assert!(
+        serialized.contains("无法看到这些图片"),
+        "应注入看不到图提示，实际：{serialized}"
+    );
+    assert!(
+        serialized.contains("未启用视觉模型中转"),
+        "应注明原因，实际：{serialized}"
+    );
+    assert!(
+        serialized.contains("1 张图片"),
+        "应注明被 strip 的图片数，实际：{serialized}"
+    );
+}
+
+#[tokio::test]
+async fn vl_over_limit_strips_and_injects_note() {
+    let _vl_guard = vl_test_isolate();
+    // 路径 B：VL 启用 + 11 张图 -> 前 10 描述、第 11 超限 strip + 注入提示。
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let counter = std::sync::Arc::new(AtomicU32::new(0));
+    let counter_clone = counter.clone();
+    let response = vl_response("[[图片1]]d1[[图片2]]d2[[图片3]]d3[[图片4]]d4[[图片5]]d5");
+    let mock_task = tokio::spawn(async move {
+        mock_vl_server_counted(
+            listener,
+            Box::leak(response.into_boxed_str()),
+            counter_clone,
+        )
+        .await;
+    });
+
+    let config = VisionRelayConfig {
+        enabled: true,
+        model: "qwen-vl-plus".to_string(),
+        api_key: "sk-test".to_string(),
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+        max_tokens: 256,
+        context_window: 0,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    // 11 张图（全部 Tier 1：最新消息无问题）-> 前 10 分 2 批描述，第 11 超限
+    let mut content = Vec::new();
+    for i in 1..=11 {
+        content.push(json!({"type":"input_image","image_url":format!("https://example.com/ovl-{i}.png")}));
+    }
+    let mut body = json!({
+        "model": "deepseek-v4-flash",
+        "input": [{"type":"message","role":"user","content":content}]
+    });
+    analyze_images_with_vl(&mut body, &config, &client)
+        .await
+        .unwrap();
+    mock_task.abort();
+
+    let serialized = serde_json::to_string(&body).unwrap();
+    // 第 11 张被 strip（不残留）
+    assert!(
+        !serialized.contains("ovl-11.png"),
+        "超限的第 11 张应被 strip，实际：{serialized}"
+    );
+    // 前 10 张被描述（不残留 URL，已替换为 input_text）
+    assert!(
+        !serialized.contains("ovl-1.png"),
+        "前 10 张应被描述替换（不残留 URL）"
+    );
+    // 注入「看不到图」提示 + 超限原因 + 1 张
+    assert!(
+        serialized.contains("无法看到这些图片"),
+        "应注入看不到图提示，实际：{serialized}"
+    );
+    assert!(
+        serialized.contains("超出单次处理上限"),
+        "应注明超限原因，实际：{serialized}"
+    );
+    assert!(
+        serialized.contains("1 张图片"),
+        "应注明超限 strip 1 张，实际：{serialized}"
+    );
+    // 2 批 VL 调用（5+5），第 11 张不调 VL
+    assert_eq!(counter.load(Ordering::SeqCst), 2, "前 10 张分 2 批，第 11 不调 VL");
+}
+
 #[tokio::test]
 async fn vl_description_truncated_char_safe() {
     let _vl_guard = vl_test_isolate();

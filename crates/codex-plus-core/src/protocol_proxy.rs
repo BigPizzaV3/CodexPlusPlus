@@ -777,6 +777,18 @@ fn upstream_request_parts(
                 .to_string();
             let supports_reasoning = model_supports_reasoning(relay, &model);
             strip_reasoning_in_place(&mut body, supports_reasoning);
+            // 防御纵深：supports_image=false（VL 未启用 + 纯文本模型）时转换层会 strip
+            // input_image。strip 前注入「看不到图」系统提示（role:system 经转换映射为
+            // Chat system 消息），防基座模型拿不到图却胡编。无图则 no-op。
+            if !supports_image {
+                let stripped = crate::vision::inject_strip_note_if_images(&mut body, "未启用视觉模型中转");
+                if stripped > 0 {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "protocol_proxy.vl_strip",
+                        json!({ "reason": "vl_disabled", "n_images": stripped }),
+                    );
+                }
+            }
             Ok((
                 chat_completions_url(&relay.base_url),
                 responses_to_chat_completions_with_image_support(body, supports_image)?,
