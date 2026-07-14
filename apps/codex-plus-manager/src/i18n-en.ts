@@ -656,9 +656,6 @@ export const EN_PLAIN: Record<string, string> = {
   "检测到需要处理的环境问题": "Environment issues need attention",
   "正在读取本机环境": "Reading the local environment",
   "重新检测": "Check again",
-  "重新检测延迟": "Check latency again",
-  "此供应商没有单一目标 URL": "This provider has no single target URL",
-  "不可用": "Unavailable",
   "排查可能干扰中转站配置的本机环境": "Find local environment settings that may interfere with relay configuration",
 };
 
@@ -666,7 +663,6 @@ export const EN_PLAIN: Record<string, string> = {
 export const EN_TEMPLATE: Record<string, string> = {
   "\n...以及另外 {0} 个会话": "\n...and {0} more session(s)",
   "{0}（{1}）": "{0} ({1})",
-  "{0} ms": "{0} ms",
   "{0} · {1} 个成员": "{0} · {1} member(s)",
   "{0} 个": "{0}",
   "{0} 个 Codex++ 可识别项目，默认策略：{1}": "{0} project(s) recognized by Codex++, default strategy: {1}",

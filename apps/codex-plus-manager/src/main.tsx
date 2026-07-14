@@ -5,7 +5,6 @@ import "./styles.css";
 /* ── Bundled fonts (offline, no Google Fonts request) ──
      Fontsource packages ship woff2 files that Vite bundles into dist/.
      CSS @font-face declarations are injected at build time.              */
-import "@fontsource/inter";
 import "@fontsource/jetbrains-mono";
 
 const app = document.getElementById("app");

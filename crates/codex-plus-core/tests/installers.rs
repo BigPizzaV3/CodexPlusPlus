@@ -1,7 +1,7 @@
 use codex_plus_core::install::{
-    InstallOptions, SILENT_BINARY, app_bundle_names, build_macos_app_bundle,
-    build_windows_entrypoint_plan, companion_binary_path_from_exe, default_install_root_strategy,
-    shortcut_names,
+    InstallOptions, MANAGER_BUNDLE_ID, SILENT_BINARY, SILENT_BUNDLE_ID, app_bundle_names,
+    build_macos_app_bundle, build_windows_entrypoint_plan, companion_binary_path_from_exe,
+    default_install_root_strategy, macos_companion_bundle_identifier_from_exe, shortcut_names,
 };
 
 #[test]
@@ -142,6 +142,38 @@ fn companion_binary_path_resolves_macos_manager_app_next_to_silent_app() {
         std::path::PathBuf::from(
             "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager"
         )
+    );
+}
+
+#[test]
+fn macos_companion_launch_uses_bundle_ids_from_app_translocation() {
+    let manager_exe = std::path::Path::new(
+        "/private/var/folders/x/AppTranslocation/manager-id/d/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager",
+    );
+    let silent_exe = std::path::Path::new(
+        "/private/var/folders/x/AppTranslocation/silent-id/d/Codex++.app/Contents/MacOS/CodexPlusPlus",
+    );
+
+    assert_eq!(
+        macos_companion_bundle_identifier_from_exe(manager_exe, SILENT_BINARY),
+        Some(SILENT_BUNDLE_ID)
+    );
+    assert_eq!(
+        macos_companion_bundle_identifier_from_exe(
+            silent_exe,
+            codex_plus_core::install::MANAGER_BINARY,
+        ),
+        Some(MANAGER_BUNDLE_ID)
+    );
+}
+
+#[test]
+fn macos_companion_launch_keeps_bare_binary_development_mode() {
+    let manager_exe = std::path::Path::new("/tmp/target/debug/codex-plus-plus-manager");
+
+    assert_eq!(
+        macos_companion_bundle_identifier_from_exe(manager_exe, SILENT_BINARY),
+        None
     );
 }
 

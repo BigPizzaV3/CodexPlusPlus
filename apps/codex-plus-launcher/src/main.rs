@@ -8,8 +8,6 @@ use codex_plus_core::models::{DeleteResult, ExportResult, SessionRef};
 use codex_plus_core::routes::{BridgeContext, BridgeDataService, BridgeRuntimeService};
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -211,17 +209,12 @@ async fn notify_manager_when_update_available() -> anyhow::Result<bool> {
 }
 
 fn open_manager_with_update_prompt() -> anyhow::Result<()> {
-    let manager_path = manager_exe_path();
-    let mut command = std::process::Command::new(&manager_path);
-    command.arg("--show-update");
-    #[cfg(windows)]
-    {
-        command.creation_flags(codex_plus_core::windows_create_no_window());
-    }
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
+    codex_plus_core::install::spawn_companion(
+        codex_plus_core::install::MANAGER_BINARY,
+        ["--show-update"],
+    )
+    .map(|_| ())
+    .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
 }
 
 fn parse_launch_options<I, S>(args: I) -> LaunchOptions
@@ -569,23 +562,14 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     }
 
     async fn open_manager(&self) -> anyhow::Result<Value> {
-        let manager_path = manager_exe_path();
-        #[cfg(windows)]
-        {
-            std::process::Command::new(&manager_path)
-                .creation_flags(codex_plus_core::windows_create_no_window())
-                .spawn()
-                .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
-        }
-        #[cfg(not(windows))]
-        {
-            std::process::Command::new(&manager_path)
-                .spawn()
-                .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
-        }
+        let target = codex_plus_core::install::spawn_companion(
+            codex_plus_core::install::MANAGER_BINARY,
+            std::iter::empty::<&str>(),
+        )
+        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
         Ok(json!({
             "status": "ok",
-            "path": manager_path.to_string_lossy()
+            "path": target
         }))
     }
 
@@ -753,10 +737,6 @@ fn open_url(url: &str) -> anyhow::Result<()> {
     }
 }
 
-fn manager_exe_path() -> PathBuf {
-    codex_plus_core::install::companion_binary_path(codex_plus_core::install::MANAGER_BINARY)
-}
-
 fn default_user_script_manager() -> UserScriptManager {
     let config_dir = default_user_scripts_config_dir();
     UserScriptManager::new(
@@ -832,17 +812,6 @@ mod tests {
         assert!(source.contains("async fn start_computer_use_guard_watchdog"));
         assert!(source.contains("self.core"));
         assert!(source.contains(".start_computer_use_guard_watchdog(settings)"));
-    }
-
-    #[test]
-    fn manager_update_prompt_uses_sidecar_manager_binary_name() {
-        let path = manager_exe_path();
-
-        assert!(
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.contains(codex_plus_core::install::MANAGER_BINARY))
-        );
     }
 }
 
