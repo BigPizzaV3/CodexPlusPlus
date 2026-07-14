@@ -917,7 +917,7 @@ pub fn models_url(base_url: &str) -> String {
     url
 }
 
-fn has_version_suffix(base_url: &str) -> bool {
+pub(crate) fn has_version_suffix(base_url: &str) -> bool {
     let segment = base_url.rsplit('/').next().unwrap_or(base_url);
     let Some(rest) = segment.strip_prefix('v') else {
         return false;

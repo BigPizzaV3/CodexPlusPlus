@@ -1,4 +1,6 @@
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +11,8 @@ pub const SILENT_NAME: &str = "Codex++";
 pub const MANAGER_NAME: &str = "Codex++ 管理工具";
 pub const SILENT_BINARY: &str = "codex-plus-plus";
 pub const MANAGER_BINARY: &str = "codex-plus-plus-manager";
+pub const SILENT_BUNDLE_ID: &str = "com.bigpizzav3.codexplusplus";
+pub const MANAGER_BUNDLE_ID: &str = "com.bigpizzav3.codexplusplus.manager";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -242,6 +246,68 @@ pub fn option_or_current_exe(value: &Option<PathBuf>, binary: &str) -> PathBuf {
 pub fn companion_binary_path(binary: &str) -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     companion_binary_path_from_exe(&exe, binary)
+}
+
+pub fn spawn_companion<I, S>(binary: &str, args: I) -> anyhow::Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let args = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_os_string())
+        .collect::<Vec<OsString>>();
+
+    #[cfg(target_os = "macos")]
+    {
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+        if let Some(bundle_id) = macos_companion_bundle_identifier_from_exe(&exe, binary) {
+            let launch_result = Command::new("/usr/bin/open")
+                .args(["-n", "-b", bundle_id, "--args"])
+                .args(&args)
+                .status();
+            if launch_result.as_ref().is_ok_and(|status| status.success()) {
+                return Ok(format!("bundle:{bundle_id}"));
+            }
+            let fallback = companion_binary_path_from_exe(&exe, binary);
+            if !fallback.exists() {
+                let detail = launch_result
+                    .map(|status| status.to_string())
+                    .unwrap_or_else(|error| error.to_string());
+                anyhow::bail!("macOS Launch Services 无法启动 bundle {bundle_id}：{detail}");
+            }
+        }
+    }
+
+    let path = companion_binary_path(binary);
+    let mut command = Command::new(&path);
+    command.args(&args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::windows_create_no_window());
+    }
+    command
+        .spawn()
+        .map_err(|error| anyhow::anyhow!("无法启动 {}：{error}", path.to_string_lossy()))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+pub fn macos_companion_bundle_identifier_from_exe(
+    exe: &Path,
+    binary: &str,
+) -> Option<&'static str> {
+    let (_, app_name) = macos_applications_dir_and_app_name_from_exe(exe)?;
+    let known_bundle =
+        app_name == format!("{SILENT_NAME}.app") || app_name == format!("{MANAGER_NAME}.app");
+    if !known_bundle {
+        return None;
+    }
+    match binary {
+        SILENT_BINARY => Some(SILENT_BUNDLE_ID),
+        MANAGER_BINARY => Some(MANAGER_BUNDLE_ID),
+        _ => None,
+    }
 }
 
 pub fn companion_binary_path_from_exe(exe: &Path, binary: &str) -> PathBuf {

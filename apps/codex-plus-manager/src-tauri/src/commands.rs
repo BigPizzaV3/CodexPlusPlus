@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use codex_plus_core::install::SILENT_BINARY;
 use codex_plus_core::models::{DeleteResult, SessionRef};
+use codex_plus_core::relay_environment::RelayEnvironmentReport;
 use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
 use codex_plus_core::settings::{BackendSettings, RelayProfile, SettingsStore};
 use codex_plus_core::status::{LaunchStatus, StatusStore};
@@ -75,6 +76,17 @@ pub struct PluginMarketplaceStatusPayload {
     pub marketplace_root: Option<String>,
     pub config_registered: bool,
     pub needs_repair: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemotePluginMarketplacePayload {
+    pub codex_home: String,
+    pub marketplace_root: Option<String>,
+    pub config_registered: bool,
+    pub needs_repair: bool,
+    pub plugin_count: usize,
+    pub skill_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -459,25 +471,16 @@ fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> Co
 }
 
 fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
-    let launcher = codex_plus_core::install::companion_binary_path(SILENT_BINARY);
-    let mut command = std::process::Command::new(&launcher);
+    let mut args = Vec::new();
     if !request.app_path.trim().is_empty() {
-        command.arg("--app-path").arg(request.app_path.trim());
+        args.push("--app-path".to_string());
+        args.push(request.app_path.trim().to_string());
     }
-    command
-        .arg("--debug-port")
-        .arg(request.debug_port.to_string())
-        .arg("--helper-port")
-        .arg(request.helper_port.to_string());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| anyhow::anyhow!("无法启动 {}：{error}", launcher.to_string_lossy()))
+    args.push("--debug-port".to_string());
+    args.push(request.debug_port.to_string());
+    args.push("--helper-port".to_string());
+    args.push(request.helper_port.to_string());
+    codex_plus_core::install::spawn_companion(SILENT_BINARY, &args).map(|_| ())
 }
 
 #[tauri::command]
@@ -489,13 +492,7 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
 pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
     let settings = normalize_settings_before_save(settings);
     match SettingsStore::default().save(&settings) {
-        Ok(()) => {
-            let wrapper_message = refresh_cli_wrapper_after_settings_save(&settings);
-            settings_payload(
-                &format!("设置已保存。{wrapper_message}"),
-                "设置保存后重新读取失败",
-            )
-        }
+        Ok(()) => settings_payload("设置已保存。", "设置保存后重新读取失败"),
         Err(error) => failed(
             &format!("保存设置失败：{error}"),
             SettingsPayload {
@@ -1370,20 +1367,6 @@ pub async fn repair_shortcuts() -> InstallActionResult {
 }
 
 #[tauri::command]
-pub fn repair_backend() -> CommandResult<SettingsPayload> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    let message = match codex_plus_core::cli_wrapper::ensure_cli_wrapper(&settings) {
-        Ok(Some(install)) => format!(
-            "后端已修复，命令包装器已指向 {}。",
-            install.real_codex.to_string_lossy()
-        ),
-        Ok(None) => "后端已修复，命令包装器当前未启用。".to_string(),
-        Err(error) => format!("后端修复部分失败：{error}"),
-    };
-    settings_payload(&message, "修复后重新读取设置失败")
-}
-
-#[tauri::command]
 pub fn plugin_marketplace_status() -> CommandResult<PluginMarketplaceStatusPayload> {
     let home = codex_plus_core::codex_home::default_codex_home_dir();
     let status = codex_plus_core::plugin_marketplace::openai_curated_marketplace_status(&home);
@@ -1448,6 +1431,130 @@ pub async fn repair_plugin_marketplace() -> CommandResult<PluginMarketplaceRepai
             },
         ),
     }
+}
+
+#[tauri::command]
+pub fn remote_plugin_marketplace_status() -> CommandResult<RemotePluginMarketplacePayload> {
+    let home = codex_plus_core::codex_home::default_codex_home_dir();
+    let status =
+        codex_plus_core::plugin_marketplace::openai_curated_remote_marketplace_status(&home);
+    let (plugin_count, skill_count) =
+        remote_plugin_marketplace_counts(status.marketplace_root.as_deref());
+    ok(
+        if status.needs_repair() {
+            "官方远端插件缓存需要释放或注册。"
+        } else {
+            "官方远端插件缓存已可用。"
+        },
+        RemotePluginMarketplacePayload {
+            codex_home: home.to_string_lossy().to_string(),
+            marketplace_root: status
+                .marketplace_root
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string()),
+            config_registered: status.config_registered,
+            needs_repair: status.needs_repair(),
+            plugin_count,
+            skill_count,
+        },
+    )
+}
+
+#[tauri::command]
+pub fn repair_remote_plugin_marketplace() -> CommandResult<RemotePluginMarketplacePayload> {
+    let home = codex_plus_core::codex_home::default_codex_home_dir();
+    match codex_plus_core::plugin_marketplace::ensure_openai_curated_remote_marketplace_available(
+        &home,
+    ) {
+        Ok(result) => {
+            let status =
+                codex_plus_core::plugin_marketplace::openai_curated_remote_marketplace_status(
+                    &home,
+                );
+            let (plugin_count, skill_count) =
+                remote_plugin_marketplace_counts(status.marketplace_root.as_deref());
+            ok(
+                if result.initialized {
+                    "已释放并注册内置官方远端插件缓存。"
+                } else if result.configured {
+                    "已注册官方远端插件缓存。"
+                } else {
+                    "官方远端插件缓存已可用，无需修复。"
+                },
+                RemotePluginMarketplacePayload {
+                    codex_home: home.to_string_lossy().to_string(),
+                    marketplace_root: status
+                        .marketplace_root
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().to_string()),
+                    config_registered: status.config_registered,
+                    needs_repair: status.needs_repair(),
+                    plugin_count,
+                    skill_count,
+                },
+            )
+        }
+        Err(error) => {
+            let status =
+                codex_plus_core::plugin_marketplace::openai_curated_remote_marketplace_status(
+                    &home,
+                );
+            let (plugin_count, skill_count) =
+                remote_plugin_marketplace_counts(status.marketplace_root.as_deref());
+            failed(
+                &format!("官方远端插件缓存修复失败：{error}"),
+                RemotePluginMarketplacePayload {
+                    codex_home: home.to_string_lossy().to_string(),
+                    marketplace_root: status
+                        .marketplace_root
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().to_string()),
+                    config_registered: status.config_registered,
+                    needs_repair: status.needs_repair(),
+                    plugin_count,
+                    skill_count,
+                },
+            )
+        }
+    }
+}
+
+fn remote_plugin_marketplace_counts(root: Option<&Path>) -> (usize, usize) {
+    let Some(root) = root else {
+        return (0, 0);
+    };
+    let marketplace_path = root
+        .join(".agents")
+        .join("plugins")
+        .join("marketplace.json");
+    let plugin_count = std::fs::read_to_string(&marketplace_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|marketplace| {
+            marketplace
+                .get("plugins")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+        })
+        .unwrap_or(0);
+    let skill_count = count_skill_files(&root.join("plugins")).unwrap_or(0);
+    (plugin_count, skill_count)
+}
+
+fn count_skill_files(root: &Path) -> std::io::Result<usize> {
+    if !root.is_dir() {
+        return Ok(0);
+    }
+    let mut total = 0;
+    for entry in std::fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            total += count_skill_files(&path)?;
+        } else if path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md") {
+            total += 1;
+        }
+    }
+    Ok(total)
 }
 
 #[tauri::command]
@@ -1628,6 +1735,7 @@ pub fn reset_image_overlay_settings() -> CommandResult<SettingsPayload> {
     settings.codex_app_image_overlay_enabled = defaults.codex_app_image_overlay_enabled;
     settings.codex_app_image_overlay_path = defaults.codex_app_image_overlay_path;
     settings.codex_app_image_overlay_opacity = defaults.codex_app_image_overlay_opacity;
+    settings.codex_app_image_overlay_fit_mode = defaults.codex_app_image_overlay_fit_mode;
     let settings = normalize_settings_before_save(settings);
     match store.save(&settings) {
         Ok(()) => settings_payload("图片覆盖层设置已重置。", "图片覆盖层重置后重新读取失败"),
@@ -1681,6 +1789,17 @@ pub fn check_env_conflicts() -> CommandResult<EnvConflictsPayload> {
         "检测到可能覆盖 Codex 供应商配置的 OPENAI 环境变量。"
     };
     ok(message, EnvConflictsPayload { conflicts })
+}
+
+#[tauri::command]
+pub fn check_relay_environment() -> CommandResult<RelayEnvironmentReport> {
+    let report = codex_plus_core::relay_environment::inspect_relay_environment();
+    let message = if report.all_passed() {
+        "中转站环境配置检测全部通过。"
+    } else {
+        "检测到可能影响中转站配置的环境问题。"
+    };
+    ok(message, report)
 }
 
 #[tauri::command]
@@ -2743,17 +2862,6 @@ fn sanitize_manager_event(event: &str) -> String {
     }
 }
 
-fn refresh_cli_wrapper_after_settings_save(settings: &BackendSettings) -> String {
-    match codex_plus_core::cli_wrapper::ensure_cli_wrapper(settings) {
-        Ok(Some(install)) => format!(
-            " 命令包装器已更新：{}。",
-            install.real_codex.to_string_lossy()
-        ),
-        Ok(None) => String::new(),
-        Err(error) => format!(" 但命令包装器更新失败：{error}。"),
-    }
-}
-
 fn relay_payload(
     status: codex_plus_core::relay_config::RelayStatus,
     backup_path: Option<String>,
@@ -3637,6 +3745,27 @@ mod tests {
     }
 
     #[test]
+    fn normalize_settings_before_save_preserves_manual_relay_mode_for_pure_api_profile() {
+        let settings = BackendSettings {
+            active_relay_id: "api".to_string(),
+            launch_mode: codex_plus_core::settings::LaunchMode::Relay,
+            relay_profiles: vec![RelayProfile {
+                id: "api".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        let normalized = normalize_settings_before_save(settings);
+
+        assert_eq!(
+            normalized.launch_mode,
+            codex_plus_core::settings::LaunchMode::Relay
+        );
+    }
+
+    #[test]
     fn reset_image_overlay_settings_preserves_supplier_settings() {
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
@@ -3646,6 +3775,7 @@ mod tests {
             codex_app_image_overlay_enabled: true,
             codex_app_image_overlay_path: "C:\\Users\\me\\Pictures\\overlay.png".to_string(),
             codex_app_image_overlay_opacity: 42,
+            codex_app_image_overlay_fit_mode: "fill".to_string(),
             active_relay_id: "supplier-a".to_string(),
             relay_profiles: vec![RelayProfile {
                 id: "supplier-a".to_string(),
@@ -3665,6 +3795,10 @@ mod tests {
         assert!(!result.payload.settings.codex_app_image_overlay_enabled);
         assert_eq!(result.payload.settings.codex_app_image_overlay_path, "");
         assert_eq!(result.payload.settings.codex_app_image_overlay_opacity, 35);
+        assert_eq!(
+            result.payload.settings.codex_app_image_overlay_fit_mode,
+            "fit"
+        );
         assert_eq!(result.payload.settings.active_relay_id, "supplier-a");
         assert_eq!(result.payload.settings.relay_profiles.len(), 1);
         assert_eq!(result.payload.settings.relay_profiles[0].id, "supplier-a");

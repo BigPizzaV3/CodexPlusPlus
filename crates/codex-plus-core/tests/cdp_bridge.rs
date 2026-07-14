@@ -2,7 +2,8 @@ use base64::Engine;
 use codex_plus_core::assets;
 use codex_plus_core::bridge::{self, BRIDGE_BINDING_NAME};
 use codex_plus_core::cdp::{
-    CdpTarget, list_targets, pick_injectable_codex_page_target, pick_page_target,
+    CdpTarget, is_avatar_overlay_page_target, is_primary_codex_page_target, list_targets,
+    pick_injectable_codex_page_target, pick_page_target,
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -54,6 +55,251 @@ fn injection_script_prefixes_helper_url_and_sponsor_images() {
 }
 
 #[test]
+fn pet_real_mouse_settings_are_gated_to_windows_in_injected_ui() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("codexPlusIsWindowsPlatform"));
+    assert!(script.contains(r#"/\bWindows\b/i.test(navigator.userAgent || "")"#));
+    assert!(script.contains("codexPlusIsWindowsPlatform ? `<div"));
+}
+
+#[test]
+fn pet_real_mouse_script_uses_cdp_push_and_native_avatar_event() {
+    let script = assets::pet_real_mouse_script();
+
+    assert!(script.contains("avatar-overlay-computer-use-cursor-changed"));
+    assert!(script.contains("data-avatar-mascot"));
+    assert!(script.contains("nativeCursorActive"));
+    assert!(script.contains("transport: \"cdp-push\""));
+    assert!(script.contains("updateScreenPoint(point)"));
+    assert!(script.contains("mascot.matches(\":hover\")"));
+    assert!(script.contains("document.elementFromPoint(localPoint.x, localPoint.y)"));
+    assert!(script.contains("if (mascotHovered)"));
+    assert!(
+        script
+            .contains("document.visibilityState !== \"visible\" || dragging || nativeCursorActive")
+    );
+    assert!(script.contains("sendPoint(null).catch(disableUpdates)"));
+    assert!(script.contains("void cleared.catch(disableUpdates)"));
+    assert!(script.contains("dispatcher.dispatchHostMessage({ type: eventType, point: null })"));
+    assert!(script.contains("movementHoldMs = 1400"));
+    assert!(script.contains("activationRadius = 480"));
+    assert!(!script.contains("/pet/cursor-position"));
+    assert!(!script.contains("X-Codex-Plus-Pet-Token"));
+    assert!(script.contains("delete window.__codexPlusPetRealMouseLook"));
+}
+
+#[test]
+fn pet_real_mouse_capability_probe_rejects_v1_without_explicit_v2_evidence() {
+    let probe = assets::pet_real_mouse_capability_probe_script();
+
+    assert!(probe.contains("data-avatar-mascot"));
+    assert!(probe.contains("image.naturalWidth === 1536"));
+    assert!(probe.contains("image.naturalHeight === 2288"));
+    assert!(probe.contains("getComputedStyle(element).backgroundImage"));
+    assert!(probe.contains("const image = new Image()"));
+    assert!(probe.contains("await image.decode()"));
+    assert!(probe.contains("if (!await isV2Sprite(mascot)) return false"));
+    assert!(!probe.contains("spriteVersionNumber"));
+    assert!(probe.contains("dispatchHostMessage"));
+    assert!(probe.contains("typeof value.subscribe === \"function\""));
+    assert!(!probe.contains("__codexPlusPetRealMouseLook"));
+    assert!(!probe.contains("runtimeVersion"));
+}
+
+#[test]
+fn pet_real_mouse_update_script_stops_when_runtime_capability_is_missing() {
+    let script = assets::pet_real_mouse_update_script(-125, 640);
+
+    assert!(script.contains("data-avatar-mascot"));
+    assert!(script.contains("image.naturalWidth === 1536"));
+    assert!(script.contains("image.naturalHeight === 2288"));
+    assert!(script.contains("getComputedStyle(element).backgroundImage"));
+    assert!(script.contains("await image.decode()"));
+    assert!(script.contains("__codexPlusPetV2SpriteProbe"));
+    assert!(script.contains("updateScreenPoint?.({ x: -125, y: 640 }) === true"));
+}
+
+#[test]
+fn pet_real_mouse_update_script_accepts_png_webp_and_blob_v2_but_rejects_v1() {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("pet-update.js");
+    let harness_path = temp.path().join("pet-update-harness.cjs");
+    std::fs::write(&script_path, assets::pet_real_mouse_update_script(120, 240))
+        .expect("pet update script should be written");
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    write!(
+        harness,
+        r#"
+const fs = require("fs");
+const vm = require("vm");
+const script = fs.readFileSync({script_path}, "utf8");
+const sources = {{
+  pngV2: "data:image/png;base64,png-v2",
+  webpV2: "data:image/webp;base64,webp-v2",
+  webpV1: "data:image/webp;base64,webp-v1",
+  blobV2: "blob:codex-plus-pet-v2",
+  unknown: "data:image/webp;base64,unknown",
+}};
+const dimensions = new Map([
+  [sources.pngV2, [1536, 2288]],
+  [sources.webpV2, [1536, 2288]],
+  [sources.webpV1, [1536, 1872]],
+  [sources.blobV2, [1536, 2288]],
+]);
+async function run({{ image = null, source = null }} = {{}}) {{
+  let calls = 0;
+  let decodes = 0;
+  const element = {{ querySelectorAll: () => [] }};
+  const mascot = {{
+    querySelectorAll: (selector) => selector === "img" && image ? [image] : [element],
+  }};
+  class MockImage {{
+    set src(value) {{ this.source = value; }}
+    async decode() {{
+      decodes += 1;
+      const size = dimensions.get(this.source);
+      if (!size) throw new Error("unsupported image");
+      [this.naturalWidth, this.naturalHeight] = size;
+    }}
+  }}
+  const context = {{
+    document: {{ querySelector: () => mascot }},
+    getComputedStyle: (target) => ({{ backgroundImage: target === element && source ? `url("${{source}}")` : "none" }}),
+    Image: MockImage,
+    window: {{ __codexPlusPetRealMouseLook: {{ updateScreenPoint: () => {{ calls += 1; return true; }} }} }},
+  }};
+  const result = await vm.runInNewContext(script, context);
+  return {{ result, calls, decodes }};
+}}
+async function runSwitchSequence() {{
+  let calls = 0;
+  let decodes = 0;
+  let source = sources.webpV2;
+  const element = {{ querySelectorAll: () => [] }};
+  const mascot = {{ querySelectorAll: () => [element] }};
+  class MockImage {{
+    set src(value) {{ this.source = value; }}
+    async decode() {{
+      decodes += 1;
+      [this.naturalWidth, this.naturalHeight] = dimensions.get(this.source);
+    }}
+  }}
+  const context = {{
+    document: {{ querySelector: () => mascot }},
+    getComputedStyle: (target) => ({{ backgroundImage: target === element ? `url("${{source}}")` : "none" }}),
+    Image: MockImage,
+    window: {{ __codexPlusPetRealMouseLook: {{ updateScreenPoint: () => {{ calls += 1; return true; }} }} }},
+  }};
+  const first = await vm.runInNewContext(script, context);
+  const cached = await vm.runInNewContext(script, context);
+  source = sources.webpV1;
+  const afterV1Switch = await vm.runInNewContext(script, context);
+  return {{ first, cached, afterV1Switch, calls, decodes }};
+}}
+async function runDecodeRace() {{
+  let calls = 0;
+  let source = sources.webpV2;
+  let finishDecode;
+  const element = {{ querySelectorAll: () => [] }};
+  const mascot = {{ querySelectorAll: () => [element] }};
+  class MockImage {{
+    set src(value) {{ this.source = value; }}
+    async decode() {{
+      await new Promise((resolve) => {{ finishDecode = resolve; }});
+      [this.naturalWidth, this.naturalHeight] = dimensions.get(this.source);
+    }}
+  }}
+  const context = {{
+    document: {{ querySelector: () => mascot }},
+    getComputedStyle: (target) => ({{ backgroundImage: target === element ? `url("${{source}}")` : "none" }}),
+    Image: MockImage,
+    window: {{ __codexPlusPetRealMouseLook: {{ updateScreenPoint: () => {{ calls += 1; return true; }} }} }},
+  }};
+  const pending = vm.runInNewContext(script, context);
+  source = sources.webpV1;
+  finishDecode();
+  return {{ result: await pending, calls }};
+}}
+(async () => {{
+  process.stdout.write(JSON.stringify({{
+    pngV2: await run({{ source: sources.pngV2 }}),
+    webpV2: await run({{ source: sources.webpV2 }}),
+    blobV2: await run({{ source: sources.blobV2 }}),
+    webpV1: await run({{ source: sources.webpV1 }}),
+    imgV2: await run({{ image: {{ naturalWidth: 1536, naturalHeight: 2288 }} }}),
+    unknown: await run({{ source: sources.unknown }}),
+    missing: await run(),
+    switchSequence: await runSwitchSequence(),
+    decodeRace: await runDecodeRace(),
+  }}));
+}})().catch((error) => {{ console.error(error); process.exitCode = 1; }});
+"#,
+        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+            .expect("script path should serialize")
+    )
+    .expect("harness should be written");
+    drop(harness);
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should run pet update harness");
+    assert!(
+        output.status.success(),
+        "node harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cases: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("harness stdout should be JSON");
+    assert_eq!(
+        cases["pngV2"],
+        json!({ "result": true, "calls": 1, "decodes": 1 })
+    );
+    assert_eq!(
+        cases["webpV2"],
+        json!({ "result": true, "calls": 1, "decodes": 1 })
+    );
+    assert_eq!(
+        cases["blobV2"],
+        json!({ "result": true, "calls": 1, "decodes": 1 })
+    );
+    assert_eq!(
+        cases["imgV2"],
+        json!({ "result": true, "calls": 1, "decodes": 0 })
+    );
+    assert_eq!(
+        cases["webpV1"],
+        json!({ "result": false, "calls": 0, "decodes": 1 })
+    );
+    assert_eq!(
+        cases["unknown"],
+        json!({ "result": false, "calls": 0, "decodes": 1 })
+    );
+    assert_eq!(
+        cases["missing"],
+        json!({ "result": false, "calls": 0, "decodes": 0 })
+    );
+    assert_eq!(
+        cases["switchSequence"],
+        json!({
+            "first": true,
+            "cached": true,
+            "afterV1Switch": false,
+            "calls": 2,
+            "decodes": 2
+        })
+    );
+    assert_eq!(cases["decodeRace"], json!({ "result": false, "calls": 0 }));
+}
+
+#[test]
+fn pet_real_mouse_stop_script_retires_existing_runtime() {
+    assert!(assets::pet_real_mouse_stop_script().contains("__codexPlusPetRealMouseLook?.stop?.()"));
+}
+
+#[test]
 fn injection_script_exposes_image_overlay_config() {
     let temp = tempfile::tempdir().unwrap();
     let image_path = temp.path().join("overlay.png");
@@ -68,6 +314,7 @@ fn injection_script_exposes_image_overlay_config() {
         codex_app_image_overlay_enabled: true,
         codex_app_image_overlay_path: image_path.to_string_lossy().to_string(),
         codex_app_image_overlay_opacity: 42,
+        codex_app_image_overlay_fit_mode: "fill".to_string(),
         ..Default::default()
     };
     let script = assets::injection_script_with_settings(57321, &settings);
@@ -75,6 +322,7 @@ fn injection_script_exposes_image_overlay_config() {
     assert!(script.contains("window.__CODEX_PLUS_IMAGE_OVERLAY__"));
     assert!(script.contains("\"enabled\":true"));
     assert!(script.contains("\"opacity\":0.42"));
+    assert!(script.contains("\"fitMode\":\"fill\""));
     assert!(script.contains("\"dataUrl\":\"data:image/png;base64,"));
     assert!(script.contains("http://127.0.0.1:57321/overlay/image"));
 }
@@ -84,7 +332,10 @@ fn injection_script_installs_image_overlay_from_data_uri() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("const source = config.dataUrl || \"\""));
-    assert!(script.contains("image.src = source"));
+    assert!(script.contains("backgroundImage: `url(\"${source.replace(/\"/g, \"%22\")}\")`"));
+    assert!(script.contains(
+        "fit: { size: \"contain\", position: \"center center\", repeat: \"no-repeat\" }"
+    ));
     assert!(script.contains("image_overlay_installed"));
 }
 
@@ -117,7 +368,7 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
 
     assert!(script.contains("bridgeWithBackendTimeout"));
     assert!(script.contains("backend_bridge_timeout"));
-    assert!(script.contains("/backend/repair"));
+    assert!(!script.contains("/backend/repair"));
     assert!(script.contains("backend_status_bridge_failed_http_fallback_ok"));
     assert!(script.contains("backend_status_bridge_and_http_failed"));
 }
@@ -187,6 +438,37 @@ fn stepwise_assistant_detection_accepts_two_action_buttons() {
 }
 
 #[test]
+fn stepwise_refreshes_suggestions_for_virtualized_assistant_bubbles() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("function assistantBubbleCandidates("));
+    assert!(script.contains("\".group.flex.min-w-0.flex-col\""));
+    assert!(script.contains("candidates.push(...assistantBubbleCandidates())"));
+    assert!(script.contains("function latestMessageByDocumentOrder("));
+    assert!(script.contains("function clearPromptsForNewAssistant("));
+    assert!(script.contains(
+        "if (state.prompts.length || state.currentHash) clearPromptsForNewAssistant(hash);"
+    ));
+    assert!(script.contains("function setScanStatus("));
+    assert!(script.contains("setScanStatus(\"not-ready\""));
+    assert!(script.contains("setScanStatus(\"no-assistant-message\""));
+    assert!(!script.contains("setScanStatus(\"surface-not-ready\""));
+    assert!(!script.contains("return fallback[fallback.length - 1] || null;"));
+}
+
+#[test]
+fn stepwise_exposes_manual_refresh_without_refreshing_busy_chats() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("data-action=\"refresh\""));
+    assert!(script.contains("function forceRefreshStepwise("));
+    assert!(script.contains("state.bridgeStatus === \"pending\" || chatBusy()"));
+    assert!(script.contains("setScanStatus(\"manual-refresh-busy\""));
+    assert!(script.contains("state.bridgeCache.delete(bridgeKey)"));
+    assert!(script.contains("requestBridgeStepwise(bridgeKey, userText, assistantText)"));
+}
+
+#[test]
 fn injection_script_defers_backend_mapped_toggles_until_settings_load() {
     let script = assets::injection_script(57321);
 
@@ -221,6 +503,15 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
     assert!(script.contains("!codexPlusBackendSettingsLoaded"));
     assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
     assert!(script.contains("clearPluginPatchArtifacts()"));
+}
+
+#[test]
+fn injection_script_disables_plugin_auto_expand_in_relay_mode() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("settings.pluginAutoExpand = false"));
+    assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
+    assert!(script.contains("if (!codexPlusSettings().pluginAutoExpand) return"));
 }
 
 #[test]
@@ -356,6 +647,8 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("__CODEX_PLUS_PLUGIN_MARKETPLACES__"));
     assert!(script.contains("mergeLocalPluginMarketplaces(result)"));
     assert!(script.contains("plugin_marketplace_local_merged"));
+    assert!(script.contains("cloned.marketplaceName = marketplaceName"));
+    assert!(script.contains("cloned.marketplacePath = marketplaceName"));
     assert!(script.contains("restorePluginMarketplaceName"));
     assert!(script.contains(
         "next.remoteMarketplaceName = restorePluginMarketplaceName(next.remoteMarketplaceName)"
@@ -913,6 +1206,19 @@ fn manager_ui_exposes_pure_api_relay_mode_button() {
 }
 
 #[test]
+fn manager_ui_disables_plugin_auto_expand_in_compatible_mode() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("core crate should live under crates/codex-plus-core");
+    let source = std::fs::read_to_string(repo.join("apps/codex-plus-manager/src/App.tsx")).unwrap();
+
+    assert!(source.contains(
+        "checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled || !patchMode}"
+    ));
+}
+
+#[test]
 fn cdp_target_deserializes_websocket_field() {
     let target: CdpTarget = serde_json::from_value(json!({
         "id": "page-1",
@@ -1086,6 +1392,99 @@ fn pick_injectable_codex_page_target_rejects_non_codex_pages() {
             .to_string()
             .contains("No injectable Codex page target found")
     );
+}
+
+#[test]
+fn pick_injectable_codex_page_target_accepts_chatgpt_desktop_page() {
+    let targets = vec![target(
+        "chatgpt",
+        "page",
+        "ChatGPT",
+        "https://chatgpt.com/",
+        Some("ws://chatgpt"),
+    )];
+
+    let picked = pick_injectable_codex_page_target(&targets)
+        .expect("ChatGPT desktop page should be selected");
+
+    assert_eq!(picked.id, "chatgpt");
+}
+
+#[test]
+fn pick_injectable_codex_page_target_accepts_chatgpt_desktop_error_page() {
+    let targets = vec![target(
+        "chatgpt-error",
+        "page",
+        "ChatGPT",
+        "data:text/html;charset=utf-8,%3Ctitle%3EChatGPT%3C/title%3E",
+        Some("ws://chatgpt-error"),
+    )];
+
+    let picked = pick_injectable_codex_page_target(&targets)
+        .expect("ChatGPT desktop error page should be selected");
+
+    assert_eq!(picked.id, "chatgpt-error");
+}
+
+#[test]
+fn avatar_overlay_target_detection_is_narrow() {
+    let overlay = target(
+        "avatar",
+        "page",
+        "ChatGPT Avatar Overlay",
+        "app://-/index.html?initialRoute=%2Favatar-overlay",
+        Some("ws://avatar"),
+    );
+    let main = target(
+        "main",
+        "page",
+        "ChatGPT",
+        "https://chatgpt.com/",
+        Some("ws://main"),
+    );
+
+    assert!(is_avatar_overlay_page_target(&overlay));
+    assert!(!is_primary_codex_page_target(&overlay));
+    assert!(!is_avatar_overlay_page_target(&main));
+    assert!(is_primary_codex_page_target(&main));
+    assert!(!is_avatar_overlay_page_target(&target(
+        "external",
+        "page",
+        "avatar-overlay",
+        "https://example.test/avatar-overlay",
+        Some("ws://external"),
+    )));
+}
+
+#[test]
+fn primary_target_selection_skips_v1_and_v2_overlay_candidates() {
+    let targets = vec![
+        target(
+            "v1-overlay",
+            "page",
+            "Codex",
+            "app://-/index.html?initialRoute=%2Favatar-overlay",
+            Some("ws://v1"),
+        ),
+        target(
+            "v2-overlay",
+            "page",
+            "Codex",
+            "app://-/index.html?initialRoute=/avatar-overlay",
+            Some("ws://v2"),
+        ),
+        target(
+            "main",
+            "page",
+            "Codex",
+            "app://-/index.html",
+            Some("ws://main"),
+        ),
+    ];
+
+    let selected = pick_injectable_codex_page_target(&targets).unwrap();
+
+    assert_eq!(selected.id, "main");
 }
 
 #[test]

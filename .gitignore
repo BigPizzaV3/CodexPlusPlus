@@ -19,6 +19,7 @@ docs/superpowers/
 .DS_Store
 Thumbs.db
 .env
+tools/codex-wechat/config.local.json
 
 # pnpm artifacts (project uses npm)
 pnpm-lock.yaml

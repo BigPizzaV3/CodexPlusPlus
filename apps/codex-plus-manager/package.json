@@ -1,7 +1,8 @@
 {
   "name": "codex-plus-manager",
-  "version": "1.2.28",
+  "version": "1.2.36",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",

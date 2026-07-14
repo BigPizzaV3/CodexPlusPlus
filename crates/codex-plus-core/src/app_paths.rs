@@ -3,7 +3,31 @@ use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::process::Command;
 
-const CODEX_PACKAGE_IDENTITIES: &[&str] = &["OpenAI.Codex", "OpenAI.CodexBeta"];
+#[derive(Debug, Clone, Copy)]
+struct AppPackageSpec {
+    identity: &'static str,
+    app_id: &'static str,
+    executable_names: &'static [&'static str],
+    priority: u8,
+}
+
+const CODEX_PACKAGE_EXECUTABLES: &[&str] = &["ChatGPT.exe", "Codex.exe", "codex.exe"];
+const STANDALONE_CODEX_EXECUTABLES: &[&str] = &["ChatGPT.exe", "Codex.exe", "codex.exe"];
+
+const APP_PACKAGE_SPECS: &[AppPackageSpec] = &[
+    AppPackageSpec {
+        identity: "OpenAI.Codex",
+        app_id: "App",
+        executable_names: CODEX_PACKAGE_EXECUTABLES,
+        priority: 1,
+    },
+    AppPackageSpec {
+        identity: "OpenAI.CodexBeta",
+        app_id: "App",
+        executable_names: CODEX_PACKAGE_EXECUTABLES,
+        priority: 1,
+    },
+];
 
 pub fn find_latest_codex_app_dir(root: &Path) -> Option<PathBuf> {
     let mut matches = std::fs::read_dir(root)
@@ -11,22 +35,28 @@ pub fn find_latest_codex_app_dir(root: &Path) -> Option<PathBuf> {
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.is_dir())
-        .filter_map(|path| version_tuple(&path).map(|version| (version, path)))
+        .filter_map(|path| {
+            let spec = package_spec_from_path(&path)?;
+            let version = version_tuple(&path)?;
+            let app_dir = package_entry_dir(&path, spec)?;
+            Some((spec.priority, version, app_dir))
+        })
         .collect::<Vec<_>>();
-    matches.sort_by(|left, right| left.0.cmp(&right.0));
-    let (_, latest) = matches.pop()?;
-    let app = latest.join("app");
-    Some(if app.is_dir() { app } else { latest })
+    matches.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .reverse()
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    let (_, _, latest) = matches.pop()?;
+    Some(latest)
 }
 
 pub fn find_latest_codex_app_dir_from_roots(roots: &[PathBuf]) -> Option<PathBuf> {
     roots
         .iter()
         .filter_map(|root| find_latest_codex_app_dir(root))
-        .max_by(|left, right| {
-            version_tuple(left.parent().unwrap_or(left))
-                .cmp(&version_tuple(right.parent().unwrap_or(right)))
-        })
+        .max_by(compare_app_dir_candidates)
 }
 
 pub fn find_latest_codex_app_dir_default() -> Option<PathBuf> {
@@ -50,7 +80,7 @@ fn find_latest_codex_app_dir_from_appx_package() -> Option<PathBuf> {
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            "Get-AppxPackage -Name OpenAI.Codex* | Where-Object { @('OpenAI.Codex','OpenAI.CodexBeta') -contains $_.Name } | Sort-Object Version -Descending | Select-Object -First 1 -ExpandProperty InstallLocation",
+            "$names=@('OpenAI.Codex','OpenAI.CodexBeta'); Get-AppxPackage | Where-Object { $names -contains $_.Name } | Sort-Object Version -Descending | Select-Object -First 1 -ExpandProperty InstallLocation",
         ])
         .output()
         .ok()?;
@@ -187,7 +217,7 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
     }
 
     let file_name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
-    if file_name.eq_ignore_ascii_case("Codex.exe") || file_name.eq_ignore_ascii_case("codex.exe") {
+    if is_supported_app_executable_name(file_name) {
         return path.parent().map(Path::to_path_buf);
     }
 
@@ -199,17 +229,13 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
         return path.parent().map(Path::to_path_buf);
     }
 
-    let upper = path.join("Codex.exe");
-    let lower = path.join("codex.exe");
-    if upper.exists() || lower.exists() {
+    if executable_in_dir(path).is_some() {
         return Some(path.to_path_buf());
     }
 
     let nested_app = path.join("app");
     if nested_app.is_dir() {
-        let upper = nested_app.join("Codex.exe");
-        let lower = nested_app.join("codex.exe");
-        if upper.exists() || lower.exists() {
+        if executable_in_dir(&nested_app).is_some() {
             return Some(nested_app);
         }
     }
@@ -223,14 +249,21 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
 
 pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
     if app_dir.extension() == Some(OsStr::new("app")) {
-        return app_dir.join("Contents").join("MacOS").join("Codex");
+        let macos_dir = app_dir.join("Contents").join("MacOS");
+        if let Some(executable) = macos_app_plist_value(app_dir, "CFBundleExecutable")
+            .filter(|value| !value.contains('/') && !value.contains('\\'))
+        {
+            return macos_dir.join(executable);
+        }
+        return macos_dir.join("Codex");
     }
-    let upper = app_dir.join("Codex.exe");
-    if upper.exists() {
-        upper
-    } else {
-        app_dir.join("codex.exe")
+    if let Some(executable) = executable_in_dir(app_dir) {
+        return executable;
     }
+    if let Some(spec) = package_spec_from_path(app_dir) {
+        return app_dir.join(spec.executable_names[0]);
+    }
+    app_dir.join("Codex.exe")
 }
 
 pub fn codex_app_version(app_dir: &Path) -> Option<String> {
@@ -247,15 +280,19 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
         app_dir
     };
     codex_package_version(package_dir)
+        .or_else(|| codex_directory_version(package_dir))
+        .or_else(|| codex_directory_version(app_dir))
+        .or_else(|| codex_version_file(package_dir))
+        .or_else(|| codex_version_file(app_dir))
 }
 
 pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
     let package_name = package_name_from_app_dir(app_dir)?;
-    let (identity_name, _, publisher_id) = codex_package_parts(&package_name)?;
+    let (spec, _, publisher_id) = codex_package_parts(&package_name)?;
     if publisher_id.is_empty() {
         return None;
     }
-    Some(format!("{identity_name}_{publisher_id}!App"))
+    Some(format!("{}_{publisher_id}!{}", spec.identity, spec.app_id))
 }
 
 fn package_name_from_app_dir(app_dir: &Path) -> Option<String> {
@@ -282,10 +319,60 @@ fn codex_package_version(package_dir: &Path) -> Option<String> {
     }
 }
 
+fn codex_directory_version(app_dir: &Path) -> Option<String> {
+    directory_version(app_dir).or_else(|| {
+        app_dir
+            .canonicalize()
+            .ok()
+            .and_then(|path| directory_version(&path))
+    })
+}
+
+fn directory_version(path: &Path) -> Option<String> {
+    let version = path.file_name()?.to_str()?;
+    if is_version_like(version) {
+        Some(version.to_string())
+    } else {
+        None
+    }
+}
+
+fn is_version_like(version: &str) -> bool {
+    let mut parts = version.split('.');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if first.is_empty() || !first.chars().all(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
+    let mut count = 1;
+    for part in parts {
+        if part.is_empty() || !part.chars().all(|ch| ch.is_ascii_digit()) {
+            return false;
+        }
+        count += 1;
+    }
+    count >= 2
+}
+
+fn codex_version_file(app_dir: &Path) -> Option<String> {
+    let version = std::fs::read_to_string(app_dir.join("version")).ok()?;
+    let version = version.trim();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
+}
+
 fn macos_app_version(app_dir: &Path) -> Option<String> {
+    macos_app_plist_value(app_dir, "CFBundleShortVersionString")
+        .or_else(|| macos_app_plist_value(app_dir, "CFBundleVersion"))
+}
+
+fn macos_app_plist_value(app_dir: &Path, key: &str) -> Option<String> {
     let plist = std::fs::read_to_string(app_dir.join("Contents").join("Info.plist")).ok()?;
-    plist_string_value(&plist, "CFBundleShortVersionString")
-        .or_else(|| plist_string_value(&plist, "CFBundleVersion"))
+    plist_string_value(&plist, key)
 }
 
 fn plist_string_value(plist: &str, key: &str) -> Option<String> {
@@ -301,6 +388,9 @@ fn plist_string_value(plist: &str, key: &str) -> Option<String> {
 }
 
 fn append_user_data_variants(candidates: &mut Vec<PathBuf>, base: &Path) {
+    candidates.push(base.join("OpenAI").join("ChatGPT"));
+    candidates.push(base.join("OpenAI.ChatGPT-Desktop"));
+    candidates.push(base.join("ChatGPT"));
     candidates.push(base.join("OpenAI").join("Codex"));
     candidates.push(base.join("OpenAI.Codex"));
     candidates.push(base.join("Codex"));
@@ -310,10 +400,15 @@ fn macos_app_candidates(root: &Path) -> Vec<PathBuf> {
     if root.extension() == Some(OsStr::new("app")) {
         return vec![root.to_path_buf()];
     }
-    ["Codex.app", "OpenAI Codex.app", "OpenAI.Codex.app"]
-        .into_iter()
-        .map(|name| root.join(name))
-        .collect()
+    [
+        "Codex.app",
+        "OpenAI Codex.app",
+        "OpenAI.Codex.app",
+        "ChatGPT.app",
+    ]
+    .into_iter()
+    .map(|name| root.join(name))
+    .collect()
 }
 
 fn version_tuple(path: &Path) -> Option<Vec<u32>> {
@@ -327,9 +422,70 @@ fn version_tuple(path: &Path) -> Option<Vec<u32>> {
     if parts.is_empty() { None } else { Some(parts) }
 }
 
-fn codex_package_parts(package_name: &str) -> Option<(&str, &str, &str)> {
-    for identity in CODEX_PACKAGE_IDENTITIES {
-        let Some(rest) = package_name.strip_prefix(identity) else {
+pub(crate) fn is_supported_windows_app_package_name(package_name: &str) -> bool {
+    codex_package_parts(package_name).is_some()
+}
+
+pub(crate) fn is_supported_app_executable_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("Codex.exe") || name.eq_ignore_ascii_case("ChatGPT.exe")
+}
+
+fn package_spec_from_path(path: &Path) -> Option<AppPackageSpec> {
+    let package_name = package_name_from_app_dir(path)?;
+    let (spec, _, _) = codex_package_parts(&package_name)?;
+    Some(spec)
+}
+
+fn compare_app_dir_candidates(left: &PathBuf, right: &PathBuf) -> std::cmp::Ordering {
+    app_dir_sort_key(left).cmp(&app_dir_sort_key(right))
+}
+
+fn app_dir_sort_key(app_dir: &Path) -> Option<(std::cmp::Reverse<u8>, Vec<u32>)> {
+    let spec = package_spec_from_path(app_dir)?;
+    let package_dir = if app_dir
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("app"))
+    {
+        app_dir.parent().unwrap_or(app_dir)
+    } else {
+        app_dir
+    };
+    Some((
+        std::cmp::Reverse(spec.priority),
+        version_tuple(package_dir)?,
+    ))
+}
+
+fn package_entry_dir(package_dir: &Path, spec: AppPackageSpec) -> Option<PathBuf> {
+    let app = package_dir.join("app");
+    if app.is_dir() {
+        return Some(app);
+    }
+    for name in spec.executable_names {
+        if package_dir.join(name).is_file() {
+            return Some(package_dir.to_path_buf());
+        }
+    }
+    None
+}
+
+fn executable_in_dir(dir: &Path) -> Option<PathBuf> {
+    let names = package_spec_from_path(dir)
+        .map(|spec| spec.executable_names)
+        .unwrap_or(STANDALONE_CODEX_EXECUTABLES);
+    for name in names {
+        let candidate = dir.join(name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn codex_package_parts(package_name: &str) -> Option<(AppPackageSpec, &str, &str)> {
+    for spec in APP_PACKAGE_SPECS {
+        let Some(rest) = strip_prefix_ignore_ascii_case(package_name, spec.identity) else {
             continue;
         };
         let Some(rest) = rest.strip_prefix('_') else {
@@ -341,7 +497,15 @@ fn codex_package_parts(package_name: &str) -> Option<(&str, &str, &str)> {
         let Some((_, publisher_id)) = rest.rsplit_once("__") else {
             continue;
         };
-        return Some((*identity, version, publisher_id));
+        return Some((*spec, version, publisher_id));
     }
     None
+}
+
+fn strip_prefix_ignore_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    if value.len() < prefix.len() {
+        return None;
+    }
+    let (head, rest) = value.split_at(prefix.len());
+    head.eq_ignore_ascii_case(prefix).then_some(rest)
 }

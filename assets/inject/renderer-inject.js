@@ -1,4 +1,6 @@
 (() => {
+  const codexPlusIsWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent || "");
+
   function installCodexPlusFastStartup() {
     const config = window.__CODEX_PLUS_FAST_STARTUP__;
     if (!config || config.enabled !== true) return;
@@ -376,26 +378,38 @@
       return;
     }
     const opacity = Math.min(1, Math.max(0.01, Number(config.opacity) || 0.35));
-    const image = existing || document.createElement("img");
-    image.id = codexPlusImageOverlayId;
-    image.src = source;
-    image.alt = "";
-    image.setAttribute("aria-hidden", "true");
-    Object.assign(image.style, {
+    const fitMode = ["fill", "fit", "stretch", "tile", "center"].includes(config.fitMode)
+      ? config.fitMode
+      : "fit";
+    const fitStyles = {
+      fill: { size: "cover", position: "center center", repeat: "no-repeat" },
+      fit: { size: "contain", position: "center center", repeat: "no-repeat" },
+      stretch: { size: "100% 100%", position: "center center", repeat: "no-repeat" },
+      tile: { size: "auto", position: "left top", repeat: "repeat" },
+      center: { size: "auto", position: "center center", repeat: "no-repeat" },
+    }[fitMode];
+    const overlay = existing?.tagName === "DIV" ? existing : document.createElement("div");
+    if (existing && existing !== overlay) existing.remove();
+    overlay.id = codexPlusImageOverlayId;
+    overlay.setAttribute("aria-hidden", "true");
+    Object.assign(overlay.style, {
       position: "fixed",
       inset: "0",
       width: "100vw",
       height: "100vh",
-      objectFit: "contain",
-      objectPosition: "center center",
+      backgroundImage: `url("${source.replace(/"/g, "%22")}")`,
+      backgroundSize: fitStyles.size,
+      backgroundPosition: fitStyles.position,
+      backgroundRepeat: fitStyles.repeat,
       opacity: String(opacity),
       pointerEvents: "none",
       zIndex: "2147483646",
       userSelect: "none",
     });
-    if (!existing) root.appendChild(image);
+    if (!overlay.parentElement) root.appendChild(overlay);
     sendCodexPlusDiagnostic("image_overlay_installed", {
       opacity,
+      fitMode,
       sourceKind: source.startsWith("data:") ? "data-uri" : "unknown",
     });
   }
@@ -1110,8 +1124,6 @@
       .codex-plus-backend-label { color: #a1a1aa; font-size: 12px; }
       .codex-plus-backend-label[data-status="ok"] { color: #34d399; }
       .codex-plus-backend-label[data-status="failed"] { color: #f87171; }
-      .codex-plus-backend-repair { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
-      .codex-plus-backend-repair[hidden] { display: none; }
       .codex-plus-user-script-warning { margin-top: 4px; color: #fbbf24; font-size: 12px; }
       .codex-plus-user-script-dirs { margin-top: 6px; color: #a1a1aa; font-size: 11px; line-height: 1.4; word-break: break-all; }
       .codex-plus-user-script-list { margin-top: 8px; display: grid; gap: 6px; }
@@ -1127,6 +1139,7 @@
       .codex-plus-ad-section-title { color: #f8fafc; font-size: 15px; margin: 0; }
       .codex-plus-ad-list { display: grid; gap: 14px; }
       .codex-plus-ad-card { border: 1px solid rgba(96,165,250,.26); border-radius: 16px; background: linear-gradient(135deg, rgba(37,99,235,.18), rgba(255,255,255,.05)); box-shadow: 0 14px 36px rgba(0,0,0,.22); }
+      .codex-plus-ad-image { display: block; width: calc(100% - 28px); aspect-ratio: 16 / 5; margin: 14px 14px 0; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; background: #080808; object-fit: cover; }
       .codex-plus-ad-content { padding: 14px; }
       .codex-plus-ad-title { margin: 0; color: #f8fafc; font-size: 17px; line-height: 1.35; }
       .codex-plus-ad-description { margin: 6px 0 10px; color: #dbeafe; font-size: 13px; line-height: 1.55; }
@@ -1143,7 +1156,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, stepwise: false };
+    return { pluginMarketplaceUnlock: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1160,6 +1173,7 @@
     upstreamWorktreeCreate: "codexAppUpstreamWorktreeCreate",
     nativeMenuPlacement: "codexAppNativeMenuPlacement",
     serviceTierControls: "codexAppServiceTierControls",
+    petRealMouseLook: "codexAppPetRealMouseLook",
     stepwise: "codexAppStepwiseEnabled",
     pasteFix: "codexAppPasteFix",
   };
@@ -1194,6 +1208,7 @@
         upstreamWorktreeCreate: false,
         nativeMenuPlacement: false,
         serviceTierControls: false,
+        petRealMouseLook: false,
         stepwise: false,
       };
     }
@@ -1201,12 +1216,14 @@
       const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
         settings.pluginMarketplaceUnlock = false;
+        settings.pluginAutoExpand = false;
       }
       return settings;
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
         settings.pluginMarketplaceUnlock = false;
+        settings.pluginAutoExpand = false;
       }
       return settings;
     }
@@ -1220,6 +1237,8 @@
         if (key === "stepwise") {
           Promise.resolve(window.__codexStepwisePanel?.loadSettings?.()).then(() => syncStepwisePanel(value));
         }
+      }).catch(() => {
+        void loadBackendSettings();
       });
       return;
     }
@@ -2194,8 +2213,6 @@
       indicator.dataset.status = status;
       indicator.title = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "未连接";
     });
-    const repair = document.querySelector("[data-codex-backend-repair]");
-    if (repair) repair.hidden = status === "ok" || status === "checking";
     refreshCodexServiceTierControls();
   }
 
@@ -2217,17 +2234,6 @@
         message: nextStatus?.message || "",
         timeout: !!nextStatus?.timeout,
       });
-    }
-    renderBackendStatus();
-  }
-
-  async function repairBackend() {
-    codexPlusBackendStatus = { status: "checking", message: "正在修复后端…" };
-    renderBackendStatus();
-    try {
-      codexPlusBackendStatus = await postJson("/backend/repair", {});
-    } catch (error) {
-      codexPlusBackendStatus = { status: "failed", message: "后端修复失败" };
     }
     renderBackendStatus();
   }
@@ -2302,6 +2308,7 @@
       title: String(ad.title),
       description: String(ad.description),
       url: String(ad.url),
+      image: ad.image ? String(ad.image) : "",
       expires_at: ad.expires_at ? String(ad.expires_at) : "",
       highlights: Array.isArray(ad.highlights) ? ad.highlights.map((item) => String(item)).filter(Boolean) : [],
     }));
@@ -2312,6 +2319,7 @@
     if (!ads.length) return `<div class="codex-plus-ad-empty">${escapeHtml(emptyText)}</div>`;
     return ads.map((ad) => `
       <article class="codex-plus-ad-card">
+        ${ad.image ? `<img class="codex-plus-ad-image" src="${escapeHtml(ad.image)}" alt="">` : ""}
         <div class="codex-plus-ad-content">
           <h3 class="codex-plus-ad-title">${escapeHtml(ad.title)}</h3>
           <p class="codex-plus-ad-description">${escapeHtml(ad.description)}</p>
@@ -2367,7 +2375,9 @@
 
   async function fetchCodexPlusAds() {
     try {
-      codexPlusAds = normalizeCodexPlusAds(await directFetchCodexPlusAds());
+      const localPayload = await postJson(codexPlusAdsUrl, {});
+      codexPlusAds = normalizeCodexPlusAds(localPayload?.ads ? localPayload : localPayload?.payload);
+      if (!codexPlusAds.length) codexPlusAds = normalizeCodexPlusAds(await directFetchCodexPlusAds());
     } catch (error) {
       sendCodexPlusDiagnostic("ads_fetch_failed", {
         errorName: error?.name || "",
@@ -2414,10 +2424,9 @@
         <div class="codex-plus-modal-body">
           <div class="codex-plus-panel" data-codex-plus-panel="home">
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">后端连接</div><div class="codex-plus-row-description">每 5 秒检查一次 launcher 后端状态；断开时可尝试修复后端运行。</div></div>
+              <div><div class="codex-plus-row-title">后端连接</div><div class="codex-plus-row-description">每 5 秒检查一次 launcher 后端状态。</div></div>
               <div class="codex-plus-backend-status">
                 <div class="codex-plus-backend-label" data-codex-backend-status="true" data-status="checking">正在检查后端…</div>
-                <button type="button" class="codex-plus-backend-repair" data-codex-backend-repair="true" hidden>修复后端运行</button>
               </div>
             </div>
             <div class="codex-plus-row">
@@ -2436,6 +2445,10 @@
               <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
             </div>
+            ${codexPlusIsWindowsPlatform ? `<div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">桌宠跟随真实鼠标</div><div class="codex-plus-row-description">仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="petRealMouseLook"><span></span></button>
+            </div>` : ""}
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">Stepwise</div><div class="codex-plus-row-description">在当前 Codex 页面显示可拖动的下一步建议浮层，可在设置页配置模型和直接发送。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="stepwise"><span></span></button>
@@ -2614,10 +2627,6 @@
       }
       if (target?.closest("[data-codex-plus-telegram]")) {
         window.open("https://t.me/CodexPlusPlus", "_blank");
-        return;
-      }
-      if (target?.closest("[data-codex-backend-repair]")) {
-        repairBackend();
         return;
       }
       const issueButton = target?.closest("[data-codex-plus-issue]");
@@ -2964,6 +2973,8 @@
     if (!name) return null;
     if (!cloned.name) cloned.name = name;
     if (!cloned.id) cloned.id = `${name}@${marketplaceName}`;
+    if (!cloned.marketplaceName) cloned.marketplaceName = marketplaceName;
+    if (!cloned.marketplacePath) cloned.marketplacePath = marketplaceName;
     if (!cloned.interface || typeof cloned.interface !== "object") cloned.interface = {};
     if (!cloned.interface.displayName) cloned.interface.displayName = name;
     if (!Array.isArray(cloned.keywords)) cloned.keywords = [];
@@ -4382,7 +4393,7 @@
 
   async function postJson(path, payload) {
     if (!window.__codexSessionDeleteBridge) {
-      if (path === "/backend/status" || path === "/backend/repair") {
+      if (path === "/backend/status") {
         try {
           const response = await fetch(`${helperBase}${path}`, {
             method: "POST",
@@ -4416,7 +4427,7 @@
       }
     }
     try {
-      if (path === "/backend/status" || path === "/backend/repair") {
+      if (path === "/backend/status") {
         const result = await bridgeWithBackendTimeout(path, payload);
         if (result?.status === "ok") return result;
         if (result?.timeout) sendCodexPlusDiagnostic("backend_bridge_timeout", { path });
@@ -4443,7 +4454,7 @@
         errorName: error?.name || "",
         errorMessage: error?.message || String(error),
       });
-      if (path === "/backend/status" || path === "/backend/repair") {
+      if (path === "/backend/status") {
         const fallback = await fetchBackendStatusFromHelper(path, payload);
         if (fallback?.status === "ok") {
           sendCodexPlusDiagnostic("backend_status_bridge_failed_http_fallback_ok", {
@@ -4600,8 +4611,29 @@
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
     codexModelCatalogPromise = postJson("/codex-model-catalog", {})
-      .then((result) => {
+      .then(async (result) => {
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+        if ((!codexModelCatalog.models || codexModelCatalog.models.length === 0) && codexModelCatalog.status === "not_configured") {
+          try {
+            const settingsPromise = postJson("/settings/get", {});
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("fallback timeout")), 3000));
+            const settingsResp = await Promise.race([settingsPromise, timeoutPromise]);
+            if (settingsResp && settingsResp.relayProfiles && Array.isArray(settingsResp.relayProfiles)) {
+              const activeId = settingsResp.activeRelayId || "";
+              const profile = settingsResp.relayProfiles.find(p => p.id === activeId) || settingsResp.relayProfiles[0];
+              if (profile && profile.modelList) {
+                const extraModels = profile.modelList.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean);
+                if (extraModels.length > 0) {
+                  codexModelCatalog.models = extraModels;
+                  codexModelCatalog.default_model = codexModelCatalog.default_model || extraModels[0];
+                  sendCodexPlusDiagnostic("model_catalog_fallback_applied", { count: extraModels.length });
+                }
+              }
+            }
+          } catch (fallbackError) {
+            sendCodexPlusDiagnostic("model_catalog_fallback_error", { error: String(fallbackError?.message || fallbackError) });
+          }
+        }
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
         scheduleCodexModelWhitelistRefresh();
@@ -4978,8 +5010,36 @@
     return true;
   }
 
+  const appServerModelRequestPatchMaxMisses = 8;
+  let appServerModelRequestPatchMissCount = 0;
+  let appServerModelRequestPatchDisabled = false;
+
+  function noteAppServerModelRequestPatchMiss(event, detail) {
+    appServerModelRequestPatchMissCount += 1;
+    // installAppServerModelRequestPatch() runs on every model-whitelist
+    // refresh tick (~120ms). On Codex builds where the app-server module was
+    // renamed/removed (e.g. 26.623+, issue #1324) this layer never succeeds
+    // and would otherwise emit the same diagnostic on every tick forever.
+    // Report the first miss so telemetry still captures the cause, then stay
+    // quiet, and finally disable this layer once it is clearly unavailable.
+    // This is a graceful fallback: the remaining whitelist layers (Statsig
+    // config / React state / response JSON patch) keep injecting the custom
+    // models on their own.
+    if (appServerModelRequestPatchMissCount === 1) {
+      sendCodexPlusDiagnostic(event, detail);
+    }
+    if (appServerModelRequestPatchMissCount >= appServerModelRequestPatchMaxMisses && !appServerModelRequestPatchDisabled) {
+      appServerModelRequestPatchDisabled = true;
+      sendCodexPlusDiagnostic("model_app_server_request_patch_skipped", {
+        misses: appServerModelRequestPatchMissCount,
+        lastEvent: event,
+      });
+    }
+  }
+
   function installAppServerModelRequestPatch() {
     if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
+    if (appServerModelRequestPatchDisabled) return;
     const patch = async () => {
       try {
         const module = await loadCodexAppModule("app-server-manager-signals-");
@@ -4995,19 +5055,20 @@
           }
         }
         if (patchedCount > 0) {
+          appServerModelRequestPatchMissCount = 0;
           window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
           sendCodexPlusDiagnostic("model_app_server_request_patch_installed", {
             candidateCount: candidates.length,
             patchedCount,
           });
         } else {
-          sendCodexPlusDiagnostic("model_app_server_request_patch_not_found", {
+          noteAppServerModelRequestPatchMiss("model_app_server_request_patch_not_found", {
             exportCount: Object.keys(module || {}).length,
             candidateCount: candidates.length,
           });
         }
       } catch (error) {
-        sendCodexPlusDiagnostic("model_app_server_request_patch_failed", {
+        noteAppServerModelRequestPatchMiss("model_app_server_request_patch_failed", {
           errorName: error?.name || "",
           errorMessage: error?.message || String(error),
         });

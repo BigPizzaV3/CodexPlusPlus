@@ -64,7 +64,7 @@ pub fn pick_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
         .filter(|target| is_injectable_page_target(target))
     {
         first_page.get_or_insert(target);
-        if is_codex_page_target(target) {
+        if is_primary_codex_page_target(target) {
             return Ok(target.clone());
         }
     }
@@ -81,7 +81,7 @@ pub fn pick_injectable_codex_page_target(targets: &[CdpTarget]) -> anyhow::Resul
         .iter()
         .filter(|target| is_injectable_page_target(target))
     {
-        if is_codex_page_target(target) {
+        if is_primary_codex_page_target(target) {
             return Ok(target.clone());
         }
     }
@@ -102,5 +102,30 @@ pub fn is_codex_page_target(target: &CdpTarget) -> bool {
         return false;
     }
     let haystack = format!("{} {}", target.title, target.url).to_lowercase();
-    haystack.contains("codex")
+    haystack.contains("codex") || is_chatgpt_desktop_page(&target.title, &target.url)
+}
+
+pub fn is_primary_codex_page_target(target: &CdpTarget) -> bool {
+    is_codex_page_target(target) && !is_avatar_overlay_page_target(target)
+}
+
+pub fn is_avatar_overlay_page_target(target: &CdpTarget) -> bool {
+    if !is_injectable_page_target(target) {
+        return false;
+    }
+    let url = target.url.trim().to_ascii_lowercase();
+    url.starts_with("app://-/index.html?")
+        && (url.contains("initialroute=%2favatar-overlay")
+            || url.contains("initialroute=/avatar-overlay"))
+}
+
+fn is_chatgpt_desktop_page(title: &str, url: &str) -> bool {
+    let title = title.trim().to_ascii_lowercase();
+    let url = url.trim().to_ascii_lowercase();
+    title == "chatgpt"
+        && (url == "https://chatgpt.com"
+            || url.starts_with("https://chatgpt.com/")
+            || url == "https://chat.openai.com"
+            || url.starts_with("https://chat.openai.com/")
+            || url.starts_with("data:text/html"))
 }

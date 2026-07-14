@@ -39,7 +39,15 @@ pub async fn read_codex_model_catalog() -> Value {
     let settings_path = crate::paths::default_settings_path();
     if settings_path.exists() {
         if let Ok(settings) = SettingsStore::new(settings_path).load() {
-            return relay_profile_model_catalog_value(&home, &settings.active_relay_profile());
+            let profile = settings.active_relay_profile();
+            let catalog = relay_profile_model_catalog_value(&home, &profile);
+            if catalog
+                .get("models")
+                .and_then(Value::as_array)
+                .map_or(false, |m| !m.is_empty())
+            {
+                return catalog;
+            }
         }
     }
     let env = std::env::vars().collect::<HashMap<_, _>>();
@@ -562,7 +570,12 @@ fn models_endpoint(base_url: &str) -> String {
     if cleaned.ends_with("/models") {
         return cleaned;
     }
-    if cleaned.ends_with("/v1") {
+    // Only append the default `/v1` version prefix when the base URL does not
+    // already carry a version segment. Providers such as Volcano Engine ARK use
+    // a versioned base (e.g. `.../api/coding/v3`), so blindly appending
+    // `/v1/models` produced `.../api/coding/v3/v1/models` and 404'd. This mirrors
+    // the version handling already used by the protocol proxy. See issue #1349.
+    if crate::protocol_proxy::has_version_suffix(&cleaned) {
         return format!("{cleaned}/models");
     }
     format!("{cleaned}/v1/models")
