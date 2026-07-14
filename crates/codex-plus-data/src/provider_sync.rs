@@ -877,9 +877,6 @@ pub fn apply_session_index_cleanup(
             });
         }
         let backup_dir = create_session_index_cleanup_backup(&home, &plan, removed_entries)?;
-        if require_stopped_app {
-            ensure_codex_app_stopped(Some(backup_dir.clone()))?;
-        }
         let current_bytes = fs::read(&plan.path)
             .map_err(|error| cleanup_apply_error(error, Some(backup_dir.clone())))?;
         if current_bytes != plan.original_bytes {
@@ -887,6 +884,9 @@ pub fn apply_session_index_cleanup(
                 "session_index.jsonl 在写入前再次发生变化；未覆盖 Codex 新内容，请重新预览",
                 Some(backup_dir),
             ));
+        }
+        if require_stopped_app {
+            ensure_codex_app_stopped(Some(backup_dir.clone()))?;
         }
         codex_plus_core::settings::atomic_write(&plan.path, next_text.as_bytes()).map_err(
             |error| {
@@ -911,7 +911,8 @@ pub fn apply_session_index_cleanup(
 fn ensure_codex_app_stopped(
     backup_dir: Option<PathBuf>,
 ) -> Result<(), SessionIndexCleanupApplyError> {
-    let running_processes = codex_plus_core::watcher::find_codex_processes();
+    let running_processes =
+        codex_plus_core::watcher::find_session_index_cleanup_blocking_processes();
     if running_processes.is_empty() {
         return Ok(());
     }

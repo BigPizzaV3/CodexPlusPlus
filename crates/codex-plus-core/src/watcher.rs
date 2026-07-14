@@ -231,6 +231,31 @@ pub fn find_codex_processes_from_snapshot(
     ids
 }
 
+/// Return desktop processes that can write Codex task state while a destructive
+/// session-index cleanup is running. This is intentionally stricter than the
+/// watcher filter: any supported ChatGPT desktop process blocks deletion,
+/// including portable installs outside WindowsApps.
+#[cfg(windows)]
+pub fn find_session_index_cleanup_blocking_processes() -> Vec<u32> {
+    find_session_index_cleanup_blocking_processes_from_snapshot(
+        &crate::windows_integration::enumerate_processes(),
+    )
+}
+
+#[cfg(windows)]
+pub fn find_session_index_cleanup_blocking_processes_from_snapshot(
+    processes: &[crate::windows_integration::WindowsProcessInfo],
+) -> Vec<u32> {
+    let mut ids = processes
+        .iter()
+        .filter(|process| process.exe_file == "Codex.exe" || process.exe_file == "ChatGPT.exe")
+        .map(|process| process.process_id)
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 #[cfg(target_os = "macos")]
 pub fn find_codex_processes() -> Vec<u32> {
     let mut ids = ["Codex", "ChatGPT"]
@@ -255,8 +280,18 @@ pub fn find_codex_processes() -> Vec<u32> {
     ids
 }
 
+#[cfg(target_os = "macos")]
+pub fn find_session_index_cleanup_blocking_processes() -> Vec<u32> {
+    find_codex_processes()
+}
+
 #[cfg(not(any(windows, target_os = "macos")))]
 pub fn find_codex_processes() -> Vec<u32> {
+    Vec::new()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn find_session_index_cleanup_blocking_processes() -> Vec<u32> {
     Vec::new()
 }
 
