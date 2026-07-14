@@ -26,11 +26,14 @@ const BATCH_SIZE: usize = 5;
 /// 并发上限（Bug 4.2）：最多 5 个 VL 调用同时飞（Semaphore 零新依赖）。
 const MAX_CONCURRENCY: usize = 5;
 static VL_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(MAX_CONCURRENCY));
-/// 混合重试（Bug 4.6）：批量 2 次（治瞬时故障）-> 失败拆单张 3 次（隔离坏图）。
+/// 混合重试（Bug 4.6）：批量 2 次（治瞬时故障）-> 失败拆单张 1 次（不折腾慢图）。
+/// SINGLE_MAX_ATTEMPTS 从 3 降为 1：VL 响应约 32s，慢是稳定行为非瞬时故障，
+/// 重试 3 次全 timeout 浪费（每张图 5 次 timeout × 23s ≈ 115s 白费）。
 const BATCH_MAX_ATTEMPTS: u32 = 2;
-const SINGLE_MAX_ATTEMPTS: u32 = 3;
-/// 总超时硬截断（Bug 4.5）：120s 兜底，避免 10 图 × 重试拖死请求。超时降级 strip。
-const VL_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
+const SINGLE_MAX_ATTEMPTS: u32 = 1;
+/// 总超时硬截断（Bug 4.5）：180s 兜底，适配 VL 上游响应约 32s 的场景。
+/// 单张重试 2 次 + 退避 3/6s = 45+45+9 ≈ 99s，留余量给多图分批。
+const VL_TOTAL_TIMEOUT: Duration = Duration::from_secs(180);
 /// 描述 char-safe 截断上限（Bug 4.7 廉价兜底）：>2000 字符截断，避免重蹈 Bug 3 覆辙。
 const DESC_MAX_CHARS: usize = 2000;
 
@@ -59,10 +62,11 @@ fn truncate_char_safe(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
 
-/// 指数退避（Bug 4.6）：0.3 / 0.6 / 1.2s ... + 简单 hash 抖动（±20%，免 rand 依赖）。
+/// 指数退避（Bug 4.6）：3 / 6 / 12s ... + 简单 hash 抖动（±20%，免 rand 依赖）。
+/// 适配 VL 上游响应约 32s 的场景（原 0.3/0.6s 相对 32s 可忽略）。
 /// `attempt` 为重试序号（1=第 2 次尝试前的等待）。
 fn backoff_delay(attempt: u32, salt: &str) -> Duration {
-    let base = 0.3 * 2u32.pow(attempt.saturating_sub(1)) as f64;
+    let base = 3.0 * 2u32.pow(attempt.saturating_sub(1)) as f64;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     attempt.hash(&mut h);
     salt.hash(&mut h);

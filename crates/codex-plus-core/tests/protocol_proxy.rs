@@ -2585,11 +2585,12 @@ async fn vl_isolates_bad_image_via_single_fallback() {
         !serialized.contains("bug4-good.png"),
         "好图 URL 应已被描述替换（不残留），实际：{serialized}"
     );
-    // 调用次数：批量 2 次（含坏图都 500）+ 好图单张 1 次（200）+ 坏图单张 3 次（500）= 6
+    // 调用次数：批量 2 次（含坏图都 500）+ 好图单张 1 次（200）+ 坏图单张 1 次（500）= 4
+    // SINGLE_MAX_ATTEMPTS 已从 3 降为 1（不折腾慢图）
     assert_eq!(
         counter.load(Ordering::SeqCst),
-        6,
-        "批量 2 + 好图单张 1 + 坏图单张 3 = 6 次调用，实际 {}",
+        4,
+        "批量 2 + 好图单张 1 + 坏图单张 1 = 4 次调用，实际 {}",
         counter.load(Ordering::SeqCst)
     );
 }
