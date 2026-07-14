@@ -187,14 +187,20 @@ fn estimate_item_tokens(item: &Value) -> usize {
 
 /// 从末尾遍历 input items，累积 token 直到超过 context_window。
 /// 返回需要 VL 处理的 item 索引列表（已按原始顺序排列）。
+/// 跳过 role=system（injected 提示），不计入 token 预算。
 /// context_window=0 表示不限制，返回全部索引。
 fn items_within_vl_window(input: &[Value], context_window: u64) -> Vec<usize> {
     if context_window == 0 {
-        return (0..input.len()).collect();
+        return (0..input.len())
+            .filter(|&i| input.get(i).and_then(|it| it.get("role").and_then(Value::as_str)) != Some("system"))
+            .collect();
     }
     let mut tokens: u64 = 0;
     let mut indices = vec![];
     for i in (0..input.len()).rev() {
+        if input[i].get("role").and_then(Value::as_str) == Some("system") {
+            continue;
+        }
         tokens += estimate_item_tokens(&input[i]) as u64;
         if tokens > context_window {
             break;
@@ -205,9 +211,15 @@ fn items_within_vl_window(input: &[Value], context_window: u64) -> Vec<usize> {
     indices
 }
 
-/// 从 input items 中收集用户原文（同一条消息里的 input_text）。
+/// 从 input items 中收集用户原文（role=user 消息里的 input_text）。
+/// 最新 user 消息有文字 -> 取最新文字；
+/// 最新 user 消息无文字（纯发图）-> 回溯最近一条有文字的 user 消息（追问上下文）。
+/// 跳过 role=system（injected 提示）和 role=assistant。
 fn collect_input_text(input: &[Value]) -> String {
     for item in input.iter().rev() {
+        if item.get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
         let Some(content) = item.get("content") else {
             continue;
         };
@@ -221,6 +233,7 @@ fn collect_input_text(input: &[Value]) -> String {
                 }
             }
         }
+        // 最新消息无 input_text（纯发图）-> 继续回溯
     }
     String::new()
 }
