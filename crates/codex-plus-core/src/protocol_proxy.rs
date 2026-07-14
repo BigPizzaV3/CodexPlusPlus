@@ -294,6 +294,7 @@ pub struct UpstreamProxyResponse {
 pub enum UpstreamWireApi {
     Responses,
     ChatCompletions,
+    AudioTranscriptions,
 }
 
 impl UpstreamProxyResponse {
@@ -473,6 +474,17 @@ pub fn is_models_proxy_path(path: &str) -> bool {
     matches!(
         path,
         "/models" | "/v1/models" | "/v1/v1/models" | "/codex/v1/models"
+    )
+}
+
+pub fn is_audio_transcriptions_proxy_path(path: &str) -> bool {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    matches!(
+        path,
+        "/audio/transcriptions"
+            | "/v1/audio/transcriptions"
+            | "/v1/v1/audio/transcriptions"
+            | "/codex/v1/audio/transcriptions"
     )
 }
 
@@ -670,6 +682,58 @@ pub async fn open_models_proxy_request(
         is_stream: false,
         content_type,
         wire_api: UpstreamWireApi::Responses,
+        response: upstream,
+    })
+}
+
+pub async fn open_audio_transcriptions_proxy_request(
+    body: &[u8],
+    content_type: &str,
+    original_user_agent: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
+    validate_upstream(&relay)?;
+    let content_type = content_type.trim();
+    if content_type.is_empty() {
+        anyhow::bail!("Audio transcriptions 请求缺少 Content-Type");
+    }
+
+    let endpoint = audio_transcriptions_url(&relay.base_url);
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.audio_transcriptions_request",
+        json!({
+            "relayId": relay.id,
+            "relayName": relay.name,
+            "endpoint": endpoint,
+            "wireApi": UpstreamWireApi::AudioTranscriptions,
+            "bodyBytes": body.len()
+        }),
+    );
+    let upstream = send_upstream_request(
+        crate::http_client::proxied_client(&effective_user_agent(
+            &relay.user_agent,
+            original_user_agent,
+        ))?
+        .post(endpoint)
+        .bearer_auth(relay.api_key.trim())
+        .header(reqwest::header::CONTENT_TYPE, content_type)
+        .body(body.to_vec()),
+    )
+    .await?;
+    let status_code = upstream.status().as_u16();
+    let content_type = upstream
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/json; charset=utf-8")
+        .to_string();
+
+    Ok(UpstreamProxyResponse {
+        status_code,
+        is_stream: false,
+        content_type,
+        wire_api: UpstreamWireApi::AudioTranscriptions,
         response: upstream,
     })
 }
@@ -883,6 +947,26 @@ pub fn responses_url(base_url: &str) -> String {
         format!("{base}/responses")
     } else {
         format!("{base}/v1/responses")
+    };
+    while url.contains("/v1/v1") {
+        url = url.replace("/v1/v1", "/v1");
+    }
+    url
+}
+
+pub fn audio_transcriptions_url(base_url: &str) -> String {
+    let skip_version_prefix = base_url.trim().ends_with('#');
+    let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
+    if base.to_ascii_lowercase().ends_with("/audio/transcriptions") {
+        return base.to_string();
+    }
+    let origin_only = base
+        .split_once("://")
+        .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
+    let mut url = if skip_version_prefix || has_version_suffix(base) || !origin_only {
+        format!("{base}/audio/transcriptions")
+    } else {
+        format!("{base}/v1/audio/transcriptions")
     };
     while url.contains("/v1/v1") {
         url = url.replace("/v1/v1", "/v1");
