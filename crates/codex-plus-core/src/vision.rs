@@ -147,6 +147,21 @@ fn is_latest_message_image(input: &[Value], item_idx: usize) -> bool {
     latest_user == Some(item_idx)
 }
 
+/// 最新一条 user 消息是否含 input_image（用于判断「纯文本追问」场景）。
+fn latest_user_message_has_image(input: &[Value]) -> bool {
+    input
+        .iter()
+        .rev()
+        .find(|it| it.get("role").and_then(Value::as_str) == Some("user"))
+        .and_then(|it| it.get("content").and_then(Value::as_array))
+        .map(|parts| {
+            parts
+                .iter()
+                .any(|p| p.get("type").and_then(Value::as_str) == Some("input_image"))
+        })
+        .unwrap_or(false)
+}
+
 /// 估算 input item 的 token 数（粗估：文本字符数 / 4，跳过图片 base64 数据）。
 fn estimate_item_tokens(item: &Value) -> usize {
     let Some(content) = item.get("content") else {
@@ -521,6 +536,21 @@ fn inject_image_strip_note(input: &mut Vec<Value>, stripped_count: usize, reason
     );
 }
 
+/// 文本追问时注入提示：历史图已有描述，能答直接答，需要细节让用户重发图+问题。
+fn inject_followup_note(input: &mut Vec<Value>, n_history_images: usize) {
+    let note = format!(
+        "[系统提示：用户之前发送了 {n_history_images} 张图片，这些图片的文字描述已在上面（# 图片内容描述）。请优先从这些描述回答用户的问题。如果用户追问的是描述中没有覆盖的细节，请告知用户需要重新发送图片并附上问题，因为你无法自行重新分析图片。]"
+    );
+    input.insert(
+        0,
+        json!({
+            "type": "message",
+            "role": "system",
+            "content": [{"type": "input_text", "text": note}]
+        }),
+    );
+}
+
 /// 若 body 含 input_image，注入「看不到图」系统提示（用于 VL 未启用等 strip 路径）。
 /// 返回被 strip 的图片数（0 表示无图、不注入）。供 protocol_proxy 转换层 strip 路径调用。
 pub fn inject_strip_note_if_images(body: &mut Value, reason: &str) -> usize {
@@ -550,6 +580,16 @@ async fn analyze_images_with_vl_inner(
 
     let window_indices = items_within_vl_window(input, vl_config.context_window);
     let user_text = collect_input_text(input);
+    // 方案 3：Phase 0 — 在替换图片为 text 前，判「最新消息是否含图」。
+    // 若最新消息无图（纯文本追问）+ 窗口内有历史图 -> Phase 4 注入追问提示。
+    // 必须在 Phase 1 前捕获，因为 Phase 1 会替换掉 input_image。
+    let is_followup_query = !user_text.is_empty() && !latest_user_message_has_image(input)
+        && window_indices.iter().any(|&idx| {
+            input.get(idx)
+                .and_then(|it| it.get("content").and_then(Value::as_array))
+                .map(|parts| parts.iter().any(|p| p.get("type").and_then(Value::as_str) == Some("input_image")))
+                .unwrap_or(false)
+        });
 
     // Phase 1：遍历窗口内图片。命中缓存 -> 立即替换为 input_text；超限 -> 标记空对象；
     // 未命中 -> 收集为批量任务（保留 input_image 占位，索引稳定，Phase 3 按索引回填）。
@@ -741,6 +781,12 @@ async fn analyze_images_with_vl_inner(
             (o, v) => format!("{o} 张超出上限、{v} 张视觉模型调用失败"),
         };
         inject_image_strip_note(input, total_stripped, &reason);
+    }
+
+    // 方案 3：纯文本追问 + 窗口内有历史图 -> 注入提示（描述已给出，能答直接答，
+    // 需要细节让用户重发图+问题）。只注入一次，strip 路径优先（strip 时模型本就看不了图）。
+    if total_stripped == 0 && is_followup_query {
+        inject_followup_note(input, window_indices.len());
     }
 
     // 窗口外的图片 strip 掉
