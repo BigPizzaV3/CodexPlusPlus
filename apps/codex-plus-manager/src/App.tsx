@@ -189,6 +189,7 @@ type BackendSettings = {
   relayContextConfigContents: string;
   activeRelayId: string;
   relayTestModel: string;
+  helperPort: number;
 };
 
 type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
@@ -264,7 +265,13 @@ type CodexContextEntries = {
 
 type RelayProtocol = "responses" | "chatCompletions";
 type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
-const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
+// 中转协议代理端口:由 App 在加载/更新 settings 时通过 setProtocolProxyPort 同步,
+// 保证 helper 监听口、写入 Codex config.toml 的端口、前端探测端口三者一致。默认 57321。
+let protocolProxyPort = 57321;
+const setProtocolProxyPort = (port: number) => {
+  protocolProxyPort = port;
+};
+const protocolProxyBaseUrl = (): string => `http://127.0.0.1:${protocolProxyPort}/v1`;
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
 const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
 
@@ -781,6 +788,7 @@ const defaultSettings: BackendSettings = {
   aggregateRelayProfiles: [],
   activeAggregateRelayId: "",
   relayTestModel: "gpt-5.4-mini",
+  helperPort: 57321,
 };
 
 export function App() {
@@ -827,6 +835,11 @@ export function App() {
   });
   const prevLaunchStatusRef = useRef<string | null>(null);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
+  // 端口真相源同步:settingsForm.helperPort 一旦变化(加载/保存/本地编辑),立即更新模块级
+  // protocolProxyPort,让中转三链路(helper 监听口 / 写入 config.toml 的端口 / 前端探测端口)始终一致。
+  useEffect(() => {
+    setProtocolProxyPort(settingsForm.helperPort || 57321);
+  }, [settingsForm.helperPort]);
   const [providerSyncProgress, setProviderSyncProgress] = useState<ProviderSyncProgress>({
     active: false,
     percent: 0,
@@ -6600,7 +6613,7 @@ function buildRelayConfigToml(
   profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">,
   options: { includeBearerToken: boolean },
 ): string {
-  const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
+  const baseUrl = profile.protocol === "chatCompletions" ? protocolProxyBaseUrl() : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
   const rootLines = [
     profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
@@ -6644,7 +6657,7 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
   const authContents = profile.relayMode === "official" ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "";
   const configBaseUrl = codexBaseUrlFromConfig(configContents);
   const chatUpstreamBaseUrl = rootTomlStringValue(configContents, CHAT_UPSTREAM_BASE_URL_KEY);
-  const isProxyConfig = configBaseUrl === PROTOCOL_PROXY_BASE_URL;
+  const isProxyConfig = configBaseUrl === protocolProxyBaseUrl();
   const upstreamBaseUrl = profile.upstreamBaseUrl || chatUpstreamBaseUrl || (configBaseUrl && !isProxyConfig ? configBaseUrl : profile.baseUrl || "");
   const configApiKey = codexExperimentalBearerTokenFromConfig(configContents);
   const configModel = codexModelFromConfig(configContents);
@@ -6703,7 +6716,7 @@ function applyRelayProfilePatchToFiles(
     next.baseUrl = patch.upstreamBaseUrl || "";
   }
   if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch) {
-    const baseUrlForConfig = next.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : next.upstreamBaseUrl || next.baseUrl;
+    const baseUrlForConfig = next.protocol === "chatCompletions" ? protocolProxyBaseUrl() : next.upstreamBaseUrl || next.baseUrl;
     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig);
     next.configContents = removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
   }
@@ -6995,7 +7008,7 @@ function syncLegacyRelayFields(settings: BackendSettings): BackendSettings {
     ...settings,
     relayProfiles,
     activeRelayId: active.id,
-    relayBaseUrl: isAggregateRelayProfile(active) ? PROTOCOL_PROXY_BASE_URL : active.baseUrl,
+    relayBaseUrl: isAggregateRelayProfile(active) ? protocolProxyBaseUrl() : active.baseUrl,
     relayApiKey: active.apiKey,
     aggregateRelayProfiles,
     activeAggregateRelayId,
