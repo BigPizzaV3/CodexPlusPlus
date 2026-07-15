@@ -10,6 +10,9 @@ use codex_plus_core::watcher::{
     find_session_index_cleanup_blocking_processes_from_snapshot,
 };
 
+#[cfg(target_os = "macos")]
+use codex_plus_core::watcher::macos_process_ids_from_ps_output;
+
 #[test]
 fn cdp_listening_returns_true_for_bound_loopback_port() {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -139,6 +142,27 @@ fn stop_wait_tracks_only_expected_process_ids() {
     assert_eq!(
         process_ids_still_running(&[10, 20, 30], [5, 20, 40, 30]),
         vec![20, 30]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_process_filter_matches_only_exact_main_process_names() {
+    let snapshot = r#"
+        81224 ChatGPT
+        81459 CodexPlusPlus
+        81889 Codex (Renderer)
+        83774 ChatGPT for Chrome
+        90001 codex
+    "#;
+
+    assert_eq!(
+        macos_process_ids_from_ps_output(snapshot, &["Codex", "ChatGPT"]),
+        vec![81224]
+    );
+    assert_eq!(
+        macos_process_ids_from_ps_output(snapshot, &["CodexPlusPlus", "codex-plus-plus"]),
+        vec![81459]
     );
 }
 
