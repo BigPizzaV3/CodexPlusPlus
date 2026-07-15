@@ -19,6 +19,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
+  ArrowRight,
   Bell,
   CheckCircle2,
   CircleArrowUp,
@@ -330,6 +331,9 @@ type LocalSessionsResult = CommandResult<{
   dbPath: string;
   dbPaths: string[];
   sessions: LocalSession[];
+  offset: number;
+  limit: number;
+  hasMore: boolean;
 }>;
 
 type ZedRemoteProject = {
@@ -997,9 +1001,16 @@ export function App() {
     }
   };
 
-  const refreshLocalSessions = async (silent = false) => {
-    const result = await run(() => call<LocalSessionsResult>("list_local_sessions"));
+  const refreshLocalSessions = async (silent = false, offset = 0): Promise<LocalSessionsResult | null> => {
+    const result = await run(() =>
+      call<LocalSessionsResult>("list_local_sessions", {
+        request: { offset, limit: 50 },
+      }),
+    );
     if (result) {
+      if (!result.sessions.length && result.offset > 0) {
+        return refreshLocalSessions(silent, Math.max(0, result.offset - result.limit));
+      }
       setLocalSessions(result);
       if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("会话管理"), result, { silentSuccess: true });
     }
@@ -1067,7 +1078,7 @@ export function App() {
     const result = await run(() => requestDeleteLocalSession(session));
     if (result) {
       showResultNotice(t("会话删除"), result);
-      await refreshLocalSessions(true);
+      await refreshLocalSessions(true, localSessions?.offset ?? 0);
     }
   };
 
@@ -1108,7 +1119,7 @@ export function App() {
     } else {
       showNotice(t("批量删除会话"), tf("已删除 {0} 个会话。", [succeeded]), "ok");
     }
-    await refreshLocalSessions(true);
+    await refreshLocalSessions(true, localSessions?.offset ?? 0);
   };
 
   const refreshLiveContextEntries = async (silent = false) => {
@@ -2281,7 +2292,7 @@ type Actions = {
   installMarketScript: (id: string) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
   deleteUserScript: (key: string) => Promise<void>;
-  refreshLocalSessions: () => Promise<LocalSessionsResult | null>;
+  refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
   refreshZedRemoteProjects: () => Promise<ZedRemoteProjectsResult | null>;
@@ -3097,6 +3108,11 @@ function SessionsScreen({
   actions: Actions;
 }) {
   const items = sessions?.sessions ?? [];
+  const pageOffset = sessions?.offset ?? 0;
+  const pageSize = sessions?.limit ?? 50;
+  const currentPage = Math.floor(pageOffset / pageSize) + 1;
+  const hasPreviousPage = pageOffset > 0;
+  const hasNextPage = sessions?.hasMore === true;
   const activeCount = items.filter((item) => !item.archived).length;
   const archivedCount = items.length - activeCount;
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
@@ -3152,9 +3168,9 @@ function SessionsScreen({
         <CardHead title={t("会话管理")} detail={t("读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件")} />
         <CardContent>
           <div className="metric-list">
-            <Metric label={t("会话总数")} value={tf("{0} 个", [items.length])} />
-            <Metric label={t("未归档")} value={tf("{0} 个", [activeCount])} />
-            <Metric label={t("已归档")} value={tf("{0} 个", [archivedCount])} />
+            <Metric label={t("当前页会话")} value={tf("{0} 个", [items.length])} />
+            <Metric label={t("当前页未归档")} value={tf("{0} 个", [activeCount])} />
+            <Metric label={t("当前页已归档")} value={tf("{0} 个", [archivedCount])} />
             <Metric label={t("数据库")} value={sessions?.dbPath ?? "~/.codex/sqlite/*.db"} />
           </div>
           <div className="form-row">
@@ -3222,7 +3238,10 @@ function SessionsScreen({
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("本地会话")} detail={items.length ? t("按更新时间倒序显示") : t("点击刷新会话读取本地数据库")} />
+        <CardHead
+          title={t("本地会话")}
+          detail={sessions ? tf("第 {0} 页，每页最多 {1} 条，按更新时间倒序显示", [currentPage, pageSize]) : t("点击刷新会话读取本地数据库")}
+        />
         <CardContent>
           {items.length ? (
             <>
@@ -3273,6 +3292,29 @@ function SessionsScreen({
                     </div>
                   );
                 })}
+              </div>
+              <div className="session-pagination">
+                <Button
+                  aria-label={t("上一页")}
+                  disabled={!hasPreviousPage || bulkDeleting}
+                  onClick={() => void actions.refreshLocalSessions(true, Math.max(0, pageOffset - pageSize))}
+                  size="icon"
+                  title={t("上一页")}
+                  variant="outline"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </Button>
+                <span>{tf("第 {0} 页", [currentPage])}</span>
+                <Button
+                  aria-label={t("下一页")}
+                  disabled={!hasNextPage || bulkDeleting}
+                  onClick={() => void actions.refreshLocalSessions(true, pageOffset + pageSize)}
+                  size="icon"
+                  title={t("下一页")}
+                  variant="outline"
+                >
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
               </div>
             </>
           ) : (

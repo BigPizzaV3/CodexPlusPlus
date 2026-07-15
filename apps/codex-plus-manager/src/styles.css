@@ -2684,6 +2684,22 @@ body {
   justify-content: flex-end;
 }
 
+.session-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.session-pagination span {
+  min-width: 72px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
 .session-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(180px, auto) auto;

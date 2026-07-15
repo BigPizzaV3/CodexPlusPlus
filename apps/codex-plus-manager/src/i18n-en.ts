@@ -72,6 +72,8 @@ export const EN_PLAIN: Record<string, string> = {
   "上次修复结果": "Last repair result",
   "上次更新结果": "Last update result",
   "上游协议": "Upstream protocol",
+  "上一页": "Previous page",
+  "下一页": "Next page",
   "下载并运行安装包": "Download and run installer",
   "不写 API 文件": "Does not write API files",
   "与 Codex 内插件菜单使用同一个远端广告源": "Uses the same remote ad source as the in-Codex plugin menu",
@@ -303,6 +305,9 @@ export const EN_PLAIN: Record<string, string> = {
   "强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。":
     "Forces the Codex app's built-in zh-CN language pack to avoid falling back to English when Statsig/VPN is unreachable. Requires restarting Codex to fully apply.",
   "当前": "Current",
+  "当前页会话": "Sessions on this page",
+  "当前页未归档": "Active on this page",
+  "当前页已归档": "Archived on this page",
   "当前 provider": "current provider",
   "当前不会写入 Codex config.toml / auth.json。打开供应商配置总开关后再切换。":
     "Codex config.toml / auth.json won't be written right now. Turn on the provider configuration master switch before switching.",
@@ -518,6 +523,8 @@ export const EN_PLAIN: Record<string, string> = {
   "移除最近记录": "Remove from recent",
   "立刻修复历史会话": "Repair historical sessions now",
   "第三方": "Third party",
+  "第 {0} 页": "Page {0}",
+  "第 {0} 页，每页最多 {1} 条，按更新时间倒序显示": "Page {0}, up to {1} sessions per page, newest first",
   "策略": "Strategy",
   "管理 API 供应商、协议、Key 与配置文件": "Manage API providers, protocols, keys and config files",
   "管理 Codex SSH 项目并加入 Zed workspace": "Manage Codex SSH projects and add them to a Zed workspace",

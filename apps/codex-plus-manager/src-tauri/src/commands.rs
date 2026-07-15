@@ -108,6 +108,25 @@ pub struct LocalSessionsPayload {
     pub db_path: String,
     pub db_paths: Vec<String>,
     pub sessions: Vec<codex_plus_data::LocalSession>,
+    pub offset: usize,
+    pub limit: usize,
+    pub has_more: bool,
+}
+
+const DEFAULT_LOCAL_SESSIONS_PAGE_SIZE: usize = 50;
+const MAX_LOCAL_SESSIONS_PAGE_SIZE: usize = 100;
+
+fn default_local_sessions_page_size() -> usize {
+    DEFAULT_LOCAL_SESSIONS_PAGE_SIZE
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListLocalSessionsRequest {
+    #[serde(default)]
+    pub offset: usize,
+    #[serde(default = "default_local_sessions_page_size")]
+    pub limit: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -631,14 +650,23 @@ pub fn dismiss_pending_provider_import() -> CommandResult<PendingProviderImportP
 }
 
 #[tauri::command]
-pub fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
+pub fn list_local_sessions(
+    request: Option<ListLocalSessionsRequest>,
+) -> CommandResult<LocalSessionsPayload> {
+    let request = request.unwrap_or(ListLocalSessionsRequest {
+        offset: 0,
+        limit: DEFAULT_LOCAL_SESSIONS_PAGE_SIZE,
+    });
+    let offset = request.offset;
+    let limit = request.limit.clamp(1, MAX_LOCAL_SESSIONS_PAGE_SIZE);
+    let fetch_limit = offset.saturating_add(limit).saturating_add(1);
     let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
     let mut sessions = Vec::new();
     let mut errors = Vec::new();
     for db_path in &db_paths {
         let adapter = local_session_adapter(db_path);
-        match adapter.list_local_sessions() {
+        match adapter.list_local_sessions_limited(fetch_limit) {
             Ok(mut items) => sessions.append(&mut items),
             Err(error) if db_path.exists() => {
                 errors.push(format!("{}: {error}", db_path.to_string_lossy()));
@@ -654,6 +682,8 @@ pub fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
     });
     let mut seen_session_ids = std::collections::HashSet::new();
     sessions.retain(|session| seen_session_ids.insert(session.id.clone()));
+    let has_more = sessions.len() > offset.saturating_add(limit);
+    let sessions = sessions.into_iter().skip(offset).take(limit).collect();
     let payload = LocalSessionsPayload {
         db_path: db_paths
             .first()
@@ -664,10 +694,17 @@ pub fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
             .map(|path| path.to_string_lossy().to_string())
             .collect(),
         sessions,
+        offset,
+        limit,
+        has_more,
     };
+    let page = offset / limit + 1;
     if errors.is_empty() {
         ok(
-            &format!("已读取 {} 个本地会话。", payload.sessions.len()),
+            &format!(
+                "已读取第 {page} 页，共 {} 个本地会话。",
+                payload.sessions.len()
+            ),
             payload,
         )
     } else {
@@ -3592,8 +3629,7 @@ mod tests {
         unsafe {
             std::env::set_var("CODEX_HOME", &codex_home);
         }
-        let result = list_local_sessions();
-        restore_codex_home(previous_codex_home);
+        let result = list_local_sessions(None);
 
         assert_eq!(result.status, "ok");
         assert_eq!(result.payload.sessions.len(), 1);
@@ -3603,6 +3639,34 @@ mod tests {
             result.payload.sessions[0].db_path,
             legacy_db.to_string_lossy()
         );
+
+        rusqlite::Connection::open(&current_db)
+            .unwrap()
+            .execute("INSERT INTO threads VALUES ('t2', '', 'Newest', 300)", [])
+            .unwrap();
+        rusqlite::Connection::open(&legacy_db)
+            .unwrap()
+            .execute("INSERT INTO threads VALUES ('t3', '', 'Oldest', 50)", [])
+            .unwrap();
+
+        let first_page = list_local_sessions(Some(ListLocalSessionsRequest {
+            offset: 0,
+            limit: 2,
+        }));
+        assert_eq!(first_page.payload.sessions.len(), 2);
+        assert_eq!(first_page.payload.sessions[0].id, "t2");
+        assert_eq!(first_page.payload.sessions[1].id, "t1");
+        assert!(first_page.payload.has_more);
+
+        let second_page = list_local_sessions(Some(ListLocalSessionsRequest {
+            offset: 2,
+            limit: 2,
+        }));
+        restore_codex_home(previous_codex_home);
+
+        assert_eq!(second_page.payload.sessions.len(), 1);
+        assert_eq!(second_page.payload.sessions[0].id, "t3");
+        assert!(!second_page.payload.has_more);
     }
 
     #[test]

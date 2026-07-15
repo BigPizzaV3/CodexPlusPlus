@@ -67,6 +67,10 @@ enum SchemaKind {
     CodexAutomationRuns,
 }
 
+fn sqlite_limit(limit: usize) -> i64 {
+    i64::try_from(limit).unwrap_or(i64::MAX)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalSession {
@@ -122,18 +126,26 @@ impl SQLiteStorageAdapter {
     }
 
     pub fn list_local_sessions(&self) -> anyhow::Result<Vec<LocalSession>> {
+        self.list_local_sessions_limited(usize::MAX)
+    }
+
+    pub fn list_local_sessions_limited(&self, limit: usize) -> anyhow::Result<Vec<LocalSession>> {
         if !self.db_path.exists() {
             return Ok(Vec::new());
         }
         let db = Connection::open(&self.db_path)?;
         match schema_kind(&db)? {
-            Some(SchemaKind::CodexThreads) => self.list_codex_threads(&db),
-            Some(SchemaKind::CodexAutomationRuns) => self.list_codex_automation_runs(&db),
+            Some(SchemaKind::CodexThreads) => self.list_codex_threads(&db, limit),
+            Some(SchemaKind::CodexAutomationRuns) => self.list_codex_automation_runs(&db, limit),
             _ => anyhow::bail!("Unsupported local storage schema"),
         }
     }
 
-    fn list_codex_threads(&self, db: &Connection) -> anyhow::Result<Vec<LocalSession>> {
+    fn list_codex_threads(
+        &self,
+        db: &Connection,
+        limit: usize,
+    ) -> anyhow::Result<Vec<LocalSession>> {
         let columns = table_columns(&db, "threads")?
             .into_iter()
             .collect::<HashSet<_>>();
@@ -154,10 +166,11 @@ impl SQLiteStorageAdapter {
         let sql = format!(
             "SELECT id, {title}, {cwd}, {model_provider}, {archived}, {updated_at_ms}, {rollout_path}
              FROM threads
-             ORDER BY COALESCE({updated_at_ms}, 0) DESC, id DESC"
+             ORDER BY COALESCE({updated_at_ms}, 0) DESC, id DESC
+             LIMIT ?1"
         );
         let mut stmt = db.prepare(&sql)?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map([sqlite_limit(limit)], |row| {
             Ok(LocalSession {
                 id: row.get(0)?,
                 title: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
@@ -172,7 +185,11 @@ impl SQLiteStorageAdapter {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    fn list_codex_automation_runs(&self, db: &Connection) -> anyhow::Result<Vec<LocalSession>> {
+    fn list_codex_automation_runs(
+        &self,
+        db: &Connection,
+        limit: usize,
+    ) -> anyhow::Result<Vec<LocalSession>> {
         let columns = table_columns(db, "automation_runs")?
             .into_iter()
             .collect::<HashSet<_>>();
@@ -185,10 +202,11 @@ impl SQLiteStorageAdapter {
             "SELECT thread_id, {title}, {cwd}, {status}, {updated_at}, {created_at}
              FROM automation_runs
              WHERE COALESCE(thread_id, '') <> ''
-             ORDER BY COALESCE({updated_at}, {created_at}, 0) DESC, thread_id DESC"
+             ORDER BY COALESCE({updated_at}, {created_at}, 0) DESC, thread_id DESC
+             LIMIT ?1"
         );
         let mut stmt = db.prepare(&sql)?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map([sqlite_limit(limit)], |row| {
             let updated_at_ms = row
                 .get::<_, Option<i64>>(4)?
                 .or(row.get::<_, Option<i64>>(5)?);
