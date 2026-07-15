@@ -146,6 +146,8 @@ body {
 }
 
 .sidebar {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   overflow: hidden;
   border-right: 1px solid hsl(var(--sidebar-border));
@@ -215,11 +217,13 @@ body {
 
 .nav {
   display: grid;
+  align-content: start;
+  flex: 1 1 auto;
   gap: 4px;
   margin-top: 12px;
+  min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  max-height: calc(100vh - 82px);
   padding-right: 2px;
 }
 
@@ -334,11 +338,13 @@ body {
   display: grid;
   align-content: start;
   flex: 1 1 auto;
+  height: 0;
   gap: 12px;
   min-width: 0;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   padding: 16px 20px 24px;
   scrollbar-gutter: stable;
@@ -3598,7 +3604,6 @@ select {
 
 .nav {
   gap: 2px;
-  max-height: calc(100vh - 94px);
   margin-top: 4px;
   padding-right: 3px;
 }
@@ -4138,6 +4143,46 @@ select {
     grid-template-columns: 1fr;
     justify-items: center;
     padding: 0;
+  }
+}
+
+/* 小窗口优先保留内容区可用高度，页面其余内容通过自身滚动访问。 */
+@media (max-height: 800px) {
+  .sidebar {
+    padding-block: 12px 8px;
+  }
+
+  .brand {
+    min-height: 0;
+    padding-bottom: 12px;
+  }
+
+  .nav-item {
+    min-height: 36px;
+  }
+
+  .topbar {
+    min-height: 56px;
+    padding-block: 8px;
+  }
+
+  .screen {
+    gap: 12px;
+    padding-top: 12px;
+  }
+}
+
+/* 右侧区域不足时让概览推广卡自然换行，避免标签和操作按钮被挤出。 */
+@media (max-width: 1180px) {
+  .jojocode-overview-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .jojocode-overview-side,
+  .jojocode-model-tags {
+    justify-items: start;
+    justify-content: flex-start;
+    max-width: none;
   }
 }
 
