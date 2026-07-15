@@ -901,6 +901,7 @@ export function App() {
       setLaunchForm((current) => ({
         ...current,
         appPath: current.appPath || result.settings.codexAppPath || "",
+        helperPort: String(normalized.helperPort),
       }));
       if (!silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
       return normalized;
@@ -1274,12 +1275,18 @@ export function App() {
   };
 
   const launchCommand = async (command: "launch_codex_plus" | "restart_codex_plus") => {
+    const requestedPort = numberOrDefault(launchForm.helperPort, 57321);
+    // 中转模式下端口以 settings.json 为准(launcher 读 settings.helper_port):启动框临时改的端口
+    // 必须先写盘,才能让 helper 监听口与 config.toml 写入口、前端探测口三者一致。
+    if (requestedPort !== settingsForm.helperPort) {
+      await saveSettingsValue({ ...settingsForm, helperPort: requestedPort }, true);
+    }
     const result = await run(() =>
       call<CommandResult<Record<string, unknown>>>(command, {
         request: {
           appPath: launchForm.appPath,
           debugPort: numberOrDefault(launchForm.debugPort, 9229),
-          helperPort: numberOrDefault(launchForm.helperPort, 57321),
+          helperPort: requestedPort,
         },
       }),
     );
@@ -3693,6 +3700,13 @@ function SettingsScreen({
               value={form.relayTestModel}
               onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
               placeholder={t("例如 gpt-5.4-mini")}
+            />
+          </Field>
+          <Field label={t("Helper 端口")}>
+            <Input
+              type="number"
+              value={form.helperPort}
+              onChange={(event) => onFormChange({ ...form, helperPort: clampNumber(Number(event.currentTarget.value), 1, 65535) })}
             />
           </Field>
           <div className="settings-block stepwise-settings-block">
