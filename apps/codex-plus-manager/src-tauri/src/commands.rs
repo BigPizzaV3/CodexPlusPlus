@@ -1189,6 +1189,65 @@ fn merge_manual_provider_sync_targets(
 }
 
 #[tauri::command]
+pub async fn preview_session_index_cleanup() -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        codex_plus_data::preview_session_index_cleanup(None)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("session index cleanup preview task failed: {error}"))
+    .and_then(|result| result);
+    match result {
+        Ok(preview) => ok(
+            &format!(
+                "发现 {} 条仅存在于任务索引中的候选记录。",
+                preview.candidates.len()
+            ),
+            json!({
+                "snapshotSha256": preview.snapshot_sha256,
+                "candidates": preview.candidates,
+            }),
+        ),
+        Err(error) => failed(&format!("预览失效任务索引失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn apply_session_index_cleanup(
+    snapshot_sha256: String,
+    thread_ids: Vec<String>,
+) -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_data::apply_session_index_cleanup(None, &snapshot_sha256, &thread_ids)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("session index cleanup task failed: {error}"));
+    match result {
+        Ok(Ok(cleanup)) => ok(
+            &format!(
+                "已清理 {} 条失效任务索引；原索引已完整备份。",
+                cleanup.pruned_entries
+            ),
+            json!({
+                "prunedEntries": cleanup.pruned_entries,
+                "backupDir": cleanup.backup_dir,
+            }),
+        ),
+        Ok(Err(error)) => {
+            let backup_hint = error
+                .backup_dir
+                .as_ref()
+                .map(|path| format!(" 备份目录：{}。", path.to_string_lossy()))
+                .unwrap_or_default();
+            failed(
+                &format!("清理失效任务索引失败：{}{backup_hint}", error.message),
+                json!({ "backupDir": error.backup_dir }),
+            )
+        }
+        Err(error) => failed(&format!("清理失效任务索引失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
 pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResult<Value> {
     let target_provider = target_provider
         .map(|value| value.trim().to_string())
@@ -3307,6 +3366,14 @@ fn default_log_lines() -> usize {
 mod tests {
     use super::*;
 
+    static CODEX_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_codex_home_for_test() -> std::sync::MutexGuard<'static, ()> {
+        CODEX_HOME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn backend_version_returns_structured_payload() {
         let result = backend_version();
@@ -3499,6 +3566,7 @@ mod tests {
 
     #[test]
     fn env_conflict_commands_ignore_codex_home_and_remove_openai_vars() {
+        let _codex_home_guard = lock_codex_home_for_test();
         let test_openai_name = "OPENAI_CODEX_PLUS_ENV_CONFLICT_TEST";
         let previous_openai = std::env::var_os(test_openai_name);
         let previous_codex_home = std::env::var_os("CODEX_HOME");
@@ -3550,6 +3618,7 @@ mod tests {
 
     #[test]
     fn delete_local_session_falls_back_when_requested_db_no_longer_contains_thread() {
+        let _codex_home_guard = lock_codex_home_for_test();
         let temp = tempfile::tempdir().unwrap();
         let previous_codex_home = std::env::var_os("CODEX_HOME");
         let codex_home = temp.path().join("codex-home");
@@ -3616,6 +3685,7 @@ mod tests {
 
     #[test]
     fn list_local_sessions_deduplicates_threads_across_current_and_legacy_dbs() {
+        let _codex_home_guard = lock_codex_home_for_test();
         let temp = tempfile::tempdir().unwrap();
         let previous_codex_home = std::env::var_os("CODEX_HOME");
         let codex_home = temp.path().join("codex-home");
@@ -3670,7 +3740,43 @@ mod tests {
     }
 
     #[test]
+    fn list_local_sessions_ignores_relation_only_thread_reference_dbs() {
+        let _codex_home_guard = lock_codex_home_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        let codex_home = temp.path().join("codex-home");
+        let sqlite_dir = codex_home.join("sqlite");
+        std::fs::create_dir_all(&sqlite_dir).unwrap();
+        let session_db = sqlite_dir.join("state_5.sqlite");
+        let relation_db = sqlite_dir.join("codex-related.db");
+        create_minimal_thread_db(&session_db, "t1", "Current Thread", 100);
+        let relation = rusqlite::Connection::open(&relation_db).unwrap();
+        relation
+            .execute(
+                "CREATE TABLE local_thread_catalog (thread_id TEXT PRIMARY KEY)",
+                [],
+            )
+            .unwrap();
+        relation
+            .execute("INSERT INTO local_thread_catalog VALUES ('t1')", [])
+            .unwrap();
+        drop(relation);
+
+        unsafe {
+            std::env::set_var("CODEX_HOME", &codex_home);
+        }
+        let result = list_local_sessions(None);
+        restore_codex_home(previous_codex_home);
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.payload.sessions.len(), 1);
+        assert_eq!(result.payload.sessions[0].id, "t1");
+        assert_eq!(result.payload.sessions[0].title, "Current Thread");
+    }
+
+    #[test]
     fn delete_local_session_removes_duplicate_threads_from_all_candidate_dbs() {
+        let _codex_home_guard = lock_codex_home_for_test();
         let temp = tempfile::tempdir().unwrap();
         let previous_codex_home = std::env::var_os("CODEX_HOME");
         let codex_home = temp.path().join("codex-home");

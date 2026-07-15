@@ -2260,6 +2260,58 @@ body {
 
 .modal-message {
   white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.session-index-cleanup-modal {
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: hidden;
+}
+
+.session-index-cleanup-select-all,
+.session-index-cleanup-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.session-index-cleanup-select-all {
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+
+.session-index-cleanup-list {
+  min-height: 0;
+  max-height: 48vh;
+  overflow-y: auto;
+  border-block: 1px solid hsl(var(--border));
+  margin-bottom: 14px;
+}
+
+.session-index-cleanup-item {
+  padding: 10px 2px;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.session-index-cleanup-item:last-child {
+  border-bottom: 0;
+}
+
+.session-index-cleanup-item > span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.session-index-cleanup-item strong,
+.session-index-cleanup-item code,
+.session-index-cleanup-item small {
+  overflow-wrap: anywhere;
+}
+
+.session-index-cleanup-item code,
+.session-index-cleanup-item small {
+  color: hsl(var(--muted-foreground));
 }
 
 .plugin-marketplace-modal .metric-list {

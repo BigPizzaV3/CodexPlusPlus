@@ -96,7 +96,6 @@ export const EN_PLAIN: Record<string, string> = {
   "会话删除": "Session deletion",
   "会话删除、导出、项目移动和用户脚本等界面能力": "UI capabilities like session deletion, export, project move and user scripts",
   "会话删除、导出、项目移动和脚本能力": "Session deletion, export, project move and script capabilities",
-  "会话总数": "Total sessions",
   "会话管理": "Session management",
   "会话项目移动": "Session project move",
   "使用": "Use",
@@ -357,7 +356,6 @@ export const EN_PLAIN: Record<string, string> = {
     "Per-conversation round-robin keeps the same conversation on a fixed member where possible, reducing context drift.",
   "按成员权重分配请求，权重越高承担越多。": "Distribute requests by member weight; higher weight takes on more.",
   "按成员顺序请求，失败后切到下一个供应商。": "Request members in order, switching to the next provider on failure.",
-  "按更新时间倒序显示": "Sorted by update time, newest first",
   "按请求轮转": "Per-request round-robin",
   "按请求轮转会逐请求切换成员，适合供应商能力接近的场景。":
     "Per-request round-robin switches members request by request, suited to providers with similar capabilities.",
@@ -414,7 +412,6 @@ export const EN_PLAIN: Record<string, string> = {
   "未填写 URL": "No URL filled in",
   "未安装": "Not installed",
   "未实现": "Not implemented",
-  "未归档": "Not archived",
   "未检查": "Not checked",
   "未检测到": "Not detected",
   "未检测到 Codex 应用版本。": "Codex app version not detected.",
@@ -498,6 +495,8 @@ export const EN_PLAIN: Record<string, string> = {
   "添加聚合供应商": "Add aggregate provider",
   "清空选择": "Clear selection",
   "清除保存路径": "Clear saved path",
+  "清理幽灵任务索引": "Clean up ghost task index",
+  "幽灵任务索引处理失败，请查看错误提示后重试。": "Ghost task index processing failed. Check the error message and retry.",
   "点击刷新会话读取本地数据库": "Click Refresh Sessions to read the local database",
   "点击刷新市场加载远程脚本。": "Click Refresh Marketplace to load remote scripts.",
   "版本信息、项目链接、GitHub Release 更新、日志与诊断": "Version info, project links, GitHub Release updates, logs and diagnostics",
@@ -523,8 +522,6 @@ export const EN_PLAIN: Record<string, string> = {
   "移除最近记录": "Remove from recent",
   "立刻修复历史会话": "Repair historical sessions now",
   "第三方": "Third party",
-  "第 {0} 页": "Page {0}",
-  "第 {0} 页，每页最多 {1} 条，按更新时间倒序显示": "Page {0}, up to {1} sessions per page, newest first",
   "策略": "Strategy",
   "管理 API 供应商、协议、Key 与配置文件": "Manage API providers, protocols, keys and config files",
   "管理 Codex SSH 项目并加入 Zed workspace": "Manage Codex SSH projects and add them to a Zed workspace",
@@ -608,6 +605,8 @@ export const EN_PLAIN: Record<string, string> = {
     "Automatically keep expanding 'More' on the plugins page to show the full plugin list at once.",
   "进度": "Progress",
   "远程 SSH 文件引用可直接用 Zed Remote Development 打开。": "Remote SSH file references can be opened directly with Zed Remote Development.",
+  "选择全部候选记录": "Select all candidate records",
+  "未命名任务": "Untitled task",
   "远程脚本": "Remote scripts",
   "适合官方登录或官方混入 API Key；保留会话删除、导出、项目移动和用户脚本，关闭插件市场相关增强。":
     "Suited to official login or official mixed-in API Key; keeps session deletion, export, project move and user scripts, while disabling plugin-marketplace-related enhancements.",
@@ -668,6 +667,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "，清理 {0} 条失效任务索引": ", pruned {0} stale task index entry/entries",
   "\n...以及另外 {0} 个会话": "\n...and {0} more session(s)",
   "{0}（{1}）": "{0} ({1})",
   "{0} · {1} 个成员": "{0} · {1} member(s)",
@@ -703,16 +703,21 @@ export const EN_TEMPLATE: Record<string, string> = {
   "已删除 {0} 个会话。": "Deleted {0} session(s).",
   "已删除 {0} 个，失败 {1} 个：{2}": "Deleted {0}, failed {1}: {2}",
   "已加载 {0} 条推荐": "Loaded {0} recommendation(s)",
-  "已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行索引{3}。":
-    "Synced to {0}: repaired {1} session file(s), updated {2} index row(s){3}.",
+  "已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引{3}{4}。":
+    "Synced to {0}: repaired {1} session file(s) and updated {2} database index row(s){3}{4}.",
   "已安装 {0}": "Installed {0}",
   "已缓存 {0} 个插件 / {1} 个技能。": "Cached {0} plugin(s) / {1} skill(s).",
   "已运行 {0} 分钟": "Running for {0} minute(s)",
   "已运行 {0} 小时 {1} 分钟": "Running for {0} hour(s) {1} minute(s)",
   "市场 · {0}": "Marketplace · {0}",
   "当前版本 {0}": "Current version {0}",
+  "第 {0} 页": "Page {0}",
+  "第 {0} 页，每页最多 {1} 条，按更新时间倒序显示": "Page {0}, up to {1} sessions per page, newest first",
   "打开选择器失败：{0}": "Failed to open the picker: {0}",
   "正在同步到 {0}…": "Syncing to {0}…",
+  "发现 {0} 条仅存在于 session_index.jsonl、未在本地数据库或 rollout 中找到来源的候选记录。它们也可能是云端或尚未落盘的任务，请逐项核对。任务标题仅用于预览，实际按 thread ID 与数据来源判断。清理前请先完全退出 Codex App / ChatGPT。":
+    "Found {0} candidate record(s) that exist only in session_index.jsonl and have no source in the local databases or rollout files. They may still represent cloud-only or not-yet-persisted tasks, so review each item. Titles are shown only for preview; cleanup is decided by thread ID and data sources. Fully exit Codex App / ChatGPT before cleanup.",
+  "确认清理 {0} 条": "Confirm cleanup of {0}",
   "清单更新时间：{0}": "Manifest updated at: {0}",
   "留空使用默认：{0}": "Leave empty to use the default: {0}",
   "聚合供应商 {0}": "Aggregate provider {0}",
