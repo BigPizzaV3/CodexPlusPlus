@@ -221,6 +221,67 @@ goals = true
     assert!(returned.api_key.is_empty());
 }
 
+#[test]
+fn switch_captures_safe_app_state_before_writing_provider_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(
+        home.join(".codex-global-state.json"),
+        serde_json::json!({
+            "electron-saved-workspace-roots": ["C:/work/app"],
+            "prompt-history": ["do-not-copy"],
+            "electron-persisted-atom-state": {
+                "default-service-tier": "priority",
+                "provider-token-cache": "do-not-copy"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let original = BackendSettings {
+        active_relay_id: "a".to_string(),
+        relay_profiles: vec![
+            pure_profile("a", "https://a.example/v1", "sk-a"),
+            pure_profile("b", "https://b.example/v1", "sk-b"),
+        ],
+        ..BackendSettings::default()
+    };
+    store.save(&original).unwrap();
+    let next = BackendSettings {
+        active_relay_id: "b".to_string(),
+        relay_profiles: original.relay_profiles.clone(),
+        ..BackendSettings::default()
+    };
+
+    switch_relay_profile_in_home(&store, &home, next, "a").unwrap();
+
+    let snapshot: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            home.join("backups_state")
+                .join("app-state-sync")
+                .join("latest-safe-state.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        snapshot["state"]["electron-saved-workspace-roots"],
+        serde_json::json!(["C:\\work\\app"])
+    );
+    assert_eq!(
+        snapshot["state"]["electron-persisted-atom-state"]["default-service-tier"],
+        "priority"
+    );
+    assert!(snapshot["state"].get("prompt-history").is_none());
+    assert!(
+        snapshot["state"]["electron-persisted-atom-state"]
+            .get("provider-token-cache")
+            .is_none()
+    );
+}
+
 fn pure_profile(id: &str, base_url: &str, key: &str) -> RelayProfile {
     RelayProfile {
         id: id.to_string(),

@@ -1253,6 +1253,8 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let target_for_settings = target_provider.clone();
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    prepare_codex_app_state_before_provider_switch(&home, "manager.sync_providers_now.before");
     let result = tauri::async_runtime::spawn_blocking(move || {
         codex_plus_data::run_provider_sync_with_target(None, target_provider.as_deref())
     })
@@ -1265,6 +1267,10 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
                     target_for_settings
                         .as_deref()
                         .unwrap_or(&sync.target_provider),
+                );
+                finish_codex_app_state_after_provider_switch(
+                    &home,
+                    "manager.sync_providers_now.after",
                 );
             }
             ok(
@@ -2611,10 +2617,18 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
             relay_payload(status, None),
         );
     }
+    prepare_codex_app_state_before_provider_switch(&home, "manager.apply_relay_injection.before");
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
     if settings.active_aggregate_relay_profile().is_some() {
-        return apply_aggregate_relay_injection_to_home(&home);
+        let response = apply_aggregate_relay_injection_to_home(&home);
+        if response.status == "ok" {
+            finish_codex_app_state_after_provider_switch(
+                &home,
+                "manager.apply_relay_injection.aggregate",
+            );
+        }
+        return response;
     }
     if relay_has_complete_files(&relay) {
         return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
@@ -2624,6 +2638,10 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
             settings.computer_use_guard_enabled,
         ) {
             Ok(result) => {
+                finish_codex_app_state_after_provider_switch(
+                    &home,
+                    "manager.apply_relay_injection.profile",
+                );
                 let status = codex_plus_core::relay_config::relay_status_from_home(&home);
                 log_relay_apply_result(
                     "manager.apply_relay_injection.ok",
@@ -2678,6 +2696,10 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
     ) {
         Ok(result) => {
+            finish_codex_app_state_after_provider_switch(
+                &home,
+                "manager.apply_relay_injection.generated",
+            );
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             log_relay_apply_result(
                 "manager.apply_relay_injection.ok",
@@ -2746,6 +2768,10 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
             relay_payload(status, None),
         );
     }
+    prepare_codex_app_state_before_provider_switch(
+        &home,
+        "manager.apply_pure_api_injection.before",
+    );
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_pure_api_injection", &settings, &relay);
     if relay_has_complete_files(&relay) {
@@ -2756,6 +2782,10 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
             settings.computer_use_guard_enabled,
         ) {
             Ok(result) => {
+                finish_codex_app_state_after_provider_switch(
+                    &home,
+                    "manager.apply_pure_api_injection.profile",
+                );
                 let status = codex_plus_core::relay_config::relay_status_from_home(&home);
                 log_relay_apply_result(
                     "manager.apply_pure_api_injection.ok",
@@ -2800,6 +2830,10 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
         codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
     ) {
         Ok(result) => {
+            finish_codex_app_state_after_provider_switch(
+                &home,
+                "manager.apply_pure_api_injection.generated",
+            );
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             log_relay_apply_result(
                 "manager.apply_pure_api_injection.ok",
@@ -2842,6 +2876,7 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
     log_manager_event("manager.clear_relay_injection.start", json!({}));
+    prepare_codex_app_state_before_provider_switch(&home, "manager.clear_relay_injection.before");
     let auth_contents = (relay.relay_mode == codex_plus_core::settings::RelayMode::Official
         && !relay.official_mix_api_key
         && !relay.auth_contents.trim().is_empty())
@@ -2849,6 +2884,10 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
     match codex_plus_core::relay_config::clear_relay_config_to_home_with_auth(&home, auth_contents)
     {
         Ok(result) => {
+            finish_codex_app_state_after_provider_switch(
+                &home,
+                "manager.clear_relay_injection.after",
+            );
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             log_manager_event(
                 "manager.clear_relay_injection.ok",
@@ -2877,6 +2916,14 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
             )
         }
     }
+}
+
+fn prepare_codex_app_state_before_provider_switch(home: &Path, source: &str) {
+    codex_plus_core::codex_app_state::capture_app_state_snapshot_nonfatal(home, source);
+}
+
+fn finish_codex_app_state_after_provider_switch(home: &Path, source: &str) {
+    codex_plus_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(home, source);
 }
 
 fn relay_has_complete_files(relay: &codex_plus_core::settings::RelayProfile) -> bool {
@@ -3372,6 +3419,68 @@ mod tests {
         CODEX_HOME_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn provider_switch_state_helpers_restore_only_safe_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("codex-home");
+        std::fs::create_dir(&home).unwrap();
+        let state_path = home.join(".codex-global-state.json");
+        std::fs::write(
+            &state_path,
+            json!({
+                "electron-saved-workspace-roots": ["C:/work/app"],
+                "thread-writable-roots": {"thread-1": ["C:/work/app"]},
+                "electron-persisted-atom-state": {
+                    "default-service-tier": "priority",
+                    "electron:onboarding-workspace-autolaunch-applied": true,
+                    "heartbeat-thread-permissions-by-id": {"thread-1": "do-not-copy"},
+                    "prompt-history": ["do-not-copy"]
+                },
+                "provider-token-cache": "do-not-copy"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        prepare_codex_app_state_before_provider_switch(&home, "test.before");
+        std::fs::write(
+            &state_path,
+            json!({"electron-saved-workspace-roots": ["D:/fresh/app"]}).to_string(),
+        )
+        .unwrap();
+        finish_codex_app_state_after_provider_switch(&home, "test.after");
+
+        let state: Value =
+            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+        assert_eq!(
+            state["electron-saved-workspace-roots"],
+            json!(["D:\\fresh\\app", "C:\\work\\app"])
+        );
+        assert_eq!(
+            state["thread-writable-roots"]["thread-1"],
+            json!(["C:/work/app"])
+        );
+        assert_eq!(
+            state["electron-persisted-atom-state"]["default-service-tier"],
+            "priority"
+        );
+        assert_eq!(
+            state["electron-persisted-atom-state"]["electron:onboarding-workspace-autolaunch-applied"],
+            true
+        );
+        assert!(state.get("provider-token-cache").is_none());
+        assert!(
+            state["electron-persisted-atom-state"]
+                .get("heartbeat-thread-permissions-by-id")
+                .is_none()
+        );
+        assert!(
+            state["electron-persisted-atom-state"]
+                .get("prompt-history")
+                .is_none()
+        );
     }
 
     #[test]
