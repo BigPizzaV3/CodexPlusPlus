@@ -2675,7 +2675,7 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         &relay.base_url,
         &relay.api_key,
         relay.protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        settings.helper_port,
     ) {
         Ok(result) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
@@ -2709,14 +2709,13 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
 }
 
 fn apply_aggregate_relay_injection_to_home(home: &Path) -> CommandResult<RelayPayload> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
     match codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
         home,
-        &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
-        ),
+        &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(settings.helper_port),
         "codex-plus-aggregate",
         codex_plus_core::settings::RelayProtocol::Responses,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        settings.helper_port,
     ) {
         Ok(result) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(home);
@@ -2797,7 +2796,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
         &relay.base_url,
         &relay.api_key,
         relay.protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        settings.helper_port,
     ) {
         Ok(result) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
@@ -2904,7 +2903,9 @@ fn log_relay_apply_request(
             "baseUrl": relay.base_url,
             "hasConfigContents": !relay.config_contents.trim().is_empty(),
             "hasAuthContents": !relay.auth_contents.trim().is_empty(),
-            "configContainsProxy": relay.config_contents.contains("127.0.0.1:57321")
+            "configContainsProxy": relay
+                .config_contents
+                .contains(&format!("127.0.0.1:{}", settings.helper_port))
         }),
     );
 }
