@@ -1312,6 +1312,69 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
 }
 
 #[tokio::test]
+async fn launch_uses_configured_helper_port_when_chat_protocol_proxy_is_enabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    // 中转(ChatCompletions)启用 + 自定义 helper_port:中转模式下 helper 监听口必须跟随
+    // settings.helper_port,而非写死的默认端口,否则与写入 Codex config.toml 的端口不一致。
+    let settings = BackendSettings {
+        enhancements_enabled: false,
+        helper_port: 57399,
+        relay_profiles: vec![RelayProfile {
+            id: "relay-chat".to_string(),
+            name: "Chat".to_string(),
+            model: String::new(),
+            base_url: "https://chat-only.example.test/v1".to_string(),
+            upstream_base_url: "https://chat-only.example.test/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            protocol: RelayProtocol::ChatCompletions,
+            relay_mode: codex_plus_core::settings::RelayMode::MixedApi,
+            official_mix_api_key: false,
+            test_model: String::new(),
+            config_contents: String::new(),
+            auth_contents: String::new(),
+            use_common_config: true,
+            context_selection: codex_plus_core::settings::RelayContextSelection::default(),
+            context_selection_initialized: false,
+            context_window: String::new(),
+            auto_compact_limit: String::new(),
+            model_insert_mode: codex_plus_core::settings::RelayModelInsertMode::default(),
+            model_list: String::new(),
+            model_windows: String::new(),
+            user_agent: String::new(),
+        }],
+        active_relay_id: "relay-chat".to_string(),
+        ..BackendSettings::default()
+    };
+    let hooks = FakeHooks::new(events.clone()).with_settings(settings);
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 58000, // 请求端口,中转模式下应被 settings.helper_port 覆盖
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+
+    let before_stop = events.lock().unwrap().clone();
+    // start-helper 跟随 settings.helper_port(57399),而非请求的 58000 或写死的 57321
+    assert!(before_stop.contains(&"start-helper:57399".to_string()));
+    assert!(!before_stop.contains(&"start-helper:57321".to_string()));
+
+    handle.wait_for_codex_exit().await.unwrap();
+
+    let after_stop = events.lock().unwrap().clone();
+    assert!(after_stop.contains(&"shutdown-helper:57399".to_string()));
+}
+
+#[tokio::test]
 async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");

@@ -295,7 +295,9 @@ where
         }
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings);
         if protocol_proxy_enabled {
-            helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
+            // 中转端口唯一真相源:跟随 settings.helper_port,保证与写入 Codex config.toml
+            // 的 base_url 端口、前端探测端口三者一致;无配置时 default 已回落 57321。
+            helper_port = settings.helper_port;
         }
         if settings.enhancements_enabled || protocol_proxy_enabled {
             hooks.start_helper(helper_port).await?;
