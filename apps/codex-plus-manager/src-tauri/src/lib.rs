@@ -65,6 +65,8 @@ pub fn run() {
             commands::forget_zed_remote_project,
             commands::delete_local_session,
             commands::load_provider_sync_targets,
+            commands::load_provider_guard_status,
+            commands::repair_provider_guard,
             commands::preview_session_index_cleanup,
             commands::apply_session_index_cleanup,
             commands::sync_providers_now,

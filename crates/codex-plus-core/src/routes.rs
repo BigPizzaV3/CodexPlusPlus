@@ -94,6 +94,9 @@ pub trait BridgeRuntimeService: Send + Sync {
 
 #[async_trait]
 pub trait BridgeDataService: Send + Sync {
+    async fn provider_guard_status(&self) -> anyhow::Result<Value> {
+        anyhow::bail!("provider guard is not wired in this launcher")
+    }
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult>;
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
@@ -164,6 +167,7 @@ pub async fn handle_bridge_request(
         "/devtools/open" => ctx.runtime.open_devtools().await,
         "/manager/open" => ctx.runtime.open_manager().await,
         "/backend/status" => ctx.runtime.backend_status().await,
+        "/provider-guard/status" => ctx.data.provider_guard_status().await,
         "/codex-model-catalog" | "/codex-config-model" => ctx.runtime.codex_model_catalog().await,
         "/diagnostics/log" => diagnostic_log_value(payload.clone()),
         "/ads" => ctx.runtime.ads().await,

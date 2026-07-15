@@ -1150,6 +1150,41 @@ pub async fn load_provider_sync_targets() -> CommandResult<Value> {
     }
 }
 
+#[tauri::command]
+pub async fn load_provider_guard_status() -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(|| codex_plus_data::inspect_provider_guard(None))
+        .await
+        .map_err(|error| anyhow::anyhow!("provider guard status task failed: {error}"));
+    match result {
+        Ok(Ok(status)) => ok(
+            "Provider Guard 状态已加载。",
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
+        ),
+        Ok(Err(error)) | Err(error) => {
+            failed(&format!("Provider Guard 状态加载失败：{error}"), json!({}))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn repair_provider_guard(confirmed: bool) -> CommandResult<Value> {
+    if !confirmed {
+        return failed("必须在原生管理器中确认后才能执行 Provider Guard 修复。", json!({}));
+    }
+    let result = tauri::async_runtime::spawn_blocking(|| codex_plus_data::repair_provider_guard(None))
+        .await
+        .map_err(|error| anyhow::anyhow!("provider guard repair task failed: {error}"));
+    match result {
+        Ok(Ok(repair)) => ok(
+            "Provider Guard 已完成备份和修复。",
+            serde_json::to_value(repair).unwrap_or_else(|_| json!({})),
+        ),
+        Ok(Err(error)) | Err(error) => {
+            failed(&format!("Provider Guard 修复失败：{error}"), json!({}))
+        }
+    }
+}
+
 fn merge_manual_provider_sync_targets(
     targets: &mut codex_plus_data::ProviderSyncTargetList,
     manual: &[String],

@@ -32,6 +32,7 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/devtools/open", json!({})),
         ("/manager/open", json!({})),
         ("/backend/status", json!({})),
+        ("/provider-guard/status", json!({})),
         ("/codex-model-catalog", json!({})),
         ("/codex-config-model", json!({})),
         ("/ads", json!({})),
@@ -306,6 +307,19 @@ async fn unknown_bridge_path_preserves_empty_session_id_shape() {
             "message": "Unknown bridge path"
         })
     );
+}
+
+#[tokio::test]
+async fn provider_guard_repair_is_not_exposed_to_injected_user_scripts() {
+    let result = handle_bridge_request(
+        test_context(),
+        "/provider-guard/repair",
+        json!({"confirmed": true}),
+    )
+    .await;
+
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["message"], "Unknown bridge path");
 }
 
 #[tokio::test]
@@ -647,7 +661,7 @@ async fn user_script_manager_deletes_market_script_metadata_and_rejects_builtin_
         tags: Vec::new(),
         homepage: "https://example.com/demo".to_string(),
         script_url: "https://example.com/demo.js".to_string(),
-        sha256: String::new(),
+        sha256: "5cc41099e023f38d76f44f1a0a4cfa1c11b931b59b25cc423e092117a27a132c".to_string(),
     };
 
     codex_plus_core::script_market::install_market_script_content(
@@ -895,7 +909,7 @@ fn install_market_script_writes_file_and_records_metadata() {
         tags: Vec::new(),
         homepage: "https://example.com/demo".to_string(),
         script_url: "https://example.com/demo.js".to_string(),
-        sha256: String::new(),
+        sha256: "5cc41099e023f38d76f44f1a0a4cfa1c11b931b59b25cc423e092117a27a132c".to_string(),
     };
 
     codex_plus_core::script_market::install_market_script_content(
@@ -914,7 +928,7 @@ fn install_market_script_writes_file_and_records_metadata() {
 }
 
 #[test]
-fn install_market_script_ignores_checksum_mismatch_and_replaces_existing_file() {
+fn install_market_script_rejects_checksum_mismatch_and_preserves_existing_file() {
     let temp = tempfile::tempdir().unwrap();
     let user_dir = temp.path().join("user");
     std::fs::create_dir_all(&user_dir).unwrap();
@@ -933,15 +947,18 @@ fn install_market_script_ignores_checksum_mismatch_and_replaces_existing_file() 
         tags: Vec::new(),
         homepage: String::new(),
         script_url: "https://example.com/demo.js".to_string(),
-        sha256: "0000".to_string(),
+        sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
     };
 
-    codex_plus_core::script_market::install_market_script_content(&manager, &script, b"new")
-        .unwrap();
+    let error =
+        codex_plus_core::script_market::install_market_script_content(&manager, &script, b"new")
+            .unwrap_err()
+            .to_string();
 
+    assert!(error.contains("SHA-256"));
     assert_eq!(
         std::fs::read_to_string(user_dir.join("market-demo.js")).unwrap(),
-        "new"
+        "old"
     );
 }
 
