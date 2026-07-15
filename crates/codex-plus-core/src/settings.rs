@@ -319,6 +319,8 @@ pub struct BackendSettings {
     pub active_aggregate_relay_id: String,
     #[serde(rename = "relayTestModel", default = "default_relay_test_model")]
     pub relay_test_model: String,
+    #[serde(rename = "helperPort", default = "default_helper_port")]
+    pub helper_port: u16,
 }
 
 impl Default for BackendSettings {
@@ -379,6 +381,7 @@ impl Default for BackendSettings {
             aggregate_relay_profiles: Vec::new(),
             active_aggregate_relay_id: String::new(),
             relay_test_model: default_relay_test_model(),
+            helper_port: default_helper_port(),
         }
     }
 }
@@ -568,6 +571,11 @@ pub fn default_active_relay_id() -> String {
 
 pub fn default_relay_test_model() -> String {
     "gpt-5.4-mini".to_string()
+}
+
+/// 中转 helper 端口默认值,单一来源指向 protocol_proxy 常量(57321)。
+pub fn default_helper_port() -> u16 {
+    crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT
 }
 
 pub fn default_relay_profiles() -> Vec<RelayProfile> {
@@ -1265,6 +1273,18 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         assert!(!dir.join("settings.json.tmp").exists());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn helper_port_defaults_to_protocol_proxy_port_when_missing() {
+        // 老 settings.json 不含 helperPort 字段时,反序列化必须回落默认中转端口 57321
+        let settings: BackendSettings =
+            serde_json::from_value(json!({ "codexAppPath": "" })).unwrap();
+        assert_eq!(
+            settings.helper_port,
+            crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT
+        );
+        assert_eq!(BackendSettings::default().helper_port, 57321);
     }
 
     #[test]
