@@ -33,6 +33,7 @@ const _profileTypeCheck: RelayProfile = {
   modelList: "",
   modelWindows: "",
   modelVlm: "",
+  modelReasoningSupport: "",
   vlmApiKey: "",
   vlmModel: "",
   vlmBaseUrl: "",

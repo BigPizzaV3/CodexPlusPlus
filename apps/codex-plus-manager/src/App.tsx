@@ -77,7 +77,6 @@ import {
   mergeModelWindowRows,
   modelWindowRowsFromProfile,
   serializeModelWindowRows,
-  type ImageHandling,
   type ModelWindowRow,
 } from "./model-windows";
 import { resolveProviderSyncCompletion } from "./provider-sync-flow";
@@ -259,6 +258,7 @@ export type RelayProfile = {
   modelList: string;
   modelWindows: string;
   modelVlm: string;
+  modelReasoningSupport: string;
   vlmApiKey: string;
   vlmModel: string;
   vlmBaseUrl: string;
@@ -828,6 +828,7 @@ const defaultSettings: BackendSettings = {
       modelList: "",
       modelWindows: "",
       modelVlm: "",
+      modelReasoningSupport: "",
       vlmApiKey: "",
       vlmModel: "",
       vlmBaseUrl: "",
@@ -5344,7 +5345,7 @@ function RelayProfileDetail({
 }) {
   const [draft, setDraft] = useState<RelayProfile>(profile);
   const [modelWindowRows, setModelWindowRows] = useState<ModelWindowRow[]>(
-    modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || "", profile.modelVlm),
+    modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || "", profile.modelVlm, profile.modelReasoningSupport),
   );
   const isActive = !isNew && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
@@ -5361,12 +5362,13 @@ function RelayProfileDetail({
             : profile,
         );
     setDraft(nextDraft);
-    setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm));
+    setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm, nextDraft.modelReasoningSupport));
   }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
   const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
   const draftWithModelRows = () => {
-    const serializedRows = serializeModelWindowRows(modelWindowRows);
-    return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows, modelVlm: serializedRows.modelVlm };
+    const vlConfigured = !!(draft.vlmApiKey && draft.vlmModel && draft.vlmBaseUrl);
+    const serializedRows = serializeModelWindowRows(modelWindowRows, vlConfigured);
+    return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows, modelVlm: serializedRows.modelVlm, modelReasoningSupport: serializedRows.modelReasoningSupport };
   };
   const saveDraft = async () => {
     if (validationError) return;
@@ -5505,7 +5507,7 @@ function RelayProfileEditor({
   };
   const removeModelWindowRow = (index: number) => {
     const nextRows = modelWindowRows.filter((_, rowIndex) => rowIndex !== index);
-    setModelWindowRows(nextRows.length ? nextRows : [{ model: "", window: "", imageHandling: "" }]);
+    setModelWindowRows(nextRows.length ? nextRows : [{ model: "", window: "", textOnly: false, noReasoning: false }]);
   };
   const addModelWindowRows = (rows: ModelWindowRow[]) => {
     setModelWindowRows(mergeModelWindowRows(modelWindowRows, rows));
@@ -5514,7 +5516,8 @@ function RelayProfileEditor({
     setDoctorOpen(true);
     setDoctorRunning(true);
     setDoctorResult(null);
-    const serializedRows = serializeModelWindowRows(modelWindowRows);
+    const vlConfigured = !!(profile.vlmApiKey && profile.vlmModel && profile.vlmBaseUrl);
+    const serializedRows = serializeModelWindowRows(modelWindowRows, vlConfigured);
     const result = await actions.diagnoseRelayProfile(
       deriveRelayProfileFromFiles({
         ...profile,
@@ -5729,26 +5732,30 @@ function RelayProfileEditor({
                     </Button>
                   </div>
                   <div className="relay-model-row-actions">
-                    <select
-                      className="field-select text-xs"
-                      value={row.imageHandling}
-                      disabled={vlmUnsupportedProtocol}
-                      onChange={(e) => updateModelWindowRow(index, { imageHandling: e.currentTarget.value as ImageHandling })}
-                      title={vlmUnsupportedProtocol ? t("VLM 仅支持 Chat Completions 协议和聚合模式") : ""}
-                    >
-                      <option value="" disabled>{t("纯文本模型请配置此项")}</option>
-                      <option value="send-as-is" title={t("原样发送图片")}>send-as-is</option>
-                      <option value="strip" title={t("为纯文本模型移除消息中的图片")}>strip images</option>
-                      <option value="vlm" title={t("为纯文本模型配置图片分析路由")}>VLM analysis</option>
-                    </select>
-                    <span className="relay-model-row-hint">{t("多模态模型（支持图片输入的模型）请保持 send-as-is。")}</span>
+                    <label className="relay-model-checkbox" title={t("勾选标记纯文本模型，转发前丢弃图片；配了视觉模型则先转文字")}>
+                      <input
+                        type="checkbox"
+                        checked={row.textOnly}
+                        disabled={vlmUnsupportedProtocol}
+                        onChange={(e) => updateModelWindowRow(index, { textOnly: e.currentTarget.checked })}
+                      />
+                      {t("只支持文本")}
+                    </label>
+                    <label className="relay-model-checkbox" title={t("勾选后该模型 reasoning 字段会被剥离，避免不支持推理的模型报错；对所有协议生效")}>
+                      <input
+                        type="checkbox"
+                        checked={row.noReasoning}
+                        onChange={(e) => updateModelWindowRow(index, { noReasoning: e.currentTarget.checked })}
+                      />
+                      {t("不支持推理")}
+                    </label>
                   </div>
                 </div>
               ))}
             </div>
             <div className="relay-model-list-tools">
               <Button
-                onClick={() => setModelWindowRows([...modelWindowRows, { model: "", window: "", imageHandling: "" }])}
+                onClick={() => setModelWindowRows([...modelWindowRows, { model: "", window: "", textOnly: false, noReasoning: false }])}
                 size="sm"
                 type="button"
                 variant="secondary"
@@ -5758,14 +5765,15 @@ function RelayProfileEditor({
               </Button>
               <Button
                 onClick={async () => {
-                  const serializedRows = serializeModelWindowRows(modelWindowRows);
+                  const vlConfigured = !!(profile.vlmApiKey && profile.vlmModel && profile.vlmBaseUrl);
+                  const serializedRows = serializeModelWindowRows(modelWindowRows, vlConfigured);
                   const models = await actions.fetchRelayProfileModels({
                     ...profile,
                     modelList: serializedRows.modelList,
                     modelWindows: serializedRows.modelWindows,
                   });
                   if (models?.length) {
-                    addModelWindowRows(models.map((model) => ({ model, window: "", imageHandling: "" })));
+                    addModelWindowRows(models.map((model) => ({ model, window: "", textOnly: false, noReasoning: false })));
                   }
                 }}
                 size="sm"
@@ -5781,7 +5789,7 @@ function RelayProfileEditor({
             </p>
           </Field>
         ) : null}
-        {showApiFields && modelWindowRows.some((row) => row.imageHandling === "vlm") ? (
+        {showApiFields && modelWindowRows.some((row) => row.textOnly) ? (
           <div className="relay-vlm-section">
             <div className="relay-vlm-section-header">{t("Vision Analysis Provider")}</div>
             <Field className="relay-field-vlm-api-key" label={t("VLM API Key")}>
@@ -5811,7 +5819,7 @@ function RelayProfileEditor({
               <br />
               {t("仅在 Chat Completion 和聚合模式生效。")}
             </p>
-            {modelWindowRows.some((row) => row.imageHandling === "vlm") && (!profile.vlmApiKey || !profile.vlmModel || !profile.vlmBaseUrl) ? (
+            {modelWindowRows.some((row) => row.textOnly) && (!profile.vlmApiKey || !profile.vlmModel || !profile.vlmBaseUrl) ? (
               <p className="field-hint warn">{t("VLM 配置不完整：API Key、Model 和 Base URL 为必填项，否则 VLM 不会生效。")}</p>
             ) : null}
           </div>
@@ -7611,6 +7619,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             modelList: "",
             modelWindows: "",
             modelVlm: "",
+            modelReasoningSupport: "",
             vlmApiKey: "",
             vlmModel: "",
             vlmBaseUrl: "",
@@ -8348,6 +8357,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     modelList: "",
     modelWindows: "",
     modelVlm: "",
+    modelReasoningSupport: "",
     vlmApiKey: "",
     vlmModel: "",
     vlmBaseUrl: "",
@@ -8382,6 +8392,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       modelList: "",
       modelWindows: "",
       modelVlm: "",
+      modelReasoningSupport: "",
       vlmApiKey: "",
       vlmModel: "",
       vlmBaseUrl: "",

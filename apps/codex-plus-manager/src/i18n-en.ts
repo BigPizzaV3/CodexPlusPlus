@@ -804,6 +804,10 @@ export const EN_PLAIN: Record<string, string> = {
   "正在读取本机环境": "Reading the local environment",
   "重新检测": "Check again",
   "排查可能干扰中转站配置的本机环境": "Find local environment settings that may interfere with relay configuration",
+  "勾选标记纯文本模型，转发前丢弃图片；配了视觉模型则先转文字": "Check to mark as text-only model; images are dropped before forwarding (or converted to text if a vision model is configured)",
+  "不支持推理": "No reasoning",
+  "勾选后该模型 reasoning 字段会被剥离，避免不支持推理的模型报错；对所有协议生效": "Strip the reasoning field for this model to avoid errors on models that don't support reasoning; applies to all protocols",
+  "只支持文本": "Text-only",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
