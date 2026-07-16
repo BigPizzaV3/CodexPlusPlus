@@ -5789,7 +5789,7 @@ function RelayProfileEditor({
             </p>
           </Field>
         ) : null}
-        {showApiFields && modelWindowRows.some((row) => row.textOnly) ? (
+        {showApiFields ? (
           <div className="relay-vlm-section">
             <div className="relay-vlm-section-header">{t("Vision Analysis Provider")}</div>
             <Field className="relay-field-vlm-api-key" label={t("VLM API Key")}>
@@ -5815,7 +5815,7 @@ function RelayProfileEditor({
               />
             </Field>
             <p className="field-hint">
-              {t("若开启 VLM analysis，请确认 VLM 配置项完整且服务可用。")}
+              {t("若开启 VLM analysis，请确认 VLM 配置项完整且服务可用。VLM analysis 不可用时自动降级为丢弃图片。")}
               <br />
               {t("仅在 Chat Completion 和聚合模式生效。")}
             </p>

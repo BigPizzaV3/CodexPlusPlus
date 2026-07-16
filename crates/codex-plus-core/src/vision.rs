@@ -209,7 +209,7 @@ pub fn strip_images_only_counted(messages: &mut [Value]) -> usize {
 fn inject_followup_note(messages: &mut [Value], n_history_images: usize) {
     let note = format!(
         "[系统：用户之前发送了 {n_history_images} 张图片，描述已在上面（# 图片内容描述）。\
-         请优先从这些描述回答。\n⚠️ 若用户追问的细节描述中没有明确覆盖，\
+         请优先从这些描述回答。\n若用户追问的细节描述中没有明确覆盖，\
          必须如实告知用户「需要重新查看原始图片，请重新发送图片并附上问题」。\
          绝对不要猜测或编造图片中未描述的细节。]"
     );
