@@ -1,5 +1,5 @@
 (() => {
-  const runtimeVersion = "4";
+  const runtimeVersion = "5";
   const existing = window.__codexPlusPetRealMouseLook;
   if (existing?.version === runtimeVersion && existing?.isReady?.()) return;
   existing?.stop?.();
@@ -76,12 +76,18 @@
       if (!resolved || typeof resolved.subscribe !== "function") {
         throw new Error("V2 avatar overlay dispatcher unavailable");
       }
-      dispatcher = resolved;
-      unsubscribe = dispatcher.subscribe(eventType, (message) => {
+      if (stopped) throw new Error("pet real-mouse runtime was retired during dispatcher setup");
+      const nextUnsubscribe = resolved.subscribe(eventType, (message) => {
         if (sendingSynthetic) return;
         nativeCursorActive = !!message?.point;
         if (nativeCursorActive) syntheticActive = false;
       });
+      if (stopped) {
+        nextUnsubscribe?.();
+        throw new Error("pet real-mouse runtime was retired during dispatcher subscription");
+      }
+      dispatcher = resolved;
+      unsubscribe = nextUnsubscribe;
       return dispatcher;
     }).catch((error) => {
       dispatcherPromise = null;
@@ -116,6 +122,7 @@
   async function updateScreenPoint(screenPoint) {
     if (stopped || !acceptsUpdates || updateInFlight) return;
     const mascot = document.querySelector(mascotSelector);
+    runtime.mascotHovered = false;
     if (!mascot || document.visibilityState !== "visible" || dragging || nativeCursorActive) {
       if (!nativeCursorActive) clearSyntheticPoint();
       return;
@@ -128,14 +135,16 @@
     updateInFlight = true;
     try {
       const localPoint = { x: screenPoint.x - window.screenX, y: screenPoint.y - window.screenY };
-      const hit = document.elementFromPoint(localPoint.x, localPoint.y);
-      const mascotHovered = mascot.matches(":hover") || !!hit?.closest?.(mascotSelector);
+      const bounds = mascot.getBoundingClientRect();
+      const mascotHovered = localPoint.x >= bounds.left
+        && localPoint.x <= bounds.right
+        && localPoint.y >= bounds.top
+        && localPoint.y <= bounds.bottom;
       runtime.mascotHovered = mascotHovered;
       if (mascotHovered) {
         clearSyntheticPoint();
         return;
       }
-      const bounds = mascot.getBoundingClientRect();
       const centerX = bounds.left + bounds.width / 2;
       const centerY = bounds.top + bounds.height / 2;
       const distance = Math.hypot(localPoint.x - centerX, localPoint.y - centerY);

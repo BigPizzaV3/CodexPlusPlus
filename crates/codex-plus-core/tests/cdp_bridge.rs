@@ -72,8 +72,9 @@ fn pet_real_mouse_script_uses_cdp_push_and_native_avatar_event() {
     assert!(script.contains("nativeCursorActive"));
     assert!(script.contains("transport: \"cdp-push\""));
     assert!(script.contains("updateScreenPoint(point)"));
-    assert!(script.contains("mascot.matches(\":hover\")"));
-    assert!(script.contains("document.elementFromPoint(localPoint.x, localPoint.y)"));
+    assert!(script.contains("localPoint.x >= bounds.left"));
+    assert!(script.contains("localPoint.y <= bounds.bottom"));
+    assert!(!script.contains("document.elementFromPoint"));
     assert!(script.contains("if (mascotHovered)"));
     assert!(
         script
@@ -87,6 +88,9 @@ fn pet_real_mouse_script_uses_cdp_push_and_native_avatar_event() {
     assert!(!script.contains("/pet/cursor-position"));
     assert!(!script.contains("X-Codex-Plus-Pet-Token"));
     assert!(script.contains("delete window.__codexPlusPetRealMouseLook"));
+    assert!(script.contains("retired during dispatcher setup"));
+    assert!(script.contains("nextUnsubscribe?.()"));
+    assert!(script.contains("const runtimeVersion = \"5\""));
 }
 
 #[test]
