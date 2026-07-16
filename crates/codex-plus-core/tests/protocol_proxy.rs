@@ -1782,3 +1782,35 @@ fn spawn_chat_server() -> ChatServer {
     });
     ChatServer { base_url, handle }
 }
+
+// ---------------------------------------------------------------------------
+// Task 2: reasoning field stripping tests
+// ---------------------------------------------------------------------------
+
+fn relay_with_reasoning(map: &str) -> codex_plus_core::settings::RelayProfile {
+    let mut r = codex_plus_core::settings::RelayProfile::default();
+    r.model_reasoning_support = map.to_string();
+    r
+}
+
+#[test]
+fn reasoning_stripped_when_unsupported_on_responses_passthrough() {
+    let mut body = serde_json::json!({
+        "model": "kimi-k2.6",
+        "input": [{"role":"user","content":[{"type":"input_text","text":"hi"}]}],
+        "reasoning": {"effort":"high"}
+    });
+    let relay = relay_with_reasoning(r#"{"kimi-k2.6":false}"#);
+    assert!(!codex_plus_core::protocol_proxy::model_supports_reasoning(&relay, "kimi-k2.6"));
+    codex_plus_core::protocol_proxy::strip_reasoning_in_place(&mut body, false);
+    assert!(body.get("reasoning").is_none(), "reasoning 应被剥离");
+    assert_eq!(body["input"][0]["content"][0]["text"], "hi", "其余字段不动");
+}
+
+#[test]
+fn reasoning_kept_when_supported() {
+    let mut body = serde_json::json!({"model":"gpt-5","reasoning":{"effort":"high"}});
+    let _relay = relay_with_reasoning(r#"{"kimi-k2.6":false}"#); // gpt-5 未命中 -> 默认支持
+    codex_plus_core::protocol_proxy::strip_reasoning_in_place(&mut body, true);
+    assert!(body.get("reasoning").is_some());
+}

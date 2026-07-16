@@ -794,21 +794,53 @@ pub async fn open_chat_completions_proxy_request(
     })
 }
 
+/// 大小写不敏感查 per-model JSON bool map。非法 JSON / 空串 / 未命中 -> None。
+fn lookup_model_bool_support(map_json: &str, model: &str) -> Option<bool> {
+    let map: std::collections::HashMap<String, bool> = match serde_json::from_str(map_json) {
+        Ok(map) => map,
+        Err(_) => return None,
+    };
+    let model_lower = model.to_ascii_lowercase();
+    map.iter()
+        .find(|(k, _)| k.to_ascii_lowercase() == model_lower)
+        .map(|(_, v)| *v)
+}
+
+/// per-model 推理能力查询。map 命中 -> 用 map 值；未命中 -> 默认 true（支持 reasoning，不误伤）。
+pub fn model_supports_reasoning(relay: &crate::settings::RelayProfile, model: &str) -> bool {
+    lookup_model_bool_support(&relay.model_reasoning_support, model).unwrap_or(true)
+}
+
+/// 移除 body 顶层 `reasoning` 字段。supports_reasoning=true 时 no-op。
+pub fn strip_reasoning_in_place(body: &mut serde_json::Value, supports_reasoning: bool) {
+    if supports_reasoning {
+        return;
+    }
+    if let Some(obj) = body.as_object_mut() {
+        obj.remove("reasoning");
+    }
+}
+
 async fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
-    request_json: Value,
+    mut request_json: Value,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi)> {
+    let model = request_json
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    // F1: reasoning 剥离（两协议）。从 request_json 剥，确保 Chat 路径在
+    // responses_to_chat_completions -> apply_chat_reasoning_options 之前生效。
+    strip_reasoning_in_place(&mut request_json, model_supports_reasoning(relay, &model));
+
     let mut body = match relay.protocol {
         RelayProtocol::Responses => request_json,
         RelayProtocol::ChatCompletions => responses_to_chat_completions(request_json)?,
     };
 
     // Image handling (per-model): send-as-is / strip / VLM analysis
-    let model = body
-        .get("model")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
     if !model.is_empty() {
         use crate::vision::ImageHandling;
         match crate::vision::image_handling_mode(&model, &relay.model_vlm) {
