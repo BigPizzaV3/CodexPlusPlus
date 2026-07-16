@@ -198,12 +198,14 @@ pub fn resolve_codex_app_dir_with_saved(
     saved_app_path: Option<&str>,
 ) -> Option<PathBuf> {
     if let Some(app_dir) = app_dir {
+        // 显式 --app-path 仅接受有效 Codex 应用；无效时不回退，避免静默启动错误目录
         return normalize_codex_app_path(app_dir);
     }
     if let Some(saved) = saved_app_path
         .map(str::trim)
         .filter(|saved| !saved.is_empty())
     {
+        // 已保存路径无效（例如误选 Codex++）时回退自动探测
         if let Some(path) = normalize_codex_app_path(Path::new(saved)) {
             return Some(path);
         }
@@ -213,6 +215,11 @@ pub fn resolve_codex_app_dir_with_saved(
 
 pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
     if path.as_os_str().is_empty() {
+        return None;
+    }
+
+    // 拒绝把 Codex++ 管理工具安装目录误当成 Codex 桌面应用
+    if is_codex_plus_plus_path(path) {
         return None;
     }
 
@@ -226,7 +233,9 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
     }
 
     if path.is_file() {
-        return path.parent().map(Path::to_path_buf);
+        // 任意普通文件不再视为应用根；仅当父目录已是合法 Codex 目录时取父路径
+        let parent = path.parent()?;
+        return normalize_codex_app_path(parent);
     }
 
     if executable_in_dir(path).is_some() {
@@ -238,13 +247,46 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
         if executable_in_dir(&nested_app).is_some() {
             return Some(nested_app);
         }
+        // WindowsApps 常因 ACL 无法枚举 exe；只要包名像 OpenAI.Codex_* 仍接受 app\
+        if is_codex_store_package_dir(path) {
+            return Some(nested_app);
+        }
     }
 
-    if path.is_dir() {
+    // 接受 Store 包目录本身（含 …\OpenAI.Codex_*\app）
+    if path.is_dir() && is_codex_store_package_dir(path) {
         return Some(path.to_path_buf());
     }
 
     None
+}
+
+/// Codex++ 管理控制台/安装根，绝不能当作 OpenAI Codex 桌面应用。
+fn is_codex_plus_plus_path(path: &Path) -> bool {
+    for component in path.components() {
+        let std::path::Component::Normal(name) = component else {
+            continue;
+        };
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let lower = name.to_ascii_lowercase();
+        if lower == "codex++"
+            || lower == "codexplusplus"
+            || lower == "codex-plus-plus"
+            || lower.contains("codex-plus-manager")
+        {
+            return true;
+        }
+    }
+    let normalized = path.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    normalized.contains("\\programs\\codex++")
+        || normalized.contains("\\codex++\\")
+        || normalized.ends_with("\\codex++")
+}
+
+fn is_codex_store_package_dir(path: &Path) -> bool {
+    package_spec_from_path(path).is_some()
 }
 
 pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
