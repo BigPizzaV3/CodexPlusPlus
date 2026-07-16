@@ -1537,8 +1537,30 @@ async fn audio_transcriptions_proxy_forwards_multipart_body() {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut buffer = Vec::new();
         let mut chunk = [0; 4096];
-        let read = stream.read(&mut chunk).await.unwrap();
-        buffer.extend_from_slice(&chunk[..read]);
+        loop {
+            let read = stream.read(&mut chunk).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            let request = String::from_utf8_lossy(&buffer);
+            let Some((headers, body)) = request.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            if body.as_bytes().len() >= content_length {
+                break;
+            }
+        }
         let request = String::from_utf8_lossy(&buffer).to_string();
         let body = r#"{"text":"ok"}"#;
         let response = format!(
