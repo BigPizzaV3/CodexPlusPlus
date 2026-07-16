@@ -380,6 +380,70 @@ fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
 }
 
 #[test]
+fn app_paths_rejects_codex_plus_plus_install_dir_as_codex_app() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = temp.path().join("Programs").join("Codex++");
+    std::fs::create_dir_all(&manager).unwrap();
+    std::fs::write(manager.join("Codex++ Manager.exe"), "").unwrap();
+
+    assert_eq!(normalize_codex_app_path(&manager), None);
+    assert_eq!(
+        normalize_codex_app_path(&manager.join("Codex++ Manager.exe")),
+        None
+    );
+
+    let resolved = resolve_codex_app_dir_with_saved(None, Some(&manager.to_string_lossy()));
+    assert_ne!(resolved.as_deref(), Some(manager.as_path()));
+}
+
+#[test]
+fn app_paths_rejects_plain_directory_without_codex_executable() {
+    let temp = tempfile::tempdir().unwrap();
+    let plain = temp.path().join("not-a-codex-app");
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(plain.join("readme.txt"), "nope").unwrap();
+
+    assert_eq!(normalize_codex_app_path(&plain), None);
+    assert_eq!(normalize_codex_app_path(&plain.join("readme.txt")), None);
+}
+
+#[test]
+fn app_paths_empty_saved_path_matches_no_saved_path() {
+    assert_eq!(
+        resolve_codex_app_dir_with_saved(None, Some("")),
+        resolve_codex_app_dir_with_saved(None, None)
+    );
+    assert_eq!(
+        resolve_codex_app_dir_with_saved(None, Some("   ")),
+        resolve_codex_app_dir_with_saved(None, None)
+    );
+}
+
+#[test]
+fn app_paths_invalid_saved_path_falls_back_instead_of_sticking() {
+    let temp = tempfile::tempdir().unwrap();
+    let junk = temp.path().join("Codex++");
+    std::fs::create_dir_all(&junk).unwrap();
+
+    // 合法独立安装：即使 saved 指向 Codex++，规范化失败后应能落到该候选
+    // （通过显式 app_dir 验证回退链之外的合法路径仍可用）
+    let standalone = temp.path().join("OpenAI").join("Codex").join("bin");
+    std::fs::create_dir_all(&standalone).unwrap();
+    std::fs::write(standalone.join("codex.exe"), "").unwrap();
+
+    assert_eq!(normalize_codex_app_path(&junk), None);
+    assert_eq!(
+        normalize_codex_app_path(&standalone).as_deref(),
+        Some(standalone.as_path())
+    );
+    assert_eq!(
+        resolve_codex_app_dir_with_saved(Some(&standalone), Some(&junk.to_string_lossy()))
+            .as_deref(),
+        Some(standalone.as_path())
+    );
+}
+
+#[test]
 fn launcher_builds_debug_arguments_and_commands() {
     let app_dir = PathBuf::from(r"C:\Codex\app");
 
