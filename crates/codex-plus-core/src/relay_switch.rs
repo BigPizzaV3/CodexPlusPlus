@@ -24,6 +24,7 @@ pub fn switch_relay_profile_in_home(
     if !selected_settings.relay_profiles_enabled {
         anyhow::bail!("供应商配置总开关已关闭，未写入 config.toml / auth.json。");
     }
+    crate::codex_app_state::capture_app_state_snapshot_nonfatal(home, "relay_switch.before");
 
     let original_settings = store.load().unwrap_or_default();
     if !previous_active_relay_id.trim().is_empty()
@@ -38,7 +39,13 @@ pub fn switch_relay_profile_in_home(
     let selected_settings = store.load().context("读取供应商设置失败")?;
 
     match apply_selected_relay_profile(home, &selected_settings) {
-        Ok(result) => Ok(result),
+        Ok(result) => {
+            crate::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
+                home,
+                "relay_switch.after",
+            );
+            Ok(result)
+        }
         Err(error) => {
             let _ = store.save(&original_settings);
             Err(error)

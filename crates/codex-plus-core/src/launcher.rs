@@ -258,8 +258,14 @@ where
     let mut keep_launched_on_error = false;
 
     let result: anyhow::Result<LaunchHandle> = async {
+        let home = crate::relay_config::default_codex_home_dir();
         if settings.provider_sync_enabled {
+            crate::codex_app_state::capture_app_state_snapshot_nonfatal(&home, "launcher.before");
             hooks.run_provider_sync().await?;
+            crate::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
+                &home,
+                "launcher.after_provider_sync",
+            );
         }
         if let Err(error) = hooks.ensure_plugin_marketplace_config(&settings).await {
             let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -272,7 +278,6 @@ where
         if settings.computer_use_guard_enabled {
             hooks.ensure_computer_use_config(&settings).await?;
         }
-        let home = crate::relay_config::default_codex_home_dir();
         match crate::codex_sqlite::sanitize_historical_model_suffixes(&home) {
             Ok(result) if result.updated > 0 => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -654,6 +659,13 @@ impl LaunchHooks for DefaultLaunchHooks {
         settings: &BackendSettings,
         extra_args: &[String],
     ) -> anyhow::Result<CodexLaunch> {
+        if settings.enhancements_enabled {
+            let home = crate::relay_config::default_codex_home_dir();
+            crate::codex_app_state::prepare_projectless_main_window_nonfatal(
+                &home,
+                "launcher.prelaunch",
+            );
+        }
         let native_menu_localization_enabled = settings.codex_app_native_menu_localization;
         let native_menu_inspector_port =
             native_menu_localization_enabled.then(|| select_native_menu_inspector_port(debug_port));
