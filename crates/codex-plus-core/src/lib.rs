@@ -36,6 +36,7 @@ pub mod update;
 pub mod upstream_worktree;
 pub mod user_scripts;
 pub mod version;
+pub mod vision;
 pub mod watcher;
 #[cfg(windows)]
 mod windows_integration;

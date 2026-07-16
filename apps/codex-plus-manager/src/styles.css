@@ -4186,3 +4186,40 @@ select {
     justify-content: flex-start;
   }
 }
+
+.relay-model-row-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.relay-model-row-actions .field-select {
+  width: auto;
+  min-width: 150px;
+  min-height: 32px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.relay-model-row-hint {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  align-self: center;
+  white-space: nowrap;
+}
+
+.relay-vlm-section {
+  display: grid;
+  gap: 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-sunken));
+  padding: 14px;
+  margin-top: 8px;
+}
+
+.relay-vlm-section-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
