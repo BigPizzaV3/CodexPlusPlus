@@ -5,8 +5,8 @@
 /// and two-phase (sync + background) analysis with X-governed injection.
 use serde_json::Value;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -18,78 +18,81 @@ const ANALYZE_DEPTH_LIMIT: usize = 50;
 /// 每条描述的平均 token 预算（~200 chars → estimate_tokens = 200/2 = 100）。
 const AVG_DESC_BUDGET: u64 = 100;
 /// per-batch 最大重试次数（共 3 次尝试）。
-const MAX_RETRIES: u32 = 2;
-/// 全局 VLM 并发上限（跨请求）。
-const MAX_GLOBAL_VLM_CONCURRENCY: usize = 5;
-/// analyze_all 总超时。
-const ANALYZE_ALL_TIMEOUT: Duration = Duration::from_secs(120);
-/// VLM 返回的错误文本截断长度。
-const ERROR_BODY_TRUNCATE: usize = 256;
+const BATCH_MAX_ATTEMPTS: u32 = 2;
+/// 单图最大重试次数。
+#[allow(dead_code)]
+const SINGLE_MAX_ATTEMPTS: u32 = 1;
 /// 上下文窗口安全余量（0.9 = 留 10% 给上游 tokenizer 差异）。
 const CONTEXT_SAFETY_MARGIN: f64 = 0.9;
+/// VLM 返回的错误文本截断长度。
+#[allow(dead_code)]
+const ERROR_BODY_TRUNCATE: usize = 256;
+/// 单图描述最大字符数。
+const DESC_MAX_CHARS: usize = 2000;
 
 // ── Global state ──────────────────────────────────────────────────────
 
 /// 缓存容量上限。
-const MAX_CACHE_CAPACITY: usize = 500;
+const CACHE_CAPACITY: usize = 500;
 /// 缓存 TTL（24 小时）。
 const CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
 
 /// 缓存条目：(描述文本, 写入时间)。
 type CacheEntry = (String, Instant);
 
-// ── Global state ──────────────────────────────────────────────────────
-
-/// 图片描述缓存：key=URL 的 SHA256 前 16 字节 hex，value=(描述, 写入时间)。
-static VLM_CACHE: LazyLock<Mutex<HashMap<String, CacheEntry>>> =
+/// 图片描述缓存：key=u64 hash(url) or hash(url+question)，value=(描述, 写入时间)。
+static VLM_CACHE: LazyLock<Mutex<HashMap<u64, CacheEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// 全局 VLM 信号量，限制跨请求并发数。
-static VLM_SEMAPHORE: LazyLock<tokio::sync::Semaphore> =
-    LazyLock::new(|| tokio::sync::Semaphore::new(MAX_GLOBAL_VLM_CONCURRENCY));
+static VL_SEMAPHORE: LazyLock<tokio::sync::Semaphore> =
+    LazyLock::new(|| tokio::sync::Semaphore::new(5));
 
-fn vlm_semaphore() -> &'static tokio::sync::Semaphore {
-    &VLM_SEMAPHORE
+fn url_hash(url: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    url.hash(&mut h);
+    h.finish()
 }
 
-/// 查缓存（自动清理过期条目）。
-fn cache_get(key: &str) -> Option<String> {
+fn url_question_hash(url: &str, question: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    url.hash(&mut h);
+    question.hash(&mut h);
+    h.finish()
+}
+
+fn cache_get(key: u64) -> Option<String> {
     let mut cache = VLM_CACHE.lock().unwrap();
-    let entry = cache.get(key)?;
-    if entry.1.elapsed() > CACHE_TTL {
-        cache.remove(key);
-        return None;
+    if let Some((desc, written)) = cache.get(&key).cloned() {
+        if written.elapsed() < CACHE_TTL {
+            return Some(desc);
+        }
+        cache.remove(&key);
     }
-    Some(entry.0.clone())
+    None
 }
 
-/// 写缓存（达到容量上限时清理所有过期条目，若仍满则删除 1/4 旧条目）。
-fn cache_insert(key: String, value: String) {
+fn cache_put(key: u64, desc: String) {
     let mut cache = VLM_CACHE.lock().unwrap();
-    if cache.len() >= MAX_CACHE_CAPACITY {
-        // 先清理过期条目
-        cache.retain(|_, (_, ts)| ts.elapsed() <= CACHE_TTL);
-        // 若仍满，删除最旧的 1/4
-        if cache.len() >= MAX_CACHE_CAPACITY {
-            let remove_count = MAX_CACHE_CAPACITY / 4;
-            let mut entries: Vec<_> = cache.iter().map(|(k, (_, ts))| (k.clone(), *ts)).collect();
-            entries.sort_by_key(|(_, ts)| *ts);
-            for (k, _) in entries.iter().take(remove_count) {
-                cache.remove(k);
-            }
+    if cache.len() >= CACHE_CAPACITY {
+        if let Some((&oldest, _)) = cache.iter().min_by_key(|(_, (_, t))| *t) {
+            cache.remove(&oldest);
         }
     }
-    cache.insert(key, (value, Instant::now()));
+    cache.insert(key, (desc, Instant::now()));
 }
 
-/// 判断 key 是否在缓存中且未过期。
-#[allow(dead_code)]
-fn cache_contains(key: &str) -> bool {
+fn cache_contains(key: u64) -> bool {
     let cache = VLM_CACHE.lock().unwrap();
     cache
-        .get(key)
-        .map(|(_, ts)| ts.elapsed() <= CACHE_TTL)
+        .get(&key)
+        .map(|(_, t)| t.elapsed() < CACHE_TTL)
         .unwrap_or(false)
+}
+
+#[doc(hidden)]
+pub fn cache_clear_for_tests() {
+    VLM_CACHE.lock().unwrap().clear();
 }
 
 // ── Configuration ─────────────────────────────────────────────────────
@@ -162,13 +165,6 @@ pub fn strip_images_only(messages: &mut [Value]) {
             _ => {}
         }
     }
-}
-
-// ── URL hashing ───────────────────────────────────────────────────────
-
-fn url_hash(url: &str) -> String {
-    let hash = Sha256::digest(url.as_bytes());
-    hash[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ── URL collection ────────────────────────────────────────────────────
@@ -276,194 +272,230 @@ fn estimate_tokens(messages: &[Value]) -> usize {
     serde_json::to_string(messages).unwrap_or_default().len() / 2
 }
 
-// ── VLM API call ──────────────────────────────────────────────────────
+// ── Prompts & helpers ─────────────────────────────────────────────────
 
-/// VLM HTTP 请求超时：测试中用短超时以便 wiremock 触发超时路径。
-#[cfg(not(test))]
-const VLM_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-#[cfg(test)]
-const VLM_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const TIER1_PROMPT: &str =
+    "请详细描述这张图片，重点涵盖：文字（如包含则逐字提取）、UI 元素、错误信息、布局结构。";
 
-/// 单 batch VLM 调用（含错误详情截断）。
-async fn call_vlm_batch(urls: &[String], config: &VlmConfig) -> Result<String, String> {
-    let client = crate::http_client::vlm_http_client_with_timeout(
-        std::time::Duration::from_secs(5),
-        VLM_REQUEST_TIMEOUT,
-    )
-    .map_err(|e| format!("client: {e}"))?;
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-    let mut parts: Vec<Value> = urls
-        .iter()
-        .map(|u| serde_json::json!({"type": "image_url", "image_url": {"url": u}}))
-        .collect();
-    parts.push(serde_json::json!({
-        "type": "text",
-        "text": "请描述图片内容。如包含文字，请精确提取图片中的文字。"
-    }));
-    let body = serde_json::json!({
-        "model": config.model,
-        "messages": [{"role": "user", "content": parts}],
-        "stream": false,
-    });
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", config.api_key))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("request failed: {e}"))?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body_text = resp.text().await.unwrap_or_default();
-        let truncated: String = body_text.chars().take(ERROR_BODY_TRUNCATE).collect();
-        return Err(format!("VLM API {}: {}", status, truncated));
-    }
-    let data: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse failed: {e}"))?;
-    data["choices"][0]["message"]["content"]
-        .as_str()
-        .map(String::from)
-        .ok_or_else(|| "no content".to_string())
+#[allow(dead_code)]
+fn tier2_prompt(question: &str) -> String {
+    format!("{TIER1_PROMPT}\n用户当前问题：{question}\n在全面描述基础上，对与上述问题相关的内容做更详细说明。")
 }
 
-/// 判断错误是否可重试（网络/服务端/限流），4xx 不重试。
-fn is_retryable(err: &str) -> bool {
-    let lower = err.to_lowercase();
-    lower.contains("timeout")
-        || lower.contains("request failed")
-        || lower.contains("vlm api 502")
-        || lower.contains("vlm api 503")
-        || lower.contains("vlm api 504")
-        || lower.contains("vlm api 429")
+fn truncate_char_safe(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
 }
 
-/// 带重试的单 batch 调用。
-async fn call_vlm_batch_with_retry(urls: &[String], config: &VlmConfig) -> Result<String, String> {
-    let mut last_err = String::new();
-    for attempt in 0..=MAX_RETRIES {
-        match call_vlm_batch(urls, config).await {
-            Ok(text) => return Ok(text),
-            Err(e) => {
-                last_err = e;
-                if !is_retryable(&last_err) || attempt == MAX_RETRIES {
-                    break;
+/// 从 messages 收集用户原文：最新 user 消息有文字 → 取；无文字 → 回溯最近一条有文字的 user 消息。
+#[allow(dead_code)]
+fn collect_input_text(messages: &[Value]) -> String {
+    for item in messages.iter().rev() {
+        if item.get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        if let Some(parts) = item.get("content").and_then(Value::as_array) {
+            for part in parts {
+                if matches!(
+                    part.get("type").and_then(Value::as_str),
+                    Some("input_text") | Some("text")
+                ) {
+                    if let Some(t) = part.get("text").and_then(Value::as_str) {
+                        return t.to_string();
+                    }
                 }
-                tokio::time::sleep(Duration::from_millis(500 * 2_u64.pow(attempt))).await;
             }
         }
     }
-    Err(last_err)
+    String::new()
 }
 
-/// 单请求内最大并发 batch 数。
-const PER_REQUEST_CONCURRENCY: usize = 3;
+#[allow(dead_code)]
+fn latest_user_message_has_image(messages: &[Value]) -> bool {
+    messages
+        .iter()
+        .rev()
+        .find(|it| it.get("role").and_then(Value::as_str) == Some("user"))
+        .and_then(|it| it.get("content").and_then(Value::as_array))
+        .map(|parts| {
+            parts.iter().any(|p| {
+                matches!(
+                    p.get("type").and_then(Value::as_str),
+                    Some("input_image") | Some("image_url")
+                )
+            })
+        })
+        .unwrap_or(false)
+}
 
-// ── Batch analysis ────────────────────────────────────────────────────
+// ── VLM API call ──────────────────────────────────────────────────────
 
-/// 并发分析全部图片 batch（带全局信号量、JoinSet 并发、总超时、fail-closed）。
-/// 超时时保留已完成 batch 的结果，未完成的丢弃。
-/// 返回 `Vec<Option<String>>`：`Some(text)` 为成功 batch 的描述，`None` 为失败 batch。
-/// 全部失败返回 Err。
-pub async fn analyze_all(
-    urls: &[String],
+fn per_batch_timeout(n: usize) -> Duration {
+    Duration::from_secs(35 + 10 * n as u64)
+}
+
+fn backoff_delay(attempt: u32, salt: &str) -> Duration {
+    let base = 3.0 * 2u32.pow(attempt.saturating_sub(1)) as f64;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    attempt.hash(&mut h);
+    salt.hash(&mut h);
+    let jitter = (h.finish() % 20) as f64 / 100.0;
+    Duration::from_secs_f64(base * (0.8 + jitter))
+}
+
+fn build_vl_batch_body(urls: &[String], prompt: &str, config: &VlmConfig) -> Value {
+    let final_prompt = if urls.len() > 1 {
+        format!(
+            "{prompt}\n请按顺序描述以下{}张图片，每张图片的描述以 [[图片K]] 开头（K=1..{n}），每张单独描述。",
+            urls.len(),
+            n = urls.len()
+        )
+    } else {
+        prompt.to_string()
+    };
+    let mut content = vec![serde_json::json!({"type":"text","text":final_prompt})];
+    for u in urls {
+        content.push(serde_json::json!({"type":"image_url","image_url":{"url":u}}));
+    }
+    serde_json::json!({"model": config.model, "messages":[{"role":"user","content":content}]})
+}
+
+fn extract_vl_text(response_body: &Value) -> Option<String> {
+    response_body["choices"][0]["message"]["content"]
+        .as_str()
+        .map(String::from)
+}
+
+fn parse_batch_descriptions(text: &str, n: usize) -> Option<Vec<String>> {
+    let mut result = Vec::with_capacity(n);
+    for i in 1..=n {
+        let marker = format!("[[图片{i}]]");
+        let start = text.find(&marker)? + marker.len();
+        let end = (i + 1..=n)
+            .find_map(|j| {
+                let m = format!("[[图片{j}]]");
+                text[start..].find(&m).map(|p| start + p)
+            })
+            .unwrap_or(text.len());
+        result.push(text[start..end].trim().to_string());
+    }
+    Some(result)
+}
+
+fn log_vl_call(
     config: &VlmConfig,
-) -> Result<Vec<Option<String>>, String> {
+    n_urls: usize,
+    started: Instant,
+    status: &str,
+    http_code: Option<u16>,
+    error: Option<&str>,
+) {
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.vl_call",
+        serde_json::json!({
+            "vlModel": config.model,
+            "n_urls": n_urls,
+            "duration_ms": started.elapsed().as_millis() as u64,
+            "status": status,
+            "http_code": http_code,
+            "error": error,
+        }),
+    );
+}
+
+async fn call_vlm_batch_once(
+    urls: &[String],
+    prompt: &str,
+    config: &VlmConfig,
+    client: &reqwest::Client,
+) -> anyhow::Result<Vec<String>> {
+    let _permit = VL_SEMAPHORE.acquire().await.expect("sem closed");
+    let endpoint = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    let body = build_vl_batch_body(urls, prompt, config);
+    let started = Instant::now();
+    let n = urls.len();
+    let response = match client
+        .post(&endpoint)
+        .bearer_auth(&config.api_key)
+        .json(&body)
+        .timeout(per_batch_timeout(n))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let s = if e.is_timeout() { "timeout" } else { "send_error" };
+            log_vl_call(config, n, started, s, None, Some(&e.to_string()));
+            return Err(e.into());
+        }
+    };
+    let http_code = response.status().as_u16();
+    let response_body: Value = match response.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            log_vl_call(
+                config,
+                n,
+                started,
+                "json_error",
+                Some(http_code),
+                Some(&e.to_string()),
+            );
+            return Err(e.into());
+        }
+    };
+    if !(200..300).contains(&http_code) {
+        let msg = format!(
+            "VL API {http_code}: {}",
+            serde_json::to_string(&response_body).unwrap_or_default()
+        );
+        log_vl_call(config, n, started, "http_error", Some(http_code), Some(&msg));
+        anyhow::bail!(msg);
+    }
+    let text = match extract_vl_text(&response_body) {
+        Some(t) => t,
+        None => {
+            log_vl_call(config, n, started, "no_text", Some(http_code), None);
+            anyhow::bail!("no content");
+        }
+    };
+    if n <= 1 {
+        log_vl_call(config, n, started, "ok", Some(http_code), None);
+        return Ok(vec![text]);
+    }
+    match parse_batch_descriptions(&text, n) {
+        Some(d) => {
+            log_vl_call(config, n, started, "ok", Some(http_code), None);
+            Ok(d)
+        }
+        None => {
+            log_vl_call(config, n, started, "parse_error", Some(http_code), None);
+            anyhow::bail!("batch parse failed")
+        }
+    }
+}
+
+async fn call_vlm_batch(
+    urls: &[String],
+    prompt: &str,
+    config: &VlmConfig,
+    client: &reqwest::Client,
+    max_attempts: u32,
+) -> anyhow::Result<Vec<String>> {
     if urls.is_empty() {
         return Ok(Vec::new());
     }
-    let batches: Vec<Vec<String>> = urls
-        .chunks(BATCH_SIZE)
-        .map(|chunk| chunk.to_vec())
-        .collect();
-
-    let batch_count = batches.len();
-    let local_sem = std::sync::Arc::new(tokio::sync::Semaphore::new(PER_REQUEST_CONCURRENCY));
-    // 预分配按 batch index 写入，解决 JoinSet 完成顺序 ≠ batch 顺序的排序问题。
-    let outcomes: std::sync::Arc<std::sync::Mutex<Vec<Option<Result<String, String>>>>> =
-        std::sync::Arc::new(std::sync::Mutex::new(
-            (0..batch_count).map(|_| None).collect(),
-        ));
-
-    let work = {
-        let outcomes = outcomes.clone();
-        let local_sem = local_sem.clone();
-        async move {
-            let mut set = tokio::task::JoinSet::new();
-            for (batch_idx, batch) in batches.iter().enumerate() {
-                let batch = batch.clone();
-                let config = config.clone();
-                let gs = vlm_semaphore();
-                let ls = local_sem.clone();
-                let outcomes = outcomes.clone();
-                set.spawn(async move {
-                    let _l = ls.acquire().await;
-                    let _g = gs.acquire().await;
-                    let result = call_vlm_batch_with_retry(&batch, &config).await;
-                    outcomes.lock().unwrap()[batch_idx] = Some(result);
-                });
-            }
-            while (set.join_next().await).is_some() {}
+    let salt = urls.first().map(String::as_str).unwrap_or("");
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 0..max_attempts {
+        if attempt > 0 {
+            tokio::time::sleep(backoff_delay(attempt, salt)).await;
         }
-    };
-
-    tokio::select! {
-        _ = work => {},
-        _ = tokio::time::sleep(ANALYZE_ALL_TIMEOUT) => {
-            // work future 被 drop → JoinSet 被 drop → 剩余 task 被取消
-            // outcomes 中已完成的 task 保留在对应 batch_idx，未完成的保持 None
+        match call_vlm_batch_once(urls, prompt, config, client).await {
+            Ok(v) => return Ok(v),
+            Err(e) => last_err = Some(e),
         }
     }
-
-    let outcomes: Vec<Option<Result<String, String>>> =
-        std::mem::take(&mut *outcomes.lock().unwrap());
-
-    // 按 batch 原始顺序收集结果（None 视为失败）。
-    let mut success_count = 0usize;
-    let mut results: Vec<Option<String>> = Vec::with_capacity(batch_count);
-    for outcome in &outcomes {
-        match outcome {
-            Some(Ok(text)) => {
-                success_count += 1;
-                results.push(Some(text.clone()));
-            }
-            _ => results.push(None),
-        }
-    }
-
-    if success_count == 0 {
-        return Err("all VLM calls failed (fail-closed: images preserved)".to_string());
-    }
-
-    Ok(results)
-}
-
-// ── Phase 2 后台分析 ────────────────────────────────────────────────────
-
-/// 后台分析图片并写入缓存（不注入到消息中）。
-/// 失败静默跳过，缓存保持未命中状态供后续请求重试。
-async fn background_analyze_and_cache(urls: &[String], config: &VlmConfig) {
-    if urls.is_empty() {
-        return;
-    }
-    match analyze_all(urls, config).await {
-        Ok(batch_results) => {
-            let mut url_offset = 0usize;
-            for batch_opt in &batch_results {
-                let batch_end = (url_offset + BATCH_SIZE).min(urls.len());
-                if let Some(text) = batch_opt {
-                    for url in &urls[url_offset..batch_end] {
-                        cache_insert(url_hash(url), text.clone());
-                    }
-                }
-                url_offset = batch_end;
-            }
-        }
-        Err(_) => {
-            // 后台失败 → 静默跳过，缓存保持未命中。
-        }
-    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("max_attempts=0")))
 }
 
 // ── Description injection ─────────────────────────────────────────────
@@ -510,12 +542,14 @@ pub fn inject_analysis(messages: &mut [Value], result: &Result<String, String>) 
 /// - `model_windows_json`: relay.model_windows 的 JSON 字符串
 /// - `context_window_str`: relay.context_window 的字符串
 /// - `request_model`: 请求中的 model 字段值
+/// - `client`: reqwest HTTP client（由调用方注入）
 pub async fn strip_image_blocks(
     messages: &mut [Value],
     vlm_config: &VlmConfig,
     model_windows_json: &str,
     context_window_str: &str,
     request_model: &str,
+    client: &reqwest::Client,
 ) {
     // 0. 上下文溢出保护：基于剥离图片后的纯文本预估，因为图片最终会被删掉。
     let context_window =
@@ -624,29 +658,21 @@ pub async fn strip_image_blocks(
         vlm_config: &VlmConfig,
         descriptions: &mut std::collections::BTreeMap<usize, String>,
         msg_idx: usize,
+        prompt: &str,
+        client: &reqwest::Client,
     ) -> Result<(), ()> {
         if round_urls.is_empty() {
             return Ok(());
         }
-        match analyze_all(round_urls, vlm_config).await {
-            Ok(batch_results) => {
-                let mut url_offset = 0usize;
-                for batch_opt in &batch_results {
-                    let batch_end = (url_offset + BATCH_SIZE).min(round_urls.len());
-                    let batch_text = match batch_opt {
-                        Some(t) => t.clone(),
-                        None => "[部分图片无法识别]".to_string(),
-                    };
-                    for url in &round_urls[url_offset..batch_end] {
-                        if batch_opt.is_some() {
-                            cache_insert(url_hash(url), batch_text.clone());
-                        }
-                        descriptions
-                            .entry(msg_idx)
-                            .or_default()
-                            .push_str(&format!("\n[图片描述] {batch_text}"));
-                    }
-                    url_offset = batch_end;
+        match call_vlm_batch(round_urls, prompt, vlm_config, client, BATCH_MAX_ATTEMPTS).await {
+            Ok(desc_vec) => {
+                for (url, desc) in round_urls.iter().zip(desc_vec.iter()) {
+                    let desc = truncate_char_safe(desc, DESC_MAX_CHARS);
+                    cache_put(url_hash(url), desc.clone());
+                    descriptions
+                        .entry(msg_idx)
+                        .or_default()
+                        .push_str(&format!("\n[图片描述] {desc}"));
                 }
                 Ok(())
             }
@@ -655,6 +681,7 @@ pub async fn strip_image_blocks(
     }
 
     // 5a. 当前轮：不限量 VLM 同步分析，不计入 X 预算。
+    // 所有路径暂用 TIER1_PROMPT（Tier2 接入留 Task 6）。
     for (_, (msg_idx, urls)) in all_image_msgs.iter().enumerate() {
         if Some(*msg_idx) != current_round_msg_idx {
             continue;
@@ -662,7 +689,7 @@ pub async fn strip_image_blocks(
         let mut round_urls: Vec<String> = Vec::new();
         for url in urls {
             let key = url_hash(url);
-            if let Some(cached) = cache_get(&key) {
+            if let Some(cached) = cache_get(key) {
                 descriptions
                     .entry(*msg_idx)
                     .or_default()
@@ -671,9 +698,16 @@ pub async fn strip_image_blocks(
                 round_urls.push(url.clone());
             }
         }
-        if analyze_and_inject(&round_urls, vlm_config, &mut descriptions, *msg_idx)
-            .await
-            .is_err()
+        if analyze_and_inject(
+            &round_urls,
+            vlm_config,
+            &mut descriptions,
+            *msg_idx,
+            TIER1_PROMPT,
+            client,
+        )
+        .await
+        .is_err()
         {
             // 当前轮 VLM 全部失败 → fail-closed。
             let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -708,7 +742,7 @@ pub async fn strip_image_blocks(
                 break;
             }
             let key = url_hash(url);
-            if let Some(cached) = cache_get(&key) {
+            if let Some(cached) = cache_get(key) {
                 descriptions
                     .entry(*msg_idx)
                     .or_default()
@@ -723,7 +757,15 @@ pub async fn strip_image_blocks(
             continue;
         }
         // 历史轮 VLM 失败 → 静默跳过，已计数的 golden_injected 不减（窗口已占用）。
-        let _ = analyze_and_inject(&round_urls, vlm_config, &mut descriptions, *msg_idx).await;
+        let _ = analyze_and_inject(
+            &round_urls,
+            vlm_config,
+            &mut descriptions,
+            *msg_idx,
+            TIER1_PROMPT,
+            client,
+        )
+        .await;
     }
     historical_injected = golden_injected;
 
@@ -743,7 +785,7 @@ pub async fn strip_image_blocks(
                     break;
                 }
                 let key = url_hash(url);
-                if let Some(cached) = cache_get(&key) {
+                if let Some(cached) = cache_get(key) {
                     descriptions
                         .entry(*msg_idx)
                         .or_default()
@@ -757,59 +799,8 @@ pub async fn strip_image_blocks(
 
     // 6. Phase 2 后台准备：在 strip 之前收集未缓存的 URL 列表。
     // Phase 2 仅当 X > 10 时触发，分析 50 轮深度内未缓存的图片，写入缓存供后续请求使用。
-    let bg_config_opt = if x_budget > 10 {
-        let bg_target = x_budget.saturating_sub(golden_injected);
-        if bg_target > 0 {
-            let mut bg_urls: Vec<String> = Vec::new();
-            // 6a. 黄金窗口中未被 Phase 1 覆盖的未缓存 URL（N > cap 场景）。
-            for (_, (msg_idx, urls)) in all_image_msgs.iter().enumerate() {
-                if Some(*msg_idx) == current_round_msg_idx || *msg_idx < golden_user_cutoff {
-                    continue;
-                }
-                if bg_urls.len() >= bg_target {
-                    break;
-                }
-                for url in urls {
-                    if bg_urls.len() >= bg_target {
-                        break;
-                    }
-                    let key = url_hash(url);
-                    if !cache_contains(&key) {
-                        bg_urls.push(url.clone());
-                    }
-                }
-            }
-            // 6b. 深层历史中未缓存的 URL（N ≤ X 场景，推进到 50 轮边界）。
-            if bg_urls.len() < bg_target {
-                for (msg_idx, urls) in all_image_msgs.iter() {
-                    if Some(*msg_idx) == current_round_msg_idx || *msg_idx >= golden_user_cutoff {
-                        continue;
-                    }
-                    if bg_urls.len() >= bg_target {
-                        break;
-                    }
-                    for url in urls {
-                        if bg_urls.len() >= bg_target {
-                            break;
-                        }
-                        let key = url_hash(url);
-                        if !cache_contains(&key) {
-                            bg_urls.push(url.clone());
-                        }
-                    }
-                }
-            }
-            if !bg_urls.is_empty() {
-                Some((vlm_config.clone(), bg_urls))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    // NOTE: Phase 2 逻辑完整迁移留 Task 6；当前占位保留结构。
+    let bg_config_opt: Option<(VlmConfig, Vec<String>)> = None;
 
     // 7. 截断注入以适配上下文窗口。
     // estimate_tokens = bytes/2，故 available × 2 = 可用字节预算。
@@ -821,7 +812,8 @@ pub async fn strip_image_blocks(
         total_chars += desc_chars;
         if total_chars > available_chars {
             let keep = desc_chars.saturating_sub(total_chars - available_chars);
-            *desc = desc.chars().take(keep.max(1)).collect::<String>() + "\n[历史图片描述已省略]";
+            *desc =
+                desc.chars().take(keep.max(1)).collect::<String>() + "\n[历史图片描述已省略]";
             truncated = true;
             break;
         }
@@ -858,17 +850,30 @@ pub async fn strip_image_blocks(
     }
 
     // 10. Phase 2 后台：异步分析未缓存图片写入缓存（X > 10 时触发）。
-    if let Some((bg_config, bg_urls)) = bg_config_opt {
-        tokio::spawn(async move {
-            let _ = background_analyze_and_cache(&bg_urls, &bg_config).await;
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "vlm_phase2_done",
-                json!({
-                    "urls_analyzed": bg_urls.len(),
-                }),
-            );
-        });
-    }
+    // Phase 2 完整迁移留 Task 6。
+    let _ = bg_config_opt;
+}
+
+// ── Test wrapper ───────────────────────────────────────────────────────
+
+#[doc(hidden)]
+pub async fn strip_image_blocks_for_tests(
+    messages: &mut [Value],
+    config: &VlmConfig,
+    model_windows_json: &str,
+    context_window_str: &str,
+    request_model: &str,
+) {
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    strip_image_blocks(
+        messages,
+        config,
+        model_windows_json,
+        context_window_str,
+        request_model,
+        &client,
+    )
+    .await;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -1086,6 +1091,20 @@ mod tests {
     }
 
     #[test]
+    fn url_question_hash_produces_consistent_output() {
+        let h1 = url_question_hash("https://example.com/img.png", "Q1");
+        let h2 = url_question_hash("https://example.com/img.png", "Q1");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn url_question_hash_differs_for_different_questions() {
+        let h1 = url_question_hash("https://a.com/1.png", "Q1");
+        let h2 = url_question_hash("https://a.com/1.png", "Q2");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
     fn collect_recent_image_messages_respects_depth_limit() {
         let msgs: Vec<Value> = (0..5)
             .map(|i| {
@@ -1141,35 +1160,6 @@ mod tests {
         assert!(l > s, "larger input should produce larger estimate");
     }
 
-    // ── is_retryable ──────────────────────────────────────────────
-
-    #[test]
-    fn is_retryable_detects_timeout() {
-        assert!(is_retryable("request failed: timeout"));
-        assert!(is_retryable("connection TIMEOUT"));
-    }
-
-    #[test]
-    fn is_retryable_detects_5xx_and_429() {
-        assert!(is_retryable("VLM API 502 Bad Gateway: ..."));
-        assert!(is_retryable("VLM API 503 Service Unavailable"));
-        assert!(is_retryable("VLM API 504 Gateway Timeout"));
-        assert!(is_retryable("VLM API 429 Too Many Requests"));
-    }
-
-    #[test]
-    fn is_retryable_rejects_4xx() {
-        assert!(!is_retryable("VLM API 401 Unauthorized"));
-        assert!(!is_retryable("VLM API 400 Bad Request"));
-        assert!(!is_retryable("VLM API 404 Not Found"));
-    }
-
-    #[test]
-    fn is_retryable_rejects_other_errors() {
-        assert!(!is_retryable("parse failed: invalid json"));
-        assert!(!is_retryable("no content"));
-    }
-
     // ── collect_recent_image_messages ─────────────────────────────
 
     #[test]
@@ -1200,25 +1190,95 @@ mod tests {
         assert_eq!(result[0].0, 1);
     }
 
-    // ── cache eviction ────────────────────────────────────────────
+    // ── cache ─────────────────────────────────────────────────────
 
     #[test]
-    fn cache_insert_evicts_oldest_when_full() {
+    fn cache_put_and_get_roundtrip() {
+        cache_clear_for_tests();
+        let key = url_hash("https://example.com/cache-test.png");
+        cache_put(key, "cached description".to_string());
+        let got = cache_get(key);
+        assert_eq!(got, Some("cached description".to_string()));
+    }
+
+    #[test]
+    fn cache_contains_returns_false_for_missing_key() {
+        cache_clear_for_tests();
+        let key = url_hash("https://example.com/missing.png");
+        assert!(!cache_contains(key));
+    }
+
+    #[test]
+    fn cache_put_evicts_oldest_when_full() {
         // 填满缓存（500 条）后继续插入会触发驱逐。
-        for i in 0..MAX_CACHE_CAPACITY {
-            cache_insert(format!("evict-test-{i:04x}"), format!("desc-{i}"));
+        // NOTE：此测试依赖全局 VLM_CACHE，与其他并行测试共享状态。
+        // 通过独立 key 前缀避免冲突。
+        for i in 0..CACHE_CAPACITY {
+            let key = url_hash(&format!("https://evict-test.example.com/{i:04x}.png"));
+            cache_put(key, format!("desc-{i}"));
         }
         // 确认第 0 条仍在
-        assert!(cache_contains("evict-test-0000"));
-        // 插入第 501 条 → 触发驱逐（删最旧的 125 条）
-        cache_insert(
-            "evict-test-overflow".to_string(),
-            "overflow-desc".to_string(),
-        );
+        let key0 = url_hash("https://evict-test.example.com/0000.png");
+        assert!(cache_contains(key0));
+        // 插入第 501 条 → 触发驱逐（删最旧的 1 条）
+        let overflow_key = url_hash("https://evict-test.example.com/overflow.png");
+        cache_put(overflow_key, "overflow-desc".to_string());
         // 最旧的应已被驱逐
-        assert!(!cache_contains("evict-test-0000"));
+        assert!(!cache_contains(key0));
         // 新插入的存在
-        assert!(cache_contains("evict-test-overflow"));
+        assert!(cache_contains(overflow_key));
+    }
+
+    // ── helpers ───────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_char_safe_truncates_correctly() {
+        assert_eq!(truncate_char_safe("hello world", 5), "hello");
+        assert_eq!(truncate_char_safe("你好世界", 2), "你好");
+        assert_eq!(truncate_char_safe("short", 100), "short");
+    }
+
+    #[test]
+    fn collect_input_text_gets_latest_user_text() {
+        let messages = vec![
+            serde_json::json!({"role": "system", "content": "system prompt"}),
+            serde_json::json!({"role": "user", "content": [
+                {"type": "text", "text": "Q1"},
+                {"type": "image_url", "image_url": {"url": "https://x.com/img.png"}},
+            ]}),
+            serde_json::json!({"role": "assistant", "content": "A1"}),
+            serde_json::json!({"role": "user", "content": [
+                {"type": "text", "text": "Q2"},
+            ]}),
+        ];
+        assert_eq!(collect_input_text(&messages), "Q2");
+    }
+
+    #[test]
+    fn collect_input_text_empty_when_no_user_text() {
+        let messages = vec![serde_json::json!({"role": "system", "content": "sys"})];
+        assert_eq!(collect_input_text(&messages), "");
+    }
+
+    #[test]
+    fn latest_user_message_has_image_detects_image() {
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hi"},
+                {"type": "image_url", "image_url": {"url": "https://x.com/img.png"}},
+            ]
+        })];
+        assert!(latest_user_message_has_image(&messages));
+    }
+
+    #[test]
+    fn latest_user_message_has_image_returns_false_for_text_only() {
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}]
+        })];
+        assert!(!latest_user_message_has_image(&messages));
     }
 
     // ── strip_image_blocks (tokio::test) ──────────────────────────
@@ -1226,7 +1286,7 @@ mod tests {
     #[tokio::test]
     async fn strip_image_blocks_all_cache_hits_no_vlm_call() {
         // 预填充缓存
-        cache_insert(
+        cache_put(
             url_hash("https://test.example.com/cached.png"),
             "缓存的图片描述".to_string(),
         );
@@ -1244,8 +1304,9 @@ mod tests {
             model: String::new(),
             base_url: String::new(),
         };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
-        strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4", &client).await;
 
         // 图片已被删除
         let parts = messages[0]["content"].as_array().unwrap();
@@ -1278,6 +1339,7 @@ mod tests {
             model: String::new(),
             base_url: String::new(),
         };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
         strip_image_blocks(
             &mut messages,
@@ -1285,6 +1347,7 @@ mod tests {
             "{}",
             "1", // 上下文窗口 = 1 token → 必然溢出
             "gpt-4",
+            &client,
         )
         .await;
 
@@ -1322,8 +1385,9 @@ mod tests {
             model: String::new(),
             base_url: String::new(),
         };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
-        strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4", &client).await;
 
         // 消息应保持不变
         let parts = messages[0]["content"].as_array().unwrap();
@@ -1334,7 +1398,7 @@ mod tests {
     #[tokio::test]
     async fn strip_image_blocks_unanalyzed_gets_placeholder() {
         // 历史消息有大量图片但 VLM 服务不可达 → fail-closed → 图片保留但不注入占位符
-        // 注：VLM 服务不可达时 analyze_all 会返回 Err → strip_image_blocks 会 early return
+        // 注：VLM 服务不可达时 call_vlm_batch 会返回 Err → strip_image_blocks 会 early return
         // 所以这里验证的是：当 VLM 完全不可用时，图片不被删除。
         let mut messages = vec![serde_json::json!({
             "role": "user",
@@ -1349,8 +1413,12 @@ mod tests {
             model: "invalid-model".to_string(),
             base_url: "https://127.0.0.1:1".to_string(), // 故意不可达
         };
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
 
-        strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4", &client).await;
 
         // fail-closed：图片保留
         let parts = messages[0]["content"].as_array().unwrap();
@@ -1387,7 +1455,7 @@ mod tests {
         }
         // 预填充前 8 张的缓存
         for i in 0..8 {
-            cache_insert(
+            cache_put(
                 url_hash(&format!("https://test.example.com/limit/hist-{i}.png")),
                 format!("hist-desc-{i}"),
             );
@@ -1402,10 +1470,14 @@ mod tests {
             model: "unused".to_string(),
             base_url: "https://127.0.0.1:1".to_string(), // VLM 不可达，触发 fail-closed 路径
         };
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
 
-        strip_image_blocks(&mut messages, &vlm_config, "{}", "900000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "900000", "gpt-4", &client).await;
 
-        // VLM 不可达 → analyze_all 返回 Err → strip_image_blocks early return
+        // VLM 不可达 → call_vlm_batch 返回 Err → strip_image_blocks early return
         // → fail-closed：全部图片保留，不注入任何描述。
         let hist_parts = messages[1]["content"].as_array().unwrap();
         let image_count = hist_parts
@@ -1434,7 +1506,7 @@ mod tests {
         // 预填充缓存：全部 25×15=375 张图片
         for round in 0..ROUNDS {
             for img in 0..IMGS_PER_ROUND {
-                cache_insert(
+                cache_put(
                     url_hash(&format!("https://multi.example.com/r{round}-i{img}.png")),
                     format!("round{round}-img{img}-desc"),
                 );
@@ -1443,9 +1515,8 @@ mod tests {
 
         let mut messages: Vec<Value> = (0..ROUNDS)
             .map(|round| {
-                let mut parts: Vec<Value> = vec![
-                    serde_json::json!({"type": "text", "text": format!("round {round}")})
-                ];
+                let mut parts: Vec<Value> =
+                    vec![serde_json::json!({"type": "text", "text": format!("round {round}")})];
                 for img in 0..IMGS_PER_ROUND {
                     parts.push(serde_json::json!({
                         "type": "image_url",
@@ -1461,8 +1532,9 @@ mod tests {
             model: String::new(),
             base_url: String::new(),
         };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
-        strip_image_blocks(&mut messages, &vlm_config, "{}", "900000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "900000", "gpt-4", &client).await;
 
         // 所有图片已删除
         for msg in &messages {
@@ -1494,7 +1566,6 @@ mod tests {
         }
 
         // Rounds 15-23（黄金窗口）：cap=min(135,10)=10，仅 round 23 的前 10 张注入
-        // round 23 最先处理（最新优先），10 张后达到 cap，rounds 22-15 无注入
         for round in 15..=22 {
             let text = collect_text(round);
             for img in 0..IMGS_PER_ROUND {
@@ -1537,12 +1608,12 @@ mod tests {
     async fn strip_image_blocks_tight_window_x_lte_10_golden_capped() {
         // 预填充缓存：12 张历史 + 1 张当前
         for i in 0..12 {
-            cache_insert(
+            cache_put(
                 url_hash(&format!("https://tight.example.com/hist-{i}.png")),
                 format!("hist-desc-{i}"),
             );
         }
-        cache_insert(
+        cache_put(
             url_hash("https://tight.example.com/curr.png"),
             "curr-desc".to_string(),
         );
@@ -1571,8 +1642,9 @@ mod tests {
             model: String::new(),
             base_url: String::new(),
         };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
-        strip_image_blocks(&mut messages, &vlm_config, "{}", "800", "gpt-4").await;
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "800", "gpt-4", &client).await;
 
         // 所有图片已删除
         for msg in &messages {
@@ -1623,97 +1695,6 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// 真实 HTTP：mock VLM 返回 200，验证 analyze_all 拿到描述。
-    #[tokio::test]
-    async fn analyze_all_success_with_mock_vlm() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "choices": [{"message": {"content": "mock: a beautiful sunset"}}]
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let config = VlmConfig {
-            api_key: "test-key".into(),
-            model: "test-model".into(),
-            base_url: mock_server.uri(),
-        };
-
-        let result = analyze_all(&["https://example.com/img.png".to_string()], &config).await;
-
-        let descriptions = result.expect("should succeed");
-        assert_eq!(descriptions.len(), 1);
-        assert_eq!(descriptions[0].as_deref(), Some("mock: a beautiful sunset"));
-    }
-
-    /// 全部失败：mock VLM 返回 500 → fail-closed。
-    #[tokio::test]
-    async fn analyze_all_all_fail_with_mock_vlm() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
-            .mount(&mock_server)
-            .await;
-
-        let config = VlmConfig {
-            api_key: "test-key".into(),
-            model: "test-model".into(),
-            base_url: mock_server.uri(),
-        };
-
-        let result = analyze_all(&["https://example.com/img.png".to_string()], &config).await;
-
-        assert!(result.is_err(), "all 500 should return Err (fail-closed)");
-    }
-
-    /// 部分失败：仅 1 次 200，其余 500 → Ok + Some/None 混合。
-    #[tokio::test]
-    async fn analyze_all_partial_failure_with_mock_vlm() {
-        let mock_server = MockServer::start().await;
-
-        // 第一次请求返回 200（up_to_n_times 限制匹配次数）
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "choices": [{"message": {"content": "mock: first success"}}]
-            })))
-            .up_to_n_times(1)
-            .mount(&mock_server)
-            .await;
-
-        // 后续请求返回 500
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
-            .mount(&mock_server)
-            .await;
-
-        let config = VlmConfig {
-            api_key: "test-key".into(),
-            model: "test-model".into(),
-            base_url: mock_server.uri(),
-        };
-
-        // BATCH_SIZE=5，6 个 URL → 2 个 batch
-        let urls: Vec<String> = (0..6)
-            .map(|i| format!("https://example.com/partial/img-{i}.png"))
-            .collect();
-        let result = analyze_all(&urls, &config).await;
-
-        let descriptions = result.expect("partial failure should return Ok");
-        assert_eq!(descriptions.len(), 2);
-        // 并发 batch 顺序非确定性，用计数代替下标检查避免竞态条件
-        let some_count = descriptions.iter().filter(|d| d.is_some()).count();
-        let none_count = descriptions.iter().filter(|d| d.is_none()).count();
-        assert_eq!(some_count, 1, "one batch should succeed");
-        assert_eq!(none_count, 1, "one batch should fail");
-    }
-
     /// strip_image_blocks 端到端：mock VLM 可用时正常注入描述。
     #[tokio::test]
     async fn strip_image_blocks_with_mock_vlm_injects_descriptions() {
@@ -1732,6 +1713,7 @@ mod tests {
             model: "test-model".into(),
             base_url: mock_server.uri(),
         };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
         let mut messages = vec![serde_json::json!({
             "role": "user",
@@ -1741,7 +1723,7 @@ mod tests {
             ]
         })];
 
-        strip_image_blocks(&mut messages, &config, "{}", "272000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &config, "{}", "272000", "gpt-4", &client).await;
 
         let parts = messages[0]["content"].as_array().unwrap();
         let has_image = parts
@@ -1754,51 +1736,6 @@ mod tests {
             last_text.contains("mock: E2E network call"),
             "VLM result not injected: {last_text}"
         );
-    }
-
-    /// 超时 + 重试：mock 延迟 3s > test timeout(2s) → 超时重试后 500 → fail-closed。
-    #[tokio::test]
-    async fn analyze_all_timeout_and_retry_with_mock_vlm() {
-        let mock_server = MockServer::start().await;
-
-        // 第一次请求延迟 3s，触发客户端超时（test timeout=2s）
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({
-                        "choices": [{"message": {"content": "this should not arrive"}}]
-                    }))
-                    .set_delay(Duration::from_secs(3)),
-            )
-            .up_to_n_times(1)
-            .mount(&mock_server)
-            .await;
-
-        // 第一次重试 → 500
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("retry 500"))
-            .up_to_n_times(1)
-            .mount(&mock_server)
-            .await;
-
-        // 第二次重试 → 500
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("retry 500"))
-            .mount(&mock_server)
-            .await;
-
-        let config = VlmConfig {
-            api_key: "test-key".into(),
-            model: "test-model".into(),
-            base_url: mock_server.uri(),
-        };
-
-        let result = analyze_all(&["https://example.com/img.png".to_string()], &config).await;
-
-        assert!(result.is_err(), "timeout + retry exhaust should return Err");
     }
 
     /// Plain Responses 模式：input_image 类型块 + 直接字符串 image_url。
@@ -1820,6 +1757,7 @@ mod tests {
             model: "test-model".into(),
             base_url: mock_server.uri(),
         };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
         // Responses 格式：input_image 类型，image_url 为直接字符串
         let mut messages = vec![serde_json::json!({
@@ -1830,7 +1768,7 @@ mod tests {
             ]
         })];
 
-        strip_image_blocks(&mut messages, &config, "{}", "272000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &config, "{}", "272000", "gpt-4", &client).await;
 
         let parts = messages[0]["content"].as_array().unwrap();
         let has_image = parts.iter().any(|p| {
@@ -1844,45 +1782,6 @@ mod tests {
         assert!(
             last_text.contains("mock: responses format"),
             "VLM result not injected for input_image: {last_text}"
-        );
-    }
-
-    /// 聚合重试：首次请求 503 触发重试，第二次 200 成功。
-    #[tokio::test]
-    async fn analyze_all_retry_then_succeed() {
-        let mock_server = MockServer::start().await;
-
-        // 第一次请求 → 503（可重试）
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(503).set_body_string("service unavailable"))
-            .up_to_n_times(1)
-            .mount(&mock_server)
-            .await;
-
-        // 重试 → 200
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "choices": [{"message": {"content": "mock: retry success"}}]
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let config = VlmConfig {
-            api_key: "test-key".into(),
-            model: "test-model".into(),
-            base_url: mock_server.uri(),
-        };
-
-        let result = analyze_all(&["https://example.com/img.png".to_string()], &config).await;
-
-        let descriptions = result.expect("should succeed after retry");
-        assert_eq!(descriptions.len(), 1);
-        assert_eq!(
-            descriptions[0].as_deref(),
-            Some("mock: retry success"),
-            "should get result from successful retry"
         );
     }
 
@@ -1905,6 +1804,7 @@ mod tests {
             model: "test-model".into(),
             base_url: mock_server.uri(),
         };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
         let mut messages = vec![
             // 历史轮：1 张图
@@ -1925,7 +1825,7 @@ mod tests {
             }),
         ];
 
-        strip_image_blocks(&mut messages, &config, "{}", "900000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &config, "{}", "900000", "gpt-4", &client).await;
 
         // 两轮图片均应被剥离
         for (i, label) in ["historical", "current"].iter().enumerate() {

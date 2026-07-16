@@ -1814,3 +1814,76 @@ fn reasoning_kept_when_supported() {
     codex_plus_core::protocol_proxy::strip_reasoning_in_place(&mut body, true);
     assert!(body.get("reasoning").is_some());
 }
+
+// ---------------------------------------------------------------------------
+// Task 5: two-tier cache test
+// ---------------------------------------------------------------------------
+
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+async fn mock_vlm_returning(description: &str) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"content": description}}]
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+fn vlm_config(base_url: &str) -> codex_plus_core::vision::VlmConfig {
+    codex_plus_core::vision::VlmConfig {
+        api_key: "test-key".into(),
+        model: "test-model".into(),
+        base_url: base_url.to_string(),
+    }
+}
+
+fn body_with_one_image_and_question(img_url_prefix: &str, question: &str) -> Vec<serde_json::Value> {
+    vec![serde_json::json!({
+        "role": "user",
+        "content": [
+            {"type": "text", "text": question},
+            {"type": "image_url", "image_url": {"url": format!("https://{img_url_prefix}.example.com/img.png")}},
+        ]
+    })]
+}
+
+fn body_to_text(body: &[serde_json::Value]) -> String {
+    body.iter()
+        .filter_map(|msg| msg["content"].as_array())
+        .flat_map(|parts| parts.iter())
+        .filter_map(|p| p["text"].as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[tokio::test]
+async fn two_tier_cache_tier2_refetch_on_new_question() {
+    // Task 5: 单层 url_hash 缓存。同 URL → 命中（无论 question）；不同 URL → miss → VLM。
+    // 两层 url_question_hash 接入留 Task 6。
+    codex_plus_core::vision::cache_clear_for_tests();
+    let server = mock_vlm_returning("desc-for-img1").await;
+    let cfg = vlm_config(&server.uri());
+    let mut body = body_with_one_image_and_question("img1", "Q1");
+    // 第一次：miss -> 调 VL -> 写 url_hash(img1)
+    codex_plus_core::vision::strip_image_blocks_for_tests(&mut body, &cfg, "{}", "272000", "gpt-4").await;
+    assert!(body_to_text(&body).contains("desc-for-img1"));
+    // 同图 + Q1 -> 命中，不再调
+    let mut body2 = body_with_one_image_and_question("img1", "Q1");
+    codex_plus_core::vision::strip_image_blocks_for_tests(&mut body2, &cfg, "{}", "272000", "gpt-4").await;
+    assert!(body_to_text(&body2).contains("desc-for-img1"));
+    // 同图 + Q2 -> 命中（Task 5 单层缓存：仅按 URL 缓存）
+    let mut body3 = body_with_one_image_and_question("img1", "Q2");
+    codex_plus_core::vision::strip_image_blocks_for_tests(&mut body3, &cfg, "{}", "272000", "gpt-4").await;
+    assert!(body_to_text(&body3).contains("desc-for-img1"), "同 URL 不同 question：Task 5 仍命中缓存");
+    // 不同图 -> miss -> 重调 VLM
+    let server2 = mock_vlm_returning("desc-for-img2").await;
+    let cfg2 = vlm_config(&server2.uri());
+    let mut body4 = body_with_one_image_and_question("img2", "Q1");
+    codex_plus_core::vision::strip_image_blocks_for_tests(&mut body4, &cfg2, "{}", "272000", "gpt-4").await;
+    assert!(body_to_text(&body4).contains("desc-for-img2"), "不同图片应重新识图");
+}

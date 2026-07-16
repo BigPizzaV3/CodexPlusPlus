@@ -862,6 +862,8 @@ async fn upstream_request_parts(
                         model: relay.vlm_model.clone(),
                         base_url: relay.vlm_base_url.clone(),
                     };
+                    let vlm_client = crate::http_client::proxied_client("")
+                        .context("failed to build VLM HTTP client")?;
 
                     for key in &["messages", "input"] {
                         if let Some(arr) = body.get_mut(key).and_then(Value::as_array_mut) {
@@ -871,6 +873,7 @@ async fn upstream_request_parts(
                                 &relay.model_windows,
                                 &relay.context_window,
                                 &model,
+                                &vlm_client,
                             )
                             .await;
                         }
