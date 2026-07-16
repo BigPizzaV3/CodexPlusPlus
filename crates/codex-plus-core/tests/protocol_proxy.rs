@@ -1925,3 +1925,47 @@ async fn two_tier_cache_tier2_refetch_on_new_question() {
     codex_plus_core::vision::strip_image_blocks_for_tests(&mut body4, &cfg2, "{}", "272000", "gpt-4").await;
     assert!(body_to_text(&body4).contains("desc-for-img2"), "不同图片应重新识图");
 }
+
+// ---------------------------------------------------------------------------
+// Task 8: 追问注入（text-only followup + history image）
+// ---------------------------------------------------------------------------
+
+/// Task 8 辅助：构造"历史 1 图 + 当前纯文本追问"的 messages。
+/// - `hist_prefix`: 用于生成唯一的 history image URL，避免污染共享 VLM 缓存。
+/// - `followup_text`: 当前轮（最后一条 user 消息）的纯文本追问。
+fn body_with_history_image_then_text_followup(
+    hist_prefix: &str,
+    followup_text: &str,
+) -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "old question"},
+                {"type": "image_url", "image_url": {"url": format!("https://{hist_prefix}.example.com/img.png")}},
+            ]
+        }),
+        serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": followup_text},
+            ]
+        }),
+    ]
+}
+
+#[tokio::test]
+async fn text_followup_with_history_image_injects_followup_note() {
+    // Task 8: 纯文本追问 + 窗口内有历史图 → 注入追问强化提示（防追问胡说）。
+    codex_plus_core::vision::cache_clear_for_tests();
+    let server = mock_vlm_returning("hist-desc").await;
+    let cfg = vlm_config(&server.uri());
+    // 轮1: 历史 1 图（已会被描述并缓存）；轮2: 纯文本追问，无新图
+    let mut body = body_with_history_image_then_text_followup("img1", "追问细节");
+    codex_plus_core::vision::strip_image_blocks_for_tests(&mut body, &cfg, "", "", "m").await;
+    let t = body_to_text(&body);
+    assert!(
+        t.contains("重发图片") || t.contains("优先从"),
+        "追问应注入强化提示: {t}"
+    );
+}

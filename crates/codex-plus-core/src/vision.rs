@@ -201,6 +201,49 @@ pub fn strip_images_only_counted(messages: &mut [Value]) -> usize {
     total
 }
 
+/// 向 messages 的最后一条 user 消息注入"追问强化提示"。
+///
+/// 当用户对历史图片进行纯文本追问时，告诉模型：
+/// 1) 优先从已注入的描述回答；2) 若追问细节描述未覆盖，必须告知用户重发图片+问题。
+/// 防止模型在缺乏信息时编造图片内容。
+fn inject_followup_note(messages: &mut [Value], n_history_images: usize) {
+    let note = format!(
+        "[系统：用户之前发送了 {n_history_images} 张图片，描述已在上面（# 图片内容描述）。\
+         请优先从这些描述回答。\n⚠️ 若用户追问的细节描述中没有明确覆盖，\
+         必须如实告知用户「需要重新查看原始图片，请重新发送图片并附上问题」。\
+         绝对不要猜测或编造图片中未描述的细节。]"
+    );
+    if let Some(msg) = messages
+        .iter_mut()
+        .rev()
+        .find(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+    {
+        if let Some(parts) = msg.get_mut("content").and_then(Value::as_array_mut) {
+            parts.insert(0, serde_json::json!({"type": "text", "text": note}));
+        }
+    }
+}
+
+/// 检查窗口内除当前轮消息外，是否有其他 user 消息包含图片。
+/// 用于 F4 追问检测：纯文本追问 + 窗口内历史有图 → 注入追问强化提示。
+fn window_has_history_image(messages: &[Value], current_idx: Option<usize>) -> bool {
+    messages.iter().enumerate().any(|(i, m)| {
+        Some(i) != current_idx
+            && m.get("role").and_then(Value::as_str) == Some("user")
+            && m.get("content")
+                .and_then(Value::as_array)
+                .map(|ps| {
+                    ps.iter().any(|p| {
+                        matches!(
+                            p.get("type").and_then(Value::as_str),
+                            Some("input_image") | Some("image_url")
+                        )
+                    })
+                })
+                .unwrap_or(false)
+    })
+}
+
 /// 向消息数组注入"看不到图片"的系统提示。
 ///
 /// 自动检测数组格式：
@@ -460,7 +503,6 @@ fn collect_input_text(messages: &[Value]) -> String {
     String::new()
 }
 
-#[allow(dead_code)]
 fn latest_user_message_has_image(messages: &[Value]) -> bool {
     messages
         .iter()
@@ -777,6 +819,21 @@ pub async fn strip_image_blocks(
 
     let user_text = collect_input_text(messages);
 
+    // F4: 在剥离所有图片之前捕获追问状态（剥离后窗口内不再有图，无法判断）。
+    // - is_followup: 纯文本追问 + 窗口内历史有图
+    // - history_image_count: 窗口内历史图数（仅当 is_followup 为 true 时有意义）
+    // - total_stripped_this_request: 累计本请求异常路径 strip 的图片数（fail-open/overflow），
+    //   用于判断是否跳过追问提示（异常路径已注入"看不到图"提示，优先）。
+    let mut total_stripped_this_request: usize = 0;
+    let is_followup = !user_text.is_empty()
+        && !latest_user_message_has_image(messages)
+        && window_has_history_image(messages, current_round_msg_idx);
+    let history_image_count: usize = if is_followup {
+        count_images(messages)
+    } else {
+        0
+    };
+
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "vlm_strip_entry",
         json!({
@@ -873,6 +930,7 @@ pub async fn strip_image_blocks(
                 if let Some(idx) = current_round_msg_idx {
                     if idx < messages.len() {
                         let n = strip_images_in_message(&mut messages[idx]);
+                        total_stripped_this_request += n;
                         let _ = crate::diagnostic_log::append_diagnostic_log(
                             "protocol_proxy.vl_strip",
                             json!({"reason": "vl_failed", "n": n}),
@@ -1011,6 +1069,13 @@ pub async fn strip_image_blocks(
         if *msg_idx < messages.len() {
             inject_text_into_user_message(&mut messages[*msg_idx], desc);
         }
+    }
+
+    // F4: 纯文本追问 + 窗口内历史有图 → 注入追问强化提示（仅当本请求无异常 strip 时）。
+    // 若 overflow/fail-open 已发生（total_stripped_this_request > 0），其"看不到图"提示已
+    // 覆盖当前轮图片，注入追问提示会冲突/冗余，故跳过。
+    if is_followup && total_stripped_this_request == 0 {
+        inject_followup_note(messages, history_image_count);
     }
 
     // 10. Phase 2 后台：异步分析未缓存图片写入缓存（X > 10 时触发）。
@@ -1444,6 +1509,105 @@ mod tests {
             "content": [{"type": "text", "text": "hi"}]
         })];
         assert!(!latest_user_message_has_image(&messages));
+    }
+
+    // ── F4 followup helpers ──────────────────────────────────────
+
+    #[test]
+    fn window_has_history_image_true_when_history_has_image() {
+        // 当前轮 = index 1（纯文本），历史 = index 0（带图）→ 窗口内有历史图。
+        let messages = vec![
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Q1"},
+                    {"type": "image_url", "image_url": {"url": "https://x.com/a.png"}},
+                ]
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": [{"type": "text", "text": "Q2"}]
+            }),
+        ];
+        assert!(window_has_history_image(&messages, Some(1)));
+    }
+
+    #[test]
+    fn window_has_history_image_false_when_no_history_images() {
+        let messages = vec![
+            serde_json::json!({"role": "user", "content": [{"type": "text", "text": "Q1"}]}),
+            serde_json::json!({"role": "user", "content": [{"type": "text", "text": "Q2"}]}),
+        ];
+        assert!(!window_has_history_image(&messages, Some(1)));
+    }
+
+    #[test]
+    fn window_has_history_image_false_when_only_current_has_image() {
+        // 只有当前轮有图，历史轮无图 → false（不应被算作"历史图"）。
+        let messages = vec![
+            serde_json::json!({"role": "user", "content": [{"type": "text", "text": "Q1"}]}),
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Q2"},
+                    {"type": "image_url", "image_url": {"url": "https://x.com/curr.png"}},
+                ]
+            }),
+        ];
+        assert!(!window_has_history_image(&messages, Some(1)));
+    }
+
+    #[test]
+    fn window_has_history_image_handles_none_current_idx() {
+        // current_idx = None 时，所有 user 消息都算"历史"。
+        let messages = vec![
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Q1"},
+                    {"type": "image_url", "image_url": {"url": "https://x.com/a.png"}},
+                ]
+            }),
+        ];
+        assert!(window_has_history_image(&messages, None));
+    }
+
+    #[test]
+    fn inject_followup_note_prepends_to_last_user_message() {
+        let mut messages = vec![
+            serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "ok"}]}),
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "followup question"},
+                ]
+            }),
+        ];
+        inject_followup_note(&mut messages, 3);
+        let parts = messages[1]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        // 追问提示被插入到首位
+        let first = &parts[0];
+        assert_eq!(first["type"], "text");
+        let text = first["text"].as_str().unwrap();
+        assert!(text.contains("3 张图片"));
+        assert!(text.contains("重新发送图片"));
+        assert!(text.contains("优先从"));
+        // 原 user 文本保留在第二位
+        assert_eq!(parts[1]["text"], "followup question");
+    }
+
+    #[test]
+    fn inject_followup_note_noop_when_no_user_message() {
+        let mut messages = vec![serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}]
+        })];
+        inject_followup_note(&mut messages, 5);
+        // 没有 user 消息，注入了 0 个文本块
+        let parts = messages[0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["text"], "ok");
     }
 
     // ── strip_image_blocks (tokio::test) ──────────────────────────
