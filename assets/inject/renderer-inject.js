@@ -1547,6 +1547,7 @@
   const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5"]);
   const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
   const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
+  ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].forEach((model) => codexServiceTierSupportedFastModels.add(model));
 
   function codexAppAssetUrl(namePart) {
     const urls = [
@@ -2217,14 +2218,38 @@
     return message;
   }
 
+  function codexServiceTierDispatcherFromModule(module) {
+    const values = module && typeof module === "object" ? Object.values(module) : [];
+    const singleton = values.find((candidate) => candidate
+      && typeof candidate === "object"
+      && typeof candidate.dispatchMessage === "function"
+      && typeof candidate.subscribe === "function");
+    if (singleton) return singleton;
+    const dispatcherClass = values.find((candidate) => typeof candidate === "function"
+      && typeof candidate.getInstance === "function"
+      && typeof candidate.prototype?.dispatchMessage === "function");
+    return dispatcherClass?.getInstance?.() || null;
+  }
+
   function installCodexServiceTierDispatcherPatch() {
     if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
+    const loadDispatcher = async () => {
+      const errors = [];
+      for (const assetPrefix of ["setting-storage-", "vscode-api-"]) {
+        try {
+          const module = await loadCodexAppModule(assetPrefix);
+          const dispatcher = codexServiceTierDispatcherFromModule(module);
+          if (dispatcher) return { dispatcher, assetPrefix };
+          errors.push(`${assetPrefix}: dispatcher export unavailable`);
+        } catch (error) {
+          errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+        }
+      }
+      throw new Error(`Codex dispatcher unavailable (${errors.join("; ")})`);
+    };
     const patch = async () => {
       try {
-        const module = await loadCodexAppModule("setting-storage-");
-        const dispatcherClass = typeof module.v === "function" && String(module.v).includes("dispatchMessage") ? module.v : null;
-        const dispatcher = dispatcherClass?.getInstance?.();
-        if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
+        const { dispatcher, assetPrefix } = await loadDispatcher();
         if (dispatcher.__codexServiceTierOriginalDispatchMessage) {
           window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
           return;
@@ -2237,7 +2262,7 @@
           return dispatcher.__codexServiceTierOriginalDispatchMessage(nextType, nextPayload);
         };
         window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
-        sendCodexPlusDiagnostic("service_tier_dispatcher_patch_installed", {});
+        sendCodexPlusDiagnostic("service_tier_dispatcher_patch_installed", { assetPrefix });
       } catch (error) {
         sendCodexPlusDiagnostic("service_tier_dispatcher_patch_failed", {
           errorName: error?.name || "",
@@ -4701,6 +4726,9 @@
       applyServiceTierOverride: (method, params, threadIdHint = "") => applyCodexServiceTierRequestOverride(method, params, threadIdHint),
       requestOverride: (message) => codexServiceTierRequestOverride(message),
       diagnostics: () => [...(window.__codexPlusServiceTierTestDiagnostics || [])],
+      currentModelName: () => codexServiceTierCurrentModelName(),
+      fastAvailability: (modelName = codexServiceTierCurrentModelName()) => codexServiceTierFastAvailability(modelName),
+      modelDescriptor: (modelName) => codexPlusModelDescriptor(modelName),
       setModelCatalog: (catalog = {}) => {
         codexModelCatalog = {
           status: "ok",
@@ -4728,6 +4756,7 @@
           ...state,
         }));
       },
+      dispatcherFromModule: codexServiceTierDispatcherFromModule,
     };
     return;
   }
@@ -4787,22 +4816,58 @@
     return codexModelCatalogPromise;
   }
 
-  function modelReasoningEfforts() {
-    return ["minimal", "low", "medium", "high", "xhigh"].map((reasoningEffort) => ({ reasoningEffort, description: `${reasoningEffort} effort` }));
+  function codexPlusModelMetadata(modelName) {
+    const metadata = codexModelCatalog.modelMetadata || codexModelCatalog.model_metadata;
+    const normalizedName = codexServiceTierModelFromValue(modelName);
+    const exact = metadata && typeof metadata === "object" ? metadata[normalizedName] : null;
+    const matchedKey = !exact && metadata && typeof metadata === "object"
+      ? Object.keys(metadata).find((key) => key.toLowerCase() === normalizedName.toLowerCase())
+      : null;
+    const value = exact || (matchedKey ? metadata[matchedKey] : null);
+    return value && typeof value === "object" ? value : null;
+  }
+
+  function modelReasoningEfforts(modelName) {
+    const supported = codexPlusModelMetadata(modelName)?.supportedReasoningEfforts;
+    if (Array.isArray(supported) && supported.length > 0) {
+      return supported.map((entry) => ({ ...entry }));
+    }
+    return ["low", "medium", "high", "xhigh"].map((reasoningEffort) => ({ reasoningEffort, description: `${reasoningEffort} effort` }));
+  }
+
+  function applyCodexPlusModelMetadata(descriptor, modelName) {
+    const metadata = codexPlusModelMetadata(modelName);
+    if (!descriptor || !metadata) return false;
+    let changed = false;
+    for (const key of ["displayName", "description", "defaultReasoningEffort"]) {
+      if (typeof metadata[key] === "string" && metadata[key] && descriptor[key] !== metadata[key]) {
+        descriptor[key] = metadata[key];
+        changed = true;
+      }
+    }
+    if (Array.isArray(metadata.supportedReasoningEfforts) && metadata.supportedReasoningEfforts.length > 0) {
+      const nextEfforts = modelReasoningEfforts(modelName);
+      if (JSON.stringify(descriptor.supportedReasoningEfforts || []) !== JSON.stringify(nextEfforts)) {
+        descriptor.supportedReasoningEfforts = nextEfforts;
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   function codexPlusModelDescriptor(modelName) {
+    const metadata = codexPlusModelMetadata(modelName);
     return {
       model: modelName,
       id: modelName,
       slug: modelName,
       name: modelName,
-      displayName: modelName,
-      description: codexModelCatalog.provider_name || codexModelCatalog.model_provider || "Custom model",
+      displayName: metadata?.displayName || modelName,
+      description: metadata?.description || codexModelCatalog.provider_name || codexModelCatalog.model_provider || "Custom model",
       hidden: false,
       isDefault: (codexModelCatalog.default_model || codexModelCatalog.model) === modelName,
-      defaultReasoningEffort: "medium",
-      supportedReasoningEfforts: modelReasoningEfforts(),
+      defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
+      supportedReasoningEfforts: modelReasoningEfforts(modelName),
     };
   }
 
@@ -4837,9 +4902,12 @@
     let changed = false;
     const existing = new Map(models.map((item) => [item.model, item]));
     models.forEach((item) => {
-      if (customModels.includes(item.model) && item.hidden !== false) {
-        item.hidden = false;
-        changed = true;
+      if (customModels.includes(item.model)) {
+        if (item.hidden !== false) {
+          item.hidden = false;
+          changed = true;
+        }
+        if (applyCodexPlusModelMetadata(item, item.model)) changed = true;
       }
     });
     customModels.forEach((modelName) => {

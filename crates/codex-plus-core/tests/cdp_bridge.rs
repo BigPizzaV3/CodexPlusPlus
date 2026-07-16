@@ -847,6 +847,9 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("codexServiceTierSupportedFastModels"));
     assert!(script.contains("\"gpt-5.4\""));
     assert!(script.contains("\"gpt-5.5\""));
+    assert!(script.contains("\"gpt-5.6-sol\""));
+    assert!(script.contains("\"gpt-5.6-terra\""));
+    assert!(script.contains("\"gpt-5.6-luna\""));
     assert!(script.contains("codexServiceTierFastSupportedForModel"));
     assert!(script.contains("codexServiceTierModelForRequest"));
     assert!(script.contains("codexServiceTierMaybeLoadModelCatalog"));
@@ -903,6 +906,10 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("当前 thread"));
     assert!(script.contains("standard"));
     assert!(script.contains("fast"));
+    assert!(script.contains("[\"setting-storage-\", \"vscode-api-\"]"));
+    assert!(script.contains("dispatcher export unavailable"));
+    assert!(!script.contains("data-codex-max-reasoning-control"));
+    assert!(!script.contains("codexAppMaxReasoningOverride"));
 }
 
 #[test]
@@ -972,6 +979,18 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
 
     assert_eq!(cases["startConversation"]["serviceTier"], "priority");
+    assert_eq!(cases["solFastAvailability"]["supported"], true);
+    assert_eq!(cases["solDescriptor"]["defaultReasoningEffort"], "low");
+    assert_eq!(
+        cases["solDescriptor"]["supportedReasoningEfforts"][4]["reasoningEffort"],
+        "max"
+    );
+    assert_eq!(
+        cases["solDescriptor"]["supportedReasoningEfforts"][5]["reasoningEffort"],
+        "ultra"
+    );
+    assert_eq!(cases["dispatcherFromSingleton"], true);
+    assert_eq!(cases["dispatcherFromClass"], true);
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
@@ -1069,6 +1088,47 @@ const startConversation = api.requestOverride({{
   model: "gpt-5.5",
 }});
 
+api.setModelCatalog({{
+  status: "ok",
+  model: "gpt-5.6-sol",
+  default_model: "gpt-5.6-sol",
+  models: ["gpt-5.6-sol"],
+  modelMetadata: {{
+    "gpt-5.6-sol": {{
+      displayName: "GPT-5.6-Sol",
+      description: "Latest frontier agentic coding model.",
+      defaultReasoningEffort: "low",
+      supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"].map((reasoningEffort) => ({{ reasoningEffort }})),
+      additionalSpeedTiers: ["fast"],
+      serviceTiers: [{{ id: "priority", name: "Fast" }}],
+    }},
+  }},
+}});
+const solFastAvailability = api.fastAvailability("gpt-5.6-sol");
+api.setModelCatalog({{
+  status: "ok",
+  model: "gpt-5.6-sol",
+  default_model: "gpt-5.6-sol",
+  models: ["gpt-5.6-sol"],
+  modelMetadata: {{
+    "gpt-5.6-sol": {{
+      displayName: "GPT-5.6-Sol",
+      description: "Latest frontier agentic coding model.",
+      defaultReasoningEffort: "low",
+      supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"].map((reasoningEffort) => ({{ reasoningEffort }})),
+    }},
+  }},
+}});
+const solDescriptor = api.modelDescriptor("gpt-5.6-sol");
+const singletonDispatcher = {{ dispatchMessage() {{}}, subscribe() {{}} }};
+const dispatcherFromSingleton = api.dispatcherFromModule({{ current: singletonDispatcher }}) === singletonDispatcher;
+class DispatcherClass {{
+  static instance = new DispatcherClass();
+  static getInstance() {{ return this.instance; }}
+  dispatchMessage() {{}}
+}}
+const dispatcherFromClass = api.dispatcherFromModule({{ current: DispatcherClass }}) === DispatcherClass.instance;
+
 process.stdout.write(JSON.stringify({{
   supportedFast,
   unsupportedModel,
@@ -1076,6 +1136,10 @@ process.stdout.write(JSON.stringify({{
   turnWithoutModelDiagnosticModel,
   customInheritUnsupported,
   startConversation,
+  solFastAvailability,
+  solDescriptor,
+  dispatcherFromSingleton,
+  dispatcherFromClass,
 }}));
 "#,
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
