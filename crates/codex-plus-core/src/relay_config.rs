@@ -1518,12 +1518,25 @@ fn apply_model_catalog_to_config(
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
     if let Some(existing) = root_key_string(config_text, "model_catalog_json") {
         if existing != catalog_relative {
+            if custom_responses_provider(config_text)
+                && copy_standard_responses_catalog(home, &existing, &catalog_relative)?
+            {
+                let mut doc = parse_toml_document(config_text)?;
+                doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+                return Ok(normalize_optional_toml(doc));
+            }
             return Ok(config_text.to_string());
         }
     }
     if let Some(external_catalog) = live_external_model_catalog(home) {
         let mut doc = parse_toml_document(config_text)?;
-        doc["model_catalog_json"] = toml_edit::value(external_catalog);
+        if custom_responses_provider(config_text)
+            && copy_standard_responses_catalog(home, &external_catalog, &catalog_relative)?
+        {
+            doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+        } else {
+            doc["model_catalog_json"] = toml_edit::value(external_catalog);
+        }
         return Ok(normalize_optional_toml(doc));
     }
     let (model_list, model_windows): (String, std::collections::HashMap<String, String>) =
@@ -1554,6 +1567,66 @@ fn apply_model_catalog_to_config(
     let mut doc = parse_toml_document(config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
     Ok(normalize_optional_toml(doc))
+}
+
+fn custom_responses_provider(config_text: &str) -> bool {
+    let Ok(doc) = parse_toml_document(config_text) else {
+        return false;
+    };
+    let Some(provider_id) = active_provider_id(&doc) else {
+        return false;
+    };
+    if !is_custom_provider_id(&provider_id) {
+        return false;
+    }
+    doc.get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get(&provider_id))
+        .and_then(Item::as_table_like)
+        .and_then(|provider| provider.get("wire_api"))
+        .and_then(Item::as_str)
+        .is_some_and(|wire_api| wire_api.trim().eq_ignore_ascii_case("responses"))
+}
+
+fn copy_standard_responses_catalog(
+    home: &Path,
+    source: &str,
+    target_relative: &str,
+) -> anyhow::Result<bool> {
+    let source_path = {
+        let path = Path::new(source);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            home.join(path)
+        }
+    };
+    let Ok(contents) = std::fs::read_to_string(source_path) else {
+        return Ok(false);
+    };
+    let Ok(mut catalog) = serde_json::from_str::<Value>(&contents) else {
+        return Ok(false);
+    };
+    let Some(models) = catalog.get_mut("models").and_then(Value::as_array_mut) else {
+        return Ok(false);
+    };
+    let mut changed = false;
+    for model in models {
+        if model.get("use_responses_lite").and_then(Value::as_bool) == Some(true) {
+            model["use_responses_lite"] = Value::Bool(false);
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(false);
+    }
+
+    let target = home.join(target_relative);
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(target, serde_json::to_string_pretty(&catalog)?)?;
+    Ok(true)
 }
 
 fn live_external_model_catalog(home: &Path) -> Option<String> {
@@ -2723,6 +2796,11 @@ fn unquote_toml_string(value: &str) -> String {
     value
         .strip_prefix('"')
         .and_then(|value| value.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+        })
         .unwrap_or(value)
         .to_string()
 }

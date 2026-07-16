@@ -241,6 +241,9 @@ pub fn build_model_catalog_json_with_template(
             model["priority"] = json!(1000 + index);
             model["visibility"] = json!("list");
             model["supported_in_api"] = json!(true);
+            // Third-party provider catalogs use the public Responses wire format. Responses Lite
+            // moves tools into an internal input item and suppresses hosted tools such as web_search.
+            model["use_responses_lite"] = json!(false);
             if !has_model_metadata {
                 model["additional_speed_tiers"] = json!([]);
                 model["service_tiers"] = json!([]);
