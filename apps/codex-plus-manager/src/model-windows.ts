@@ -24,13 +24,14 @@ export function modelWindowsTextToMap(modelList: string, modelWindowsText: strin
   return JSON.stringify(map);
 }
 
-/// 图片处理模式。
+/// 图片处理模式（供后端 map 值用，前端 ImageHandling 已移除）。
 export type ImageHandling = "" | "send-as-is" | "strip" | "vlm";
 
 export type ModelWindowRow = {
   model: string;
   window: string;
-  imageHandling: ImageHandling;
+  textOnly: boolean;     // 只支持文本 -> 派生 modelVlm
+  noReasoning: boolean;  // 不支持推理 -> modelReasoningSupport
 };
 
 export function mergeModelWindowRows(
@@ -43,64 +44,74 @@ export function mergeModelWindowRows(
     const model = row.model.trim();
     if (!model || seen.has(model)) return;
     seen.add(model);
-    rows.push({ model, window: row.window.trim(), imageHandling: row.imageHandling ?? "send-as-is" });
+    rows.push({
+      model,
+      window: row.window.trim(),
+      textOnly: row.textOnly ?? false,
+      noReasoning: row.noReasoning ?? false,
+    });
   };
   currentRows.forEach(append);
   incomingRows.forEach(append);
-  return rows.length ? rows : [{ model: "", window: "", imageHandling: "send-as-is" }];
+  return rows.length ? rows : [{ model: "", window: "", textOnly: false, noReasoning: false }];
 }
 
-export function modelWindowRowsFromProfile(modelList: string, modelWindows: string, modelVlm?: string): ModelWindowRow[] {
-  let map: Record<string, string> = {};
-  try {
-    map = JSON.parse(modelWindows || "{}") as Record<string, string>;
-  } catch {
-    map = {};
-  }
-  // 解析 modelVlm JSON：`{"model": "vlm"/"strip"}`
-  let vlmMap: Record<string, ImageHandling> = {};
+export function modelWindowRowsFromProfile(
+  modelList: string,
+  modelWindows: string,
+  modelVlm?: string,
+  modelReasoningSupport?: string,
+): ModelWindowRow[] {
+  let winMap: Record<string, string> = {};
+  try { winMap = JSON.parse(modelWindows || "{}"); } catch { winMap = {}; }
+  // 旧 modelVlm 迁移：vlm/strip -> textOnly=true
+  const textOnlySet = new Set<string>();
   try {
     const raw = JSON.parse(modelVlm || "{}") as Record<string, unknown>;
     for (const [model, value] of Object.entries(raw)) {
-      if (value === "vlm") {
-        vlmMap[model] = "vlm";
-      } else if (value === "strip") {
-        vlmMap[model] = "strip";
-      }
-      // 其他值 → 不记录
+      if (value === "vlm" || value === "strip") textOnlySet.add(model);
     }
-  } catch {
-    vlmMap = {};
-  }
+  } catch { /* ignore */ }
+  const noReasoningSet = new Set<string>();
+  try {
+    const raw = JSON.parse(modelReasoningSupport || "{}") as Record<string, unknown>;
+    for (const [model, value] of Object.entries(raw)) {
+      if (value === false) noReasoningSet.add(model);
+    }
+  } catch { /* ignore */ }
   const rows = modelList
-    .split("\n")
-    .map((model) => model.trim())
-    .filter(Boolean)
-    .map((model) => ({ model, window: map[model] ?? "", imageHandling: vlmMap[model] ?? "send-as-is" }));
-  return rows.length ? rows : [{ model: "", window: "", imageHandling: "send-as-is" }];
+    .split("\n").map((s) => s.trim()).filter(Boolean)
+    .map((model) => ({
+      model,
+      window: winMap[model] ?? "",
+      textOnly: textOnlySet.has(model),
+      noReasoning: noReasoningSet.has(model),
+    }));
+  return rows.length ? rows : [{ model: "", window: "", textOnly: false, noReasoning: false }];
 }
 
-export function serializeModelWindowRows(rows: ModelWindowRow[]): { modelList: string; modelWindows: string; modelVlm: string } {
+export function serializeModelWindowRows(
+  rows: ModelWindowRow[],
+  vlConfigured: boolean,
+): { modelList: string; modelWindows: string; modelVlm: string; modelReasoningSupport: string } {
   const modelList: string[] = [];
   const modelWindows: Record<string, string> = {};
   const modelVlm: Record<string, string> = {};
+  const modelReasoningSupport: Record<string, boolean> = {};
   mergeModelWindowRows(rows, []).forEach((row) => {
     const model = row.model.trim();
     if (!model) return;
     modelList.push(model);
     const window = row.window.trim();
-    if (window) {
-      modelWindows[model] = window;
-    }
-    // 只持久化非默认值
-    if (row.imageHandling === "vlm" || row.imageHandling === "strip") {
-      modelVlm[model] = row.imageHandling;
-    }
+    if (window) modelWindows[model] = window;
+    if (row.textOnly) modelVlm[model] = vlConfigured ? "vlm" : "strip";
+    if (row.noReasoning) modelReasoningSupport[model] = false;
   });
   return {
     modelList: modelList.join("\n"),
     modelWindows: JSON.stringify(modelWindows),
     modelVlm: JSON.stringify(modelVlm),
+    modelReasoningSupport: JSON.stringify(modelReasoningSupport),
   };
 }
 

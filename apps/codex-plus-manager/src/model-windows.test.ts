@@ -8,6 +8,7 @@ import {
   modelWindowsTextToMap,
   serializeModelWindowRows,
   mergeModelWindowRows,
+  ModelWindowRow,
 } from "./model-windows.ts";
 
 // 类型检查：确保 RelayProfile 包含 modelWindows 和 modelVlm 字段
@@ -87,9 +88,9 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       modelWindowRowsFromProfile("a\nb\nc", '{"a":"1M","c":"200K"}'),
       [
-        { model: "a", window: "1M", imageHandling: "send-as-is" },
-        { model: "b", window: "", imageHandling: "send-as-is" },
-        { model: "c", window: "200K", imageHandling: "send-as-is" },
+        { model: "a", window: "1M", textOnly: false, noReasoning: false },
+        { model: "b", window: "", textOnly: false, noReasoning: false },
+        { model: "c", window: "200K", textOnly: false, noReasoning: false },
       ],
     );
   });
@@ -98,9 +99,9 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       modelWindowRowsFromProfile("a\nb\nc", '{}', '{"a":"vlm","b":"strip"}'),
       [
-        { model: "a", window: "", imageHandling: "vlm" },
-        { model: "b", window: "", imageHandling: "strip" },
-        { model: "c", window: "", imageHandling: "send-as-is" },
+        { model: "a", window: "", textOnly: true, noReasoning: false },
+        { model: "b", window: "", textOnly: true, noReasoning: false },
+        { model: "c", window: "", textOnly: false, noReasoning: false },
       ],
     );
   });
@@ -108,14 +109,15 @@ describe("model-windows helpers", () => {
   it("serializeModelWindowRows 从行控件生成 modelList、modelWindows 和 modelVlm", () => {
     assert.deepStrictEqual(
       serializeModelWindowRows([
-        { model: "a", window: "1M", imageHandling: "vlm" },
-        { model: "", window: "400K", imageHandling: "send-as-is" },
-        { model: "b", window: "", imageHandling: "send-as-is" },
-      ]),
+        { model: "a", window: "1M", textOnly: true, noReasoning: false },
+        { model: "", window: "400K", textOnly: false, noReasoning: false },
+        { model: "b", window: "", textOnly: false, noReasoning: false },
+      ], false),
       {
         modelList: "a\nb",
         modelWindows: '{"a":"1M"}',
-        modelVlm: '{"a":"vlm"}',
+        modelVlm: '{"a":"strip"}',
+        modelReasoningSupport: "{}",
       },
     );
   });
@@ -124,19 +126,53 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       mergeModelWindowRows(
         [
-          { model: "deepseek-v4-flash", window: "1M", imageHandling: "vlm" },
-          { model: "  ", window: "", imageHandling: "send-as-is" },
+          { model: "deepseek-v4-flash", window: "1M", textOnly: true, noReasoning: false },
+          { model: "  ", window: "", textOnly: false, noReasoning: false },
         ],
         [
-          { model: "deepseek-v4-flash", window: "", imageHandling: "send-as-is" },
-          { model: "deepseek-v4-pro", window: "", imageHandling: "vlm" },
-          { model: " deepseek-v4-pro ", window: "200K", imageHandling: "send-as-is" },
+          { model: "deepseek-v4-flash", window: "", textOnly: false, noReasoning: false },
+          { model: "deepseek-v4-pro", window: "", textOnly: true, noReasoning: false },
+          { model: " deepseek-v4-pro ", window: "200K", textOnly: false, noReasoning: false },
         ],
       ),
       [
-        { model: "deepseek-v4-flash", window: "1M", imageHandling: "vlm" },
-        { model: "deepseek-v4-pro", window: "", imageHandling: "vlm" },
+        { model: "deepseek-v4-flash", window: "1M", textOnly: true, noReasoning: false },
+        { model: "deepseek-v4-pro", window: "", textOnly: true, noReasoning: false },
       ],
     );
+  });
+});
+
+describe("checkbox serialization", () => {
+  it("textOnly + VL configured -> vlm; textOnly + VL not configured -> strip", () => {
+    const rows: ModelWindowRow[] = [
+      { model: "deepseek-v4", window: "1M", textOnly: true, noReasoning: false },
+      { model: "glm-5.2", window: "", textOnly: true, noReasoning: false },
+      { model: "minimax", window: "", textOnly: false, noReasoning: false },
+    ];
+    const withVl = serializeModelWindowRows(rows, true);
+    assert.deepStrictEqual(JSON.parse(withVl.modelVlm), { "deepseek-v4": "vlm", "glm-5.2": "vlm" });
+    const noVl = serializeModelWindowRows(rows, false);
+    assert.deepStrictEqual(JSON.parse(noVl.modelVlm), { "deepseek-v4": "strip", "glm-5.2": "strip" });
+  });
+
+  it("noReasoning -> modelReasoningSupport map", () => {
+    const rows: ModelWindowRow[] = [
+      { model: "kimi-k2.6", window: "", textOnly: false, noReasoning: true },
+    ];
+    const s = serializeModelWindowRows(rows, false);
+    assert.deepStrictEqual(JSON.parse(s.modelReasoningSupport), { "kimi-k2.6": false });
+  });
+
+  it("migrates old modelVlm vlm/strip -> textOnly=true", () => {
+    const rows = modelWindowRowsFromProfile(
+      "deepseek-v4\nglm-5.2\nminimax",
+      "{}",
+      '{"deepseek-v4":"vlm","glm-5.2":"strip"}',
+      "{}",
+    );
+    assert.strictEqual(rows[0].textOnly, true);
+    assert.strictEqual(rows[1].textOnly, true);
+    assert.strictEqual(rows[2].textOnly, false);
   });
 });
