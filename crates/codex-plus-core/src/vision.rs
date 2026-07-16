@@ -134,7 +134,9 @@ pub fn image_handling_mode(model: &str, model_vlm_json: &str) -> ImageHandling {
 /// 不调 VLM，不入缓存，不注入描述。
 pub fn strip_images_only(messages: &mut [Value]) {
     for msg in messages.iter_mut() {
-        let Some(content) = msg.get_mut("content") else { continue };
+        let Some(content) = msg.get_mut("content") else {
+            continue;
+        };
 
         match &content {
             Value::Array(parts) => {
@@ -145,7 +147,8 @@ pub fn strip_images_only(messages: &mut [Value]) {
                         .and_then(Value::as_str)
                         .map_or(false, |t| t == "image_url" || t == "input_image");
                     if is_image {
-                        new_content.push(serde_json::json!({"type": "text", "text": "[图片已省略]"}));
+                        new_content
+                            .push(serde_json::json!({"type": "text", "text": "[图片已省略]"}));
                     } else {
                         new_content.push(part.clone());
                     }
@@ -668,7 +671,10 @@ pub async fn strip_image_blocks(
                 round_urls.push(url.clone());
             }
         }
-        if analyze_and_inject(&round_urls, vlm_config, &mut descriptions, *msg_idx).await.is_err() {
+        if analyze_and_inject(&round_urls, vlm_config, &mut descriptions, *msg_idx)
+            .await
+            .is_err()
+        {
             // 当前轮 VLM 全部失败 → fail-closed。
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "vlm_current_round_fail_closed",
@@ -899,10 +905,7 @@ mod tests {
 
     #[test]
     fn handling_mode_defaults_to_send_as_is_for_empty_json() {
-        assert_eq!(
-            image_handling_mode("gpt-4", "{}"),
-            ImageHandling::SendAsIs
-        );
+        assert_eq!(image_handling_mode("gpt-4", "{}"), ImageHandling::SendAsIs);
     }
 
     #[test]
@@ -915,10 +918,7 @@ mod tests {
 
     #[test]
     fn handling_mode_defaults_to_send_as_is_for_empty_string() {
-        assert_eq!(
-            image_handling_mode("gpt-4", ""),
-            ImageHandling::SendAsIs
-        );
+        assert_eq!(image_handling_mode("gpt-4", ""), ImageHandling::SendAsIs);
     }
 
     // ── strip_images_only ─────────────────────────────────────────
@@ -1293,12 +1293,21 @@ mod tests {
         let has_image = parts
             .iter()
             .any(|p| p.get("type").and_then(Value::as_str) == Some("image_url"));
-        assert!(!has_image, "image should be stripped on overflow to free space");
+        assert!(
+            !has_image,
+            "image should be stripped on overflow to free space"
+        );
         // 注入跳过占位符
         let texts: Vec<&str> = parts.iter().filter_map(|p| p["text"].as_str()).collect();
         let joined = texts.join(" ");
-        assert!(joined.contains("上下文已满"), "should contain overflow placeholder: {joined}");
-        assert!(joined.contains("1 张图片"), "should mention image count: {joined}");
+        assert!(
+            joined.contains("上下文已满"),
+            "should contain overflow placeholder: {joined}"
+        );
+        assert!(
+            joined.contains("1 张图片"),
+            "should mention image count: {joined}"
+        );
     }
 
     #[tokio::test]
@@ -1568,9 +1577,11 @@ mod tests {
         // 所有图片已删除
         for msg in &messages {
             let parts = msg["content"].as_array().unwrap();
-            assert!(!parts
-                .iter()
-                .any(|p| p.get("type").and_then(Value::as_str) == Some("image_url")));
+            assert!(
+                !parts
+                    .iter()
+                    .any(|p| p.get("type").and_then(Value::as_str) == Some("image_url"))
+            );
         }
 
         let collect_text = |idx: usize| -> String {

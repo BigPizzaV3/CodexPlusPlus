@@ -279,7 +279,10 @@ fn is_codex_plus_plus_path(path: &Path) -> bool {
             return true;
         }
     }
-    let normalized = path.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    let normalized = path
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
     normalized.contains("\\programs\\codex++")
         || normalized.contains("\\codex++\\")
         || normalized.ends_with("\\codex++")
