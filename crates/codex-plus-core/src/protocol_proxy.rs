@@ -848,7 +848,18 @@ async fn upstream_request_parts(
             ImageHandling::Strip => {
                 for key in &["messages", "input"] {
                     if let Some(arr) = body.get_mut(key).and_then(Value::as_array_mut) {
-                        crate::vision::strip_images_only(arr);
+                        let n = crate::vision::strip_images_only_counted(arr);
+                        if n > 0 {
+                            let _ = crate::diagnostic_log::append_diagnostic_log(
+                                "protocol_proxy.vl_strip",
+                                json!({"reason": "strip_mode", "n": n}),
+                            );
+                            crate::vision::inject_cannot_see_note_slice(
+                                arr,
+                                n,
+                                "未配置视觉模型中转，图片已剥离",
+                            );
+                        }
                     }
                 }
             }

@@ -167,6 +167,159 @@ pub fn strip_images_only(messages: &mut [Value]) {
     }
 }
 
+/// 纯剥离模式：删除所有消息中的图片块，替换为 "[图片已省略]"，返回剥离数。
+/// 不调 VLM，不入缓存，不注入描述。
+pub fn strip_images_only_counted(messages: &mut [Value]) -> usize {
+    let mut total = 0;
+    for msg in messages.iter_mut() {
+        let Some(content) = msg.get_mut("content") else {
+            continue;
+        };
+
+        match &content {
+            Value::Array(parts) => {
+                let mut new_content: Vec<Value> = Vec::new();
+                for part in parts.iter() {
+                    let is_image = part
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .map_or(false, |t| t == "image_url" || t == "input_image");
+                    if is_image {
+                        new_content
+                            .push(serde_json::json!({"type": "text", "text": "[图片已省略]"}));
+                        total += 1;
+                    } else {
+                        new_content.push(part.clone());
+                    }
+                }
+                *content = Value::Array(new_content);
+            }
+            Value::String(_) => {}
+            _ => {}
+        }
+    }
+    total
+}
+
+/// 向消息数组注入"看不到图片"的系统提示。
+///
+/// 自动检测数组格式：
+/// - `messages` 格式（首条有 `role` 键）：插入 `{role:"system",content:[{type:"text",text:note}]}`
+/// - `input` 格式（首条有 `type:"message"`）：插入 `{type:"message",role:"system",content:[{type:"input_text",text:note}]}`
+pub fn inject_cannot_see_note_slice(arr: &mut Vec<Value>, n: usize, reason: &str) {
+    if n == 0 {
+        return;
+    }
+    let note = format!(
+        "[系统：用户发送了 {n} 张图片，但{reason}，图片内容未被处理。你无法看到这些图片。\
+         请如实告知用户当前状况（图片已剥离 / 路由中转失败 / 当前模式），\
+         并建议：① 换用支持多模态的模型；或 ② 在 Codex++ 中为该纯文本模型配置视觉模型路由。\
+         不要猜测或编造图片内容。]"
+    );
+
+    let is_input_format = arr
+        .first()
+        .and_then(|item| item.get("type").and_then(Value::as_str))
+        .map_or(false, |t| t == "message");
+
+    if is_input_format {
+        arr.insert(
+            0,
+            serde_json::json!({
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": note}]
+            }),
+        );
+    } else {
+        arr.insert(
+            0,
+            serde_json::json!({
+                "role": "system",
+                "content": [{"type": "text", "text": note}]
+            }),
+        );
+    }
+}
+
+/// 注入"看不到图片"提示到 messages 的最后一条 user 消息中。
+fn inject_cannot_see_note(messages: &mut [Value], n: usize, reason: &str) {
+    if n == 0 {
+        return;
+    }
+    let note = format!(
+        "[系统：用户发送了 {n} 张图片，但{reason}，图片内容未被处理。你无法看到这些图片。\
+         请如实告知用户当前状况（图片已剥离 / 路由中转失败 / 当前模式），\
+         并建议：① 换用支持多模态的模型；或 ② 在 Codex++ 中为该纯文本模型配置视觉模型路由。\
+         不要猜测或编造图片内容。]"
+    );
+    if let Some(msg) = messages
+        .iter_mut()
+        .rev()
+        .find(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+    {
+        if let Some(parts) = msg.get_mut("content").and_then(Value::as_array_mut) {
+            parts.insert(0, serde_json::json!({"type": "text", "text": note}));
+        }
+    }
+}
+
+/// 统计 messages 中所有图片块的数量。
+fn count_images(messages: &[Value]) -> usize {
+    messages
+        .iter()
+        .map(|m| {
+            m.get("content")
+                .and_then(Value::as_array)
+                .map(|ps| {
+                    ps.iter()
+                        .filter(|p| {
+                            matches!(
+                                p.get("type").and_then(Value::as_str),
+                                Some("input_image") | Some("image_url")
+                            )
+                        })
+                        .count()
+                })
+                .unwrap_or(0)
+        })
+        .sum()
+}
+
+/// 删除所有消息中的全部 image 块，返回剥离数量。
+fn strip_all_images_counted(messages: &mut [Value]) -> usize {
+    let mut n = 0;
+    for msg in messages.iter_mut() {
+        if let Some(parts) = msg.get_mut("content").and_then(Value::as_array_mut) {
+            let before = parts.len();
+            parts.retain(|p| {
+                !matches!(
+                    p.get("type").and_then(Value::as_str),
+                    Some("input_image") | Some("image_url")
+                )
+            });
+            n += before - parts.len();
+        }
+    }
+    n
+}
+
+/// 删除单条消息中的全部 image 块，返回剥离数量。
+fn strip_images_in_message(msg: &mut Value) -> usize {
+    if let Some(parts) = msg.get_mut("content").and_then(Value::as_array_mut) {
+        let before = parts.len();
+        parts.retain(|p| {
+            !matches!(
+                p.get("type").and_then(Value::as_str),
+                Some("input_image") | Some("image_url")
+            )
+        });
+        before - parts.len()
+    } else {
+        0
+    }
+}
+
 // ── URL collection ────────────────────────────────────────────────────
 
 /// 收集单条消息中的全部图片 URL（不修改消息）。
@@ -562,34 +715,21 @@ pub async fn strip_image_blocks(
     let available = effective_window.saturating_sub(current_tokens as u64);
     // 1 token 安全余量，防止零宽窗口。
     if available <= 1 {
-        // 上下文已满：剥离图片释放空间，注入占位符告知模型图片被跳过（而非静默丢弃）。
-        let image_count: usize = messages
-            .iter()
-            .rev()
-            .filter(|m| m.get("role").and_then(Value::as_str) == Some("user"))
-            .take(1)
-            .flat_map(|m| collect_urls(m))
-            .count();
-        strip_all_images(messages);
-        if image_count > 0 {
-            inject_text_into_user_message(
-                messages
-                    .iter_mut()
-                    .rev()
-                    .find(|m| m.get("role").and_then(Value::as_str) == Some("user"))
-                    .expect("at least one user message exists"),
-                &format!(
-                    "\n[系统：当前轮次有 {} 张图片因上下文已满未完成 VLM 分析，图片已被清理以释放空间]",
-                    image_count
-                ),
+        // 上下文已满：剥离图片释放空间，注入"看不到图"提示，记录 vl_strip 事件。
+        let n = strip_all_images_counted(messages);
+        if n > 0 {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.vl_strip",
+                json!({"reason": "overflow", "n": n}),
             );
+            inject_cannot_see_note(messages, n, "上下文已满，图片未处理");
         }
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "vlm_context_overflow",
             json!({
                 "context_window": context_window,
                 "text_only_estimated_tokens": current_tokens,
-                "skipped_images": image_count,
+                "skipped_images": n,
             }),
         );
         return;
@@ -729,15 +869,18 @@ pub async fn strip_image_blocks(
                 }
             }
             Err(_) => {
-                // 当前轮 VLM 全部失败 → fail-closed。
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "vlm_current_round_fail_closed",
-                    json!({
-                        "round_url_count": round_urls.len(),
-                        "is_current": true,
-                    }),
-                );
-                return;
+                // fail-open：strip 当前轮图片 + 注入"看不到图"提示（不再 return 保留图片）。
+                if let Some(idx) = current_round_msg_idx {
+                    if idx < messages.len() {
+                        let n = strip_images_in_message(&mut messages[idx]);
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "protocol_proxy.vl_strip",
+                            json!({"reason": "vl_failed", "n": n}),
+                        );
+                        inject_cannot_see_note(messages, n, "视觉模型调用失败");
+                    }
+                }
+                // 继续执行后续阶段（历史轮仍可走缓存），不 return。
             }
         }
     }
@@ -1425,9 +1568,7 @@ mod tests {
 
     #[tokio::test]
     async fn strip_image_blocks_unanalyzed_gets_placeholder() {
-        // 历史消息有大量图片但 VLM 服务不可达 → fail-closed → 图片保留但不注入占位符
-        // 注：VLM 服务不可达时 call_vlm_batch 会返回 Err → strip_image_blocks 会 early return
-        // 所以这里验证的是：当 VLM 完全不可用时，图片不被删除。
+        // VLM 服务不可达时 → fail-open：剥离当前轮图片 + 注入"看不到图"提示。
         let mut messages = vec![serde_json::json!({
             "role": "user",
             "content": [
@@ -1448,31 +1589,31 @@ mod tests {
 
         strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4", &client).await;
 
-        // fail-closed：图片保留
+        // fail-open：图片被剥离（不再保留）
         let parts = messages[0]["content"].as_array().unwrap();
         let has_image = parts
             .iter()
             .any(|p| p.get("type").and_then(Value::as_str) == Some("image_url"));
         assert!(
-            has_image,
-            "image should be preserved when VLM is unreachable (fail-closed)"
+            !has_image,
+            "image should be stripped when VLM is unreachable (fail-open)"
+        );
+        // 注入"看不到图"提示
+        let texts: Vec<&str> = parts.iter().filter_map(|p| p["text"].as_str()).collect();
+        let joined = texts.join(" ");
+        assert!(
+            joined.contains("无法看到") || joined.contains("视觉模型"),
+            "should contain cannot-see note: {joined}"
         );
     }
 
-    /// 混合缓存命中/未命中 + VLM 不可达 → fail-closed。
-    /// 前 8 张在缓存中，后 7 张不在，VLM 不可达时全部图片保留。
+    /// 混合缓存命中/未命中 + VLM 不可达 → fail-open。
+    /// 前 8 张在缓存中，后 7 张不在，VLM 不可达时当前轮图片被剥离 + 注入提示。
+    /// 注意：当前轮 = 最后一条 user 消息（messages[1]），历史轮 = messages[0]。
     #[tokio::test]
-    async fn strip_image_blocks_mixed_cache_vlm_unreachable_fail_closed() {
+    async fn strip_image_blocks_mixed_cache_vlm_unreachable_fail_open() {
         let mut messages: Vec<Value> = Vec::new();
-        // 当前轮消息（1 张图）
-        messages.push(serde_json::json!({
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "current"},
-                {"type": "image_url", "image_url": {"url": "https://test.example.com/limit/current.png"}},
-            ]
-        }));
-        // 历史消息（15 张图，模拟一条大消息）
+        // 历史消息（15 张图）— 先 push，index 0
         let mut history_parts: Vec<Value> =
             vec![serde_json::json!({"type": "text", "text": "history"})];
         for i in 0..15 {
@@ -1492,11 +1633,19 @@ mod tests {
             "role": "user",
             "content": history_parts
         }));
+        // 当前轮消息（1 张图）— 后 push，index 1（最后一条 user 消息）
+        messages.push(serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "current"},
+                {"type": "image_url", "image_url": {"url": "https://test.example.com/limit/current.png"}},
+            ]
+        }));
 
         let vlm_config = VlmConfig {
             api_key: "unused".to_string(),
             model: "unused".to_string(),
-            base_url: "https://127.0.0.1:1".to_string(), // VLM 不可达，触发 fail-closed 路径
+            base_url: "https://127.0.0.1:1".to_string(), // VLM 不可达
         };
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_millis(100))
@@ -1505,16 +1654,30 @@ mod tests {
 
         strip_image_blocks(&mut messages, &vlm_config, "{}", "900000", "gpt-4", &client).await;
 
-        // VLM 不可达 → call_vlm_batch 返回 Err → strip_image_blocks early return
-        // → fail-closed：全部图片保留，不注入任何描述。
-        let hist_parts = messages[1]["content"].as_array().unwrap();
+        // fail-open：当前轮（messages[1]）图片在 Phase 5a 剥离，历史轮（messages[0]）在 step 8 剥离。
+        let hist_parts = messages[0]["content"].as_array().unwrap();
         let image_count = hist_parts
             .iter()
             .filter(|p| p.get("type").and_then(Value::as_str) == Some("image_url"))
             .count();
         assert_eq!(
-            image_count, 15,
-            "images preserved (fail-closed when VLM unreachable)"
+            image_count, 0,
+            "history images stripped in step 8"
+        );
+        let curr_parts = messages[1]["content"].as_array().unwrap();
+        let curr_has_image = curr_parts
+            .iter()
+            .any(|p| p.get("type").and_then(Value::as_str) == Some("image_url"));
+        assert!(!curr_has_image, "current round images stripped in Phase 5a");
+        // 当前轮应有"无法看到图"提示
+        let curr_texts: Vec<&str> = curr_parts
+            .iter()
+            .filter_map(|p| p["text"].as_str())
+            .collect();
+        let curr_joined = curr_texts.join(" ");
+        assert!(
+            curr_joined.contains("无法看到") || curr_joined.contains("视觉模型"),
+            "current round should contain cannot-see note: {curr_joined}"
         );
     }
 
@@ -1724,6 +1887,248 @@ mod tests {
                 "history img {i}: beyond X cap, should NOT be injected"
             );
         }
+    }
+
+    // ── new helpers tests ─────────────────────────────────────────
+
+    #[test]
+    fn count_images_counts_all_images_across_messages() {
+        let messages = vec![
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hi"},
+                    {"type": "image_url", "image_url": {"url": "https://x.com/a.png"}},
+                    {"type": "image_url", "image_url": {"url": "https://x.com/b.png"}},
+                ]
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+                ]
+            }),
+        ];
+        assert_eq!(count_images(&messages), 3);
+    }
+
+    #[test]
+    fn count_images_returns_zero_for_no_images() {
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}]
+        })];
+        assert_eq!(count_images(&messages), 0);
+    }
+
+    #[test]
+    fn strip_all_images_counted_returns_correct_count() {
+        let mut messages = vec![
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hi"},
+                    {"type": "image_url", "image_url": {"url": "https://x.com/a.png"}},
+                    {"type": "image_url", "image_url": {"url": "https://x.com/b.png"}},
+                ]
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+                ]
+            }),
+        ];
+        let n = strip_all_images_counted(&mut messages);
+        assert_eq!(n, 3);
+        // 确认图片已全部删除
+        for msg in &messages {
+            let parts = msg["content"].as_array().unwrap();
+            let has_image = parts.iter().any(|p| {
+                matches!(
+                    p.get("type").and_then(Value::as_str),
+                    Some("image_url") | Some("input_image")
+                )
+            });
+            assert!(!has_image);
+        }
+    }
+
+    #[test]
+    fn strip_all_images_counted_returns_zero_when_no_images() {
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}]
+        })];
+        let n = strip_all_images_counted(&mut messages);
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn strip_images_in_message_strips_from_single_message() {
+        let mut msg = serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hi"},
+                {"type": "image_url", "image_url": {"url": "https://x.com/a.png"}},
+                {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+            ]
+        });
+        let n = strip_images_in_message(&mut msg);
+        assert_eq!(n, 2);
+        let parts = msg["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["text"], "hi");
+    }
+
+    #[test]
+    fn strip_images_in_message_returns_zero_for_text_only() {
+        let mut msg = serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}]
+        });
+        let n = strip_images_in_message(&mut msg);
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn strip_images_only_counted_returns_count_and_replaces_placeholders() {
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hello"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+                {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+            ]
+        })];
+        let n = strip_images_only_counted(&mut messages);
+        assert_eq!(n, 2);
+        let parts = messages[0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0]["text"], "hello");
+        assert_eq!(parts[1]["text"], "[图片已省略]");
+        assert_eq!(parts[2]["text"], "[图片已省略]");
+    }
+
+    #[test]
+    fn inject_cannot_see_note_slice_messages_format() {
+        let mut arr: Vec<Value> = vec![serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}]
+        })];
+        inject_cannot_see_note_slice(&mut arr, 3, "测试原因");
+        assert_eq!(arr.len(), 2);
+        // 第一条是系统消息
+        let sys = &arr[0];
+        assert_eq!(sys["role"], "system");
+        let sys_text = sys["content"][0]["text"].as_str().unwrap();
+        assert!(sys_text.contains("无法看到"));
+        assert!(sys_text.contains("测试原因"));
+        assert!(sys_text.contains("3 张图片"));
+    }
+
+    #[test]
+    fn inject_cannot_see_note_slice_input_format() {
+        let mut arr: Vec<Value> = vec![serde_json::json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hello"}]
+        })];
+        inject_cannot_see_note_slice(&mut arr, 2, "测试原因");
+        assert_eq!(arr.len(), 2);
+        // 第一条是系统消息
+        let sys = &arr[0];
+        assert_eq!(sys["type"], "message");
+        assert_eq!(sys["role"], "system");
+        let sys_text = sys["content"][0]["text"].as_str().unwrap();
+        assert!(sys_text.contains("无法看到"));
+        assert!(sys_text.contains("测试原因"));
+        assert!(sys_text.contains("2 张图片"));
+    }
+
+    #[test]
+    fn inject_cannot_see_note_slice_noop_when_n_is_zero() {
+        let mut arr: Vec<Value> = vec![serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}]
+        })];
+        inject_cannot_see_note_slice(&mut arr, 0, "测试原因");
+        assert_eq!(arr.len(), 1);
+    }
+
+    #[test]
+    fn inject_cannot_see_note_injects_into_last_user_message() {
+        let mut messages = vec![
+            serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "ok"}]}),
+            serde_json::json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}),
+        ];
+        inject_cannot_see_note(&mut messages, 5, "测试原因");
+        let parts = messages[1]["content"].as_array().unwrap();
+        let first = &parts[0];
+        assert_eq!(first["type"], "text");
+        let text = first["text"].as_str().unwrap();
+        assert!(text.contains("无法看到"));
+        assert!(text.contains("测试原因"));
+        assert!(text.contains("5 张图片"));
+    }
+
+    #[test]
+    fn inject_cannot_see_note_noop_when_n_is_zero() {
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}]
+        })];
+        inject_cannot_see_note(&mut messages, 0, "测试原因");
+        let parts = messages[0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+    }
+
+    // ── VLM failure fail-open test ────────────────────────────────
+
+    /// VLM 永远返回 500 → 当前轮图片被剥离 + 注入"看不到图"提示 + 继续处理历史轮。
+    #[tokio::test]
+    async fn vlm_failure_failopen_strips_and_injects_note() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": {"message": "internal server error"}
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let vlm_config = VlmConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: mock_server.uri(),
+        };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Q1"},
+                {"type": "image_url", "image_url": {"url": "https://test.example.com/img1.png"}},
+            ]
+        })];
+
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4", &client).await;
+
+        let parts = messages[0]["content"].as_array().unwrap();
+        let has_image = parts
+            .iter()
+            .any(|p| p.get("type").and_then(Value::as_str) == Some("image_url"));
+        assert!(
+            !has_image,
+            "VLM failure should strip images (fail-open)"
+        );
+        let texts: Vec<&str> = parts.iter().filter_map(|p| p["text"].as_str()).collect();
+        let joined = texts.join(" ");
+        assert!(
+            joined.contains("无法看到") || joined.contains("视觉模型"),
+            "should inject cannot-see note: {joined}"
+        );
     }
 
     // ── wiremock integration tests ───────────────────────────────
