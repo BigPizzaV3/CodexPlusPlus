@@ -1,8 +1,9 @@
 use codex_plus_core::protocol_proxy::{
-    ChatSseToResponsesConverter, chat_completion_to_response,
+    ChatSseToResponsesConverter, audio_transcriptions_url, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
-    chat_sse_to_responses_sse_with_request, is_chat_completions_proxy_path, is_models_proxy_path,
-    is_responses_proxy_path, models_url, open_chat_completions_proxy_request,
+    chat_sse_to_responses_sse_with_request, is_audio_transcriptions_proxy_path,
+    is_chat_completions_proxy_path, is_models_proxy_path, is_responses_proxy_path, models_url,
+    open_audio_transcriptions_proxy_request, open_chat_completions_proxy_request,
     open_models_proxy_request, open_responses_proxy_request,
     open_responses_proxy_request_with_settings, responses_error_from_upstream,
     responses_to_chat_completions, send_upstream_request_with_header_timeout,
@@ -132,6 +133,15 @@ fn proxy_route_matchers_accept_ccswitch_codex_aliases() {
 
     for path in ["/models", "/v1/models", "/v1/v1/models", "/codex/v1/models"] {
         assert!(is_models_proxy_path(path), "{path}");
+    }
+
+    for path in [
+        "/audio/transcriptions",
+        "/v1/audio/transcriptions",
+        "/v1/v1/audio/transcriptions",
+        "/codex/v1/audio/transcriptions",
+    ] {
+        assert!(is_audio_transcriptions_proxy_path(path), "{path}");
     }
 }
 
@@ -1268,6 +1278,30 @@ fn chat_completions_url_normalizes_common_base_urls() {
 }
 
 #[test]
+fn audio_transcriptions_url_normalizes_common_base_urls() {
+    assert_eq!(
+        audio_transcriptions_url("https://api.example.test"),
+        "https://api.example.test/v1/audio/transcriptions"
+    );
+    assert_eq!(
+        audio_transcriptions_url("https://api.example.test/v1"),
+        "https://api.example.test/v1/audio/transcriptions"
+    );
+    assert_eq!(
+        audio_transcriptions_url("https://api.example.test/openai"),
+        "https://api.example.test/openai/audio/transcriptions"
+    );
+    assert_eq!(
+        audio_transcriptions_url("https://api.example.test/v1/audio/transcriptions"),
+        "https://api.example.test/v1/audio/transcriptions"
+    );
+    assert_eq!(
+        audio_transcriptions_url("https://api.example.test/openai#"),
+        "https://api.example.test/openai/audio/transcriptions"
+    );
+}
+
+#[test]
 fn models_url_normalizes_common_base_urls() {
     assert_eq!(
         models_url("https://api.example.test"),
@@ -1490,6 +1524,55 @@ fn aggregate_proxy_settings(
         ..BackendSettings::default()
     }
 }
+#[tokio::test]
+async fn audio_transcriptions_proxy_forwards_multipart_body() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = Vec::new();
+        let mut chunk = [0; 4096];
+        let read = stream.read(&mut chunk).await.unwrap();
+        buffer.extend_from_slice(&chunk[..read]);
+        let request = String::from_utf8_lossy(&buffer).to_string();
+        let body = r#"{"text":"ok"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        request
+    });
+    write_chat_relay_settings(temp.path(), &format!("http://{addr}/v1"), "");
+    let boundary = "codex-boundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngpt-4o-mini-transcribe\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\nabc\r\n--{boundary}--\r\n"
+    );
+
+    let upstream = open_audio_transcriptions_proxy_request(
+        body.as_bytes(),
+        &format!("multipart/form-data; boundary={boundary}"),
+        Some("Original-Codex-UA/1.0"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+    let request = server.await.unwrap();
+    assert!(request.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
+    assert!(
+        request.contains("content-type: multipart/form-data; boundary=codex-boundary")
+            || request.contains("Content-Type: multipart/form-data; boundary=codex-boundary")
+    );
+    assert!(request.contains("gpt-4o-mini-transcribe"));
+    assert!(request.contains("abc"));
+}
+
 #[tokio::test]
 async fn chat_completions_proxy_uses_configured_user_agent() {
     let _lock = settings_path_test_lock().lock().unwrap();
