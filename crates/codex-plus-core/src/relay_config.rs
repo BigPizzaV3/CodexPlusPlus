@@ -1192,7 +1192,7 @@ fn write_codex_live_atomic(
 
     let config_text = match config_text {
         Some(config_text) => {
-            let config_text = preserve_live_desktop_settings(home, config_text)?;
+            let config_text = preserve_live_app_settings(home, config_text)?;
             Some(preserve_live_marketplace_configs(home, &config_text)?)
         }
         None => None,
@@ -1558,7 +1558,7 @@ fn normalize_config_text_for_write(config_text: &str) -> String {
     config_text.trim_start_matches('\u{feff}').to_string()
 }
 
-fn preserve_live_desktop_settings(home: &Path, config_text: &str) -> anyhow::Result<String> {
+fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<String> {
     let normalized = normalize_config_text_for_write(config_text);
     let mut target_doc = parse_toml_document(&normalized)?;
     remove_unsupported_approval_policies(&mut target_doc);
@@ -1580,6 +1580,7 @@ fn preserve_live_desktop_settings(home: &Path, config_text: &str) -> anyhow::Res
         }
     }
     remove_unsupported_approval_policies(&mut target_doc);
+    preserve_live_hook_state(&mut target_doc, &live_doc);
     let context_usage_configured = target_doc
         .get("desktop")
         .and_then(Item::as_table)
@@ -1594,6 +1595,41 @@ fn preserve_live_desktop_settings(home: &Path, config_text: &str) -> anyhow::Res
         }
     }
     Ok(normalize_optional_toml(target_doc))
+}
+
+fn preserve_live_hook_state(target_doc: &mut DocumentMut, live_doc: &DocumentMut) {
+    let live_state = live_doc
+        .get("hooks")
+        .and_then(Item::as_table_like)
+        .and_then(|hooks| hooks.get("state"))
+        .cloned();
+
+    if let Some(live_state) = live_state {
+        if target_doc
+            .get("hooks")
+            .and_then(Item::as_table_like)
+            .is_none()
+        {
+            target_doc["hooks"] = toml_edit::table();
+        }
+        let hooks = target_doc["hooks"]
+            .as_table_like_mut()
+            .expect("hooks was initialized as a table");
+        hooks.insert("state", live_state);
+    } else if let Some(hooks) = target_doc
+        .get_mut("hooks")
+        .and_then(Item::as_table_like_mut)
+    {
+        hooks.remove("state");
+    }
+
+    let remove_empty_hooks = target_doc
+        .get("hooks")
+        .and_then(Item::as_table_like)
+        .is_some_and(|hooks| hooks.is_empty());
+    if remove_empty_hooks {
+        target_doc.as_table_mut().remove("hooks");
+    }
 }
 
 fn remove_unsupported_approval_policies(doc: &mut DocumentMut) -> bool {

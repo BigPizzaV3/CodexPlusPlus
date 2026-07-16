@@ -69,19 +69,23 @@ fn switch_rolls_back_live_files_when_post_write_status_check_fails() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("codex");
     std::fs::create_dir(&home).unwrap();
-    std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"sk-a"}"#).unwrap();
-    std::fs::write(
-        home.join("config.toml"),
-        r#"model_provider = "custom"
+    let original_auth = r#"{"OPENAI_API_KEY":"sk-a"}"#;
+    let original_config = r#"model_provider = "custom"
+
+[hooks.state."plugin-a@personal:hooks/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "live-a-hash"
+
+[hooks.state."plugin-b@openai-bundled:hooks/hooks.json:user_prompt_submit:1:0"]
+trusted_hash = "live-b-hash"
 
 [model_providers.custom]
 name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://a.example/v1"
-"#,
-    )
-    .unwrap();
+"#;
+    std::fs::write(home.join("auth.json"), original_auth).unwrap();
+    std::fs::write(home.join("config.toml"), original_config).unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let original = BackendSettings {
         active_relay_id: "a".to_string(),
@@ -89,6 +93,8 @@ base_url = "https://a.example/v1"
         ..BackendSettings::default()
     };
     store.save(&original).unwrap();
+    let persisted_original = store.load().unwrap();
+    let original_settings_bytes = std::fs::read(temp.path().join("settings.json")).unwrap();
     let next = BackendSettings {
         active_relay_id: "b".to_string(),
         relay_profiles: vec![
@@ -121,15 +127,18 @@ base_url = "https://b.example/v1"
             .to_string()
             .contains("纯 API 配置写入后未检测到完整 custom provider")
     );
-    assert_eq!(store.load().unwrap().active_relay_id, "a");
-    assert!(
-        std::fs::read_to_string(home.join("config.toml"))
-            .unwrap()
-            .contains("https://a.example/v1")
+    assert_eq!(store.load().unwrap(), persisted_original);
+    assert_eq!(
+        std::fs::read(temp.path().join("settings.json")).unwrap(),
+        original_settings_bytes
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("config.toml")).unwrap(),
+        original_config
     );
     assert_eq!(
         std::fs::read_to_string(home.join("auth.json")).unwrap(),
-        r#"{"OPENAI_API_KEY":"sk-a"}"#
+        original_auth
     );
 }
 
@@ -144,6 +153,12 @@ fn switch_backfills_previous_profile_from_live_before_selecting_target() {
 model_provider = "manual_a"
 model_context_window = 1000000
 model_auto_compact_token_limit = 900000
+
+[hooks.state."plugin-a@personal:hooks/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "live-a-hash"
+
+[hooks.state."plugin-b@openai-bundled:hooks/hooks.json:user_prompt_submit:1:0"]
+trusted_hash = "live-b-hash"
 
 [model_providers.manual_a]
 name = "manual_a"
@@ -188,6 +203,22 @@ base_url = "https://edited-a.example/v1"
     assert_eq!(previous.auto_compact_limit, "900000");
     assert_eq!(stored.active_relay_id, "b");
     assert_eq!(stored.launch_mode, LaunchMode::Patch);
+    let live: toml::Value = std::fs::read_to_string(home.join("config.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        live["hooks"]["state"]["plugin-a@personal:hooks/hooks.json:pre_tool_use:0:0"]
+            ["trusted_hash"]
+            .as_str(),
+        Some("live-a-hash")
+    );
+    assert_eq!(
+        live["hooks"]["state"]["plugin-b@openai-bundled:hooks/hooks.json:user_prompt_submit:1:0"]
+            ["trusted_hash"]
+            .as_str(),
+        Some("live-b-hash")
+    );
 }
 
 #[test]

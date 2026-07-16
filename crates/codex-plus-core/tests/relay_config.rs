@@ -1106,6 +1106,16 @@ sandbox_workspace_write = ["C:/workspace"]
 composerEnterBehavior = "cmdAlways"
 followUpQueueMode = "queue"
 selected-avatar-id = "avatar-local"
+
+[hooks]
+live_only_setting = "do-not-copy"
+
+[hooks.state."plugin-a@personal:hooks/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "live-a-hash"
+
+[hooks.state."plugin-b@openai-bundled:hooks/hooks.json:user_prompt_submit:1:0"]
+trusted_hash = "live-b-hash"
+enabled = false
 "#,
     )
     .unwrap();
@@ -1120,6 +1130,15 @@ sandbox_workspace_write = []
 [desktop]
 composerEnterBehavior = "enter"
 selected-avatar-id = "avatar-from-profile"
+
+[hooks]
+target_only_setting = "keep-me"
+
+[hooks.state."plugin-a@personal:hooks/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "stale-a-hash"
+
+[hooks.state."profile-only-hook"]
+trusted_hash = "stale-profile-only-hash"
 
 [model_providers.custom]
 name = "custom"
@@ -1153,9 +1172,68 @@ experimental_bearer_token = "sk-a"
         &[toml::Value::String("C:/workspace".to_string())]
     );
     assert_eq!(
+        parsed["hooks"]["state"]["plugin-a@personal:hooks/hooks.json:pre_tool_use:0:0"]
+            ["trusted_hash"]
+            .as_str(),
+        Some("live-a-hash")
+    );
+    assert_eq!(
+        parsed["hooks"]["state"]["plugin-b@openai-bundled:hooks/hooks.json:user_prompt_submit:1:0"]
+            ["trusted_hash"]
+            .as_str(),
+        Some("live-b-hash")
+    );
+    assert_eq!(
+        parsed["hooks"]["state"]["plugin-b@openai-bundled:hooks/hooks.json:user_prompt_submit:1:0"]
+            ["enabled"]
+            .as_bool(),
+        Some(false)
+    );
+    assert!(parsed["hooks"]["state"].get("profile-only-hook").is_none());
+    assert_eq!(
+        parsed["hooks"]["target_only_setting"].as_str(),
+        Some("keep-me")
+    );
+    assert!(parsed["hooks"].get("live_only_setting").is_none());
+    assert_eq!(
         parsed["model_providers"]["custom"]["base_url"].as_str(),
         Some("https://relay-a.example/v1")
     );
+}
+
+#[test]
+fn apply_relay_files_removes_stale_profile_hook_state_when_live_config_has_none() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("config.toml"), "model = \"old\"\n").unwrap();
+
+    apply_relay_files_to_home(
+        temp.path(),
+        r#"model_provider = "custom"
+
+[hooks]
+target_only_setting = "keep-me"
+
+[hooks.state."stale-profile-hook"]
+trusted_hash = "stale-hash"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay-a.example/v1"
+experimental_bearer_token = "sk-a"
+"#,
+        r#"{"OPENAI_API_KEY":"sk-a"}"#,
+    )
+    .unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = config.parse().unwrap();
+    assert_eq!(
+        parsed["hooks"]["target_only_setting"].as_str(),
+        Some("keep-me")
+    );
+    assert!(parsed["hooks"].get("state").is_none());
 }
 
 #[test]

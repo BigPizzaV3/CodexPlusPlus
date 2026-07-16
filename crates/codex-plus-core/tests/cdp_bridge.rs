@@ -1893,6 +1893,27 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
 
     assert_eq!(cases["startConversation"]["serviceTier"], "priority");
+    assert_eq!(
+        cases["explicitProjectStartConversation"]["workspaceKind"],
+        "project"
+    );
+    assert_eq!(
+        cases["explicitProjectStartConversation"]["projectAssignment"]["projectId"],
+        "C:/projects/explicit"
+    );
+    assert_eq!(
+        cases["projectlessStartConversation"]["workspaceKind"],
+        "projectless"
+    );
+    assert_eq!(
+        cases["projectlessStartConversation"]["projectlessOutputDirectory"],
+        "C:/projectless/outputs"
+    );
+    assert!(
+        cases["projectlessStartConversation"]
+            .get("projectAssignment")
+            .is_none()
+    );
     assert_eq!(cases["fetchStartConversation"]["serviceTier"], "priority");
     assert_eq!(
         cases["fetchSendCliRequest"]["params"]["serviceTier"],
@@ -1921,7 +1942,8 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["legacyStateApi"], true);
     assert_eq!(cases["currentStateApi"], true);
     assert_eq!(cases["appServerParamsUnchanged"], true);
-    assert_eq!(cases["appServerSentCount"], 6);
+    assert_eq!(cases["appServerProjectlessParamsUnchanged"], true);
+    assert_eq!(cases["appServerSentCount"], 7);
     assert_eq!(
         cases["providerFromMissing"]["modelProvider"],
         "vendor_alpha"
@@ -2112,6 +2134,24 @@ const startConversation = api.requestOverride({{
   threadId: "thread-12345678",
   model: "gpt-5.5",
 }});
+const explicitProjectStartConversation = api.requestOverride({{
+  type: "start-conversation",
+  threadId: "thread-explicit-project",
+  model: "gpt-5.5",
+  cwd: "C:/projects/explicit",
+  workspaceRoots: ["C:/projects/explicit"],
+  workspaceKind: "project",
+  projectAssignment: {{ projectKind: "local", projectId: "C:/projects/explicit" }},
+}});
+const projectlessStartConversation = api.requestOverride({{
+  type: "start-conversation",
+  threadId: "thread-projectless",
+  model: "gpt-5.5",
+  cwd: "C:/projectless/work",
+  workspaceRoots: ["C:/projectless/work"],
+  workspaceKind: "projectless",
+  projectlessOutputDirectory: "C:/projectless/outputs",
+}});
 const fetchStartConversationEnvelope = api.requestOverride({{
   type: "fetch",
   url: "vscode://codex/start-conversation",
@@ -2232,6 +2272,12 @@ const nativeAppServerParams = {{
   workspaceKind: "project",
   projectAssignment: {{ projectKind: "local", projectId: "C:/native/work" }},
 }};
+const nativeProjectlessAppServerParams = {{
+  cwd: "C:/native/projectless-work",
+  workspaceRoots: ["C:/native/projectless-work"],
+  workspaceKind: "projectless",
+  projectlessOutputDirectory: "C:/native/projectless-outputs",
+}};
 const appServerCalls = [];
 const appServerClient = {{
   async sendRequest(method, params, options) {{
@@ -2242,6 +2288,11 @@ const appServerClient = {{
 api.patchAppServerClient(appServerClient);
 
 appServerClient.sendRequest("start-conversation", nativeAppServerParams, {{ signal: "native" }}).then(async () => {{
+await appServerClient.sendRequest(
+  "thread/start",
+  nativeProjectlessAppServerParams,
+  {{ signal: "native-projectless" }}
+);
 api.setModelCatalog({{ status: "ok", model: "gpt-5.4", default_model: "gpt-5.4", models: ["gpt-5.4"], service_tier: "fast" }});
 const resolvedConfigTomlTier = await api.resolveInheritedServiceTier();
 api.setModelCatalog({{ status: "ok", model: "gpt-5.4", default_model: "gpt-5.4", models: ["gpt-5.4"] }});
@@ -2258,6 +2309,11 @@ const appServerParamsUnchanged = appServerCalls[0]?.params === nativeAppServerPa
   && appServerCalls[0]?.params?.workspaceKind === "project"
   && appServerCalls[0]?.params?.cwd === "C:/native/work"
   && appServerCalls[0]?.params?.projectAssignment?.projectId === "C:/native/work";
+const appServerProjectlessParamsUnchanged = appServerCalls[1]?.params === nativeProjectlessAppServerParams
+  && appServerCalls[1]?.params?.workspaceKind === "projectless"
+  && appServerCalls[1]?.params?.cwd === "C:/native/projectless-work"
+  && appServerCalls[1]?.params?.projectlessOutputDirectory === "C:/native/projectless-outputs"
+  && !Object.hasOwn(appServerCalls[1]?.params || {{}}, "projectAssignment");
 api.setBackendSettings({{
   relayProfilesEnabled: true,
   activeRelayId: "custom-relay",
@@ -2286,7 +2342,7 @@ const providerWithServiceTierControlsDisabled = api.requestOverride({{
   modelProvider: "openai",
 }});
 await appServerClient.sendRequest("thread/start", {{ cwd: "C:/mobile", modelProvider: "openai" }}, {{ signal: "mobile" }});
-const appServerProviderOverride = appServerCalls[1]?.params?.modelProvider;
+const appServerProviderOverride = appServerCalls[2]?.params?.modelProvider;
 const directThreadStartedId = api.remoteSessionStartedThreadId({{
   method: "thread/started",
   params: {{ thread: {{ id: "thread-mobile-direct" }} }},
@@ -2567,6 +2623,8 @@ process.stdout.write(JSON.stringify({{
   resolvedUnsetTier,
   inheritedConfigFastBlocked,
   startConversation,
+  explicitProjectStartConversation,
+  projectlessStartConversation,
   fetchStartConversation,
   fetchSendCliRequest,
   solFastAvailability,
@@ -2580,6 +2638,7 @@ process.stdout.write(JSON.stringify({{
   legacyStateApi,
   currentStateApi,
   appServerParamsUnchanged,
+  appServerProjectlessParamsUnchanged,
   appServerSentCount: appServerCalls.length,
   providerFromMissing,
   providerFromOpenAi,
