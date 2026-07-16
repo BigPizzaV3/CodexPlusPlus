@@ -277,7 +277,6 @@ fn estimate_tokens(messages: &[Value]) -> usize {
 const TIER1_PROMPT: &str =
     "请详细描述这张图片，重点涵盖：文字（如包含则逐字提取）、UI 元素、错误信息、布局结构。";
 
-#[allow(dead_code)]
 fn tier2_prompt(question: &str) -> String {
     format!("{TIER1_PROMPT}\n用户当前问题：{question}\n在全面描述基础上，对与上述问题相关的内容做更详细说明。")
 }
@@ -287,7 +286,6 @@ fn truncate_char_safe(s: &str, max_chars: usize) -> String {
 }
 
 /// 从 messages 收集用户原文：最新 user 消息有文字 → 取；无文字 → 回溯最近一条有文字的 user 消息。
-#[allow(dead_code)]
 fn collect_input_text(messages: &[Value]) -> String {
     for item in messages.iter().rev() {
         if item.get("role").and_then(Value::as_str) != Some("user") {
@@ -637,6 +635,8 @@ pub async fn strip_image_blocks(
         .position(|m| m.get("role").and_then(Value::as_str) == Some("user"))
         .map(|pos| messages.len() - 1 - pos);
 
+    let user_text = collect_input_text(messages);
+
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "vlm_strip_entry",
         json!({
@@ -681,14 +681,20 @@ pub async fn strip_image_blocks(
     }
 
     // 5a. 当前轮：不限量 VLM 同步分析，不计入 X 预算。
-    // 所有路径暂用 TIER1_PROMPT（Tier2 接入留 Task 6）。
+    // 若有用户文字问题则使用 Tier2 (URL+问题) prompt/缓存键，否则退级 Tier1。
     for (_, (msg_idx, urls)) in all_image_msgs.iter().enumerate() {
         if Some(*msg_idx) != current_round_msg_idx {
             continue;
         }
+        let tier2_prompt_str = tier2_prompt(&user_text);
+        let use_tier2 = !user_text.is_empty();
         let mut round_urls: Vec<String> = Vec::new();
         for url in urls {
-            let key = url_hash(url);
+            let key = if use_tier2 {
+                url_question_hash(url, &user_text)
+            } else {
+                url_hash(url)
+            };
             if let Some(cached) = cache_get(key) {
                 descriptions
                     .entry(*msg_idx)
@@ -698,26 +704,41 @@ pub async fn strip_image_blocks(
                 round_urls.push(url.clone());
             }
         }
-        if analyze_and_inject(
-            &round_urls,
-            vlm_config,
-            &mut descriptions,
-            *msg_idx,
-            TIER1_PROMPT,
-            client,
-        )
-        .await
-        .is_err()
-        {
-            // 当前轮 VLM 全部失败 → fail-closed。
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "vlm_current_round_fail_closed",
-                json!({
-                    "round_url_count": round_urls.len(),
-                    "is_current": true,
-                }),
-            );
-            return;
+        if round_urls.is_empty() {
+            continue;
+        }
+        let prompt = if use_tier2 {
+            tier2_prompt_str.as_str()
+        } else {
+            TIER1_PROMPT
+        };
+        match call_vlm_batch(&round_urls, prompt, vlm_config, client, BATCH_MAX_ATTEMPTS).await {
+            Ok(desc_vec) => {
+                for (url, desc) in round_urls.iter().zip(desc_vec.iter()) {
+                    let desc = truncate_char_safe(desc, DESC_MAX_CHARS);
+                    let key = if use_tier2 {
+                        url_question_hash(url, &user_text)
+                    } else {
+                        url_hash(url)
+                    };
+                    cache_put(key, desc.clone());
+                    descriptions
+                        .entry(*msg_idx)
+                        .or_default()
+                        .push_str(&format!("\n[图片描述] {desc}"));
+                }
+            }
+            Err(_) => {
+                // 当前轮 VLM 全部失败 → fail-closed。
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "vlm_current_round_fail_closed",
+                    json!({
+                        "round_url_count": round_urls.len(),
+                        "is_current": true,
+                    }),
+                );
+                return;
+            }
         }
     }
 
@@ -1212,7 +1233,8 @@ mod tests {
     fn cache_put_evicts_oldest_when_full() {
         // 填满缓存（500 条）后继续插入会触发驱逐。
         // NOTE：此测试依赖全局 VLM_CACHE，与其他并行测试共享状态。
-        // 通过独立 key 前缀避免冲突。
+        // 通过独立 key 前缀避免冲突，启动时清空缓存避免交叉干扰。
+        cache_clear_for_tests();
         for i in 0..CACHE_CAPACITY {
             let key = url_hash(&format!("https://evict-test.example.com/{i:04x}.png"));
             cache_put(key, format!("desc-{i}"));
@@ -1285,17 +1307,23 @@ mod tests {
 
     #[tokio::test]
     async fn strip_image_blocks_all_cache_hits_no_vlm_call() {
-        // 预填充缓存
+        let img_url = "https://test.example.com/cached.png";
+        let user_text = "看这张图";
+        // 预填充缓存：当前轮使用 url_question_hash (Tier2) 键
         cache_put(
-            url_hash("https://test.example.com/cached.png"),
+            url_hash(img_url),
+            "缓存的图片描述".to_string(),
+        );
+        cache_put(
+            url_question_hash(img_url, user_text),
             "缓存的图片描述".to_string(),
         );
 
         let mut messages = vec![serde_json::json!({
             "role": "user",
             "content": [
-                {"type": "text", "text": "看这张图"},
-                {"type": "image_url", "image_url": {"url": "https://test.example.com/cached.png"}},
+                {"type": "text", "text": user_text},
+                {"type": "image_url", "image_url": {"url": img_url}},
             ]
         })];
 
@@ -1506,10 +1534,13 @@ mod tests {
         // 预填充缓存：全部 25×15=375 张图片
         for round in 0..ROUNDS {
             for img in 0..IMGS_PER_ROUND {
-                cache_put(
-                    url_hash(&format!("https://multi.example.com/r{round}-i{img}.png")),
-                    format!("round{round}-img{img}-desc"),
-                );
+                let url = format!("https://multi.example.com/r{round}-i{img}.png");
+                let desc = format!("round{round}-img{img}-desc");
+                cache_put(url_hash(&url), desc.clone());
+                // 当前轮（round 24）额外缓存 Tier2 键
+                if round == ROUNDS - 1 {
+                    cache_put(url_question_hash(&url, "round 24"), desc);
+                }
             }
         }
 
@@ -1615,6 +1646,11 @@ mod tests {
         }
         cache_put(
             url_hash("https://tight.example.com/curr.png"),
+            "curr-desc".to_string(),
+        );
+        // 当前轮使用 Tier2 键（有 user_text "current"）
+        cache_put(
+            url_question_hash("https://tight.example.com/curr.png", "current"),
             "curr-desc".to_string(),
         );
 

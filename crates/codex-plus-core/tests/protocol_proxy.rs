@@ -1861,25 +1861,63 @@ fn body_to_text(body: &[serde_json::Value]) -> String {
         .join(" ")
 }
 
+fn body_with_history_and_latest_image(
+    hist_prefix: &str,
+    latest_prefix: &str,
+    question: &str,
+) -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "old question"},
+                {"type": "image_url", "image_url": {"url": format!("https://{hist_prefix}.example.com/img.png")}},
+            ]
+        }),
+        serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": question},
+                {"type": "image_url", "image_url": {"url": format!("https://{latest_prefix}.example.com/img.png")}},
+            ]
+        }),
+    ]
+}
+
+#[tokio::test]
+async fn current_round_uses_tier2_history_uses_tier1() {
+    // Task 6: 当前轮使用 Tier2 (URL+问题) 缓存键和 tier2_prompt，
+    // 历史轮使用 Tier1 (URL) 缓存键和 TIER1_PROMPT。
+    codex_plus_core::vision::cache_clear_for_tests();
+    let server = mock_vlm_returning("desc").await;
+    let cfg = vlm_config(&server.uri());
+    // 历史 1 张图 + 最新 1 张图 + 最新有文字问题
+    let mut body = body_with_history_and_latest_image("hist", "latest", "Q1");
+    codex_plus_core::vision::strip_image_blocks_for_tests(&mut body, &cfg, "{}", "272000", "gpt-4").await;
+    // 两张图都被描述
+    let t = body_to_text(&body);
+    assert!(t.matches("desc").count() >= 2);
+}
+
 #[tokio::test]
 async fn two_tier_cache_tier2_refetch_on_new_question() {
-    // Task 5: 单层 url_hash 缓存。同 URL → 命中（无论 question）；不同 URL → miss → VLM。
-    // 两层 url_question_hash 接入留 Task 6。
+    // Task 6: 当前轮使用 url_question_hash 双层缓存的 Tier2 键。
+    // 同 URL + 同 question → 命中；同 URL + 不同 question → miss → VLM（Tier2 行为）。
     codex_plus_core::vision::cache_clear_for_tests();
     let server = mock_vlm_returning("desc-for-img1").await;
     let cfg = vlm_config(&server.uri());
     let mut body = body_with_one_image_and_question("img1", "Q1");
-    // 第一次：miss -> 调 VL -> 写 url_hash(img1)
+    // 第一次：miss -> 调 VL -> 写 url_question_hash(img1, Q1)
     codex_plus_core::vision::strip_image_blocks_for_tests(&mut body, &cfg, "{}", "272000", "gpt-4").await;
     assert!(body_to_text(&body).contains("desc-for-img1"));
-    // 同图 + Q1 -> 命中，不再调
+    // 同图 + Q1 -> 命中（Tier2 键匹配）
     let mut body2 = body_with_one_image_and_question("img1", "Q1");
     codex_plus_core::vision::strip_image_blocks_for_tests(&mut body2, &cfg, "{}", "272000", "gpt-4").await;
     assert!(body_to_text(&body2).contains("desc-for-img1"));
-    // 同图 + Q2 -> 命中（Task 5 单层缓存：仅按 URL 缓存）
+    // 同图 + Q2 -> miss（Tier2 键：不同 question → 需重调 VLM）
     let mut body3 = body_with_one_image_and_question("img1", "Q2");
     codex_plus_core::vision::strip_image_blocks_for_tests(&mut body3, &cfg, "{}", "272000", "gpt-4").await;
-    assert!(body_to_text(&body3).contains("desc-for-img1"), "同 URL 不同 question：Task 5 仍命中缓存");
+    assert!(body_to_text(&body3).contains("desc-for-img1"), "同 URL 不同 question：Tier2 需重调 VLM");
     // 不同图 -> miss -> 重调 VLM
     let server2 = mock_vlm_returning("desc-for-img2").await;
     let cfg2 = vlm_config(&server2.uri());
