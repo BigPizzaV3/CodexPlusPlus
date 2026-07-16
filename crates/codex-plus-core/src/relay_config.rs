@@ -226,6 +226,20 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
     }
 }
 
+pub fn responses_proxy_configured_in_home(home: &Path) -> bool {
+    let contents = match std::fs::read_to_string(home.join("config.toml")) {
+        Ok(contents) => contents,
+        Err(_) => return false,
+    };
+    provider_string_from_config(&contents, "base_url").as_deref()
+        == Some(
+            crate::protocol_proxy::local_responses_proxy_base_url(
+                crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            )
+            .as_str(),
+        )
+}
+
 pub fn apply_relay_config_to_home(
     home: &Path,
     base_url: &str,
@@ -691,6 +705,7 @@ pub fn backfill_relay_profile_from_home_with_common(
     let live_config = read_optional_text(&home.join("config.toml"))?;
     let template_config = profile.config_contents.clone();
     let template_auth = profile.auth_contents.clone();
+    let template_base_url = relay_profile_base_url(profile);
     profile.config_contents = if profile.use_common_config {
         strip_common_config_from_config(&live_config, common_config_contents)?
     } else {
@@ -698,6 +713,23 @@ pub fn backfill_relay_profile_from_home_with_common(
     };
     profile.config_contents =
         restore_profile_provider_id_for_backfill(&profile.config_contents, &template_config)?;
+    if profile.protocol == RelayProtocol::Responses
+        && provider_string_from_config(&profile.config_contents, "base_url").as_deref()
+            == Some(
+                crate::protocol_proxy::local_responses_proxy_base_url(
+                    crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+                )
+                .as_str(),
+            )
+        && !template_base_url.trim().is_empty()
+    {
+        let mut doc = parse_toml_document(&profile.config_contents)?;
+        let provider_id = active_or_default_provider_id(&doc);
+        ensure_provider_table(&mut doc, &provider_id)?["base_url"] =
+            toml_edit::value(template_base_url.trim());
+        profile.config_contents =
+            move_model_providers_before_profiles(&ensure_trailing_newline(doc.to_string()));
+    }
     profile.auth_contents = read_optional_text(&home.join("auth.json"))?;
     restore_profile_auth_from_live_config(profile, &template_auth)?;
     sync_profile_mode_from_backfilled_live(profile);
@@ -1076,7 +1108,10 @@ fn write_codex_live_atomic(
     let config_text = guarded_config_text.as_deref();
 
     let config_text = match config_text {
-        Some(config_text) => Some(preserve_live_marketplace_configs(home, config_text)?),
+        Some(config_text) => {
+            let config_text = preserve_live_desktop_settings(home, config_text)?;
+            Some(preserve_live_marketplace_configs(home, &config_text)?)
+        }
         None => None,
     };
     let config_text = config_text.as_deref();
@@ -1396,6 +1431,42 @@ fn normalize_config_text_for_write(config_text: &str) -> String {
     config_text.trim_start_matches('\u{feff}').to_string()
 }
 
+fn preserve_live_desktop_settings(home: &Path, config_text: &str) -> anyhow::Result<String> {
+    let normalized = normalize_config_text_for_write(config_text);
+    let live_text = read_optional_text(&home.join("config.toml"))?;
+    if live_text.trim().is_empty() {
+        return Ok(normalized);
+    }
+    let Ok(live_doc) = parse_toml_document(&live_text) else {
+        return Ok(normalized);
+    };
+    let mut target_doc = parse_toml_document(&normalized)?;
+    if let Some(live_desktop) = live_doc.get("desktop").cloned() {
+        if !live_desktop.is_none() {
+            merge_toml_item(&mut target_doc["desktop"], &live_desktop);
+        }
+    }
+    for key in ["sandbox_mode", "approval_policy", "sandbox_workspace_write"] {
+        if let Some(live_value) = live_doc.get(key).cloned() {
+            merge_toml_item(&mut target_doc[key], &live_value);
+        }
+    }
+    let context_usage_configured = target_doc
+        .get("desktop")
+        .and_then(Item::as_table)
+        .and_then(|desktop| desktop.get("show-context-window-usage"))
+        .is_some();
+    if !context_usage_configured {
+        if target_doc.get("desktop").is_none() {
+            target_doc["desktop"] = toml_edit::table();
+        }
+        if let Some(desktop) = target_doc["desktop"].as_table_mut() {
+            desktop["show-context-window-usage"] = toml_edit::value(true);
+        }
+    }
+    Ok(normalize_optional_toml(target_doc))
+}
+
 fn validate_auth_json(auth_bytes: &[u8], path: &Path) -> anyhow::Result<()> {
     if auth_bytes.iter().all(|byte| byte.is_ascii_whitespace()) {
         return Ok(());
@@ -1450,6 +1521,11 @@ fn apply_model_catalog_to_config(
             return Ok(config_text.to_string());
         }
     }
+    if let Some(external_catalog) = live_external_model_catalog(home) {
+        let mut doc = parse_toml_document(config_text)?;
+        doc["model_catalog_json"] = toml_edit::value(external_catalog);
+        return Ok(normalize_optional_toml(doc));
+    }
     let (model_list, model_windows): (String, std::collections::HashMap<String, String>) =
         if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
             crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list)
@@ -1461,8 +1537,11 @@ fn apply_model_catalog_to_config(
         };
     let entries =
         crate::model_suffix::collect_catalog_entries(&model_list, &model_windows, &profile.model);
-    // 无后缀条目则 no-op，保持现有 per-profile 单值行为（保 does_not_write 测试）
-    if !entries.iter().any(|entry| entry.suffix_window.is_some()) {
+    // Known bundled metadata entries need a catalog even without a user-supplied window.
+    if !entries.iter().any(|entry| {
+        entry.suffix_window.is_some()
+            || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
+    }) {
         return Ok(config_text.to_string());
     }
     let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
@@ -1475,6 +1554,40 @@ fn apply_model_catalog_to_config(
     let mut doc = parse_toml_document(config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
     Ok(normalize_optional_toml(doc))
+}
+
+fn live_external_model_catalog(home: &Path) -> Option<String> {
+    let live_text = read_optional_text(&home.join("config.toml")).ok()?;
+    let live = parse_toml_document(&live_text).ok()?;
+    let path = live.get("model_catalog_json")?.as_str()?.trim();
+    (!path.is_empty() && !is_codex_plus_managed_model_catalog(home, path)).then(|| path.to_string())
+}
+
+fn is_codex_plus_managed_model_catalog(home: &Path, path: &str) -> bool {
+    let normalized = path.trim().replace('\\', "/");
+    let relative = normalized.trim_start_matches("./");
+    if relative.to_ascii_lowercase().starts_with("model-catalogs/") {
+        return true;
+    }
+    let normalized_lower = normalized.to_ascii_lowercase();
+    if normalized_lower.contains("/model-catalogs/")
+        || normalized_lower.ends_with("/model-catalogs")
+    {
+        return true;
+    }
+    let managed_root = home
+        .join("model-catalogs")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let managed_root = managed_root.trim_end_matches('/');
+    normalized.eq_ignore_ascii_case(managed_root)
+        || normalized
+            .get(..managed_root.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(managed_root))
+            && normalized
+                .as_bytes()
+                .get(managed_root.len())
+                .is_some_and(|byte| *byte == b'/')
 }
 
 fn sanitize_catalog_filename(id: &str) -> String {

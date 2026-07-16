@@ -83,6 +83,12 @@ fn injection_script_includes_force_chinese_locale_global_and_patch() {
     assert!(script.contains("72216192"));
     assert!(script.contains("enable_i18n"));
     assert!(script.contains("locale_source"));
+    assert!(script.contains("vscode://codex/${method}"));
+    assert!(script.contains("\"get-setting\""));
+    assert!(script.contains("\"set-setting\""));
+    assert!(script.contains("{ key: \"localeOverride\", value: locale }"));
+    assert!(script.contains("window.location.reload()"));
+    assert!(script.contains("codexPlus.forceChineseLocale.managed.v1"));
     assert!(!script.contains("setItem(\"localeOverride\""));
 
     settings.codex_app_force_chinese_locale = false;

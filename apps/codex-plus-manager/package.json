@@ -1,6 +1,6 @@
 {
   "name": "codex-plus-manager",
-  "version": "1.2.36",
+  "version": "1.2.38",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -8,6 +8,7 @@
     "dev": "tauri dev",
     "build": "cargo build -p codex-plus-launcher --release && tauri build",
     "check": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test \"src/*.test.ts\"",
     "vite:dev": "vite --host 127.0.0.1 --port 1420",
     "vite:build": "vite build"
   },

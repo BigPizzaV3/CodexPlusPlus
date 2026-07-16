@@ -35,6 +35,15 @@ pub fn codex_session_db_paths_from_home(home: &Path) -> Vec<PathBuf> {
     paths
 }
 
+pub fn codex_thread_reference_db_paths_from_home(home: &Path) -> Vec<PathBuf> {
+    let mut paths = codex_sqlite_dir_thread_reference_dbs(home);
+    let legacy = legacy_state_db_path(home);
+    if !paths.iter().any(|path| path == &legacy) {
+        paths.push(legacy);
+    }
+    paths
+}
+
 /// codex 客户端日志数据库路径（固定文件名）。
 pub fn codex_logs_db_path_from_home(home: &Path) -> PathBuf {
     home.join("logs_2.sqlite")
@@ -57,6 +66,29 @@ fn legacy_state_db_path(home: &Path) -> PathBuf {
 }
 
 fn codex_sqlite_dir_session_dbs(home: &Path) -> Vec<PathBuf> {
+    codex_sqlite_dir_dbs_with_tables(home, &["threads", "automation_runs", "inbox_items"])
+}
+
+fn codex_sqlite_dir_thread_reference_dbs(home: &Path) -> Vec<PathBuf> {
+    codex_sqlite_dir_dbs_with_tables(
+        home,
+        &[
+            "threads",
+            "local_thread_catalog",
+            "automation_runs",
+            "inbox_items",
+            "sessions",
+            "messages",
+            "thread_dynamic_tools",
+            "thread_goals",
+            "thread_spawn_edges",
+            "stage1_outputs",
+            "agent_job_items",
+        ],
+    )
+}
+
+fn codex_sqlite_dir_dbs_with_tables(home: &Path, tables: &[&str]) -> Vec<PathBuf> {
     let sqlite_dir = home.join("sqlite");
     let Ok(entries) = fs::read_dir(sqlite_dir) else {
         return Vec::new();
@@ -66,7 +98,7 @@ fn codex_sqlite_dir_session_dbs(home: &Path) -> Vec<PathBuf> {
         .map(|entry| entry.path())
         .filter(|path| path.is_file())
         .filter(|path| is_sqlite_candidate(path))
-        .filter(|path| has_session_table(path))
+        .filter(|path| has_any_table(path, tables))
         .collect::<Vec<_>>();
     candidates.sort_by_key(|path| {
         (
@@ -86,10 +118,8 @@ fn is_sqlite_candidate(path: &Path) -> bool {
     )
 }
 
-fn has_session_table(path: &Path) -> bool {
-    ["threads", "automation_runs", "inbox_items"]
-        .iter()
-        .any(|table| sqlite_has_table(path, table))
+fn has_any_table(path: &Path, tables: &[&str]) -> bool {
+    tables.iter().any(|table| sqlite_has_table(path, table))
 }
 
 fn sqlite_has_table(path: &Path, table: &str) -> bool {

@@ -847,6 +847,9 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("codexServiceTierSupportedFastModels"));
     assert!(script.contains("\"gpt-5.4\""));
     assert!(script.contains("\"gpt-5.5\""));
+    assert!(script.contains("\"gpt-5.6-sol\""));
+    assert!(script.contains("\"gpt-5.6-terra\""));
+    assert!(script.contains("\"gpt-5.6-luna\""));
     assert!(script.contains("codexServiceTierFastSupportedForModel"));
     assert!(script.contains("codexServiceTierModelForRequest"));
     assert!(script.contains("codexServiceTierMaybeLoadModelCatalog"));
@@ -903,6 +906,10 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("当前 thread"));
     assert!(script.contains("standard"));
     assert!(script.contains("fast"));
+    assert!(script.contains("[\"setting-storage-\", \"vscode-api-\"]"));
+    assert!(script.contains("dispatcher export unavailable"));
+    assert!(!script.contains("data-codex-max-reasoning-control"));
+    assert!(!script.contains("codexAppMaxReasoningOverride"));
 }
 
 #[test]
@@ -972,6 +979,18 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
 
     assert_eq!(cases["startConversation"]["serviceTier"], "priority");
+    assert_eq!(cases["solFastAvailability"]["supported"], true);
+    assert_eq!(cases["solDescriptor"]["defaultReasoningEffort"], "low");
+    assert_eq!(
+        cases["solDescriptor"]["supportedReasoningEfforts"][4]["reasoningEffort"],
+        "max"
+    );
+    assert_eq!(
+        cases["solDescriptor"]["supportedReasoningEfforts"][5]["reasoningEffort"],
+        "ultra"
+    );
+    assert_eq!(cases["dispatcherFromSingleton"], true);
+    assert_eq!(cases["dispatcherFromClass"], true);
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
@@ -1069,6 +1088,47 @@ const startConversation = api.requestOverride({{
   model: "gpt-5.5",
 }});
 
+api.setModelCatalog({{
+  status: "ok",
+  model: "gpt-5.6-sol",
+  default_model: "gpt-5.6-sol",
+  models: ["gpt-5.6-sol"],
+  modelMetadata: {{
+    "gpt-5.6-sol": {{
+      displayName: "GPT-5.6-Sol",
+      description: "Latest frontier agentic coding model.",
+      defaultReasoningEffort: "low",
+      supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"].map((reasoningEffort) => ({{ reasoningEffort }})),
+      additionalSpeedTiers: ["fast"],
+      serviceTiers: [{{ id: "priority", name: "Fast" }}],
+    }},
+  }},
+}});
+const solFastAvailability = api.fastAvailability("gpt-5.6-sol");
+api.setModelCatalog({{
+  status: "ok",
+  model: "gpt-5.6-sol",
+  default_model: "gpt-5.6-sol",
+  models: ["gpt-5.6-sol"],
+  modelMetadata: {{
+    "gpt-5.6-sol": {{
+      displayName: "GPT-5.6-Sol",
+      description: "Latest frontier agentic coding model.",
+      defaultReasoningEffort: "low",
+      supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"].map((reasoningEffort) => ({{ reasoningEffort }})),
+    }},
+  }},
+}});
+const solDescriptor = api.modelDescriptor("gpt-5.6-sol");
+const singletonDispatcher = {{ dispatchMessage() {{}}, subscribe() {{}} }};
+const dispatcherFromSingleton = api.dispatcherFromModule({{ current: singletonDispatcher }}) === singletonDispatcher;
+class DispatcherClass {{
+  static instance = new DispatcherClass();
+  static getInstance() {{ return this.instance; }}
+  dispatchMessage() {{}}
+}}
+const dispatcherFromClass = api.dispatcherFromModule({{ current: DispatcherClass }}) === DispatcherClass.instance;
+
 process.stdout.write(JSON.stringify({{
   supportedFast,
   unsupportedModel,
@@ -1076,6 +1136,10 @@ process.stdout.write(JSON.stringify({{
   turnWithoutModelDiagnosticModel,
   customInheritUnsupported,
   startConversation,
+  solFastAvailability,
+  solDescriptor,
+  dispatcherFromSingleton,
+  dispatcherFromClass,
 }}));
 "#,
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
@@ -1088,6 +1152,241 @@ process.stdout.write(JSON.stringify({{
         .arg(&harness_path)
         .output()
         .expect("node should run service-tier harness");
+    assert!(
+        output.status.success(),
+        "node harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("harness stdout should be JSON")
+}
+
+#[test]
+fn injection_script_applies_projectless_main_window_contract() {
+    let script = assets::injection_script(57321);
+    assert!(script.contains("installCodexProjectlessNewTaskButtons"));
+    assert!(script.contains("codexProjectlessMainWindowVersion = \"5\""));
+    assert!(script.contains("generic-new-task-button"));
+    assert!(script.contains("loadCodexAppModule(\"projectless-thread-\")"));
+    assert!(script.contains("projectless_thread_start_overridden"));
+    assert!(script.contains("projectless_app_server_start_overridden"));
+    assert!(script.contains("projectless_main_window_home_route_cleared"));
+    assert!(script.contains("dispatcher.dispatchHostMessage"));
+    assert!(script.contains("[\"use-host-config-\", \"app-server-manager-signals-\"]"));
+    assert!(script.contains("codexProjectlessMainWindowRetryDelaysMs = [0, 250, 750, 1500, 3000]"));
+    let cases = run_projectless_main_window_contract_harness();
+
+    assert_eq!(cases["englishNewTask"], "generic");
+    assert_eq!(cases["chineseNewTask"], "generic");
+    assert_eq!(cases["compactChineseNewTask"], "generic");
+    assert_eq!(cases["quickChat"], "generic");
+    assert_eq!(cases["explicitProject"], "project");
+    assert_eq!(cases["projectRow"], "project");
+    assert_eq!(cases["unrelated"], "");
+    assert_eq!(cases["genericEnabled"], true);
+    assert_eq!(cases["projectRequestNeedsOverride"], true);
+    assert_eq!(cases["nativeProjectlessNeedsOverride"], false);
+    assert_eq!(cases["patchedWorkspaceKind"], "projectless");
+    assert_eq!(cases["patchedCwd"], "C:/generated/work");
+    assert_eq!(cases["patchedOutputDirectory"], "C:/generated/outputs");
+    assert_eq!(cases["patchedWorkspaceRoots"], json!(["C:/generated/work"]));
+    assert_eq!(
+        cases["patchedPermissionRoots"],
+        json!(["C:/generated/work"])
+    );
+    assert_eq!(cases["patchedWritableRoots"], json!(["C:/generated/work"]));
+    assert_eq!(cases["patchedHasProjectAssignment"], false);
+    assert_eq!(cases["dispatchResult"], "sent");
+    assert_eq!(cases["dispatchedCount"], 1);
+    assert_eq!(cases["dispatchedType"], "start-conversation");
+    assert_eq!(cases["dispatchedWorkspaceKind"], "projectless");
+    assert_eq!(cases["dispatchedCwd"], "C:/generated/work");
+    assert_eq!(cases["appServerRequestNeedsOverride"], true);
+    assert_eq!(cases["appServerPatchedWorkspaceKind"], "projectless");
+    assert_eq!(cases["appServerPatchedCwd"], "C:/generated/work");
+    assert_eq!(cases["appServerPatchedHasProjectAssignment"], false);
+    assert_eq!(cases["nestedAppServerWorkspaceKind"], "projectless");
+    assert_eq!(cases["nestedAppServerCwd"], "C:/generated/work");
+    assert_eq!(cases["appServerSentCount"], 1);
+    assert_eq!(cases["appServerSentMethod"], "start-conversation");
+    assert_eq!(cases["appServerSentWorkspaceKind"], "projectless");
+    assert_eq!(cases["appServerSentCwd"], "C:/generated/work");
+    assert_eq!(cases["explicitProjectWins"], false);
+    assert_eq!(cases["explicitProjectRequestIsUntouched"], false);
+    assert_eq!(cases["disabledIsNoop"], false);
+}
+
+fn run_projectless_main_window_contract_harness() -> serde_json::Value {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("renderer-inject.js");
+    let harness_path = temp.path().join("projectless-main-window-harness.cjs");
+    std::fs::write(&script_path, assets::injection_script(57321))
+        .expect("injection script should be written");
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    write!(
+        harness,
+        r#"
+const scriptPath = {script_path};
+const store = new Map();
+function node() {{
+  return {{
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
+    closest() {{ return null; }},
+    classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
+    dataset: {{}}, style: {{}}, children: [], isConnected: true, textContent: "", innerHTML: "",
+  }};
+}}
+function trigger(label, kind = "generic") {{
+  const value = {{
+    textContent: label,
+    getAttribute(name) {{ return name === "aria-label" ? label : null; }},
+    closest(selector) {{
+      if (selector.includes('Start new chat in') || selector.includes('data-app-action-sidebar-project-row')) {{
+        return kind === "project-button" || kind === "project-row" ? value : null;
+      }}
+      if (selector === 'button, a, [role="button"], [role="menuitem"]') return value;
+      return null;
+    }},
+  }};
+  return value;
+}}
+globalThis.window = globalThis;
+window.__CODEX_PLUS_TEST_PROJECTLESS__ = true;
+window.addEventListener = () => {{}};
+window.removeEventListener = () => {{}};
+window.dispatchEvent = () => true;
+globalThis.Element = class Element {{}};
+globalThis.HTMLElement = class HTMLElement extends Element {{}};
+globalThis.HTMLAnchorElement = class HTMLAnchorElement extends HTMLElement {{}};
+globalThis.MutationObserver = class MutationObserver {{ observe() {{}} disconnect() {{}} }};
+globalThis.ResizeObserver = class ResizeObserver {{ observe() {{}} disconnect() {{}} }};
+globalThis.requestAnimationFrame = () => 0;
+globalThis.cancelAnimationFrame = () => {{}};
+globalThis.document = {{
+  scripts: [], documentElement: node(), body: node(), createElement: () => node(),
+  getElementById: () => null, querySelector: () => null, querySelectorAll: () => [],
+  addEventListener() {{}}, removeEventListener() {{}},
+}};
+globalThis.localStorage = {{
+  getItem: (key) => store.has(key) ? store.get(key) : null,
+  setItem: (key, value) => store.set(key, String(value)), removeItem: (key) => store.delete(key),
+}};
+store.set("codexPlusSettings", JSON.stringify({{ modelWhitelistUnlock: false }}));
+globalThis.sessionStorage = globalThis.localStorage;
+globalThis.location = {{ href: "https://codex.test/index.html", pathname: "/index.html", search: "", hash: "" }};
+window.location = globalThis.location;
+globalThis.navigator = {{ userAgent: "node-test" }};
+globalThis.performance = {{ getEntriesByType: () => [] }};
+require(scriptPath);
+void (async () => {{
+const api = window.__codexPlusProjectlessTest;
+const englishNewTask = api.triggerKind(trigger("New task"));
+const chineseNewTask = api.triggerKind(trigger("新建任务\nCtrl+N"));
+const compactChineseNewTask = api.triggerKind(trigger("新建任务Ctrl+N"));
+const quickChat = api.triggerKind(trigger("Quick Chat"));
+const explicitProject = api.triggerKind(trigger("Start new chat in Demo", "project-button"));
+const projectRow = api.triggerKind(trigger("Demo", "project-row"));
+const unrelated = api.triggerKind(trigger("Settings"));
+api.setEnabled(true);
+api.setIntent("generic", "test");
+const genericEnabled = api.shouldEnforce();
+const context = {{ cwd: "C:/generated/work", projectlessOutputDirectory: "C:/generated/outputs", workspaceRoots: ["C:/generated/work"] }};
+const projectRequest = {{
+  type: "start-conversation",
+  cwd: "C:/recent-project",
+  workspaceRoots: ["C:/recent-project"],
+  workspaceKind: "project",
+  projectAssignment: {{ projectKind: "local", projectId: "C:/recent-project" }},
+  permissions: {{
+    runtimeWorkspaceRoots: ["C:/recent-project"],
+    sandboxPolicy: {{ type: "workspaceWrite", writableRoots: ["C:/recent-project"] }},
+  }},
+}};
+const projectRequestNeedsOverride = api.requestNeedsOverride(projectRequest);
+const patchedRequest = api.applyRequestOverride(projectRequest, context);
+const nativeProjectlessNeedsOverride = api.requestNeedsOverride({{
+  type: "start-conversation",
+  cwd: "C:/native/work",
+  workspaceRoots: ["C:/native/work"],
+  workspaceKind: "projectless",
+  projectlessOutputDirectory: "C:/native/outputs",
+}});
+const dispatched = [];
+const dispatcher = {{
+  __codexServiceTierOriginalDispatchMessage(type, payload) {{
+    dispatched.push({{ type, payload }});
+    return "sent";
+  }},
+}};
+api.setDraftContext(context);
+const dispatchResult = await api.dispatchMessage(dispatcher, "start-conversation", projectRequest);
+const appServerProjectRequest = {{ ...projectRequest }};
+delete appServerProjectRequest.type;
+const appServerRequestNeedsOverride = api.appServerRequestNeedsOverride("start-conversation", appServerProjectRequest);
+const appServerPatchedRequest = api.applyAppServerRequestOverride("start-conversation", appServerProjectRequest, context);
+const nestedAppServerPatchedRequest = api.applyAppServerRequestOverride("send-cli-request-for-host", {{
+  method: "thread/start",
+  params: appServerProjectRequest,
+}}, context);
+const appServerSent = [];
+const appServerClient = {{
+  async sendRequest(method, params) {{
+    appServerSent.push({{ method, params }});
+    return {{ ok: true }};
+  }},
+}};
+api.patchAppServerClient(appServerClient);
+await appServerClient.sendRequest("start-conversation", appServerProjectRequest);
+api.setIntent("project", "test");
+const explicitProjectWins = api.shouldEnforce();
+const explicitProjectRequestIsUntouched = api.requestNeedsOverride(projectRequest);
+api.setEnabled(false);
+api.setIntent("generic", "test");
+const disabledIsNoop = api.shouldEnforce();
+process.stdout.write(JSON.stringify({{
+  englishNewTask, chineseNewTask, compactChineseNewTask, quickChat, explicitProject, projectRow, unrelated,
+  genericEnabled, projectRequestNeedsOverride, nativeProjectlessNeedsOverride,
+  patchedWorkspaceKind: patchedRequest.workspaceKind,
+  patchedCwd: patchedRequest.cwd,
+  patchedOutputDirectory: patchedRequest.projectlessOutputDirectory,
+  patchedWorkspaceRoots: patchedRequest.workspaceRoots,
+  patchedPermissionRoots: patchedRequest.permissions.runtimeWorkspaceRoots,
+  patchedWritableRoots: patchedRequest.permissions.sandboxPolicy.writableRoots,
+  patchedHasProjectAssignment: Object.hasOwn(patchedRequest, "projectAssignment"),
+  dispatchResult,
+  dispatchedCount: dispatched.length,
+  dispatchedType: dispatched[0]?.type,
+  dispatchedWorkspaceKind: dispatched[0]?.payload?.workspaceKind,
+  dispatchedCwd: dispatched[0]?.payload?.cwd,
+  appServerRequestNeedsOverride,
+  appServerPatchedWorkspaceKind: appServerPatchedRequest.workspaceKind,
+  appServerPatchedCwd: appServerPatchedRequest.cwd,
+  appServerPatchedHasProjectAssignment: Object.hasOwn(appServerPatchedRequest, "projectAssignment"),
+  nestedAppServerWorkspaceKind: nestedAppServerPatchedRequest.params.workspaceKind,
+  nestedAppServerCwd: nestedAppServerPatchedRequest.params.cwd,
+  appServerSentCount: appServerSent.length,
+  appServerSentMethod: appServerSent[0]?.method,
+  appServerSentWorkspaceKind: appServerSent[0]?.params?.workspaceKind,
+  appServerSentCwd: appServerSent[0]?.params?.cwd,
+  explicitProjectWins, explicitProjectRequestIsUntouched, disabledIsNoop,
+}}));
+process.exit(0);
+}})().catch((error) => {{
+  console.error(error);
+  process.exit(1);
+}});
+"#,
+        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+            .expect("script path should serialize")
+    )
+    .expect("harness should be written");
+    drop(harness);
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should run projectless main-window harness");
     assert!(
         output.status.success(),
         "node harness failed\nstdout:\n{}\nstderr:\n{}",

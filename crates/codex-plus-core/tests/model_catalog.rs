@@ -136,7 +136,8 @@ async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
                     base_url: "https://example.test/v1".to_string(),
                     protocol: RelayProtocol::Responses,
                     relay_mode: RelayMode::MixedApi,
-                    model_list: "deepseek-coder\nqwen3-coder\nclaude-compatible".to_string(),
+                    model_list: "deepseek-coder\nqwen3-coder\nclaude-compatible\ngpt-5.6-sol"
+                        .to_string(),
                     config_contents: "model = \"qwen3-coder\"\n".to_string(),
                     ..RelayProfile::default()
                 }],
@@ -164,7 +165,25 @@ async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
     assert_eq!(result["default_model"], "qwen3-coder");
     assert_eq!(
         result["models"],
-        json!(["qwen3-coder", "deepseek-coder", "claude-compatible"])
+        json!([
+            "qwen3-coder",
+            "deepseek-coder",
+            "claude-compatible",
+            "gpt-5.6-sol"
+        ])
+    );
+    assert_eq!(
+        result["modelMetadata"]["gpt-5.6-sol"]["defaultReasoningEffort"],
+        "low"
+    );
+    assert_eq!(
+        result["modelMetadata"]["gpt-5.6-sol"]["supportedReasoningEfforts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["reasoningEffort"].as_str())
+            .collect::<Vec<_>>(),
+        ["low", "medium", "high", "xhigh", "max", "ultra"]
     );
     assert_eq!(result["sources"][0]["type"], "relay_profile_model_list");
 }
@@ -216,8 +235,8 @@ async fn model_catalog_merges_models_from_config_model_catalog_json() {
         json!({
             "models": [
                 {
-                    "slug": "gpt-5.6",
-                    "display_name": "GPT-5.6",
+                    "slug": "gpt-5.6-sol",
+                    "display_name": "GPT-5.6-Sol",
                     "visibility": "list",
                     "supported_in_api": true
                 }
@@ -230,7 +249,7 @@ async fn model_catalog_merges_models_from_config_model_catalog_json() {
         temp.path(),
         &format!(
             r#"
-model = "gpt-5.6"
+ model = "gpt-5.6-sol"
 model_provider = "relay"
 model_catalog_json = "{}"
 
@@ -252,8 +271,12 @@ experimental_bearer_token = "relay-key"
     .await;
 
     assert_eq!(result["status"], "ok");
-    assert_eq!(result["default_model"], "gpt-5.6");
-    assert_eq!(result["models"], json!(["qwen3-coder", "gpt-5.6"]));
+    assert_eq!(result["default_model"], "gpt-5.6-sol");
+    assert_eq!(result["models"], json!(["qwen3-coder", "gpt-5.6-sol"]));
+    assert_eq!(
+        result["modelMetadata"]["gpt-5.6-sol"]["supportedReasoningEfforts"][5]["reasoningEffort"],
+        "ultra"
+    );
     server.finish();
 }
 

@@ -337,7 +337,9 @@ body {
   gap: 12px;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 16px 20px 24px;
   scrollbar-gutter: stable;
   animation: screen-enter 260ms var(--motion-ease) both;
@@ -2258,6 +2260,58 @@ body {
 
 .modal-message {
   white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.session-index-cleanup-modal {
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: hidden;
+}
+
+.session-index-cleanup-select-all,
+.session-index-cleanup-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.session-index-cleanup-select-all {
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+
+.session-index-cleanup-list {
+  min-height: 0;
+  max-height: 48vh;
+  overflow-y: auto;
+  border-block: 1px solid hsl(var(--border));
+  margin-bottom: 14px;
+}
+
+.session-index-cleanup-item {
+  padding: 10px 2px;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.session-index-cleanup-item:last-child {
+  border-bottom: 0;
+}
+
+.session-index-cleanup-item > span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.session-index-cleanup-item strong,
+.session-index-cleanup-item code,
+.session-index-cleanup-item small {
+  overflow-wrap: anywhere;
+}
+
+.session-index-cleanup-item code,
+.session-index-cleanup-item small {
+  color: hsl(var(--muted-foreground));
 }
 
 .plugin-marketplace-modal .metric-list {
@@ -2680,6 +2734,22 @@ body {
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
+}
+
+.session-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.session-pagination span {
+  min-width: 72px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
 }
 
 .session-row {
@@ -3618,11 +3688,15 @@ select {
 }
 
 .panel {
-  overflow: clip;
+  overflow: visible;
   border-color: hsl(var(--border));
   border-radius: 10px;
   background: hsl(var(--card));
   box-shadow: none;
+}
+
+.enhance-panel {
+  min-height: max-content;
 }
 
 .panel:hover {
@@ -4111,4 +4185,41 @@ select {
   .jojocode-model-tags {
     justify-content: flex-start;
   }
+}
+
+.relay-model-row-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.relay-model-row-actions .field-select {
+  width: auto;
+  min-width: 150px;
+  min-height: 32px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.relay-model-row-hint {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  align-self: center;
+  white-space: nowrap;
+}
+
+.relay-vlm-section {
+  display: grid;
+  gap: 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-sunken));
+  padding: 14px;
+  margin-top: 8px;
+}
+
+.relay-vlm-section-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
 }

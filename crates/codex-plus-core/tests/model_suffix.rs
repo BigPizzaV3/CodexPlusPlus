@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use codex_plus_core::model_suffix::{
-    build_model_catalog_json, collect_catalog_entries, parse_model_suffix,
+    build_model_catalog_json, collect_catalog_entries, model_ui_metadata, parse_model_suffix,
 };
 
 #[test]
@@ -97,6 +97,62 @@ fn build_catalog_json_uses_fallback_for_no_suffix_entries() {
     let catalog = build_model_catalog_json(&entries, Some(272_000));
     assert!(catalog.contains(r#""slug": "qwen3-coder""#));
     assert!(catalog.contains(r#""context_window": 272000"#));
+}
+
+#[test]
+fn build_catalog_json_uses_runtime_compatible_gpt56_metadata() {
+    let entries = collect_catalog_entries(
+        "gpt-5.6-sol\ngpt-5.6-terra\ngpt-5.6-luna",
+        &HashMap::new(),
+        "gpt-5.6-sol",
+    );
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    let models = catalog["models"].as_array().unwrap();
+
+    for (slug, default_reasoning, expected_efforts) in [
+        (
+            "gpt-5.6-sol",
+            "low",
+            vec!["low", "medium", "high", "xhigh", "max", "ultra"],
+        ),
+        (
+            "gpt-5.6-terra",
+            "medium",
+            vec!["low", "medium", "high", "xhigh", "max", "ultra"],
+        ),
+        (
+            "gpt-5.6-luna",
+            "medium",
+            vec!["low", "medium", "high", "xhigh", "max"],
+        ),
+    ] {
+        let model = models.iter().find(|model| model["slug"] == slug).unwrap();
+        let efforts = model["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["effort"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(model["context_window"], 272_000);
+        assert_eq!(model["max_context_window"], 272_000);
+        assert_eq!(model["default_reasoning_level"], default_reasoning);
+        assert_eq!(efforts, expected_efforts);
+        assert!(!efforts.contains(&"minimal"));
+        assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
+        assert_eq!(model["service_tiers"][0]["id"], "priority");
+    }
+}
+
+#[test]
+fn model_ui_metadata_exposes_fast_service_tier_capability() {
+    let metadata = model_ui_metadata("gpt-5.6-sol").expect("Sol metadata should exist");
+
+    assert_eq!(
+        metadata["additionalSpeedTiers"],
+        serde_json::json!(["fast"])
+    );
+    assert_eq!(metadata["serviceTiers"][0]["id"], "priority");
 }
 
 #[test]

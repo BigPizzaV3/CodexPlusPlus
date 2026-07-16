@@ -526,6 +526,10 @@ fn list_local_sessions_reads_codex_threads_ordered_by_update_time() {
     assert_eq!(sessions[0].model_provider, "custom");
     assert!(sessions[0].archived);
     assert_eq!(sessions[1].id, "t1");
+
+    let first_page = adapter.list_local_sessions_limited(1).unwrap();
+    assert_eq!(first_page.len(), 1);
+    assert_eq!(first_page[0].id, "t2");
 }
 
 #[test]

@@ -1,0 +1,90 @@
+{
+  "models": [
+    {
+      "slug": "gpt-5.6-sol",
+      "display_name": "GPT-5.6-Sol",
+      "description": "Latest frontier agentic coding model.",
+      "default_reasoning_level": "low",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Fast responses with lighter reasoning" },
+        { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
+        { "effort": "high", "description": "Greater reasoning depth for complex problems" },
+        { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" },
+        { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" },
+        { "effort": "ultra", "description": "Maximum reasoning with automatic task delegation" }
+      ],
+      "context_window": 272000,
+      "max_context_window": 272000,
+      "effective_context_window_percent": 100,
+      "additional_speed_tiers": ["fast"],
+      "service_tiers": [
+        { "id": "priority", "name": "Fast", "description": "1.5x speed, increased usage" }
+      ],
+      "supports_reasoning_summaries": true,
+      "support_verbosity": true,
+      "supports_parallel_tool_calls": true,
+      "input_modalities": ["text", "image"],
+      "supports_search_tool": true,
+      "tool_mode": "code_mode_only",
+      "multi_agent_version": "v2",
+      "use_responses_lite": true
+    },
+    {
+      "slug": "gpt-5.6-terra",
+      "display_name": "GPT-5.6-Terra",
+      "description": "Balanced agentic coding model for everyday work.",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Fast responses with lighter reasoning" },
+        { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
+        { "effort": "high", "description": "Greater reasoning depth for complex problems" },
+        { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" },
+        { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" },
+        { "effort": "ultra", "description": "Maximum reasoning with automatic task delegation" }
+      ],
+      "context_window": 272000,
+      "max_context_window": 272000,
+      "effective_context_window_percent": 100,
+      "additional_speed_tiers": ["fast"],
+      "service_tiers": [
+        { "id": "priority", "name": "Fast", "description": "1.5x speed, increased usage" }
+      ],
+      "supports_reasoning_summaries": true,
+      "support_verbosity": true,
+      "supports_parallel_tool_calls": true,
+      "input_modalities": ["text", "image"],
+      "supports_search_tool": true,
+      "tool_mode": "code_mode_only",
+      "multi_agent_version": "v2",
+      "use_responses_lite": true
+    },
+    {
+      "slug": "gpt-5.6-luna",
+      "display_name": "GPT-5.6-Luna",
+      "description": "Fast and affordable agentic coding model.",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Fast responses with lighter reasoning" },
+        { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
+        { "effort": "high", "description": "Greater reasoning depth for complex problems" },
+        { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" },
+        { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" }
+      ],
+      "context_window": 272000,
+      "max_context_window": 272000,
+      "effective_context_window_percent": 100,
+      "additional_speed_tiers": ["fast"],
+      "service_tiers": [
+        { "id": "priority", "name": "Fast", "description": "1.5x speed, increased usage" }
+      ],
+      "supports_reasoning_summaries": true,
+      "support_verbosity": true,
+      "supports_parallel_tool_calls": true,
+      "input_modalities": ["text", "image"],
+      "supports_search_tool": true,
+      "tool_mode": "code_mode_only",
+      "multi_agent_version": "v1",
+      "use_responses_lite": true
+    }
+  ]
+}
