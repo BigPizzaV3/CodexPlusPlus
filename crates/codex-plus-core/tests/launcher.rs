@@ -1359,6 +1359,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             model_list: String::new(),
             model_windows: String::new(),
             model_vlm: String::new(),
+            model_reasoning_support: String::new(),
             vlm_api_key: String::new(),
             vlm_model: String::new(),
             vlm_base_url: String::new(),

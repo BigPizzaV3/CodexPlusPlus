@@ -89,6 +89,8 @@ pub struct RelayProfile {
     pub model_windows: String,
     #[serde(rename = "modelVlm", default, skip_serializing_if = "String::is_empty")]
     pub model_vlm: String,
+    #[serde(rename = "modelReasoningSupport", default, skip_serializing_if = "String::is_empty")]
+    pub model_reasoning_support: String,
     #[serde(
         rename = "vlmApiKey",
         default,
@@ -161,6 +163,7 @@ impl Default for RelayProfile {
             model_list: String::new(),
             model_windows: String::new(),
             model_vlm: String::new(),
+            model_reasoning_support: String::new(),
             vlm_api_key: String::new(),
             vlm_model: String::new(),
             vlm_base_url: String::new(),
@@ -576,6 +579,7 @@ impl BackendSettings {
                 model_list: String::new(),
                 model_windows: String::new(),
                 model_vlm: String::new(),
+                model_reasoning_support: String::new(),
                 vlm_api_key: String::new(),
                 vlm_model: String::new(),
                 vlm_base_url: String::new(),
@@ -625,6 +629,7 @@ impl BackendSettings {
             model_list: String::new(),
             model_windows: String::new(),
             model_vlm: String::new(),
+            model_reasoning_support: String::new(),
             vlm_api_key: String::new(),
             vlm_model: String::new(),
             vlm_base_url: String::new(),
@@ -2564,5 +2569,14 @@ experimental_bearer_token = "sk-existing""#
 
         assert!(!updated.provider_sync_enabled);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn model_reasoning_support_defaults_empty_and_roundtrips() {
+        let p = RelayProfile::default();
+        assert!(p.model_reasoning_support.is_empty());
+        let json = r#"{"id":"test","name":"Test","modelReasoningSupport":"{\"kimi-k2.6\":false}"}"#;
+        let p: RelayProfile = serde_json::from_str(json).unwrap();
+        assert_eq!(p.model_reasoning_support, r#"{"kimi-k2.6":false}"#);
     }
 }
