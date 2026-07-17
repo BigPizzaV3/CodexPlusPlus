@@ -10,6 +10,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::protocol_proxy::chat_completions_url;
+
 const BATCH_SIZE: usize = 5;
 /// 黄金窗口：Phase 1 同步补全的最近 N 轮 user 消息。
 const GOLDEN_WINDOW_DEPTH: usize = 10;
@@ -602,7 +604,7 @@ async fn call_vlm_batch_once(
     client: &reqwest::Client,
 ) -> anyhow::Result<Vec<String>> {
     let _permit = VL_SEMAPHORE.acquire().await.expect("sem closed");
-    let endpoint = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    let endpoint = chat_completions_url(&config.base_url);
     let body = build_vl_batch_body(urls, prompt, config);
     let started = Instant::now();
     let n = urls.len();
@@ -2255,7 +2257,7 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .and(path("/v1/chat/completions"))
             .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
                 "error": {"message": "internal server error"}
             })))
@@ -2306,7 +2308,7 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .and(path("/v1/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "choices": [{"message": {"content": "mock: E2E network call"}}]
             })))
@@ -2350,7 +2352,7 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .and(path("/v1/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "choices": [{"message": {"content": "mock: responses format"}}]
             })))
@@ -2397,7 +2399,7 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .and(path("/v1/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "choices": [{"message": {"content": "mock: analyzed"}}]
             })))
