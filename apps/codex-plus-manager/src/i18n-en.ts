@@ -37,6 +37,8 @@ export const EN_PLAIN: Record<string, string> = {
     "“Text-only”: marks a text-only model. Before forwarding, images are first converted to text descriptions by the VLM above and then sent to this model; if VLM is unconfigured or unavailable, images are dropped with a notice. Effective only under Chat Completions / aggregate mode.",
   "「不支持推理」：剥离该模型的 reasoning 字段，避免不支持推理的模型报错。对所有协议生效。":
     "“No reasoning”: strips the reasoning field for this model to avoid errors on models that don’t support reasoning. Effective for all protocols.",
+  "注意：纯文本模型若未勾选「只支持文本」，图片会以 base64 原样发给该模型，模型无法识别，可能出现反复调用查看图片工具或无法作答。请为纯文本模型勾选此项。":
+    "Note: if a text-only model is not checked “Text-only”, images are sent to it as-is in base64; the model cannot recognize them and may repeatedly call the view-image tool or fail to respond. Please check this option for text-only models.",
   "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。":
     "Expands plugin marketplace requests in API Key mode to show the full plugin list. Usually unnecessary in official/mixed mode.",
   "API Key 环境变量": "API Key environment variable",
