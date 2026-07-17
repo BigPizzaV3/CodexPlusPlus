@@ -47,7 +47,7 @@ pub struct TestVlmRequest {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestVlmResult {
-    pub status: String,
+    pub vlm_status: String,
     pub http_code: Option<u16>,
     pub duration_ms: u64,
     pub error: Option<String>,
@@ -71,7 +71,7 @@ pub async fn test_vlm(request: TestVlmRequest) -> CommandResult<TestVlmResult> {
             return failed(
                 &format!("VLM HTTP 客户端构建失败：{e}"),
                 TestVlmResult {
-                    status: "client_error".to_string(),
+                    vlm_status: "client_error".to_string(),
                     http_code: None,
                     duration_ms: 0,
                     error: Some(e.to_string()),
@@ -88,14 +88,14 @@ pub async fn test_vlm(request: TestVlmRequest) -> CommandResult<TestVlmResult> {
         format!("VLM 测试失败：{}", outcome.status)
     };
     let result = TestVlmResult {
-        status: outcome.status,
+        vlm_status: outcome.status,
         http_code: outcome.http_code,
         duration_ms: outcome.duration_ms,
         error: outcome.error,
         description: outcome.text,
         model: request.model,
     };
-    if result.status == "ok" {
+    if result.vlm_status == "ok" {
         ok(&msg, result)
     } else {
         failed(&msg, result)

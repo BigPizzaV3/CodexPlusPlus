@@ -5,6 +5,23 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "测试 VLM": "Test VLM",
+  "上传一张图片，使用 tier1 提示词测试当前 VLM 配置是否可用。使用表单当前值（无需保存）。":
+    "Upload an image and use the tier1 prompt to test whether the current VLM config works. Uses the form’s current values (no save needed).",
+  "正在调用 VLM…": "Calling VLM…",
+  "开始测试": "Start test",
+  "隐藏详细信息": "Hide details",
+  "显示详细信息": "Show details",
+  "\u274C 认证失败：API Key 可能不正确（HTTP 401）": "\u274C Auth failed: API Key may be incorrect (HTTP 401)",
+  "\u274C 接口不存在：Base URL 或模型名有误（HTTP 404）": "\u274C Endpoint not found: Base URL or model name may be wrong (HTTP 404)",
+  "\u274C 被限流，稍后再试（HTTP 429）": "\u274C Rate limited, try again later (HTTP 429)",
+  "\u274C 请求超时：VLM 响应过慢或网络不通": "\u274C Request timed out: VLM too slow or network unreachable",
+  "\u274C 发送失败：网络错误，检查 Base URL 是否可达": "\u274C Send failed: network error, check that Base URL is reachable",
+  "\u274C 返回内容解析失败：上游返回的不是有效 JSON": "\u274C Failed to parse response: upstream did not return valid JSON",
+  "\u274C 返回中未找到描述文本：模型可能不支持视觉或返回格式异常": "\u274C No description text found in response: model may not support vision or returned an unexpected format",
+  "\u274C 批量描述解析失败": "\u274C Batch description parse failed",
+  "\u274C HTTP 客户端构建失败": "\u274C Failed to build HTTP client",
+  "\u274C 未知错误": "\u274C Unknown error",
   "VLM 协议": "VLM Protocol",
   "「只支持文本」：标记纯文本模型。转发前，图片会先经上方 VLM 转成文字描述再发给该模型；若 VLM 未配置或不可用，则丢弃图片并提示。仅在 Chat Completion / 聚合模式生效。":
     "“Text-only”: marks a text-only model. Before forwarding, images are first converted to text descriptions by the VLM above and then sent to this model; if VLM is unconfigured or unavailable, images are dropped with a notice. Effective only under Chat Completions / aggregate mode.",
@@ -819,6 +836,8 @@ export const EN_PLAIN: Record<string, string> = {
 export const EN_TEMPLATE: Record<string, string> = {
   "作者：{0} · {1}": "Author: {0} · {1}",
   "清单更新于 {0}，安装后会保存到“我的主题”。": "Manifest updated {0}. Installed themes are saved under My themes.",
+  "\u2705 识别成功（耗时 {0}s）": "\u2705 Recognition succeeded ({0}s)",
+  "\u274C 服务返回错误（HTTP {0}）": "\u274C Server returned an error (HTTP {0})",
   "，清理 {0} 条失效任务索引": ", pruned {0} stale task index entry/entries",
   "\n...以及另外 {0} 个会话": "\n...and {0} more session(s)",
   "{0}（{1}）": "{0} ({1})",

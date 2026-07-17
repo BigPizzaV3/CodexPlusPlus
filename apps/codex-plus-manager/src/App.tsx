@@ -80,6 +80,7 @@ import {
   type ModelWindowRow,
 } from "./model-windows";
 import { normalizeVlmProtocol } from "./vlm-protocol";
+import { vlmTestTranslation } from "./vlm-test-translation";
 import { resolveProviderSyncCompletion } from "./provider-sync-flow";
 import {
   defaultDreamSkinTheme,
@@ -448,6 +449,15 @@ type RelayProfileTestResult = CommandResult<{
   httpStatus: number;
   endpoint: string;
   responsePreview: string;
+}>;
+
+type TestVlmResult = CommandResult<{
+  vlmStatus: string;
+  httpCode: number | null;
+  durationMs: number;
+  error: string | null;
+  description: string | null;
+  model: string;
 }>;
 
 type StepwiseTestResult = CommandResult<{
@@ -5486,6 +5496,7 @@ function RelayProfileEditor({
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
+  const [vlmTestOpen, setVlmTestOpen] = useState(false);
   // 纯 Responses 模式（非聚合）下 VLM/Strip 不生效，禁用下拉
   const vlmUnsupportedProtocol = profile.protocol === "responses" && !isAggregateRelayProfile(profile);
   if (isAggregateRelayProfile(profile)) {
@@ -5844,6 +5855,16 @@ function RelayProfileEditor({
             </p>
             {modelWindowRows.some((row) => row.textOnly) && (!profile.vlmApiKey || !profile.vlmModel || !profile.vlmBaseUrl) ? (
               <p className="field-hint warn">{t("VLM 配置不完整：API Key、Model 和 Base URL 为必填项，否则 VLM 不会生效。")}</p>
+            ) : null}
+            {!vlmUnsupportedProtocol ? (
+              <div className="vlm-test-entry">
+                <Button onClick={() => setVlmTestOpen(true)} size="sm" type="button" variant="secondary">
+                  {t("测试 VLM")}
+                </Button>
+              </div>
+            ) : null}
+            {vlmTestOpen ? (
+              <VlmTestModal profile={profile} onClose={() => setVlmTestOpen(false)} />
             ) : null}
           </div>
         ) : null}
@@ -6655,6 +6676,115 @@ function ConfirmDialog({
             {confirm.confirmText}
           </Button>
           <Button onClick={onCancel} variant="secondary">{confirm.cancelText}</Button>
+        </Toolbar>
+      </div>
+    </div>
+  );
+}
+
+type VlmTestState =
+  | { kind: "idle" }
+  | { kind: "running" }
+  | { kind: "done"; result: TestVlmResult };
+
+function VlmTestModal({
+  profile,
+  onClose,
+}: {
+  profile: Pick<RelayProfile, "vlmApiKey" | "vlmModel" | "vlmBaseUrl" | "vlmProtocol">;
+  onClose: () => void;
+}) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [state, setState] = useState<VlmTestState>({ kind: "idle" });
+  const [showDetail, setShowDetail] = useState(false);
+  const canRun = !!dataUrl && !!profile.vlmApiKey && !!profile.vlmModel && !!profile.vlmBaseUrl;
+  const tr = (zh: string, params?: string[]) => (params ? tf(zh, params) : t(zh));
+
+  const onFile = (file: File | undefined) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setDataUrl(typeof reader.result === "string" ? reader.result : null);
+    reader.readAsDataURL(file);
+  };
+
+  const runTest = async () => {
+    if (!dataUrl) return;
+    setState({ kind: "running" });
+    try {
+      const res = await invoke<TestVlmResult>("test_vlm", {
+        request: {
+          apiKey: profile.vlmApiKey,
+          model: profile.vlmModel,
+          baseUrl: profile.vlmBaseUrl,
+          protocol: profile.vlmProtocol,
+          imageDataUrl: dataUrl,
+        },
+      });
+      setState({ kind: "done", result: res });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setState({
+        kind: "done",
+        result: {
+          status: "failed",
+          message: msg,
+          vlmStatus: "client_error",
+          httpCode: null,
+          durationMs: 0,
+          error: msg,
+          description: null,
+          model: profile.vlmModel,
+        },
+      });
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card vlm-test-modal">
+        <div className="modal-head">
+          <div>
+            <h2>{t("测试 VLM")}</h2>
+            <p className="modal-message">
+              {t("上传一张图片，使用 tier1 提示词测试当前 VLM 配置是否可用。使用表单当前值（无需保存）。")}
+            </p>
+          </div>
+          <button className="toast-close" onClick={onClose} type="button">×</button>
+        </div>
+
+        <div className="vlm-test-upload">
+          <input accept="image/*" onChange={(e) => onFile(e.currentTarget.files?.[0])} type="file" />
+          {dataUrl ? <img alt="preview" className="vlm-test-preview" src={dataUrl} /> : null}
+        </div>
+
+        {state.kind === "done" ? (
+          <div className="vlm-test-result">
+            <p className="vlm-test-summary">
+              {vlmTestTranslation(state.result.vlmStatus, state.result.httpCode ?? undefined, state.result.durationMs, tr)}
+            </p>
+            {state.result.description ? (
+              <pre className="vlm-test-description">{state.result.description}</pre>
+            ) : null}
+            <button className="vlm-test-detail-toggle" onClick={() => setShowDetail((v) => !v)} type="button">
+              {showDetail ? t("隐藏详细信息") : t("显示详细信息")}
+            </button>
+            {showDetail ? (
+              <dl className="vlm-test-detail">
+                <dt>vlmStatus</dt><dd>{state.result.vlmStatus}</dd>
+                <dt>httpCode</dt><dd>{String(state.result.httpCode ?? "-")}</dd>
+                <dt>durationMs</dt><dd>{state.result.durationMs}</dd>
+                <dt>model</dt><dd>{state.result.model}</dd>
+                {state.result.error ? (<><dt>error</dt><dd>{state.result.error}</dd></>) : null}
+              </dl>
+            ) : null}
+          </div>
+        ) : null}
+
+        <Toolbar>
+          <Button disabled={!canRun || state.kind === "running"} onClick={runTest} type="button">
+            {state.kind === "running" ? t("正在调用 VLM…") : t("开始测试")}
+          </Button>
+          <Button onClick={onClose} type="button" variant="secondary">{t("取消")}</Button>
         </Toolbar>
       </div>
     </div>
