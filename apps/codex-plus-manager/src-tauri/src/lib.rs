@@ -148,7 +148,8 @@ pub fn run() {
             commands::clear_relay_injection,
             manager_exit_app,
             manager_hide_to_tray,
-            update_tray_labels
+            update_tray_labels,
+            commands::test_vlm,
         ])
         .run(tauri::generate_context!());
     if let Err(error) = run_result {

@@ -645,14 +645,27 @@ fn log_vl_call(
     );
 }
 
-async fn call_vlm_batch_once(
+/// 单次 VLM 调用的结构化结果，供真实代理路径与测试命令共享。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VlCallOutcome {
+    pub status: String,
+    pub http_code: Option<u16>,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+    pub text: Option<String>,
+}
+
+/// 单次 VLM 调用核心：按 protocol 选 URL/构造/解析，返回结构化结果。
+/// 真实代理路径（call_vlm_batch_once）与测试命令（test_vlm_once）共享，
+/// vl_call 日志在此统一记录。
+pub async fn call_vl_once_structured(
     urls: &[String],
     prompt: &str,
     config: &VlmConfig,
     client: &reqwest::Client,
-) -> anyhow::Result<Vec<String>> {
-    let _permit = VL_SEMAPHORE.acquire().await.expect("sem closed");
+) -> VlCallOutcome {
     use crate::settings::RelayProtocol;
+    let _permit = VL_SEMAPHORE.acquire().await.expect("sem closed");
     let endpoint = match config.protocol {
         RelayProtocol::Responses => crate::protocol_proxy::responses_url(&config.base_url),
         RelayProtocol::ChatCompletions => chat_completions_url(&config.base_url),
@@ -675,22 +688,27 @@ async fn call_vlm_batch_once(
         Err(e) => {
             let s = if e.is_timeout() { "timeout" } else { "send_error" };
             log_vl_call(config, n, started, s, None, Some(&e.to_string()));
-            return Err(e.into());
+            return VlCallOutcome {
+                status: s.to_string(),
+                http_code: None,
+                duration_ms: started.elapsed().as_millis() as u64,
+                error: Some(e.to_string()),
+                text: None,
+            };
         }
     };
     let http_code = response.status().as_u16();
     let response_body: Value = match response.json().await {
         Ok(v) => v,
         Err(e) => {
-            log_vl_call(
-                config,
-                n,
-                started,
-                "json_error",
-                Some(http_code),
-                Some(&e.to_string()),
-            );
-            return Err(e.into());
+            log_vl_call(config, n, started, "json_error", Some(http_code), Some(&e.to_string()));
+            return VlCallOutcome {
+                status: "json_error".to_string(),
+                http_code: Some(http_code),
+                duration_ms: started.elapsed().as_millis() as u64,
+                error: Some(e.to_string()),
+                text: None,
+            };
         }
     };
     if !(200..300).contains(&http_code) {
@@ -699,7 +717,13 @@ async fn call_vlm_batch_once(
             serde_json::to_string(&response_body).unwrap_or_default()
         );
         log_vl_call(config, n, started, "http_error", Some(http_code), Some(&msg));
-        anyhow::bail!(msg);
+        return VlCallOutcome {
+            status: "http_error".to_string(),
+            http_code: Some(http_code),
+            duration_ms: started.elapsed().as_millis() as u64,
+            error: Some(msg),
+            text: None,
+        };
     }
     let text = match config.protocol {
         RelayProtocol::Responses => extract_vl_text_responses(&response_body),
@@ -709,23 +733,77 @@ async fn call_vlm_batch_once(
         Some(t) => t,
         None => {
             log_vl_call(config, n, started, "no_text", Some(http_code), None);
-            anyhow::bail!("no content");
+            return VlCallOutcome {
+                status: "no_text".to_string(),
+                http_code: Some(http_code),
+                duration_ms: started.elapsed().as_millis() as u64,
+                error: Some("no content".to_string()),
+                text: None,
+            };
         }
     };
     if n <= 1 {
         log_vl_call(config, n, started, "ok", Some(http_code), None);
-        return Ok(vec![text]);
+        return VlCallOutcome {
+            status: "ok".to_string(),
+            http_code: Some(http_code),
+            duration_ms: started.elapsed().as_millis() as u64,
+            error: None,
+            text: Some(text),
+        };
     }
     match parse_batch_descriptions(&text, n) {
-        Some(d) => {
+        Some(_) => {
             log_vl_call(config, n, started, "ok", Some(http_code), None);
-            Ok(d)
+            VlCallOutcome {
+                status: "ok".to_string(),
+                http_code: Some(http_code),
+                duration_ms: started.elapsed().as_millis() as u64,
+                error: None,
+                text: Some(text),
+            }
         }
         None => {
             log_vl_call(config, n, started, "parse_error", Some(http_code), None);
-            anyhow::bail!("batch parse failed")
+            VlCallOutcome {
+                status: "parse_error".to_string(),
+                http_code: Some(http_code),
+                duration_ms: started.elapsed().as_millis() as u64,
+                error: Some("batch parse failed".to_string()),
+                text: Some(text),
+            }
         }
     }
+}
+
+async fn call_vlm_batch_once(
+    urls: &[String],
+    prompt: &str,
+    config: &VlmConfig,
+    client: &reqwest::Client,
+) -> anyhow::Result<Vec<String>> {
+    let n = urls.len();
+    let outcome = call_vl_once_structured(urls, prompt, config, client).await;
+    match outcome.status.as_str() {
+        "ok" => {
+            if n <= 1 {
+                Ok(vec![outcome.text.unwrap_or_default()])
+            } else {
+                parse_batch_descriptions(&outcome.text.unwrap_or_default(), n)
+                    .ok_or_else(|| anyhow::anyhow!("batch parse failed"))
+            }
+        }
+        _ => anyhow::bail!(outcome.error.unwrap_or_else(|| outcome.status.clone())),
+    }
+}
+
+/// 测试入口：用 TIER1_PROMPT 对单张图片（data URL 或 http URL）调用 VLM，返回结构化结果。
+pub async fn test_vlm_once(
+    config: &VlmConfig,
+    image_data_url: &str,
+    client: &reqwest::Client,
+) -> VlCallOutcome {
+    call_vl_once_structured(&[image_data_url.to_string()], TIER1_PROMPT, config, client).await
 }
 
 async fn call_vlm_batch(

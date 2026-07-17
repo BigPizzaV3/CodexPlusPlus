@@ -13,7 +13,7 @@ use codex_plus_core::settings::{BackendSettings, RelayProfile, SettingsStore};
 use codex_plus_core::status::{LaunchStatus, StatusStore};
 use codex_plus_core::user_scripts::UserScriptManager;
 use codex_plus_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::install::{self, InstallActionResult, InstallOptions};
@@ -32,6 +32,74 @@ where
 #[derive(Debug, Clone, Serialize)]
 pub struct VersionPayload {
     pub version: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestVlmRequest {
+    pub api_key: String,
+    pub model: String,
+    pub base_url: String,
+    pub protocol: codex_plus_core::settings::RelayProtocol,
+    pub image_data_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestVlmResult {
+    pub status: String,
+    pub http_code: Option<u16>,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+    pub description: Option<String>,
+    pub model: String,
+}
+
+/// 用表单当前 VLM 配置 + 用户上传图片（data URL）测试 VLM 可用性。
+/// 复用 test_vlm_once（TIER1_PROMPT + 单图），返回结构化结果供前端翻译展示。
+#[tauri::command]
+pub async fn test_vlm(request: TestVlmRequest) -> CommandResult<TestVlmResult> {
+    let config = codex_plus_core::vision::VlmConfig {
+        api_key: request.api_key,
+        model: request.model.clone(),
+        base_url: request.base_url,
+        protocol: request.protocol,
+    };
+    let client = match codex_plus_core::http_client::proxied_client("") {
+        Ok(c) => c,
+        Err(e) => {
+            return failed(
+                &format!("VLM HTTP 客户端构建失败：{e}"),
+                TestVlmResult {
+                    status: "client_error".to_string(),
+                    http_code: None,
+                    duration_ms: 0,
+                    error: Some(e.to_string()),
+                    description: None,
+                    model: request.model,
+                },
+            );
+        }
+    };
+    let outcome = codex_plus_core::vision::test_vlm_once(&config, &request.image_data_url, &client).await;
+    let msg = if outcome.status == "ok" {
+        "VLM 测试成功。".to_string()
+    } else {
+        format!("VLM 测试失败：{}", outcome.status)
+    };
+    let result = TestVlmResult {
+        status: outcome.status,
+        http_code: outcome.http_code,
+        duration_ms: outcome.duration_ms,
+        error: outcome.error,
+        description: outcome.text,
+        model: request.model,
+    };
+    if result.status == "ok" {
+        ok(&msg, result)
+    } else {
+        failed(&msg, result)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -2018,3 +2018,72 @@ async fn vlm_responses_protocol_calls_responses_endpoint_and_extracts_text() {
         .collect::<Vec<_>>().join(" ");
     assert!(t.contains("一张图"), "responses path should inject description: {t}");
 }
+
+
+#[tokio::test]
+async fn test_vlm_once_chat_success_returns_outcome() {
+    codex_plus_core::vision::cache_clear_for_tests();
+    let server = mock_vlm_returning("一只狗").await;
+    let cfg = codex_plus_core::vision::VlmConfig {
+        api_key: "k".into(),
+        model: "m".into(),
+        base_url: server.uri(),
+        ..Default::default()
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let outcome = codex_plus_core::vision::test_vlm_once(
+        &cfg,
+        "data:image/png;base64,iVBORw0KGgo=",
+        &client,
+    ).await;
+    assert_eq!(outcome.status, "ok");
+    assert_eq!(outcome.http_code, Some(200));
+    assert_eq!(outcome.text.as_deref(), Some("一只狗"));
+    assert!(outcome.error.is_none());
+}
+
+#[tokio::test]
+async fn test_vlm_once_responses_success() {
+    codex_plus_core::vision::cache_clear_for_tests();
+    let server = mock_vlm_responses_returning("一张表").await;
+    let cfg = codex_plus_core::vision::VlmConfig {
+        api_key: "k".into(),
+        model: "m".into(),
+        base_url: server.uri(),
+        protocol: codex_plus_core::settings::RelayProtocol::Responses,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let outcome = codex_plus_core::vision::test_vlm_once(
+        &cfg,
+        "data:image/png;base64,iVBORw0KGgo=",
+        &client,
+    ).await;
+    assert_eq!(outcome.status, "ok");
+    assert_eq!(outcome.text.as_deref(), Some("一张表"));
+}
+
+#[tokio::test]
+async fn test_vlm_once_http_error_returns_status() {
+    codex_plus_core::vision::cache_clear_for_tests();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({"error":"bad key"})))
+        .mount(&server)
+        .await;
+    let cfg = codex_plus_core::vision::VlmConfig {
+        api_key: "k".into(),
+        model: "m".into(),
+        base_url: server.uri(),
+        ..Default::default()
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let outcome = codex_plus_core::vision::test_vlm_once(
+        &cfg,
+        "data:image/png;base64,iVBORw0KGgo=",
+        &client,
+    ).await;
+    assert_eq!(outcome.status, "http_error");
+    assert_eq!(outcome.http_code, Some(401));
+    assert!(outcome.text.is_none());
+}
