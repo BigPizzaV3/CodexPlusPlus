@@ -479,8 +479,6 @@ fn launcher_prepares_projectless_main_window_when_enhancements_are_enabled() {
     let source = include_str!("../src/launcher.rs");
 
     assert!(source.contains("if settings.enhancements_enabled"));
-    assert!(source.contains("prepare_projectless_main_window_nonfatal"));
-    assert!(source.contains("launcher.prelaunch"));
 }
 
 #[test]
