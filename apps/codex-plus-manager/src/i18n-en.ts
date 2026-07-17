@@ -6,6 +6,7 @@
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
   "测试 VLM": "Test VLM",
+  "重新选择": "Choose another",
   "上传一张图片，使用 tier1 提示词测试当前 VLM 配置是否可用。使用表单当前值（无需保存）。":
     "Upload an image and use the tier1 prompt to test whether the current VLM config works. Uses the form’s current values (no save needed).",
   "正在调用 VLM…": "Calling VLM…",

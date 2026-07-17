@@ -6697,6 +6697,7 @@ function VlmTestPanel({
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [state, setState] = useState<VlmTestState>({ kind: "idle" });
   const [showDetail, setShowDetail] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const canRun = !!dataUrl && !!profile.vlmApiKey && !!profile.vlmModel && !!profile.vlmBaseUrl;
   const tr = (zh: string, params?: string[]) => (params ? tf(zh, params) : t(zh));
 
@@ -6752,7 +6753,16 @@ function VlmTestPanel({
         </div>
 
         <div className="vlm-test-upload">
-          <input accept="image/*" onChange={(e) => onFile(e.currentTarget.files?.[0])} type="file" />
+          <input
+            ref={fileInputRef}
+            accept="image/*"
+            onChange={(e) => onFile(e.currentTarget.files?.[0])}
+            type="file"
+            style={{ display: "none" }}
+          />
+          <Button onClick={() => fileInputRef.current?.click()} size="sm" type="button" variant="secondary">
+            {dataUrl ? t("重新选择") : t("选择图片")}
+          </Button>
           {dataUrl ? <img alt="preview" className="vlm-test-preview" src={dataUrl} /> : null}
         </div>
 
@@ -6780,16 +6790,18 @@ function VlmTestPanel({
         ) : null}
 
         <Toolbar>
-          <Button disabled={!canRun || state.kind === "running"} onClick={runTest} type="button">
-            {state.kind === "running" ? (
-              <>
-                <span className="vlm-test-spinner" aria-hidden="true" />
-                {t("正在调用 VLM…")}
-              </>
-            ) : (
-              t("开始测试")
-            )}
-          </Button>
+          {dataUrl ? (
+            <Button disabled={!canRun || state.kind === "running"} onClick={runTest} type="button">
+              {state.kind === "running" ? (
+                <>
+                  <span className="vlm-test-spinner" aria-hidden="true" />
+                  {t("正在调用 VLM…")}
+                </>
+              ) : (
+                t("开始测试")
+              )}
+            </Button>
+          ) : null}
           <Button onClick={onClose} type="button" variant="secondary">{t("取消")}</Button>
         </Toolbar>
     </div>
