@@ -6782,7 +6782,14 @@ function VlmTestModal({
 
         <Toolbar>
           <Button disabled={!canRun || state.kind === "running"} onClick={runTest} type="button">
-            {state.kind === "running" ? t("正在调用 VLM…") : t("开始测试")}
+            {state.kind === "running" ? (
+              <>
+                <span className="vlm-test-spinner" aria-hidden="true" />
+                {t("正在调用 VLM…")}
+              </>
+            ) : (
+              t("开始测试")
+            )}
           </Button>
           <Button onClick={onClose} type="button" variant="secondary">{t("取消")}</Button>
         </Toolbar>

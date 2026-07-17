@@ -1047,13 +1047,21 @@ pub fn audio_transcriptions_url(base_url: &str) -> String {
 
 pub fn models_url(base_url: &str) -> String {
     // models_url 额外先剥离尾部 /chat/completions，再走通用脚手架。
+    // 保留原始 # 语义：build_versioned_url 依 ends_with('#') 判定 skip_version_prefix，
+    // 故剥离后需把 # 拼回，避免 <origin>/chat/completions# 这类组合被误加 /v1。
+    let had_hash = base_url.trim().ends_with('#');
     let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
     let stripped: &str = if base.to_ascii_lowercase().ends_with("/chat/completions") {
         &base[..base.len() - "/chat/completions".len()]
     } else {
         base
     };
-    build_versioned_url(stripped, "/models")
+    let url = if had_hash {
+        format!("{stripped}#")
+    } else {
+        stripped.to_string()
+    };
+    build_versioned_url(&url, "/models")
 }
 
 pub(crate) fn has_version_suffix(base_url: &str) -> bool {

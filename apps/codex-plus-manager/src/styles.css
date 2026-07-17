@@ -5194,5 +5194,78 @@ select {
   .dream-skin-pending-state .button {
     grid-column: 2;
     justify-self: start;
+/* ── VLM 测试 Modal ─────────────────────────────────────────────── */
+.vlm-test-modal {
+  max-width: 560px;
+}
+.vlm-test-upload {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.vlm-test-preview {
+  max-width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+}
+.vlm-test-result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.vlm-test-summary {
+  font-weight: 600;
+}
+.vlm-test-description {
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  padding: 10px;
+  background: hsl(var(--muted));
+  border-radius: 8px;
+  font-size: 13px;
+}
+.vlm-test-detail-toggle {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: hsl(var(--primary));
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+}
+.vlm-test-detail {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+.vlm-test-detail dt {
+  font-weight: 600;
+}
+.vlm-test-entry {
+  margin-top: 10px;
+}
+.vlm-test-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid hsl(var(--muted));
+  border-top-color: hsl(var(--primary));
+  border-radius: 50%;
+  animation: vlm-test-spin 0.7s linear infinite;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+@keyframes vlm-test-spin {
+  to {
+    transform: rotate(360deg);
   }
 }

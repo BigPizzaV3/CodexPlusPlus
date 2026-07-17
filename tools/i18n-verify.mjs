@@ -22,6 +22,7 @@ const ts = require("typescript");
 const SRC_FILES = [
   "src/App.tsx",
   "src/components/ProviderPresetSelector.tsx",
+  "src/vlm-test-translation.ts",
 ];
 
 // ── Collect the keys referenced by t()/tf() across the source. ──────────────
@@ -40,8 +41,9 @@ function scanFile(relPath) {
       const literal =
         arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) ? arg.text : null;
       if (literal !== null) {
-        if (fn === "t") usedPlain.add(literal);
-        else if (fn === "tf") usedTemplate.add(literal);
+        // tr 是 vlm-test-translation.ts 注入的翻译回调：1 参->plain，2 参->template。
+        if (fn === "t" || (fn === "tr" && node.arguments.length === 1)) usedPlain.add(literal);
+        else if (fn === "tf" || (fn === "tr" && node.arguments.length >= 2)) usedTemplate.add(literal);
       }
     }
     ts.forEachChild(node, visit);

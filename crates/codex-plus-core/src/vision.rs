@@ -803,7 +803,13 @@ pub async fn test_vlm_once(
     image_data_url: &str,
     client: &reqwest::Client,
 ) -> VlCallOutcome {
-    call_vl_once_structured(&[image_data_url.to_string()], TIER1_PROMPT, config, client).await
+    let mut outcome =
+        call_vl_once_structured(&[image_data_url.to_string()], TIER1_PROMPT, config, client).await;
+    // 描述文本上限沿用 DESC_MAX_CHARS，防超长描述撑爆弹窗。
+    if let Some(text) = outcome.text.take() {
+        outcome.text = Some(truncate_char_safe(&text, DESC_MAX_CHARS));
+    }
+    outcome
 }
 
 async fn call_vlm_batch(

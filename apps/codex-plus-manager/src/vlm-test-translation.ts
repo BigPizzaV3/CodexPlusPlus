@@ -26,7 +26,7 @@ export function vlmTestTranslation(
     case "no_text":
       return tr("\u274C 返回中未找到描述文本：模型可能不支持视觉或返回格式异常");
     case "parse_error":
-      return tr("\u274C 批量描述解析失败");
+      return tr("\u274C 批量描述解析失败（单图测试不应触发）");
     case "client_error":
       return tr("\u274C HTTP 客户端构建失败");
     default:

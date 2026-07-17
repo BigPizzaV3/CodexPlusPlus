@@ -1334,6 +1334,15 @@ fn models_url_normalizes_common_base_urls() {
 }
 
 #[test]
+fn models_url_preserves_hash_after_chat_completions_strip() {
+    // <origin>/chat/completions# 组合：剥离 /chat/completions 后须保留 # 语义，不得误加 /v1。
+    assert_eq!(
+        models_url("https://api.example.test/chat/completions#"),
+        "https://api.example.test/models"
+    );
+}
+
+#[test]
 fn models_proxy_path_matches_v1_models() {
     assert!(is_models_proxy_path("/models"));
     assert!(is_models_proxy_path("/v1/models"));

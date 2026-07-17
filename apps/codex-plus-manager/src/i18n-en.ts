@@ -19,10 +19,19 @@ export const EN_PLAIN: Record<string, string> = {
   "\u274C 发送失败：网络错误，检查 Base URL 是否可达": "\u274C Send failed: network error, check that Base URL is reachable",
   "\u274C 返回内容解析失败：上游返回的不是有效 JSON": "\u274C Failed to parse response: upstream did not return valid JSON",
   "\u274C 返回中未找到描述文本：模型可能不支持视觉或返回格式异常": "\u274C No description text found in response: model may not support vision or returned an unexpected format",
-  "\u274C 批量描述解析失败": "\u274C Batch description parse failed",
+  "\u274C 批量描述解析失败（单图测试不应触发）": "\u274C Batch description parse failed (single-image test should not reach this)",
   "\u274C HTTP 客户端构建失败": "\u274C Failed to build HTTP client",
   "\u274C 未知错误": "\u274C Unknown error",
   "VLM 协议": "VLM Protocol",
+  "Vision Analysis Provider": "Vision Analysis Provider",
+  "VLM API Key": "VLM API Key",
+  "VLM Model": "VLM Model",
+  "VLM Base URL": "VLM Base URL",
+  "若开启 VLM analysis，请确认 VLM 配置项完整且服务可用。VLM analysis 不可用时自动降级为丢弃图片。":
+    "If VLM analysis is enabled, ensure the VLM config is complete and the service is available. When VLM analysis is unavailable, images are automatically dropped as a fallback.",
+  "仅在 Chat Completion 和聚合模式生效。": "Effective only in Chat Completions and aggregate mode.",
+  "VLM 配置不完整：API Key、Model 和 Base URL 为必填项，否则 VLM 不会生效。":
+    "VLM config incomplete: API Key, Model, and Base URL are required; otherwise VLM will not take effect.",
   "「只支持文本」：标记纯文本模型。转发前，图片会先经上方 VLM 转成文字描述再发给该模型；若 VLM 未配置或不可用，则丢弃图片并提示。仅在 Chat Completion / 聚合模式生效。":
     "“Text-only”: marks a text-only model. Before forwarding, images are first converted to text descriptions by the VLM above and then sent to this model; if VLM is unconfigured or unavailable, images are dropped with a notice. Effective only under Chat Completions / aggregate mode.",
   "「不支持推理」：剥离该模型的 reasoning 字段，避免不支持推理的模型报错。对所有协议生效。":
