@@ -260,7 +260,12 @@ where
     let result: anyhow::Result<LaunchHandle> = async {
         let home = crate::relay_config::default_codex_home_dir();
         if settings.provider_sync_enabled {
+            crate::codex_app_state::capture_app_state_snapshot_nonfatal(&home, "launcher.before");
             hooks.run_provider_sync().await?;
+            crate::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
+                &home,
+                "launcher.after_provider_sync",
+            );
         }
         crate::dream_skin::sync_default_dream_skin_base_theme(
             settings.enhancements_enabled
@@ -661,6 +666,11 @@ impl LaunchHooks for DefaultLaunchHooks {
         extra_args: &[String],
     ) -> anyhow::Result<CodexLaunch> {
         if settings.enhancements_enabled {
+            let home = crate::relay_config::default_codex_home_dir();
+            crate::codex_app_state::prepare_projectless_main_window_nonfatal(
+                &home,
+                "launcher.prelaunch",
+            );
         }
         let native_menu_localization_enabled = settings.codex_app_native_menu_localization;
         let native_menu_inspector_port =
