@@ -5864,7 +5864,7 @@ function RelayProfileEditor({
               </div>
             ) : null}
             {vlmTestOpen ? (
-              <VlmTestModal profile={profile} onClose={() => setVlmTestOpen(false)} />
+              <VlmTestPanel profile={profile} onClose={() => setVlmTestOpen(false)} />
             ) : null}
           </div>
         ) : null}
@@ -6687,7 +6687,7 @@ type VlmTestState =
   | { kind: "running" }
   | { kind: "done"; result: TestVlmResult };
 
-function VlmTestModal({
+function VlmTestPanel({
   profile,
   onClose,
 }: {
@@ -6740,8 +6740,7 @@ function VlmTestModal({
   };
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-card vlm-test-modal">
+    <div className="vlm-test-panel">
         <div className="modal-head">
           <div>
             <h2>{t("测试 VLM")}</h2>
@@ -6793,7 +6792,6 @@ function VlmTestModal({
           </Button>
           <Button onClick={onClose} type="button" variant="secondary">{t("取消")}</Button>
         </Toolbar>
-      </div>
     </div>
   );
 }

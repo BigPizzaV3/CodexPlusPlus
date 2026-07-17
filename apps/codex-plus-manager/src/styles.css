@@ -5195,8 +5195,14 @@ select {
     grid-column: 2;
     justify-self: start;
 /* ── VLM 测试 Modal ─────────────────────────────────────────────── */
-.vlm-test-modal {
+.vlm-test-panel {
   max-width: 560px;
+  margin-top: 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--popover));
+  color: hsl(var(--popover-foreground));
+  padding: 14px;
 }
 .vlm-test-upload {
   display: flex;
