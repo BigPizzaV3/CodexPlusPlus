@@ -27,7 +27,6 @@ const SINGLE_MAX_ATTEMPTS: u32 = 1;
 /// 上下文窗口安全余量（0.9 = 留 10% 给上游 tokenizer 差异）。
 const CONTEXT_SAFETY_MARGIN: f64 = 0.9;
 /// VLM 返回的错误文本截断长度。
-#[allow(dead_code)]
 const ERROR_BODY_TRUNCATE: usize = 256;
 /// 单图描述最大字符数。
 const DESC_MAX_CHARS: usize = 2000;
@@ -698,24 +697,12 @@ pub async fn call_vl_once_structured(
         }
     };
     let http_code = response.status().as_u16();
-    let response_body: Value = match response.json().await {
-        Ok(v) => v,
-        Err(e) => {
-            log_vl_call(config, n, started, "json_error", Some(http_code), Some(&e.to_string()));
-            return VlCallOutcome {
-                status: "json_error".to_string(),
-                http_code: Some(http_code),
-                duration_ms: started.elapsed().as_millis() as u64,
-                error: Some(e.to_string()),
-                text: None,
-            };
-        }
-    };
+    // 先按文本读 body，再判 HTTP 码：非 2xx 时无论 body 是否 JSON 都报 http_error（含 body 片段），
+    // 避免上游返回 HTML 错误页/纯文本时被误判为 json_error 而掩盖真实状态码。
+    let body_text = response.text().await.unwrap_or_default();
+    let body_snippet: String = body_text.chars().take(ERROR_BODY_TRUNCATE).collect();
     if !(200..300).contains(&http_code) {
-        let msg = format!(
-            "VL API {http_code}: {}",
-            serde_json::to_string(&response_body).unwrap_or_default()
-        );
+        let msg = format!("VL API {http_code}: {body_snippet}");
         log_vl_call(config, n, started, "http_error", Some(http_code), Some(&msg));
         return VlCallOutcome {
             status: "http_error".to_string(),
@@ -725,6 +712,20 @@ pub async fn call_vl_once_structured(
             text: None,
         };
     }
+    let response_body: Value = match serde_json::from_str(&body_text) {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = format!("JSON parse failed: {e} | body: {body_snippet}");
+            log_vl_call(config, n, started, "json_error", Some(http_code), Some(&msg));
+            return VlCallOutcome {
+                status: "json_error".to_string(),
+                http_code: Some(http_code),
+                duration_ms: started.elapsed().as_millis() as u64,
+                error: Some(msg),
+                text: None,
+            };
+        }
+    };
     let text = match config.protocol {
         RelayProtocol::Responses => extract_vl_text_responses(&response_body),
         RelayProtocol::ChatCompletions => extract_vl_text(&response_body),

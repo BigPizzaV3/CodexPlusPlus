@@ -2096,3 +2096,37 @@ async fn test_vlm_once_http_error_returns_status() {
     assert_eq!(outcome.http_code, Some(401));
     assert!(outcome.text.is_none());
 }
+
+
+#[tokio::test]
+async fn test_vlm_once_http_error_with_non_json_body_reports_status() {
+    // 非 2xx + 非 JSON body（如 HTML 错误页/代理 502）应报 http_error（含状态码），
+    // 而非被误判为 json_error。
+    codex_plus_core::vision::cache_clear_for_tests();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(502)
+                .set_body_string("<html>Bad Gateway</html>")
+                .insert_header("content-type", "text/html"),
+        )
+        .mount(&server)
+        .await;
+    let cfg = codex_plus_core::vision::VlmConfig {
+        api_key: "k".into(),
+        model: "m".into(),
+        base_url: server.uri(),
+        ..Default::default()
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let outcome = codex_plus_core::vision::test_vlm_once(
+        &cfg,
+        "data:image/png;base64,iVBORw0KGgo=",
+        &client,
+    ).await;
+    assert_eq!(outcome.status, "http_error");
+    assert_eq!(outcome.http_code, Some(502));
+    assert!(outcome.text.is_none());
+    assert!(outcome.error.as_deref().unwrap_or("").contains("502"));
+}
