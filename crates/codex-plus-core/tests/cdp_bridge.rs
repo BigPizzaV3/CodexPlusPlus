@@ -6,6 +6,7 @@ use codex_plus_core::cdp::{
     is_quick_chat_page_target, list_targets, pick_injectable_codex_page_target, pick_page_target,
     validate_cdp_websocket_url,
 };
+use codex_plus_core::settings::BackendSettings;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
@@ -67,6 +68,25 @@ fn injection_script_prefixes_helper_url_and_metadata() {
     assert!(script.contains(codex_plus_core::version::VERSION));
     assert!(script.contains("https://discord.gg/y96kX7A76v"));
     assert!(script.contains("data-codex-plus-discord"));
+}
+
+#[test]
+fn injection_script_omits_stepwise_runtime_when_disabled() {
+    let script = assets::injection_script_with_settings(57321, &BackendSettings::default());
+
+    assert!(!script.contains("const API_KEY = \"__codexStepwisePanel\";"));
+    assert!(script.contains("data-codex-plus-setting=\"stepwise\""));
+}
+
+#[test]
+fn injection_script_includes_stepwise_runtime_when_enabled() {
+    let settings = BackendSettings {
+        codex_app_stepwise_enabled: true,
+        ..Default::default()
+    };
+    let script = assets::injection_script_with_settings(57321, &settings);
+
+    assert!(script.contains("const API_KEY = \"__codexStepwisePanel\";"));
 }
 
 #[test]
@@ -747,7 +767,11 @@ fn injection_script_menu_exposes_marketplace_plugin_switch_only() {
 
 #[test]
 fn injection_script_menu_exposes_stepwise_switch_and_syncs_panel() {
-    let script = assets::injection_script(57321);
+    let settings = BackendSettings {
+        codex_app_stepwise_enabled: true,
+        ..Default::default()
+    };
+    let script = assets::injection_script_with_settings(57321, &settings);
 
     assert!(script.contains("stepwise: false"));
     assert!(script.contains("stepwise: \"codexAppStepwiseEnabled\""));
@@ -758,6 +782,18 @@ fn injection_script_menu_exposes_stepwise_switch_and_syncs_panel() {
     assert!(script.contains("if (key === \"stepwise\") syncStepwisePanel(value)"));
     assert!(script.contains("if (patch?.enabled === true)"));
     assert!(script.contains("activateRuntime();"));
+}
+
+#[test]
+fn stepwise_runtime_stops_work_when_disabled() {
+    let script = assets::stepwise_script().replace("\r\n", "\n");
+
+    assert!(script.contains("function stepwiseEnabled()"));
+    assert!(script.contains("if (!stepwiseEnabled()) {"));
+    assert!(script.contains("stopRuntime();"));
+    assert!(script.contains(
+        "function requestBridgeStepwise(key, userText, assistantText) {\n    if (!stepwiseEnabled()) return;"
+    ));
 }
 
 #[test]
