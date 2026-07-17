@@ -1825,7 +1825,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 async fn mock_vlm_returning(description: &str) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/chat/completions"))
+        .and(path("/v1/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "choices": [{"message": {"content": description}}]
         })))
@@ -1969,4 +1969,52 @@ async fn text_followup_with_history_image_injects_followup_note() {
         t.contains("重发图片") || t.contains("优先从"),
         "追问应注入强化提示: {t}"
     );
+}
+
+
+async fn mock_vlm_responses_returning(description: &str) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "output": [{"type":"message","content":[
+                {"type":"output_text","text": description}
+            ]}]
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+fn vlm_config_responses(base_url: &str) -> codex_plus_core::vision::VlmConfig {
+    codex_plus_core::vision::VlmConfig {
+        api_key: "test-key".into(),
+        model: "test-model".into(),
+        base_url: base_url.to_string(),
+        protocol: codex_plus_core::settings::RelayProtocol::Responses,
+    }
+}
+
+#[tokio::test]
+async fn vlm_responses_protocol_calls_responses_endpoint_and_extracts_text() {
+    codex_plus_core::vision::cache_clear_for_tests();
+    let server = mock_vlm_responses_returning("一张图").await;
+    let cfg = vlm_config_responses(&server.uri());
+    let mut body = vec![serde_json::json!({
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "看图"},
+            {"type": "image_url", "image_url": {"url": "https://r.example.com/i.png"}},
+        ]
+    })];
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    codex_plus_core::vision::strip_image_blocks_for_tests(
+        &mut body, &cfg, "{}", "272000", "gpt-4",
+    ).await;
+    let t: String = body.iter()
+        .filter_map(|m| m["content"].as_array())
+        .flat_map(|p| p.iter())
+        .filter_map(|p| p["text"].as_str())
+        .collect::<Vec<_>>().join(" ");
+    assert!(t.contains("一张图"), "responses path should inject description: {t}");
 }

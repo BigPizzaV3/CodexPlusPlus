@@ -549,16 +549,19 @@ fn backoff_delay(attempt: u32, salt: &str) -> Duration {
     Duration::from_secs_f64(base * (0.8 + jitter))
 }
 
-fn build_vl_batch_body(urls: &[String], prompt: &str, config: &VlmConfig) -> Value {
-    let final_prompt = if urls.len() > 1 {
+/// 多图时追加"按顺序描述 + [[图片K]] 标记"提示；单图直接返回原 prompt。
+fn batch_prompt(prompt: &str, n: usize) -> String {
+    if n > 1 {
         format!(
-            "{prompt}\n请按顺序描述以下{}张图片，每张图片的描述以 [[图片K]] 开头（K=1..{n}），每张单独描述。",
-            urls.len(),
-            n = urls.len()
+            "{prompt}\n请按顺序描述以下{n}张图片，每张图片的描述以 [[图片K]] 开头（K=1..{n}），每张单独描述。"
         )
     } else {
         prompt.to_string()
-    };
+    }
+}
+
+fn build_vl_batch_body(urls: &[String], prompt: &str, config: &VlmConfig) -> Value {
+    let final_prompt = batch_prompt(prompt, urls.len());
     let mut content = vec![serde_json::json!({"type":"text","text":final_prompt})];
     for u in urls {
         content.push(serde_json::json!({"type":"image_url","image_url":{"url":u}}));
@@ -566,10 +569,43 @@ fn build_vl_batch_body(urls: &[String], prompt: &str, config: &VlmConfig) -> Val
     serde_json::json!({"model": config.model, "messages":[{"role":"user","content":content}]})
 }
 
+/// Responses API 格式请求体：input + input_text/input_image parts。
+fn build_vl_batch_body_responses(urls: &[String], prompt: &str, config: &VlmConfig) -> Value {
+    let final_prompt = batch_prompt(prompt, urls.len());
+    let mut content = vec![serde_json::json!({"type":"input_text","text":final_prompt})];
+    for u in urls {
+        content.push(serde_json::json!({"type":"input_image","image_url":{"url":u}}));
+    }
+    serde_json::json!({"model": config.model, "input":[{"role":"user","content":content}]})
+}
+
 fn extract_vl_text(response_body: &Value) -> Option<String> {
     response_body["choices"][0]["message"]["content"]
         .as_str()
         .map(String::from)
+}
+
+/// Responses 响应：output[].content[] 中 type==output_text 的 text 拼接。
+fn extract_vl_text_responses(response_body: &Value) -> Option<String> {
+    let output = response_body.get("output")?.as_array()?;
+    let mut texts: Vec<String> = Vec::new();
+    for item in output {
+        let Some(content) = item.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        for part in content {
+            if part.get("type").and_then(Value::as_str) == Some("output_text") {
+                if let Some(t) = part.get("text").and_then(Value::as_str) {
+                    texts.push(t.to_string());
+                }
+            }
+        }
+    }
+    if texts.is_empty() {
+        None
+    } else {
+        Some(texts.join(""))
+    }
 }
 
 fn parse_batch_descriptions(text: &str, n: usize) -> Option<Vec<String>> {
@@ -616,8 +652,15 @@ async fn call_vlm_batch_once(
     client: &reqwest::Client,
 ) -> anyhow::Result<Vec<String>> {
     let _permit = VL_SEMAPHORE.acquire().await.expect("sem closed");
-    let endpoint = chat_completions_url(&config.base_url);
-    let body = build_vl_batch_body(urls, prompt, config);
+    use crate::settings::RelayProtocol;
+    let endpoint = match config.protocol {
+        RelayProtocol::Responses => crate::protocol_proxy::responses_url(&config.base_url),
+        RelayProtocol::ChatCompletions => chat_completions_url(&config.base_url),
+    };
+    let body = match config.protocol {
+        RelayProtocol::Responses => build_vl_batch_body_responses(urls, prompt, config),
+        RelayProtocol::ChatCompletions => build_vl_batch_body(urls, prompt, config),
+    };
     let started = Instant::now();
     let n = urls.len();
     let response = match client
@@ -658,7 +701,11 @@ async fn call_vlm_batch_once(
         log_vl_call(config, n, started, "http_error", Some(http_code), Some(&msg));
         anyhow::bail!(msg);
     }
-    let text = match extract_vl_text(&response_body) {
+    let text = match config.protocol {
+        RelayProtocol::Responses => extract_vl_text_responses(&response_body),
+        RelayProtocol::ChatCompletions => extract_vl_text(&response_body),
+    };
+    let text = match text {
         Some(t) => t,
         None => {
             log_vl_call(config, n, started, "no_text", Some(http_code), None);
@@ -1133,6 +1180,71 @@ mod tests {
         assert_eq!(cfg.api_key, "");
         assert_eq!(cfg.model, "");
         assert_eq!(cfg.base_url, "");
+    }
+
+    #[test]
+    fn batch_prompt_single_image_is_plain_prompt() {
+        assert_eq!(batch_prompt("PROMPT", 1), "PROMPT");
+    }
+
+    #[test]
+    fn batch_prompt_multi_image_has_markers() {
+        let p = batch_prompt("P", 3);
+        assert!(p.contains("P\n请按顺序描述以下3张图片"));
+        assert!(p.contains("[[图片K]]"));
+    }
+
+    #[test]
+    fn build_vl_batch_body_responses_single_image() {
+        let cfg = VlmConfig { model: "vlm-m".into(), ..Default::default() };
+        let body = build_vl_batch_body_responses(
+            &["https://e.example/i.png".into()],
+            "PROMPT",
+            &cfg,
+        );
+        assert_eq!(body["model"], "vlm-m");
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 1);
+        assert_eq!(input[0]["role"], "user");
+        let content = input[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "input_text");
+        assert_eq!(content[0]["text"], "PROMPT");
+        assert_eq!(content[1]["type"], "input_image");
+        assert_eq!(content[1]["image_url"]["url"], "https://e.example/i.png");
+    }
+
+    #[test]
+    fn build_vl_batch_body_responses_multi_image_uses_batch_prompt() {
+        let cfg = VlmConfig { model: "m".into(), ..Default::default() };
+        let urls = vec!["u1".into(), "u2".into()];
+        let body = build_vl_batch_body_responses(&urls, "P", &cfg);
+        let text = body["input"][0]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("P\n请按顺序描述以下2张图片"));
+        assert!(text.contains("[[图片K]]"));
+        let content = body["input"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[1]["type"], "input_image");
+        assert_eq!(content[2]["type"], "input_image");
+    }
+
+    #[test]
+    fn extract_vl_text_responses_picks_output_text() {
+        let body = serde_json::json!({
+            "output": [{
+                "type": "message",
+                "content": [
+                    {"type": "output_text", "text": "图片里是一只猫"},
+                    {"type": "reasoning", "summary": []}
+                ]
+            }]
+        });
+        assert_eq!(extract_vl_text_responses(&body).as_deref(), Some("图片里是一只猫"));
+    }
+
+    #[test]
+    fn extract_vl_text_responses_none_when_missing() {
+        let body = serde_json::json!({"output": [{"content": [{"type": "reasoning"}]}]});
+        assert_eq!(extract_vl_text_responses(&body), None);
     }
 
     // ── image_handling_mode ───────────────────────────────────────
