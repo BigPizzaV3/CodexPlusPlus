@@ -683,11 +683,22 @@ fn normalize_desktop_path(value: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let mut path = trimmed.replace('/', r"\");
-    while path.len() > 3 && path.ends_with('\\') {
-        path.pop();
+    #[cfg(windows)]
+    {
+        let mut path = trimmed.replace('/', r"\");
+        while path.len() > 3 && path.ends_with('\\') {
+            path.pop();
+        }
+        Some(path)
     }
-    Some(path)
+    #[cfg(not(windows))]
+    {
+        let mut path = trimmed.to_string();
+        while path.len() > 1 && path.ends_with('/') {
+            path.pop();
+        }
+        Some(path)
+    }
 }
 
 fn create_backup(home: &Path, original: &Value) -> anyhow::Result<PathBuf> {

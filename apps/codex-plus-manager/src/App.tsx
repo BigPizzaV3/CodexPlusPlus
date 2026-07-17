@@ -5706,50 +5706,47 @@ function RelayProfileEditor({
               <div className="relay-model-row relay-model-row-head">
                 <span>{t("模型名称")}</span>
                 <span>{t("上下文窗口")}</span>
+                <span>{t("只支持文本")}</span>
+                <span>{t("不支持推理")}</span>
+                <span />
               </div>
               {modelWindowRows.map((row, index) => (
-                <div key={index}>
-                  <div className="relay-model-row">
-                    <Input
-                      value={row.model}
-                      onChange={(event) => updateModelWindowRow(index, { model: event.currentTarget.value })}
-                      placeholder="deepseek/deepseek-v4-flash"
+                <div className="relay-model-row" key={index}>
+                  <Input
+                    value={row.model}
+                    onChange={(event) => updateModelWindowRow(index, { model: event.currentTarget.value })}
+                    placeholder="deepseek/deepseek-v4-flash"
+                  />
+                  <Input
+                    value={row.window}
+                    onChange={(event) => updateModelWindowRow(index, { window: event.currentTarget.value })}
+                    placeholder="1M"
+                  />
+                  <label className="relay-model-checkbox" title={t("勾选标记纯文本模型，转发前丢弃图片；配了视觉模型则先转文字")}>
+                    <input
+                      type="checkbox"
+                      checked={row.textOnly}
+                      disabled={vlmUnsupportedProtocol}
+                      onChange={(e) => updateModelWindowRow(index, { textOnly: e.currentTarget.checked })}
                     />
-                    <Input
-                      value={row.window}
-                      onChange={(event) => updateModelWindowRow(index, { window: event.currentTarget.value })}
-                      placeholder="1M"
+                  </label>
+                  <label className="relay-model-checkbox" title={t("勾选后该模型 reasoning 字段会被剥离，避免不支持推理的模型报错；对所有协议生效")}>
+                    <input
+                      type="checkbox"
+                      checked={row.noReasoning}
+                      onChange={(e) => updateModelWindowRow(index, { noReasoning: e.currentTarget.checked })}
                     />
-                    <Button
-                      aria-label={t("删除模型")}
-                      onClick={() => removeModelWindowRow(index)}
-                      size="icon"
-                      title={t("删除模型")}
-                      type="button"
-                      variant="ghost"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <div className="relay-model-row-actions">
-                    <label className="relay-model-checkbox" title={t("勾选标记纯文本模型，转发前丢弃图片；配了视觉模型则先转文字")}>
-                      <input
-                        type="checkbox"
-                        checked={row.textOnly}
-                        disabled={vlmUnsupportedProtocol}
-                        onChange={(e) => updateModelWindowRow(index, { textOnly: e.currentTarget.checked })}
-                      />
-                      {t("只支持文本")}
-                    </label>
-                    <label className="relay-model-checkbox" title={t("勾选后该模型 reasoning 字段会被剥离，避免不支持推理的模型报错；对所有协议生效")}>
-                      <input
-                        type="checkbox"
-                        checked={row.noReasoning}
-                        onChange={(e) => updateModelWindowRow(index, { noReasoning: e.currentTarget.checked })}
-                      />
-                      {t("不支持推理")}
-                    </label>
-                  </div>
+                  </label>
+                  <Button
+                    aria-label={t("删除模型")}
+                    onClick={() => removeModelWindowRow(index)}
+                    size="icon"
+                    title={t("删除模型")}
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
                 </div>
               ))}
             </div>

@@ -103,15 +103,15 @@ fn app_state_sync_restores_safe_state_and_ignores_sensitive_snapshot_keys() {
     assert!(result.snapshot_path.as_deref().unwrap().is_file());
     assert_eq!(
         state["electron-saved-workspace-roots"],
-        json!(["D:\\fresh\\app", "C:\\work\\app"])
+        json!(["D:/fresh/app", "C:/work/app"])
     );
     assert_eq!(
         state["active-workspace-roots"],
-        json!(["D:\\fresh\\app", "C:\\work\\app"])
+        json!(["D:/fresh/app", "C:/work/app"])
     );
     assert_eq!(
         state["electron-workspace-root-labels"],
-        json!({"C:\\work\\app": "App"})
+        json!({"C:/work/app": "App"})
     );
     assert_eq!(state["electron-avatar-overlay-open"], true);
     assert_eq!(state["electron-avatar-overlay-bounds"]["width"], 320);
@@ -225,9 +225,9 @@ fn app_state_sync_normalizes_current_state_and_writes_backup_before_change() {
     assert!(result.changed);
     assert_eq!(
         state["electron-saved-workspace-roots"],
-        json!(["C:\\work\\app"])
+        json!(["C:/work/app"])
     );
-    assert_eq!(state["active-workspace-roots"], json!("C:\\work\\app"));
+    assert_eq!(state["active-workspace-roots"], json!("C:/work/app"));
     assert_eq!(state["projectless-thread-ids"], json!(["thread-1"]));
     assert_eq!(
         backup["electron-saved-workspace-roots"],

@@ -3533,7 +3533,7 @@ body {
 
 .relay-model-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(120px, 180px) 36px;
+  grid-template-columns: minmax(220px, 1fr) minmax(120px, 180px) 60px 60px 36px;
   align-items: center;
   gap: 8px;
 }
@@ -3542,6 +3542,18 @@ body {
   color: hsl(var(--muted-foreground));
   font-size: 12px;
   font-weight: 600;
+}
+
+.relay-model-row .relay-model-checkbox {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+
+.relay-model-row-head span:nth-child(3),
+.relay-model-row-head span:nth-child(4) {
+  text-align: center;
 }
 
 .relay-model-row input {
