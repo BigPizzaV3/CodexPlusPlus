@@ -1011,91 +1011,49 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
     })
 }
 
-pub fn chat_completions_url(base_url: &str) -> String {
+// 共享脚手架：版本前缀(`#`)/origin-only/已带版本号后缀判断 + `/v1/v1` 去重。
+// suffix 含前导 '/'，如 "/responses"。各具体端点函数为薄包装，避免重复逻辑。
+fn build_versioned_url(base_url: &str, suffix: &str) -> String {
     let skip_version_prefix = base_url.trim().ends_with('#');
     let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
-    if base.to_ascii_lowercase().ends_with("/chat/completions") {
+    if base.to_ascii_lowercase().ends_with(suffix) {
         return base.to_string();
     }
     let origin_only = base
         .split_once("://")
         .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
     let mut url = if skip_version_prefix || has_version_suffix(base) || !origin_only {
-        format!("{base}/chat/completions")
+        format!("{base}{suffix}")
     } else {
-        format!("{base}/v1/chat/completions")
+        format!("{base}/v1{suffix}")
     };
     while url.contains("/v1/v1") {
         url = url.replace("/v1/v1", "/v1");
     }
     url
+}
+
+pub fn chat_completions_url(base_url: &str) -> String {
+    build_versioned_url(base_url, "/chat/completions")
 }
 
 pub fn responses_url(base_url: &str) -> String {
-    let skip_version_prefix = base_url.trim().ends_with('#');
-    let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
-    if base.to_ascii_lowercase().ends_with("/responses") {
-        return base.to_string();
-    }
-    let origin_only = base
-        .split_once("://")
-        .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
-    let mut url = if skip_version_prefix || has_version_suffix(base) || !origin_only {
-        format!("{base}/responses")
-    } else {
-        format!("{base}/v1/responses")
-    };
-    while url.contains("/v1/v1") {
-        url = url.replace("/v1/v1", "/v1");
-    }
-    url
+    build_versioned_url(base_url, "/responses")
 }
 
 pub fn audio_transcriptions_url(base_url: &str) -> String {
-    let skip_version_prefix = base_url.trim().ends_with('#');
-    let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
-    if base.to_ascii_lowercase().ends_with("/audio/transcriptions") {
-        return base.to_string();
-    }
-    let origin_only = base
-        .split_once("://")
-        .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
-    let mut url = if skip_version_prefix || has_version_suffix(base) || !origin_only {
-        format!("{base}/audio/transcriptions")
-    } else {
-        format!("{base}/v1/audio/transcriptions")
-    };
-    while url.contains("/v1/v1") {
-        url = url.replace("/v1/v1", "/v1");
-    }
-    url
+    build_versioned_url(base_url, "/audio/transcriptions")
 }
 
 pub fn models_url(base_url: &str) -> String {
-    let skip_version_prefix = base_url.trim().ends_with('#');
-    let mut base = base_url
-        .trim()
-        .trim_end_matches('#')
-        .trim_end_matches('/')
-        .to_string();
-    if base.to_ascii_lowercase().ends_with("/chat/completions") {
-        base.truncate(base.len() - "/chat/completions".len());
-    }
-    if base.to_ascii_lowercase().ends_with("/models") {
-        return base;
-    }
-    let origin_only = base
-        .split_once("://")
-        .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
-    let mut url = if skip_version_prefix || has_version_suffix(&base) || !origin_only {
-        format!("{base}/models")
+    // models_url 额外先剥离尾部 /chat/completions，再走通用脚手架。
+    let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
+    let stripped: &str = if base.to_ascii_lowercase().ends_with("/chat/completions") {
+        &base[..base.len() - "/chat/completions".len()]
     } else {
-        format!("{base}/v1/models")
+        base
     };
-    while url.contains("/v1/v1") {
-        url = url.replace("/v1/v1", "/v1");
-    }
-    url
+    build_versioned_url(stripped, "/models")
 }
 
 pub(crate) fn has_version_suffix(base_url: &str) -> bool {
