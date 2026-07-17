@@ -872,6 +872,7 @@ async fn upstream_request_parts(
                         api_key: relay.vlm_api_key.clone(),
                         model: relay.vlm_model.clone(),
                         base_url: relay.vlm_base_url.clone(),
+                        protocol: relay.vlm_protocol,
                     };
                     let vlm_client = crate::http_client::proxied_client("")
                         .context("failed to build VLM HTTP client")?;

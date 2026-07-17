@@ -214,6 +214,7 @@ fn relay_profile_from_request(
         vlm_api_key: String::new(),
         vlm_model: String::new(),
         vlm_base_url: String::new(),
+        vlm_protocol: crate::settings::RelayProtocol::ChatCompletions,
         user_agent: String::new(),
     }
 }

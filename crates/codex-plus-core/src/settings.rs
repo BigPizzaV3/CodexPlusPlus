@@ -101,6 +101,8 @@ pub struct RelayProfile {
     pub vlm_model: String,
     #[serde(rename = "vlmBaseUrl", default)]
     pub vlm_base_url: String,
+    #[serde(rename = "vlmProtocol", default = "default_vlm_protocol")]
+    pub vlm_protocol: RelayProtocol,
     #[serde(
         rename = "userAgent",
         default,
@@ -139,6 +141,10 @@ pub struct AggregateRelayProfile {
     pub members: Vec<AggregateRelayMember>,
 }
 
+fn default_vlm_protocol() -> RelayProtocol {
+    RelayProtocol::ChatCompletions
+}
+
 impl Default for RelayProfile {
     fn default() -> Self {
         Self {
@@ -167,6 +173,7 @@ impl Default for RelayProfile {
             vlm_api_key: String::new(),
             vlm_model: String::new(),
             vlm_base_url: String::new(),
+            vlm_protocol: RelayProtocol::ChatCompletions,
             user_agent: String::new(),
         }
     }
@@ -583,6 +590,7 @@ impl BackendSettings {
                 vlm_api_key: String::new(),
                 vlm_model: String::new(),
                 vlm_base_url: String::new(),
+                vlm_protocol: RelayProtocol::ChatCompletions,
                 user_agent: String::new(),
             };
         }
@@ -633,6 +641,7 @@ impl BackendSettings {
             vlm_api_key: String::new(),
             vlm_model: String::new(),
             vlm_base_url: String::new(),
+            vlm_protocol: RelayProtocol::ChatCompletions,
             user_agent: String::new(),
         }
     }
@@ -1555,6 +1564,32 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn relay_profile_vlm_protocol_defaults_to_chat_completions() {
+        let json = r#"{
+            "id": "x", "name": "n", "model": "", "baseUrl": "",
+            "upstreamBaseUrl": "", "apiKey": "", "protocol": "responses",
+            "relayMode": "official", "useCommonConfig": true,
+            "vlmApiKey": "", "vlmModel": "", "vlmBaseUrl": ""
+        }"#;
+        let profile: RelayProfile = serde_json::from_str(json).unwrap();
+        assert_eq!(profile.vlm_protocol, RelayProtocol::ChatCompletions);
+    }
+
+    #[test]
+    fn relay_profile_vlm_protocol_explicit_responses_round_trips() {
+        let json = r#"{
+            "id": "x", "name": "n", "model": "", "baseUrl": "",
+            "upstreamBaseUrl": "", "apiKey": "", "protocol": "responses",
+            "relayMode": "official", "useCommonConfig": true,
+            "vlmProtocol": "responses"
+        }"#;
+        let profile: RelayProfile = serde_json::from_str(json).unwrap();
+        assert_eq!(profile.vlm_protocol, RelayProtocol::Responses);
+        let re = serde_json::to_string(&profile).unwrap();
+        assert!(re.contains(r#""vlmProtocol":"responses""#));
+    }
 
     fn temp_dir() -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(

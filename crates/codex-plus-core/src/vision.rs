@@ -104,6 +104,18 @@ pub struct VlmConfig {
     pub api_key: String,
     pub model: String,
     pub base_url: String,
+    pub protocol: crate::settings::RelayProtocol,
+}
+
+impl Default for VlmConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            model: String::new(),
+            base_url: String::new(),
+            protocol: crate::settings::RelayProtocol::ChatCompletions,
+        }
+    }
 }
 
 // ── Public helpers ────────────────────────────────────────────────────
@@ -1113,6 +1125,16 @@ pub async fn strip_image_blocks_for_tests(
 mod tests {
     use super::*;
 
+    #[test]
+    fn vlm_config_default_is_chat_completions() {
+        use crate::settings::RelayProtocol;
+        let cfg = VlmConfig::default();
+        assert_eq!(cfg.protocol, RelayProtocol::ChatCompletions);
+        assert_eq!(cfg.api_key, "");
+        assert_eq!(cfg.model, "");
+        assert_eq!(cfg.base_url, "");
+    }
+
     // ── image_handling_mode ───────────────────────────────────────
 
     #[test]
@@ -1640,6 +1662,7 @@ mod tests {
             api_key: String::new(),
             model: String::new(),
             base_url: String::new(),
+            ..Default::default()
         };
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -1675,6 +1698,7 @@ mod tests {
             api_key: String::new(),
             model: String::new(),
             base_url: String::new(),
+            ..Default::default()
         };
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -1721,6 +1745,7 @@ mod tests {
             api_key: String::new(),
             model: String::new(),
             base_url: String::new(),
+            ..Default::default()
         };
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -1747,6 +1772,7 @@ mod tests {
             api_key: "invalid-key".to_string(),
             model: "invalid-model".to_string(),
             base_url: "https://127.0.0.1:1".to_string(), // 故意不可达
+            ..Default::default()
         };
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_millis(100))
@@ -1812,6 +1838,7 @@ mod tests {
             api_key: "unused".to_string(),
             model: "unused".to_string(),
             base_url: "https://127.0.0.1:1".to_string(), // VLM 不可达
+            ..Default::default()
         };
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_millis(100))
@@ -1891,6 +1918,7 @@ mod tests {
             api_key: String::new(),
             model: String::new(),
             base_url: String::new(),
+            ..Default::default()
         };
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -2006,6 +2034,7 @@ mod tests {
             api_key: String::new(),
             model: String::new(),
             base_url: String::new(),
+            ..Default::default()
         };
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -2268,6 +2297,7 @@ mod tests {
             api_key: "test-key".into(),
             model: "test-model".into(),
             base_url: mock_server.uri(),
+            ..Default::default()
         };
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -2319,6 +2349,7 @@ mod tests {
             api_key: "test-key".into(),
             model: "test-model".into(),
             base_url: mock_server.uri(),
+            ..Default::default()
         };
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -2363,6 +2394,7 @@ mod tests {
             api_key: "test-key".into(),
             model: "test-model".into(),
             base_url: mock_server.uri(),
+            ..Default::default()
         };
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -2410,6 +2442,7 @@ mod tests {
             api_key: "test-key".into(),
             model: "test-model".into(),
             base_url: mock_server.uri(),
+            ..Default::default()
         };
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
 

@@ -1839,6 +1839,7 @@ fn vlm_config(base_url: &str) -> codex_plus_core::vision::VlmConfig {
         api_key: "test-key".into(),
         model: "test-model".into(),
         base_url: base_url.to_string(),
+        ..Default::default()
     }
 }
 
