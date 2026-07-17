@@ -79,6 +79,7 @@ import {
   serializeModelWindowRows,
   type ModelWindowRow,
 } from "./model-windows";
+import { normalizeVlmProtocol } from "./vlm-protocol";
 import { resolveProviderSyncCompletion } from "./provider-sync-flow";
 import {
   defaultDreamSkinTheme,
@@ -262,6 +263,7 @@ export type RelayProfile = {
   vlmApiKey: string;
   vlmModel: string;
   vlmBaseUrl: string;
+  vlmProtocol: RelayProtocol;
   userAgent: string;
   aggregate?: RelayAggregateConfig | null;
 };
@@ -832,6 +834,7 @@ const defaultSettings: BackendSettings = {
       vlmApiKey: "",
       vlmModel: "",
       vlmBaseUrl: "",
+      vlmProtocol: "chatCompletions",
       userAgent: "",
     },
   ],
@@ -5784,11 +5787,34 @@ function RelayProfileEditor({
             <p className="field-hint">
               {t("每行一个模型；上下文窗口可填")} <code>1M</code>{t("、")}<code>200K</code> {t("或")} <code>1000000</code>{t("，留空表示使用 Codex 默认长度。")}
             </p>
+            <p className="field-hint">
+              {t("「只支持文本」：标记纯文本模型。转发前，图片会先经上方 VLM 转成文字描述再发给该模型；若 VLM 未配置或不可用，则丢弃图片并提示。仅在 Chat Completion / 聚合模式生效。")}
+              <br />
+              {t("「不支持推理」：剥离该模型的 reasoning 字段，避免不支持推理的模型报错。对所有协议生效。")}
+            </p>
           </Field>
         ) : null}
         {showApiFields ? (
           <div className="relay-vlm-section">
             <div className="relay-vlm-section-header">{t("Vision Analysis Provider")}</div>
+            <Field className="relay-field-vlm-protocol" label={t("VLM 协议")}>
+              <div className="protocol-options">
+                <button
+                  className={`protocol-option ${profile.vlmProtocol === "responses" ? "active" : ""}`}
+                  onClick={() => updateDraft({ vlmProtocol: "responses" })}
+                  type="button"
+                >
+                  Responses API
+                </button>
+                <button
+                  className={`protocol-option ${profile.vlmProtocol === "chatCompletions" ? "active" : ""}`}
+                  onClick={() => updateDraft({ vlmProtocol: "chatCompletions" })}
+                  type="button"
+                >
+                  Chat Completions
+                </button>
+              </div>
+            </Field>
             <Field className="relay-field-vlm-api-key" label={t("VLM API Key")}>
               <Input
                 type="password"
@@ -7620,6 +7646,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             vlmApiKey: "",
             vlmModel: "",
             vlmBaseUrl: "",
+            vlmProtocol: "chatCompletions" as RelayProtocol,
             userAgent: "",
           },
         ];
@@ -7709,6 +7736,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl || "",
     apiKey: profile.apiKey || "",
     protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
+    vlmProtocol: normalizeVlmProtocol(profile.vlmProtocol),
     relayMode,
     officialMixApiKey,
     testModel: profile.testModel || "",
@@ -8358,6 +8386,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     vlmApiKey: "",
     vlmModel: "",
     vlmBaseUrl: "",
+    vlmProtocol: "chatCompletions" as RelayProtocol,
     userAgent: "",
   };
   return withGeneratedRelayFiles(next);
@@ -8393,6 +8422,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       vlmApiKey: "",
       vlmModel: "",
       vlmBaseUrl: "",
+      vlmProtocol: "chatCompletions" as RelayProtocol,
       userAgent: "",
       aggregate: {
         strategy: "failover",

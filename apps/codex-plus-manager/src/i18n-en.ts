@@ -5,6 +5,11 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "VLM 协议": "VLM Protocol",
+  "「只支持文本」：标记纯文本模型。转发前，图片会先经上方 VLM 转成文字描述再发给该模型；若 VLM 未配置或不可用，则丢弃图片并提示。仅在 Chat Completion / 聚合模式生效。":
+    "“Text-only”: marks a text-only model. Before forwarding, images are first converted to text descriptions by the VLM above and then sent to this model; if VLM is unconfigured or unavailable, images are dropped with a notice. Effective only under Chat Completions / aggregate mode.",
+  "「不支持推理」：剥离该模型的 reasoning 字段，避免不支持推理的模型报错。对所有协议生效。":
+    "“No reasoning”: strips the reasoning field for this model to avoid errors on models that don’t support reasoning. Effective for all protocols.",
   "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。":
     "Expands plugin marketplace requests in API Key mode to show the full plugin list. Usually unnecessary in official/mixed mode.",
   "API Key 环境变量": "API Key environment variable",

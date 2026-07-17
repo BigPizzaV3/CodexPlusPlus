@@ -37,6 +37,7 @@ const _profileTypeCheck: RelayProfile = {
   vlmApiKey: "",
   vlmModel: "",
   vlmBaseUrl: "",
+  vlmProtocol: "chatCompletions",
   userAgent: "",
 };
 
