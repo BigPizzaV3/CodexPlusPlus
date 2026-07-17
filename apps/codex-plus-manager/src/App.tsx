@@ -567,6 +567,18 @@ type DiagnosticsResult = CommandResult<{
   report: string;
 }>;
 
+type LocalProjectRepairResult = CommandResult<{
+  existingAssignments: number;
+  safeAssignmentsFound: number;
+  unmatched: number;
+  ambiguous: number;
+  missingCwd: number;
+  duplicateRolloutThreadIds: number;
+  malformedRolloutLines: number;
+  appliedAssignments: number;
+  backupPath?: string | null;
+}>;
+
 type WatcherResult = CommandResult<{
   enabled: boolean;
   disabled_flag: string;
@@ -1201,6 +1213,16 @@ export function App() {
       setDiagnostics(result);
       if (!silent) showResultNotice(t("诊断已生成"), result, { silentSuccess: true });
     }
+  };
+
+  const analyzeLocalProjectAssignments = async () => {
+    const result = await run(() => call<LocalProjectRepairResult>("analyze_local_project_assignments"));
+    if (result) showResultNotice(t("本地项目归属分析"), result);
+  };
+
+  const applyLocalProjectAssignments = async () => {
+    const result = await run(() => call<LocalProjectRepairResult>("apply_local_project_assignments"));
+    if (result) showResultNotice(t("本地项目归属修复"), result);
   };
 
   const refreshWatcher = async (silent = false) => {
@@ -2134,6 +2156,8 @@ export function App() {
       switchPureApiMode,
       refreshLogs,
       refreshDiagnostics,
+      analyzeLocalProjectAssignments,
+      applyLocalProjectAssignments,
       showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
       copyLogs: () => copyText(logs?.text ?? "", t("日志已复制。")),
       copyDiagnostics: () => copyText(diagnostics?.report ?? "", t("诊断报告已复制。")),
@@ -2428,6 +2452,8 @@ type Actions = {
   switchPureApiMode: () => Promise<void>;
   refreshLogs: () => Promise<void>;
   refreshDiagnostics: () => Promise<void>;
+  analyzeLocalProjectAssignments: () => Promise<void>;
+  applyLocalProjectAssignments: () => Promise<void>;
   showMessage: (title: string, message: string, status?: Status) => Promise<void>;
   copyLogs: () => Promise<void>;
   copyDiagnostics: () => Promise<void>;
@@ -3504,6 +3530,19 @@ function MaintenanceScreen({
           <Toolbar>
             <Button onClick={() => void actions.checkHealth()}>{t("检查")}</Button>
             <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>{t("修复快捷方式")}</Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("本地项目会话归属")} detail={t("扫描旧对话的 rollout 工作目录；仅对唯一的精确匹配创建缺失归属。分析不会写入任何文件。")} />
+        <CardContent>
+          <div className="hint-line">
+            <Info className="h-4 w-4" />
+            <span>{t("应用会先创建带时间戳的备份，再原子写入并重新读取验证；已有归属、未匹配和歧义记录不会修改。")}</span>
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.analyzeLocalProjectAssignments()}>{t("分析")}</Button>
+            <Button onClick={() => void actions.applyLocalProjectAssignments()} variant="secondary">{t("应用修复")}</Button>
           </Toolbar>
         </CardContent>
       </Panel>

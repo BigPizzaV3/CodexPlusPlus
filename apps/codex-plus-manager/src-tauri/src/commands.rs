@@ -1248,6 +1248,46 @@ pub async fn apply_session_index_cleanup(
 }
 
 #[tauri::command]
+pub async fn analyze_local_project_assignments() -> CommandResult<Value> {
+    let home = codex_plus_core::codex_home::default_codex_home_dir();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::local_project_repair::analyze_local_project_assignments(&home)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("local project repair analysis task failed: {error}"));
+    match result {
+        Ok(Ok(report)) => ok(
+            &format!(
+                "分析完成：已有 {} 条归属，{} 条可安全修复，{} 条未匹配，{} 条存在歧义。",
+                report.existing_assignments,
+                report.safe_assignments_found,
+                report.unmatched,
+                report.ambiguous
+            ),
+            serde_json::to_value(report).unwrap_or_else(|_| json!({})),
+        ),
+        Ok(Err(error)) | Err(error) => failed(&format!("分析本地项目归属失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn apply_local_project_assignments() -> CommandResult<Value> {
+    let home = codex_plus_core::codex_home::default_codex_home_dir();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::local_project_repair::apply_local_project_assignments(&home)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("local project repair apply task failed: {error}"));
+    match result {
+        Ok(Ok(report)) => ok(
+            &format!("已修复 {} 条本地项目归属。", report.applied_assignments),
+            serde_json::to_value(report).unwrap_or_else(|_| json!({})),
+        ),
+        Ok(Err(error)) | Err(error) => failed(&format!("修复本地项目归属失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
 pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResult<Value> {
     let target_provider = target_provider
         .map(|value| value.trim().to_string())

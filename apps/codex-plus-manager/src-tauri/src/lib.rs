@@ -67,6 +67,8 @@ pub fn run() {
             commands::load_provider_sync_targets,
             commands::preview_session_index_cleanup,
             commands::apply_session_index_cleanup,
+            commands::analyze_local_project_assignments,
+            commands::apply_local_project_assignments,
             commands::sync_providers_now,
             commands::load_ads,
             commands::refresh_script_market,

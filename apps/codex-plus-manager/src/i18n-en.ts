@@ -20,6 +20,9 @@ export const EN_PLAIN: Record<string, string> = {
     "The official Codex++ relay, built for stable access and good value, supporting the full GPT-5.6 family, Fable 5, Sonnet 5, GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2 and other models plus image capabilities.",
   "Codex++ 导入": "Codex++ import",
   "Codex++ 版本": "Codex++ version",
+  "本地项目会话归属": "Local Project conversation assignments",
+  "本地项目归属分析": "Local Project assignment analysis",
+  "本地项目归属修复": "Local Project assignment repair",
   "Codex增强": "Codex enhancements",
   "Codex增强模式": "Codex enhancement mode",
   "Debug 端口": "Debug port",
@@ -128,6 +131,12 @@ export const EN_PLAIN: Record<string, string> = {
   "保存的应用路径": "Saved app path",
   "保存策略": "Save strategy",
   "保存自动修复设置": "Save auto-repair settings",
+  "扫描旧对话的 rollout 工作目录；仅对唯一的精确匹配创建缺失归属。分析不会写入任何文件。":
+    "Scans older conversation rollout working directories and creates only uniquely exact missing assignments. Analysis does not write files.",
+  "应用会先创建带时间戳的备份，再原子写入并重新读取验证；已有归属、未匹配和歧义记录不会修改。":
+    "Apply creates a timestamped backup, writes atomically, and rereads to verify. Existing assignments, unmatched records, and ambiguous records are unchanged.",
+  "分析": "Analyze",
+  "应用修复": "Apply repair",
   "保存设置": "Save settings",
   "保存路径": "Saved path",
   "修复入口": "Repair entrypoints",

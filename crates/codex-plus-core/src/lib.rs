@@ -14,6 +14,7 @@ pub mod env_conflicts;
 pub mod http_client;
 pub mod install;
 pub mod launcher;
+pub mod local_project_repair;
 pub mod model_catalog;
 pub mod model_suffix;
 pub mod models;
