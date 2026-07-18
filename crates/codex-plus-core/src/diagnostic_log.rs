@@ -1,5 +1,5 @@
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -7,6 +7,9 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 static TEST_LOG_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+
+const MAX_DIAGNOSTIC_LOG_BYTES: u64 = 50 * 1024 * 1024;
+const COMPACTED_DIAGNOSTIC_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 struct DiagnosticRecord {
@@ -45,12 +48,26 @@ pub fn append_diagnostic_log(event: &str, detail: impl Serialize) -> std::io::Re
         .to_string()
     });
 
+    compact_diagnostic_log_if_needed(&path)?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)?;
     writeln!(file, "{line}")?;
     Ok(())
+}
+
+pub fn clear_diagnostic_log() -> std::io::Result<()> {
+    let path = diagnostic_log_path();
+    clear_diagnostic_log_path(&path)
+}
+
+fn clear_diagnostic_log_path(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 pub fn diagnostic_log_path() -> PathBuf {
@@ -75,4 +92,66 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn compact_diagnostic_log_if_needed(path: &PathBuf) -> std::io::Result<()> {
+    compact_diagnostic_log(
+        path,
+        MAX_DIAGNOSTIC_LOG_BYTES,
+        COMPACTED_DIAGNOSTIC_LOG_BYTES,
+    )
+}
+
+fn compact_diagnostic_log(
+    path: &PathBuf,
+    max_bytes: u64,
+    compacted_bytes: u64,
+) -> std::io::Result<()> {
+    let len = match std::fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if len <= max_bytes {
+        return Ok(());
+    }
+
+    let keep = compacted_bytes.min(len);
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(len - keep))?;
+    let mut tail = Vec::with_capacity(keep as usize);
+    file.read_to_end(&mut tail)?;
+    drop(file);
+    if len > keep {
+        if let Some(pos) = tail.iter().position(|byte| *byte == b'\n') {
+            tail.drain(..=pos);
+        }
+    }
+
+    crate::settings::atomic_write(path, &tail).map_err(std::io::Error::other)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_diagnostic_log_keeps_tail_and_drops_partial_first_line() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("codex-plus.log");
+        std::fs::write(&path, "line-1\nline-2\nline-3\nline-4\n").unwrap();
+
+        compact_diagnostic_log(&path, 12, 16).unwrap();
+
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert_eq!(contents, "line-3\nline-4\n");
+    }
+
+    #[test]
+    fn clear_diagnostic_log_ignores_missing_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("missing.log");
+
+        clear_diagnostic_log_path(&path).unwrap();
+    }
 }

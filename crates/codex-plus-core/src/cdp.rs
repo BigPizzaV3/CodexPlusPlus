@@ -1,5 +1,6 @@
 use anyhow::{Context, bail};
 use serde::Deserialize;
+use std::net::IpAddr;
 use std::time::Duration;
 
 const CDP_HTTP_TIMEOUT: Duration = Duration::from_secs(3);
@@ -17,6 +18,28 @@ pub struct CdpTarget {
     pub web_socket_debugger_url: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct CdpBrowserIdentity {
+    #[serde(rename = "Browser")]
+    pub browser: String,
+    #[serde(rename = "webSocketDebuggerUrl")]
+    pub web_socket_debugger_url: String,
+}
+
+impl CdpBrowserIdentity {
+    pub fn browser_id(&self) -> anyhow::Result<String> {
+        let url = reqwest::Url::parse(&self.web_socket_debugger_url)
+            .context("invalid browser WebSocket URL")?;
+        let mut segments = url
+            .path_segments()
+            .ok_or_else(|| anyhow::anyhow!("browser WebSocket URL has no path"))?;
+        match (segments.next(), segments.next(), segments.next()) {
+            (Some("devtools"), Some("browser"), Some(id)) if !id.is_empty() => Ok(id.to_string()),
+            _ => bail!("browser WebSocket URL has no Browser ID"),
+        }
+    }
+}
+
 pub async fn list_targets(debug_port: u16) -> anyhow::Result<Vec<CdpTarget>> {
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -30,7 +53,7 @@ pub async fn list_targets(debug_port: u16) -> anyhow::Result<Vec<CdpTarget>> {
     ];
     let mut errors = Vec::new();
     for url in urls {
-        match query_targets_url(&client, &url).await {
+        match query_targets_url(&client, &url, debug_port).await {
             Ok(targets) => return Ok(targets),
             Err(error) => errors.push(format!("{url}: {error:#}")),
         }
@@ -42,7 +65,50 @@ pub async fn list_targets(debug_port: u16) -> anyhow::Result<Vec<CdpTarget>> {
     )
 }
 
-async fn query_targets_url(client: &reqwest::Client, url: &str) -> anyhow::Result<Vec<CdpTarget>> {
+pub async fn browser_identity(debug_port: u16) -> anyhow::Result<CdpBrowserIdentity> {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(CDP_HTTP_TIMEOUT)
+        .build()
+        .context("failed to build CDP HTTP client")?;
+    let urls = [
+        format!("http://127.0.0.1:{debug_port}/json/version"),
+        format!("http://[::1]:{debug_port}/json/version"),
+    ];
+    let mut errors = Vec::new();
+    for url in urls {
+        let result = async {
+            let identity = client
+                .get(&url)
+                .send()
+                .await
+                .context("failed to query CDP browser identity")?
+                .error_for_status()
+                .context("CDP browser identity query failed")?
+                .json::<CdpBrowserIdentity>()
+                .await
+                .context("failed to deserialize CDP browser identity")?;
+            validate_cdp_websocket_url(&identity.web_socket_debugger_url, debug_port)?;
+            identity.browser_id()?;
+            anyhow::Ok(identity)
+        }
+        .await;
+        match result {
+            Ok(identity) => return Ok(identity),
+            Err(error) => errors.push(format!("{url}: {error:#}")),
+        }
+    }
+    bail!(
+        "failed to query CDP browser identity on loopback addresses: {}",
+        errors.join("; ")
+    )
+}
+
+async fn query_targets_url(
+    client: &reqwest::Client,
+    url: &str,
+    debug_port: u16,
+) -> anyhow::Result<Vec<CdpTarget>> {
     let response = client
         .get(url)
         .send()
@@ -51,10 +117,43 @@ async fn query_targets_url(client: &reqwest::Client, url: &str) -> anyhow::Resul
         .error_for_status()
         .context("CDP target query failed")?;
 
-    response
+    let targets = response
         .json::<Vec<CdpTarget>>()
         .await
-        .context("failed to deserialize CDP targets")
+        .context("failed to deserialize CDP targets")?;
+    for target in &targets {
+        if let Some(websocket_url) = target.web_socket_debugger_url.as_deref() {
+            validate_cdp_websocket_url(websocket_url, debug_port).with_context(|| {
+                format!("unsafe CDP target WebSocket URL for target {}", target.id)
+            })?;
+        }
+    }
+    Ok(targets)
+}
+
+pub fn validate_cdp_websocket_url(url: &str, expected_port: u16) -> anyhow::Result<()> {
+    let parsed = reqwest::Url::parse(url).context("invalid CDP WebSocket URL")?;
+    if !matches!(parsed.scheme(), "ws" | "wss") {
+        bail!("CDP WebSocket URL must use ws or wss");
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("CDP WebSocket URL has no host"))?;
+    let address = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<IpAddr>()
+        .with_context(|| "CDP WebSocket host must be a loopback IP address")?;
+    if !address.is_loopback() {
+        bail!("CDP WebSocket host must be loopback");
+    }
+    let port = parsed
+        .port()
+        .ok_or_else(|| anyhow::anyhow!("CDP WebSocket URL must include an explicit port"))?;
+    if port != expected_port {
+        bail!("CDP WebSocket port {port} does not match debug port {expected_port}");
+    }
+    Ok(())
 }
 
 pub fn pick_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {

@@ -3,7 +3,7 @@ use codex_plus_core::assets;
 use codex_plus_core::bridge::{self, BRIDGE_BINDING_NAME};
 use codex_plus_core::cdp::{
     CdpTarget, is_avatar_overlay_page_target, is_primary_codex_page_target, list_targets,
-    pick_injectable_codex_page_target, pick_page_target,
+    pick_injectable_codex_page_target, pick_page_target, validate_cdp_websocket_url,
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -39,6 +39,18 @@ fn bridge_script_defines_expected_globals_and_binding() {
     assert!(script.contains("window.__codexSessionDeleteResolve"));
     assert!(script.contains("window.__codexSessionDeleteReject"));
     assert!(script.contains("codexSessionDeleteV2"));
+}
+
+#[test]
+fn screenshot_command_uses_png_from_surface() {
+    assert_eq!(
+        bridge::capture_screenshot_params(),
+        json!({
+            "format": "png",
+            "fromSurface": true,
+            "captureBeyondViewport": false
+        })
+    );
 }
 
 #[test]
@@ -337,6 +349,177 @@ fn injection_script_installs_image_overlay_from_data_uri() {
         "fit: { size: \"contain\", position: \"center center\", repeat: \"no-repeat\" }"
     ));
     assert!(script.contains("image_overlay_installed"));
+}
+
+#[test]
+fn rejects_non_loopback_cdp_websocket() {
+    let error =
+        validate_cdp_websocket_url("ws://example.com:9222/devtools/page/1", 9222).unwrap_err();
+
+    assert!(error.to_string().contains("loopback"));
+}
+
+#[test]
+fn rejects_mismatched_cdp_websocket_port() {
+    let error =
+        validate_cdp_websocket_url("ws://127.0.0.1:9333/devtools/page/1", 9222).unwrap_err();
+
+    assert!(error.to_string().contains("port"));
+}
+
+#[test]
+fn validates_ipv4_and_ipv6_loopback_cdp_websockets() {
+    validate_cdp_websocket_url("ws://127.0.0.1:9222/devtools/page/1", 9222).unwrap();
+    validate_cdp_websocket_url("ws://[::1]:9222/devtools/page/1", 9222).unwrap();
+}
+
+#[test]
+fn rejects_cdp_websocket_with_wrong_scheme_or_missing_port() {
+    assert!(validate_cdp_websocket_url("http://127.0.0.1:9222/devtools/page/1", 9222).is_err());
+    assert!(validate_cdp_websocket_url("ws://127.0.0.1/devtools/page/1", 9222).is_err());
+}
+
+#[test]
+fn injection_script_installs_dream_skin_from_backend_settings() {
+    let settings = codex_plus_core::settings::BackendSettings {
+        codex_app_dream_skin_enabled: true,
+        codex_app_dream_skin_paused: false,
+        codex_app_dream_skin_theme_config: codex_plus_core::settings::DreamSkinThemeConfig {
+            name: "Upstream Theme".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let script = assets::injection_script_with_settings(57321, &settings);
+
+    assert!(script.contains("dreamSkinEnabled: \"codexAppDreamSkinEnabled\""));
+    assert!(script.contains("dreamSkinPaused: \"codexAppDreamSkinPaused\""));
+    assert!(script.contains("dreamSkinThemeConfig: \"codexAppDreamSkinThemeConfig\""));
+    assert!(script.contains("dreamSkinImagePath: \"codexAppDreamSkinImagePath\""));
+    assert!(!script.contains("window.__CODEX_PLUS_DREAM_SKIN_STYLES__ ="));
+    assert!(!script.contains("window.__CODEX_PLUS_DREAM_SKIN_CSS__"));
+    assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__"));
+    assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_REVISION__"));
+    assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_ART__"));
+    assert!(script.contains(if cfg!(windows) {
+        "data:image/jpeg;base64,"
+    } else {
+        "data:image/png;base64,"
+    }));
+    assert!(script.contains("codex-dream-skin-style"));
+    assert!(script.contains("codex-dream-skin-chrome"));
+    assert!(script.contains("URL.createObjectURL(new Blob"));
+    assert!(script.contains("URL.revokeObjectURL(state.artUrl)"));
+    assert!(!script.contains("/dream-skin/image?v="));
+    assert!(script.contains("window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true"));
+    assert!(script.contains("window.__CODEX_PLUS_CLEAR_DREAM_SKIN__?.();"));
+    assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__"));
+    assert!(script.contains("state.version = `codex-plus:"));
+    assert!(script.contains("state.observer?.disconnect?.()"));
+    assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_PAYLOAD_SIGNATURE__"));
+    assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_THEME__"));
+    if cfg!(windows) {
+        assert!(script.contains(":root.codex-dream-skin"));
+        assert!(!script.contains("薛凯琪专属定制皮肤"));
+    }
+    assert!(script.contains(".group\\\\/home-suggestions"));
+    assert!(script.contains("--dream-skin-art"));
+    assert!(script.contains("--dream-art"));
+    assert!(script.contains("function refreshDreamSkin()"));
+    assert!(script.contains(
+        "codexPlusBackendSettingsLoaded && (!settings.dreamSkinEnabled || settings.dreamSkinPaused)"
+    ));
+    assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__"));
+    assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__"));
+    assert!(!script.contains(
+        "attributeFilter: [\"class\", \"data-theme\", \"data-appearance\", \"data-color-mode\", \"style\"]"
+    ));
+    assert!(script.contains("codexAppDreamSkinEnabled"));
+    assert!(script.contains("codexAppDreamSkinPaused"));
+    assert!(script.contains("codexAppDreamSkinThemeConfig"));
+    assert!(script.contains("Upstream Theme"));
+    assert!(script.contains("codexAppDreamSkinImagePath"));
+    assert!(script.contains("const STATE_KEY = \"__CODEX_DREAM_SKIN_STATE__\""));
+    assert!(!script.contains("artDataUrl.slice(-64)"));
+    assert!(!script.contains("luckyGod:"));
+}
+
+#[test]
+fn dream_skin_live_update_script_excludes_the_full_renderer_runtime() {
+    let settings = codex_plus_core::settings::BackendSettings {
+        codex_app_dream_skin_enabled: true,
+        codex_app_dream_skin_theme_config: codex_plus_core::settings::DreamSkinThemeConfig {
+            name: "Lightweight Theme".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let probe = assets::dream_skin_live_update_probe_script();
+    let update = assets::dream_skin_live_update_script(&settings, true);
+    let metadata_only_update = assets::dream_skin_live_update_script(&settings, false);
+    let full = assets::injection_script_with_settings(57321, &settings);
+
+    assert!(probe.contains("__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__"));
+    assert!(probe.contains("payloadSignature"));
+    assert!(probe.contains("__CODEX_DREAM_SKIN_STATE__"));
+    assert!(probe.contains("__CODEX_GLASS_VISION_SKIN_STATE__"));
+    assert!(update.contains("Lightweight Theme"));
+    assert!(update.contains("__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__"));
+    assert!(update.contains(if cfg!(windows) {
+        "data:image/jpeg;base64,"
+    } else {
+        "data:image/png;base64,"
+    }));
+    assert!(!metadata_only_update.contains("base64,"));
+    assert!(!update.contains("__CODEX_PLUS_SPONSOR_IMAGES__"));
+    assert!(!update.contains("__codexSessionDeleteObserver"));
+    assert!(!update.contains("function refreshDreamSkin()"));
+    assert!(metadata_only_update.len() < full.len());
+}
+
+#[test]
+fn dream_skin_style_presets_select_their_original_target_engines() {
+    for (id, expected_engine) in [
+        ("caishen-lite", "dream-skin"),
+        ("preset-midnight-aurora", "cidala-tiger"),
+        ("codex-snow-skin", "snow"),
+        ("glass-vision", "glass-vision"),
+    ] {
+        let settings = codex_plus_core::settings::BackendSettings {
+            codex_app_dream_skin_enabled: true,
+            codex_app_dream_skin_theme_config: codex_plus_core::settings::DreamSkinThemeConfig {
+                id: id.to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let script = assets::dream_skin_live_update_script(&settings, true);
+
+        assert!(
+            script.contains(&format!(
+                "window.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__ = \"{expected_engine}\""
+            )),
+            "wrong target engine for {id}"
+        );
+        assert!(!script.contains("__DREAM_"));
+        assert!(!script.contains("__GLASS_VISION_"));
+    }
+}
+
+#[test]
+fn dream_skin_bundles_a_real_default_image() {
+    let (content_type, image) = assets::dream_skin_default_image();
+
+    if cfg!(windows) {
+        assert_eq!(content_type, "image/jpeg");
+        assert!(image.len() > 600_000);
+        assert_eq!(&image[..3], b"\xFF\xD8\xFF");
+    } else {
+        assert_eq!(content_type, "image/png");
+        assert!(image.len() > 1_000_000);
+        assert_eq!(&image[..8], b"\x89PNG\r\n\x1a\n");
+    }
 }
 
 #[test]

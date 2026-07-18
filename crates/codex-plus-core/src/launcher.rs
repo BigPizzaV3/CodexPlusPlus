@@ -267,6 +267,12 @@ where
                 "launcher.after_provider_sync",
             );
         }
+        crate::dream_skin::sync_default_dream_skin_base_theme(
+            settings.enhancements_enabled
+                && settings.codex_app_dream_skin_enabled
+                && !settings.codex_app_dream_skin_paused,
+            &settings.codex_app_dream_skin_theme_config,
+        )?;
         if let Err(error) = hooks.ensure_plugin_marketplace_config(&settings).await {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "launcher.plugin_marketplace_config_failed_nonfatal",
@@ -788,14 +794,31 @@ impl LaunchHooks for DefaultLaunchHooks {
         let task = tokio::spawn(async move {
             #[cfg(windows)]
             let pet_cursor_task = tokio::spawn(run_pet_real_mouse_cursor_driver(debug_port));
+            let mut observed_browser_id: Option<String> = None;
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => break,
                     _ = interval.tick() => {
+                        let current_browser_id = match crate::cdp::browser_identity(debug_port).await {
+                            Ok(identity) => identity.browser_id().ok(),
+                            Err(_) => None,
+                        };
+                        let identity_changed = current_browser_id
+                            .as_deref()
+                            .is_some_and(|current| {
+                                browser_identity_changed(observed_browser_id.as_deref(), current)
+                            });
+                        if let Some(current) = current_browser_id {
+                            observed_browser_id = Some(current);
+                        }
                         let (pet_result, _) = tokio::join!(
                             sync_pet_real_mouse_overlay(debug_port, helper_port),
-                            check_and_reinject_bridge(debug_port, helper_port),
+                            check_and_reinject_bridge_inner(
+                                debug_port,
+                                helper_port,
+                                identity_changed,
+                            ),
                         );
                         record_pet_overlay_sync_result(debug_port, helper_port, pet_result);
                     }
@@ -1091,6 +1114,17 @@ async fn handle_helper_connection(
         } else {
             overlay_image_response()
         }
+    } else if path == "/dream-skin/image" && matches!(method, "GET" | "OPTIONS") {
+        if method == "OPTIONS" {
+            (
+                "200 OK".to_string(),
+                Vec::new(),
+                "application/octet-stream".to_string(),
+                "helper.dream_skin_image_options",
+            )
+        } else {
+            dream_skin_image_response()
+        }
     } else {
         (
             "404 Not Found".to_string(),
@@ -1159,6 +1193,47 @@ fn overlay_image_response() -> (String, Vec<u8>, String, &'static str) {
             bytes,
             content_type.to_string(),
             "helper.overlay_image_ok",
+        ),
+        Err(_) => not_found(),
+    }
+}
+
+fn dream_skin_image_response() -> (String, Vec<u8>, String, &'static str) {
+    let not_found = || {
+        (
+            "404 Not Found".to_string(),
+            serde_json::to_vec(&serde_json::json!({
+                "status": "failed",
+                "message": "皮肤图片未启用或图片不可用"
+            }))
+            .unwrap_or_default(),
+            "application/json; charset=utf-8".to_string(),
+            "helper.dream_skin_image_not_found",
+        )
+    };
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    if !settings.codex_app_dream_skin_enabled {
+        return not_found();
+    }
+    let image_path = PathBuf::from(settings.codex_app_dream_skin_image_path.trim());
+    if image_path.as_os_str().is_empty() || !image_path.is_file() {
+        let (content_type, image) = crate::assets::dream_skin_default_image();
+        return (
+            "200 OK".to_string(),
+            image.to_vec(),
+            content_type.to_string(),
+            "helper.dream_skin_default_image_ok",
+        );
+    }
+    let Some(content_type) = overlay_image_content_type(&image_path) else {
+        return not_found();
+    };
+    match std::fs::read(&image_path) {
+        Ok(bytes) => (
+            "200 OK".to_string(),
+            bytes,
+            content_type.to_string(),
+            "helper.dream_skin_image_ok",
         ),
         Err(_) => not_found(),
     }
@@ -2161,18 +2236,34 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
 }
 
 pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> bool {
-    let healthy = match bridge_health_ok(debug_port).await {
-        Ok(healthy) => healthy,
-        Err(error) => {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "bridge.health_check_failed",
-                serde_json::json!({
-                    "debug_port": debug_port,
-                    "helper_port": helper_port,
-                    "message": error.to_string()
-                }),
-            );
-            false
+    check_and_reinject_bridge_inner(debug_port, helper_port, false).await
+}
+
+pub fn browser_identity_changed(previous: Option<&str>, current: &str) -> bool {
+    previous.is_some_and(|previous| previous != current)
+}
+
+async fn check_and_reinject_bridge_inner(
+    debug_port: u16,
+    helper_port: u16,
+    browser_identity_changed: bool,
+) -> bool {
+    let healthy = if browser_identity_changed {
+        false
+    } else {
+        match bridge_health_ok(debug_port).await {
+            Ok(healthy) => healthy,
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "bridge.health_check_failed",
+                    serde_json::json!({
+                        "debug_port": debug_port,
+                        "helper_port": helper_port,
+                        "message": error.to_string()
+                    }),
+                );
+                false
+            }
         }
     };
     if healthy {
@@ -2183,7 +2274,8 @@ pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> boo
         "bridge.reinject_start",
         serde_json::json!({
             "debug_port": debug_port,
-            "helper_port": helper_port
+            "helper_port": helper_port,
+            "browser_identity_changed": browser_identity_changed
         }),
     );
     match retry_injection(debug_port, helper_port).await {

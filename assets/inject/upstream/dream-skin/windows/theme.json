@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "preset-arina-hashimoto",
+  "name": "桥本有菜",
+  "brandSubtitle": "CODEX DREAM SKIN",
+  "tagline": "把柔光与玫瑰带进今天的工作台。",
+  "projectPrefix": "选择项目 · ",
+  "projectLabel": "◉  选择项目",
+  "statusText": "DREAM SKIN ONLINE",
+  "quote": "MAKE SOMETHING WONDERFUL",
+  "image": "dream-reference.jpg",
+  "appearance": "auto",
+  "art": {
+    "focusX": 0.72,
+    "focusY": 0.45,
+    "safeArea": "left",
+    "taskMode": "ambient"
+  }
+}

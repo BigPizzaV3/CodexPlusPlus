@@ -1,7 +1,8 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+
 #[cfg(windows)]
-use std::process::Command;
+use anyhow::{Context, bail};
 
 #[derive(Debug, Clone, Copy)]
 struct AppPackageSpec {
@@ -13,6 +14,20 @@ struct AppPackageSpec {
 
 const CODEX_PACKAGE_EXECUTABLES: &[&str] = &["ChatGPT.exe", "Codex.exe", "codex.exe"];
 const STANDALONE_CODEX_EXECUTABLES: &[&str] = &["ChatGPT.exe", "Codex.exe", "codex.exe"];
+
+#[cfg(windows)]
+const OPENAI_PACKAGE_FAMILY_NAMES: &[&str] = &[
+    "OpenAI.Codex_2p2nqsd0c76g0",
+    "OpenAI.CodexBeta_2p2nqsd0c76g0",
+    "OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0",
+];
+
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RegisteredWindowsPackage {
+    pub full_name: String,
+    pub install_location: PathBuf,
+}
 
 const APP_PACKAGE_SPECS: &[AppPackageSpec] = &[
     AppPackageSpec {
@@ -74,29 +89,132 @@ pub fn find_latest_codex_app_dir_default() -> Option<PathBuf> {
 
 #[cfg(windows)]
 fn find_latest_codex_app_dir_from_appx_package() -> Option<PathBuf> {
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            "$names=@('OpenAI.Codex','OpenAI.CodexBeta'); Get-AppxPackage | Where-Object { $names -contains $_.Name } | Sort-Object Version -Descending | Select-Object -First 1 -ExpandProperty InstallLocation",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    latest_appx_install_location_from_output(&String::from_utf8_lossy(&output.stdout))
-        .and_then(|location| normalize_codex_app_path(Path::new(&location)))
+    registered_windows_packages()
+        .ok()?
+        .into_iter()
+        .filter(|package| is_supported_windows_app_package_name(&package.full_name))
+        .filter_map(|package| normalize_codex_app_path(&package.install_location))
+        .max_by(compare_app_dir_candidates)
 }
 
-pub fn latest_appx_install_location_from_output(output: &str) -> Option<String> {
-    output
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(ToString::to_string)
+#[cfg(windows)]
+pub(crate) fn registered_windows_packages() -> anyhow::Result<Vec<RegisteredWindowsPackage>> {
+    use std::sync::OnceLock;
+
+    static PACKAGES: OnceLock<Result<Vec<RegisteredWindowsPackage>, String>> = OnceLock::new();
+    PACKAGES
+        .get_or_init(|| query_registered_windows_packages().map_err(|error| error.to_string()))
+        .clone()
+        .map_err(anyhow::Error::msg)
+}
+
+#[cfg(windows)]
+fn query_registered_windows_packages() -> anyhow::Result<Vec<RegisteredWindowsPackage>> {
+    let mut packages = Vec::new();
+    for family_name in OPENAI_PACKAGE_FAMILY_NAMES {
+        for full_name in package_full_names_for_family(family_name)? {
+            let install_location = package_path_by_full_name(&full_name)
+                .with_context(|| format!("failed to resolve registered package {full_name}"))?;
+            packages.push(RegisteredWindowsPackage {
+                full_name,
+                install_location,
+            });
+        }
+    }
+    Ok(packages)
+}
+
+#[cfg(windows)]
+fn package_full_names_for_family(family_name: &str) -> anyhow::Result<Vec<String>> {
+    use windows::Win32::Foundation::{
+        APPMODEL_ERROR_NO_PACKAGE, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS,
+    };
+    use windows::Win32::Storage::Packaging::Appx::GetPackagesByPackageFamily;
+    use windows::core::{PCWSTR, PWSTR};
+
+    let family = family_name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut count = 0u32;
+    let mut buffer_length = 0u32;
+    let first = unsafe {
+        GetPackagesByPackageFamily(
+            PCWSTR(family.as_ptr()),
+            &mut count,
+            None,
+            &mut buffer_length,
+            PWSTR(std::ptr::null_mut()),
+        )
+    };
+    if first == APPMODEL_ERROR_NO_PACKAGE || (first == ERROR_SUCCESS && count == 0) {
+        return Ok(Vec::new());
+    }
+    if first != ERROR_INSUFFICIENT_BUFFER {
+        bail!("GetPackagesByPackageFamily failed with {}", first.0);
+    }
+
+    let mut pointers = vec![PWSTR(std::ptr::null_mut()); count as usize];
+    let mut buffer = vec![0u16; buffer_length as usize];
+    let status = unsafe {
+        GetPackagesByPackageFamily(
+            PCWSTR(family.as_ptr()),
+            &mut count,
+            Some(pointers.as_mut_ptr()),
+            &mut buffer_length,
+            PWSTR(buffer.as_mut_ptr()),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        bail!("GetPackagesByPackageFamily failed with {}", status.0);
+    }
+    buffer.truncate(buffer_length as usize);
+    buffer
+        .split(|value| *value == 0)
+        .filter(|value| !value.is_empty())
+        .map(|value| String::from_utf16(value).context("invalid package full name"))
+        .collect()
+}
+
+#[cfg(windows)]
+fn package_path_by_full_name(full_name: &str) -> anyhow::Result<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
+    use windows::Win32::Storage::Packaging::Appx::GetPackagePathByFullName;
+    use windows::core::{PCWSTR, PWSTR};
+
+    let full_name = full_name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut path_length = 0u32;
+    let first = unsafe {
+        GetPackagePathByFullName(
+            PCWSTR(full_name.as_ptr()),
+            &mut path_length,
+            PWSTR(std::ptr::null_mut()),
+        )
+    };
+    if first != ERROR_INSUFFICIENT_BUFFER {
+        bail!("GetPackagePathByFullName failed with {}", first.0);
+    }
+    let mut path = vec![0u16; path_length as usize];
+    let status = unsafe {
+        GetPackagePathByFullName(
+            PCWSTR(full_name.as_ptr()),
+            &mut path_length,
+            PWSTR(path.as_mut_ptr()),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        bail!("GetPackagePathByFullName failed with {}", status.0);
+    }
+    let end = path
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(path.len());
+    Ok(PathBuf::from(OsString::from_wide(&path[..end])))
 }
 
 #[cfg(windows)]

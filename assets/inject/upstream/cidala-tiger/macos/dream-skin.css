@@ -1,0 +1,1325 @@
+:root.codex-dream-skin {
+  color-scheme: dark !important;
+  --ds-bg: #111318;
+  --ds-panel: #191c22;
+  --ds-panel-2: #20242b;
+  --ds-green: #8298a3;
+  --ds-lime: #a0adb3;
+  --ds-cyan: #8da397;
+  --ds-purple: #9d94a3;
+  --ds-text: #edf0f1;
+  --ds-muted: #a3aaae;
+  --ds-line: rgba(130, 152, 163, .24);
+  --ds-bg-rgb: 17 19 24;
+  --ds-panel-rgb: 25 28 34;
+  --ds-panel-2-rgb: 32 36 43;
+  --ds-text-rgb: 237 240 241;
+  --ds-muted-rgb: 163 170 174;
+  --ds-accent-rgb: 130 152 163;
+  --ds-secondary-rgb: 141 163 151;
+  --ds-highlight-rgb: var(--ds-secondary-rgb);
+  --ds-accent: var(--ds-green);
+  --ds-accent-soft: var(--ds-lime);
+  --ds-secondary: var(--ds-cyan);
+  --ds-highlight: var(--ds-purple);
+  --ds-on-accent: rgb(var(--ds-bg-rgb) / 1);
+  --ds-focus-x: var(--dream-skin-focus-x, var(--dream-art-focus-x, 50%));
+  --ds-focus-y: var(--dream-skin-focus-y, var(--dream-art-focus-y, 50%));
+  --ds-art-position: var(--dream-art-position, var(--dream-skin-art-position, var(--ds-focus-x) var(--ds-focus-y)));
+  --ds-safe-side: left;
+  --ds-hero-scrim: linear-gradient(90deg,
+    rgb(var(--ds-bg-rgb) / .90) 0%,
+    rgb(var(--ds-bg-rgb) / .76) 50%,
+    rgb(var(--ds-bg-rgb) / .18) 84%,
+    transparent 100%);
+  --ds-task-shade: linear-gradient(90deg,
+    rgb(var(--ds-bg-rgb) / .56) 0%,
+    rgb(var(--ds-bg-rgb) / .36) 48%,
+    rgb(var(--ds-bg-rgb) / .12) 100%);
+  --ds-task-fade: linear-gradient(180deg,
+    rgb(var(--ds-bg-rgb) / .10) 0%,
+    rgb(var(--ds-bg-rgb) / .18) 32%,
+    rgb(var(--ds-bg-rgb) / .76) 68%,
+    rgb(var(--ds-bg-rgb) / 1) 100%);
+  --ds-immersive-edge: rgb(var(--ds-bg-rgb) / .40);
+  --ds-immersive-mid: rgb(var(--ds-bg-rgb) / .26);
+  --ds-immersive-far: rgb(var(--ds-bg-rgb) / .16);
+  --ds-immersive-sidebar: rgb(var(--ds-panel-rgb) / .46);
+  --ds-task-immersive-sidebar: rgb(var(--ds-panel-rgb) / .70);
+  --ds-immersive-chrome: rgb(var(--ds-panel-rgb) / .28);
+  --ds-immersive-composer: rgb(var(--ds-panel-rgb) / .44);
+  --ds-immersive-composer-solid: color-mix(in srgb,
+    rgb(var(--ds-panel-2-rgb)) 88%,
+    rgb(var(--ds-muted-rgb)) 12%);
+  --ds-immersive-line: rgb(var(--ds-muted-rgb) / .42);
+  --ds-task-immersive-edge: rgb(var(--ds-bg-rgb) / .82);
+  --ds-task-immersive-mid: rgb(var(--ds-bg-rgb) / .74);
+  --ds-task-immersive-far: rgb(var(--ds-bg-rgb) / .60);
+  --dream-skin-decor-intensity: 0;
+  --dream-skin-decor-route-intensity: var(--dream-skin-decor-intensity);
+  --dream-skin-decor-gold: #c99536;
+  --dream-skin-decor-red: #c94b42;
+  --dream-skin-decor-ink: #8f5b35;
+}
+
+html.codex-dream-skin[data-dream-shell="light"] {
+  color-scheme: light !important;
+  --ds-bg: #f3f5f6;
+  --ds-panel: #fafbfb;
+  --ds-panel-2: #e9edef;
+  --ds-text: #22272a;
+  --ds-muted: #687176;
+  --ds-line: rgba(91, 111, 121, .18);
+  --ds-bg-rgb: 243 245 246;
+  --ds-panel-rgb: 250 251 251;
+  --ds-panel-2-rgb: 233 237 239;
+  --ds-text-rgb: 34 39 42;
+  --ds-muted-rgb: 104 113 118;
+  --ds-accent-rgb: 84 112 126;
+  --ds-secondary-rgb: 102 128 116;
+  --ds-highlight-rgb: var(--ds-secondary-rgb);
+  --ds-on-accent: rgb(var(--ds-panel-rgb) / 1);
+  --ds-hero-scrim: linear-gradient(90deg,
+    rgb(var(--ds-panel-rgb) / .96) 0%,
+    rgb(var(--ds-panel-rgb) / .82) 50%,
+    rgb(var(--ds-panel-rgb) / .20) 84%,
+    transparent 100%);
+  --ds-task-shade: linear-gradient(90deg,
+    rgb(var(--ds-bg-rgb) / .68) 0%,
+    rgb(var(--ds-bg-rgb) / .40) 48%,
+    rgb(var(--ds-bg-rgb) / .12) 100%);
+  --ds-task-fade: linear-gradient(180deg,
+    rgb(var(--ds-bg-rgb) / .08) 0%,
+    rgb(var(--ds-bg-rgb) / .22) 34%,
+    rgb(var(--ds-bg-rgb) / .78) 70%,
+    rgb(var(--ds-bg-rgb) / 1) 100%);
+  --ds-immersive-edge: rgb(var(--ds-panel-rgb) / .44);
+  --ds-immersive-mid: rgb(var(--ds-panel-rgb) / .28);
+  --ds-immersive-far: rgb(var(--ds-panel-rgb) / .14);
+  --ds-immersive-sidebar: rgb(var(--ds-panel-rgb) / .48);
+  --ds-task-immersive-sidebar: rgb(var(--ds-panel-rgb) / .72);
+  --ds-immersive-chrome: rgb(var(--ds-panel-rgb) / .34);
+  --ds-immersive-composer: rgb(var(--ds-panel-rgb) / .46);
+  --ds-immersive-composer-solid: rgb(var(--ds-panel-rgb) / .74);
+  --ds-immersive-line: rgb(var(--ds-accent-rgb) / .24);
+  --ds-task-immersive-edge: rgb(var(--ds-panel-rgb) / .86);
+  --ds-task-immersive-mid: rgb(var(--ds-panel-rgb) / .78);
+  --ds-task-immersive-far: rgb(var(--ds-panel-rgb) / .66);
+}
+
+html.codex-dream-skin:is([data-dream-art-safe="left"], [data-dream-art-safe-area="left"]) {
+  --ds-safe-side: left;
+  --ds-art-position: 100% var(--ds-focus-y);
+}
+
+html.codex-dream-skin:is([data-dream-art-safe="right"], [data-dream-art-safe-area="right"]) {
+  --ds-safe-side: right;
+  --ds-art-position: 0% var(--ds-focus-y);
+  --ds-hero-scrim: linear-gradient(270deg,
+    rgb(var(--ds-bg-rgb) / .90) 0%,
+    rgb(var(--ds-bg-rgb) / .76) 50%,
+    rgb(var(--ds-bg-rgb) / .18) 84%,
+    transparent 100%);
+  --ds-task-shade: linear-gradient(270deg,
+    rgb(var(--ds-bg-rgb) / .56) 0%,
+    rgb(var(--ds-bg-rgb) / .36) 48%,
+    rgb(var(--ds-bg-rgb) / .12) 100%);
+}
+
+html.codex-dream-skin[data-dream-shell="light"]:is([data-dream-art-safe="right"], [data-dream-art-safe-area="right"]) {
+  --ds-hero-scrim: linear-gradient(270deg,
+    rgb(var(--ds-panel-rgb) / .96) 0%,
+    rgb(var(--ds-panel-rgb) / .82) 50%,
+    rgb(var(--ds-panel-rgb) / .20) 84%,
+    transparent 100%);
+  --ds-task-shade: linear-gradient(270deg,
+    rgb(var(--ds-bg-rgb) / .68) 0%,
+    rgb(var(--ds-bg-rgb) / .40) 48%,
+    rgb(var(--ds-bg-rgb) / .12) 100%);
+}
+
+html.codex-dream-skin:is([data-dream-art-safe="center"], [data-dream-art-safe-area="center"]) {
+  --ds-safe-side: center;
+  --ds-hero-scrim: linear-gradient(90deg,
+    transparent 0%,
+    rgb(var(--ds-bg-rgb) / .68) 25%,
+    rgb(var(--ds-bg-rgb) / .78) 50%,
+    rgb(var(--ds-bg-rgb) / .68) 75%,
+    transparent 100%);
+  --ds-task-shade: radial-gradient(ellipse at center,
+    rgb(var(--ds-bg-rgb) / .48) 0%,
+    rgb(var(--ds-bg-rgb) / .30) 52%,
+    rgb(var(--ds-bg-rgb) / .10) 100%);
+}
+
+html.codex-dream-skin[data-dream-shell="light"]:is([data-dream-art-safe="center"], [data-dream-art-safe-area="center"]) {
+  --ds-hero-scrim: linear-gradient(90deg,
+    transparent 0%,
+    rgb(var(--ds-panel-rgb) / .72) 25%,
+    rgb(var(--ds-panel-rgb) / .88) 50%,
+    rgb(var(--ds-panel-rgb) / .72) 75%,
+    transparent 100%);
+  --ds-task-shade: radial-gradient(ellipse at center,
+    rgb(var(--ds-bg-rgb) / .58) 0%,
+    rgb(var(--ds-bg-rgb) / .34) 52%,
+    rgb(var(--ds-bg-rgb) / .10) 100%);
+}
+
+html.codex-dream-skin:is([data-dream-art-safe="none"], [data-dream-art-safe-area="none"]) {
+  --ds-safe-side: none;
+  --ds-hero-scrim: linear-gradient(180deg,
+    rgb(var(--ds-bg-rgb) / .34),
+    rgb(var(--ds-bg-rgb) / .20));
+  --ds-task-shade: linear-gradient(180deg,
+    rgb(var(--ds-bg-rgb) / .28),
+    rgb(var(--ds-bg-rgb) / .14));
+}
+
+html.codex-dream-skin[data-dream-shell="light"]:is([data-dream-art-safe="none"], [data-dream-art-safe-area="none"]) {
+  --ds-hero-scrim: linear-gradient(180deg,
+    rgb(var(--ds-panel-rgb) / .46),
+    rgb(var(--ds-panel-rgb) / .28));
+  --ds-task-shade: linear-gradient(180deg,
+    rgb(var(--ds-bg-rgb) / .34),
+    rgb(var(--ds-bg-rgb) / .16));
+}
+
+html.codex-dream-skin body {
+  background: var(--ds-bg) !important;
+  color: var(--ds-text) !important;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif !important;
+}
+
+html.codex-dream-skin body::before {
+  content: none;
+}
+
+html.codex-dream-skin aside.app-shell-left-panel {
+  background:
+    linear-gradient(180deg,
+      rgb(var(--ds-panel-rgb) / .98),
+      rgb(var(--ds-bg-rgb) / .96)) !important;
+  border: 1px solid var(--ds-line) !important;
+  border-left: 0 !important;
+  border-radius: 0 16px 16px 0 !important;
+  box-shadow: 10px 0 30px rgb(var(--ds-bg-rgb) / .22) !important;
+  color: var(--ds-text) !important;
+  backdrop-filter: none !important;
+}
+
+html.codex-dream-skin aside.app-shell-left-panel nav { background: transparent !important; }
+
+html.codex-dream-skin aside.app-shell-left-panel button,
+html.codex-dream-skin aside.app-shell-left-panel a {
+  color: var(--ds-text) !important;
+  transition: background-color .18s cubic-bezier(.22, 1, .36, 1),
+    border-color .18s cubic-bezier(.22, 1, .36, 1),
+    color .18s cubic-bezier(.22, 1, .36, 1) !important;
+}
+
+html.codex-dream-skin aside.app-shell-left-panel [class*="text-token-foreground"] {
+  color: var(--ds-text) !important;
+}
+
+html.codex-dream-skin aside.app-shell-left-panel [class*="text-token-input-placeholder-foreground"] {
+  color: rgb(var(--ds-muted-rgb) / .92) !important;
+}
+
+html.codex-dream-skin aside.app-shell-left-panel svg {
+  color: rgb(var(--ds-muted-rgb) / .96) !important;
+}
+
+html.codex-dream-skin aside.app-shell-left-panel button:hover,
+html.codex-dream-skin aside.app-shell-left-panel a:hover {
+  background: rgb(var(--ds-accent-rgb) / .09) !important;
+  color: var(--ds-text) !important;
+  transform: none !important;
+}
+
+html.codex-dream-skin aside.app-shell-left-panel button:hover svg,
+html.codex-dream-skin aside.app-shell-left-panel a:hover svg {
+  color: var(--ds-accent) !important;
+}
+
+html.codex-dream-skin aside.app-shell-left-panel button[aria-label^="切换模式"] {
+  background: transparent !important;
+  border: 0 !important;
+  color: var(--ds-accent) !important;
+  font-family: inherit !important;
+  font-size: 19px !important;
+  font-weight: 800 !important;
+  text-shadow: none !important;
+}
+
+html.codex-dream-skin aside.app-shell-left-panel button[aria-label^="切换模式"]::after {
+  content: " ·";
+  color: var(--ds-secondary);
+}
+
+html.codex-dream-skin aside.app-shell-left-panel [class~="bg-token-list-hover-background"],
+html.codex-dream-skin aside.app-shell-left-panel [aria-current="page"] {
+  background: rgb(var(--ds-accent-rgb) / .12) !important;
+  border: 1px solid rgb(var(--ds-accent-rgb) / .22) !important;
+  box-shadow: 0 4px 16px rgb(var(--ds-bg-rgb) / .12) !important;
+  color: var(--ds-text) !important;
+}
+
+html.codex-dream-skin aside.app-shell-left-panel [aria-current="page"] svg {
+  color: var(--ds-accent) !important;
+}
+
+html.codex-dream-skin main.main-surface {
+  position: relative !important;
+  isolation: isolate;
+  overflow: hidden !important;
+  background: var(--ds-bg) !important;
+  border: 1px solid var(--ds-line) !important;
+  border-right: 0 !important;
+  border-bottom: 0 !important;
+  border-radius: 16px 0 0 0 !important;
+  box-shadow: -8px 0 28px rgb(var(--ds-bg-rgb) / .18) !important;
+}
+
+html.codex-dream-skin main.main-surface:not(.dream-skin-home-shell)::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: var(--ds-task-fade), var(--ds-task-shade), var(--dream-skin-art);
+  background-repeat: no-repeat;
+  background-position: center, center, var(--ds-art-position);
+  background-size: 100% 100%, 100% 100%, cover;
+  opacity: .78;
+}
+
+html.codex-dream-skin[data-dream-shell="light"] main.main-surface:not(.dream-skin-home-shell)::before {
+  opacity: .72;
+}
+
+html.codex-dream-skin:is([data-dream-art-wide="true"], [data-dream-art-aspect="wide"], [data-dream-art-aspect="ultrawide"])
+  main.main-surface:not(.dream-skin-home-shell)::before {
+  background-position: center, center, var(--ds-art-position);
+  background-size: 100% 100%, 100% 100%, cover;
+}
+
+html.codex-dream-skin:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"])
+  main.main-surface:not(.dream-skin-home-shell)::before {
+  inset: 0;
+  height: auto;
+}
+
+html.codex-dream-skin:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"])[data-dream-art-wide="true"]:has(main.main-surface:not(.dream-skin-home-shell)) body {
+  background-image: var(--dream-skin-art) !important;
+  background-position: var(--ds-art-position) !important;
+  background-size: cover !important;
+  background-repeat: no-repeat !important;
+  background-attachment: fixed !important;
+}
+
+html.codex-dream-skin:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"])[data-dream-art-wide="true"]:has(main.main-surface:not(.dream-skin-home-shell))
+  aside.app-shell-left-panel {
+  background: linear-gradient(90deg,
+    var(--ds-task-immersive-sidebar),
+    var(--ds-task-immersive-edge) 100%) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+/* Native sidebar resize chrome inherits the sidebar background and extends
+   20px into the main surface. Keeping it clear preserves one continuous image. */
+html.codex-dream-skin:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"])[data-dream-art-wide="true"]:has(main.main-surface:not(.dream-skin-home-shell))
+  aside.app-shell-left-panel::after {
+  background: transparent !important;
+}
+
+html.codex-dream-skin:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"])[data-dream-art-wide="true"]:has(main.main-surface:not(.dream-skin-home-shell))
+  main.main-surface:not(.dream-skin-home-shell) {
+  background: linear-gradient(90deg,
+    var(--ds-task-immersive-edge),
+    var(--ds-task-immersive-mid) 64%,
+    var(--ds-task-immersive-far)) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+html.codex-dream-skin:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"])[data-dream-art-wide="true"]
+  main.main-surface:not(.dream-skin-home-shell)::before {
+  content: none;
+}
+
+html.codex-dream-skin:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"])[data-dream-art-wide="true"]:has(main.main-surface:not(.dream-skin-home-shell))
+  .composer-surface-chrome {
+  background: var(--ds-immersive-composer-solid) !important;
+  border: 0 !important;
+  box-shadow:
+    0 10px 30px rgb(var(--ds-bg-rgb) / .20),
+    inset 0 0 0 1px var(--ds-immersive-line),
+    inset 0 1px rgb(var(--ds-text-rgb) / .12) !important;
+  backdrop-filter: none !important;
+}
+
+html.codex-dream-skin:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"])[data-dream-art-wide="true"]:has(main.main-surface:not(.dream-skin-home-shell))
+  main.main-surface > header.app-header-tint {
+  background: transparent !important;
+  border-bottom: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+html.codex-dream-skin:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"])[data-dream-art-wide="true"]
+  main.main-surface:not(.dream-skin-home-shell) [class*="_markdown"] {
+  color: var(--ds-text) !important;
+  text-shadow:
+    0 1px 2px rgb(var(--ds-bg-rgb) / .82),
+    0 0 10px rgb(var(--ds-bg-rgb) / .58);
+}
+
+html.codex-dream-skin[data-dream-shell="light"]:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"])[data-dream-art-wide="true"]
+  main.main-surface:not(.dream-skin-home-shell) [class*="_markdown"] {
+  text-shadow:
+    0 1px 2px rgb(var(--ds-panel-rgb) / .92),
+    0 0 10px rgb(var(--ds-panel-rgb) / .72);
+}
+
+html.codex-dream-skin:is([data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"])
+  main.main-surface:not(.dream-skin-home-shell)::before {
+  inset: 0 0 auto;
+  height: clamp(280px, 46vh, 520px);
+  background-position: center top, center top, var(--ds-art-position);
+  background-size: 100% 100%, 100% 100%, cover;
+}
+
+html.codex-dream-skin:is([data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"]):is([data-dream-art-wide="true"], [data-dream-art-aspect="wide"], [data-dream-art-aspect="ultrawide"])
+  main.main-surface:not(.dream-skin-home-shell)::before {
+  inset: 0;
+  height: auto;
+  background-position: center, center, var(--ds-art-position);
+  background-size: 100% 100%, 100% 100%, cover;
+}
+
+html.codex-dream-skin:is([data-dream-task-mode="off"], [data-dream-art-task-mode="off"])
+  main.main-surface:not(.dream-skin-home-shell)::before {
+  content: none;
+}
+
+html.codex-dream-skin main.main-surface:not(.dream-skin-home-shell) > * {
+  position: relative;
+  z-index: 1;
+}
+
+html.codex-dream-skin main.main-surface:not(.dream-skin-home-shell) [role="main"] {
+  background: transparent !important;
+  color: var(--ds-text) !important;
+  text-shadow:
+    0 1px 2px rgb(var(--ds-bg-rgb) / .72),
+    0 0 10px rgb(var(--ds-bg-rgb) / .46);
+}
+
+html.codex-dream-skin[data-dream-shell="light"] main.main-surface:not(.dream-skin-home-shell) [role="main"] {
+  text-shadow: none;
+}
+
+html.codex-dream-skin main.main-surface:not(.dream-skin-home-shell) article {
+  border: 1px solid rgb(var(--ds-muted-rgb) / .12);
+  background: rgb(var(--ds-panel-rgb) / .44);
+  box-shadow: 0 8px 24px rgb(var(--ds-bg-rgb) / .10);
+  backdrop-filter: blur(7px) saturate(105%);
+}
+
+html.codex-dream-skin[data-dream-shell="light"] main.main-surface:not(.dream-skin-home-shell) article {
+  background: rgb(var(--ds-panel-rgb) / .72);
+}
+
+html.codex-dream-skin main.main-surface > header.app-header-tint {
+  position: relative;
+  z-index: 2;
+  background: rgb(var(--ds-panel-rgb) / .90) !important;
+  border-bottom: 1px solid var(--ds-line) !important;
+  backdrop-filter: blur(14px) saturate(108%) !important;
+}
+
+#codex-dream-skin-chrome {
+  position: fixed;
+  z-index: 31;
+  overflow: hidden;
+  pointer-events: none;
+  border-radius: 16px 0 0 0;
+}
+
+.dream-skin-brand {
+  position: absolute;
+  left: 22px;
+  top: 4px;
+  height: 40px;
+  display: none;
+  align-items: center;
+  gap: 10px;
+  color: var(--ds-text);
+}
+
+#codex-dream-skin-chrome.dream-skin-home-shell .dream-skin-brand { display: none !important; }
+
+.dream-skin-portal-mark {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgb(var(--ds-accent-rgb) / .44);
+  border-radius: 50%;
+  color: var(--ds-accent);
+  background: rgb(var(--ds-accent-rgb) / .08);
+  font-size: 18px;
+  box-shadow: 0 0 0 4px rgb(var(--ds-accent-rgb) / .05);
+}
+
+.dream-skin-brand b {
+  display: block;
+  color: var(--ds-accent);
+  font-size: 13px;
+  letter-spacing: 0;
+}
+
+.dream-skin-brand small {
+  display: block;
+  margin-top: 2px;
+  color: var(--ds-muted);
+  font-size: 9px;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.dream-skin-brand small,
+.dream-skin-status { display: none !important; }
+
+.dream-skin-status {
+  position: absolute;
+  right: 84px;
+  top: 13px;
+  display: none;
+  align-items: center;
+  gap: 7px;
+  color: var(--ds-muted);
+  font: 700 10px/1 ui-monospace, "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0;
+}
+
+.dream-skin-status i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ds-accent);
+  box-shadow: 0 0 8px rgb(var(--ds-accent-rgb) / .42);
+}
+
+.dream-skin-quote,
+.dream-skin-orbit { display: none !important; }
+
+.dream-skin-decor {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: none;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: var(--dream-skin-decor-route-intensity);
+  contain: paint;
+}
+
+html.codex-dream-skin[data-dream-decor="tiger-festival"] #codex-dream-skin-chrome .dream-skin-decor {
+  display: block;
+}
+
+html.codex-dream-skin:is(
+  [data-dream-task-mode="ambient"],
+  [data-dream-art-task-mode="ambient"],
+  [data-dream-task-mode="banner"],
+  [data-dream-art-task-mode="banner"]
+) #codex-dream-skin-chrome {
+  --dream-skin-decor-route-intensity: calc(var(--dream-skin-decor-intensity) * .48);
+}
+
+html.codex-dream-skin:is(
+  [data-dream-task-mode="off"],
+  [data-dream-art-task-mode="off"]
+) #codex-dream-skin-chrome .dream-skin-decor {
+  display: none;
+}
+
+.dream-skin-decor img {
+  position: absolute;
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: none;
+  user-select: none;
+  pointer-events: none;
+  object-fit: contain;
+}
+
+.dream-skin-decor-ribbon {
+  top: -23%;
+  left: -7%;
+  width: min(64%, 920px) !important;
+  opacity: .48;
+  transform: rotate(-4deg);
+  filter: drop-shadow(0 10px 13px rgb(143 91 53 / .10));
+}
+
+.dream-skin-decor-cloud {
+  left: -8%;
+  bottom: -7%;
+  width: min(46%, 660px) !important;
+  opacity: .46;
+  transform: rotate(2deg);
+  filter: drop-shadow(0 8px 12px rgb(94 156 145 / .10));
+}
+
+.dream-skin-decor-seal {
+  top: 11%;
+  left: 1.5%;
+  width: clamp(92px, 10vw, 148px) !important;
+  opacity: .52;
+  transform: rotate(-7deg);
+  filter: drop-shadow(0 9px 12px rgb(143 91 53 / .13));
+}
+
+.dream-skin-decor-accent {
+  left: -10%;
+  bottom: -20%;
+  width: min(66%, 980px) !important;
+  opacity: .34;
+  transform: rotate(1deg);
+  filter: drop-shadow(0 12px 14px rgb(59 43 37 / .10));
+}
+
+@media (max-width: 900px) {
+  .dream-skin-decor-ribbon {
+    top: -10%;
+    left: -24%;
+    width: 86% !important;
+  }
+
+  .dream-skin-decor-cloud {
+    left: -20%;
+    bottom: -4%;
+    width: 68% !important;
+  }
+
+  .dream-skin-decor-seal {
+    top: 9%;
+    left: 2%;
+    width: 88px !important;
+  }
+
+  .dream-skin-decor-accent {
+    left: -27%;
+    bottom: -10%;
+    width: 88% !important;
+  }
+}
+
+.dream-skin-particles {
+  display: none;
+}
+
+.dream-skin-particles i {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--ds-accent);
+  box-shadow: 0 0 8px 2px rgb(var(--ds-accent-rgb) / .24);
+}
+
+.dream-skin-particles i:nth-child(1) { left: 6%; top: 13%; }
+.dream-skin-particles i:nth-child(2) { left: 29%; top: 7%; background: var(--ds-secondary); }
+.dream-skin-particles i:nth-child(3) { left: 51%; top: 18%; }
+.dream-skin-particles i:nth-child(4) { left: 75%; top: 9%; background: var(--ds-secondary); }
+.dream-skin-particles i:nth-child(5) { left: 91%; top: 28%; }
+.dream-skin-particles i:nth-child(6) { left: 64%; top: 63%; background: var(--ds-secondary); }
+.dream-skin-particles i:nth-child(7) { left: 22%; top: 72%; }
+.dream-skin-particles i:nth-child(8) { left: 86%; top: 78%; }
+
+html.codex-dream-skin [role="main"] {
+  background: transparent !important;
+  scrollbar-color: rgb(var(--ds-accent-rgb) / .38) transparent;
+}
+
+html.codex-dream-skin .dream-skin-home {
+  --thread-content-max-width: min(1180px, calc(100cqw - 44px)) !important;
+  overflow-x: hidden !important;
+}
+
+.dream-skin-home > div:first-child {
+  min-height: 100% !important;
+  padding-top: 15px !important;
+}
+
+.dream-skin-home > div:first-child > div:first-child {
+  flex: 0 0 440px !important;
+  min-height: 440px !important;
+  align-items: flex-start !important;
+  padding-bottom: 0 !important;
+}
+
+.dream-skin-home > div:first-child > div:first-child > div:first-child {
+  position: relative !important;
+  isolation: isolate;
+  width: calc(100% - 44px) !important;
+  max-width: none !important;
+  height: clamp(248px, 31cqw, 376px) !important;
+  min-height: 248px !important;
+  flex: 0 1 auto !important;
+  overflow: visible !important;
+  padding: 0 !important;
+  border: 1px solid rgb(var(--ds-accent-rgb) / .30) !important;
+  border-radius: 22px !important;
+  background-color: var(--ds-panel) !important;
+  background-image: var(--dream-skin-art) !important;
+  background-repeat: no-repeat !important;
+  background-position: var(--ds-art-position) !important;
+  background-size: cover !important;
+  box-shadow: 0 16px 38px rgb(var(--ds-bg-rgb) / .30) !important;
+}
+
+.dream-skin-home > div:first-child > div:first-child > div:first-child::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 0;
+  width: 62%;
+  border-radius: 21px 0 0 21px;
+  pointer-events: none;
+  background: var(--ds-hero-scrim);
+}
+
+html.codex-dream-skin:is([data-dream-art-safe="right"], [data-dream-art-safe-area="right"])
+  .dream-skin-home > div:first-child > div:first-child > div:first-child::before {
+  inset: 0 0 0 auto;
+}
+
+html.codex-dream-skin:is([data-dream-art-safe="center"], [data-dream-art-safe-area="center"])
+  .dream-skin-home > div:first-child > div:first-child > div:first-child::before {
+  inset: 0 14%;
+  width: auto;
+  border-radius: 0;
+}
+
+html.codex-dream-skin:is([data-dream-art-safe="none"], [data-dream-art-safe-area="none"])
+  .dream-skin-home > div:first-child > div:first-child > div:first-child::before {
+  inset: 0;
+  width: auto;
+  border-radius: 21px;
+}
+
+.dream-skin-home > div:first-child > div:first-child > div:first-child > div:first-child {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  padding: 0 38px;
+}
+
+html.codex-dream-skin:is([data-dream-art-safe="right"], [data-dream-art-safe-area="right"])
+  .dream-skin-home > div:first-child > div:first-child > div:first-child > div:first-child {
+  justify-content: flex-end !important;
+}
+
+html.codex-dream-skin:is([data-dream-art-safe="center"], [data-dream-art-safe-area="center"])
+  .dream-skin-home > div:first-child > div:first-child > div:first-child > div:first-child {
+  justify-content: center !important;
+}
+
+.dream-skin-home > div:first-child > div:first-child > div:first-child > div:first-child > div:first-child {
+  width: min(46%, 520px) !important;
+  align-items: flex-start !important;
+  gap: 0 !important;
+}
+
+html.codex-dream-skin:is([data-dream-art-safe="right"], [data-dream-art-safe-area="right"])
+  .dream-skin-home > div:first-child > div:first-child > div:first-child > div:first-child > div:first-child {
+  align-items: flex-end !important;
+  text-align: right !important;
+}
+
+html.codex-dream-skin:is([data-dream-art-safe="center"], [data-dream-art-safe-area="center"])
+  .dream-skin-home > div:first-child > div:first-child > div:first-child > div:first-child > div:first-child {
+  width: min(58%, 640px) !important;
+  align-items: center !important;
+  text-align: center !important;
+}
+
+.dream-skin-home [data-testid="home-icon"] { display: none !important; }
+
+.dream-skin-home [data-feature="game-source"] {
+  display: block !important;
+  max-width: 100% !important;
+  color: var(--ds-text) !important;
+  font-size: clamp(19px, 1.85vw, 27px) !important;
+  line-height: 1.28 !important;
+  font-weight: 760 !important;
+  text-align: inherit !important;
+  text-shadow: none !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+.dream-skin-home [data-feature="game-source"]::before {
+  content: none;
+}
+
+.dream-skin-home [data-feature="game-source"]::after {
+  content: var(--dream-skin-tagline, "把喜欢的画面变成可交互的 Codex 工作台。");
+  display: block;
+  margin-top: 13px;
+  color: rgb(var(--ds-text-rgb) / .76);
+  font-size: 13px;
+  line-height: 1.5;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.dream-skin-home [data-feature="game-source"] button {
+  margin: 0 5px;
+  padding: 2px 9px 3px;
+  border: 1px solid rgb(var(--ds-accent-rgb) / .36);
+  border-radius: 999px;
+  background: rgb(var(--ds-accent-rgb) / .10);
+  color: var(--ds-accent) !important;
+  text-decoration-color: rgb(var(--ds-accent-rgb) / .56) !important;
+  text-underline-offset: 5px;
+}
+
+.dream-skin-home [data-feature="game-source"] button::before {
+  content: var(--dream-skin-project-prefix, "选择项目 · ");
+  font-size: .46em;
+  font-weight: 700;
+  vertical-align: middle;
+  opacity: .86;
+}
+
+.dream-skin-home > div:first-child > div:first-child > div:first-child > div:nth-child(2) {
+  left: 14px !important;
+  right: 14px !important;
+  top: 100% !important;
+  margin-top: 13px !important;
+}
+
+.dream-skin-home .group\/home-suggestions { overflow: visible !important; }
+
+.dream-skin-home .group\/home-suggestions button {
+  position: relative !important;
+  min-height: 118px !important;
+  padding: 14px 13px 12px !important;
+  align-items: stretch !important;
+  justify-content: flex-start !important;
+  text-align: center !important;
+  border: 1px solid rgb(var(--ds-muted-rgb) / .18) !important;
+  border-radius: 18px !important;
+  background: rgb(var(--ds-panel-rgb) / .90) !important;
+  color: var(--ds-text) !important;
+  font-weight: 600 !important;
+  line-height: 1.45 !important;
+  box-shadow: 0 8px 22px rgb(var(--ds-bg-rgb) / .18) !important;
+  backdrop-filter: blur(10px) saturate(105%) !important;
+  transform: translateY(0);
+  transition: transform .18s cubic-bezier(.22, 1, .36, 1),
+    box-shadow .18s cubic-bezier(.22, 1, .36, 1),
+    border-color .18s cubic-bezier(.22, 1, .36, 1) !important;
+}
+
+.dream-skin-home .group\/home-suggestions button:hover {
+  transform: translateY(-2px) !important;
+  border-color: rgb(var(--ds-accent-rgb) / .42) !important;
+  box-shadow: 0 12px 28px rgb(var(--ds-bg-rgb) / .24) !important;
+}
+
+.dream-skin-home .group\/home-suggestions button > span:first-child > span:first-child {
+  width: 38px;
+  height: 38px;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+  line-height: 0 !important;
+  margin: 0 auto;
+  border: 1px solid rgb(var(--ds-accent-rgb) / .24);
+  border-radius: 50%;
+  color: var(--ds-accent) !important;
+  background: rgb(var(--ds-accent-rgb) / .12);
+  box-shadow: 0 0 0 6px rgb(var(--ds-accent-rgb) / .05);
+}
+
+.dream-skin-home .group\/home-suggestions button svg {
+  width: 21px !important;
+  height: 21px !important;
+  display: block !important;
+  flex: 0 0 auto !important;
+  margin: 0 !important;
+  color: var(--ds-accent) !important;
+}
+
+.dream-skin-home .group\/home-suggestions button > span:first-child { justify-content: center !important; }
+.dream-skin-home .group\/home-suggestions button > span:last-child { align-items: center !important; text-align: center !important; }
+
+html.codex-dream-skin .composer-surface-chrome {
+  overflow: visible !important;
+  border: 1px solid rgb(var(--ds-muted-rgb) / .18) !important;
+  border-radius: 22px !important;
+  background: rgb(var(--ds-panel-rgb) / .94) !important;
+  box-shadow: 0 10px 28px rgb(var(--ds-bg-rgb) / .24) !important;
+  backdrop-filter: blur(16px) saturate(108%) !important;
+}
+
+html.codex-dream-skin .composer-surface-chrome::before { content: none !important; }
+
+/* A wide image can carry the home screen too. The native hero remains live,
+   but the artwork is painted once on the window instead of repeated in a card. */
+html.codex-dream-skin[data-dream-art-wide="true"]:has(main.main-surface.dream-skin-home-shell) body {
+  background-image: var(--dream-skin-art) !important;
+  background-position: var(--ds-art-position) !important;
+  background-size: cover !important;
+  background-repeat: no-repeat !important;
+  background-attachment: fixed !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"]:has(main.main-surface.dream-skin-home-shell)
+  aside.app-shell-left-panel {
+  background: linear-gradient(90deg,
+    var(--ds-immersive-sidebar),
+    var(--ds-immersive-edge) 100%) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"]:has(main.main-surface.dream-skin-home-shell)
+  aside.app-shell-left-panel::after {
+  background: transparent !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"] main.main-surface.dream-skin-home-shell {
+  background: linear-gradient(90deg,
+    var(--ds-immersive-edge),
+    var(--ds-immersive-mid) 64%,
+    var(--ds-immersive-far)) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"] main.main-surface.dream-skin-home-shell
+  > header.app-header-tint {
+  background: transparent !important;
+  border-bottom: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"] main.main-surface
+  > header.app-header-tint {
+  color: var(--ds-text) !important;
+  text-shadow:
+    0 1px 2px rgb(var(--ds-bg-rgb) / .86),
+    0 0 8px rgb(var(--ds-bg-rgb) / .52) !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"] main.main-surface
+  > header.app-header-tint svg {
+  color: rgb(var(--ds-muted-rgb) / .96) !important;
+  filter: drop-shadow(0 1px 2px rgb(var(--ds-bg-rgb) / .72));
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"] main.main-surface.dream-skin-home-shell
+  .dream-skin-home > div:first-child > div:first-child > div:first-child {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"] main.main-surface.dream-skin-home-shell
+  .dream-skin-home > div:first-child > div:first-child > div:first-child::before {
+  content: none !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"] main.main-surface.dream-skin-home-shell
+  .dream-skin-home .group\/home-suggestions button {
+  background: rgb(var(--ds-panel-rgb) / .56) !important;
+  box-shadow:
+    0 8px 22px rgb(var(--ds-bg-rgb) / .16),
+    inset 0 0 0 1px rgb(var(--ds-muted-rgb) / .20) !important;
+  backdrop-filter: blur(8px) saturate(104%) !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"] .composer-surface-chrome {
+  background: var(--ds-immersive-composer-solid) !important;
+  border: 0 !important;
+  box-shadow:
+    0 10px 30px rgb(var(--ds-bg-rgb) / .20),
+    inset 0 0 0 1px var(--ds-immersive-line),
+    inset 0 1px rgb(var(--ds-text-rgb) / .12) !important;
+  backdrop-filter: none !important;
+}
+
+html.codex-dream-skin[data-dream-shell="light"][data-dream-art-wide="true"]
+  .composer-surface-chrome {
+  box-shadow:
+    0 10px 28px rgb(var(--ds-bg-rgb) / .14),
+    inset 0 0 0 1px var(--ds-immersive-line),
+    inset 0 1px rgb(var(--ds-panel-rgb) / .72) !important;
+  backdrop-filter: blur(8px) saturate(102%) !important;
+}
+
+html.codex-dream-skin[data-dream-shell="light"]
+  .composer-surface-chrome p.placeholder::after {
+  color: rgb(var(--ds-muted-rgb) / .78) !important;
+  opacity: 1 !important;
+}
+
+/* Current Codex builds render the home project picker as a separate opaque
+   cap above the composer. Join both native controls into one continuous
+   surface while leaving task and utility-route inputs untouched. */
+html.codex-dream-skin .dream-skin-home-utility {
+  top: 0 !important;
+  width: 100% !important;
+  margin-inline: 0 !important;
+  padding-inline: 18px !important;
+  border-radius: 22px 22px 0 0 !important;
+  background: rgb(var(--ds-panel-rgb) / .94) !important;
+  box-shadow:
+    inset 1px 0 rgb(var(--ds-muted-rgb) / .18),
+    inset -1px 0 rgb(var(--ds-muted-rgb) / .18),
+    inset 0 1px rgb(var(--ds-muted-rgb) / .18) !important;
+  backdrop-filter: blur(16px) saturate(108%) !important;
+}
+
+html.codex-dream-skin .dream-skin-home:has(.dream-skin-home-utility)
+  .composer-surface-chrome {
+  border: 0 !important;
+  border-radius: 0 0 22px 22px !important;
+  box-shadow:
+    0 10px 28px rgb(var(--ds-bg-rgb) / .24),
+    inset 1px 0 rgb(var(--ds-muted-rgb) / .18),
+    inset -1px 0 rgb(var(--ds-muted-rgb) / .18),
+    inset 0 -1px rgb(var(--ds-muted-rgb) / .18) !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"] .dream-skin-home-utility {
+  background: var(--ds-immersive-composer-solid) !important;
+  box-shadow:
+    inset 1px 0 var(--ds-immersive-line),
+    inset -1px 0 var(--ds-immersive-line),
+    inset 0 1px rgb(var(--ds-text-rgb) / .12) !important;
+  backdrop-filter: none !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"]
+  .dream-skin-home:has(.dream-skin-home-utility) .composer-surface-chrome {
+  box-shadow:
+    0 10px 30px rgb(var(--ds-bg-rgb) / .20),
+    inset 1px 0 var(--ds-immersive-line),
+    inset -1px 0 var(--ds-immersive-line),
+    inset 0 -1px var(--ds-immersive-line) !important;
+}
+
+html.codex-dream-skin[data-dream-shell="light"][data-dream-art-wide="true"]
+  .dream-skin-home-utility {
+  box-shadow:
+    inset 1px 0 var(--ds-immersive-line),
+    inset -1px 0 var(--ds-immersive-line),
+    inset 0 1px rgb(var(--ds-panel-rgb) / .72) !important;
+  backdrop-filter: blur(8px) saturate(102%) !important;
+}
+
+html.codex-dream-skin .dream-skin-home-utility button,
+html.codex-dream-skin .composer-surface-chrome button:not([class~="bg-token-foreground"]) {
+  color: var(--ds-muted) !important;
+}
+
+html.codex-dream-skin .dream-skin-home-utility button svg,
+html.codex-dream-skin .composer-surface-chrome button svg {
+  color: currentColor !important;
+}
+
+html.codex-dream-skin .dream-skin-home-utility button *,
+html.codex-dream-skin .composer-surface-chrome button:not([class~="bg-token-foreground"]) * {
+  color: currentColor !important;
+}
+
+html.codex-dream-skin .dream-skin-home-utility button:hover,
+html.codex-dream-skin .composer-surface-chrome button:not([class~="bg-token-foreground"]):hover {
+  color: var(--ds-text) !important;
+  background: rgb(var(--ds-accent-rgb) / .10) !important;
+}
+
+html.codex-dream-skin .composer-surface-chrome p.placeholder::after {
+  color: rgb(var(--ds-muted-rgb) / .82) !important;
+  opacity: 1 !important;
+}
+
+/* Search routes ship an opaque sticky band and input surface. Keep the
+   control legible while allowing the selected image to remain continuous. */
+html.codex-dream-skin:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"])[data-dream-art-wide="true"]
+  main.main-surface:not(.dream-skin-home-shell) div.sticky:has(input[type="text"]) {
+  background: transparent !important;
+}
+
+html.codex-dream-skin:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"])[data-dream-art-wide="true"]
+  main.main-surface:not(.dream-skin-home-shell) div.sticky:has(input[type="text"])::after {
+  background: transparent !important;
+}
+
+html.codex-dream-skin:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"])[data-dream-art-wide="true"]
+  main.main-surface:not(.dream-skin-home-shell) div.no-drag:has(> input[type="text"]) {
+  background: var(--ds-immersive-composer) !important;
+  border: 0 !important;
+  box-shadow:
+    0 8px 22px rgb(var(--ds-bg-rgb) / .16),
+    inset 0 0 0 1px var(--ds-immersive-line) !important;
+  backdrop-filter: none !important;
+}
+
+/* Pull Requests and similar utility routes wrap their content in a native
+   full-size opaque surface. Only clear full-window wrappers, not cards. */
+html.codex-dream-skin:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"])[data-dream-art-wide="true"]
+  main.main-surface:not(.dream-skin-home-shell)
+  [class~="bg-token-main-surface-primary"][class~="h-full"][class~="w-full"] {
+  background: transparent !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"] main.main-surface
+  .app-shell-main-content-frame {
+  border-top: 0 !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"] main.main-surface
+  .app-shell-main-content-top-fade {
+  display: none !important;
+  background: transparent !important;
+}
+
+/* Codex paints a second opaque fade behind the sticky composer. The composer
+   already owns its readable surface, so retaining this layer creates a false
+   bottom panel and makes the control look duplicated. */
+html.codex-dream-skin[data-dream-art-wide="true"] main.main-surface
+  .thread-scroll-container .bg-gradient-to-t.from-token-main-surface-primary {
+  background: transparent !important;
+}
+
+/* Theme the thread Outputs/Sources utility without changing unrelated menus. */
+html.codex-dream-skin .dream-skin-outputs-panel {
+  background:
+    linear-gradient(
+      135deg,
+      rgb(var(--ds-panel-rgb) / .62) 0%,
+      rgb(var(--ds-panel-rgb) / .42) 52%,
+      rgb(var(--ds-panel-2-rgb) / .24) 100%
+    ) !important;
+  border: 1px solid rgb(var(--ds-accent-rgb) / .24) !important;
+  border-radius: 22px !important;
+  color: var(--ds-text) !important;
+  box-shadow:
+    0 18px 42px rgb(var(--ds-text-rgb) / .12),
+    0 4px 14px rgb(var(--ds-accent-rgb) / .10),
+    inset 0 1px rgb(var(--ds-panel-rgb) / .92) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+html.codex-dream-skin .dream-skin-outputs-panel > div,
+html.codex-dream-skin .dream-skin-outputs-panel section,
+html.codex-dream-skin .dream-skin-outputs-panel section > header {
+  background: transparent !important;
+}
+
+html.codex-dream-skin .dream-skin-outputs-panel section::after {
+  background: rgb(var(--ds-accent-rgb) / .16) !important;
+}
+
+html.codex-dream-skin .dream-skin-outputs-panel section > header {
+  color: var(--ds-accent) !important;
+}
+
+html.codex-dream-skin .dream-skin-outputs-panel section > header svg {
+  color: var(--ds-highlight) !important;
+}
+
+html.codex-dream-skin .dream-skin-outputs-panel [data-slot="thread-summary-panel-item-button"] {
+  color: rgb(var(--ds-text-rgb) / .78) !important;
+  border-radius: 7px !important;
+}
+
+html.codex-dream-skin .dream-skin-outputs-panel [data-slot="thread-summary-panel-item-button"]:hover {
+  background: rgb(var(--ds-accent-rgb) / .08) !important;
+  color: var(--ds-text) !important;
+}
+
+html.codex-dream-skin .dream-skin-outputs-panel [data-slot="thread-summary-panel-item-button"]:hover::before {
+  background: transparent !important;
+}
+
+html.codex-dream-skin .dream-skin-outputs-panel [data-slot="thread-summary-panel-item-leading"] {
+  color: var(--ds-highlight) !important;
+}
+
+html.codex-dream-skin .dream-skin-outputs-panel img {
+  border-color: rgb(var(--ds-accent-rgb) / .28) !important;
+}
+
+/* Keep Codex's preview split functional while allowing character artwork to
+   remain visible through the otherwise full-height native white surface. */
+html.codex-dream-skin .dream-skin-preview-panel {
+  background:
+    linear-gradient(
+      90deg,
+      rgb(var(--ds-panel-rgb) / .62) 0%,
+      rgb(var(--ds-panel-rgb) / .42) 46%,
+      rgb(var(--ds-panel-2-rgb) / .20) 100%
+    ) !important;
+  border-left: 1px solid rgb(var(--ds-accent-rgb) / .24) !important;
+  color: var(--ds-text) !important;
+  box-shadow:
+    -12px 0 28px rgb(var(--ds-text-rgb) / .05),
+    inset 1px 0 rgb(var(--ds-panel-rgb) / .72) !important;
+  backdrop-filter: none !important;
+}
+
+html.codex-dream-skin .dream-skin-preview-panel.dream-skin-preview-launcher {
+  background:
+    linear-gradient(
+      90deg,
+      rgb(var(--ds-panel-rgb) / .48) 0%,
+      rgb(var(--ds-panel-rgb) / .24) 48%,
+      transparent 100%
+    ) !important;
+}
+
+html.codex-dream-skin .dream-skin-preview-panel
+  :is(
+    [class~="bg-token-main-surface-primary"],
+    [class~="bg-token-bg-fog"]
+  ) {
+  background: transparent !important;
+}
+
+html.codex-dream-skin .dream-skin-preview-panel.dream-skin-preview-launcher
+  ul:has(> li button) {
+  padding: 9px !important;
+  border: 1px solid rgb(var(--ds-accent-rgb) / .14) !important;
+  border-radius: 10px !important;
+  background: rgb(var(--ds-panel-rgb) / .38) !important;
+  box-shadow:
+    0 12px 28px rgb(var(--ds-text-rgb) / .06),
+    inset 0 1px rgb(var(--ds-panel-rgb) / .72) !important;
+}
+
+html.codex-dream-skin .dream-skin-preview-panel.dream-skin-preview-launcher
+  ul:has(> li button) button {
+  background: rgb(var(--ds-panel-rgb) / .66) !important;
+  border: 1px solid transparent !important;
+  color: var(--ds-text) !important;
+}
+
+html.codex-dream-skin .dream-skin-preview-panel.dream-skin-preview-launcher
+  ul:has(> li button) button:hover {
+  background: rgb(var(--ds-panel-2-rgb) / .82) !important;
+  border-color: rgb(var(--ds-accent-rgb) / .22) !important;
+  color: var(--ds-accent) !important;
+}
+
+html.codex-dream-skin .dream-skin-preview-panel button svg {
+  color: var(--ds-highlight) !important;
+}
+
+html.codex-dream-skin .dream-skin-preview-panel kbd {
+  background: rgb(var(--ds-panel-2-rgb) / .76) !important;
+  color: var(--ds-muted) !important;
+  box-shadow: inset 0 0 0 1px rgb(var(--ds-accent-rgb) / .12) !important;
+}
+
+.dream-skin-home div:has(> .horizontal-scroll-fade-mask .group\/project-selector) {
+  position: relative;
+  padding-top: 28px !important;
+  border: 1px solid rgb(var(--ds-muted-rgb) / .16);
+  border-bottom: 0;
+  background: rgb(var(--ds-panel-rgb) / .92) !important;
+}
+
+.dream-skin-home div:has(> .horizontal-scroll-fade-mask .group\/project-selector)::before {
+  content: var(--dream-skin-project-label, "选择项目");
+  position: absolute;
+  left: 13px;
+  top: 6px;
+  z-index: 2;
+  color: var(--ds-muted);
+  font-size: 12px;
+  font-weight: 720;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.dream-skin-home .group\/project-selector > button {
+  border-color: rgb(var(--ds-accent-rgb) / .22) !important;
+  background: rgb(var(--ds-accent-rgb) / .08) !important;
+  color: var(--ds-text) !important;
+  box-shadow: 0 3px 12px rgb(var(--ds-bg-rgb) / .12) !important;
+}
+
+html.codex-dream-skin .ProseMirror {
+  color: var(--ds-text) !important;
+  caret-color: var(--ds-accent) !important;
+}
+
+html.codex-dream-skin button[class~="bg-token-foreground"] {
+  background: var(--ds-accent) !important;
+  color: var(--ds-on-accent) !important;
+  box-shadow: 0 5px 14px rgb(var(--ds-accent-rgb) / .20) !important;
+}
+
+html.codex-dream-skin article,
+html.codex-dream-skin [data-message-author-role] { border-radius: 16px; }
+
+@media (max-width: 1120px) {
+  .dream-skin-status { display: none !important; }
+  .dream-skin-home { --thread-content-max-width: min(940px, calc(100cqw - 30px)) !important; }
+  .dream-skin-home > div:first-child > div:first-child > div:first-child { width: calc(100% - 28px) !important; }
+}
+
+@media (max-width: 900px) {
+  .dream-skin-brand { left: 15px; }
+  .dream-skin-brand b { font-size: 12px; }
+  .dream-skin-home > div:first-child > div:first-child {
+    flex-basis: 408px !important;
+    min-height: 408px !important;
+  }
+  .dream-skin-home > div:first-child > div:first-child > div:first-child {
+    height: 232px !important;
+    min-height: 232px !important;
+  }
+  .dream-skin-home > div:first-child > div:first-child > div:first-child > div:first-child { padding: 0 26px; }
+  .dream-skin-home > div:first-child > div:first-child > div:first-child > div:first-child > div:first-child {
+    width: min(58%, 460px) !important;
+  }
+  .dream-skin-home [data-feature="game-source"] { font-size: 18px !important; }
+  .dream-skin-home [data-feature="game-source"]::before { margin-bottom: 7px; font-size: 10px; }
+  .dream-skin-home [data-feature="game-source"]::after { margin-top: 9px; font-size: 11px; }
+  .dream-skin-home .group\/home-suggestions button { min-height: 112px !important; font-size: 12px !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.codex-dream-skin *,
+  html.codex-dream-skin *::before,
+  html.codex-dream-skin *::after {
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

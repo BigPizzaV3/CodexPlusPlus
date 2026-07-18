@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-core"
-version = "1.2.38"
+version = "1.2.39"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -444,7 +444,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-data"
-version = "1.2.38"
+version = "1.2.39"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -461,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-launcher"
-version = "1.2.38"
+version = "1.2.39"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -475,7 +475,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-manager"
-version = "1.2.38"
+version = "1.2.39"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1599,6 +1599,12 @@ dependencies = [
  "http-body",
  "pin-project-lite",
 ]
+
+[[package]]
+name = "http-range"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21dec9db110f5f872ed9699c3ecf50cf16f423502706ba5c72462e28d3157573"
 
 [[package]]
 name = "httparse"
@@ -3727,6 +3733,7 @@ dependencies = [
  "gtk",
  "heck 0.5.0",
  "http",
+ "http-range",
  "jni",
  "libc",
  "log",
