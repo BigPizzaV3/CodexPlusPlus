@@ -1,5 +1,5 @@
 (() => {
-  const runtimeVersion = "5";
+  const runtimeVersion = "6";
   const existing = window.__codexPlusPetRealMouseLook;
   if (existing?.version === runtimeVersion && existing?.isReady?.()) return;
   existing?.stop?.();
@@ -9,6 +9,54 @@
   const activationRadius = 480;
   const movementThreshold = 2;
   const movementHoldMs = 1400;
+  const interactionOwner = "real-mouse";
+
+  const interaction = (() => {
+    const key = "__codexPlusPetInteraction";
+    const current = window[key];
+    if (current?.version === 1 && typeof current.begin === "function") return current;
+    const state = { pointerId: null, owner: "", captureTarget: null };
+    const next = {
+      version: 1,
+      begin(event, owner, captureTarget) {
+        if (state.pointerId != null) return state.pointerId === event.pointerId && state.owner === owner;
+        state.pointerId = event.pointerId;
+        state.owner = owner;
+        state.captureTarget = captureTarget || event.target;
+        try {
+          state.captureTarget?.setPointerCapture?.(event.pointerId);
+        } catch {
+        }
+        return true;
+      },
+      owns(event, owner) {
+        return state.pointerId === event.pointerId && state.owner === owner;
+      },
+      active() {
+        return state.pointerId != null;
+      },
+      end(event, owner) {
+        if (!next.owns(event, owner)) return false;
+        try {
+          state.captureTarget?.releasePointerCapture?.(event.pointerId);
+        } catch {
+        }
+        state.pointerId = null;
+        state.owner = "";
+        state.captureTarget = null;
+        return true;
+      },
+      cancel(owner) {
+        if (state.owner !== owner) return false;
+        state.pointerId = null;
+        state.owner = "";
+        state.captureTarget = null;
+        return true;
+      },
+    };
+    window[key] = next;
+    return next;
+  })();
 
   let stopped = false;
   let acceptsUpdates = true;
@@ -123,7 +171,7 @@
     if (stopped || !acceptsUpdates || updateInFlight) return;
     const mascot = document.querySelector(mascotSelector);
     runtime.mascotHovered = false;
-    if (!mascot || document.visibilityState !== "visible" || dragging || nativeCursorActive) {
+    if (!mascot || document.visibilityState !== "visible" || interaction.active() || nativeCursorActive) {
       if (!nativeCursorActive) clearSyntheticPoint();
       return;
     }
@@ -154,7 +202,7 @@
         lastMoveAt = Date.now();
       }
       const active = distance <= activationRadius && Date.now() - lastMoveAt <= movementHoldMs;
-      if (!active || nativeCursorActive || dragging) {
+      if (!active || nativeCursorActive || interaction.active()) {
         clearSyntheticPoint();
         return;
       }
@@ -168,14 +216,51 @@
     }
   }
 
-  function onPointerDown(event) {
-    if (!(event.target instanceof Element) || !event.target.closest(mascotSelector)) return;
-    dragging = true;
-    clearSyntheticPoint();
+  function mascotAtPoint(event) {
+    if (!Number.isFinite(event?.clientX) || !Number.isFinite(event?.clientY)) return null;
+    const mascot = document.querySelector(mascotSelector);
+    if (!mascot) return null;
+    const bounds = mascot.getBoundingClientRect();
+    return event.clientX >= bounds.left
+      && event.clientX <= bounds.right
+      && event.clientY >= bounds.top
+      && event.clientY <= bounds.bottom
+      ? mascot
+      : null;
   }
 
-  function onPointerUp() {
+  function onPointerDown(event) {
+    const target = event.target instanceof Element ? event.target : null;
+    const mascot = target?.closest(mascotSelector) || mascotAtPoint(event);
+    if (!mascot) return;
+    const ownsPointer = interaction.begin(event, interactionOwner, target || mascot);
+    if (!ownsPointer) return;
+    dragging = true;
+    clearSyntheticPoint();
+    event.preventDefault?.();
+  }
+
+  function onPointerMove(event) {
+    if (!dragging || !interaction.owns(event, interactionOwner)) return;
+    event.preventDefault?.();
+  }
+
+  function releaseDragging(event) {
+    if (!dragging) return;
+    if (event) {
+      if (interaction.owns(event, interactionOwner)) interaction.end(event, interactionOwner);
+    } else {
+      interaction.cancel(interactionOwner);
+    }
     dragging = false;
+  }
+
+  function onPointerUp(event) {
+    releaseDragging(event);
+  }
+
+  function onWindowBlur() {
+    releaseDragging();
   }
 
   function stop() {
@@ -195,10 +280,12 @@
     }
     syntheticActive = false;
     document.removeEventListener("pointerdown", onPointerDown, true);
+    document.removeEventListener("pointermove", onPointerMove, true);
     document.removeEventListener("pointerup", onPointerUp, true);
     document.removeEventListener("pointercancel", onPointerUp, true);
     document.removeEventListener("lostpointercapture", onPointerUp, true);
-    window.removeEventListener("blur", onPointerUp);
+    window.removeEventListener("blur", onWindowBlur);
+    interaction.cancel(interactionOwner);
     unsubscribe?.();
     if (window.__codexPlusPetRealMouseLook?.version === runtimeVersion) {
       delete window.__codexPlusPetRealMouseLook;
@@ -206,10 +293,11 @@
   }
 
   document.addEventListener("pointerdown", onPointerDown, true);
+  document.addEventListener("pointermove", onPointerMove, true);
   document.addEventListener("pointerup", onPointerUp, true);
   document.addEventListener("pointercancel", onPointerUp, true);
   document.addEventListener("lostpointercapture", onPointerUp, true);
-  window.addEventListener("blur", onPointerUp);
+  window.addEventListener("blur", onWindowBlur);
   const runtime = {
     version: runtimeVersion,
     transport: "cdp-push",
@@ -218,6 +306,9 @@
     mascotHovered: false,
     isReady() {
       return !stopped && acceptsUpdates;
+    },
+    isVisualOverrideActive() {
+      return nativeCursorActive || syntheticActive || interaction.active() || this.mascotHovered;
     },
     stop,
     updateScreenPoint(point) {

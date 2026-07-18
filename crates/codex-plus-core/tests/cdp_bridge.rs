@@ -76,13 +76,18 @@ fn pet_real_mouse_script_uses_cdp_push_and_native_avatar_event() {
     assert!(script.contains("localPoint.y <= bounds.bottom"));
     assert!(!script.contains("document.elementFromPoint"));
     assert!(script.contains("if (mascotHovered)"));
-    assert!(
-        script
-            .contains("document.visibilityState !== \"visible\" || dragging || nativeCursorActive")
-    );
+    assert!(script.contains(
+        "document.visibilityState !== \"visible\" || interaction.active() || nativeCursorActive"
+    ));
     assert!(script.contains("sendPoint(null).catch(disableUpdates)"));
     assert!(script.contains("void cleared.catch(disableUpdates)"));
     assert!(script.contains("dispatcher.dispatchHostMessage({ type: eventType, point: null })"));
+    assert!(script.contains("__codexPlusPetInteraction"));
+    assert!(script.contains("setPointerCapture"));
+    assert!(script.contains("releasePointerCapture"));
+    assert!(script.contains("mascotAtPoint"));
+    assert!(script.contains("if (!ownsPointer) return"));
+    assert!(script.contains("document.addEventListener(\"pointermove\", onPointerMove, true)"));
     assert!(script.contains("movementHoldMs = 1400"));
     assert!(script.contains("activationRadius = 480"));
     assert!(!script.contains("/pet/cursor-position"));
@@ -90,7 +95,7 @@ fn pet_real_mouse_script_uses_cdp_push_and_native_avatar_event() {
     assert!(script.contains("delete window.__codexPlusPetRealMouseLook"));
     assert!(script.contains("retired during dispatcher setup"));
     assert!(script.contains("nextUnsubscribe?.()"));
-    assert!(script.contains("const runtimeVersion = \"5\""));
+    assert!(script.contains("const runtimeVersion = \"6\""));
 }
 
 #[test]
