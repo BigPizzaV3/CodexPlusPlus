@@ -1,4 +1,4 @@
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,11 +13,7 @@ pub fn codex_session_db_path() -> PathBuf {
 }
 
 pub fn codex_session_db_path_from_home(home: &Path) -> PathBuf {
-    let mut paths = codex_sqlite_dir_session_dbs(home);
-    let legacy = legacy_state_db_path(home);
-    if !paths.iter().any(|path| path == &legacy) {
-        paths.push(legacy.clone());
-    }
+    let paths = codex_session_db_paths_from_home(home);
     paths
         .iter()
         .find(|path| sqlite_has_table(path, "threads"))
@@ -27,6 +23,11 @@ pub fn codex_session_db_path_from_home(home: &Path) -> PathBuf {
 }
 
 pub fn codex_session_db_paths_from_home(home: &Path) -> Vec<PathBuf> {
+    let sqlite_home = resolve_sqlite_home_from_env().unwrap_or_else(|| home.to_path_buf());
+    codex_session_db_paths_in_home(&sqlite_home)
+}
+
+fn codex_session_db_paths_in_home(home: &Path) -> Vec<PathBuf> {
     let mut paths = codex_sqlite_dir_session_dbs(home);
     let legacy = legacy_state_db_path(home);
     if !paths.iter().any(|path| path == &legacy) {
@@ -59,6 +60,15 @@ pub fn codex_sqlite_sidecar_paths(db_path: &Path) -> [PathBuf; 3] {
 
 pub fn relative_to_codex_home(home: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(home).unwrap_or(path).to_path_buf()
+}
+
+fn resolve_sqlite_home_from_env() -> Option<PathBuf> {
+    resolve_sqlite_home(std::env::var_os("CODEX_SQLITE_HOME"))
+}
+
+fn resolve_sqlite_home(value: Option<OsString>) -> Option<PathBuf> {
+    let path = PathBuf::from(value?);
+    path.is_dir().then_some(path)
 }
 
 fn legacy_state_db_path(home: &Path) -> PathBuf {
@@ -314,7 +324,46 @@ fn is_model_id_char(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::codex_session_db_paths_in_home;
+    use super::resolve_sqlite_home;
     use super::sanitize_model_suffixes_in_text;
+    use std::ffi::OsString;
+
+    #[test]
+    fn resolves_existing_sqlite_home() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        assert_eq!(
+            resolve_sqlite_home(Some(OsString::from(temp.path()))),
+            Some(temp.path().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn ignores_missing_sqlite_home() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        assert_eq!(
+            resolve_sqlite_home(Some(OsString::from(temp.path().join("missing")))),
+            None
+        );
+    }
+
+    #[test]
+    fn finds_session_databases_relative_to_sqlite_home() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let sqlite_dir = temp.path().join("sqlite");
+        std::fs::create_dir(&sqlite_dir).expect("create sqlite dir");
+        let database = sqlite_dir.join("codex-dev.db");
+        let connection = rusqlite::Connection::open(&database).expect("create database");
+        connection
+            .execute("CREATE TABLE threads (id TEXT PRIMARY KEY)", [])
+            .expect("create threads table");
+        drop(connection);
+
+        assert_eq!(
+            codex_session_db_paths_in_home(temp.path()),
+            vec![database, temp.path().join("state_5.sqlite")]
+        );
+    }
 
     #[test]
     fn strips_trailing_suffix_from_model_names() {
