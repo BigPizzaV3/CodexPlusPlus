@@ -156,6 +156,23 @@ describe("dream skin theme helpers", () => {
     assert.doesNotMatch(source, /当前 Codex 无法实时切换完整主题，需要重启 Codex\+\+。是否立即重启/);
   });
 
+  it("restores the original appearance as pending without reloading or restarting Codex", async () => {
+    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+    const commands = await readFile(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
+    const restoreStart = app.indexOf("const restoreDreamSkin = async () =>");
+    const restoreEnd = app.indexOf("const verifyDreamSkin", restoreStart);
+    const restoreHandler = app.slice(restoreStart, restoreEnd);
+    const commandStart = commands.indexOf("pub async fn restore_dream_skin");
+    const commandEnd = commands.indexOf("pub fn reset_dream_skin_theme", commandStart);
+    const restoreCommand = commands.slice(commandStart, commandEnd);
+
+    assert.match(restoreHandler, /Codex 原始外观/);
+    assert.match(restoreHandler, /setPendingDreamSkinRestart/);
+    assert.doesNotMatch(restoreHandler, /window\.confirm|await restart\(\)/);
+    assert.doesNotMatch(restoreCommand, /reload_dream_skin_live/);
+    assert.match(restoreCommand, /pending_restart\(false, false\)/);
+  });
+
   it("renders responsive three-column theme grids with platform guidance", async () => {
     const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
     const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");

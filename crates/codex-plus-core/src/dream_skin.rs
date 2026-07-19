@@ -8,6 +8,7 @@ use toml_edit::{DocumentMut, InlineTable, Item, Table, Value, value};
 use crate::settings::DreamSkinThemeConfig;
 
 const BACKUP_FILE: &str = "dream-skin-base-theme-backup.json";
+const BACKUP_SCHEMA_VERSION: u32 = 2;
 const MANAGED_THEME_DIR: &str = "dream-skin/theme";
 const MANAGED_IMAGE_PREFIX: &str = "current.";
 pub const DREAM_SKIN_SOURCE_LIMIT: u64 = 50 * 1024 * 1024;
@@ -253,12 +254,12 @@ fn apply_base_theme(
                     .get("desktop")
                     .and_then(Item::as_table)
                     .and_then(|desktop| desktop.get(key))
-                    .map(ToString::to_string);
+                    .map(serialize_item);
                 ((*key).to_string(), item)
             })
             .collect();
         let backup = DreamSkinThemeBackup {
-            schema_version: 1,
+            schema_version: BACKUP_SCHEMA_VERSION,
             config_path: config_path.to_string_lossy().to_string(),
             desktop_existed,
             values,
@@ -283,7 +284,7 @@ fn apply_base_theme(
             .and_then(Option::as_deref)
         {
             Some(serialized) => {
-                desktop["appearanceTheme"] = parse_item(serialized)
+                desktop["appearanceTheme"] = parse_backup_item(&backup, serialized)
                     .context("failed to restore Dream Skin setting appearanceTheme")?;
             }
             None => {
@@ -315,7 +316,7 @@ fn restore_base_theme(config_path: &Path, backup_path: &Path) -> anyhow::Result<
     for key in APPEARANCE_KEYS {
         match backup.values.get(key).and_then(Option::as_deref) {
             Some(serialized) => {
-                desktop[key] = parse_item(serialized)
+                desktop[key] = parse_backup_item(&backup, serialized)
                     .with_context(|| format!("failed to restore Dream Skin setting {key}"))?;
             }
             None => {
@@ -419,8 +420,36 @@ fn target_chrome_theme(profile: TargetBaseTheme) -> InlineTable {
     theme
 }
 
-fn parse_item(serialized: &str) -> anyhow::Result<Item> {
-    let mut document = format!("value = {serialized}\n").parse::<DocumentMut>()?;
+fn serialize_item(item: &Item) -> String {
+    let mut document = DocumentMut::new();
+    document["value"] = item.clone();
+    document.to_string()
+}
+
+fn parse_backup_item(backup: &DreamSkinThemeBackup, serialized: &str) -> anyhow::Result<Item> {
+    match backup.schema_version {
+        1 => parse_legacy_item(serialized),
+        BACKUP_SCHEMA_VERSION => parse_document_item(serialized),
+        _ => bail!("unsupported Dream Skin backup schema"),
+    }
+}
+
+fn parse_legacy_item(serialized: &str) -> anyhow::Result<Item> {
+    match format!("value = {serialized}\n").parse::<DocumentMut>() {
+        Ok(mut document) => document
+            .remove("value")
+            .context("serialized Dream Skin backup value is missing"),
+        Err(_) => parse_legacy_table(serialized),
+    }
+}
+
+fn parse_legacy_table(serialized: &str) -> anyhow::Result<Item> {
+    let document = serialized.parse::<DocumentMut>()?;
+    Ok(Item::Table(document.as_table().clone()))
+}
+
+fn parse_document_item(serialized: &str) -> anyhow::Result<Item> {
+    let mut document = serialized.parse::<DocumentMut>()?;
     document
         .remove("value")
         .context("serialized Dream Skin backup value is missing")
@@ -431,7 +460,7 @@ fn read_backup(path: &Path) -> anyhow::Result<DreamSkinThemeBackup> {
         .with_context(|| format!("failed to read Dream Skin backup {}", path.display()))?;
     let backup: DreamSkinThemeBackup = serde_json::from_slice(&bytes)
         .with_context(|| format!("failed to parse Dream Skin backup {}", path.display()))?;
-    if backup.schema_version != 1 {
+    if !matches!(backup.schema_version, 1 | BACKUP_SCHEMA_VERSION) {
         bail!("unsupported Dream Skin backup schema");
     }
     Ok(backup)

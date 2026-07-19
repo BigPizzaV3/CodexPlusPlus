@@ -1017,15 +1017,6 @@ pub async fn restore_dream_skin(
     request: DreamSkinRuntimeRequest,
 ) -> CommandResult<codex_plus_core::dream_skin_runtime::DreamSkinRuntimeStatus> {
     let store = SettingsStore::default();
-    if let Err(error) = store.update(json!({
-        "codexAppDreamSkinEnabled": false,
-        "codexAppDreamSkinPaused": false
-    })) {
-        return failed(
-            &format!("保存恢复状态失败：{error}"),
-            codex_plus_core::dream_skin_runtime::DreamSkinRuntimeStatus::not_running(false, false),
-        );
-    }
     if let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
         false,
         &codex_plus_core::settings::DreamSkinThemeConfig::default(),
@@ -1035,17 +1026,23 @@ pub async fn restore_dream_skin(
             codex_plus_core::dream_skin_runtime::dream_skin_status(request.debug_port).await,
         );
     }
-    let live = async {
-        codex_plus_core::dream_skin_runtime::pause_dream_skin_live(request.debug_port).await?;
-        codex_plus_core::dream_skin_runtime::reload_dream_skin_live(request.debug_port).await
-    }
-    .await;
-    let status = codex_plus_core::dream_skin_runtime::dream_skin_status(request.debug_port).await;
-    match live {
-        Ok(()) => ok("已恢复 Codex 原始外观。", status),
-        Err(error) => ok(
-            &format!("外观设置已恢复；Codex 当前不可连接：{error}"),
+    if let Err(error) = store.update(json!({
+        "codexAppDreamSkinEnabled": false,
+        "codexAppDreamSkinPaused": false
+    })) {
+        return failed(
+            &format!("保存恢复状态失败：{error}"),
             codex_plus_core::dream_skin_runtime::DreamSkinRuntimeStatus::not_running(false, false),
+        );
+    }
+    let live = codex_plus_core::dream_skin_runtime::pause_dream_skin_live(request.debug_port).await;
+    let status =
+        codex_plus_core::dream_skin_runtime::DreamSkinRuntimeStatus::pending_restart(false, false);
+    match live {
+        Ok(()) => ok("外观配置已恢复，重启 Codex 后完整生效。", status),
+        Err(error) => ok(
+            &format!("外观配置已恢复，重启 Codex 后完整生效；当前无法清理实时皮肤：{error}"),
+            status,
         ),
     }
 }

@@ -51,8 +51,6 @@ export const EN_PLAIN: Record<string, string> = {
   "Dream Skin 状态": "Dream Skin status",
   "主题库": "Theme library",
   "恢复 Dream Skin 默认主题": "Restore the default Dream Skin theme",
-  "当前 Codex 无法实时更新完整外观，需要重启 Codex++。是否立即重启？":
-    "Codex cannot update the complete appearance live. Restart Codex++ now?",
   "主题市场": "Theme marketplace",
   "主题视图": "Theme view",
   "社区主题": "Community themes",
@@ -78,6 +76,7 @@ export const EN_PLAIN: Record<string, string> = {
   "保存并应用主题；需要重启时只会标记为待应用": "Save and apply the theme; when a restart is required it will only be marked as pending",
   "应用皮肤": "Apply skin",
   "恢复 Codex 外观": "Restore Codex appearance",
+  "Codex 原始外观": "Original Codex appearance",
   "刷新状态": "Refresh status",
   "图片与主题": "Image and theme",
   "自定义图片会被导入 Codex++ 托管目录；主题字段与目标项目 theme.json 对齐":

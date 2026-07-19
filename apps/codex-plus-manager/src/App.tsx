@@ -2391,15 +2391,24 @@ export function App() {
   };
 
   const restoreDreamSkin = async () => {
+    const currentTheme = pendingDreamSkinRestart
+      ? {
+          key: pendingDreamSkinRestart.currentThemeKey,
+          name: pendingDreamSkinRestart.currentThemeName,
+        }
+      : dreamSkinLibrary?.themes.find((item) => item.active) ?? null;
     const result = await run(() => call<DreamSkinRuntimeResult>("restore_dream_skin", dreamSkinRequest()));
     if (!result) return;
     setDreamSkinStatus(result);
     await refreshSettings(true);
     showResultNotice(t("皮肤管理"), result);
-    if (isSuccessStatus(result.status)) setPendingDreamSkinRestart(null);
-    if (result.state === "not_running") {
-      const confirmed = window.confirm(t("当前 Codex 无法实时更新完整外观，需要重启 Codex++。是否立即重启？"));
-      if (confirmed) await restart();
+    if (isSuccessStatus(result.status)) {
+      setPendingDreamSkinRestart({
+        currentThemeKey: currentTheme?.key ?? null,
+        currentThemeName: currentTheme?.name ?? t("当前皮肤"),
+        pendingThemeKey: "codex-original-appearance",
+        pendingThemeName: t("Codex 原始外观"),
+      });
     }
   };
 
