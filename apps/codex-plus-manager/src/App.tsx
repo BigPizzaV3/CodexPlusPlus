@@ -2522,6 +2522,12 @@ export function App() {
       resetDreamSkinTheme: async () => runAfterDreamSkinDraftGuard(() => {
         setDreamSkinThemeDraft((current) => {
           if (!current) return current;
+          if (isWindowsPlatform) {
+            const config = { ...current.config };
+            delete config.colors;
+            delete config.palette;
+            return { ...current, config };
+          }
           const defaults = defaultDreamSkinTheme();
           return {
             ...current,
@@ -3577,6 +3583,18 @@ function DreamSkinScreen({
   const updateThemeColor = (key: keyof DreamSkinColors, value: string) => {
     updateTheme({ ...theme, colors: { ...themeColors, [key]: value } });
   };
+  const themeAppearance = theme.appearance === "light" || theme.appearance === "dark"
+    ? theme.appearance
+    : "auto";
+  const windowsAccent = typeof theme.palette?.accent === "string" ? theme.palette.accent : "";
+  const updateWindowsAccent = (value: string) => {
+    const palette = { ...(theme.palette ?? {}) };
+    if (value.trim()) palette.accent = value;
+    else delete palette.accent;
+    const next: DreamSkinThemeConfig = { ...theme, palette };
+    if (!Object.keys(palette).length) delete next.palette;
+    updateTheme(next);
+  };
   const stateLabel = dreamSkinStateLabel(status?.state ?? "not_running");
   const runtimeChecks = status?.checks ?? [];
   const verificationChecks = verification?.checks ?? [];
@@ -3842,18 +3860,21 @@ function DreamSkinScreen({
                 <Info className="h-4 w-4" />
                 <span>
                   {isWindowsPlatform
-                    ? t("Windows 原版样式固定，主题配置主要用于图片和跨平台迁移。")
+                    ? t("Windows 使用亮暗模式、图片取色和可选强调色；完整色板仅在 macOS 生效。")
                     : t("macOS 会应用主题中的图片、文字和颜色配置。")}
                 </span>
               </div>
 
               <div className="dream-skin-editor-layout">
                 <div className="dream-skin-media-editor">
-                  <div className="dream-skin-preview" style={{ backgroundColor: themeColors.background }}>
+                  <div
+                    className="dream-skin-preview"
+                    style={isWindowsPlatform ? undefined : { backgroundColor: themeColors.background }}
+                  >
                     <img alt={t("Dream Skin 图片预览")} src={previewUrl} />
-                    <span style={{ backgroundColor: themeColors.panel, color: themeColors.text }}>
+                    <span style={isWindowsPlatform ? undefined : { backgroundColor: themeColors.panel, color: themeColors.text }}>
                       <strong>{theme.name}</strong>
-                      <small style={{ color: themeColors.muted }}>{customImagePath ? t("自定义托管图片") : t("目标项目默认图片")}</small>
+                      <small style={isWindowsPlatform ? undefined : { color: themeColors.muted }}>{customImagePath ? t("自定义托管图片") : t("目标项目默认图片")}</small>
                     </span>
                   </div>
                   <Field label={t("托管图片路径")}>
@@ -3890,16 +3911,59 @@ function DreamSkinScreen({
                     <Field label={t("状态文字")}><Input value={theme.statusText} onChange={(event) => updateThemeText("statusText", event.currentTarget.value)} /></Field>
                     <Field label={t("引用文字")}><Input value={theme.quote} onChange={(event) => updateThemeText("quote", event.currentTarget.value)} /></Field>
                   </div>
-                  <div className="dream-skin-colors">
-                    {dreamSkinColorFields().map(([key, label]) => (
-                      <DreamSkinColorField
-                        key={key}
-                        label={label}
-                        value={String(themeColors[key])}
-                        onChange={(value) => updateThemeColor(key, value)}
-                      />
-                    ))}
-                  </div>
+                  {isWindowsPlatform ? (
+                    <div className="dream-skin-windows-theme-controls">
+                      <Field label={t("外观模式")}>
+                        <div aria-label={t("外观模式")} className="segmented dream-skin-appearance-options" role="group">
+                          {([
+                            ["auto", t("自动")],
+                            ["light", t("亮色")],
+                            ["dark", t("暗色")],
+                          ] as const).map(([value, label]) => (
+                            <button
+                              aria-pressed={themeAppearance === value}
+                              className={themeAppearance === value ? "active" : ""}
+                              key={value}
+                              onClick={() => updateTheme({ ...theme, appearance: value })}
+                              type="button"
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </Field>
+                      <div className="dream-skin-windows-accent">
+                        <DreamSkinColorField
+                          label={t("强调色")}
+                          value={windowsAccent}
+                          onChange={updateWindowsAccent}
+                        />
+                        <Button
+                          disabled={!windowsAccent.trim()}
+                          onClick={() => updateWindowsAccent("")}
+                          size="sm"
+                          variant="outline"
+                        >
+                          <RotateCcw className="h-4 w-4" />
+                          {t("跟随图片配色")}
+                        </Button>
+                      </div>
+                      <small className="dream-skin-windows-theme-note">
+                        {t("亮暗模式直接控制 Codex 外观；强调色留空时自动从主题图片提取。")}
+                      </small>
+                    </div>
+                  ) : (
+                    <div className="dream-skin-colors">
+                      {dreamSkinColorFields().map(([key, label]) => (
+                        <DreamSkinColorField
+                          key={key}
+                          label={label}
+                          value={String(themeColors[key])}
+                          onChange={(value) => updateThemeColor(key, value)}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
               <Toolbar>
@@ -3909,7 +3973,7 @@ function DreamSkinScreen({
                 </Button>
                 <Button variant="outline" onClick={() => void actions.resetDreamSkinTheme()}>
                   <RotateCcw className="h-4 w-4" />
-                  {t("恢复 Dream Skin 默认主题")}
+                  {isWindowsPlatform ? t("恢复 Codex 默认配色") : t("恢复 Dream Skin 默认主题")}
                 </Button>
               </Toolbar>
             </div>

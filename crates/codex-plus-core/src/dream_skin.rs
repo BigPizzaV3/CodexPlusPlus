@@ -278,23 +278,16 @@ fn apply_base_theme(
     let desktop = desktop_table_mut(&mut document)?;
     match profile.appearance_theme {
         Some(appearance) => desktop["appearanceTheme"] = value(appearance),
-        None => match backup
-            .values
-            .get("appearanceTheme")
-            .and_then(Option::as_deref)
-        {
-            Some(serialized) => {
-                desktop["appearanceTheme"] = parse_backup_item(&backup, serialized)
-                    .context("failed to restore Dream Skin setting appearanceTheme")?;
-            }
-            None => {
-                desktop.remove("appearanceTheme");
-            }
-        },
+        None => restore_backup_setting(desktop, &backup, "appearanceTheme")?,
     }
-    desktop["appearanceLightCodeThemeId"] = value("codex");
-    desktop["appearanceLightChromeTheme"] =
-        Item::Value(Value::InlineTable(target_chrome_theme(profile)));
+    if uses_native_chrome_theme(theme) {
+        restore_backup_setting(desktop, &backup, "appearanceLightCodeThemeId")?;
+        restore_backup_setting(desktop, &backup, "appearanceLightChromeTheme")?;
+    } else {
+        desktop["appearanceLightCodeThemeId"] = value("codex");
+        desktop["appearanceLightChromeTheme"] =
+            Item::Value(Value::InlineTable(target_chrome_theme(theme, profile)));
+    }
     write_config(config_path, document.to_string().as_bytes())
 }
 
@@ -362,7 +355,7 @@ struct TargetBaseTheme {
 
 fn target_base_theme(theme: &DreamSkinThemeConfig) -> TargetBaseTheme {
     let preset = crate::settings::resolve_dream_skin_style_preset(&theme.id, &theme.style_preset);
-    match preset.as_str() {
+    let mut profile = match preset.as_str() {
         "codex-snow" => TargetBaseTheme {
             appearance_theme: Some("light"),
             accent: "#1F7FE8",
@@ -396,10 +389,58 @@ fn target_base_theme(theme: &DreamSkinThemeConfig) -> TargetBaseTheme {
             skill: "#C47BFF",
             surface: "#FFF4FA",
         },
-    }
+    };
+    profile.appearance_theme = match theme
+        .extra_fields
+        .get("appearance")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("light") => Some("light"),
+        Some("dark") => Some("dark"),
+        _ => profile.appearance_theme,
+    };
+    profile
 }
 
-fn target_chrome_theme(profile: TargetBaseTheme) -> InlineTable {
+fn target_palette_accent(theme: &DreamSkinThemeConfig) -> Option<&str> {
+    theme
+        .extra_fields
+        .get("palette")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|palette| palette.get("accent"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|accent| !accent.is_empty())
+}
+
+fn uses_native_chrome_theme(theme: &DreamSkinThemeConfig) -> bool {
+    let preset = crate::settings::resolve_dream_skin_style_preset(&theme.id, &theme.style_preset);
+    !matches!(preset.as_str(), "codex-snow" | "glass-vision")
+        && target_palette_accent(theme).is_none()
+}
+
+fn restore_backup_setting(
+    desktop: &mut Table,
+    backup: &DreamSkinThemeBackup,
+    key: &str,
+) -> anyhow::Result<()> {
+    match backup.values.get(key).and_then(Option::as_deref) {
+        Some(serialized) => {
+            desktop[key] = parse_backup_item(backup, serialized)
+                .with_context(|| format!("failed to restore Dream Skin setting {key}"))?;
+        }
+        None => {
+            desktop.remove(key);
+        }
+    }
+    Ok(())
+}
+
+fn target_chrome_theme(
+    theme_config: &DreamSkinThemeConfig,
+    profile: TargetBaseTheme,
+) -> InlineTable {
+    let accent = target_palette_accent(theme_config).unwrap_or(profile.accent);
     let mut fonts = InlineTable::new();
     fonts.insert("code", "Cascadia Code".into());
     fonts.insert("ui", "Microsoft YaHei UI".into());
@@ -410,7 +451,7 @@ fn target_chrome_theme(profile: TargetBaseTheme) -> InlineTable {
     semantic_colors.insert("skill", profile.skill.into());
 
     let mut theme = InlineTable::new();
-    theme.insert("accent", profile.accent.into());
+    theme.insert("accent", accent.into());
     theme.insert("contrast", profile.contrast.into());
     theme.insert("fonts", Value::InlineTable(fonts));
     theme.insert("ink", profile.ink.into());

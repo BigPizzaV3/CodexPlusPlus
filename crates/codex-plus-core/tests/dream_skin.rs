@@ -187,11 +187,9 @@ keep = "before"
         applied_doc["desktop"]["appearanceTheme"].as_str(),
         Some("dark")
     );
-    assert!(applied.contains("appearanceLightCodeThemeId = \"codex\""));
-    assert!(applied.contains("accent = \"#B65CFF\""));
-    assert!(applied.contains("ink = \"#4A235F\""));
-    assert!(applied.contains("surface = \"#FFF4FA\""));
-    assert!(applied.contains("opaqueWindows = true"));
+    assert!(applied.contains("appearanceLightCodeThemeId = \"custom-light\""));
+    assert!(applied.contains("accent = \"#112233\""));
+    assert!(applied.contains("opaqueWindows = false"));
     assert!(applied.contains("keep = \"before\""));
 
     std::fs::write(
@@ -376,7 +374,11 @@ fn snow_base_theme_matches_the_target_project_and_switching_back_restores_appear
         dream_doc["desktop"]["appearanceTheme"].as_str(),
         Some("dark")
     );
-    assert!(dream_config.contains("accent = \"#B65CFF\""));
+    assert!(
+        dream_doc["desktop"]
+            .get("appearanceLightChromeTheme")
+            .is_none()
+    );
 }
 
 #[test]
@@ -399,6 +401,64 @@ fn glass_vision_base_theme_matches_the_target_project() {
     assert!(config.contains("contrast = 54"));
     assert!(config.contains("opaqueWindows = false"));
     assert!(config.contains("surface = \"#EAF7FF\""));
+}
+
+#[test]
+fn base_theme_applies_explicit_appearance_and_palette_accent() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex-home");
+    let state = temp.path().join("state");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        "[desktop]\nappearanceTheme = \"light\"\n",
+    )
+    .unwrap();
+    let mut theme = DreamSkinThemeConfig::default();
+    theme.extra_fields.insert(
+        "appearance".to_string(),
+        serde_json::Value::String("dark".to_string()),
+    );
+    theme.extra_fields.insert(
+        "palette".to_string(),
+        serde_json::json!({ "accent": "#123456" }),
+    );
+
+    sync_dream_skin_base_theme_in_home(&home, &state, true, &theme).unwrap();
+
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    let document = config.parse::<toml_edit::DocumentMut>().unwrap();
+    assert_eq!(
+        document["desktop"]["appearanceTheme"].as_str(),
+        Some("dark")
+    );
+    assert_eq!(
+        document["desktop"]["appearanceLightChromeTheme"]["accent"].as_str(),
+        Some("#123456")
+    );
+}
+
+#[test]
+fn non_fixed_preset_without_accent_preserves_native_chrome_theme() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex-home");
+    let state = temp.path().join("state");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        "[desktop]\nappearanceLightCodeThemeId = \"native\"\nappearanceLightChromeTheme = { accent = \"#112233\" }\n",
+    )
+    .unwrap();
+    let mut theme = DreamSkinThemeConfig::default();
+    theme.id = "preset-cyber-neon".to_string();
+    theme.style_preset = "cyber-neon".to_string();
+
+    sync_dream_skin_base_theme_in_home(&home, &state, true, &theme).unwrap();
+
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(config.contains("appearanceLightCodeThemeId = \"native\""));
+    assert!(config.contains("accent = \"#112233\""));
+    assert!(!config.contains("#B65CFF"));
 }
 
 #[test]
