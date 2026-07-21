@@ -381,7 +381,7 @@ fn rejects_cdp_websocket_with_wrong_scheme_or_missing_port() {
 
 #[test]
 fn injection_script_installs_dream_skin_from_backend_settings() {
-    let settings = codex_plus_core::settings::BackendSettings {
+    let mut settings = codex_plus_core::settings::BackendSettings {
         codex_app_dream_skin_enabled: true,
         codex_app_dream_skin_paused: false,
         codex_app_dream_skin_theme_config: codex_plus_core::settings::DreamSkinThemeConfig {
@@ -390,6 +390,17 @@ fn injection_script_installs_dream_skin_from_backend_settings() {
         },
         ..Default::default()
     };
+    settings
+        .codex_app_dream_skin_theme_config
+        .extra_fields
+        .insert(
+            "companion".to_string(),
+            serde_json::json!({
+                "dataUrl": "data:image/webp;base64,UklGRg==",
+                "width": 96,
+                "side": "right"
+            }),
+        );
     let script = assets::injection_script_with_settings(57321, &settings);
 
     assert!(script.contains("dreamSkinEnabled: \"codexAppDreamSkinEnabled\""));
@@ -418,6 +429,9 @@ fn injection_script_installs_dream_skin_from_backend_settings() {
     assert!(script.contains("state.observer?.disconnect?.()"));
     assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_PAYLOAD_SIGNATURE__"));
     assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_THEME__"));
+    assert!(script.contains("data:image/webp;base64,UklGRg=="));
+    assert!(script.contains("codex-dream-skin-companion"));
+    assert!(script.contains("removeDreamSkinCompanion"));
     if cfg!(windows) {
         assert!(script.contains(":root.codex-dream-skin"));
         assert!(!script.contains("薛凯琪专属定制皮肤"));
