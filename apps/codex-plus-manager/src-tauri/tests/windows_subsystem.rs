@@ -61,10 +61,21 @@ fn manager_close_minimizes_to_tray_without_confirmation() {
     assert!(!lib_rs.contains("MessageDialogButtons"));
     assert!(!lib_rs.contains(".dialog()"));
     assert!(!lib_rs.contains("manager://close-requested"));
-    assert!(lib_rs.contains("let _ = close_event_window.hide();"));
+    assert!(lib_rs.contains("\"close.hide_to_tray\""));
+    assert!(lib_rs.contains("\"close.minimize_fallback\""));
+    assert!(lib_rs.contains("manager.window_operation_failed"));
     assert!(!app_tsx.contains("CloseConfirmDialog"));
     assert!(app_tsx.contains("manager_exit_app"));
     assert!(app_tsx.contains("manager_hide_to_tray"));
+}
+
+#[test]
+fn manager_centers_window_on_startup() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+
+    assert!(lib_rs.contains(".center()"));
+    assert!(!lib_rs.contains("\"restore.center\""));
 }
 
 #[test]
