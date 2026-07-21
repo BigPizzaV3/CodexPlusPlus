@@ -1514,11 +1514,12 @@ fn apply_model_catalog_to_config(
         "model-catalogs/{}.json",
         sanitize_catalog_filename(&profile.id)
     );
+    let custom_responses = custom_responses_provider(config_text);
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
     if let Some(existing) = root_key_string(config_text, "model_catalog_json") {
         if existing != catalog_relative {
-            if custom_responses_provider(config_text)
+            if custom_responses
                 && copy_standard_responses_catalog(home, &existing, &catalog_relative)?
             {
                 let mut doc = parse_toml_document(config_text)?;
@@ -1530,7 +1531,7 @@ fn apply_model_catalog_to_config(
     }
     if let Some(external_catalog) = live_external_model_catalog(home) {
         let mut doc = parse_toml_document(config_text)?;
-        if custom_responses_provider(config_text)
+        if custom_responses
             && copy_standard_responses_catalog(home, &external_catalog, &catalog_relative)?
         {
             doc["model_catalog_json"] = toml_edit::value(catalog_relative);
@@ -1562,7 +1563,14 @@ fn apply_model_catalog_to_config(
     if let Some(parent) = catalog_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let catalog_json = crate::model_suffix::build_model_catalog_json(&entries, fallback);
+    // Only custom Responses providers need the standard Responses tool wire format. Official
+    // profiles and custom Chat Completions retain the model template's original Lite behavior.
+    let catalog_json = crate::model_suffix::build_model_catalog_json_with_capabilities(
+        &entries,
+        fallback,
+        None,
+        custom_responses.then_some(false),
+    );
     std::fs::write(&catalog_path, catalog_json)?;
     let mut doc = parse_toml_document(config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
