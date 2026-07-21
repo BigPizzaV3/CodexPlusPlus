@@ -943,6 +943,7 @@ export const EN_BACKEND: Record<string, string> = {
   "脚本删除失败": "Failed to delete script",
   "只允许打开 http 或 https 链接。": "Only http or https links can be opened.",
   "已在系统浏览器打开链接。": "Link opened in system browser.",
+  // 以下键与 EN_PLAIN 同名，分属不同对象，属有意重复。
   "安装入口": "Install entrypoints",
   "卸载入口": "Uninstall entrypoints",
   "修复快捷方式": "Repair shortcuts",
@@ -991,6 +992,7 @@ export const EN_BACKEND: Record<string, string> = {
   "纯 API 配置写入后未检测到完整 custom provider，请检查 config.toml 和供应商 API Key。": "After writing pure API config, no complete custom provider was detected. Please check config.toml and the provider API Key.",
   "供应商导入后重新读取设置失败": "Failed to reload settings after provider import",
   "诊断日志已写入。": "Diagnostics log written.",
+  // 与 EN_PLAIN 的 "Untitled provider" 翻译不同，属有意区分。
   "未命名供应商": "Unnamed provider",
   "响应内容为空": "Response is empty",
 };
