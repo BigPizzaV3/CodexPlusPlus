@@ -487,10 +487,12 @@ impl LauncherDataService {
     }
 
     fn storage_adapter(&self) -> codex_plus_data::SQLiteStorageAdapter {
+        let allowed_db_paths = self.candidate_db_paths();
         codex_plus_data::SQLiteStorageAdapter::new(
             self.db_path.clone(),
             codex_plus_data::BackupStore::new(self.backup_dir.clone()),
         )
+        .with_allowed_db_paths(allowed_db_paths)
     }
 }
 
