@@ -1,5 +1,5 @@
 (() => {
-  const runtimeVersion = "6";
+  const runtimeVersion = "7";
   const existing = window.__codexPlusPetRealMouseLook;
   if (existing?.version === runtimeVersion && existing?.isReady?.()) return;
   existing?.stop?.();
@@ -48,6 +48,12 @@
       },
       cancel(owner) {
         if (state.owner !== owner) return false;
+        const pointerId = state.pointerId;
+        const captureTarget = state.captureTarget;
+        try {
+          if (pointerId != null) captureTarget?.releasePointerCapture?.(pointerId);
+        } catch {
+        }
         state.pointerId = null;
         state.owner = "";
         state.captureTarget = null;
@@ -248,7 +254,8 @@
   function releaseDragging(event) {
     if (!dragging) return;
     if (event) {
-      if (interaction.owns(event, interactionOwner)) interaction.end(event, interactionOwner);
+      if (!interaction.owns(event, interactionOwner)) return;
+      interaction.end(event, interactionOwner);
     } else {
       interaction.cancel(interactionOwner);
     }
