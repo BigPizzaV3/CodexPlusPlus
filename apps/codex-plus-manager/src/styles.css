@@ -5194,6 +5194,8 @@ select {
   .dream-skin-pending-state .button {
     grid-column: 2;
     justify-self: start;
+  }
+}
 /* ── VLM 测试 Modal ─────────────────────────────────────────────── */
 .vlm-test-panel {
   max-width: 560px;
