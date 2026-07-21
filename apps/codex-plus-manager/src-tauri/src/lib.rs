@@ -51,6 +51,7 @@ pub fn run() {
             let mut main_window_builder =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
                     .title("Codex++ 管理工具")
+                    .center()
                     .inner_size(1180.0, 820.0)
                     .min_inner_size(960.0, 720.0);
             if let Some(icon) = app.default_window_icon().cloned() {
@@ -220,21 +221,48 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
     let close_event_window = event_window.clone();
 
     event_window.on_window_event(move |event| match event {
-        WindowEvent::Resized(_) => {
-            if matches!(minimized_window.is_minimized(), Ok(true)) {
-                let _ = minimized_window.hide();
+        WindowEvent::Resized(_) => match minimized_window.is_minimized() {
+            Ok(true) => {
+                record_window_operation_result("minimize.hide_to_tray", minimized_window.hide());
             }
-        }
+            Ok(false) => {}
+            Err(error) => record_window_operation_error("minimize.read_state", error),
+        },
         WindowEvent::CloseRequested { api, .. } => {
             if APP_EXITING.load(Ordering::SeqCst) {
                 return;
             }
 
             api.prevent_close();
-            let _ = close_event_window.hide();
+            if !record_window_operation_result("close.hide_to_tray", close_event_window.hide()) {
+                record_window_operation_result(
+                    "close.minimize_fallback",
+                    close_event_window.minimize(),
+                );
+            }
         }
         _ => {}
     });
+}
+
+fn record_window_operation_result(operation: &str, result: tauri::Result<()>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            record_window_operation_error(operation, error);
+            false
+        }
+    }
+}
+
+fn record_window_operation_error(operation: &str, error: tauri::Error) {
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.window_operation_failed",
+        serde_json::json!({
+            "operation": operation,
+            "error": error.to_string()
+        }),
+    );
 }
 
 #[tauri::command]
@@ -245,7 +273,7 @@ fn manager_exit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
 
 #[tauri::command]
 fn manager_hide_to_tray<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
-    let _ = window.hide();
+    record_window_operation_result("command.hide_to_tray", window.hide());
 }
 
 #[tauri::command]
@@ -316,9 +344,10 @@ fn record_tray_dream_skin_result(action: &str, result: anyhow::Result<()>) {
 
 fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
     if let Some(window) = app_handle.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+        record_window_operation_result("restore.unminimize", window.unminimize());
+        record_window_operation_result("restore.show", window.show());
+        record_window_operation_result("restore.center", window.center());
+        record_window_operation_result("restore.focus", window.set_focus());
     }
 }
 
