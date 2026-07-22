@@ -409,6 +409,111 @@ fn collect_urls(msg: &Value) -> Vec<String> {
 
 /// 收集最近 `depth_limit` 轮对话（所有 user 消息，无论是否带图）中的带图消息（最新优先），
 /// 返回 `(message_index, Vec<url>)`。
+// ── Data URL extraction (for tool output images) ─────────────────────
+
+/// 提取字符串中所有 base64 图片 data URL，返回 (start, end, url) 列表。
+/// 手动解析（不引入 regex 依赖），匹配模式：data:image/{subtype};base64,{base64数据}
+pub fn extract_data_urls(text: &str) -> Vec<(usize, usize, String)> {
+    let prefix = "data:image/";
+    let mut results = Vec::new();
+    let mut search_from = 0;
+    while search_from < text.len() {
+        let Some(rel_start) = text[search_from..].find(prefix) else {
+            break;
+        };
+        let abs_start = search_from + rel_start;
+        let rest = &text[abs_start..];
+        let Some(sep_pos) = rest.find(";base64,") else {
+            search_from = abs_start + prefix.len();
+            continue;
+        };
+        let data_start = abs_start + sep_pos + ";base64,".len();
+        let data_end = text[data_start..]
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '+' && c != '/' && c != '=')
+            .map(|p| data_start + p)
+            .unwrap_or(text.len());
+        let url = text[abs_start..data_end].to_string();
+        results.push((abs_start, data_end, url));
+        search_from = data_end;
+    }
+    results
+}
+
+/// Strip 模式：把 tool/function_call_output 消息中的 data URL 替换为占位符。
+/// 检查 output 字段（Responses function_call_output）和 content 字段（Chat tool 消息）。
+pub fn strip_data_urls_in_messages(messages: &mut [Value]) -> usize {
+    let mut total = 0;
+    for msg in messages.iter_mut() {
+        for key in &["output", "content"] {
+            let Some(text) = msg.get(key).and_then(Value::as_str).map(String::from) else {
+                continue;
+            };
+            let urls = extract_data_urls(&text);
+            if urls.is_empty() {
+                continue;
+            }
+            let mut new_text = text;
+            for (start, end, _) in urls.iter().rev() {
+                new_text.replace_range(*start..*end, "[图片已省略]");
+                total += 1;
+            }
+            if let Some(field) = msg.get_mut(key) {
+                *field = Value::String(new_text);
+            }
+        }
+    }
+    total
+}
+
+/// Vlm 模式：调 VLM 分析 tool/function_call_output 消息中的 data URL，
+/// 把描述替换回字符串，base64 本体被删除。VLM 失败时 fail-open 替换为失败提示。
+/// 返回处理的图片数。
+pub async fn analyze_data_urls_in_messages(
+    messages: &mut [Value],
+    vlm_config: &VlmConfig,
+    client: &reqwest::Client,
+) -> usize {
+    let mut total = 0;
+    for msg in messages.iter_mut() {
+        for key in &["output", "content"] {
+            let Some(text) = msg.get(key).and_then(Value::as_str).map(String::from) else {
+                continue;
+            };
+            let urls = extract_data_urls(&text);
+            if urls.is_empty() {
+                continue;
+            }
+            let url_strings: Vec<String> = urls.iter().map(|(_, _, u)| u.clone()).collect();
+            match call_vlm_batch(&url_strings, TIER1_PROMPT, vlm_config, client, BATCH_MAX_ATTEMPTS).await {
+                Ok(descs) => {
+                    let mut new_text = text;
+                    for ((start, end, url), desc) in urls.iter().rev().zip(descs.iter().rev()) {
+                        let desc = truncate_char_safe(desc, DESC_MAX_CHARS);
+                        cache_put(url_hash(url), desc.clone());
+                        let replacement = format!("[图片描述] {desc}");
+                        new_text.replace_range(*start..*end, &replacement);
+                        total += 1;
+                    }
+                    if let Some(field) = msg.get_mut(key) {
+                        *field = Value::String(new_text);
+                    }
+                }
+                Err(_) => {
+                    let mut new_text = text;
+                    for (start, end, _) in urls.iter().rev() {
+                        new_text.replace_range(*start..*end, "[图片描述失败，视觉模型调用失败]");
+                        total += 1;
+                    }
+                    if let Some(field) = msg.get_mut(key) {
+                        *field = Value::String(new_text);
+                    }
+                }
+            }
+        }
+    }
+    total
+}
+
 fn collect_recent_image_messages(
     messages: &[Value],
     depth_limit: usize,
@@ -2524,6 +2629,84 @@ mod tests {
         assert_eq!(count_images(&messages), 0);
     }
 
+    // ── R4 data URL 提取和替换测试 ──────────────────────────────
+
+    #[test]
+    fn extract_data_urls_finds_single_image() {
+        let text = "data:image/png;base64,iVBORw0KGgo=";
+        let urls = extract_data_urls(text);
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].2, "data:image/png;base64,iVBORw0KGgo=");
+    }
+
+    #[test]
+    fn extract_data_urls_finds_url_in_mixed_text() {
+        let text = "result: data:image/png;base64,abc123== done";
+        let urls = extract_data_urls(text);
+        assert_eq!(urls.len(), 1);
+        assert!(urls[0].2.starts_with("data:image/png;base64,abc123"));
+        assert_eq!(&text[..urls[0].0], "result: ");
+        assert_eq!(text[urls[0].1..].find(" done"), Some(0));
+    }
+
+    #[test]
+    fn extract_data_urls_finds_multiple_urls() {
+        let text = "a:data:image/png;base64,AAA b:data:image/jpeg;base64,BBB";
+        let urls = extract_data_urls(text);
+        assert_eq!(urls.len(), 2);
+        assert!(urls[0].2.contains("png"));
+        assert!(urls[1].2.contains("jpeg"));
+    }
+
+    #[test]
+    fn extract_data_urls_ignores_non_image_data_url() {
+        let text = "data:text/plain;base64,hello";
+        let urls = extract_data_urls(text);
+        assert_eq!(urls.len(), 0, "data:text/plain 不是 image/，不应识别");
+    }
+
+    #[test]
+    fn extract_data_urls_returns_empty_for_no_url() {
+        let urls = extract_data_urls("just plain text, no images here");
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn strip_data_urls_in_messages_replaces_with_placeholder() {
+        let mut messages = vec![serde_json::json!({
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "view_image result: data:image/png;base64,iVBORw0KGgo="
+        })];
+        let n = strip_data_urls_in_messages(&mut messages);
+        assert_eq!(n, 1);
+        let content = messages[0]["content"].as_str().unwrap();
+        assert!(content.contains("[图片已省略]"));
+        assert!(!content.contains("base64"));
+    }
+
+    #[test]
+    fn strip_data_urls_handles_responses_function_call_output() {
+        let mut messages = vec![serde_json::json!({
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": "data:image/png;base64,iVBOR="
+        })];
+        let n = strip_data_urls_in_messages(&mut messages);
+        assert_eq!(n, 1);
+        let output = messages[0]["output"].as_str().unwrap();
+        assert!(output.contains("[图片已省略]"));
+    }
+
+    #[test]
+    fn strip_data_urls_noop_for_no_data_urls() {
+        let mut messages = vec![serde_json::json!({
+            "role": "tool", "content": "just text output, no images"
+        })];
+        let n = strip_data_urls_in_messages(&mut messages);
+        assert_eq!(n, 0);
+    }
+
     #[test]
     fn strip_all_images_counted_returns_correct_count() {
         let mut messages = vec![
@@ -2684,6 +2867,95 @@ mod tests {
         inject_cannot_see_note(&mut messages, 0, "测试原因");
         let parts = messages[0]["content"].as_array().unwrap();
         assert_eq!(parts.len(), 1);
+    }
+
+    // ── R4 VLM data URL 分析测试 ─────────────────────────────────
+
+    /// Vlm 模式：tool 消息含 data URL -> VLM 分析 + 描述替换 + base64 删除。
+    #[tokio::test]
+    async fn analyze_data_urls_replaces_with_vlm_description() {
+        cache_clear_for_tests();
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "这是一张截图"}}]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let config = VlmConfig {
+            api_key: "k".into(), model: "m".into(), base_url: mock_server.uri(),
+            ..Default::default()
+        };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let mut messages = vec![serde_json::json!({
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "view_image: data:image/png;base64,iVBORw0KGgoAAAANS"
+        })];
+
+        let n = analyze_data_urls_in_messages(&mut messages, &config, &client).await;
+        assert_eq!(n, 1, "应处理 1 张 data URL 图片");
+        let content = messages[0]["content"].as_str().unwrap();
+        assert!(content.contains("这是一张截图"), "描述应替换 data URL: {content}");
+        assert!(!content.contains("base64"), "base64 本体应被删除: {content}");
+    }
+
+    /// VLM 失败 -> fail-open 替换为失败提示（不保留 base64）。
+    #[tokio::test]
+    async fn analyze_data_urls_failopen_on_vlm_error() {
+        cache_clear_for_tests();
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let config = VlmConfig {
+            api_key: "k".into(), model: "m".into(), base_url: mock_server.uri(),
+            ..Default::default()
+        };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let mut messages = vec![serde_json::json!({
+            "role": "tool",
+            "content": "data:image/png;base64,iVBOR="
+        })];
+
+        let n = analyze_data_urls_in_messages(&mut messages, &config, &client).await;
+        assert_eq!(n, 1);
+        let content = messages[0]["content"].as_str().unwrap();
+        assert!(content.contains("图片描述失败"), "应注入失败提示: {content}");
+        assert!(!content.contains("base64"), "base64 不应残留: {content}");
+    }
+
+    /// 无 data URL 时不影响原文本。
+    #[tokio::test]
+    async fn analyze_data_urls_noop_for_plain_text() {
+        cache_clear_for_tests();
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let config = VlmConfig {
+            api_key: "k".into(), model: "m".into(), base_url: mock_server.uri(),
+            ..Default::default()
+        };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let mut messages = vec![serde_json::json!({
+            "role": "tool", "content": "plain text output, no images"
+        })];
+        let n = analyze_data_urls_in_messages(&mut messages, &config, &client).await;
+        assert_eq!(n, 0);
+        assert_eq!(messages[0]["content"], "plain text output, no images");
     }
 
     // ── VLM failure fail-open test ────────────────────────────────

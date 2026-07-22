@@ -849,14 +849,17 @@ async fn upstream_request_parts(
                 for key in &["messages", "input"] {
                     if let Some(arr) = body.get_mut(key).and_then(Value::as_array_mut) {
                         let n = crate::vision::strip_images_only_counted(arr);
-                        if n > 0 {
+                        // 处理 tool/function_call_output 消息中的 data URL（R4）
+                        let n_data = crate::vision::strip_data_urls_in_messages(arr);
+                        let total = n + n_data;
+                        if total > 0 {
                             let _ = crate::diagnostic_log::append_diagnostic_log(
                                 "protocol_proxy.vl_strip",
-                                json!({"reason": "strip_mode", "n": n}),
+                                json!({"reason": "strip_mode", "n": total, "n_data_url": n_data}),
                             );
                             crate::vision::inject_cannot_see_note_slice(
                                 arr,
-                                n,
+                                total,
                                 "未配置视觉模型中转，图片已剥离",
                             );
                         }
@@ -888,6 +891,16 @@ async fn upstream_request_parts(
                                 &vlm_client,
                             )
                             .await;
+                            // 处理 tool/function_call_output 消息中的 data URL（R4）
+                            let n_data = crate::vision::analyze_data_urls_in_messages(
+                                arr, &vlm_config, &vlm_client,
+                            ).await;
+                            if n_data > 0 {
+                                let _ = crate::diagnostic_log::append_diagnostic_log(
+                                    "protocol_proxy.vl_tool_image",
+                                    json!({"n_data_url": n_data}),
+                                );
+                            }
                         }
                     }
                 }
