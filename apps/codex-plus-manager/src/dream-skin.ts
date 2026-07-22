@@ -40,6 +40,13 @@ export type DreamSkinThemeConfig = {
   promoSub?: string;
   promoUrl?: string;
   image?: string;
+  companion?: {
+    dataUrl: string;
+    width?: number;
+    side?: "auto" | "left" | "right";
+    offsetX?: number;
+    offsetY?: number;
+  };
   [key: string]: unknown;
 };
 
