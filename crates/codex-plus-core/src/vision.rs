@@ -853,6 +853,35 @@ async fn call_vlm_batch(
     Ok(all_descs)
 }
 
+// ── Phase 2 后台分析 ────────────────────────────────────────────────────
+
+/// 后台分析图片并写入缓存（不注入到消息中）。
+/// 失败静默跳过，缓存保持未命中状态供后续请求重试。
+async fn background_analyze_and_cache(
+    urls: &[String],
+    config: &VlmConfig,
+    client: &reqwest::Client,
+) {
+    if urls.is_empty() {
+        return;
+    }
+    match call_vlm_batch(urls, TIER1_PROMPT, config, client, BATCH_MAX_ATTEMPTS).await {
+        Ok(descs) => {
+            for (url, desc) in urls.iter().zip(descs.iter()) {
+                let desc = truncate_char_safe(desc, DESC_MAX_CHARS);
+                cache_put(url_hash(url), desc.clone());
+            }
+        }
+        Err(e) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "vlm_phase2_error",
+                json!({"error": format!("{e:#}"), "url_count": urls.len()}),
+            );
+        }
+    }
+}
+
+
 // ── Description injection ─────────────────────────────────────────────
 
 /// 向指定 user 消息末尾注入分析文本。
@@ -1183,8 +1212,35 @@ pub async fn strip_image_blocks(
 
     // 6. Phase 2 后台准备：在 strip 之前收集未缓存的 URL 列表。
     // Phase 2 仅当 X > 10 时触发，分析 50 轮深度内未缓存的图片，写入缓存供后续请求使用。
-    // NOTE: Phase 2 逻辑完整迁移留 Task 6；当前占位保留结构。
-    let bg_config_opt: Option<(VlmConfig, Vec<String>)> = None;
+    let bg_config_opt: Option<(VlmConfig, Vec<String>)> = if x_budget > 10 {
+        let mut bg_urls: Vec<String> = Vec::new();
+        // 收集黄金窗口外 + 深层未缓存 URL（最多 X 个，不占用主预算）。
+        for (msg_idx, urls) in all_image_msgs.iter() {
+            if bg_urls.len() >= x_budget {
+                break;
+            }
+            // 跳过黄金窗口内的消息（Phase 2 只收集深层历史）
+            if *msg_idx >= golden_user_cutoff  {
+                continue;
+            }
+            for url in urls {
+                if bg_urls.len() >= x_budget {
+                    break;
+                }
+                let key = url_hash(url);
+                if !cache_contains(&key) {
+                    bg_urls.push(url.clone());
+                }
+            }
+        }
+        if !bg_urls.is_empty() {
+            Some((vlm_config.clone(), bg_urls))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // 7. 截断注入以适配上下文窗口。
     // estimate_tokens = bytes/2，故 available × 2 = 可用字节预算。
@@ -1241,8 +1297,17 @@ pub async fn strip_image_blocks(
     }
 
     // 10. Phase 2 后台：异步分析未缓存图片写入缓存（X > 10 时触发）。
-    // Phase 2 完整迁移留 Task 6。
-    let _ = bg_config_opt;
+    if let Some((bg_config, bg_urls)) = bg_config_opt {
+        let bg_client = client.clone();
+        tokio::spawn(async move {
+            let n = bg_urls.len();
+            let _ = background_analyze_and_cache(&bg_urls, &bg_config, &bg_client).await;
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "vlm_phase2_done",
+                json!({"urls_analyzed": n}),
+            );
+        });
+    }
 }
 
 // ── Test wrapper ───────────────────────────────────────────────────────
@@ -2331,6 +2396,103 @@ mod tests {
     }
 
     // ── new helpers tests ─────────────────────────────────────────
+
+    // ── Phase 2 后台分析测试 ────────────────────────────────────
+
+    /// x_budget>10 时，深层未缓存 URL 在后台被分析写入缓存。
+    #[tokio::test]
+    async fn phase2_background_analyzes_deep_urls_when_x_budget_gt_10() {
+        cache_clear_for_tests();
+        let mock_server = MockServer::start().await;
+        // VLM 响应只有 1 张图的描述（Phase 2 只收集 1 个深层 URL）
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "deep-desc"}}]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let vlm_config = VlmConfig {
+            api_key: "k".into(), model: "m".into(), base_url: mock_server.uri(),
+            ..Default::default()
+        };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        // 构造 12 轮：前 11 轮在黄金窗口外（只有第 0 轮有图），第 12 轮是当前轮
+        // context_window=900000 -> X=8100>10
+        let mut messages: Vec<serde_json::Value> = Vec::new();
+        messages.push(serde_json::json!({
+            "role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "https://phase2.example.com/deep.png"}},
+            ]
+        }));
+        for i in 1..11 {
+            messages.push(serde_json::json!({
+                "role": "user", "content": [{"type": "text", "text": format!("round {i}")}]
+            }));
+        }
+        messages.push(serde_json::json!({
+            "role": "user", "content": [{"type": "text", "text": "current question"}]
+        }));
+
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "900000", "gpt-4", &client).await;
+
+        // 等待后台 spawn 完成
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // 深层 URL 应已写入缓存
+        let key = url_hash("https://phase2.example.com/deep.png");
+        assert_eq!(
+            cache_get(&key),
+            Some("deep-desc".to_string()),
+            "Phase 2 后台应分析深层 URL 并写入缓存"
+        );
+    }
+
+    /// x_budget<=10 时不触发 Phase 2，深层 URL 不被分析。
+    #[tokio::test]
+    async fn phase2_not_triggered_when_x_budget_le_10() {
+        cache_clear_for_tests();
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "should-not-appear"}}]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let vlm_config = VlmConfig {
+            api_key: "k".into(), model: "m".into(), base_url: mock_server.uri(),
+            ..Default::default()
+        };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        // 构造 12 轮：前 11 轮在黄金窗口外（只有第 0 轮有图），第 12 轮是当前轮
+        // context_window=800 -> X=6<=10，不触发 Phase 2
+        let mut messages: Vec<serde_json::Value> = Vec::new();
+        messages.push(serde_json::json!({
+            "role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "https://phase2-no.example.com/hist.png"}},
+            ]
+        }));
+        for i in 1..11 {
+            messages.push(serde_json::json!({
+                "role": "user", "content": [{"type": "text", "text": format!("round {i}")}]
+            }));
+        }
+        messages.push(serde_json::json!({
+            "role": "user", "content": [{"type": "text", "text": "current"}]
+        }));
+
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "800", "gpt-4", &client).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // 深层 URL 不应被后台分析写入缓存
+        let key = url_hash("https://phase2-no.example.com/hist.png");
+        assert_eq!(cache_get(&key), None, "x_budget<=10 时不应后台分析深层 URL");
+    }
 
     #[test]
     fn count_images_counts_all_images_across_messages() {
