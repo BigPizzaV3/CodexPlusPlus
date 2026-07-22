@@ -2284,6 +2284,27 @@ body {
   overflow-wrap: anywhere;
 }
 
+.confirm-modal {
+  max-height: min(760px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.confirm-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin-bottom: 14px;
+}
+
+.confirm-modal-actions {
+  flex: 0 0 auto;
+  margin-top: 0;
+  padding-top: 14px;
+  border-top: 1px solid hsl(var(--border));
+}
+
 .session-index-cleanup-modal {
   max-height: min(760px, calc(100vh - 48px));
   overflow: hidden;
