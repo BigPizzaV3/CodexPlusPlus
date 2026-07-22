@@ -2543,11 +2543,14 @@ mod tests {
 
         strip_image_blocks(&mut messages, &vlm_config, "{}", "900000", "gpt-4", &client).await;
 
-        // 等待后台 spawn 完成
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // 深层 URL 应已写入缓存
+        // 轮询等待后台 spawn 完成（最多 5 秒，CI 可能较慢）
         let key = url_hash("https://phase2.example.com/deep.png");
+        for _ in 0..50 {
+            if cache_get(&key).is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         assert_eq!(
             cache_get(&key),
             Some("deep-desc".to_string()),
@@ -2592,10 +2595,14 @@ mod tests {
         }));
 
         strip_image_blocks(&mut messages, &vlm_config, "{}", "800", "gpt-4", &client).await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // 深层 URL 不应被后台分析写入缓存
+        // 轮询等待（Phase 2 不应触发，缓存应始终为空）
         let key = url_hash("https://phase2-no.example.com/hist.png");
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if cache_get(&key).is_some() {
+                break;
+            }
+        }
         assert_eq!(cache_get(&key), None, "x_budget<=10 时不应后台分析深层 URL");
     }
 
