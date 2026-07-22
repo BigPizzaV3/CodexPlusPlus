@@ -829,17 +829,28 @@ async fn call_vlm_batch(
         return Ok(Vec::new());
     }
     let salt = urls.first().map(String::as_str).unwrap_or("");
-    let mut last_err: Option<anyhow::Error> = None;
-    for attempt in 0..max_attempts {
-        if attempt > 0 {
-            tokio::time::sleep(backoff_delay(attempt, salt)).await;
+    let mut all_descs: Vec<String> = Vec::with_capacity(urls.len());
+    // 按 BATCH_SIZE 分批，每批独立重试，避免一次性发送过多图片触发 provider 限制。
+    for chunk in urls.chunks(BATCH_SIZE) {
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 0..max_attempts {
+            if attempt > 0 {
+                tokio::time::sleep(backoff_delay(attempt, salt)).await;
+            }
+            match call_vlm_batch_once(chunk, prompt, config, client).await {
+                Ok(v) => {
+                    all_descs.extend(v);
+                    last_err = None;
+                    break;
+                }
+                Err(e) => last_err = Some(e),
+            }
         }
-        match call_vlm_batch_once(urls, prompt, config, client).await {
-            Ok(v) => return Ok(v),
-            Err(e) => last_err = Some(e),
+        if let Some(e) = last_err {
+            return Err(e);
         }
     }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("max_attempts=0")))
+    Ok(all_descs)
 }
 
 // ── Description injection ─────────────────────────────────────────────
@@ -2563,6 +2574,73 @@ mod tests {
     }
 
     // ── wiremock integration tests ───────────────────────────────
+
+    // ── R2 BATCH_SIZE 分批测试 ──────────────────────────────────
+
+    /// 7 张图（>BATCH_SIZE=5）应触发 2 次 VLM 调用（5+2），描述按顺序对应。
+    #[tokio::test]
+    async fn call_vlm_batch_chunks_by_batch_size() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "[[图片1]]batch1-1\n[[图片2]]batch1-2\n[[图片3]]batch1-3\n[[图片4]]batch1-4\n[[图片5]]batch1-5"}}]
+            })))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "[[图片1]]batch2-1\n[[图片2]]batch2-2"}}]
+            })))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = VlmConfig {
+            api_key: "k".into(), model: "m".into(), base_url: mock_server.uri(),
+            ..Default::default()
+        };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let urls: Vec<String> = (0..7).map(|i| format!("https://chunk.example.com/img{i}.png")).collect();
+
+        let descs = call_vlm_batch(&urls, TIER1_PROMPT, &config, &client, BATCH_MAX_ATTEMPTS)
+            .await
+            .unwrap();
+
+        assert_eq!(descs.len(), 7, "7 张图应返回 7 个描述");
+        assert!(descs[0].contains("batch1-1"), "第 1 张描述对应第 1 批第 1 图");
+        assert!(descs[4].contains("batch1-5"), "第 5 张描述对应第 1 批第 5 图");
+        assert!(descs[5].contains("batch2-1"), "第 6 张描述对应第 2 批第 1 图");
+        assert!(descs[6].contains("batch2-2"), "第 7 张描述对应第 2 批第 2 图");
+    }
+
+    /// 恰好 5 张（=BATCH_SIZE）应只触发 1 次调用。
+    #[tokio::test]
+    async fn call_vlm_batch_exact_batch_size_single_call() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "[[图片1]]d1\n[[图片2]]d2\n[[图片3]]d3\n[[图片4]]d4\n[[图片5]]d5"}}]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let config = VlmConfig {
+            api_key: "k".into(), model: "m".into(), base_url: mock_server.uri(),
+            ..Default::default()
+        };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let urls: Vec<String> = (0..5).map(|i| format!("https://exact.example.com/img{i}.png")).collect();
+
+        let descs = call_vlm_batch(&urls, TIER1_PROMPT, &config, &client, BATCH_MAX_ATTEMPTS)
+            .await
+            .unwrap();
+        assert_eq!(descs.len(), 5);
+    }
 
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
