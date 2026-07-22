@@ -6610,15 +6610,17 @@ function ConfirmDialog({
 }) {
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-card">
+      <div className="modal-card confirm-modal">
         <div className="modal-head">
           <div>
             <h2>{confirm.title}</h2>
-            <p className="modal-message">{confirm.message}</p>
           </div>
           <button className="toast-close" onClick={onCancel} type="button">×</button>
         </div>
-        <Toolbar>
+        <div className="confirm-modal-body">
+          <p className="modal-message">{confirm.message}</p>
+        </div>
+        <Toolbar className="confirm-modal-actions">
           <Button onClick={onConfirm}>
             <Trash2 className="h-4 w-4" />
             {confirm.confirmText}
@@ -6777,8 +6779,8 @@ function CardHead({ title, detail }: { title: string; detail: string }) {
   );
 }
 
-function Toolbar({ children }: { children: React.ReactNode }) {
-  return <div className="toolbar">{children}</div>;
+function Toolbar({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <div className={`toolbar ${className}`.trim()}>{children}</div>;
 }
 
 function Field({ label, children, className = "" }: { label: string; children: React.ReactNode; className?: string }) {
