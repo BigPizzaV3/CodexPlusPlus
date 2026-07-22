@@ -70,6 +70,11 @@ describe("dream skin theme helpers", () => {
       promoTitle: "Sponsor",
       promoSub: "sponsor.example",
       promoUrl: "https://sponsor.example",
+      companion: {
+        dataUrl: "data:image/webp;base64,UklGRg==",
+        width: 96,
+        side: "right",
+      },
       customTargetField: { nested: true },
     });
 
@@ -77,7 +82,22 @@ describe("dream skin theme helpers", () => {
     assert.equal(theme.stylePreset, undefined);
     assert.deepEqual(theme.art, { focusX: 0.72, focusY: 0.45, safeArea: "left", taskMode: "ambient" });
     assert.deepEqual(theme.palette, { accent: "#123456", custom: "keep" });
+    assert.deepEqual(theme.companion, {
+      dataUrl: "data:image/webp;base64,UklGRg==",
+      width: 96,
+      side: "right",
+    });
     assert.deepEqual(theme.customTargetField, { nested: true });
+  });
+
+  it("renders an optional image companion beside the visible composer", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /codex-dream-skin-companion/);
+    assert.match(renderer, /theme\.companion/);
+    assert.match(renderer, /\.composer-footer/);
+    assert.match(renderer, /data:image\/(?:png|jpeg|webp|gif);base64/);
+    assert.match(renderer, /removeDreamSkinCompanion/);
   });
 
   it("detects text, color, and image draft changes", () => {

@@ -49,7 +49,7 @@ const STEPWISE_SCRIPT: &str = include_str!("../../../assets/inject/stepwise-inje
 const SPONSOR_ALIPAY: &[u8] = include_bytes!("../../../assets/images/sponsor-alipay.jpg");
 const SPONSOR_WECHAT: &[u8] = include_bytes!("../../../assets/images/sponsor-wechat.jpg");
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "14";
+const DREAM_SKIN_RENDERER_REVISION: &str = "15";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT

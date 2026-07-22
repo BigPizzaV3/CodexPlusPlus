@@ -1621,6 +1621,106 @@
     };
   }
 
+  const dreamSkinCompanionId = "codex-dream-skin-companion";
+  const dreamSkinCompanionDataUrlPrefixes = [
+    "data:image/png;base64,",
+    "data:image/jpeg;base64,",
+    "data:image/webp;base64,",
+    "data:image/gif;base64,",
+  ];
+  const dreamSkinCompanionBase64Pattern = /^[a-z0-9+/=\s]+$/i;
+
+  function removeDreamSkinCompanion() {
+    document.getElementById(dreamSkinCompanionId)?.remove();
+  }
+
+  function dreamSkinCompanionConfig(theme) {
+    const companion = theme && theme.companion;
+    if (!companion || typeof companion !== "object") return null;
+    const dataUrl = typeof companion.dataUrl === "string" ? companion.dataUrl.trim() : "";
+    const prefix = dreamSkinCompanionDataUrlPrefixes.find((candidate) =>
+      dataUrl.toLowerCase().startsWith(candidate));
+    if (
+      !dataUrl
+      || dataUrl.length > 240_000
+      || !prefix
+      || !dreamSkinCompanionBase64Pattern.test(dataUrl.slice(prefix.length))
+    ) {
+      return null;
+    }
+    const width = Math.max(48, Math.min(Number(companion.width) || 96, 160));
+    const side = ["left", "right"].includes(companion.side) ? companion.side : "auto";
+    const offsetX = Math.max(-48, Math.min(Number(companion.offsetX) || 0, 48));
+    const offsetY = Math.max(-48, Math.min(Number(companion.offsetY) || 0, 48));
+    return { dataUrl, width, side, offsetX, offsetY };
+  }
+
+  function visibleDreamSkinComposer() {
+    return [...document.querySelectorAll(".composer-footer")]
+      .map((node) => ({ node, rect: node.getBoundingClientRect?.() }))
+      .filter(({ rect }) => rect && rect.width > 200 && rect.height > 0)
+      .sort((left, right) => right.rect.bottom - left.rect.bottom)[0] || null;
+  }
+
+  function ensureDreamSkinCompanion(theme) {
+    const config = dreamSkinCompanionConfig(theme);
+    const composer = visibleDreamSkinComposer();
+    if (!config || !composer) {
+      removeDreamSkinCompanion();
+      return;
+    }
+
+    let companion = document.getElementById(dreamSkinCompanionId);
+    if (!companion) {
+      companion = document.createElement("img");
+      companion.id = dreamSkinCompanionId;
+      companion.alt = "";
+      companion.setAttribute("aria-hidden", "true");
+      Object.assign(companion.style, {
+        position: "fixed",
+        zIndex: "39",
+        height: "auto",
+        maxHeight: "160px",
+        objectFit: "contain",
+        pointerEvents: "none",
+        userSelect: "none",
+        filter: "drop-shadow(0 8px 14px rgba(0, 0, 0, .18))",
+        transition: "left 160ms ease, top 160ms ease, opacity 160ms ease",
+      });
+      document.body.appendChild(companion);
+    }
+    if (companion.src !== config.dataUrl) companion.src = config.dataUrl;
+
+    const gap = 12;
+    const edge = 8;
+    const right = composer.rect.right + gap + config.offsetX;
+    const left = composer.rect.left - config.width - gap + config.offsetX;
+    const fitsRight = right + config.width <= window.innerWidth - edge;
+    const fitsLeft = left >= edge;
+    const useRight = config.side === "right"
+      ? fitsRight
+      : config.side === "left"
+        ? !fitsLeft && fitsRight
+        : fitsRight || !fitsLeft;
+
+    if (!fitsRight && !fitsLeft) {
+      companion.style.opacity = "0";
+      return;
+    }
+
+    const top = Math.max(
+      edge,
+      Math.min(
+        composer.rect.bottom - config.width + config.offsetY,
+        window.innerHeight - config.width - edge,
+      ),
+    );
+    companion.style.width = `${config.width}px`;
+    companion.style.left = `${Math.round(useRight ? right : left)}px`;
+    companion.style.top = `${Math.round(top)}px`;
+    companion.style.opacity = "1";
+  }
+
   function clearDreamSkinPresentation() {
     const root = document.documentElement;
     for (const className of [...(root?.classList || [])]) {
@@ -1678,6 +1778,7 @@
     document.getElementById("codex-dream-skin-chrome")?.remove();
     document.getElementById("codex-glass-vision-skin-chrome")?.remove();
     document.getElementById("codex-theme-chrome")?.remove();
+    removeDreamSkinCompanion();
     const state = window.__CODEX_DREAM_SKIN_STATE__;
     const descriptor = state?.descriptor;
     if (descriptor) {
@@ -1832,6 +1933,7 @@
       root.setAttribute("data-dream-shell", shell);
       applyIndependentThemeVariables(root, shell, theme, descriptor, artSource);
       ensureStyle(root);
+      ensureDreamSkinCompanion(theme);
 
       const homeIndicator = document.querySelector('[data-testid="home-icon"]');
       const home = homeIndicator?.closest('[role="main"]')
