@@ -42,6 +42,12 @@ const APP_PACKAGE_SPECS: &[AppPackageSpec] = &[
         executable_names: CODEX_PACKAGE_EXECUTABLES,
         priority: 1,
     },
+    AppPackageSpec {
+        identity: "OpenAI.ChatGPT-Desktop",
+        app_id: "App",
+        executable_names: CODEX_PACKAGE_EXECUTABLES,
+        priority: 1,
+    },
 ];
 
 pub fn find_latest_codex_app_dir(root: &Path) -> Option<PathBuf> {

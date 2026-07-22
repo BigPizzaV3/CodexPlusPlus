@@ -1,7 +1,7 @@
 use crate::BackupStore;
 use codex_plus_core::models::{DeleteResult, DeleteStatus, SessionRef};
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
-use rusqlite::{Connection, OptionalExtension, ToSql};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
@@ -20,11 +20,15 @@ pub fn delete_local_from_paths(
         "Thread not found in local storage".to_string(),
     );
     let mut deleted_count = 0usize;
+    let mut backup_tokens = Vec::new();
     for db_path in db_paths {
         let adapter = SQLiteStorageAdapter::new(db_path, backup_store.clone());
         let candidate_result = adapter.delete_local(session);
         if matches!(candidate_result.status, DeleteStatus::LocalDeleted) {
             deleted_count += 1;
+            if let Some(token) = candidate_result.undo_token.as_ref() {
+                backup_tokens.push(token.clone());
+            }
             result = candidate_result;
         } else if deleted_count == 0 {
             result = candidate_result;
@@ -32,6 +36,8 @@ pub fn delete_local_from_paths(
     }
     if deleted_count > 1 {
         result.message = format!("已从 {deleted_count} 个本地存储删除");
+        result.undo_token = Some(json!(backup_tokens).to_string());
+        result.backup_path = None;
     }
     result
 }
@@ -58,6 +64,7 @@ pub fn move_codex_thread_workspace_from_paths(
 pub struct SQLiteStorageAdapter {
     db_path: PathBuf,
     backup_store: BackupStore,
+    allowed_db_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,10 +102,21 @@ impl ToSql for OwnedSqlValue {
 
 impl SQLiteStorageAdapter {
     pub fn new(db_path: impl Into<PathBuf>, backup_store: BackupStore) -> Self {
+        let db_path = db_path.into();
         Self {
-            db_path: db_path.into(),
+            allowed_db_paths: vec![db_path.clone()],
+            db_path,
             backup_store,
         }
+    }
+
+    pub fn with_allowed_db_paths(mut self, db_paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        for db_path in db_paths {
+            if !self.allowed_db_paths.contains(&db_path) {
+                self.allowed_db_paths.push(db_path);
+            }
+        }
+        self
     }
 
     pub fn delete_local(&self, session: &SessionRef) -> DeleteResult {
@@ -229,52 +247,9 @@ impl SQLiteStorageAdapter {
 
     pub fn undo(&self, token: &str) -> DeleteResult {
         let result = (|| -> anyhow::Result<DeleteResult> {
-            let backup = self.backup_store.read_backup(token)?;
-            let session_id = backup["session_id"].as_str().unwrap_or("").to_string();
-            let mut db = Connection::open(&self.db_path)?;
-            if let Some(tables) = backup["tables"].as_object() {
-                validate_restore_tables(tables)?;
-                detect_restore_conflicts(&db, tables)?;
-                detect_file_restore_conflicts(tables)?;
-                let tx = db.transaction()?;
-                for (table, rows) in tables {
-                    if table.starts_with("__") {
-                        continue;
-                    }
-                    let Some(rows) = rows.as_array() else {
-                        continue;
-                    };
-                    for row in rows {
-                        if let Some(row) = row.as_object() {
-                            if table == "agent_job_items"
-                                && update_existing_agent_job_item(&tx, row)?
-                            {
-                                continue;
-                            }
-                            insert_row(&tx, table, row)?;
-                        }
-                    }
-                }
-                tx.commit()?;
-                if let Some(files) = tables.get("__files").and_then(Value::as_array) {
-                    for file in files {
-                        let Some(path) = file.get("path").and_then(Value::as_str) else {
-                            continue;
-                        };
-                        let Some(content) = file.get("content_b64").and_then(Value::as_str) else {
-                            continue;
-                        };
-                        let bytes = base64::Engine::decode(
-                            &base64::engine::general_purpose::STANDARD,
-                            content,
-                        )?;
-                        if let Some(parent) = Path::new(path).parent() {
-                            fs::create_dir_all(parent)?;
-                        }
-                        fs::write(path, bytes)?;
-                    }
-                }
-            }
+            let backups = undo_backups(&self.backup_store, token)?;
+            let session_id = backups[0]["session_id"].as_str().unwrap_or("").to_string();
+            restore_backups(&backups, &self.db_path, &self.allowed_db_paths)?;
             Ok(DeleteResult {
                 status: DeleteStatus::Undone,
                 session_id,
@@ -896,6 +871,122 @@ fn normalize_codex_thread_id(session_id: &str) -> String {
         .to_string()
 }
 
+fn undo_backups(backup_store: &BackupStore, token: &str) -> anyhow::Result<Vec<Value>> {
+    let tokens =
+        serde_json::from_str::<Vec<String>>(token).unwrap_or_else(|_| vec![token.to_string()]);
+    if tokens.is_empty() {
+        anyhow::bail!("empty undo token");
+    }
+    tokens
+        .into_iter()
+        .map(|token| backup_store.read_backup(&token))
+        .collect()
+}
+
+fn restore_backups(
+    backups: &[Value],
+    fallback_db_path: &Path,
+    allowed_db_paths: &[PathBuf],
+) -> anyhow::Result<()> {
+    for backup in backups {
+        let Some(tables) = backup["tables"].as_object() else {
+            continue;
+        };
+        let source_db = backup_source_db(backup, fallback_db_path, allowed_db_paths)?;
+        let db = Connection::open_with_flags(&source_db, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        validate_restore_tables(tables)?;
+        detect_restore_conflicts(&db, tables)?;
+        detect_file_restore_conflicts(tables)?;
+        preflight_restore_rows(&db, tables)?;
+    }
+
+    for backup in backups {
+        let Some(tables) = backup["tables"].as_object() else {
+            continue;
+        };
+        let source_db = backup_source_db(backup, fallback_db_path, allowed_db_paths)?;
+        let mut db = Connection::open_with_flags(&source_db, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let tx = db.transaction()?;
+        restore_rows(&tx, tables)?;
+        tx.commit()?;
+        if let Some(files) = tables.get("__files").and_then(Value::as_array) {
+            for file in files {
+                let Some(path) = file.get("path").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(content) = file.get("content_b64").and_then(Value::as_str) else {
+                    continue;
+                };
+                let bytes =
+                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, content)?;
+                if let Some(parent) = Path::new(path).parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(path, bytes)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn preflight_restore_rows(db: &Connection, tables: &Map<String, Value>) -> anyhow::Result<()> {
+    db.execute_batch("SAVEPOINT codex_plus_restore_preflight")?;
+    let restore_result = restore_rows(db, tables);
+    let rollback_result = db.execute_batch(
+        "ROLLBACK TO codex_plus_restore_preflight; RELEASE codex_plus_restore_preflight",
+    );
+    restore_result?;
+    rollback_result?;
+    Ok(())
+}
+
+fn restore_rows(db: &Connection, tables: &Map<String, Value>) -> anyhow::Result<()> {
+    for (table, rows) in tables {
+        if table.starts_with("__") {
+            continue;
+        }
+        let Some(rows) = rows.as_array() else {
+            continue;
+        };
+        for row in rows {
+            if let Some(row) = row.as_object() {
+                if table == "agent_job_items" && update_existing_agent_job_item(db, row)? {
+                    continue;
+                }
+                insert_row(db, table, row)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn backup_source_db(
+    backup: &Value,
+    fallback_db_path: &Path,
+    allowed_db_paths: &[PathBuf],
+) -> anyhow::Result<PathBuf> {
+    let source_db = backup["source_db"]
+        .as_str()
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| fallback_db_path.to_path_buf());
+    if !source_db.is_file() {
+        anyhow::bail!(
+            "Backup source database not found: {}",
+            source_db.to_string_lossy()
+        );
+    }
+    let source_db = fs::canonicalize(source_db)?;
+    let allowed = allowed_db_paths
+        .iter()
+        .filter_map(|path| fs::canonicalize(path).ok())
+        .any(|path| path == source_db);
+    if !allowed {
+        anyhow::bail!("Backup source database is not an allowed local storage path");
+    }
+    Ok(source_db)
+}
+
 fn schema_kind(db: &Connection) -> anyhow::Result<Option<SchemaKind>> {
     if has_table(db, "sessions")? && has_columns(db, "sessions", &["id", "title"])? {
         if has_table(db, "messages")? && !has_columns(db, "messages", &["session_id"])? {
@@ -1063,6 +1154,9 @@ fn detect_file_restore_conflicts(tables: &Map<String, Value>) -> anyhow::Result<
             }
             if Path::new(path).exists() {
                 anyhow::bail!("restore conflict: file already exists: {path}");
+            }
+            if let Some(content) = file.get("content_b64").and_then(Value::as_str) {
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, content)?;
             }
         }
     }
