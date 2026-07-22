@@ -526,6 +526,14 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         self.user_scripts.inventory()
     }
 
+    async fn user_script_inventory_with_runtime_status(
+        &self,
+        payload: Value,
+    ) -> anyhow::Result<Value> {
+        self.user_scripts
+            .inventory_with_runtime_status(payload.get("runtime_status"))
+    }
+
     async fn set_user_scripts_enabled(&self, enabled: bool) -> anyhow::Result<Value> {
         self.user_scripts.set_global_enabled(enabled)?;
         self.user_scripts.inventory()
