@@ -41,52 +41,57 @@ const CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
 /// 缓存条目：(描述文本, 写入时间)。
 type CacheEntry = (String, Instant);
 
-/// 图片描述缓存：key=u64 hash(url) or hash(url+question)，value=(描述, 写入时间)。
-static VLM_CACHE: LazyLock<Mutex<HashMap<u64, CacheEntry>>> =
+/// 缓存键：Tier1 只看 URL（历史轮/无文字当前轮），Tier2 看 URL+问题（有文字当前轮）。
+/// 用结构键而非 hash 值，HashMap 的 Eq 比较原始字符串，彻底消除碰撞误命中。
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
+enum CacheKey {
+    Url(String),
+    UrlQuestion(String, String),
+}
+
+/// 图片描述缓存：key=CacheKey，value=(描述, 写入时间)。
+static VLM_CACHE: LazyLock<Mutex<HashMap<CacheKey, CacheEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// 全局 VLM 信号量，限制跨请求并发数。
 static VL_SEMAPHORE: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(5));
 
-fn url_hash(url: &str) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    url.hash(&mut h);
-    h.finish()
+fn url_hash(url: &str) -> CacheKey {
+    CacheKey::Url(url.to_string())
 }
 
-fn url_question_hash(url: &str, question: &str) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    url.hash(&mut h);
-    question.hash(&mut h);
-    h.finish()
+fn url_question_hash(url: &str, question: &str) -> CacheKey {
+    CacheKey::UrlQuestion(url.to_string(), question.to_string())
 }
 
-fn cache_get(key: u64) -> Option<String> {
+fn cache_get(key: &CacheKey) -> Option<String> {
     let mut cache = VLM_CACHE.lock().unwrap();
-    if let Some((desc, written)) = cache.get(&key).cloned() {
+    if let Some((desc, written)) = cache.get(key).cloned() {
         if written.elapsed() < CACHE_TTL {
             return Some(desc);
         }
-        cache.remove(&key);
+        cache.remove(key);
     }
     None
 }
 
-fn cache_put(key: u64, desc: String) {
+fn cache_put(key: CacheKey, desc: String) {
     let mut cache = VLM_CACHE.lock().unwrap();
     if cache.len() >= CACHE_CAPACITY {
-        if let Some((&oldest, _)) = cache.iter().min_by_key(|(_, (_, t))| *t) {
+        // clone oldest key 以便 remove（cache 已被 &mut 借用，不能直接拿 &key）
+        if let Some((oldest, _)) = cache.iter().min_by_key(|(_, (_, t))| *t) {
+            let oldest = oldest.clone();
             cache.remove(&oldest);
         }
     }
     cache.insert(key, (desc, Instant::now()));
 }
 
-fn cache_contains(key: u64) -> bool {
+fn cache_contains(key: &CacheKey) -> bool {
     let cache = VLM_CACHE.lock().unwrap();
     cache
-        .get(&key)
+        .get(key)
         .map(|(_, t)| t.elapsed() < CACHE_TTL)
         .unwrap_or(false)
 }
@@ -1038,7 +1043,7 @@ pub async fn strip_image_blocks(
             } else {
                 url_hash(url)
             };
-            if let Some(cached) = cache_get(key) {
+            if let Some(cached) = cache_get(&key) {
                 descriptions
                     .entry(*msg_idx)
                     .or_default()
@@ -1110,7 +1115,7 @@ pub async fn strip_image_blocks(
                 break;
             }
             let key = url_hash(url);
-            if let Some(cached) = cache_get(key) {
+            if let Some(cached) = cache_get(&key) {
                 descriptions
                     .entry(*msg_idx)
                     .or_default()
@@ -1153,7 +1158,7 @@ pub async fn strip_image_blocks(
                     break;
                 }
                 let key = url_hash(url);
-                if let Some(cached) = cache_get(key) {
+                if let Some(cached) = cache_get(&key) {
                     descriptions
                         .entry(*msg_idx)
                         .or_default()
@@ -1646,8 +1651,8 @@ mod tests {
     fn cache_put_and_get_roundtrip() {
         cache_clear_for_tests();
         let key = url_hash("https://example.com/cache-test.png");
-        cache_put(key, "cached description".to_string());
-        let got = cache_get(key);
+        cache_put(key.clone(), "cached description".to_string());
+        let got = cache_get(&key);
         assert_eq!(got, Some("cached description".to_string()));
     }
 
@@ -1655,7 +1660,7 @@ mod tests {
     fn cache_contains_returns_false_for_missing_key() {
         cache_clear_for_tests();
         let key = url_hash("https://example.com/missing.png");
-        assert!(!cache_contains(key));
+        assert!(!cache_contains(&key));
     }
 
     #[test]
@@ -1670,14 +1675,47 @@ mod tests {
         }
         // 确认第 0 条仍在
         let key0 = url_hash("https://evict-test.example.com/0000.png");
-        assert!(cache_contains(key0));
+        assert!(cache_contains(&key0));
         // 插入第 501 条 → 触发驱逐（删最旧的 1 条）
         let overflow_key = url_hash("https://evict-test.example.com/overflow.png");
-        cache_put(overflow_key, "overflow-desc".to_string());
+        cache_put(overflow_key.clone(), "overflow-desc".to_string());
         // 最旧的应已被驱逐
-        assert!(!cache_contains(key0));
+        assert!(!cache_contains(&key0));
         // 新插入的存在
-        assert!(cache_contains(overflow_key));
+        assert!(cache_contains(&overflow_key));
+    }
+
+
+    // ── CacheKey 结构键测试 ─────────────────────────────────────
+
+    #[test]
+    fn cachekey_url_and_url_question_do_not_collide() {
+        cache_clear_for_tests();
+        // 同 URL，Tier1 key vs Tier2 key 应互不命中
+        let tier1 = url_hash("https://example.com/img.png");
+        let tier2 = url_question_hash("https://example.com/img.png", "问题A");
+        cache_put(tier1, "tier1-desc".to_string());
+        // Tier2 key 不应命中 Tier1 的描述
+        assert_eq!(cache_get(&tier2), None);
+        assert_eq!(cache_get(&url_hash("https://example.com/img.png")), Some("tier1-desc".to_string()));
+    }
+
+    #[test]
+    fn cachekey_different_questions_do_not_collide() {
+        cache_clear_for_tests();
+        let k1 = url_question_hash("https://example.com/img.png", "问题A");
+        let k2 = url_question_hash("https://example.com/img.png", "问题B");
+        cache_put(k1, "desc-A".to_string());
+        assert_eq!(cache_get(&k2), None);
+    }
+
+    #[test]
+    fn cachekey_empty_question_uses_tier1() {
+        cache_clear_for_tests();
+        // user_text 为空时 use_tier2=false，走 url_hash (Tier1)
+        let key = url_hash("https://example.com/solo.png");
+        cache_put(key.clone(), "solo-desc".to_string());
+        assert_eq!(cache_get(&key), Some("solo-desc".to_string()));
     }
 
     // ── helpers ───────────────────────────────────────────────────
