@@ -112,6 +112,27 @@ describe("dream skin theme helpers", () => {
     assert.doesNotMatch(renderer, /!shellMain\s*\|\|\s*!shellSidebar/);
   });
 
+  it("extends the Windows wallpaper treatment to right and bottom dock panels", async () => {
+    const renderer = await readFile(
+      new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url),
+      "utf8",
+    );
+    const css = await readFile(
+      new URL("../../../assets/inject/upstream/dream-skin/windows/dream-skin.css", import.meta.url),
+      "utf8",
+    );
+
+    assert.match(renderer, /\[data-app-shell-tabs="true"\]/);
+    assert.match(renderer, /dream-aux-panel-layer/);
+    assert.match(renderer, /dream-aux-panel-right/);
+    assert.match(renderer, /dream-aux-panel-bottom/);
+    assert.match(renderer, /clearAuxiliaryPanelClasses/);
+    assert.match(css, /\.dream-aux-panel-layer/);
+    assert.match(css, /\.dream-aux-panel-right/);
+    assert.match(css, /\.dream-aux-panel-bottom/);
+    assert.match(css, /\[data-codex-terminal="true"\]/);
+  });
+
   it("exposes companion image controls in the theme editor", async () => {
     const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
 
