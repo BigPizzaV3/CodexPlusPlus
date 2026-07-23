@@ -327,8 +327,7 @@
     if (!root || !document.body) return;
 
     const shellMain = document.querySelector("main.main-surface");
-    const shellSidebar = document.querySelector("aside.app-shell-left-panel");
-    if (!shellMain || !shellSidebar) {
+    if (!shellMain) {
       clearSkinDom();
       return;
     }

@@ -2037,6 +2037,9 @@
       } else {
         const state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
         state?.ensure?.();
+        ensureDreamSkinCompanion(
+          window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig,
+        );
       }
       return;
     }

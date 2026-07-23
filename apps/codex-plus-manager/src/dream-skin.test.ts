@@ -99,6 +99,17 @@ describe("dream skin theme helpers", () => {
     assert.match(renderer, /\.composer-surface-chrome/);
     assert.match(renderer, /data:image\/(?:png|jpeg|webp|gif);base64/);
     assert.match(renderer, /removeDreamSkinCompanion/);
+    assert.match(renderer, /ensureDreamSkinCompanion\(\s*window\.__CODEX_PLUS_DREAM_SKIN_THEME__/);
+  });
+
+  it("keeps the Windows skin active when the sidebar is hidden", async () => {
+    const renderer = await readFile(
+      new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url),
+      "utf8",
+    );
+
+    assert.match(renderer, /const shellMain = document\.querySelector\("main\.main-surface"\)/);
+    assert.doesNotMatch(renderer, /!shellMain\s*\|\|\s*!shellSidebar/);
   });
 
   it("exposes companion image controls in the theme editor", async () => {
