@@ -101,6 +101,17 @@ describe("dream skin theme helpers", () => {
     assert.match(renderer, /removeDreamSkinCompanion/);
   });
 
+  it("exposes companion image controls in the theme editor", async () => {
+    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+
+    assert.match(app, /dream-skin-companion-controls/);
+    assert.match(app, /FileReader/);
+    assert.match(app, /companion\.dataUrl/);
+    assert.match(app, /companion\?\.offsetX/);
+    assert.match(app, /companion\?\.offsetY/);
+    assert.match(app, /companionEnabled/);
+  });
+
   it("detects text, color, and image draft changes", () => {
     const draft = {
       config: defaultDreamSkinTheme(),

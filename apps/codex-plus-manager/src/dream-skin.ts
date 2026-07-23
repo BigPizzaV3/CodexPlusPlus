@@ -42,6 +42,7 @@ export type DreamSkinThemeConfig = {
   image?: string;
   companion?: {
     dataUrl: string;
+    enabled?: boolean;
     width?: number;
     side?: "auto" | "left" | "right";
     offsetX?: number;

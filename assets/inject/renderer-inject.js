@@ -1636,7 +1636,7 @@
 
   function dreamSkinCompanionConfig(theme) {
     const companion = theme && theme.companion;
-    if (!companion || typeof companion !== "object") return null;
+    if (!companion || typeof companion !== "object" || companion.enabled === false) return null;
     const dataUrl = typeof companion.dataUrl === "string" ? companion.dataUrl.trim() : "";
     const prefix = dreamSkinCompanionDataUrlPrefixes.find((candidate) =>
       dataUrl.toLowerCase().startsWith(candidate));

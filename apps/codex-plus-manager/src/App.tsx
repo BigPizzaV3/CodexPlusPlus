@@ -106,6 +106,8 @@ import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 const dreamSkinWindowsPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/windows/dream-reference.jpg", import.meta.url).href;
 const dreamSkinMacPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/macos/portal-hero.png", import.meta.url).href;
+const dreamSkinCompanionDataUrlLimit = 240_000;
+const dreamSkinCompanionMimeTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 
 type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
 
@@ -3562,6 +3564,8 @@ function DreamSkinScreen({
   actions: Actions;
 }) {
   const [themeView, setThemeView] = useState<"market" | "local">("market");
+  const companionInputRef = useRef<HTMLInputElement>(null);
+  const [companionError, setCompanionError] = useState("");
   const masterEnabled = form.enhancementsEnabled;
   const theme = draft?.config ?? defaultDreamSkinTheme();
   const themeColors = theme.colors ?? defaultDreamSkinColors();
@@ -3594,6 +3598,48 @@ function DreamSkinScreen({
     const next: DreamSkinThemeConfig = { ...theme, palette };
     if (!Object.keys(palette).length) delete next.palette;
     updateTheme(next);
+  };
+  const companion = theme.companion;
+  const companionDataUrl = typeof companion?.dataUrl === "string" ? companion.dataUrl : "";
+  const companionEnabled = Boolean(companionDataUrl) && companion?.enabled !== false;
+  const updateCompanion = (patch: Partial<NonNullable<DreamSkinThemeConfig["companion"]>>) => {
+    const nextCompanion = {
+      dataUrl: companionDataUrl,
+      enabled: companion?.enabled ?? true,
+      width: companion?.width ?? 96,
+      side: companion?.side ?? "right",
+      offsetX: companion?.offsetX ?? 0,
+      offsetY: companion?.offsetY ?? 4,
+      ...patch,
+    };
+    updateTheme({ ...theme, companion: nextCompanion });
+  };
+  const clearCompanion = () => {
+    const next = { ...theme };
+    delete next.companion;
+    setCompanionError("");
+    updateTheme(next);
+  };
+  const chooseCompanion = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    if (!dreamSkinCompanionMimeTypes.has(file.type)) {
+      setCompanionError(t("仅支持 PNG、JPEG、WebP 或 GIF 图片"));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : "";
+      if (!dataUrl || dataUrl.length > dreamSkinCompanionDataUrlLimit) {
+        setCompanionError(t("图片过大，请选择 180 KB 以内的图片"));
+        return;
+      }
+      setCompanionError("");
+      updateCompanion({ dataUrl });
+    };
+    reader.onerror = () => setCompanionError(t("读取图片失败，请重新选择"));
+    reader.readAsDataURL(file);
   };
   const stateLabel = dreamSkinStateLabel(status?.state ?? "not_running");
   const runtimeChecks = status?.checks ?? [];
@@ -3863,6 +3909,96 @@ function DreamSkinScreen({
                     ? t("Windows 使用亮暗模式、图片取色和可选强调色；完整色板仅在 macOS 生效。")
                     : t("macOS 会应用主题中的图片、文字和颜色配置。")}
                 </span>
+              </div>
+
+              <div className="dream-skin-companion-controls">
+                <div className="dream-skin-companion-heading">
+                  <div>
+                    <strong>{t("输入框旁照片")}</strong>
+                    <small>{t("为主题选择一张显示在 Codex 输入框旁的自定义照片")}</small>
+                  </div>
+                  {companionDataUrl ? (
+                    <img alt={t("输入框旁照片预览")} src={companionDataUrl} />
+                  ) : null}
+                </div>
+                <input
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  className="sr-only"
+                  onChange={chooseCompanion}
+                  ref={companionInputRef}
+                  type="file"
+                />
+                <Toolbar>
+                  <Button onClick={() => companionInputRef.current?.click()} type="button" variant="secondary">
+                    <Camera className="h-4 w-4" />
+                    {companionDataUrl ? t("更换照片") : t("选择照片")}
+                  </Button>
+                  <Button disabled={!companionDataUrl} onClick={clearCompanion} type="button" variant="outline">
+                    <Trash2 className="h-4 w-4" />
+                    {t("清除照片")}
+                  </Button>
+                </Toolbar>
+                {companionError ? <small className="dream-skin-companion-error">{companionError}</small> : null}
+                <div className="dream-skin-companion-fields">
+                  <label className="switch-row compact">
+                    <input
+                      checked={companionEnabled}
+                      disabled={!companionDataUrl}
+                      onChange={(event) => updateCompanion({ enabled: event.currentTarget.checked })}
+                      type="checkbox"
+                    />
+                    <span>
+                      <strong>{t("显示在输入框旁")}</strong>
+                      <small>{t("应用主题后显示在输入框的左侧或右侧")}</small>
+                    </span>
+                    <ToggleVisual />
+                  </label>
+                  <Field label={t("照片宽度") }>
+                    <Input
+                      disabled={!companionDataUrl}
+                      inputMode="numeric"
+                      max={160}
+                      min={48}
+                      type="number"
+                      value={companion?.width ?? 96}
+                      onChange={(event) => updateCompanion({ width: Math.max(48, Math.min(160, Number(event.currentTarget.value) || 96)) })}
+                    />
+                  </Field>
+                  <Field label={t("显示位置") }>
+                    <select
+                      className="select-input"
+                      disabled={!companionDataUrl}
+                      value={companion?.side ?? "right"}
+                      onChange={(event) => updateCompanion({ side: event.currentTarget.value as "auto" | "left" | "right" })}
+                    >
+                      <option value="auto">{t("自动")}</option>
+                      <option value="left">{t("左侧")}</option>
+                      <option value="right">{t("右侧")}</option>
+                    </select>
+                  </Field>
+                  <Field label={t("水平偏移") }>
+                    <Input
+                      disabled={!companionDataUrl}
+                      inputMode="numeric"
+                      max={48}
+                      min={-48}
+                      type="number"
+                      value={companion?.offsetX ?? 0}
+                      onChange={(event) => updateCompanion({ offsetX: Math.max(-48, Math.min(48, Number(event.currentTarget.value) || 0)) })}
+                    />
+                  </Field>
+                  <Field label={t("垂直偏移") }>
+                    <Input
+                      disabled={!companionDataUrl}
+                      inputMode="numeric"
+                      max={48}
+                      min={-48}
+                      type="number"
+                      value={companion?.offsetY ?? 4}
+                      onChange={(event) => updateCompanion({ offsetY: Math.max(-48, Math.min(48, Number(event.currentTarget.value) || 0)) })}
+                    />
+                  </Field>
+                </div>
               </div>
 
               <div className="dream-skin-editor-layout">
