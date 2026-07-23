@@ -1656,7 +1656,7 @@
   }
 
   function visibleDreamSkinComposer() {
-    return [...document.querySelectorAll(".composer-footer")]
+    return [...document.querySelectorAll(".composer-footer, .composer-surface-chrome")]
       .map((node) => ({ node, rect: node.getBoundingClientRect?.() }))
       .filter(({ rect }) => rect && rect.width > 200 && rect.height > 0)
       .sort((left, right) => right.rect.bottom - left.rect.bottom)[0] || null;

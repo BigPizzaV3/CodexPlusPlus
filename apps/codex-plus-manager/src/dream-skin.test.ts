@@ -96,6 +96,7 @@ describe("dream skin theme helpers", () => {
     assert.match(renderer, /codex-dream-skin-companion/);
     assert.match(renderer, /theme\.companion/);
     assert.match(renderer, /\.composer-footer/);
+    assert.match(renderer, /\.composer-surface-chrome/);
     assert.match(renderer, /data:image\/(?:png|jpeg|webp|gif);base64/);
     assert.match(renderer, /removeDreamSkinCompanion/);
   });
