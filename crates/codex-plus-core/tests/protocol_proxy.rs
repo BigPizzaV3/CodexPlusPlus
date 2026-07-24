@@ -156,7 +156,7 @@ fn responses_request_converts_input_images_to_anthropic_sources() {
                 { "type": "input_text", "text": "What is this?" },
                 {
                     "type": "input_image",
-                    "image_url": "data:image/png;base64,abc123"
+                    "image_url": "data:image/png;charset=utf-8;base64,abc123"
                 }
             ]
         }]

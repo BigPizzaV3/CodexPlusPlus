@@ -398,7 +398,11 @@ fn anthropic_image_block(image_url: &Value) -> Option<Value> {
         .or_else(|| image_url.get("url").and_then(Value::as_str))?;
     if let Some(data_url) = url.strip_prefix("data:") {
         let (metadata, data) = data_url.split_once(',')?;
-        let media_type = metadata.strip_suffix(";base64")?;
+        let mut metadata_parts = metadata.split(';');
+        let media_type = metadata_parts.next().filter(|value| !value.is_empty())?;
+        if !metadata_parts.any(|part| part.eq_ignore_ascii_case("base64")) {
+            return None;
+        }
         return Some(json!({
             "type": "image",
             "source": { "type": "base64", "media_type": media_type, "data": data }
@@ -1654,8 +1658,10 @@ fn upstream_request_builder(
 ) -> reqwest::RequestBuilder {
     let mut builder = client
         .post(endpoint)
-        .bearer_auth(api_key)
         .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if wire_api != UpstreamWireApi::AnthropicMessages {
+        builder = builder.bearer_auth(api_key);
+    }
     if wire_api == UpstreamWireApi::AnthropicMessages {
         builder = builder
             .header("x-api-key", api_key)
@@ -4930,4 +4936,35 @@ fn is_openai_o_series(model: &str) -> bool {
             .as_bytes()
             .get(1)
             .is_some_and(|byte| byte.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anthropic_request_uses_x_api_key_without_bearer_auth() {
+        let request = upstream_request_builder(
+            reqwest::Client::new(),
+            "https://relay.example/v1/messages",
+            "sk-test",
+            false,
+            &json!({}),
+            UpstreamWireApi::AnthropicMessages,
+        )
+        .build()
+        .unwrap();
+
+        assert!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .is_none()
+        );
+        assert_eq!(request.headers().get("x-api-key").unwrap(), "sk-test");
+        assert_eq!(
+            request.headers().get("anthropic-version").unwrap(),
+            "2023-06-01"
+        );
+    }
 }
