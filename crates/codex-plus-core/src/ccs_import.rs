@@ -167,6 +167,9 @@ fn extract_api_key(config: &Value) -> Option<String> {
 
 fn extract_protocol(config: &Value) -> RelayProtocol {
     if let Some(api_format) = string_at(config, &["api_format", "apiFormat"]) {
+        if is_anthropic_protocol(&api_format) {
+            return RelayProtocol::AnthropicMessages;
+        }
         if is_chat_protocol(&api_format) {
             return RelayProtocol::ChatCompletions;
         }
@@ -176,9 +179,18 @@ fn extract_protocol(config: &Value) -> RelayProtocol {
         .and_then(Value::as_str)
         .and_then(extract_toml_wire_api)
     {
+        if is_anthropic_protocol(&wire_api) {
+            return RelayProtocol::AnthropicMessages;
+        }
         if is_chat_protocol(&wire_api) {
             return RelayProtocol::ChatCompletions;
         }
+    }
+    if extract_base_url(config)
+        .map(|value| value.to_ascii_lowercase().ends_with("/messages"))
+        .unwrap_or(false)
+    {
+        return RelayProtocol::AnthropicMessages;
     }
     if extract_base_url(config)
         .map(|value| value.to_ascii_lowercase().ends_with("/chat/completions"))
@@ -225,6 +237,13 @@ fn is_chat_protocol(value: &str) -> bool {
     )
 }
 
+fn is_anthropic_protocol(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "anthropic" | "messages" | "anthropic_messages" | "anthropic-messages" | "claude"
+    )
+}
+
 fn extract_toml_base_url(text: &str) -> Option<String> {
     extract_toml_string_value(text, "base_url")
 }
@@ -259,6 +278,7 @@ fn build_config_toml(base_url: &str, api_key: &str, protocol: RelayProtocol) -> 
     let wire_api = match protocol {
         RelayProtocol::Responses => "responses",
         RelayProtocol::ChatCompletions => "chat",
+        RelayProtocol::AnthropicMessages => "responses",
     };
     [
         "model_provider = \"CodexPlusPlus\"".to_string(),

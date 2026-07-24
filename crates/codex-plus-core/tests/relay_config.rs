@@ -325,14 +325,22 @@ model = "gpt-5-mini"
 }
 
 #[test]
-fn apply_chat_protocol_relay_points_codex_to_local_responses_proxy() {
-    let temp = tempfile::tempdir().unwrap();
+fn apply_non_responses_protocol_relay_points_codex_to_local_responses_proxy() {
+    for protocol in [
+        RelayProtocol::ChatCompletions,
+        RelayProtocol::AnthropicMessages,
+    ] {
+        assert_relay_points_codex_to_local_responses_proxy(protocol);
+    }
+}
 
+fn assert_relay_points_codex_to_local_responses_proxy(protocol: RelayProtocol) {
+    let temp = tempfile::tempdir().unwrap();
     let result = codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
         temp.path(),
         "https://chat-only.example.test/v1",
         "sk-test-redacted",
-        RelayProtocol::ChatCompletions,
+        protocol,
         57321,
     )
     .unwrap();
@@ -417,14 +425,23 @@ fn apply_aggregate_relay_points_codex_to_local_responses_proxy_without_snapshot(
 }
 
 #[test]
-fn chat_protocol_profile_keeps_upstream_base_url_separate_from_codex_proxy() {
+fn non_responses_profile_keeps_upstream_base_url_separate_from_codex_proxy() {
+    for protocol in [
+        RelayProtocol::ChatCompletions,
+        RelayProtocol::AnthropicMessages,
+    ] {
+        assert_profile_keeps_upstream_base_url_separate_from_codex_proxy(protocol);
+    }
+}
+
+fn assert_profile_keeps_upstream_base_url_separate_from_codex_proxy(protocol: RelayProtocol) {
     let temp = tempfile::tempdir().unwrap();
     let mut profile = RelayProfile {
         id: "relay-chat".to_string(),
         model: "deepseek-chat".to_string(),
         upstream_base_url: "https://api.deepseek.com".to_string(),
         api_key: "sk-test-redacted".to_string(),
-        protocol: RelayProtocol::ChatCompletions,
+        protocol,
         relay_mode: RelayMode::PureApi,
         config_contents: r#"model = "deepseek-chat"
 model_provider = "custom"

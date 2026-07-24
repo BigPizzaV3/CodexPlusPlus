@@ -248,6 +248,9 @@ fn normalize_request(mut request: ProviderImportRequest) -> anyhow::Result<Provi
 fn relay_protocol(value: &str) -> RelayProtocol {
     match value.trim().to_ascii_lowercase().as_str() {
         "chat" | "chat_completions" | "chat-completions" => RelayProtocol::ChatCompletions,
+        "anthropic" | "messages" | "anthropic_messages" | "anthropic-messages" => {
+            RelayProtocol::AnthropicMessages
+        }
         _ => RelayProtocol::Responses,
     }
 }
@@ -265,6 +268,7 @@ fn build_config_toml(base_url: &str, api_key: &str, protocol: RelayProtocol) -> 
     let wire_api = match protocol {
         RelayProtocol::Responses => "responses",
         RelayProtocol::ChatCompletions => "chat",
+        RelayProtocol::AnthropicMessages => "responses",
     };
     [
         "model_provider = \"CodexPlusPlus\"".to_string(),

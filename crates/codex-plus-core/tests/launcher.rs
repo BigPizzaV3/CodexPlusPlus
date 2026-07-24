@@ -1329,7 +1329,16 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
 }
 
 #[tokio::test]
-async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
+async fn launch_starts_helper_when_non_responses_protocol_proxy_is_enabled() {
+    for protocol in [
+        RelayProtocol::ChatCompletions,
+        RelayProtocol::AnthropicMessages,
+    ] {
+        assert_launch_starts_protocol_proxy(protocol).await;
+    }
+}
+
+async fn assert_launch_starts_protocol_proxy(protocol: RelayProtocol) {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1344,7 +1353,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             base_url: "https://chat-only.example.test/v1".to_string(),
             upstream_base_url: "https://chat-only.example.test/v1".to_string(),
             api_key: "sk-test".to_string(),
-            protocol: RelayProtocol::ChatCompletions,
+            protocol,
             relay_mode: codex_plus_core::settings::RelayMode::MixedApi,
             official_mix_api_key: false,
             test_model: String::new(),

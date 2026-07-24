@@ -1,6 +1,4 @@
-//! Codex Responses API 与 OpenAI Chat Completions 的本地协议转换。
-//!
-//! Codex Chat 与 Responses 协议之间的转换实现。
+//! Codex Responses API 与 Chat Completions、Claude Messages 的本地协议转换。
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -16,6 +14,7 @@ pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 57321;
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
+const DEFAULT_ANTHROPIC_MAX_TOKENS: u64 = 8192;
 const THINK_OPEN_TAG: &str = "<think>";
 const THINK_CLOSE_TAG: &str = "</think>";
 const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
@@ -217,6 +216,332 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     Ok(result)
 }
 
+pub fn responses_to_anthropic_messages(body: Value) -> anyhow::Result<Value> {
+    let original_request = body.clone();
+    let chat_body = responses_to_chat_completions(body)?;
+    chat_completions_to_anthropic_messages(chat_body, &original_request)
+}
+
+fn chat_completions_to_anthropic_messages(
+    chat_body: Value,
+    original_request: &Value,
+) -> anyhow::Result<Value> {
+    let model = chat_body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let adaptive_thinking = anthropic_uses_adaptive_thinking(model);
+    let mut reasoning_signatures = responses_reasoning_signatures(original_request).into_iter();
+    let mut result = json!({
+        "model": model,
+        "max_tokens": chat_body
+            .get("max_tokens")
+            .or_else(|| chat_body.get("max_completion_tokens"))
+            .cloned()
+            .unwrap_or_else(|| json!(DEFAULT_ANTHROPIC_MAX_TOKENS))
+    });
+
+    let mut system_parts = Vec::new();
+    let mut messages = Vec::new();
+    for message in chat_body
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("user");
+        if matches!(role, "system" | "developer") {
+            let text = instruction_text(message.get("content").unwrap_or(&Value::Null));
+            if !text.is_empty() {
+                system_parts.push(text);
+            }
+            continue;
+        }
+
+        let mut content =
+            chat_content_to_anthropic_blocks(message.get("content").unwrap_or(&Value::Null));
+        match role {
+            "assistant" => {
+                if let Some(thinking) = message
+                    .get("reasoning_content")
+                    .and_then(Value::as_str)
+                    .filter(|thinking| !thinking.is_empty())
+                {
+                    let mut block = json!({ "type": "thinking", "thinking": thinking });
+                    if let Some(Some(signature)) = reasoning_signatures.next() {
+                        block["signature"] = json!(signature);
+                    }
+                    content.insert(0, block);
+                }
+                for tool_call in message
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let function = tool_call.get("function").unwrap_or(&Value::Null);
+                    let arguments = function
+                        .get("arguments")
+                        .and_then(Value::as_str)
+                        .and_then(|arguments| serde_json::from_str::<Value>(arguments).ok())
+                        .unwrap_or_else(|| json!({}));
+                    content.push(json!({
+                        "type": "tool_use",
+                        "id": tool_call
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("call_0"),
+                        "name": function
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown_tool"),
+                        "input": arguments
+                    }));
+                }
+                push_anthropic_message(&mut messages, "assistant", content);
+            }
+            "tool" => {
+                let tool_use_id = message
+                    .get("tool_call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !tool_use_id.is_empty() {
+                    push_anthropic_message(
+                        &mut messages,
+                        "user",
+                        vec![json!({
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": response_output_text(
+                                message.get("content").unwrap_or(&Value::Null)
+                            )
+                        })],
+                    );
+                }
+            }
+            _ => push_anthropic_message(&mut messages, "user", content),
+        }
+    }
+    if !system_parts.is_empty() {
+        result["system"] = json!(system_parts.join("\n\n"));
+    }
+    result["messages"] = json!(messages);
+
+    if let Some(tools) = chat_body.get("tools").and_then(Value::as_array) {
+        let tools = tools
+            .iter()
+            .filter_map(chat_tool_to_anthropic_tool)
+            .collect::<Vec<_>>();
+        if !tools.is_empty() {
+            result["tools"] = json!(tools);
+            if let Some(tool_choice) = chat_body
+                .get("tool_choice")
+                .and_then(|choice| chat_tool_choice_to_anthropic(choice, &chat_body))
+            {
+                result["tool_choice"] =
+                    compatible_anthropic_tool_choice(tool_choice, adaptive_thinking);
+            }
+        }
+    }
+
+    for key in ["temperature", "top_p", "stream"] {
+        if let Some(value) = chat_body.get(key) {
+            result[key] = value.clone();
+        }
+    }
+    if let Some(stop) = chat_body.get("stop") {
+        result["stop_sequences"] = if stop.is_array() {
+            stop.clone()
+        } else {
+            json!([stop])
+        };
+    }
+    if let Some(effort) = original_request
+        .pointer("/reasoning/effort")
+        .and_then(Value::as_str)
+        .and_then(anthropic_effort)
+    {
+        result["output_config"] = json!({ "effort": effort });
+    }
+    if adaptive_thinking {
+        result["thinking"] = json!({ "type": "adaptive" });
+    }
+
+    Ok(result)
+}
+
+fn chat_content_to_anthropic_blocks(content: &Value) -> Vec<Value> {
+    match content {
+        Value::String(text) if !text.is_empty() => vec![json!({ "type": "text", "text": text })],
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| match part.get("type").and_then(Value::as_str) {
+                Some("text" | "input_text" | "output_text") => part
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                    .map(|text| json!({ "type": "text", "text": text })),
+                Some("image_url") => anthropic_image_block(part.get("image_url")?),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn anthropic_image_block(image_url: &Value) -> Option<Value> {
+    let url = image_url
+        .as_str()
+        .or_else(|| image_url.get("url").and_then(Value::as_str))?;
+    if let Some(data_url) = url.strip_prefix("data:") {
+        let (metadata, data) = data_url.split_once(',')?;
+        let media_type = metadata.strip_suffix(";base64")?;
+        return Some(json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": media_type, "data": data }
+        }));
+    }
+    Some(json!({
+        "type": "image",
+        "source": { "type": "url", "url": url }
+    }))
+}
+
+fn push_anthropic_message(messages: &mut Vec<Value>, role: &str, content: Vec<Value>) {
+    if content.is_empty() {
+        return;
+    }
+    if let Some(last) = messages.last_mut()
+        && last.get("role").and_then(Value::as_str) == Some(role)
+        && let Some(parts) = last.get_mut("content").and_then(Value::as_array_mut)
+    {
+        parts.extend(content);
+        return;
+    }
+    messages.push(json!({ "role": role, "content": content }));
+}
+
+fn chat_tool_to_anthropic_tool(tool: &Value) -> Option<Value> {
+    let function = tool.get("function")?;
+    let name = function.get("name").and_then(Value::as_str)?;
+    let mut converted = json!({
+        "name": name,
+        "input_schema": function
+            .get("parameters")
+            .cloned()
+            .unwrap_or_else(|| json!({ "type": "object", "properties": {} }))
+    });
+    if let Some(description) = function.get("description") {
+        converted["description"] = description.clone();
+    }
+    Some(converted)
+}
+
+fn chat_tool_choice_to_anthropic(choice: &Value, chat_body: &Value) -> Option<Value> {
+    let disable_parallel_tool_use = chat_body
+        .get("parallel_tool_calls")
+        .and_then(Value::as_bool)
+        .map(|enabled| !enabled);
+    let mut converted = match choice {
+        Value::String(value) => match value.as_str() {
+            "auto" => json!({ "type": "auto" }),
+            "required" => json!({ "type": "any" }),
+            "none" => json!({ "type": "none" }),
+            _ => return None,
+        },
+        Value::Object(object) => {
+            let choice_type = object
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if matches!(choice_type, "auto" | "any" | "none") {
+                json!({ "type": choice_type })
+            } else {
+                let name = object
+                    .get("function")
+                    .and_then(|function| function.get("name"))
+                    .or_else(|| object.get("name"))
+                    .and_then(Value::as_str)?;
+                json!({ "type": "tool", "name": name })
+            }
+        }
+        _ => return None,
+    };
+    if let Some(disabled) = disable_parallel_tool_use {
+        converted["disable_parallel_tool_use"] = json!(disabled);
+    }
+    Some(converted)
+}
+
+fn anthropic_effort(effort: &str) -> Option<&'static str> {
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "none" | "off" | "disabled" | "minimal" | "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "xhigh" => Some("xhigh"),
+        "max" => Some("max"),
+        _ => None,
+    }
+}
+
+fn anthropic_uses_adaptive_thinking(model: &str) -> bool {
+    let model = model.trim().to_ascii_lowercase();
+    [
+        "fable-5",
+        "mythos-5",
+        "mythos-preview",
+        "opus-4-6",
+        "opus-4-7",
+        "opus-4-8",
+        "sonnet-4-6",
+        "sonnet-5",
+    ]
+    .iter()
+    .any(|name| model.contains(name))
+}
+
+fn compatible_anthropic_tool_choice(mut choice: Value, adaptive_thinking: bool) -> Value {
+    if adaptive_thinking
+        && matches!(
+            choice.get("type").and_then(Value::as_str),
+            Some("any" | "tool")
+        )
+    {
+        choice["type"] = json!("auto");
+        if let Some(choice) = choice.as_object_mut() {
+            choice.remove("name");
+        }
+    }
+    choice
+}
+
+fn responses_reasoning_signatures(request: &Value) -> Vec<Option<String>> {
+    let mut signatures = Vec::new();
+    let mut push_signature = |item: &Value| {
+        if item.get("type").and_then(Value::as_str) != Some("reasoning")
+            || responses_reasoning_text(item).is_none_or(|text| text.is_empty())
+        {
+            return;
+        }
+        signatures.push(
+            item.get("encrypted_content")
+                .or_else(|| item.get("signature"))
+                .and_then(Value::as_str)
+                .filter(|signature| !signature.is_empty())
+                .map(ToString::to_string),
+        );
+    };
+    match request.get("input") {
+        Some(Value::Array(items)) => items.iter().for_each(&mut push_signature),
+        Some(item @ Value::Object(_)) => push_signature(item),
+        _ => {}
+    }
+    signatures
+}
+
 pub fn chat_completion_to_response(body: Value) -> anyhow::Result<Value> {
     chat_completion_to_response_with_context(body, &CodexToolContext::default(), None)
 }
@@ -276,6 +601,136 @@ fn chat_completion_to_response_with_context(
     Ok(response)
 }
 
+pub fn anthropic_message_to_response(body: Value) -> anyhow::Result<Value> {
+    let chat_body = anthropic_message_to_chat_completion(body)?;
+    chat_completion_to_response(chat_body)
+}
+
+pub fn anthropic_message_to_response_with_request(
+    body: Value,
+    original_request: &Value,
+) -> anyhow::Result<Value> {
+    let chat_body = anthropic_message_to_chat_completion(body)?;
+    chat_completion_to_response_with_request(chat_body, original_request)
+}
+
+fn anthropic_message_to_chat_completion(body: Value) -> anyhow::Result<Value> {
+    let content = body
+        .get("content")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("Anthropic message response missing content"))?;
+    let mut text = String::new();
+    let mut reasoning = String::new();
+    let mut reasoning_signature = None;
+    let mut tool_calls = Vec::new();
+    for block in content {
+        match block
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
+            "text" => {
+                if let Some(value) = block.get("text").and_then(Value::as_str) {
+                    text.push_str(value);
+                }
+            }
+            "thinking" => {
+                if let Some(value) = block.get("thinking").and_then(Value::as_str) {
+                    reasoning.push_str(value);
+                }
+                if reasoning_signature.is_none() {
+                    reasoning_signature = block
+                        .get("signature")
+                        .and_then(Value::as_str)
+                        .filter(|signature| !signature.is_empty())
+                        .map(ToString::to_string);
+                }
+            }
+            "tool_use" => {
+                tool_calls.push(json!({
+                    "id": block.get("id").and_then(Value::as_str).unwrap_or("call_0"),
+                    "type": "function",
+                    "function": {
+                        "name": block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown_tool"),
+                        "arguments": canonical_json_string(
+                            block.get("input").unwrap_or(&json!({}))
+                        )
+                    }
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    let stop_reason = body
+        .get("stop_reason")
+        .and_then(Value::as_str)
+        .unwrap_or("end_turn");
+    let mut message = json!({
+        "role": "assistant",
+        "content": text
+    });
+    if !reasoning.is_empty() {
+        message["reasoning_content"] = json!(reasoning);
+    }
+    if let Some(signature) = reasoning_signature {
+        message["reasoning_signature"] = json!(signature);
+    }
+    if !tool_calls.is_empty() {
+        message["tool_calls"] = json!(tool_calls);
+    }
+    if stop_reason == "refusal" {
+        message["refusal"] = json!(anthropic_refusal_text(&body));
+    }
+
+    Ok(json!({
+        "id": body.get("id").and_then(Value::as_str).unwrap_or("msg_compat"),
+        "object": "chat.completion",
+        "created": 0,
+        "model": body.get("model").and_then(Value::as_str).unwrap_or(""),
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": anthropic_stop_reason_to_chat(stop_reason)
+        }],
+        "usage": anthropic_usage_to_chat_usage(body.get("usage"))
+    }))
+}
+
+fn anthropic_refusal_text(body: &Value) -> String {
+    body.pointer("/stop_details/explanation")
+        .or_else(|| body.pointer("/stop_details/category"))
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("Request refused by upstream model")
+        .to_string()
+}
+
+fn anthropic_stop_reason_to_chat(stop_reason: &str) -> &'static str {
+    match stop_reason {
+        "max_tokens" | "model_context_window_exceeded" => "length",
+        "tool_use" => "tool_calls",
+        _ => "stop",
+    }
+}
+
+fn anthropic_usage_to_chat_usage(usage: Option<&Value>) -> Value {
+    let Some(usage) = usage.filter(|usage| usage.is_object()) else {
+        return json!({});
+    };
+    let mut converted = usage.clone();
+    if let Some(value) = usage.pointer("/cache_creation/ephemeral_5m_input_tokens") {
+        converted["cache_creation_5m_input_tokens"] = value.clone();
+    }
+    if let Some(value) = usage.pointer("/cache_creation/ephemeral_1h_input_tokens") {
+        converted["cache_creation_1h_input_tokens"] = value.clone();
+    }
+    converted
+}
+
 pub struct ProxyHttpResponse {
     pub status: String,
     pub content_type: String,
@@ -294,6 +749,7 @@ pub struct UpstreamProxyResponse {
 pub enum UpstreamWireApi {
     Responses,
     ChatCompletions,
+    AnthropicMessages,
     AudioTranscriptions,
 }
 
@@ -443,6 +899,323 @@ impl ChatSseToResponsesConverter {
     }
 }
 
+pub struct AnthropicSseToResponsesConverter {
+    buffer: String,
+    utf8_remainder: Vec<u8>,
+    state: AnthropicSseState,
+    failed: bool,
+}
+
+impl Default for AnthropicSseToResponsesConverter {
+    fn default() -> Self {
+        Self {
+            buffer: String::new(),
+            utf8_remainder: Vec::new(),
+            state: AnthropicSseState::default(),
+            failed: false,
+        }
+    }
+}
+
+impl AnthropicSseToResponsesConverter {
+    pub fn with_request(original_request: &Value) -> Self {
+        Self {
+            state: AnthropicSseState::with_request(original_request),
+            ..Self::default()
+        }
+    }
+
+    pub fn push_bytes(&mut self, bytes: &[u8]) -> Vec<u8> {
+        append_utf8_safe(&mut self.buffer, &mut self.utf8_remainder, bytes);
+        let mut output = String::new();
+        while let Some(block) = take_sse_block(&mut self.buffer) {
+            if block.trim().is_empty() {
+                continue;
+            }
+            self.handle_block(&block, &mut output);
+            if self.failed {
+                break;
+            }
+        }
+        output.into_bytes()
+    }
+
+    pub fn finish(&mut self) -> Vec<u8> {
+        if !self.utf8_remainder.is_empty() {
+            self.buffer
+                .push_str(&String::from_utf8_lossy(&self.utf8_remainder));
+            self.utf8_remainder.clear();
+        }
+        let mut output = String::new();
+        if !self.failed {
+            self.state.chat.finalize_into(&mut output);
+        }
+        output.into_bytes()
+    }
+
+    pub fn fail(&mut self, message: String, error_type: Option<String>) -> Vec<u8> {
+        let mut output = String::new();
+        self.state
+            .chat
+            .failed_into(&mut output, message, error_type);
+        self.failed = true;
+        output.into_bytes()
+    }
+
+    fn handle_block(&mut self, block: &str, output: &mut String) {
+        let data = block
+            .lines()
+            .filter_map(|line| strip_sse_field(line, "data"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() {
+            return;
+        }
+        if data.trim() == "[DONE]" {
+            self.state.chat.finalize_into(output);
+            return;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(&data) else {
+            return;
+        };
+        if event.get("type").and_then(Value::as_str) == Some("error")
+            || event.get("error").is_some()
+        {
+            let (message, error_type) = extract_chat_sse_error(&event);
+            self.state.chat.failed_into(output, message, error_type);
+            self.failed = true;
+            return;
+        }
+        self.state.handle_event_into(&event, output);
+    }
+}
+
+pub enum UpstreamSseToResponsesConverter {
+    Chat(ChatSseToResponsesConverter),
+    Anthropic(AnthropicSseToResponsesConverter),
+}
+
+impl UpstreamSseToResponsesConverter {
+    pub fn with_request(wire_api: UpstreamWireApi, original_request: &Value) -> Self {
+        match wire_api {
+            UpstreamWireApi::AnthropicMessages => Self::Anthropic(
+                AnthropicSseToResponsesConverter::with_request(original_request),
+            ),
+            _ => Self::Chat(ChatSseToResponsesConverter::with_request(original_request)),
+        }
+    }
+
+    pub fn push_bytes(&mut self, bytes: &[u8]) -> Vec<u8> {
+        match self {
+            Self::Chat(converter) => converter.push_bytes(bytes),
+            Self::Anthropic(converter) => converter.push_bytes(bytes),
+        }
+    }
+
+    pub fn finish(&mut self) -> Vec<u8> {
+        match self {
+            Self::Chat(converter) => converter.finish(),
+            Self::Anthropic(converter) => converter.finish(),
+        }
+    }
+
+    pub fn fail(&mut self, message: String, error_type: Option<String>) -> Vec<u8> {
+        match self {
+            Self::Chat(converter) => converter.fail(message, error_type),
+            Self::Anthropic(converter) => converter.fail(message, error_type),
+        }
+    }
+}
+
+struct AnthropicSseState {
+    chat: ChatSseState,
+    usage: Value,
+}
+
+impl Default for AnthropicSseState {
+    fn default() -> Self {
+        Self {
+            chat: ChatSseState::default(),
+            usage: json!({}),
+        }
+    }
+}
+
+impl AnthropicSseState {
+    fn with_request(original_request: &Value) -> Self {
+        Self {
+            chat: ChatSseState::with_request(original_request),
+            ..Self::default()
+        }
+    }
+
+    fn handle_event_into(&mut self, event: &Value, output: &mut String) {
+        match event
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
+            "message_start" => {
+                let message = event.get("message").unwrap_or(&Value::Null);
+                self.merge_usage(message.get("usage"));
+                self.chat.handle_chat_chunk_into(
+                    &json!({
+                        "id": message.get("id").and_then(Value::as_str).unwrap_or("msg_compat"),
+                        "model": message.get("model").and_then(Value::as_str).unwrap_or(""),
+                        "choices": [],
+                        "usage": anthropic_usage_to_chat_usage(Some(&self.usage))
+                    }),
+                    output,
+                );
+                for (index, block) in message
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    self.handle_content_block_start(index, block, output);
+                }
+            }
+            "content_block_start" => {
+                let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                self.handle_content_block_start(
+                    index,
+                    event.get("content_block").unwrap_or(&Value::Null),
+                    output,
+                );
+            }
+            "content_block_delta" => {
+                let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let delta = event.get("delta").unwrap_or(&Value::Null);
+                let chat_delta = match delta.get("type").and_then(Value::as_str) {
+                    Some("text_delta") => {
+                        json!({ "content": delta.get("text").and_then(Value::as_str).unwrap_or("") })
+                    }
+                    Some("thinking_delta") => json!({
+                        "reasoning_content": delta
+                            .get("thinking")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                    }),
+                    Some("signature_delta") => {
+                        if let Some(signature) = delta.get("signature").and_then(Value::as_str) {
+                            self.chat.reasoning.encrypted_content.push_str(signature);
+                        }
+                        return;
+                    }
+                    Some("input_json_delta") => json!({
+                        "tool_calls": [{
+                            "index": index,
+                            "function": {
+                                "arguments": delta
+                                    .get("partial_json")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                            }
+                        }]
+                    }),
+                    _ => return,
+                };
+                self.chat.handle_chat_chunk_into(
+                    &json!({ "choices": [{ "index": 0, "delta": chat_delta }] }),
+                    output,
+                );
+            }
+            "message_delta" => {
+                self.merge_usage(event.get("usage"));
+                let delta = event.get("delta").unwrap_or(&Value::Null);
+                let stop_reason = delta
+                    .get("stop_reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("end_turn");
+                if stop_reason == "refusal" && !self.chat.text.added {
+                    let refusal = delta
+                        .pointer("/stop_details/explanation")
+                        .or_else(|| delta.pointer("/stop_details/category"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("Request refused by upstream model");
+                    self.chat.handle_chat_chunk_into(
+                        &json!({ "choices": [{ "index": 0, "delta": { "content": refusal } }] }),
+                        output,
+                    );
+                }
+                self.chat.handle_chat_chunk_into(
+                    &json!({
+                        "choices": [{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": anthropic_stop_reason_to_chat(stop_reason)
+                        }],
+                        "usage": anthropic_usage_to_chat_usage(Some(&self.usage))
+                    }),
+                    output,
+                );
+            }
+            "message_stop" => self.chat.finalize_into(output),
+            _ => {}
+        }
+    }
+
+    fn handle_content_block_start(&mut self, index: usize, block: &Value, output: &mut String) {
+        let delta = match block.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                json!({ "content": block.get("text").and_then(Value::as_str).unwrap_or("") })
+            }
+            Some("thinking") => {
+                if let Some(signature) = block
+                    .get("signature")
+                    .and_then(Value::as_str)
+                    .filter(|signature| !signature.is_empty())
+                {
+                    self.chat.reasoning.encrypted_content.push_str(signature);
+                }
+                json!({
+                    "reasoning_content": block
+                        .get("thinking")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                })
+            }
+            Some("tool_use") => json!({
+                "tool_calls": [{
+                    "index": index,
+                    "id": block.get("id").and_then(Value::as_str).unwrap_or("call_0"),
+                    "type": "function",
+                    "function": {
+                        "name": block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown_tool"),
+                        "arguments": block
+                            .get("input")
+                            .filter(|input| input.as_object().is_some_and(|input| !input.is_empty()))
+                            .map(canonical_json_string)
+                            .unwrap_or_default()
+                    }
+                }]
+            }),
+            _ => return,
+        };
+        self.chat.handle_chat_chunk_into(
+            &json!({ "choices": [{ "index": 0, "delta": delta }] }),
+            output,
+        );
+    }
+
+    fn merge_usage(&mut self, usage: Option<&Value>) {
+        let Some(incoming) = usage.and_then(Value::as_object) else {
+            return;
+        };
+        let Some(current) = self.usage.as_object_mut() else {
+            return;
+        };
+        for (key, value) in incoming {
+            current.insert(key.clone(), value.clone());
+        }
+    }
+}
+
 pub fn is_responses_proxy_path(path: &str) -> bool {
     let path = path.split_once('?').map_or(path, |(path, _)| path);
     matches!(
@@ -552,6 +1325,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 relay.api_key.trim(),
                 is_stream,
                 &upstream_body,
+                wire_api,
             ),
             is_stream,
         )
@@ -798,9 +1572,11 @@ async fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
     request_json: Value,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi)> {
+    let original_request = request_json.clone();
     let mut body = match relay.protocol {
         RelayProtocol::Responses => request_json,
         RelayProtocol::ChatCompletions => responses_to_chat_completions(request_json)?,
+        RelayProtocol::AnthropicMessages => responses_to_chat_completions(request_json)?,
     };
 
     // Image handling (per-model): send-as-is / strip / VLM analysis
@@ -848,14 +1624,20 @@ async fn upstream_request_parts(
         }
     }
 
+    if relay.protocol == RelayProtocol::AnthropicMessages {
+        body = chat_completions_to_anthropic_messages(body, &original_request)?;
+    }
+
     let wire_api = match relay.protocol {
         RelayProtocol::Responses => UpstreamWireApi::Responses,
         RelayProtocol::ChatCompletions => UpstreamWireApi::ChatCompletions,
+        RelayProtocol::AnthropicMessages => UpstreamWireApi::AnthropicMessages,
     };
     Ok((
         match relay.protocol {
             RelayProtocol::Responses => responses_url(&relay.base_url),
             RelayProtocol::ChatCompletions => chat_completions_url(&relay.base_url),
+            RelayProtocol::AnthropicMessages => anthropic_messages_url(&relay.base_url),
         },
         body,
         wire_api,
@@ -868,11 +1650,17 @@ fn upstream_request_builder(
     api_key: &str,
     is_stream: bool,
     upstream_body: &Value,
+    wire_api: UpstreamWireApi,
 ) -> reqwest::RequestBuilder {
     let mut builder = client
         .post(endpoint)
         .bearer_auth(api_key)
         .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if wire_api == UpstreamWireApi::AnthropicMessages {
+        builder = builder
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01");
+    }
     if is_stream {
         builder = builder
             .header(reqwest::header::ACCEPT, "text/event-stream")
@@ -948,15 +1736,26 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
 
     if is_stream {
         let text = String::from_utf8_lossy(&upstream_body);
+        let converted = match wire_api {
+            UpstreamWireApi::AnthropicMessages => {
+                anthropic_sse_to_responses_sse_with_request(&text, &request_json)
+            }
+            _ => chat_sse_to_responses_sse_with_request(&text, &request_json),
+        };
         return Ok(ProxyHttpResponse {
             status: "200 OK".to_string(),
             content_type: "text/event-stream; charset=utf-8".to_string(),
-            body: chat_sse_to_responses_sse_with_request(&text, &request_json).into_bytes(),
+            body: converted.into_bytes(),
         });
     }
 
-    let chat_json: Value = serde_json::from_slice(&upstream_body)?;
-    let response_json = chat_completion_to_response_with_request(chat_json, &request_json)?;
+    let upstream_json: Value = serde_json::from_slice(&upstream_body)?;
+    let response_json = match wire_api {
+        UpstreamWireApi::AnthropicMessages => {
+            anthropic_message_to_response_with_request(upstream_json, &request_json)?
+        }
+        _ => chat_completion_to_response_with_request(upstream_json, &request_json)?,
+    };
     Ok(ProxyHttpResponse {
         status: "200 OK".to_string(),
         content_type: "application/json; charset=utf-8".to_string(),
@@ -977,6 +1776,26 @@ pub fn chat_completions_url(base_url: &str) -> String {
         format!("{base}/chat/completions")
     } else {
         format!("{base}/v1/chat/completions")
+    };
+    while url.contains("/v1/v1") {
+        url = url.replace("/v1/v1", "/v1");
+    }
+    url
+}
+
+pub fn anthropic_messages_url(base_url: &str) -> String {
+    let skip_version_prefix = base_url.trim().ends_with('#');
+    let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
+    if base.to_ascii_lowercase().ends_with("/messages") {
+        return base.to_string();
+    }
+    let origin_only = base
+        .split_once("://")
+        .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
+    let mut url = if skip_version_prefix || has_version_suffix(base) || !origin_only {
+        format!("{base}/messages")
+    } else {
+        format!("{base}/v1/messages")
     };
     while url.contains("/v1/v1") {
         url = url.replace("/v1/v1", "/v1");
@@ -1034,6 +1853,9 @@ pub fn models_url(base_url: &str) -> String {
     if base.to_ascii_lowercase().ends_with("/chat/completions") {
         base.truncate(base.len() - "/chat/completions".len());
     }
+    if base.to_ascii_lowercase().ends_with("/messages") {
+        base.truncate(base.len() - "/messages".len());
+    }
     if base.to_ascii_lowercase().ends_with("/models") {
         return base;
     }
@@ -1073,6 +1895,23 @@ pub fn chat_sse_to_responses_sse_with_request(input: &str, original_request: &Va
     String::from_utf8(output).unwrap_or_default()
 }
 
+pub fn anthropic_sse_to_responses_sse(input: &str) -> String {
+    let mut converter = AnthropicSseToResponsesConverter::default();
+    let mut output = converter.push_bytes(input.as_bytes());
+    output.extend(converter.finish());
+    String::from_utf8(output).unwrap_or_default()
+}
+
+pub fn anthropic_sse_to_responses_sse_with_request(
+    input: &str,
+    original_request: &Value,
+) -> String {
+    let mut converter = AnthropicSseToResponsesConverter::with_request(original_request);
+    let mut output = converter.push_bytes(input.as_bytes());
+    output.extend(converter.finish());
+    String::from_utf8(output).unwrap_or_default()
+}
+
 pub fn response_id_from_chat_id(id: Option<&str>) -> String {
     let id = id.unwrap_or("compat");
     if id.starts_with("resp_") {
@@ -1104,6 +1943,7 @@ struct ReasoningItemState {
     output_index: Option<u32>,
     item_id: String,
     text: String,
+    encrypted_content: String,
     added: bool,
     done: bool,
 }
@@ -1564,12 +2404,15 @@ impl ChatSseState {
             return;
         }
         let output_index = self.reasoning.output_index.unwrap_or(0);
-        let item = json!({
+        let mut item = json!({
             "id": self.reasoning.item_id,
             "type": "reasoning",
             "reasoning_content": self.reasoning.text,
             "summary": [{ "type": "summary_text", "text": self.reasoning.text }]
         });
+        if !self.reasoning.encrypted_content.is_empty() {
+            item["encrypted_content"] = json!(self.reasoning.encrypted_content);
+        }
         self.output_items.push((output_index, item.clone()));
         self.reasoning.done = true;
         push_sse(
@@ -2976,12 +3819,20 @@ fn chat_reasoning_to_response_output_item(message: &Value, response_id: &str) ->
     if reasoning.is_empty() {
         return None;
     }
-    Some(json!({
+    let mut item = json!({
         "id": format!("rs_{response_id}"),
         "type": "reasoning",
         "reasoning_content": reasoning,
         "summary": [{ "type": "summary_text", "text": reasoning }]
-    }))
+    });
+    if let Some(signature) = message
+        .get("reasoning_signature")
+        .and_then(Value::as_str)
+        .filter(|signature| !signature.is_empty())
+    {
+        item["encrypted_content"] = json!(signature);
+    }
+    Some(item)
 }
 
 fn chat_reasoning_text(message: &Value) -> Option<String> {
@@ -3404,17 +4255,9 @@ fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
         || usage.get("cache_creation_input_tokens").is_some()
         || usage.get("cache_creation_5m_input_tokens").is_some()
         || usage.get("cache_creation_1h_input_tokens").is_some();
-    let has_cache_details = cached_tokens > 0
-        || usage
-            .pointer("/prompt_tokens_details/cached_tokens")
-            .is_some()
-        || usage
-            .pointer("/input_tokens_details/cached_tokens")
-            .is_some();
-
     if let Some(value) = usage.get("input_tokens").and_then(Value::as_u64) {
         input_tokens = value;
-        input_tokens_include_cache = false;
+        input_tokens_include_cache = !has_claude_cache_fields;
     }
     if let Some(cache_read) = usage.get("cache_read_input_tokens").and_then(Value::as_u64) {
         cached_tokens = cache_read;
@@ -3424,46 +4267,47 @@ fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
             .get("cachedContentTokenCount")
             .and_then(Value::as_u64)
             .unwrap_or(0);
-        input_tokens = prompt_tokens.saturating_sub(cached_tokens);
-        input_tokens_include_cache = false;
+        input_tokens = prompt_tokens;
+        input_tokens_include_cache = true;
     }
 
-    let usage_input_tokens = if input_tokens_include_cache {
-        input_tokens.saturating_sub(
-            cached_tokens
-                + effective_cache_creation_tokens(
-                    cache_creation,
-                    cache_creation_5m,
-                    cache_creation_1h,
-                ),
-        )
+    let cache_creation_tokens =
+        effective_cache_creation_tokens(cache_creation, cache_creation_5m, cache_creation_1h);
+    let uncached_input_tokens = if input_tokens_include_cache {
+        input_tokens.saturating_sub(cached_tokens + cache_creation_tokens)
     } else {
         input_tokens
     };
+    let response_input_tokens = uncached_input_tokens + cached_tokens + cache_creation_tokens;
     let should_recalculate_total = usage.get("total_tokens").is_none()
         || cached_tokens > 0
-        || effective_cache_creation_tokens(cache_creation, cache_creation_5m, cache_creation_1h)
-            > 0
+        || cache_creation_tokens > 0
         || usage.get("promptTokenCount").is_some();
     let total_tokens = if should_recalculate_total {
-        usage_input_tokens
-            + output_tokens
-            + cached_tokens
-            + effective_cache_creation_tokens(cache_creation, cache_creation_5m, cache_creation_1h)
+        response_input_tokens + output_tokens
     } else {
         usage
             .get("total_tokens")
             .and_then(Value::as_u64)
-            .unwrap_or(usage_input_tokens + output_tokens)
+            .unwrap_or(response_input_tokens + output_tokens)
     };
     let mut result = json!({
-        "input_tokens": usage_input_tokens,
+        "input_tokens": response_input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": total_tokens
     });
 
-    if !has_claude_cache_fields && has_cache_details && cached_tokens > 0 {
-        result["input_tokens_details"] = json!({ "cached_tokens": cached_tokens });
+    if cached_tokens > 0 || cache_creation_tokens > 0 {
+        let mut details = usage
+            .get("input_tokens_details")
+            .cloned()
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}));
+        details["cached_tokens"] = json!(cached_tokens);
+        if cache_creation_tokens > 0 {
+            details["cache_write_tokens"] = json!(cache_creation_tokens);
+        }
+        result["input_tokens_details"] = details;
     }
     if let Some(details) = usage.get("completion_tokens_details") {
         result["output_tokens_details"] = details.clone();

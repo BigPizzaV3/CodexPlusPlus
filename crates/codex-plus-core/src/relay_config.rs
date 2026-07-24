@@ -528,6 +528,7 @@ pub async fn test_relay_profile(
     let endpoint = match profile.protocol {
         RelayProtocol::Responses => format!("{base_url}/responses"),
         RelayProtocol::ChatCompletions => format!("{base_url}/chat/completions"),
+        RelayProtocol::AnthropicMessages => format!("{base_url}/messages"),
     };
     let test_model = model.trim();
     if test_model.is_empty() {
@@ -535,13 +536,16 @@ pub async fn test_relay_profile(
     }
 
     let payload = relay_profile_test_payload(profile.protocol, test_model);
-    let response = client
+    let mut request = client
         .post(&endpoint)
         .bearer_auth(api_key)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .json(&payload)
-        .send()
-        .await?;
+        .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if profile.protocol == RelayProtocol::AnthropicMessages {
+        request = request
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01");
+    }
+    let response = request.json(&payload).send().await?;
     let http_status = response.status().as_u16();
 
     // 如果 404 且 base_url 末尾没有 /v1，尝试自动补 /v1 后再发一次。
@@ -552,14 +556,18 @@ pub async fn test_relay_profile(
         let v1_endpoint = match profile.protocol {
             RelayProtocol::Responses => format!("{v1_url}/responses"),
             RelayProtocol::ChatCompletions => format!("{v1_url}/chat/completions"),
+            RelayProtocol::AnthropicMessages => format!("{v1_url}/messages"),
         };
-        let v1_response = client
+        let mut v1_request = client
             .post(&v1_endpoint)
             .bearer_auth(api_key)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(&payload)
-            .send()
-            .await?;
+            .header(reqwest::header::CONTENT_TYPE, "application/json");
+        if profile.protocol == RelayProtocol::AnthropicMessages {
+            v1_request = v1_request
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01");
+        }
+        let v1_response = v1_request.json(&payload).send().await?;
         let v1_status = v1_response.status().as_u16();
         if v1_status < 400 {
             let response_text = v1_response.text().await.unwrap_or_default();
@@ -596,13 +604,20 @@ fn relay_profile_test_payload(protocol: RelayProtocol, model: &str) -> Value {
             ],
             "max_tokens": 16
         }),
+        RelayProtocol::AnthropicMessages => serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "user", "content": "hi" }
+            ],
+            "max_tokens": 256
+        }),
     }
 }
 
 fn codex_base_url_for_protocol(base_url: &str, protocol: RelayProtocol, proxy_port: u16) -> String {
     match protocol {
         RelayProtocol::Responses => base_url.to_string(),
-        RelayProtocol::ChatCompletions => {
+        RelayProtocol::ChatCompletions | RelayProtocol::AnthropicMessages => {
             crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
         }
     }
@@ -2001,7 +2016,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
             crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
         );
     }
-    if profile.protocol == RelayProtocol::ChatCompletions {
+    if profile.protocol != RelayProtocol::Responses {
         if !profile.upstream_base_url.trim().is_empty() {
             return profile.upstream_base_url.trim().to_string();
         }
@@ -2017,7 +2032,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
     let provider_base_url = provider_string_from_config(&profile.config_contents, "base_url")
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_default();
-    if profile.protocol == RelayProtocol::ChatCompletions
+    if profile.protocol != RelayProtocol::Responses
         && provider_base_url
             == crate::protocol_proxy::local_responses_proxy_base_url(
                 crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,

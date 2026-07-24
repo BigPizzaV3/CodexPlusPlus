@@ -1422,10 +1422,10 @@ async fn handle_protocol_proxy_connection(
             stream.shutdown().await?;
             return Ok(());
         }
-        let mut converter = request_json
-            .as_ref()
-            .map(crate::protocol_proxy::ChatSseToResponsesConverter::with_request)
-            .unwrap_or_default();
+        let mut converter = crate::protocol_proxy::UpstreamSseToResponsesConverter::with_request(
+            upstream.wire_api,
+            request_json.as_ref().unwrap_or(&serde_json::Value::Null),
+        );
         let mut bytes_stream = upstream.response.bytes_stream();
         let mut stream_failed = false;
         while let Some(chunk) = bytes_stream.next().await {
@@ -1488,11 +1488,28 @@ async fn handle_protocol_proxy_connection(
         stream.shutdown().await?;
         return Ok(());
     }
-    let chat_json: serde_json::Value = serde_json::from_slice(&upstream_body)?;
-    let response_json = if let Some(request_json) = request_json.as_ref() {
-        crate::protocol_proxy::chat_completion_to_response_with_request(chat_json, request_json)?
-    } else {
-        crate::protocol_proxy::chat_completion_to_response(chat_json)?
+    let upstream_json: serde_json::Value = serde_json::from_slice(&upstream_body)?;
+    let response_json = match upstream.wire_api {
+        crate::protocol_proxy::UpstreamWireApi::AnthropicMessages => {
+            if let Some(request_json) = request_json.as_ref() {
+                crate::protocol_proxy::anthropic_message_to_response_with_request(
+                    upstream_json,
+                    request_json,
+                )?
+            } else {
+                crate::protocol_proxy::anthropic_message_to_response(upstream_json)?
+            }
+        }
+        _ => {
+            if let Some(request_json) = request_json.as_ref() {
+                crate::protocol_proxy::chat_completion_to_response_with_request(
+                    upstream_json,
+                    request_json,
+                )?
+            } else {
+                crate::protocol_proxy::chat_completion_to_response(upstream_json)?
+            }
+        }
     };
     let body = serde_json::to_vec(&response_json)?;
     write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body).await?;

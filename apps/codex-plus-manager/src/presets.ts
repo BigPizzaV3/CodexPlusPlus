@@ -9,7 +9,7 @@
 
 export type PresetCategory = "official" | "aggregator" | "third_party" | "cn_official";
 
-export type RelayProtocol = "responses" | "chatCompletions";
+export type RelayProtocol = "responses" | "chatCompletions" | "anthropicMessages";
 
 export interface ProviderPreset {
   id: string;
@@ -27,7 +27,7 @@ export interface ProviderPreset {
  * 预设列表。选择任一预设会自动填充：
  * - name     → 供应商名称
  * - baseUrl  → API 端点
- * - protocol → responses / chatCompletions（根据上游实际协议）
+ * - protocol → responses / chatCompletions / anthropicMessages（根据上游实际协议）
  * - model    → 默认模型名
  * - modelList → 可选模型清单（换行分隔）
  */

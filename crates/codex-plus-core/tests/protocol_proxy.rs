@@ -1,13 +1,16 @@
 use codex_plus_core::protocol_proxy::{
-    ChatSseToResponsesConverter, audio_transcriptions_url, chat_completion_to_response,
+    AnthropicSseToResponsesConverter, ChatSseToResponsesConverter, anthropic_message_to_response,
+    anthropic_message_to_response_with_request, anthropic_messages_url,
+    anthropic_sse_to_responses_sse, audio_transcriptions_url, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
     chat_sse_to_responses_sse_with_request, is_audio_transcriptions_proxy_path,
     is_chat_completions_proxy_path, is_models_proxy_path, is_responses_proxy_path, models_url,
     open_audio_transcriptions_proxy_request, open_chat_completions_proxy_request,
     open_models_proxy_request, open_responses_proxy_request,
     open_responses_proxy_request_with_settings, responses_error_from_upstream,
-    responses_to_chat_completions, send_upstream_request_with_header_timeout,
-    upstream_header_timeout, upstream_http_client, upstream_stream_header_timeout,
+    responses_to_anthropic_messages, responses_to_chat_completions,
+    send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
+    upstream_stream_header_timeout,
 };
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
@@ -74,6 +77,73 @@ fn responses_request_converts_to_chat_completions() {
             ]
         })
     );
+}
+
+#[test]
+fn responses_request_converts_to_anthropic_messages_with_tools() {
+    let converted = responses_to_anthropic_messages(json!({
+        "model": "claude-fable-5",
+        "instructions": "You are a coding agent.",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "Check Paris." }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_weather",
+                "name": "get_weather",
+                "arguments": "{\"location\":\"Paris\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_weather",
+                "output": "18 C and sunny"
+            }
+        ],
+        "max_output_tokens": 2048,
+        "reasoning": { "effort": "low" },
+        "stream": true,
+        "parallel_tool_calls": false,
+        "tool_choice": "required",
+        "tools": [{
+            "type": "function",
+            "name": "get_weather",
+            "description": "Get weather",
+            "parameters": {
+                "type": "object",
+                "properties": { "location": { "type": "string" } },
+                "required": ["location"]
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["model"], "claude-fable-5");
+    assert_eq!(converted["system"], "You are a coding agent.");
+    assert_eq!(converted["max_tokens"], 2048);
+    assert_eq!(converted["thinking"]["type"], "adaptive");
+    assert_eq!(converted["output_config"]["effort"], "low");
+    assert_eq!(converted["messages"][0]["role"], "user");
+    assert_eq!(converted["messages"][1]["role"], "assistant");
+    assert_eq!(converted["messages"][1]["content"][0]["type"], "tool_use");
+    assert_eq!(converted["messages"][1]["content"][0]["id"], "call_weather");
+    assert_eq!(
+        converted["messages"][1]["content"][0]["input"]["location"],
+        "Paris"
+    );
+    assert_eq!(converted["messages"][2]["role"], "user");
+    assert_eq!(
+        converted["messages"][2]["content"][0]["type"],
+        "tool_result"
+    );
+    assert_eq!(converted["tools"][0]["name"], "get_weather");
+    assert_eq!(converted["tools"][0]["input_schema"]["type"], "object");
+    assert_eq!(converted["tool_choice"]["type"], "auto");
+    assert_eq!(converted["tool_choice"]["disable_parallel_tool_use"], true);
+    assert_eq!(converted["stream"], true);
+    assert!(converted.get("stream_options").is_none());
 }
 
 #[test]
@@ -316,6 +386,129 @@ fn responses_request_preserves_reasoning_content_for_thinking_followup() {
     );
     assert_eq!(converted["messages"][1]["tool_calls"][0]["id"], "call_1");
     assert_eq!(converted["messages"][2]["role"], "tool");
+}
+
+#[test]
+fn responses_request_restores_anthropic_thinking_signature() {
+    let converted = responses_to_anthropic_messages(json!({
+        "model": "claude-fable-5",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "inspect files" }]
+            },
+            {
+                "id": "rs_1",
+                "type": "reasoning",
+                "encrypted_content": "sig_abc",
+                "summary": [{ "type": "summary_text", "text": "Need to inspect files." }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "shell_command",
+                "arguments": "{\"command\":\"rg foo\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "result"
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][1]["content"][0]["type"], "thinking");
+    assert_eq!(
+        converted["messages"][1]["content"][0]["thinking"],
+        "Need to inspect files."
+    );
+    assert_eq!(
+        converted["messages"][1]["content"][0]["signature"],
+        "sig_abc"
+    );
+    assert_eq!(converted["messages"][1]["content"][1]["type"], "tool_use");
+}
+
+#[test]
+fn anthropic_tool_round_trip_preserves_signature_and_tool_result() {
+    let first_request = json!({
+        "model": "claude-fable-5",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{ "type": "input_text", "text": "Inspect the repository." }]
+        }],
+        "tools": [{
+            "type": "function",
+            "name": "shell_command",
+            "description": "Run a shell command",
+            "parameters": {
+                "type": "object",
+                "properties": { "command": { "type": "string" } },
+                "required": ["command"]
+            }
+        }],
+        "stream": false
+    });
+    let first_response = anthropic_message_to_response_with_request(
+        json!({
+            "id": "msg_roundtrip",
+            "model": "claude-fable-5",
+            "content": [
+                { "type": "thinking", "thinking": "I should inspect it.", "signature": "sig_roundtrip" },
+                {
+                    "type": "tool_use",
+                    "id": "toolu_roundtrip",
+                    "name": "shell_command",
+                    "input": { "command": "git status --short" }
+                }
+            ],
+            "stop_reason": "tool_use",
+            "usage": { "input_tokens": 10, "output_tokens": 5 }
+        }),
+        &first_request,
+    )
+    .unwrap();
+    let mut second_input = first_request["input"].as_array().unwrap().clone();
+    second_input.extend(first_response["output"].as_array().unwrap().clone());
+    second_input.push(json!({
+        "type": "function_call_output",
+        "call_id": "toolu_roundtrip",
+        "output": "clean"
+    }));
+
+    let second_request = responses_to_anthropic_messages(json!({
+        "model": "claude-fable-5",
+        "input": second_input,
+        "tools": first_request["tools"],
+        "stream": true
+    }))
+    .unwrap();
+
+    assert_eq!(second_request["messages"][1]["role"], "assistant");
+    assert_eq!(
+        second_request["messages"][1]["content"][0]["type"],
+        "thinking"
+    );
+    assert_eq!(
+        second_request["messages"][1]["content"][0]["signature"],
+        "sig_roundtrip"
+    );
+    assert_eq!(
+        second_request["messages"][1]["content"][1]["type"],
+        "tool_use"
+    );
+    assert_eq!(second_request["messages"][2]["role"], "user");
+    assert_eq!(
+        second_request["messages"][2]["content"][0]["tool_use_id"],
+        "toolu_roundtrip"
+    );
+    assert_eq!(
+        second_request["messages"][2]["content"][0]["content"],
+        "clean"
+    );
 }
 
 #[test]
@@ -802,6 +995,68 @@ fn chat_completion_response_converts_to_responses_response() {
 }
 
 #[test]
+fn anthropic_message_response_converts_reasoning_tools_and_usage() {
+    let converted = anthropic_message_to_response(json!({
+        "id": "msg_123",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-fable-5",
+        "content": [
+            { "type": "thinking", "thinking": "I should check.", "signature": "sig_abc" },
+            { "type": "text", "text": "Let me check." },
+            {
+                "type": "tool_use",
+                "id": "toolu_123",
+                "name": "get_weather",
+                "input": { "location": "Paris" }
+            }
+        ],
+        "stop_reason": "tool_use",
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 3,
+            "cache_read_input_tokens": 2,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 4,
+                "ephemeral_1h_input_tokens": 6
+            }
+        }
+    }))
+    .unwrap();
+
+    assert_eq!(converted["id"], "resp_msg_123");
+    assert_eq!(converted["output"][0]["type"], "reasoning");
+    assert_eq!(
+        converted["output"][0]["summary"][0]["text"],
+        "I should check."
+    );
+    assert_eq!(converted["output"][0]["encrypted_content"], "sig_abc");
+    assert_eq!(
+        converted["output"][1]["content"][0]["text"],
+        "Let me check."
+    );
+    assert_eq!(converted["output"][2]["type"], "function_call");
+    assert_eq!(converted["output"][2]["call_id"], "toolu_123");
+    assert_eq!(
+        converted["output"][2]["arguments"],
+        "{\"location\":\"Paris\"}"
+    );
+    assert_eq!(converted["usage"]["input_tokens"], 22);
+    assert_eq!(converted["usage"]["output_tokens"], 3);
+    assert_eq!(converted["usage"]["total_tokens"], 25);
+    assert_eq!(
+        converted["usage"]["input_tokens_details"]["cached_tokens"],
+        2
+    );
+    assert_eq!(
+        converted["usage"]["input_tokens_details"]["cache_write_tokens"],
+        10
+    );
+    assert_eq!(converted["usage"]["cache_creation_5m_input_tokens"], 4);
+    assert_eq!(converted["usage"]["cache_creation_1h_input_tokens"], 6);
+}
+
+#[test]
 fn chat_completion_response_maps_reasoning_tool_calls_and_usage_details() {
     let converted = chat_completion_to_response(json!({
         "id": "chatcmpl_1",
@@ -849,6 +1104,7 @@ fn chat_completion_response_maps_reasoning_tool_calls_and_usage_details() {
         converted["usage"]["input_tokens_details"]["cached_tokens"],
         3
     );
+    assert_eq!(converted["usage"]["input_tokens"], 10);
     assert_eq!(
         converted["usage"]["output_tokens_details"]["reasoning_tokens"],
         2
@@ -906,10 +1162,17 @@ fn chat_completion_response_accepts_responses_style_usage_fields() {
     }))
     .unwrap();
 
-    assert_eq!(converted["usage"]["input_tokens"], 7);
+    assert_eq!(converted["usage"]["input_tokens"], 12);
     assert_eq!(converted["usage"]["output_tokens"], 3);
     assert_eq!(converted["usage"]["total_tokens"], 15);
-    assert!(converted["usage"].get("input_tokens_details").is_none());
+    assert_eq!(
+        converted["usage"]["input_tokens_details"]["cached_tokens"],
+        1
+    );
+    assert_eq!(
+        converted["usage"]["input_tokens_details"]["cache_write_tokens"],
+        4
+    );
     assert_eq!(converted["usage"]["cache_read_input_tokens"], 1);
     assert_eq!(converted["usage"]["cache_creation_input_tokens"], 4);
 }
@@ -1060,7 +1323,7 @@ fn chat_completion_response_maps_gemini_and_claude_cache_usage_like_ccx() {
         }
     }))
     .unwrap();
-    assert_eq!(gemini["usage"]["input_tokens"], 15);
+    assert_eq!(gemini["usage"]["input_tokens"], 20);
     assert_eq!(gemini["usage"]["output_tokens"], 7);
     assert_eq!(gemini["usage"]["total_tokens"], 27);
     assert_eq!(gemini["usage"]["input_tokens_details"]["cached_tokens"], 5);
@@ -1079,13 +1342,17 @@ fn chat_completion_response_maps_gemini_and_claude_cache_usage_like_ccx() {
         }
     }))
     .unwrap();
-    assert_eq!(claude["usage"]["input_tokens"], 10);
+    assert_eq!(claude["usage"]["input_tokens"], 22);
     assert_eq!(claude["usage"]["total_tokens"], 25);
     assert_eq!(claude["usage"]["cache_read_input_tokens"], 2);
     assert_eq!(claude["usage"]["cache_creation_5m_input_tokens"], 4);
     assert_eq!(claude["usage"]["cache_creation_1h_input_tokens"], 6);
     assert_eq!(claude["usage"]["cache_ttl"], "mixed");
-    assert!(claude["usage"].get("input_tokens_details").is_none());
+    assert_eq!(claude["usage"]["input_tokens_details"]["cached_tokens"], 2);
+    assert_eq!(
+        claude["usage"]["input_tokens_details"]["cache_write_tokens"],
+        10
+    );
 }
 
 #[test]
@@ -1111,6 +1378,76 @@ fn chat_completion_response_splits_inline_think_block() {
     );
     assert_eq!(converted["output"][1]["type"], "message");
     assert_eq!(converted["output"][1]["content"][0]["text"], "pong");
+}
+
+#[test]
+fn anthropic_sse_converts_thinking_and_tool_use() {
+    let converted = anthropic_sse_to_responses_sse(
+        r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_stream","type":"message","role":"assistant","model":"claude-fable-5","content":[],"usage":{"input_tokens":20,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Check first."}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig_stream"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_stream","name":"get_weather","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"location\":\"Paris\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":5}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#,
+    );
+
+    assert!(converted.contains("event: response.created"));
+    assert!(converted.contains("\"id\":\"resp_msg_stream\""));
+    assert!(converted.contains("event: response.reasoning_summary_text.delta"));
+    assert!(converted.contains("\"delta\":\"Check first.\""));
+    assert!(converted.contains("\"encrypted_content\":\"sig_stream\""));
+    assert!(converted.contains("event: response.function_call_arguments.delta"));
+    assert!(converted.contains("\"call_id\":\"toolu_stream\""));
+    assert!(converted.contains("\"arguments\":\"{\\\"location\\\":\\\"Paris\\\"}\""));
+    assert!(converted.contains("\"input_tokens\":20"));
+    assert!(converted.contains("\"output_tokens\":5"));
+    assert!(converted.contains("event: response.completed"));
+    assert!(converted.contains("data: [DONE]"));
+}
+
+#[test]
+fn anthropic_sse_converter_handles_partial_utf8_chunks() {
+    let sse = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_utf8\",\"model\":\"claude-fable-5\",\"content\":[],\"usage\":{}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+    let bytes = sse.as_bytes();
+    let split = bytes
+        .windows("好".len())
+        .position(|window| window == "好".as_bytes())
+        .unwrap()
+        + 1;
+
+    let mut converter = AnthropicSseToResponsesConverter::default();
+    let mut output = converter.push_bytes(&bytes[..split]);
+    output.extend(converter.push_bytes(&bytes[split..]));
+    output.extend(converter.finish());
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("\"delta\":\"你好\""));
+    assert!(output.contains("event: response.completed"));
 }
 
 #[test]
@@ -1274,6 +1611,26 @@ fn chat_completions_url_normalizes_common_base_urls() {
     assert_eq!(
         chat_completions_url("https://api.example.test/openai#"),
         "https://api.example.test/openai/chat/completions"
+    );
+}
+
+#[test]
+fn anthropic_messages_url_normalizes_common_base_urls() {
+    assert_eq!(
+        anthropic_messages_url("https://api.example.test"),
+        "https://api.example.test/v1/messages"
+    );
+    assert_eq!(
+        anthropic_messages_url("https://api.example.test/v1"),
+        "https://api.example.test/v1/messages"
+    );
+    assert_eq!(
+        anthropic_messages_url("https://api.example.test/anthropic"),
+        "https://api.example.test/anthropic/messages"
+    );
+    assert_eq!(
+        anthropic_messages_url("https://api.example.test/v1/messages"),
+        "https://api.example.test/v1/messages"
     );
 }
 

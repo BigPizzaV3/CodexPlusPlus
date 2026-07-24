@@ -9,6 +9,7 @@ export const EN_PLAIN: Record<string, string> = {
     "Expands plugin marketplace requests in API Key mode to show the full plugin list. Usually unnecessary in official/mixed mode.",
   "API Key 环境变量": "API Key environment variable",
   "Chat Completions 转 Responses": "Chat Completions to Responses",
+  "Claude Messages 转 Responses": "Claude Messages to Responses",
   "Codex 启动参数": "Codex launch arguments",
   "Codex 工具与插件": "Codex tools & plugins",
   "Codex 应用": "Codex app",
