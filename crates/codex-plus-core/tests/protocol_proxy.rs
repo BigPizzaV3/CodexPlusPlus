@@ -147,6 +147,32 @@ fn responses_request_converts_to_anthropic_messages_with_tools() {
 }
 
 #[test]
+fn responses_request_converts_input_images_to_anthropic_sources() {
+    let converted = responses_to_anthropic_messages(json!({
+        "model": "claude-fable-5",
+        "input": [{
+            "role": "user",
+            "content": [
+                { "type": "input_text", "text": "What is this?" },
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,abc123"
+                }
+            ]
+        }]
+    }))
+    .unwrap();
+
+    let content = converted["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[0]["text"], "What is this?");
+    assert_eq!(content[1]["type"], "image");
+    assert_eq!(content[1]["source"]["type"], "base64");
+    assert_eq!(content[1]["source"]["media_type"], "image/png");
+    assert_eq!(content[1]["source"]["data"], "abc123");
+}
+
+#[test]
 fn responses_request_matches_ccs_reasoning_and_tool_choice_edges() {
     let non_reasoning = responses_to_chat_completions(json!({
         "model": "gpt-4o",
