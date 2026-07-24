@@ -8,12 +8,15 @@ use codex_plus_core::relay_config::{
     chatgpt_auth_status_from_home, clear_relay_config_to_home,
     clear_relay_config_to_home_with_auth, delete_context_entry_from_common_config,
     extract_common_config_from_config, filter_common_config_for_selection,
-    list_context_entries_from_common_config, normalize_relay_profile_for_storage,
-    relay_config_status_from_home, sanitize_common_config_contents,
-    set_codex_goals_feature_in_home, strip_common_config_from_config,
-    sync_live_config_context_entries, upsert_context_entry_in_common_config,
+    list_context_entries_from_common_config, model_router_profile,
+    normalize_relay_profile_for_storage, relay_config_status_from_home,
+    sanitize_common_config_contents, set_codex_goals_feature_in_home,
+    strip_common_config_from_config, sync_live_config_context_entries,
+    upsert_context_entry_in_common_config,
 };
-use codex_plus_core::settings::{RelayContextSelection, RelayMode, RelayProfile, RelayProtocol};
+use codex_plus_core::settings::{
+    BackendSettings, RelayContextSelection, RelayMode, RelayProfile, RelayProtocol,
+};
 
 fn write_remote_plugin_marketplace_snapshot(home: &std::path::Path) {
     let root = home.join(".tmp").join("plugins-remote");
@@ -3572,4 +3575,53 @@ experimental_bearer_token = "sk-new"
         "1000000"
     );
     assert!(!windows.contains_key("deepseek-v4-pro"));
+}
+
+#[test]
+fn model_router_catalog_merges_official_models_and_routed_windows() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    std::fs::write(
+        home.join("models_cache.json"),
+        r#"{"models":[{"slug":"gpt-official","context_window":272000}]}"#,
+    )
+    .unwrap();
+    let settings = BackendSettings {
+        model_routing_enabled: true,
+        active_relay_id: "default".to_string(),
+        relay_profiles: vec![
+            RelayProfile {
+                id: "default".to_string(),
+                name: "Official".to_string(),
+                relay_mode: RelayMode::Official,
+                ..RelayProfile::default()
+            },
+            RelayProfile {
+                id: "mimo".to_string(),
+                name: "MiMo".to_string(),
+                relay_mode: RelayMode::PureApi,
+                model_list: "mimo-v2.5-pro".to_string(),
+                model_windows: r#"{"mimo-v2.5-pro":"1M"}"#.to_string(),
+                ..RelayProfile::default()
+            },
+        ],
+        ..BackendSettings::default()
+    };
+
+    let router = model_router_profile(&settings, home);
+    assert_eq!(router.model_list, "mimo-v2.5-pro");
+    apply_relay_profile_to_home_with_switch_rules(home, &router, "").unwrap();
+
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.join("model-catalogs/codex-plus-router.json")).unwrap(),
+    )
+    .unwrap();
+    let models = catalog["models"].as_array().unwrap();
+    assert!(models.iter().any(|model| model["slug"] == "gpt-official"));
+    let mimo = models
+        .iter()
+        .find(|model| model["slug"] == "mimo-v2.5-pro")
+        .unwrap();
+    assert_eq!(mimo["context_window"], 1_000_000);
+    assert_eq!(mimo["max_context_window"], 1_000_000);
 }

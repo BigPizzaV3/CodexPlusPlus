@@ -1166,6 +1166,44 @@ async fn launch_lifecycle_does_not_apply_relay_profile_before_launching_codex() 
 }
 
 #[tokio::test]
+async fn launch_lifecycle_applies_model_router_before_starting_helper() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
+        relay_profiles_enabled: true,
+        model_routing_enabled: true,
+        ..BackendSettings::default()
+    });
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    let events = events.lock().unwrap().clone();
+    let apply = events
+        .iter()
+        .position(|event| event == "apply-relay")
+        .unwrap();
+    let helper = events
+        .iter()
+        .position(|event| event == "start-helper:57321")
+        .unwrap();
+    assert!(apply < helper);
+}
+
+#[tokio::test]
 async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabled() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::settings::{RelayProfile, SettingsStore};
+use crate::settings::{BackendSettings, RelayMode, RelayProfile, SettingsStore};
 use serde_json::{Map, Value, json};
 
 const BASE_URL_ENV_KEYS: &[&str] = &[
@@ -39,8 +39,12 @@ pub async fn read_codex_model_catalog() -> Value {
     let settings_path = crate::paths::default_settings_path();
     if settings_path.exists() {
         if let Ok(settings) = SettingsStore::new(settings_path).load() {
-            let profile = settings.active_relay_profile();
-            let catalog = relay_profile_model_catalog_value(&home, &profile);
+            let catalog = if settings.model_routing_enabled {
+                model_routing_catalog_value(&home, &settings)
+            } else {
+                let profile = settings.active_relay_profile();
+                relay_profile_model_catalog_value(&home, &profile)
+            };
             if catalog
                 .get("models")
                 .and_then(Value::as_array)
@@ -70,6 +74,72 @@ pub async fn read_codex_model_catalog() -> Value {
         }
     };
     read_codex_model_catalog_from_home(&home, &env, client).await
+}
+
+fn model_routing_catalog_value(home: &Path, settings: &BackendSettings) -> Value {
+    let routed_profiles = settings
+        .relay_profiles
+        .iter()
+        .filter(|profile| {
+            profile.relay_mode != RelayMode::Aggregate
+                && (profile.relay_mode != RelayMode::Official || profile.official_mix_api_key)
+        })
+        .collect::<Vec<_>>();
+
+    let models = unique_strings(
+        routed_profiles
+            .iter()
+            .flat_map(|profile| relay_profile_model_ids(profile))
+            .collect(),
+    );
+    let (_, effective, _) = load_codex_config(&home.join("config.toml"));
+    let active_model = {
+        let live_model = string_value(effective.get("model"));
+        if live_model.is_empty() {
+            settings.active_relay_profile().model.trim().to_string()
+        } else {
+            live_model
+        }
+    };
+    let default_model = if models.iter().any(|model| model == &active_model) {
+        active_model.clone()
+    } else {
+        String::new()
+    };
+    let model_metadata = model_ui_metadata_map(&models);
+    let sources = routed_profiles
+        .iter()
+        .map(|profile| {
+            let provider_name = if profile.name.trim().is_empty() {
+                profile.id.trim()
+            } else {
+                profile.name.trim()
+            };
+            let count = relay_profile_model_ids(profile).len();
+            json!({
+                "id": format!("relay-profile:{}", profile.id),
+                "type": "model_route",
+                "name": provider_name,
+                "base_url": profile.base_url.trim(),
+                "status": "ok",
+                "models": count,
+                "responses_api": responses_api_status("unknown", "", "")
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "status": if models.is_empty() { "not_configured" } else { "ok" },
+        "path": home.join("config.toml").to_string_lossy(),
+        "model": active_model,
+        "model_provider": "codex-plus-router",
+        "provider_name": "Codex++ Model Router",
+        "default_model": default_model,
+        "models": models,
+        "modelMetadata": model_metadata,
+        "sources": sources,
+        "responses_api": responses_api_status("unknown", "", "")
+    })
 }
 
 fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Value {
@@ -804,4 +874,51 @@ fn unquote_toml_string(value: &str) -> String {
         })
         .unwrap_or(value)
         .to_string()
+}
+
+#[cfg(test)]
+mod model_routing_catalog_tests {
+    use super::*;
+    use crate::settings::{BackendSettings, RelayMode, RelayProfile};
+
+    #[test]
+    fn routing_catalog_is_union_of_third_party_model_lists_only() {
+        let settings = BackendSettings {
+            model_routing_enabled: true,
+            relay_profiles: vec![
+                RelayProfile {
+                    id: "official".to_string(),
+                    name: "OpenAI Official".to_string(),
+                    relay_mode: RelayMode::Official,
+                    model_list: "gpt-5.6".to_string(),
+                    ..RelayProfile::default()
+                },
+                RelayProfile {
+                    id: "claude".to_string(),
+                    name: "Claude API".to_string(),
+                    relay_mode: RelayMode::PureApi,
+                    model_list: "claude-sonnet-4-6\nshared".to_string(),
+                    ..RelayProfile::default()
+                },
+                RelayProfile {
+                    id: "gemini".to_string(),
+                    name: "Gemini API".to_string(),
+                    relay_mode: RelayMode::PureApi,
+                    model_list: "gemini-3-pro\nshared".to_string(),
+                    ..RelayProfile::default()
+                },
+            ],
+            ..BackendSettings::default()
+        };
+
+        let catalog = model_routing_catalog_value(Path::new("/tmp/codex"), &settings);
+        let models = catalog["models"].as_array().unwrap();
+        let values = models.iter().filter_map(Value::as_str).collect::<Vec<_>>();
+
+        assert!(values.contains(&"claude-sonnet-4-6"));
+        assert!(values.contains(&"gemini-3-pro"));
+        assert!(values.contains(&"shared"));
+        assert!(!values.contains(&"gpt-5.6"));
+        assert_eq!(values.iter().filter(|value| **value == "shared").count(), 1);
+    }
 }

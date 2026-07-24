@@ -304,6 +304,9 @@ where
                 );
             }
         }
+        if settings.model_routing_enabled {
+            hooks.apply_active_relay_profile(&settings).await?;
+        }
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings);
         if protocol_proxy_enabled {
             helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
@@ -536,6 +539,16 @@ impl LaunchHooks for DefaultLaunchHooks {
             .collect::<Vec<_>>()
             .join("\n\n"),
         );
+        if settings.model_routing_enabled {
+            let router = crate::relay_config::model_router_profile(settings, &home);
+            crate::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+                &home,
+                &router,
+                &common_config,
+                settings.computer_use_guard_enabled,
+            )?;
+            return Ok(());
+        }
         if profile.relay_mode == crate::settings::RelayMode::Official
             && !profile.official_mix_api_key
         {
@@ -1004,6 +1017,7 @@ async fn handle_helper_connection(
     let path = raw_path.split('?').next().unwrap_or(raw_path);
     let request_user_agent = header_value_from_headers(&request_headers, "user-agent");
     let request_content_type = header_value_from_headers(&request_headers, "content-type");
+    let request_proxy_headers = header_pairs_from_headers(&request_headers);
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
 
     let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -1035,6 +1049,7 @@ async fn handle_helper_connection(
             &mut stream,
             &request_body,
             request_user_agent.as_deref(),
+            &request_proxy_headers,
             method,
             path,
             remote_addr_text,
@@ -1346,14 +1361,17 @@ async fn handle_protocol_proxy_connection(
     stream: &mut tokio::net::TcpStream,
     request_body: &str,
     request_user_agent: Option<&str>,
+    request_headers: &[(String, String)],
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
-    let upstream = match crate::protocol_proxy::open_responses_proxy_request(
+    let upstream = match crate::protocol_proxy::open_responses_proxy_request_with_client_context(
         request_body,
         request_user_agent,
+        path,
+        request_headers,
     )
     .await
     {
@@ -2072,6 +2090,22 @@ fn decode_chunked_body(encoded: &[u8]) -> Result<ChunkedBody, HttpRequestReadErr
 #[cfg(test)]
 fn scan_chunked_body(encoded: &[u8]) -> Result<ChunkedBodyScan, HttpRequestReadError> {
     ChunkedScanState::default().advance(encoded)
+}
+
+fn header_pairs_from_headers(headers: &str) -> Vec<(String, String)> {
+    headers
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            let name = name.trim();
+            let value = value.trim();
+            if name.is_empty() || value.is_empty() {
+                return None;
+            }
+            Some((name.to_string(), value.to_string()))
+        })
+        .collect()
 }
 
 fn header_value_from_headers(headers: &str, header_name: &str) -> Option<String> {

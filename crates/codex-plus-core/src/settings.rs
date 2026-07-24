@@ -332,6 +332,8 @@ pub struct BackendSettings {
     pub provider_sync_last_selected_provider: String,
     #[serde(rename = "relayProfilesEnabled", default = "default_true")]
     pub relay_profiles_enabled: bool,
+    #[serde(rename = "modelRoutingEnabled", default)]
+    pub model_routing_enabled: bool,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
     pub enhancements_enabled: bool,
     #[serde(rename = "computerUseGuardEnabled", default)]
@@ -482,6 +484,7 @@ impl Default for BackendSettings {
             provider_sync_manual_providers: Vec::new(),
             provider_sync_last_selected_provider: String::new(),
             relay_profiles_enabled: true,
+            model_routing_enabled: false,
             enhancements_enabled: true,
             computer_use_guard_enabled: false,
             codex_app_plugin_marketplace_unlock: true,
@@ -657,8 +660,62 @@ impl BackendSettings {
             .cloned()
     }
 
+    /// Resolve a model to exactly one ordinary third-party relay profile.
+    ///
+    /// `model_list` is the routing declaration: one model slug per line. Plain
+    /// official profiles are intentionally excluded so an unmatched model can
+    /// fall back to the native ChatGPT/Codex login route. Aggregate profiles are
+    /// also excluded here to avoid proxy recursion through the same local port.
+    pub fn relay_profile_for_model(&self, model: &str) -> anyhow::Result<Option<RelayProfile>> {
+        let (model, _) = crate::model_suffix::parse_model_suffix(model);
+        let model = model.trim();
+        if model.is_empty() {
+            return Ok(None);
+        }
+
+        let mut matches = self
+            .relay_profiles
+            .iter()
+            .filter(|profile| {
+                profile.relay_mode != RelayMode::Aggregate
+                    && (profile.relay_mode != RelayMode::Official || profile.official_mix_api_key)
+            })
+            .filter(|profile| {
+                profile
+                    .model_list
+                    .split(['\r', '\n', ','])
+                    .chain(std::iter::once(profile.model.as_str()))
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(crate::model_suffix::parse_model_suffix)
+                    .any(|(slug, _)| slug == model)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.pop()),
+            _ => {
+                let names = matches
+                    .iter()
+                    .map(|profile| {
+                        if profile.name.trim().is_empty() {
+                            profile.id.as_str()
+                        } else {
+                            profile.name.as_str()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("、");
+                anyhow::bail!("模型 {model} 同时存在于多个供应商中：{names}")
+            }
+        }
+    }
+
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
-        self.active_aggregate_relay_profile().is_some()
+        self.model_routing_enabled
+            || self.active_aggregate_relay_profile().is_some()
             || self.active_relay_profile().protocol == RelayProtocol::ChatCompletions
     }
 }
@@ -1041,6 +1098,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     if let Some(value) = source.get("relayProfilesEnabled").and_then(Value::as_bool) {
         target.insert("relayProfilesEnabled".to_string(), Value::Bool(value));
     }
+    merge_bool_setting(target, source, "modelRoutingEnabled");
     if let Some(value) = source.get("enhancementsEnabled").and_then(Value::as_bool) {
         target.insert("enhancementsEnabled".to_string(), Value::Bool(value));
     }
@@ -2473,6 +2531,85 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(active_aggregate.members[1].relay_id, "relay-b");
         assert_eq!(active_aggregate.members[1].weight, 4);
         assert!(updated.active_relay_uses_protocol_proxy());
+    }
+
+    #[test]
+    fn model_routing_selects_the_profile_that_declares_the_model() {
+        let settings = BackendSettings {
+            model_routing_enabled: true,
+            relay_profiles: vec![
+                RelayProfile {
+                    id: "claude".to_string(),
+                    name: "Claude API".to_string(),
+                    relay_mode: RelayMode::PureApi,
+                    model_list: "claude-sonnet-4-6\nclaude-opus-4-6".to_string(),
+                    ..RelayProfile::default()
+                },
+                RelayProfile {
+                    id: "gemini".to_string(),
+                    name: "Gemini API".to_string(),
+                    relay_mode: RelayMode::PureApi,
+                    model_list: "gemini-3-pro".to_string(),
+                    ..RelayProfile::default()
+                },
+            ],
+            ..BackendSettings::default()
+        };
+
+        let relay = settings
+            .relay_profile_for_model("claude-sonnet-4-6")
+            .unwrap()
+            .unwrap();
+        assert_eq!(relay.id, "claude");
+        assert!(
+            settings
+                .relay_profile_for_model("gpt-5.6")
+                .unwrap()
+                .is_none()
+        );
+        assert!(settings.active_relay_uses_protocol_proxy());
+    }
+
+    #[test]
+    fn model_routing_ignores_plain_official_profile_and_rejects_duplicates() {
+        let settings = BackendSettings {
+            model_routing_enabled: true,
+            relay_profiles: vec![
+                RelayProfile {
+                    id: "official".to_string(),
+                    name: "OpenAI Official".to_string(),
+                    relay_mode: RelayMode::Official,
+                    official_mix_api_key: false,
+                    model_list: "gpt-5.6".to_string(),
+                    ..RelayProfile::default()
+                },
+                RelayProfile {
+                    id: "a".to_string(),
+                    name: "Provider A".to_string(),
+                    relay_mode: RelayMode::PureApi,
+                    model_list: "same-model".to_string(),
+                    ..RelayProfile::default()
+                },
+                RelayProfile {
+                    id: "b".to_string(),
+                    name: "Provider B".to_string(),
+                    relay_mode: RelayMode::PureApi,
+                    model_list: "same-model".to_string(),
+                    ..RelayProfile::default()
+                },
+            ],
+            ..BackendSettings::default()
+        };
+
+        assert!(
+            settings
+                .relay_profile_for_model("gpt-5.6")
+                .unwrap()
+                .is_none()
+        );
+        let error = settings.relay_profile_for_model("same-model").unwrap_err();
+        assert!(error.to_string().contains("Provider A"));
+        assert!(error.to_string().contains("Provider B"));
     }
 
     #[test]

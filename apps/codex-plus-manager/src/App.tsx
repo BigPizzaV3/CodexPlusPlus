@@ -179,6 +179,7 @@ type BackendSettings = {
   providerSyncManualProviders: string[];
   providerSyncLastSelectedProvider: string;
   relayProfilesEnabled: boolean;
+  modelRoutingEnabled: boolean;
   enhancementsEnabled: boolean;
   computerUseGuardEnabled: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
@@ -760,6 +761,7 @@ const defaultSettings: BackendSettings = {
   providerSyncManualProviders: [],
   providerSyncLastSelectedProvider: "",
   relayProfilesEnabled: true,
+  modelRoutingEnabled: false,
   enhancementsEnabled: true,
   computerUseGuardEnabled: false,
   codexAppPluginMarketplaceUnlock: true,
@@ -3257,6 +3259,22 @@ function RelayScreen({
             <span>
               <strong>{t("启用供应商配置切换")}</strong>
               <small>{t("关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
+          <label className="switch-row relay-master-switch">
+            <input
+              checked={normalized.modelRoutingEnabled}
+              disabled={!normalized.relayProfilesEnabled}
+              onChange={(event) => {
+                const next = { ...normalized, modelRoutingEnabled: event.currentTarget.checked };
+                void saveRelaySettings(next);
+              }}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("按模型自动路由供应商")}</strong>
+              <small>{t("开启后，模型列表中的模型自动走所属第三方供应商；未匹配模型走 ChatGPT 官方登录。重启 Codex++ 后生效。")}</small>
             </span>
             <ToggleVisual />
           </label>
@@ -7626,6 +7644,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ...defaultSettings,
     ...settings,
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
+    modelRoutingEnabled: settings.modelRoutingEnabled === true,
     computerUseGuardEnabled: settings.computerUseGuardEnabled === true,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),

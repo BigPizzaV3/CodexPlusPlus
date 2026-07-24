@@ -1,7 +1,6 @@
 //! Codex Responses API 与 OpenAI Chat Completions 的本地协议转换。
 //!
 //! Codex Chat 与 Responses 协议之间的转换实现。
-
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -317,6 +316,7 @@ pub fn upstream_stream_header_timeout() -> Duration {
 
 pub fn upstream_http_client() -> anyhow::Result<reqwest::Client> {
     reqwest::Client::builder()
+        .no_proxy()
         .connect_timeout(UPSTREAM_CONNECT_TIMEOUT)
         .user_agent("CodexPlusPlus/ProtocolProxy")
         .build()
@@ -488,40 +488,98 @@ pub fn is_audio_transcriptions_proxy_path(path: &str) -> bool {
     )
 }
 
+const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
+
 pub async fn open_responses_proxy_request(
     body: &str,
     original_user_agent: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
-    open_responses_proxy_request_with_settings_and_user_agent(body, settings, original_user_agent)
-        .await
+    open_responses_proxy_request_with_settings_and_client_context(
+        body,
+        settings,
+        original_user_agent,
+        "/v1/responses",
+        &[],
+    )
+    .await
 }
 
 pub async fn open_responses_proxy_request_with_settings(
     body: &str,
     settings: crate::settings::BackendSettings,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    open_responses_proxy_request_with_settings_and_user_agent(body, settings, None).await
+    open_responses_proxy_request_with_settings_and_client_context(
+        body,
+        settings,
+        None,
+        "/v1/responses",
+        &[],
+    )
+    .await
 }
 
-async fn open_responses_proxy_request_with_settings_and_user_agent(
+pub async fn open_responses_proxy_request_with_client_context(
+    body: &str,
+    original_user_agent: Option<&str>,
+    request_path: &str,
+    incoming_headers: &[(String, String)],
+) -> anyhow::Result<UpstreamProxyResponse> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    open_responses_proxy_request_with_settings_and_client_context(
+        body,
+        settings,
+        original_user_agent,
+        request_path,
+        incoming_headers,
+    )
+    .await
+}
+
+async fn open_responses_proxy_request_with_settings_and_client_context(
     body: &str,
     settings: crate::settings::BackendSettings,
     original_user_agent: Option<&str>,
+    request_path: &str,
+    incoming_headers: &[(String, String)],
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let request_json: Value = serde_json::from_str(body)?;
     let is_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let context = RotationContext {
-        conversation_id: conversation_id_from_responses_request(&request_json),
+
+    let relays = if settings.model_routing_enabled {
+        let model = request_json
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        match settings.relay_profile_for_model(model)? {
+            Some(relay) => vec![relay],
+            None => {
+                return open_official_responses_proxy_request(
+                    &request_json,
+                    is_stream,
+                    request_path,
+                    incoming_headers,
+                    original_user_agent,
+                )
+                .await;
+            }
+        }
+    } else {
+        let context = RotationContext {
+            conversation_id: conversation_id_from_responses_request(&request_json),
+        };
+        let relay = crate::relay_rotation::select_relay_for_request(&settings, context)?;
+        let mut relays = vec![relay.clone()];
+        relays.extend(crate::relay_rotation::fallback_relays_after(
+            &settings, &relay.id,
+        )?);
+        relays
     };
-    let relay = crate::relay_rotation::select_relay_for_request(&settings, context)?;
-    let mut relays = vec![relay.clone()];
-    relays.extend(crate::relay_rotation::fallback_relays_after(
-        &settings, &relay.id,
-    )?);
+
     let relay_count = relays.len();
     for (attempt, relay) in relays.into_iter().enumerate() {
         validate_upstream(&relay)?;
@@ -641,6 +699,158 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         );
     }
     anyhow::bail!("未找到可用的聚合供应商成员")
+}
+
+async fn open_official_responses_proxy_request(
+    request_json: &Value,
+    is_stream: bool,
+    request_path: &str,
+    incoming_headers: &[(String, String)],
+    original_user_agent: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    let authorization = incoming_header(incoming_headers, "authorization")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Codex 官方登录不可用，请先在 Codex 中完成 ChatGPT 登录"))?;
+    if authorization.contains(PROXY_AUTH_PLACEHOLDER) {
+        anyhow::bail!("Codex 官方登录不可用，请重启 Codex++ 或新建会话以重新加载官方登录认证");
+    }
+
+    let endpoint = official_responses_url(request_path);
+    let client =
+        crate::http_client::proxied_client(original_user_agent.map(str::trim).unwrap_or_default())?;
+    let mut builder = client
+        .post(&endpoint)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::ACCEPT_ENCODING, "identity");
+    if is_stream {
+        builder = builder
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .header(reqwest::header::CACHE_CONTROL, "no-cache");
+    } else {
+        builder = builder.header(reqwest::header::ACCEPT, "application/json");
+    }
+
+    for (name, value) in incoming_headers {
+        let lower = name.trim().to_ascii_lowercase();
+        if !official_passthrough_header_allowed(&lower) {
+            continue;
+        }
+        if lower == "authorization" {
+            builder = builder.header(reqwest::header::AUTHORIZATION, authorization);
+            continue;
+        }
+        let Ok(header_name) = reqwest::header::HeaderName::from_bytes(lower.as_bytes()) else {
+            continue;
+        };
+        let Ok(header_value) = reqwest::header::HeaderValue::from_str(value.trim()) else {
+            continue;
+        };
+        builder = builder.header(header_name, header_value);
+    }
+
+    let model = request_json
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.official_request",
+        json!({
+            "model": model,
+            "endpoint": endpoint,
+            "stream": is_stream
+        }),
+    );
+
+    let upstream =
+        send_upstream_request_for_responses(builder.json(request_json), is_stream).await?;
+    let status_code = upstream.status().as_u16();
+    let content_type = upstream
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.official_response",
+        json!({
+            "model": model,
+            "endpoint": endpoint,
+            "stream": is_stream,
+            "statusCode": status_code
+        }),
+    );
+
+    Ok(UpstreamProxyResponse {
+        status_code,
+        content_type: content_type.clone(),
+        is_stream: is_stream || content_type.contains("text/event-stream"),
+        wire_api: UpstreamWireApi::Responses,
+        response: upstream,
+    })
+}
+
+fn incoming_header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
+}
+
+fn official_responses_url(request_path: &str) -> String {
+    let path = request_path
+        .split_once('?')
+        .map_or(request_path, |(path, _)| path);
+    if path.trim_end_matches('/').ends_with("/responses/compact") {
+        format!("{CHATGPT_CODEX_BASE_URL}/responses/compact")
+    } else {
+        format!("{CHATGPT_CODEX_BASE_URL}/responses")
+    }
+}
+
+fn official_passthrough_header_allowed(name: &str) -> bool {
+    !matches!(
+        name,
+        "host"
+            | "content-length"
+            | "content-type"
+            | "transfer-encoding"
+            | "connection"
+            | "proxy-connection"
+            | "keep-alive"
+            | "upgrade"
+            | "accept"
+            | "accept-encoding"
+            | "cache-control"
+            | "user-agent"
+            | "x-api-key"
+            | "x-goog-api-key"
+            | "x-forwarded-host"
+            | "x-forwarded-port"
+            | "x-forwarded-proto"
+            | "forwarded"
+            | "cf-connecting-ip"
+            | "cf-ipcountry"
+            | "cf-ray"
+            | "cf-visitor"
+            | "true-client-ip"
+            | "fastly-client-ip"
+            | "x-azure-clientip"
+            | "x-azure-fdid"
+            | "x-azure-ref"
+            | "akamai-origin-hop"
+            | "x-akamai-config-log-detail"
+            | "x-request-id"
+            | "x-correlation-id"
+            | "x-trace-id"
+            | "x-amzn-trace-id"
+            | "x-b3-traceid"
+            | "x-b3-spanid"
+            | "x-b3-parentspanid"
+            | "x-b3-sampled"
+            | "traceparent"
+            | "tracestate"
+    )
 }
 
 pub async fn open_models_proxy_request(
@@ -4086,4 +4296,31 @@ fn is_openai_o_series(model: &str) -> bool {
             .as_bytes()
             .get(1)
             .is_some_and(|byte| byte.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod model_routing_tests {
+    use super::*;
+
+    #[test]
+    fn official_route_preserves_responses_and_compact_paths() {
+        assert_eq!(
+            official_responses_url("/v1/responses"),
+            "https://chatgpt.com/backend-api/codex/responses"
+        );
+        assert_eq!(
+            official_responses_url("/v1/responses/compact"),
+            "https://chatgpt.com/backend-api/codex/responses/compact"
+        );
+    }
+
+    #[test]
+    fn official_route_filters_third_party_and_hop_by_hop_headers() {
+        assert!(official_passthrough_header_allowed("authorization"));
+        assert!(official_passthrough_header_allowed("chatgpt-account-id"));
+        assert!(official_passthrough_header_allowed("originator"));
+        assert!(!official_passthrough_header_allowed("x-api-key"));
+        assert!(!official_passthrough_header_allowed("host"));
+        assert!(!official_passthrough_header_allowed("content-length"));
+    }
 }

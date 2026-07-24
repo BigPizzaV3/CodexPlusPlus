@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol};
+use crate::settings::{
+    BackendSettings, RelayContextSelection, RelayMode, RelayProfile, RelayProtocol,
+};
 
 const RELAY_PROVIDER: &str = "custom";
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
@@ -215,10 +217,20 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
         .and_then(|values| values.get("base_url"))
         .map(|value| !unquote_toml_string(value).trim().is_empty())
         .unwrap_or(false);
+    let is_model_router = root_provider.as_deref() == Some("codex-plus-router")
+        && provider_string_from_config(&contents, "base_url").as_deref()
+            == Some(
+                crate::protocol_proxy::local_responses_proxy_base_url(
+                    crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+                )
+                .as_str(),
+            );
     RelayConfigStatus {
         configured: root_provider.is_some()
             && requires_openai_auth
-            && (has_bearer_token || codex_auth_api_key(&auth_contents).is_some())
+            && (has_bearer_token
+                || codex_auth_api_key(&auth_contents).is_some()
+                || is_model_router)
             && has_base_url,
         requires_openai_auth,
         has_bearer_token,
@@ -605,6 +617,77 @@ fn codex_base_url_for_protocol(base_url: &str, protocol: RelayProtocol, proxy_po
         RelayProtocol::ChatCompletions => {
             crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
         }
+    }
+}
+
+/// Build the fixed local provider used by per-model routing.
+///
+/// The router itself has no API key. `requires_openai_auth = true` makes Codex
+/// attach its native ChatGPT authorization to localhost; the protocol proxy only
+/// forwards that credential for unmatched (official) models. Third-party routes
+/// replace it with the selected RelayProfile API key.
+pub fn model_router_profile(settings: &BackendSettings, home: &Path) -> RelayProfile {
+    let active = settings.active_relay_profile();
+    let live_model = std::fs::read_to_string(home.join("config.toml"))
+        .ok()
+        .and_then(|contents| root_key_string(&contents, "model"))
+        .filter(|value| !value.trim().is_empty());
+    let model = live_model.unwrap_or_else(|| relay_profile_model(&active));
+    let base_url = crate::protocol_proxy::local_responses_proxy_base_url(
+        crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+    );
+    let config_contents = format!(
+        "model_provider = \"codex-plus-router\"\n\n[model_providers.codex-plus-router]\nname = \"Codex++ Model Router\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"{base_url}\"\n"
+    );
+    let mut routed_models = Vec::new();
+    let mut seen_models = HashSet::new();
+    let mut routed_windows = std::collections::HashMap::<String, String>::new();
+    for profile in settings.relay_profiles.iter().filter(|profile| {
+        profile.relay_mode != RelayMode::Aggregate
+            && (profile.relay_mode != RelayMode::Official || profile.official_mix_api_key)
+    }) {
+        let (model_list, model_windows) =
+            if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
+                crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list)
+            } else {
+                (
+                    profile.model_list.clone(),
+                    serde_json::from_str(&profile.model_windows).unwrap_or_default(),
+                )
+            };
+        for model in model_list
+            .split(['\r', '\n', ','])
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            if seen_models.insert(model.to_string()) {
+                routed_models.push(model.to_string());
+            }
+            if let Some(window) = model_windows.get(model) {
+                routed_windows.insert(model.to_string(), window.clone());
+            }
+        }
+    }
+
+    RelayProfile {
+        id: "codex-plus-router".to_string(),
+        name: "Codex++ Model Router".to_string(),
+        model,
+        base_url: base_url.clone(),
+        upstream_base_url: base_url,
+        api_key: String::new(),
+        protocol: RelayProtocol::Responses,
+        relay_mode: RelayMode::Official,
+        // Keep the provider table instead of clearing back to vanilla official config.
+        official_mix_api_key: true,
+        config_contents,
+        auth_contents: String::new(),
+        use_common_config: active.use_common_config,
+        context_selection: active.context_selection,
+        context_selection_initialized: active.context_selection_initialized,
+        model_list: routed_models.join("\n"),
+        model_windows: serde_json::to_string(&routed_windows).unwrap_or_default(),
+        ..RelayProfile::default()
     }
 }
 
@@ -1549,11 +1632,48 @@ fn apply_model_catalog_to_config(
     if let Some(parent) = catalog_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let catalog_json = crate::model_suffix::build_model_catalog_json(&entries, fallback);
+    let catalog_json = if profile.id == "codex-plus-router" {
+        build_model_router_catalog_json(home, &catalog_path, &entries, fallback)
+    } else {
+        crate::model_suffix::build_model_catalog_json(&entries, fallback)
+    };
     std::fs::write(&catalog_path, catalog_json)?;
     let mut doc = parse_toml_document(config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
     Ok(normalize_optional_toml(doc))
+}
+
+fn build_model_router_catalog_json(
+    home: &Path,
+    current_catalog_path: &Path,
+    entries: &[crate::model_suffix::ModelCatalogEntry],
+    fallback: Option<u64>,
+) -> String {
+    let generated = crate::model_suffix::build_model_catalog_json(entries, fallback);
+    let routed_models = serde_json::from_str::<Value>(&generated)
+        .ok()
+        .and_then(|value| value.get("models").and_then(Value::as_array).cloned())
+        .unwrap_or_default();
+    let mut models = catalog_models_from_file(&home.join("models_cache.json"))
+        .or_else(|| catalog_models_from_file(current_catalog_path))
+        .unwrap_or_default();
+    let routed_slugs = routed_models
+        .iter()
+        .filter_map(|model| model.get("slug").and_then(Value::as_str))
+        .collect::<HashSet<_>>();
+    models.retain(|model| {
+        model
+            .get("slug")
+            .and_then(Value::as_str)
+            .is_none_or(|slug| !routed_slugs.contains(slug))
+    });
+    models.extend(routed_models);
+    serde_json::to_string_pretty(&json!({ "models": models })).unwrap_or(generated)
+}
+
+fn catalog_models_from_file(path: &Path) -> Option<Vec<Value>> {
+    let value = serde_json::from_str::<Value>(&std::fs::read_to_string(path).ok()?).ok()?;
+    value.get("models")?.as_array().cloned()
 }
 
 fn live_external_model_catalog(home: &Path) -> Option<String> {
