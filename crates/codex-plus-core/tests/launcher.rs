@@ -3,13 +3,12 @@ use std::sync::{Arc, Mutex};
 
 use codex_plus_core::app_paths::{
     build_codex_executable, codex_app_version, find_latest_codex_app_dir,
-    find_latest_codex_app_dir_from_roots, find_macos_codex_app,
-    latest_appx_install_location_from_output, normalize_codex_app_path, packaged_app_user_model_id,
-    resolve_codex_app_dir_with_saved, user_data_candidates_from,
+    find_latest_codex_app_dir_from_roots, find_macos_codex_app, normalize_codex_app_path,
+    packaged_app_user_model_id, resolve_codex_app_dir_with_saved, user_data_candidates_from,
 };
 use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
-    build_codex_arguments, build_codex_arguments_for_settings,
+    browser_identity_changed, build_codex_arguments, build_codex_arguments_for_settings,
     build_codex_arguments_with_native_menu_inspector, build_codex_command,
     build_codex_command_with_native_menu_inspector, build_macos_cleanup_command,
     build_macos_open_command, build_macos_open_command_with_native_menu_inspector,
@@ -23,6 +22,13 @@ use codex_plus_core::ports::{
 };
 use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol};
 use codex_plus_core::status::StatusStore;
+
+#[test]
+fn browser_identity_change_requires_two_distinct_observations() {
+    assert!(!browser_identity_changed(None, "browser-a"));
+    assert!(!browser_identity_changed(Some("browser-a"), "browser-a"));
+    assert!(browser_identity_changed(Some("browser-a"), "browser-b"));
+}
 
 #[test]
 fn app_paths_find_latest_windows_package_prefers_highest_version_app_dir() {
@@ -678,14 +684,13 @@ fn launcher_plugin_marketplace_unlock_repairs_role_specific_plugins() {
 }
 
 #[test]
-fn app_paths_parse_appx_install_location_from_powershell_output() {
-    let output =
-        "\r\nC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.611.7849.0_x64__2p2nqsd0c76g0\r\n";
+fn app_paths_uses_native_windows_package_api_without_powershell() {
+    let source =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app_paths.rs")).unwrap();
 
-    assert_eq!(
-        latest_appx_install_location_from_output(output).as_deref(),
-        Some(r"C:\Program Files\WindowsApps\OpenAI.Codex_26.611.7849.0_x64__2p2nqsd0c76g0")
-    );
+    assert!(source.contains("GetPackagesByPackageFamily"));
+    assert!(source.contains("GetPackagePathByFullName"));
+    assert!(!source.contains("Command::new(\"powershell\")"));
 }
 
 #[test]
@@ -1557,6 +1562,14 @@ async fn default_launch_hooks_provider_sync_enabled_returns_explicit_error() {
             .to_string()
             .contains("provider sync requires launcher hooks")
     );
+}
+
+#[test]
+fn paused_dream_skin_does_not_reapply_the_native_base_theme_on_launch() {
+    let source =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/launcher.rs")).unwrap();
+
+    assert!(source.contains("!settings.codex_app_dream_skin_paused"));
 }
 
 #[derive(Clone)]

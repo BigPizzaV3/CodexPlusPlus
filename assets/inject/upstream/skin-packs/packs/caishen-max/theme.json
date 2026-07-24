@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "caishen-max",
+  "name": "Caishen Max",
+  "brandSubtitle": "CODEX DREAM SKIN",
+  "tagline": "财气更重的财神皮肤，适合展示和短时沉浸。",
+  "projectPrefix": "选择项目 · ",
+  "projectLabel": "◉  选择项目",
+  "statusText": "SKIN ONLINE",
+  "quote": "MORE FORTUNE",
+  "image": "background.png",
+  "colors": {
+    "background": "#8f240f",
+    "panel": "rgba(255, 247, 232, 0.9)",
+    "panelAlt": "rgba(137, 37, 16, 0.78)",
+    "accent": "#e4a844",
+    "accentAlt": "#f6d37c",
+    "secondary": "#c44321",
+    "highlight": "#22a276",
+    "text": "#2f1f16",
+    "muted": "#806554",
+    "line": "rgba(228, 168, 68, 0.28)"
+  },
+  "promoTitle": "Caishen Max",
+  "promoSub": "更浓的财神皮肤图和可复用主题配置。",
+  "promoUrl": "https://codex-theme-gallery.howardhua.chatgpt.site"
+}

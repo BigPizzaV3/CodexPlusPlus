@@ -6,3 +6,7 @@
 
 *.sh text eol=lf
 .github/workflows/*.yml text eol=lf
+
+# Preserve the original Snow Skin asset line endings for byte-exact bundling.
+assets/inject/upstream/snow-skin/*.js text eol=lf
+assets/inject/upstream/snow-skin/*.css text eol=lf

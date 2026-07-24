@@ -1,4 +1,4 @@
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,11 +13,7 @@ pub fn codex_session_db_path() -> PathBuf {
 }
 
 pub fn codex_session_db_path_from_home(home: &Path) -> PathBuf {
-    let mut paths = codex_sqlite_dir_session_dbs(home);
-    let legacy = legacy_state_db_path(home);
-    if !paths.iter().any(|path| path == &legacy) {
-        paths.push(legacy.clone());
-    }
+    let paths = codex_session_db_paths_from_home(home);
     paths
         .iter()
         .find(|path| sqlite_has_table(path, "threads"))
@@ -27,6 +23,11 @@ pub fn codex_session_db_path_from_home(home: &Path) -> PathBuf {
 }
 
 pub fn codex_session_db_paths_from_home(home: &Path) -> Vec<PathBuf> {
+    let sqlite_home = resolve_sqlite_home_home_or_default(home);
+    codex_session_db_paths_in_home(&sqlite_home)
+}
+
+fn codex_session_db_paths_in_home(home: &Path) -> Vec<PathBuf> {
     let mut paths = codex_sqlite_dir_session_dbs(home);
     let legacy = legacy_state_db_path(home);
     if !paths.iter().any(|path| path == &legacy) {
@@ -36,8 +37,9 @@ pub fn codex_session_db_paths_from_home(home: &Path) -> Vec<PathBuf> {
 }
 
 pub fn codex_thread_reference_db_paths_from_home(home: &Path) -> Vec<PathBuf> {
-    let mut paths = codex_sqlite_dir_thread_reference_dbs(home);
-    let legacy = legacy_state_db_path(home);
+    let sqlite_home = resolve_sqlite_home_home_or_default(home);
+    let mut paths = codex_sqlite_dir_thread_reference_dbs(&sqlite_home);
+    let legacy = legacy_state_db_path(&sqlite_home);
     if !paths.iter().any(|path| path == &legacy) {
         paths.push(legacy);
     }
@@ -46,7 +48,8 @@ pub fn codex_thread_reference_db_paths_from_home(home: &Path) -> Vec<PathBuf> {
 
 /// codex 客户端日志数据库路径（固定文件名）。
 pub fn codex_logs_db_path_from_home(home: &Path) -> PathBuf {
-    home.join("logs_2.sqlite")
+    let sqlite_home = resolve_sqlite_home_home_or_default(home);
+    sqlite_home.join("logs_2.sqlite")
 }
 
 pub fn codex_sqlite_sidecar_paths(db_path: &Path) -> [PathBuf; 3] {
@@ -59,6 +62,19 @@ pub fn codex_sqlite_sidecar_paths(db_path: &Path) -> [PathBuf; 3] {
 
 pub fn relative_to_codex_home(home: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(home).unwrap_or(path).to_path_buf()
+}
+
+fn resolve_sqlite_home_from_env() -> Option<PathBuf> {
+    resolve_sqlite_home(std::env::var_os("CODEX_SQLITE_HOME"))
+}
+
+fn resolve_sqlite_home_home_or_default(home: &Path) -> PathBuf {
+    resolve_sqlite_home_from_env().unwrap_or_else(|| home.to_path_buf())
+}
+
+fn resolve_sqlite_home(value: Option<OsString>) -> Option<PathBuf> {
+    let path = PathBuf::from(value?);
+    (!path.as_os_str().is_empty() && path.is_dir()).then_some(path)
 }
 
 fn legacy_state_db_path(home: &Path) -> PathBuf {
@@ -314,7 +330,155 @@ fn is_model_id_char(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::codex_logs_db_path_from_home;
+    use super::codex_session_db_paths_from_home;
+    use super::codex_session_db_paths_in_home;
+    use super::codex_thread_reference_db_paths_from_home;
+    use super::resolve_sqlite_home;
+    use super::resolve_sqlite_home_from_env;
+    use super::resolve_sqlite_home_home_or_default;
     use super::sanitize_model_suffixes_in_text;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+
+    static SQLITE_HOME_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn with_sqlite_home_env<T, F: FnOnce() -> T>(value: Option<&std::path::Path>, action: F) -> T {
+        let _guard = SQLITE_HOME_MUTEX.lock().unwrap();
+        let previous = std::env::var_os("CODEX_SQLITE_HOME");
+        match value {
+            Some(value) => unsafe { std::env::set_var("CODEX_SQLITE_HOME", value) },
+            None => unsafe { std::env::remove_var("CODEX_SQLITE_HOME") },
+        }
+        let result = action();
+        match previous {
+            Some(value) => unsafe { std::env::set_var("CODEX_SQLITE_HOME", value) },
+            None => unsafe { std::env::remove_var("CODEX_SQLITE_HOME") },
+        }
+        result
+    }
+
+    #[test]
+    fn resolves_existing_sqlite_home() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        assert_eq!(
+            resolve_sqlite_home(Some(OsString::from(temp.path()))),
+            Some(temp.path().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn ignores_missing_sqlite_home() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        assert_eq!(
+            resolve_sqlite_home(Some(OsString::from(temp.path().join("missing")))),
+            None
+        );
+    }
+
+    #[test]
+    fn finds_session_databases_relative_to_sqlite_home() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let sqlite_dir = temp.path().join("sqlite");
+        std::fs::create_dir(&sqlite_dir).expect("create sqlite dir");
+        let database = sqlite_dir.join("codex-dev.db");
+        let connection = rusqlite::Connection::open(&database).expect("create database");
+        connection
+            .execute("CREATE TABLE threads (id TEXT PRIMARY KEY)", [])
+            .expect("create threads table");
+        drop(connection);
+
+        assert_eq!(
+            codex_session_db_paths_in_home(temp.path()),
+            vec![database, temp.path().join("state_5.sqlite")]
+        );
+    }
+
+    #[test]
+    fn resolves_sqlite_home_override_from_env_before_home() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let home = temp.path().join("home");
+        let sqlite_home = temp.path().join("sqlite-override");
+        std::fs::create_dir_all(&home).expect("create home");
+        std::fs::create_dir_all(&sqlite_home).expect("create sqlite override home");
+
+        with_sqlite_home_env(Some(&sqlite_home), || {
+            assert_eq!(resolve_sqlite_home_from_env(), Some(sqlite_home.clone()));
+            assert_eq!(resolve_sqlite_home_home_or_default(&home), sqlite_home);
+        });
+    }
+
+    #[test]
+    fn session_thread_reference_and_logs_paths_share_sqlite_home_override() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let home = temp.path().join("home");
+        let sqlite_home = temp.path().join("sqlite-override");
+        let legacy_logs = home.join("logs_2.sqlite");
+        let legacy_session = home.join("state_5.sqlite");
+        std::fs::create_dir_all(&home).expect("create home");
+        std::fs::create_dir_all(&sqlite_home.join("sqlite")).expect("create override sqlite dir");
+
+        let thread_reference_db = sqlite_home.join("sqlite").join("threads-reference.db");
+        let connection =
+            rusqlite::Connection::open(&thread_reference_db).expect("create thread reference db");
+        connection
+            .execute("CREATE TABLE threads (id TEXT PRIMARY KEY)", [])
+            .expect("create threads table");
+        connection
+            .execute("CREATE TABLE messages (id TEXT PRIMARY KEY)", [])
+            .expect("create messages table");
+        drop(connection);
+
+        let session_db = sqlite_home.join("state_5.sqlite");
+        let connection = rusqlite::Connection::open(&session_db).expect("create session db");
+        connection
+            .execute("CREATE TABLE threads (id TEXT PRIMARY KEY)", [])
+            .expect("create threads table");
+        drop(connection);
+
+        std::fs::write(&legacy_logs, b"legacy logs").expect("write legacy logs");
+        std::fs::write(&legacy_session, b"legacy state").expect("write legacy session");
+
+        with_sqlite_home_env(Some(&sqlite_home), || {
+            let session_paths = codex_session_db_paths_from_home(&home);
+            let thread_reference_paths = codex_thread_reference_db_paths_from_home(&home);
+            let logs_path = codex_logs_db_path_from_home(&home);
+
+            assert!(session_paths.contains(&session_db));
+            assert!(!session_paths.iter().any(|path| path == &legacy_session));
+            assert_eq!(logs_path, sqlite_home.join("logs_2.sqlite"));
+            assert!(thread_reference_paths.contains(&thread_reference_db));
+            assert!(
+                !thread_reference_paths
+                    .iter()
+                    .any(|path| path == &legacy_session)
+            );
+        });
+    }
+
+    #[test]
+    fn missing_override_falls_back_to_codex_home() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let home = temp.path().join("home");
+        let missing_sqlite_home = temp.path().join("missing-sqlite-home");
+        let home_sqlite = home.join("sqlite");
+        let home_db = home_sqlite.join("codex-dev.db");
+        std::fs::create_dir_all(&home_sqlite).expect("create home sqlite dir");
+        let connection = rusqlite::Connection::open(&home_db).expect("create home db");
+        connection
+            .execute("CREATE TABLE threads (id TEXT PRIMARY KEY)", [])
+            .expect("create threads table");
+        drop(connection);
+
+        with_sqlite_home_env(Some(&missing_sqlite_home), || {
+            let session_paths = codex_session_db_paths_from_home(&home);
+            assert!(session_paths.contains(&home_db));
+            assert_eq!(
+                codex_logs_db_path_from_home(&home),
+                home.join("logs_2.sqlite")
+            );
+        });
+    }
 
     #[test]
     fn strips_trailing_suffix_from_model_names() {

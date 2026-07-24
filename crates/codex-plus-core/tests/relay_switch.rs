@@ -53,6 +53,84 @@ base_url = "https://a.example/v1"
 
     assert!(error.to_string().contains("auth.json"));
     assert_eq!(store.load().unwrap().active_relay_id, "a");
+    assert!(
+        std::fs::read_to_string(temp.path().join("codex").join("config.toml"))
+            .unwrap()
+            .contains("https://a.example/v1")
+    );
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("codex").join("auth.json")).unwrap(),
+        r#"{"OPENAI_API_KEY":"sk-a"}"#
+    );
+}
+
+#[test]
+fn switch_rolls_back_live_files_when_post_write_status_check_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"sk-a"}"#).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://a.example/v1"
+"#,
+    )
+    .unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let original = BackendSettings {
+        active_relay_id: "a".to_string(),
+        relay_profiles: vec![pure_profile("a", "https://a.example/v1", "sk-a")],
+        ..BackendSettings::default()
+    };
+    store.save(&original).unwrap();
+    let next = BackendSettings {
+        active_relay_id: "b".to_string(),
+        relay_profiles: vec![
+            pure_profile("a", "https://a.example/v1", "sk-a"),
+            RelayProfile {
+                id: "b".to_string(),
+                name: "B".to_string(),
+                relay_mode: RelayMode::PureApi,
+                config_contents: r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://b.example/v1"
+"#
+                .to_string(),
+                auth_contents: "{}".to_string(),
+                ..RelayProfile::default()
+            },
+        ],
+        ..BackendSettings::default()
+    };
+
+    let error = switch_relay_profile_in_home(&store, &home, next, "a")
+        .expect_err("missing api key should fail post-write status check");
+
+    assert!(
+        error
+            .to_string()
+            .contains("纯 API 配置写入后未检测到完整 custom provider")
+    );
+    assert_eq!(store.load().unwrap().active_relay_id, "a");
+    assert!(
+        std::fs::read_to_string(home.join("config.toml"))
+            .unwrap()
+            .contains("https://a.example/v1")
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("auth.json")).unwrap(),
+        r#"{"OPENAI_API_KEY":"sk-a"}"#
+    );
 }
 
 #[test]

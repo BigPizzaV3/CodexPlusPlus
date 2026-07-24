@@ -452,6 +452,131 @@ fn delete_local_from_paths_removes_duplicate_threads_from_all_databases() {
 }
 
 #[test]
+fn delete_local_from_paths_undo_restores_duplicate_threads_and_shared_rollout_to_source_databases()
+{
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join("codex-home");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    let old_db = sqlite_dir.join("state_5.sqlite");
+    let new_db = home.join("state_5.sqlite");
+    let rollout = home.join("rollout.jsonl");
+    let rollout_text = "{\"type\":\"message\",\"payload\":\"original\"}\n";
+    fs::write(&rollout, rollout_text).unwrap();
+    create_codex_thread_db(&old_db, &rollout);
+    create_codex_thread_db(&new_db, &rollout);
+    let db = Connection::open(&new_db).unwrap();
+    db.execute("ALTER TABLE threads ADD COLUMN recency_at INTEGER", [])
+        .unwrap();
+    db.execute("UPDATE threads SET recency_at = 42 WHERE id = 't1'", [])
+        .unwrap();
+    drop(db);
+
+    let backups = BackupStore::new(tmp.path().join("backups"));
+    let deleted = delete_local_from_paths(
+        vec![old_db.clone(), new_db.clone()],
+        backups.clone(),
+        &session("t1", "Codex Thread"),
+    );
+    let token = deleted.undo_token.as_deref().unwrap();
+
+    assert_eq!(deleted.status, DeleteStatus::LocalDeleted);
+    assert_eq!(deleted.message, "已从 2 个本地存储删除");
+    assert_eq!(thread_count(&old_db, "t1"), 0);
+    assert_eq!(thread_count(&new_db, "t1"), 0);
+    assert!(!rollout.exists());
+
+    let restored = SQLiteStorageAdapter::new(&old_db, backups)
+        .with_allowed_db_paths(vec![old_db.clone(), new_db.clone()])
+        .undo(token);
+
+    assert_eq!(restored.status, DeleteStatus::Undone);
+    assert_eq!(restored.undo_token.as_deref(), Some(token));
+    assert_eq!(thread_count(&old_db, "t1"), 1);
+    assert_eq!(thread_count(&new_db, "t1"), 1);
+    assert_eq!(fs::read_to_string(&rollout).unwrap(), rollout_text);
+    let db = Connection::open(&new_db).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT recency_at FROM threads WHERE id = 't1'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        42
+    );
+}
+
+#[test]
+fn grouped_undo_preflights_all_databases_before_restoring_any() {
+    let tmp = tempdir().unwrap();
+    let first_db = tmp.path().join("first.sqlite");
+    let second_db = tmp.path().join("second.sqlite");
+    let rollout = tmp.path().join("rollout.jsonl");
+    fs::write(&rollout, "{\"type\":\"message\"}\n").unwrap();
+    create_codex_thread_db(&first_db, &rollout);
+    create_codex_thread_db(&second_db, &rollout);
+    let backups = BackupStore::new(tmp.path().join("backups"));
+    let deleted = delete_local_from_paths(
+        vec![first_db.clone(), second_db.clone()],
+        backups.clone(),
+        &session("t1", "Codex Thread"),
+    );
+    let token = deleted.undo_token.as_deref().unwrap();
+    Connection::open(&second_db)
+        .unwrap()
+        .execute(
+            "ALTER TABLE threads RENAME COLUMN title TO renamed_title",
+            [],
+        )
+        .unwrap();
+
+    let restored = SQLiteStorageAdapter::new(&first_db, backups)
+        .with_allowed_db_paths(vec![first_db.clone(), second_db.clone()])
+        .undo(token);
+
+    assert_eq!(restored.status, DeleteStatus::Failed);
+    assert!(restored.message.contains("no column named title"));
+    assert_eq!(thread_count(&first_db, "t1"), 0);
+    assert_eq!(thread_count(&second_db, "t1"), 0);
+    assert!(!rollout.exists());
+}
+
+#[test]
+fn undo_rejects_source_database_outside_allowed_paths() {
+    let tmp = tempdir().unwrap();
+    let allowed_dir = tmp.path().join("home").join("sqlite");
+    let outside_dir = tmp.path().join("outside");
+    fs::create_dir_all(&allowed_dir).unwrap();
+    fs::create_dir_all(&outside_dir).unwrap();
+    let allowed_db = allowed_dir.join("codex.sqlite");
+    let outside_db = outside_dir.join("codex.sqlite");
+    create_supported_db(&allowed_db);
+    create_supported_db(&outside_db);
+    let backups = BackupStore::new(tmp.path().join("backups"));
+    let deleted = SQLiteStorageAdapter::new(&outside_db, backups.clone())
+        .delete_local(&session("s1", "First"));
+    let token = deleted.undo_token.as_deref().unwrap();
+
+    let restored = SQLiteStorageAdapter::new(&allowed_db, backups).undo(token);
+
+    assert_eq!(restored.status, DeleteStatus::Failed);
+    assert!(
+        restored
+            .message
+            .contains("not an allowed local storage path")
+    );
+    let outside = Connection::open(&outside_db).unwrap();
+    assert_eq!(
+        outside
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn move_thread_workspace_from_paths_uses_database_that_contains_thread() {
     let tmp = tempdir().unwrap();
     let stale_db = tmp.path().join("stale.sqlite");

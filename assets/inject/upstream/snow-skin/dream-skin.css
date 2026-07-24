@@ -1,0 +1,454 @@
+:root.codex-dream-skin {
+  color-scheme: light !important;
+  --dream-ink: #10263f;
+  --dream-navy: #123763;
+  --dream-blue: #1f7fe8;
+  --dream-ice: #dff3ff;
+  --dream-frost: #f7fcff;
+  --dream-pearl: rgba(248, 253, 255, .94);
+  --dream-line: rgba(99, 174, 232, .34);
+}
+
+html.codex-dream-skin body {
+  background:
+    linear-gradient(120deg, rgba(255,255,255,.82), rgba(221,242,255,.45) 40%, rgba(166,212,247,.30)),
+    linear-gradient(180deg, #f7fbff 0%, #eaf7ff 50%, #f8fbff 100%) !important;
+  color: var(--dream-ink) !important;
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif !important;
+}
+
+html.codex-dream-skin body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: .48;
+  background-image:
+    radial-gradient(circle, rgba(255,255,255,.95) 0 1px, transparent 2px),
+    radial-gradient(circle, rgba(128,197,244,.55) 0 1px, transparent 2px);
+  background-position: 0 0, 31px 23px;
+  background-size: 62px 62px, 88px 88px;
+}
+
+html.codex-dream-skin aside.app-shell-left-panel {
+  background: linear-gradient(180deg, rgba(248,253,255,.98), rgba(224,242,255,.96)) !important;
+  border: 1px solid rgba(105,170,220,.38) !important;
+  border-left: 0 !important;
+  border-radius: 0 18px 18px 0 !important;
+  box-shadow: 10px 0 30px rgba(19,74,119,.10), inset -1px 0 rgba(255,255,255,.88) !important;
+  backdrop-filter: none !important;
+  color: var(--dream-ink) !important;
+}
+
+html.codex-dream-skin aside.app-shell-left-panel nav {
+  background: transparent !important;
+}
+
+html.codex-dream-skin aside.app-shell-left-panel button {
+  color: #173755 !important;
+  transition: transform .16s ease, background .16s ease, box-shadow .16s ease !important;
+}
+
+html.codex-dream-skin aside.app-shell-left-panel button:hover {
+  background: linear-gradient(90deg, rgba(226,246,255,.82), rgba(191,225,251,.66)) !important;
+  box-shadow: inset 0 0 0 1px rgba(75,152,220,.22) !important;
+  transform: translateX(1px);
+}
+
+html.codex-dream-skin aside.app-shell-left-panel [class~="bg-token-list-hover-background"],
+html.codex-dream-skin aside.app-shell-left-panel [aria-current="page"] {
+  background: linear-gradient(90deg, rgba(198,232,255,.86), rgba(236,249,255,.78)) !important;
+  border: 1px solid rgba(69,143,213,.28) !important;
+  box-shadow: 0 4px 16px rgba(35,91,143,.10) !important;
+}
+
+html.codex-dream-skin main.main-surface {
+  background:
+    linear-gradient(120deg, rgba(255,255,255,.65), rgba(222,244,255,.34)),
+    linear-gradient(180deg, #f9fdff 0%, #edf8ff 100%) !important;
+  border: 1px solid rgba(105,170,220,.36) !important;
+  border-right: 0 !important;
+  border-bottom: 0 !important;
+  border-radius: 18px 0 0 0 !important;
+  box-shadow: inset 0 1px rgba(255,255,255,.96), -8px 0 30px rgba(24,82,130,.08) !important;
+  overflow: hidden !important;
+}
+
+html.codex-dream-skin main.main-surface > header.app-header-tint {
+  background: linear-gradient(90deg, rgba(248,253,255,.95), rgba(225,244,255,.90), rgba(205,232,252,.78)) !important;
+  border-bottom: 1px solid rgba(105,170,220,.28) !important;
+  backdrop-filter: none !important;
+}
+
+#codex-dream-skin-chrome {
+  position: fixed;
+  z-index: 31;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: 18px 0 0 0;
+}
+
+.dream-brand {
+  position: absolute;
+  left: 25px;
+  top: 4px;
+  height: 40px;
+  display: none;
+  align-items: center;
+  gap: 10px;
+  color: #164a7a;
+  text-shadow: 0 1px 0 white;
+}
+
+#codex-dream-skin-chrome.dream-home-shell .dream-brand { display: flex; }
+.dream-brand .dream-note { font-size: 28px; color: #1c86e8; filter: drop-shadow(0 2px 5px rgba(89,174,238,.34)); }
+.dream-brand b { display: block; font-size: 15px; letter-spacing: 0; }
+.dream-brand small { display: block; margin-top: 1px; color: #4d7fa8; font-size: 10px; letter-spacing: 0; }
+
+.dream-signature {
+  position: absolute;
+  right: 92px;
+  top: 7px;
+  display: none;
+  color: #1b79d0;
+  font: italic 18px/1.2 "Segoe Script", "Comic Sans MS", cursive;
+  text-shadow: 0 0 8px white, 0 2px 8px rgba(37,96,145,.24);
+  transform: rotate(-3deg);
+}
+#codex-dream-skin-chrome.dream-home-shell .dream-signature { display: block; }
+
+.dream-sparkles { position: absolute; inset: 48px 0 0; opacity: .82; }
+.dream-sparkles i { position: absolute; width: 5px; height: 5px; border-radius: 50%; background: white; box-shadow: 0 0 10px 3px rgba(132,205,255,.72); }
+.dream-sparkles i::before, .dream-sparkles i::after { content: ""; position: absolute; left: 2px; top: -6px; width: 1px; height: 17px; background: linear-gradient(transparent, rgba(255,255,255,.95), transparent); }
+.dream-sparkles i::after { transform: rotate(90deg); }
+.dream-sparkles i:nth-child(1) { left: 7%; top: 11%; }
+.dream-sparkles i:nth-child(2) { left: 31%; top: 5%; opacity: .55; }
+.dream-sparkles i:nth-child(3) { left: 55%; top: 17%; opacity: .82; }
+.dream-sparkles i:nth-child(4) { left: 78%; top: 8%; opacity: .64; }
+.dream-sparkles i:nth-child(5) { left: 92%; top: 27%; opacity: .9; }
+.dream-sparkles i:nth-child(6) { left: 66%; top: 66%; opacity: .48; }
+
+.dream-polaroid {
+  position: absolute;
+  right: 15px;
+  bottom: 70px;
+  width: 112px;
+  height: 148px;
+  display: none;
+  background-image: var(--dream-art);
+  background-size: cover;
+  background-position: 50% 22%;
+  border: 7px solid rgba(255,255,255,.96);
+  border-bottom-width: 20px;
+  box-shadow: 0 9px 20px rgba(22,66,103,.22), 0 0 0 1px rgba(91,151,201,.24);
+  transform: rotate(-5deg);
+  border-radius: 3px;
+}
+#codex-dream-skin-chrome.dream-home-shell .dream-polaroid { display: block; }
+.dream-polaroid::before { content: "snow"; position: absolute; left: -17px; top: -22px; font-size: 10px; letter-spacing: 0; color: #1e7cd2; text-transform: uppercase; }
+
+.dream-ribbon {
+  position: absolute;
+  left: 50%;
+  bottom: 68px;
+  display: none;
+  align-items: center;
+  gap: 10px;
+  color: #1f7fe8;
+  font-size: 22px;
+  transform: translateX(-50%);
+  filter: drop-shadow(0 4px 5px rgba(35,86,128,.20));
+}
+#codex-dream-skin-chrome.dream-home-shell .dream-ribbon { display: flex; }
+.dream-ribbon span { font-size: 13px; color: #5f9dd3; text-transform: uppercase; letter-spacing: 0; }
+
+html.codex-dream-skin [role="main"] {
+  background: transparent !important;
+  scrollbar-color: rgba(76,146,210,.52) transparent;
+}
+
+html.codex-dream-skin .dream-home {
+  --thread-content-max-width: min(950px, calc(100cqw - 44px)) !important;
+  overflow-x: hidden !important;
+}
+
+.dream-home > div:first-child {
+  padding-top: 15px !important;
+  min-height: 100% !important;
+}
+
+.dream-home > div:first-child > div:first-child {
+  flex: 0 0 430px !important;
+  min-height: 430px !important;
+  align-items: flex-start !important;
+  padding-bottom: 0 !important;
+}
+
+.dream-home > div:first-child > div:first-child > div:first-child {
+  position: relative !important;
+  isolation: isolate;
+  width: calc(100% - 44px) !important;
+  max-width: none !important;
+  height: 252px !important;
+  min-height: 252px !important;
+  flex: 0 1 auto !important;
+  padding: 0 !important;
+  border: 2px solid rgba(185,226,255,.92) !important;
+  border-radius: 24px !important;
+  overflow: visible !important;
+  background-image:
+    linear-gradient(90deg, rgba(6,38,76,.12), rgba(255,255,255,.06)),
+    var(--dream-art) !important;
+  background-repeat: no-repeat !important;
+  background-size: 100% 100%, auto 145% !important;
+  background-position: center, right 18% !important;
+  box-shadow: 0 14px 34px rgba(33,93,146,.20), inset 0 0 0 4px rgba(255,255,255,.22) !important;
+}
+
+.dream-home > div:first-child > div:first-child > div:first-child::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0 auto 0 0;
+  width: 60%;
+  border-radius: 22px 0 0 22px;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(8,35,68,.98) 0%, rgba(13,58,105,.94) 52%, rgba(25,111,184,.64) 78%, transparent 100%),
+    repeating-linear-gradient(-18deg, transparent 0 18px, rgba(255,255,255,.10) 19px 20px);
+}
+
+.dream-home > div:first-child > div:first-child > div:first-child::after {
+  content: "";
+  position: absolute;
+  inset: auto 22px 18px auto;
+  width: 170px;
+  height: 42px;
+  border-bottom: 2px solid rgba(255,255,255,.78);
+  border-radius: 0 0 60% 60%;
+  transform: rotate(-8deg);
+  opacity: .72;
+}
+
+.dream-home > div:first-child > div:first-child > div:first-child > div:first-child {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  padding-left: 38px;
+}
+
+.dream-home > div:first-child > div:first-child > div:first-child > div:first-child > div:first-child {
+  width: 54% !important;
+  align-items: flex-start !important;
+  gap: 0 !important;
+}
+
+.dream-home [data-testid="home-icon"] {
+  display: none !important;
+}
+
+.dream-home [data-feature="game-source"] {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  justify-content: flex-start !important;
+  max-width: 100% !important;
+  color: white !important;
+  font-size: clamp(20px, 2vw, 30px) !important;
+  line-height: 1.28 !important;
+  font-weight: 760 !important;
+  text-align: left !important;
+  text-shadow: 0 2px 12px rgba(3,25,52,.50), 0 1px 0 rgba(255,255,255,.22);
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+.dream-home [data-feature="game-source"]::after {
+  content: "Snow track focus mode. Fast, clean, and sharp.";
+  display: block;
+  margin-top: 13px;
+  color: rgba(235,248,255,.96);
+  font-size: 15px;
+  line-height: 1.5;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.dream-home [data-feature="game-source"] button {
+  margin: 0 5px;
+  padding: 2px 9px 3px;
+  border: 1px solid rgba(225,245,255,.72);
+  border-radius: 999px;
+  background: rgba(219,242,255,.20);
+  color: #dff4ff !important;
+  text-decoration-color: rgba(223,244,255,.72) !important;
+  text-underline-offset: 5px;
+  box-shadow: inset 0 0 12px rgba(255,255,255,.10);
+}
+
+.dream-home [data-feature="game-source"] button::before {
+  content: "project / ";
+  font-size: .50em;
+  font-weight: 600;
+  vertical-align: middle;
+  opacity: .86;
+}
+
+.dream-home > div:first-child > div:first-child > div:first-child > div:nth-child(2) {
+  left: 14px !important;
+  right: 14px !important;
+  top: 100% !important;
+  margin-top: 13px !important;
+}
+
+.dream-home .group\/home-suggestions {
+  overflow: visible !important;
+}
+
+.dream-home .group\/home-suggestions button {
+  position: relative !important;
+  min-height: 126px !important;
+  padding: 14px 13px 12px !important;
+  align-items: stretch !important;
+  justify-content: flex-start !important;
+  text-align: center !important;
+  border: 1px solid rgba(153,209,246,.82) !important;
+  border-radius: 18px !important;
+  background:
+    linear-gradient(145deg, rgba(255,255,255,.97), rgba(232,247,255,.96)) !important;
+  color: #173755 !important;
+  font-weight: 600 !important;
+  line-height: 1.45 !important;
+  box-shadow: 0 8px 18px rgba(41,93,136,.10), inset 0 0 0 3px rgba(255,255,255,.52) !important;
+  transform: translateY(0);
+  transition: transform .18s ease, box-shadow .18s ease !important;
+}
+
+.dream-home .group\/home-suggestions button:hover {
+  transform: translateY(-4px) !important;
+  box-shadow: 0 13px 26px rgba(37,93,141,.16), 0 0 0 2px rgba(78,165,235,.14) !important;
+}
+
+.dream-home .group\/home-suggestions button > span:first-child > span:first-child {
+  width: 38px;
+  height: 38px;
+  display: grid !important;
+  place-items: center;
+  margin: 0 auto;
+  border-radius: 50%;
+  color: white !important;
+  background: linear-gradient(145deg, #45a8f4, #145a9d);
+  box-shadow: 0 0 0 7px rgba(220,244,255,.70), 0 5px 12px rgba(31,91,143,.24);
+}
+.dream-home .group\/home-suggestions button svg {
+  width: 21px !important;
+  height: 21px !important;
+  color: white !important;
+}
+.dream-home .group\/home-suggestions button > span:first-child {
+  justify-content: center !important;
+}
+.dream-home .group\/home-suggestions button > span:last-child {
+  align-items: center !important;
+  text-align: center !important;
+}
+
+html.codex-dream-skin .composer-surface-chrome {
+  border: 2px solid rgba(102,176,231,.52) !important;
+  border-radius: 22px !important;
+  background:
+    linear-gradient(145deg, rgba(255,255,255,.98), rgba(229,246,255,.95)) !important;
+  box-shadow: 0 10px 25px rgba(35,88,135,.13), inset 0 0 0 4px rgba(255,255,255,.48) !important;
+  backdrop-filter: none !important;
+  overflow: visible !important;
+}
+
+html.codex-dream-skin .composer-surface-chrome::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: -12px;
+  z-index: 20;
+  width: 27px;
+  height: 27px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background:
+    linear-gradient(135deg, transparent 43%, rgba(255,255,255,.95) 44% 56%, transparent 57%),
+    linear-gradient(145deg, #63bdf8, #1d6fb8);
+  box-shadow: 0 4px 12px rgba(42,94,139,.22);
+}
+
+.dream-home div:has(> .horizontal-scroll-fade-mask .group\/project-selector) {
+  position: relative;
+  padding-top: 28px !important;
+  border: 1px solid rgba(107,176,228,.36);
+  border-bottom: 0;
+  background: linear-gradient(180deg, rgba(248,253,255,.96), rgba(228,246,255,.90)) !important;
+}
+
+.dream-home div:has(> .horizontal-scroll-fade-mask .group\/project-selector)::before {
+  content: "snow line / projects";
+  position: absolute;
+  left: 13px;
+  top: 6px;
+  z-index: 2;
+  color: #1d679f;
+  font-size: 12px;
+  font-weight: 760;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  text-shadow: 0 1px white;
+  white-space: nowrap;
+}
+
+.dream-home .group\/project-selector > button {
+  border-color: rgba(77,153,218,.34) !important;
+  background: linear-gradient(135deg, rgba(255,255,255,.94), rgba(225,244,255,.90)) !important;
+  color: #19527e !important;
+  box-shadow: 0 3px 10px rgba(41,91,135,.10) !important;
+}
+
+html.codex-dream-skin .ProseMirror {
+  color: #153551 !important;
+  caret-color: #1f7fe8 !important;
+}
+
+html.codex-dream-skin button[class~="bg-token-foreground"] {
+  background: linear-gradient(145deg, #2e9af0, #0f5f9d) !important;
+  color: white !important;
+  box-shadow: 0 5px 12px rgba(31,91,143,.26) !important;
+}
+
+html.codex-dream-skin article,
+html.codex-dream-skin [data-message-author-role] {
+  border-radius: 18px;
+}
+
+@media (max-width: 1120px) {
+  .dream-polaroid { display: none !important; }
+  .dream-ribbon { bottom: 70px; font-size: 20px; }
+  .dream-home { --thread-content-max-width: min(860px, calc(100cqw - 30px)) !important; }
+  .dream-home > div:first-child > div:first-child > div:first-child { width: calc(100% - 28px) !important; }
+}
+
+@media (max-width: 900px) {
+  .dream-signature { display: none !important; }
+  .dream-brand { left: 15px; }
+  .dream-brand b { font-size: 13px; }
+  .dream-home > div:first-child > div:first-child { flex-basis: 396px !important; min-height: 396px !important; }
+  .dream-home > div:first-child > div:first-child > div:first-child { height: 224px !important; min-height: 224px !important; background-size: 100% 100%, auto 145% !important; }
+  .dream-home > div:first-child > div:first-child > div:first-child > div:first-child { padding-left: 26px; }
+  .dream-home > div:first-child > div:first-child > div:first-child > div:first-child > div:first-child { width: 66% !important; }
+  .dream-home [data-feature="game-source"] { font-size: 18px !important; }
+  .dream-home [data-feature="game-source"]::after { font-size: 12px; margin-top: 10px; }
+  .dream-home .group\/home-suggestions button { min-height: 114px !important; font-size: 12px !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dream-sparkles i { animation: none !important; }
+}
