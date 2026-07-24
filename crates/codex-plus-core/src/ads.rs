@@ -9,8 +9,10 @@ const RAWCHAT_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-rawcha
 const RUNAPI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-runapi.png");
 const BAIKEWEI_AI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-baikewei-ai.jpg");
 const CUBENCE_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-cubence.png");
+const DEEPKEY_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-deepkey.png");
 const ERGOU_API_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-ergou-api.png");
 const BUILTIN_SPONSOR_EXPIRES_AT: &str = "2026-08-02T23:59:59+08:00";
+const DEEPKEY_SPONSOR_EXPIRES_AT: &str = "2026-08-25T23:59:59+08:00";
 
 pub const DEFAULT_AD_LIST_URLS: [&str; 2] = [
     "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
@@ -72,6 +74,7 @@ fn known_remote_logo(id: &str) -> Option<(&'static str, &'static [u8])> {
         "rawchat-codex-relay" => Some(("image/svg+xml", RAWCHAT_IMAGE)),
         "runapi-openrouter-alternative" => Some(("image/png", RUNAPI_IMAGE)),
         "baikewei-ai" => Some(("image/jpeg", BAIKEWEI_AI_IMAGE)),
+        "deepkey-api-key" => Some(("image/png", DEEPKEY_IMAGE)),
         _ => None,
     }
 }
@@ -90,6 +93,16 @@ fn append_builtin_sponsors(ads: &mut Vec<Value>) {
             "https://cubence.com?source=codexplusplus",
             CUBENCE_IMAGE,
             &["Claude Code", "Codex / Gemini", "CODEXPLUSPLUS 8.8 折"],
+            BUILTIN_SPONSOR_EXPIRES_AT,
+        ),
+        builtin_sponsor(
+            "deepkey-api-key",
+            "deepkey｜API KEY",
+            "感谢 deepkey 赞助本项目！deepkey 起初只是连接顶级算力的上游供应商，凭借稳定低价的接口被学生群体发现并口口相传。随着开发者与学子的涌入，这里不再只是 API 的搬运工，而是共同探讨提示词工程、分享创新应用的温暖社区。从工具到伙伴，deepkey 见证了无数灵感的诞生与落地。通过链接注册进入群聊，可享受福利并与小伙伴们一起探讨。",
+            "https://deepkey.top/register?aff=DNVc",
+            DEEPKEY_IMAGE,
+            &["稳定低价", "提示词工程社区", "注册进群享福利"],
+            DEEPKEY_SPONSOR_EXPIRES_AT,
         ),
         builtin_sponsor(
             "ergou-api",
@@ -98,6 +111,7 @@ fn append_builtin_sponsors(ads: &mut Vec<Value>) {
             "https://ergouapi.com/r/gh-codexplusplus",
             ERGOU_API_IMAGE,
             &["0.1x~0.2x", "Claude / GPT / Gemini", "IPLC + 双 ISP"],
+            BUILTIN_SPONSOR_EXPIRES_AT,
         ),
     ];
     let mut cursor = insert_at;
@@ -121,6 +135,7 @@ fn builtin_sponsor(
     url: &str,
     image: &[u8],
     highlights: &[&str],
+    expires_at: &str,
 ) -> Value {
     let mut sponsor = Map::new();
     sponsor.insert("id".to_string(), json!(id));
@@ -128,7 +143,7 @@ fn builtin_sponsor(
     sponsor.insert("title".to_string(), json!(title));
     sponsor.insert("description".to_string(), json!(description));
     sponsor.insert("url".to_string(), json!(url));
-    sponsor.insert("expires_at".to_string(), json!(BUILTIN_SPONSOR_EXPIRES_AT));
+    sponsor.insert("expires_at".to_string(), json!(expires_at));
     sponsor.insert("image".to_string(), json!(data_uri("image/png", image)));
     sponsor.insert("highlights".to_string(), json!(highlights));
     Value::Object(sponsor)

@@ -79,14 +79,6 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
   <tr>
     <td align="center">
-      <a href="https://runapi.co/register?aff=AWJq">
-        <img src="docs/images/sponsor-runapi.png" alt="RunAPI" height="80">
-      </a>
-    </td>
-    <td><a href="https://runapi.co/register?aff=AWJq"><strong>RunAPI</strong></a><br>感谢 RunAPI 赞助了本项目！RunAPI 是高效稳定的 API OpenRouter 平替平台，一个 API Key 即可访问 OpenAI、Claude、Gemini、DeepSeek、Grok 等 150+ 主流模型，低至 1 折，极其稳定，可以无缝兼容 Claude Code、OpenClaw 等工具。</td>
-  </tr>
-  <tr>
-    <td align="center">
       <a href="https://cubence.com?source=codexplusplus">
         <img src="docs/images/sponsor-cubence.png" alt="Cubence" height="80">
       </a>
@@ -127,14 +119,6 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
   <tr>
     <td align="center">
-      <a href="https://smallice.xyz/register?aff=FSNMGR2THBLN">
-        <img src="docs/images/sponsor-smallice.png" alt="Smallice" height="80">
-      </a>
-    </td>
-    <td><a href="https://smallice.xyz/register?aff=FSNMGR2THBLN"><strong>Smallice｜AI 中转站</strong></a><br>感谢 Smallice 赞助本项目！Smallice 是一把钥匙，通往所有值得调用的语言模型。一个统一的 endpoint，作为你应用之下、无需多言的基础层。无论你召唤的是 Claude、GPT、Gemini 还是 DeepSeek，调用的形式从此恒等。通过<a href="https://smallice.xyz/register?aff=FSNMGR2THBLN">此链接注册</a>即可开始使用。</td>
-  </tr>
-  <tr>
-    <td align="center">
       <a href="https://ergouapi.com/r/gh-codexplusplus">
         <img src="docs/images/sponsor-ergou-api.png" alt="二狗 API" height="80">
       </a>
@@ -164,6 +148,14 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
       </a>
     </td>
     <td><a href="https://api.sublyx.org/register?aff=JMNUFYR8XAH6"><strong>Sublyx｜AI API Gateway</strong></a><br>感谢 Sublyx 赞助本项目！Sublyx 是面向开发者与团队的 AI API 聚合网关，一个 API Key 即可统一接入 OpenAI、Claude、Gemini 等主流模型服务，支持 OpenAI compatible 和 Anthropic Messages 等兼容接口，可用于 Codex、Claude Code、Cherry Studio、OpenAI SDK 等常见开发工具。平台提供统一控制台、用量管理、稳定线路与按需付费能力，适合个人开发、团队协作和 Agent 工作流。Codex++ 用户通过<a href="https://api.sublyx.org/register?aff=JMNUFYR8XAH6">此链接注册 Sublyx</a>并使用优惠码 <code>CDXPP</code>，可额外领取 $10 使用额度。</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://deepkey.top/register?aff=DNVc">
+        <img src="docs/images/sponsor-deepkey.png" alt="deepkey" height="90">
+      </a>
+    </td>
+    <td><a href="https://deepkey.top/register?aff=DNVc"><strong>deepkey｜API KEY</strong></a><br>感谢 deepkey 赞助本项目！deepkey 起初只是连接顶级算力的上游供应商，凭借稳定低价的接口被学生群体发现并口口相传。随着开发者与学子的涌入，这里不再只是 API 的搬运工，而是共同探讨提示词工程、分享创新应用的温暖社区。从工具到伙伴，deepkey 见证了无数灵感的诞生与落地。通过<a href="https://deepkey.top/register?aff=DNVc">此链接注册</a>进入群聊，可享受福利并与小伙伴们一起探讨。</td>
   </tr>
 </table>
 
