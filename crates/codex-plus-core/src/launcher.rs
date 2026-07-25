@@ -2367,22 +2367,24 @@ async fn confirmed_pet_overlay_targets(
         let Some(websocket_url) = target.web_socket_debugger_url.as_deref() else {
             continue;
         };
-        if pet_overlay_supports_v2_cursor(websocket_url).await {
+        if pet_overlay_supports_v2_cursor(websocket_url)
+            .await
+            .unwrap_or(false)
+        {
             confirmed.push(target);
         }
     }
     Ok(confirmed)
 }
 
-async fn pet_overlay_supports_v2_cursor(websocket_url: &str) -> bool {
-    crate::bridge::evaluate_script_with_await_promise(
+async fn pet_overlay_supports_v2_cursor(websocket_url: &str) -> anyhow::Result<bool> {
+    let result = crate::bridge::evaluate_script_with_await_promise(
         websocket_url,
         &crate::assets::pet_real_mouse_capability_probe_script(),
         true,
     )
-    .await
-    .as_ref()
-    .is_ok_and(runtime_evaluate_result_is_true)
+    .await?;
+    Ok(runtime_evaluate_result_is_true(&result))
 }
 
 async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyhow::Result<()> {
@@ -2396,8 +2398,17 @@ async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyh
         let Some(websocket_url) = target.web_socket_debugger_url.as_deref() else {
             continue;
         };
-        let supports_v2 = enabled && pet_overlay_supports_v2_cursor(websocket_url).await;
-        let script = if supports_v2 {
+        let script = if !enabled {
+            crate::assets::pet_real_mouse_stop_script()
+        } else if pet_overlay_supports_v2_cursor(websocket_url)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to probe pet overlay capability in target {} ({})",
+                    target.id, target.url
+                )
+            })?
+        {
             crate::assets::pet_real_mouse_script()
         } else {
             crate::assets::pet_real_mouse_stop_script()
@@ -2445,15 +2456,6 @@ async fn run_pet_real_mouse_cursor_driver(debug_port: u16) {
                 );
             }
         }
-        for target in &targets {
-            if let Some(websocket_url) = target.web_socket_debugger_url.as_deref() {
-                let _ = crate::bridge::evaluate_script(
-                    websocket_url,
-                    crate::assets::pet_real_mouse_stop_script(),
-                )
-                .await;
-            }
-        }
         drivers.abort_all();
         while drivers.join_next().await.is_some() {}
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -2491,9 +2493,13 @@ async fn run_pet_real_mouse_target_driver(debug_port: u16, target: crate::cdp::C
     )
     .await;
 
-    let _ =
-        crate::bridge::evaluate_script(websocket_url, crate::assets::pet_real_mouse_stop_script())
-            .await;
+    if result.is_ok() {
+        let _ = crate::bridge::evaluate_script(
+            websocket_url,
+            crate::assets::pet_real_mouse_stop_script(),
+        )
+        .await;
+    }
     match result {
         Ok(()) => {
             PET_CURSOR_DRIVER_FAILED.store(false, Ordering::Relaxed);

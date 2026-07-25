@@ -84,21 +84,127 @@ fn pet_real_mouse_script_uses_cdp_push_and_native_avatar_event() {
     assert!(script.contains("nativeCursorActive"));
     assert!(script.contains("transport: \"cdp-push\""));
     assert!(script.contains("updateScreenPoint(point)"));
-    assert!(script.contains("mascot.matches(\":hover\")"));
-    assert!(script.contains("document.elementFromPoint(localPoint.x, localPoint.y)"));
+    assert!(script.contains("localPoint.x >= bounds.left"));
+    assert!(script.contains("localPoint.y <= bounds.bottom"));
+    assert!(!script.contains("document.elementFromPoint"));
     assert!(script.contains("if (mascotHovered)"));
-    assert!(
-        script
-            .contains("document.visibilityState !== \"visible\" || dragging || nativeCursorActive")
-    );
+    assert!(script.contains(
+        "document.visibilityState !== \"visible\" || interaction.active() || nativeCursorActive"
+    ));
     assert!(script.contains("sendPoint(null).catch(disableUpdates)"));
     assert!(script.contains("void cleared.catch(disableUpdates)"));
     assert!(script.contains("dispatcher.dispatchHostMessage({ type: eventType, point: null })"));
+    assert!(script.contains("__codexPlusPetInteraction"));
+    assert!(script.contains("setPointerCapture"));
+    assert!(script.contains("releasePointerCapture"));
+    assert!(script.contains("mascotAtPoint"));
+    assert!(script.contains("if (!ownsPointer) return"));
+    assert!(script.contains("document.addEventListener(\"pointermove\", onPointerMove, true)"));
     assert!(script.contains("movementHoldMs = 1400"));
     assert!(script.contains("activationRadius = 480"));
     assert!(!script.contains("/pet/cursor-position"));
     assert!(!script.contains("X-Codex-Plus-Pet-Token"));
     assert!(script.contains("delete window.__codexPlusPetRealMouseLook"));
+    assert!(script.contains("retired during dispatcher setup"));
+    assert!(script.contains("nextUnsubscribe?.()"));
+    assert!(script.contains("const runtimeVersion = \"7\""));
+}
+
+#[test]
+fn pet_real_mouse_cancel_releases_pointer_capture_on_blur_and_stop() {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("pet-real-mouse.js");
+    let harness_path = temp.path().join("pet-real-mouse-cancel-harness.cjs");
+    std::fs::write(&script_path, assets::pet_real_mouse_script())
+        .expect("pet real-mouse script should be written");
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    write!(
+        harness,
+        r#"
+const scriptPath = {script_path};
+const documentListeners = new Map();
+const windowListeners = new Map();
+const setCalls = [];
+const releaseCalls = [];
+
+class MockElement {{
+  closest(selector) {{ return selector === '[data-avatar-mascot="true"]' ? this : null; }}
+  getBoundingClientRect() {{ return {{ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 }}; }}
+  setPointerCapture(pointerId) {{ setCalls.push(pointerId); }}
+  releasePointerCapture(pointerId) {{ releaseCalls.push(pointerId); }}
+}}
+
+const mascot = new MockElement();
+globalThis.Element = MockElement;
+globalThis.window = globalThis;
+window.screenX = 0;
+window.screenY = 0;
+window.addEventListener = (type, listener) => windowListeners.set(type, listener);
+window.removeEventListener = (type, listener) => {{
+  if (windowListeners.get(type) === listener) windowListeners.delete(type);
+}};
+globalThis.document = {{
+  scripts: [],
+  visibilityState: "visible",
+  querySelector: (selector) => selector === '[data-avatar-mascot="true"]' ? mascot : null,
+  querySelectorAll: () => [],
+  addEventListener: (type, listener) => documentListeners.set(type, listener),
+  removeEventListener: (type, listener) => {{
+    if (documentListeners.get(type) === listener) documentListeners.delete(type);
+  }},
+}};
+globalThis.performance = {{ getEntriesByType: () => [] }};
+
+require(scriptPath);
+const runtime = window.__codexPlusPetRealMouseLook;
+const pointerEvent = (pointerId) => ({{
+  pointerId,
+  target: mascot,
+  clientX: 50,
+  clientY: 50,
+  preventDefault() {{}},
+}});
+
+documentListeners.get("pointerdown")(pointerEvent(7));
+windowListeners.get("blur")();
+const activeAfterBlur = runtime.isVisualOverrideActive();
+
+documentListeners.get("pointerdown")(pointerEvent(8));
+documentListeners.get("pointerup")(pointerEvent(9));
+const activeAfterForeignPointer = runtime.isVisualOverrideActive();
+runtime.stop();
+
+process.stdout.write(JSON.stringify({{
+  setCalls,
+  releaseCalls,
+  activeAfterBlur,
+  activeAfterForeignPointer,
+  runtimeRemoved: window.__codexPlusPetRealMouseLook == null,
+}}));
+"#,
+        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+            .expect("script path should serialize")
+    )
+    .expect("harness should be written");
+    drop(harness);
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should run pet pointer-cancel harness");
+    assert!(
+        output.status.success(),
+        "node harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("harness stdout should be JSON");
+    assert_eq!(result["setCalls"], json!([7, 8]));
+    assert_eq!(result["releaseCalls"], json!([7, 8]));
+    assert_eq!(result["activeAfterBlur"], false);
+    assert_eq!(result["activeAfterForeignPointer"], true);
+    assert_eq!(result["runtimeRemoved"], true);
 }
 
 #[test]
