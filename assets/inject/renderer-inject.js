@@ -3151,7 +3151,10 @@
   }
 
   async function loadUserScripts(path = "/user-scripts/list", payload = {}) {
-    const result = await postJson(path, payload);
+    const requestPayload = path === "/user-scripts/list"
+      ? { ...payload, runtime_status: window.__codexPlusUserScripts?.scripts || {} }
+      : payload;
+    const result = await postJson(path, requestPayload);
     if (result?.scripts) {
       codexPlusUserScripts = result;
       renderUserScripts();

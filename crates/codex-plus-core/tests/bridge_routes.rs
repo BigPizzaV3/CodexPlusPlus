@@ -626,6 +626,41 @@ async fn user_script_manager_scans_and_persists_inventory_shape() {
 }
 
 #[tokio::test]
+async fn user_script_inventory_merges_renderer_runtime_status() {
+    let temp = tempfile::tempdir().unwrap();
+    let builtin_dir = temp.path().join("builtin");
+    let user_dir = temp.path().join("user");
+    std::fs::create_dir_all(&builtin_dir).unwrap();
+    std::fs::create_dir_all(&user_dir).unwrap();
+    std::fs::write(user_dir.join("loaded.js"), "window.loaded = true;").unwrap();
+    std::fs::write(user_dir.join("failed.js"), "throw new Error('boom');").unwrap();
+    let manager =
+        UserScriptManager::new(builtin_dir, user_dir, temp.path().join("user_scripts.json"));
+    let runtime_status = json!({
+        "user:loaded.js": {"status": "loaded", "error": ""},
+        "user:failed.js": {"status": "failed", "error": "boom"}
+    });
+
+    let inventory = manager
+        .inventory_with_runtime_status(Some(&runtime_status))
+        .unwrap();
+    let scripts = inventory["scripts"].as_array().unwrap();
+    let loaded = scripts
+        .iter()
+        .find(|script| script["key"] == "user:loaded.js")
+        .unwrap();
+    let failed = scripts
+        .iter()
+        .find(|script| script["key"] == "user:failed.js")
+        .unwrap();
+
+    assert_eq!(loaded["status"], "loaded");
+    assert_eq!(loaded["error"], "");
+    assert_eq!(failed["status"], "failed");
+    assert_eq!(failed["error"], "boom");
+}
+
+#[tokio::test]
 async fn user_script_manager_deletes_market_script_metadata_and_rejects_builtin_delete() {
     let temp = tempfile::tempdir().unwrap();
     let builtin_dir = temp.path().join("builtin");

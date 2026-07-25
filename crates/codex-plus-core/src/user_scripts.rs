@@ -176,8 +176,19 @@ impl UserScriptManager {
     }
 
     pub fn inventory(&self) -> anyhow::Result<Value> {
+        self.inventory_with_runtime_status(None)
+    }
+
+    /// Build the script inventory and, when available, merge the status recorded
+    /// by the renderer-side loader. The filesystem scan alone cannot tell
+    /// whether a script was actually evaluated, so callers that have access to
+    /// the live page should provide `window.__codexPlusUserScripts.scripts`.
+    pub fn inventory_with_runtime_status(
+        &self,
+        runtime_status: Option<&Value>,
+    ) -> anyhow::Result<Value> {
         let config = self.load_config();
-        let scripts = self.scan_scripts(&config)?;
+        let scripts = self.scan_scripts(&config, runtime_status)?;
         Ok(json!({
             "enabled": config.enabled,
             "builtin_dir": self.builtin_dir.to_string_lossy(),
@@ -203,16 +214,36 @@ impl UserScriptManager {
         Ok(blocks.join("\n"))
     }
 
-    fn scan_scripts(&self, config: &UserScriptConfig) -> anyhow::Result<Vec<Value>> {
+    fn scan_scripts(
+        &self,
+        config: &UserScriptConfig,
+        runtime_status: Option<&Value>,
+    ) -> anyhow::Result<Vec<Value>> {
+        let runtime_scripts = runtime_status
+            .and_then(|value| value.get("scripts").or(Some(value)))
+            .and_then(Value::as_object);
         Ok(self
             .scan_script_files(config)?
             .into_iter()
             .map(|script| {
                 let market = config.market.get(&script.key);
-                let status = if !config.enabled || !script.enabled {
+                let fallback_status = if !config.enabled || !script.enabled {
                     "disabled"
                 } else {
                     "not_loaded"
+                };
+                let live = runtime_scripts.and_then(|items| items.get(&script.key));
+                let status = if fallback_status == "disabled" {
+                    fallback_status
+                } else {
+                    live.and_then(|item| item.get("status").and_then(Value::as_str))
+                        .unwrap_or(fallback_status)
+                };
+                let error = if fallback_status == "disabled" {
+                    ""
+                } else {
+                    live.and_then(|item| item.get("error").and_then(Value::as_str))
+                        .unwrap_or("")
                 };
                 json!({
                     "key": script.key,
@@ -220,7 +251,7 @@ impl UserScriptManager {
                     "source": script.source,
                     "enabled": script.enabled,
                     "status": status,
-                    "error": "",
+                    "error": error,
                     "market_id": market.as_ref().map(|item| item.id.as_str()).unwrap_or(""),
                     "version": market.as_ref().map(|item| item.version.as_str()).unwrap_or(""),
                     "installed": market.is_some(),
