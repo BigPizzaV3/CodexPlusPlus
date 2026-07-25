@@ -5744,7 +5744,7 @@ function RelayProfileEditor({
                       onChange={(e) => updateModelWindowRow(index, { textOnly: e.currentTarget.checked })}
                     />
                   </label>
-                  <label className="relay-model-checkbox" title={t("勾选后该模型 reasoning 字段会被剥离，避免不支持推理的模型报错；对所有协议生效")}>
+                  <label className="relay-model-checkbox" title={t("勾选后该模型 reasoning 字段会被剥离，避免不支持推理的模型报错；仅在 Chat Completion / 聚合模式生效")}>
                     <input
                       type="checkbox"
                       checked={row.noReasoning}
@@ -5801,7 +5801,7 @@ function RelayProfileEditor({
             <p className="field-hint">
               {t("「只支持文本」：标记纯文本模型。转发前，图片会先经上方 VLM 转成文字描述再发给该模型；若 VLM 未配置或不可用，则丢弃图片并提示。仅在 Chat Completion / 聚合模式生效。")}
               <br />
-              {t("「不支持推理」：剥离该模型的 reasoning 字段，避免不支持推理的模型报错。对所有协议生效。")}
+              {t("「不支持推理」：剥离该模型的 reasoning 字段，避免不支持推理的模型报错。仅在 Chat Completion / 聚合模式生效。")}
               <br />
               {t("注意：纯文本模型若未勾选「只支持文本」，图片会以 base64 原样发给该模型，模型无法识别，可能出现反复调用查看图片工具或无法作答。请为纯文本模型勾选此项。")}
             </p>

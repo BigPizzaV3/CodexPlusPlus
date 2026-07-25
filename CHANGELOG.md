@@ -6,6 +6,10 @@
 
 - **纯文本模型未勾选「只支持文本」时图片以 base64 原样透传**：SendAsIs 模式下，未标记的纯文本模型收到原始 base64 图片后无法识别，可能出现反复调用 `view_image` 等查看图片工具的死循环（直至用户手动打断）。此外，图片若经 `function_call_output`（如 `view_image` 工具返回）进入对话，会绕过所有图片处理--Strip/Vlm 仅扫描 user 消息 `content`，不扫描工具输出 `output`，即便勾选「只支持文本」也覆盖不到此类工具回图。该缺陷需随 function_call 改造一并修复，暂不处理；建议用户为纯文本模型勾选「只支持文本」规避。
 
+### 功能边界
+
+- **Responses 协议下路由层增强不生效**：当供应商的上游协议选择 Responses API 时，Codex 客户端会直连上游 Responses 端点、不再经过本地代理（`127.0.0.1:57321`），因此 `protocol_proxy.rs` 中的纯文本图片处理（VLM/Strip/SendAsIs）和 reasoning 字段剥离不会执行。代码层面这些增强位于 `upstream_request_parts` 钩子、分流前（`strip_reasoning_in_place` 对 Responses 透传和 Chat 转换两个分支都生效），但 Responses 直连路径下请求根本不会进入该钩子。**聚合模式除外**——只要当前中转为聚合供应商，无论成员的上游协议是什么，Codex 客户端都会经过本地代理，路由层增强全部生效。
+
 ## 1.2.22 - 2026-06-28
 
 - 修复启动 Codex 时会自动应用当前供应商配置的问题；现在只有手动点击“使用/切换供应商”才会切换供应商配置。

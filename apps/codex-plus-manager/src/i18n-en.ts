@@ -35,8 +35,8 @@ export const EN_PLAIN: Record<string, string> = {
     "VLM config incomplete: API Key, Model, and Base URL are required; otherwise VLM will not take effect.",
   "「只支持文本」：标记纯文本模型。转发前，图片会先经上方 VLM 转成文字描述再发给该模型；若 VLM 未配置或不可用，则丢弃图片并提示。仅在 Chat Completion / 聚合模式生效。":
     "“Text-only”: marks a text-only model. Before forwarding, images are first converted to text descriptions by the VLM above and then sent to this model; if VLM is unconfigured or unavailable, images are dropped with a notice. Effective only under Chat Completions / aggregate mode.",
-  "「不支持推理」：剥离该模型的 reasoning 字段，避免不支持推理的模型报错。对所有协议生效。":
-    "“No reasoning”: strips the reasoning field for this model to avoid errors on models that don’t support reasoning. Effective for all protocols.",
+  "「不支持推理」：剥离该模型的 reasoning 字段，避免不支持推理的模型报错。仅在 Chat Completion / 聚合模式生效。":
+    "“No reasoning”: strips the reasoning field for this model to avoid errors on models that don’t support reasoning. Effective only in Chat Completions / aggregate mode.",
   "注意：纯文本模型若未勾选「只支持文本」，图片会以 base64 原样发给该模型，模型无法识别，可能出现反复调用查看图片工具或无法作答。请为纯文本模型勾选此项。":
     "Note: if a text-only model is not checked “Text-only”, images are sent to it as-is in base64; the model cannot recognize them and may repeatedly call the view-image tool or fail to respond. Please check this option for text-only models.",
   "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。":
@@ -832,7 +832,7 @@ export const EN_PLAIN: Record<string, string> = {
   "排查可能干扰中转站配置的本机环境": "Find local environment settings that may interfere with relay configuration",
   "勾选标记纯文本模型，转发前丢弃图片；配了视觉模型则先转文字": "Check to mark as text-only model; images are dropped before forwarding (or converted to text if a vision model is configured)",
   "不支持推理": "No reasoning",
-  "勾选后该模型 reasoning 字段会被剥离，避免不支持推理的模型报错；对所有协议生效": "Strip the reasoning field for this model to avoid errors on models that don't support reasoning; applies to all protocols",
+  "勾选后该模型 reasoning 字段会被剥离，避免不支持推理的模型报错；仅在 Chat Completion / 聚合模式生效": "Strip the reasoning field for this model to avoid errors on models that don't support reasoning; effective in Chat Completions / aggregate mode only",
   "只支持文本": "Text-only",
 };
 

@@ -212,6 +212,8 @@ Codex++ 将官方登录、混入 API 和纯 API 分开保存和切换：
 
 每个供应商可配置 Responses 或 Chat Completions 协议、模型列表、测试模型、User-Agent、上下文窗口、自动压缩阈值，以及该供应商启用的 MCP Server、Skill 和 Plugin。Chat Completions 可通过本地代理转换为 Codex 使用的 Responses 协议。
 
+如果供应商的上游协议选择 Responses API，Codex 客户端会直接连接到上游 Responses 端点、不再经过本地代理，因此路由层的纯文本图片处理（VLM/Strip/SendAsIs）和 reasoning 字段剥离功能均不会生效。**聚合模式是例外**——只要当前中转为聚合供应商，无论成员的上游协议是什么，Codex 客户端都会经过本地代理（`127.0.0.1:57321`）路由，由本地代理按策略轮转调用成员，路由层增强全部生效。
+
 每模型窗口支持 `1M`、`200K` 或纯数字。Codex++ 会生成独立 `model_catalog_json`，让 Codex 按当前模型使用对应窗口。
 
 切换供应商时会先保存当前配置，再写入目标配置。真实 API Key 只保存在本机，请勿放入日志、截图或 issue。
