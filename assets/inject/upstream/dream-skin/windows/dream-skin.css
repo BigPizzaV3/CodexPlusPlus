@@ -527,6 +527,26 @@ html.codex-dream-skin .dream-home:has(.dream-home-utility) .composer-surface-chr
     inset 0 -1px var(--dream-immersive-line) !important;
 }
 
+html.codex-dream-skin.dream-art-wide:is(.dream-task-ambient, .dream-task-banner)
+  .dream-aux-panel-layer {
+  background: transparent !important;
+}
+
+html.codex-dream-skin.dream-art-wide:is(.dream-task-ambient, .dream-task-banner)
+  .dream-aux-panel-right {
+  border-left-color: var(--dream-immersive-line) !important;
+}
+
+html.codex-dream-skin.dream-art-wide:is(.dream-task-ambient, .dream-task-banner)
+  .dream-aux-panel-bottom {
+  border-top-color: var(--dream-immersive-line) !important;
+}
+
+html.codex-dream-skin.dream-art-wide:is(.dream-task-ambient, .dream-task-banner)
+  .dream-aux-panel-bottom [data-codex-terminal="true"] {
+  background: color-mix(in oklab, var(--dream-surface-raised) 58%, transparent) !important;
+}
+
 /* Plugins, scheduled tasks and search routes ship opaque sticky wrappers.
    Clear only full-window or sticky route chrome, leaving functional cards and
    their hover states intact. */

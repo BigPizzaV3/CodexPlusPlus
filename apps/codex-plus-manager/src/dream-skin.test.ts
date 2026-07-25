@@ -96,8 +96,52 @@ describe("dream skin theme helpers", () => {
     assert.match(renderer, /codex-dream-skin-companion/);
     assert.match(renderer, /theme\.companion/);
     assert.match(renderer, /\.composer-footer/);
+    assert.match(renderer, /\.composer-surface-chrome/);
     assert.match(renderer, /data:image\/(?:png|jpeg|webp|gif);base64/);
     assert.match(renderer, /removeDreamSkinCompanion/);
+    assert.match(renderer, /ensureDreamSkinCompanion\(\s*window\.__CODEX_PLUS_DREAM_SKIN_THEME__/);
+  });
+
+  it("keeps the Windows skin active when the sidebar is hidden", async () => {
+    const renderer = await readFile(
+      new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url),
+      "utf8",
+    );
+
+    assert.match(renderer, /const shellMain = document\.querySelector\("main\.main-surface"\)/);
+    assert.doesNotMatch(renderer, /!shellMain\s*\|\|\s*!shellSidebar/);
+  });
+
+  it("extends the Windows wallpaper treatment to right and bottom dock panels", async () => {
+    const renderer = await readFile(
+      new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url),
+      "utf8",
+    );
+    const css = await readFile(
+      new URL("../../../assets/inject/upstream/dream-skin/windows/dream-skin.css", import.meta.url),
+      "utf8",
+    );
+
+    assert.match(renderer, /\[data-app-shell-tabs="true"\]/);
+    assert.match(renderer, /dream-aux-panel-layer/);
+    assert.match(renderer, /dream-aux-panel-right/);
+    assert.match(renderer, /dream-aux-panel-bottom/);
+    assert.match(renderer, /clearAuxiliaryPanelClasses/);
+    assert.match(css, /\.dream-aux-panel-layer/);
+    assert.match(css, /\.dream-aux-panel-right/);
+    assert.match(css, /\.dream-aux-panel-bottom/);
+    assert.match(css, /\[data-codex-terminal="true"\]/);
+  });
+
+  it("exposes companion image controls in the theme editor", async () => {
+    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+
+    assert.match(app, /dream-skin-companion-controls/);
+    assert.match(app, /FileReader/);
+    assert.match(app, /companion\.dataUrl/);
+    assert.match(app, /companion\?\.offsetX/);
+    assert.match(app, /companion\?\.offsetY/);
+    assert.match(app, /companionEnabled/);
   });
 
   it("detects text, color, and image draft changes", () => {

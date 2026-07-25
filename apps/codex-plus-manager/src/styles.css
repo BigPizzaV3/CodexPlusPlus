@@ -4939,6 +4939,57 @@ select {
   color: hsl(var(--brand-accent));
 }
 
+.dream-skin-companion-controls {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 14px 0;
+  border-top: 1px solid hsl(var(--border));
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.dream-skin-companion-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  gap: 14px;
+  align-items: center;
+}
+
+.dream-skin-companion-heading strong,
+.dream-skin-companion-heading small {
+  display: block;
+}
+
+.dream-skin-companion-heading small {
+  margin-top: 3px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.dream-skin-companion-heading img {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+}
+
+.dream-skin-companion-fields {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) repeat(4, minmax(100px, 0.7fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.dream-skin-companion-fields .field,
+.dream-skin-companion-fields .switch-row {
+  min-width: 0;
+  margin: 0;
+}
+
+.dream-skin-companion-error {
+  color: hsl(var(--destructive));
+  font-size: 12px;
+}
+
 .dream-skin-editor-layout {
   display: grid;
   grid-template-columns: minmax(260px, 0.72fr) minmax(0, 1.28fr);
@@ -5187,6 +5238,10 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .dream-skin-companion-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .dream-skin-market-grid,
   .dream-skin-theme-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5214,6 +5269,7 @@ select {
   .dream-skin-text-grid,
   .dream-skin-colors,
   .dream-skin-windows-accent,
+  .dream-skin-companion-fields,
   .dream-skin-diagnostics-grid,
   .dream-skin-verification-meta {
     grid-template-columns: 1fr;

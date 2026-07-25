@@ -1636,7 +1636,7 @@
 
   function dreamSkinCompanionConfig(theme) {
     const companion = theme && theme.companion;
-    if (!companion || typeof companion !== "object") return null;
+    if (!companion || typeof companion !== "object" || companion.enabled === false) return null;
     const dataUrl = typeof companion.dataUrl === "string" ? companion.dataUrl.trim() : "";
     const prefix = dreamSkinCompanionDataUrlPrefixes.find((candidate) =>
       dataUrl.toLowerCase().startsWith(candidate));
@@ -1656,7 +1656,7 @@
   }
 
   function visibleDreamSkinComposer() {
-    return [...document.querySelectorAll(".composer-footer")]
+    return [...document.querySelectorAll(".composer-footer, .composer-surface-chrome")]
       .map((node) => ({ node, rect: node.getBoundingClientRect?.() }))
       .filter(({ rect }) => rect && rect.width > 200 && rect.height > 0)
       .sort((left, right) => right.rect.bottom - left.rect.bottom)[0] || null;
@@ -2037,6 +2037,9 @@
       } else {
         const state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
         state?.ensure?.();
+        ensureDreamSkinCompanion(
+          window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig,
+        );
       }
       return;
     }
