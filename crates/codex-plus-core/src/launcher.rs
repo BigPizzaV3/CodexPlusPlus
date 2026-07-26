@@ -122,7 +122,10 @@ impl std::fmt::Debug for LaunchHandle {
 
 impl LaunchHandle {
     pub async fn wait_for_codex_exit(&self) -> anyhow::Result<()> {
-        let result = self.hooks.wait_for_codex_exit(&self.launch).await;
+        let result = self
+            .hooks
+            .wait_for_codex_exit(&self.launch, self.debug_port)
+            .await;
         if self.helper_started {
             self.hooks.shutdown_helper(self.helper_port).await;
         }
@@ -216,7 +219,11 @@ pub trait LaunchHooks: Send + Sync {
         Ok(())
     }
     async fn write_status(&self, status: &str);
-    async fn wait_for_codex_exit(&self, launch: &CodexLaunch) -> anyhow::Result<()>;
+    async fn wait_for_codex_exit(
+        &self,
+        launch: &CodexLaunch,
+        debug_port: u16,
+    ) -> anyhow::Result<()>;
     async fn shutdown_helper(&self, helper_port: u16);
     async fn terminate_codex(&self, launch: &CodexLaunch);
 }
@@ -913,7 +920,11 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     async fn write_status(&self, _status: &str) {}
 
-    async fn wait_for_codex_exit(&self, launch: &CodexLaunch) -> anyhow::Result<()> {
+    async fn wait_for_codex_exit(
+        &self,
+        launch: &CodexLaunch,
+        debug_port: u16,
+    ) -> anyhow::Result<()> {
         match launch {
             CodexLaunch::Process { .. } => {
                 if let Some(mut child) = self.child.lock().await.take() {
@@ -936,7 +947,10 @@ impl LaunchHooks for DefaultLaunchHooks {
         }
         let mut empty_streak = 0u32;
         loop {
-            if crate::watcher::find_codex_processes().is_empty() {
+            let has_codex_process = !crate::watcher::find_codex_processes().is_empty();
+            let cdp_available = should_probe_launcher_cdp(cfg!(windows), has_codex_process)
+                && crate::cdp::endpoint_available(debug_port);
+            if !launcher_target_alive(has_codex_process, cdp_available) {
                 empty_streak = empty_streak.saturating_add(1);
                 if empty_streak >= 3 {
                     break;
@@ -2268,6 +2282,14 @@ pub fn browser_identity_changed(previous: Option<&str>, current: &str) -> bool {
     previous.is_some_and(|previous| previous != current)
 }
 
+fn launcher_target_alive(has_codex_process: bool, cdp_available: bool) -> bool {
+    has_codex_process || cdp_available
+}
+
+fn should_probe_launcher_cdp(is_windows: bool, has_codex_process: bool) -> bool {
+    is_windows && !has_codex_process
+}
+
 async fn check_and_reinject_bridge_inner(
     debug_port: u16,
     helper_port: u16,
@@ -3019,6 +3041,18 @@ mod tests {
                 Ok(())
             })
         })
+    }
+
+    #[test]
+    fn launcher_stays_alive_while_injected_cdp_endpoint_is_available() {
+        assert!(launcher_target_alive(false, true));
+    }
+
+    #[test]
+    fn launcher_only_probes_cdp_for_unrecognized_windows_processes() {
+        assert!(should_probe_launcher_cdp(true, false));
+        assert!(!should_probe_launcher_cdp(true, true));
+        assert!(!should_probe_launcher_cdp(false, false));
     }
 
     #[tokio::test]

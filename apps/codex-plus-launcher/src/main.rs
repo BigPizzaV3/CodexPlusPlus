@@ -408,8 +408,9 @@ impl LaunchHooks for LauncherHooks {
     async fn wait_for_codex_exit(
         &self,
         launch: &codex_plus_core::launcher::CodexLaunch,
+        debug_port: u16,
     ) -> anyhow::Result<()> {
-        self.core.wait_for_codex_exit(launch).await
+        self.core.wait_for_codex_exit(launch, debug_port).await
     }
 
     async fn shutdown_helper(&self, helper_port: u16) {
