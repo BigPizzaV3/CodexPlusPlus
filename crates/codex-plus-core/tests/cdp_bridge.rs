@@ -899,7 +899,7 @@ fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
 fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"14\""));
     assert!(!script.contains("function pluginMarketplaceAliasForName"));
     assert!(
         !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
@@ -911,7 +911,7 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
 fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"14\""));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
     assert!(script.contains("source.includes(\"!u(e.marketplaceName)||e.marketplaceName===r\")"));
     assert!(script.contains("source.includes(\"!t.includes(e.name)\")"));
@@ -923,7 +923,7 @@ fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
 fn injection_script_expands_api_key_plugin_marketplace_requests() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"14\""));
     assert!(script.contains("installPluginMarketplaceRequestPatch"));
     assert!(script.contains("installPluginMarketplaceBridgePatch"));
     assert!(script.contains("installPluginBuildFlavorFilterPatch"));
@@ -943,6 +943,10 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("message.type === \"fetch\""));
     assert!(script.contains("data?.type === \"fetch-response\""));
     assert!(script.contains("__codexPluginMarketplaceFetchRequestIds"));
+    assert!(script.contains("__codexPluginMarketplaceFetchRequestProfiles"));
+    assert!(script.contains("__codexPluginMarketplaceRequestProfiles"));
+    assert!(script.contains("pluginMarketplaceRequestProfile"));
+    assert!(script.contains("remoteOnlyPluginMarketplaceFallbackResult"));
     assert!(script.contains("let nextKinds = Array.isArray(next.marketplaceKinds)"));
     assert!(script.contains("if (!nextKinds.includes(\"local\")) nextKinds.push(\"local\")"));
     assert!(script.contains("if (!nextKinds.includes(\"vertical\")) nextKinds.push(\"vertical\")"));
@@ -1010,22 +1014,29 @@ fn injection_script_recovers_plugin_search_from_remote_auth_errors() {
     let cases = run_plugin_marketplace_search_contract_harness();
 
     assert_eq!(cases["initialKinds"], json!(["local", "vertical"]));
-    assert_eq!(
-        cases["searchKinds"],
-        json!(["created-by-me-remote", "vertical", "local"])
-    );
-    assert_eq!(cases["searchCwds"], json!(["C:/workspace"]));
+    assert_eq!(cases["searchKinds"], json!(["created-by-me-remote"]));
+    assert_eq!(cases["searchCwds"], serde_json::Value::Null);
+    assert_eq!(cases["searchRemoteOnly"], true);
     assert_eq!(cases["responsePatched"], true);
     assert_eq!(cases["responseHasError"], false);
-    assert_eq!(cases["fallbackMarketplaceNames"], json!(["fixture-local"]));
-    assert_eq!(cases["fallbackPluginNames"], json!(["alpha"]));
+    assert_eq!(cases["fallbackMarketplaceNames"], json!([]));
+    assert_eq!(cases["fallbackPluginNames"], json!([]));
+    assert_eq!(cases["fallbackFeaturedPluginIds"], json!([]));
+    assert_eq!(cases["fallbackMarketplaceLoadErrors"], json!([]));
     assert_eq!(cases["remoteUnavailable"], true);
-    assert_eq!(cases["subsequentKinds"], json!(["vertical", "local"]));
-    assert_eq!(cases["subsequentCwds"], json!(["C:/workspace"]));
+    assert_eq!(cases["subsequentKinds"], json!(["created-by-me-remote"]));
+    assert_eq!(cases["subsequentCwds"], serde_json::Value::Null);
     assert_eq!(
-        cases["chatGptKinds"],
-        json!(["created-by-me-remote", "vertical", "local"])
+        cases["generalAfterFallbackKinds"],
+        json!(["local", "vertical"])
     );
+    assert_eq!(cases["generalAfterFallbackCwds"], json!(["C:/workspace"]));
+    assert_eq!(
+        cases["localFallbackMarketplaceNames"],
+        json!(["fixture-local"])
+    );
+    assert_eq!(cases["localFallbackPluginNames"], json!(["alpha"]));
+    assert_eq!(cases["chatGptKinds"], json!(["created-by-me-remote"]));
     assert_eq!(cases["unrelatedErrorMatched"], false);
 }
 
@@ -1085,7 +1096,7 @@ const searchMessage = api.patchRequestMessage({{
   request: {{
     id: "search-1",
     method: "vscode://codex/list-plugins",
-    params: {{ marketplaceKinds: ["created-by-me-remote", "vertical"] }},
+    params: {{ marketplaceKinds: ["created-by-me-remote"] }},
   }},
 }});
 const remoteAuthMessage = "list remote plugin catalog: chatgpt authentication required for remote plugin catalog; api key auth is not supported";
@@ -1094,21 +1105,31 @@ const response = {{
   message: {{ id: "search-1", error: {{ code: -32600, message: remoteAuthMessage }} }},
 }};
 const responsePatched = api.patchResponseData(response);
-const subsequent = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote", "vertical"] }});
+const subsequent = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote"] }});
+const generalAfterFallback = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote", "local", "vertical"] }});
 const fallbackMarketplaces = response.message.result?.marketplaces || [];
+const localFallbackMarketplaces = api.localFallback().marketplaces || [];
+const remoteUnavailable = api.remoteCatalogUnavailable();
 api.reset();
-const chatGpt = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote", "vertical"] }});
+const chatGpt = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote"] }});
 const cases = {{
   initialKinds: initial.marketplaceKinds,
   searchKinds: searchMessage.request.params.marketplaceKinds,
-  searchCwds: searchMessage.request.params.cwds,
+  searchCwds: searchMessage.request.params.cwds ?? null,
+  searchRemoteOnly: api.requestProfile({{ marketplaceKinds: ["created-by-me-remote"] }}).remoteOnly,
   responsePatched,
   responseHasError: Object.prototype.hasOwnProperty.call(response.message, "error"),
   fallbackMarketplaceNames: fallbackMarketplaces.map((marketplace) => marketplace.name),
   fallbackPluginNames: fallbackMarketplaces.flatMap((marketplace) => marketplace.plugins || []).map((plugin) => plugin.name),
-  remoteUnavailable: subsequent.marketplaceKinds.includes("created-by-me-remote") === false,
+  fallbackFeaturedPluginIds: response.message.result?.featuredPluginIds || [],
+  fallbackMarketplaceLoadErrors: response.message.result?.marketplaceLoadErrors || [],
+  remoteUnavailable,
   subsequentKinds: subsequent.marketplaceKinds,
-  subsequentCwds: subsequent.cwds,
+  subsequentCwds: subsequent.cwds ?? null,
+  generalAfterFallbackKinds: generalAfterFallback.marketplaceKinds,
+  generalAfterFallbackCwds: generalAfterFallback.cwds,
+  localFallbackMarketplaceNames: localFallbackMarketplaces.map((marketplace) => marketplace.name),
+  localFallbackPluginNames: localFallbackMarketplaces.flatMap((marketplace) => marketplace.plugins || []).map((plugin) => plugin.name),
   chatGptKinds: chatGpt.marketplaceKinds,
   unrelatedErrorMatched: api.remoteAuthError({{ message: "network unavailable" }}),
 }};
