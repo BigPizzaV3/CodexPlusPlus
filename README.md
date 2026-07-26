@@ -163,8 +163,6 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
 
 欢迎加入 Codex++ 交流 3 群（QQ群：619480492），反馈问题、交流使用体验或提出新功能建议。<a href="https://qm.qq.com/q/Erf1F1zwqs">点击链接加入群聊</a>。
 
-微信群：<a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">点击这里获取最新微信群二维码</a>。
-
 <img src="docs/images/discussion-group-qr.jpg" alt="Codex++ 微信群二维码" width="260">
 
 Telegram 频道：<https://t.me/CodexPlusPlus>
