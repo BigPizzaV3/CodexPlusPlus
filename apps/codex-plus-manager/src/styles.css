@@ -184,8 +184,52 @@ body {
 }
 
 .brand-title {
+  background:
+    linear-gradient(
+      90deg,
+      #ff2f70,
+      #ff9f1c,
+      #f7f24a,
+      #25f36b,
+      #18d9ff,
+      #7a5cff,
+      #ff4fe3,
+      #ff2f70,
+      #ff9f1c,
+      #f7f24a,
+      #25f36b,
+      #18d9ff,
+      #7a5cff,
+      #ff4fe3,
+      #ff2f70
+    );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  text-shadow:
+    0 0 8px rgb(24 217 255 / 0.36),
+    0 0 16px rgb(255 79 227 / 0.24);
+  animation: brand-rainbow-flow 2.8s linear infinite;
   font-weight: 700;
   line-height: 1.2;
+}
+
+@keyframes brand-rainbow-flow {
+  from {
+    background-position: 0% 50%;
+  }
+
+  to {
+    background-position: 200% 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand-title {
+    animation: none;
+    background-position: 70% 50%;
+  }
 }
 
 .update-dot {

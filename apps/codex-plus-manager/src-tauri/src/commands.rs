@@ -509,7 +509,7 @@ pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 #[tauri::command]
 pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     codex_plus_core::watcher::stop_launcher_processes_and_wait();
-    codex_plus_core::watcher::stop_codex_processes_and_wait();
+    codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
     spawn_codex_plus_launch(request, "Codex 已请求重启，启动任务正在后台运行。")
 }
 
@@ -1987,6 +1987,7 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
                     "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
                     "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
                     "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
+                    "sqliteCatalogRowsInserted": sync.sqlite_catalog_rows_inserted,
                     "updatedWorkspaceRoots": sync.updated_workspace_roots,
                     "encryptedContentWarning": sync.encrypted_content_warning,
                     "backupDir": sync.backup_dir,

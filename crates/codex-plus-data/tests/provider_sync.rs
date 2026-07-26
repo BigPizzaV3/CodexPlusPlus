@@ -84,6 +84,77 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
     }
 }
 
+fn create_local_thread_catalog_db(path: &Path, rows: &[(&str, &str)]) {
+    let db = Connection::open(path).unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog (
+            host_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            display_title TEXT NOT NULL,
+            source_created_at REAL NOT NULL,
+            source_updated_at REAL NOT NULL,
+            cwd TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_detail TEXT,
+            model_provider TEXT NOT NULL,
+            git_branch TEXT,
+            observation_sequence INTEGER NOT NULL,
+            missing_candidate INTEGER NOT NULL DEFAULT 0,
+            thread_source TEXT,
+            PRIMARY KEY (host_id, thread_id)
+        )",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog_hosts (host_id TEXT PRIMARY KEY, host_kind TEXT NOT NULL)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog_hosts VALUES ('local', 'local')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog_metadata (id INTEGER PRIMARY KEY, catalog_revision INTEGER NOT NULL DEFAULT 0)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog_metadata VALUES (1, 0)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog_sync_state (
+            host_id TEXT PRIMARY KEY,
+            watermark_updated_at REAL,
+            initial_build_complete INTEGER NOT NULL DEFAULT 0,
+            observation_sequence INTEGER NOT NULL DEFAULT 0,
+            last_full_reconciled_at INTEGER
+        )",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog_sync_state VALUES ('local', 100, 1, 0, 100)",
+        [],
+    )
+    .unwrap();
+    for (index, (thread_id, provider)) in rows.iter().enumerate() {
+        db.execute(
+            "INSERT INTO local_thread_catalog (
+                host_id, thread_id, display_title, source_created_at, source_updated_at, cwd,
+                source_kind, source_detail, model_provider, git_branch, observation_sequence,
+                missing_candidate, thread_source
+            ) VALUES ('local', ?1, ?1, 100, 100, 'C:/workspace', 'cli', '', ?2, NULL, ?3, 0, 'user')",
+            (thread_id, provider, index as i64 + 1),
+        )
+        .unwrap();
+    }
+}
+
 #[test]
 fn provider_sync_targets_merge_config_rollout_sqlite_and_sort_current_first() {
     let tmp = tempdir().unwrap();
@@ -358,6 +429,128 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
     );
     let backup_dir = result.backup_dir.unwrap();
     assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
+}
+
+#[test]
+fn provider_sync_updates_and_discovers_local_thread_catalog() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    let db_path = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&db_path, &[("thread-1", "openai"), ("thread-2", "custom")]);
+
+    let targets = load_provider_sync_targets(Some(&home));
+    let ids = targets
+        .targets
+        .iter()
+        .map(|target| target.id.as_str())
+        .collect::<Vec<_>>();
+    assert!(ids.contains(&"openai"));
+    assert!(ids.contains(&"custom"));
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.sqlite_rows_updated, 2);
+    assert_eq!(result.sqlite_provider_rows_updated, 2);
+    let db = Connection::open(&db_path).unwrap();
+    let remaining = db
+        .query_row(
+            "SELECT COUNT(*) FROM local_thread_catalog WHERE model_provider <> 'apigather'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0);
+    let backup_dir = result.backup_dir.unwrap();
+    assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
+}
+
+#[test]
+fn provider_sync_repairs_missing_local_thread_catalog_rows_from_threads() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    let state_db = home.join("state_5.sqlite");
+    let db = Connection::open(&state_db).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            model_provider TEXT,
+            archived INTEGER,
+            has_user_event INTEGER,
+            cwd TEXT,
+            title TEXT,
+            rollout_path TEXT,
+            source TEXT,
+            created_at_ms INTEGER,
+            updated_at_ms INTEGER,
+            thread_source TEXT,
+            git_branch TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads VALUES (
+            'thread-1', 'old-provider', 0, 1, 'C:/workspace', 'Thread One',
+            'C:/rollout.jsonl', 'cli', 100000, 200000, 'user', 'main'
+        )",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&catalog_db, &[]);
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.sqlite_catalog_rows_inserted, 1);
+    assert_eq!(result.sqlite_rows_updated, 2);
+    let db = Connection::open(&catalog_db).unwrap();
+    let row = db
+        .query_row(
+            "SELECT display_title, source_created_at, source_updated_at, cwd, source_kind, source_detail, model_provider, git_branch, thread_source FROM local_thread_catalog WHERE thread_id = 'thread-1'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(row.0, "Thread One");
+    assert_eq!(row.1, 100.0);
+    assert_eq!(row.2, 200.0);
+    assert_eq!(row.3, "C:/workspace");
+    assert_eq!(row.4, "cli");
+    assert_eq!(row.5, "C:/rollout.jsonl");
+    assert_eq!(row.6, "apigather");
+    assert_eq!(row.7, "main");
+    assert_eq!(row.8, "user");
+    let sync_state = db
+        .query_row(
+            "SELECT initial_build_complete, watermark_updated_at >= 200, observation_sequence FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+        )
+        .unwrap();
+    assert_eq!(sync_state.0, 1);
+    assert_eq!(sync_state.1, 1);
+    assert_eq!(sync_state.2, 1);
 }
 
 #[test]
