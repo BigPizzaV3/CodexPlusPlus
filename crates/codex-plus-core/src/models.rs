@@ -56,6 +56,32 @@ pub struct ExportResult {
     pub markdown: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageOutputStatus {
+    Found,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ImageOutput {
+    pub id: String,
+    pub turn_id: Option<String>,
+    pub assistant_text: Option<String>,
+    pub data_url: String,
+    pub output_format: String,
+    pub revised_prompt: Option<String>,
+    pub timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ImageOutputResult {
+    pub status: ImageOutputStatus,
+    pub session_id: String,
+    pub message: String,
+    pub images: Vec<ImageOutput>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +200,47 @@ mod tests {
         let result = serde_json::from_value::<ExportResult>(value.clone()).unwrap();
 
         assert_eq!(serde_json::to_value(result).unwrap(), value);
+    }
+
+    #[test]
+    fn image_output_result_json_shape_matches_rust_model() {
+        let result = ImageOutputResult {
+            status: ImageOutputStatus::Found,
+            session_id: "s1".to_string(),
+            message: "found 1 image".to_string(),
+            images: vec![ImageOutput {
+                id: "img-1".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                assistant_text: Some("done".to_string()),
+                data_url: "data:image/png;base64,aGVsbG8=".to_string(),
+                output_format: "png".to_string(),
+                revised_prompt: Some("prompt".to_string()),
+                timestamp: Some("2026-07-25T12:00:00Z".to_string()),
+            }],
+        };
+
+        let value = serde_json::to_value(&result).unwrap();
+
+        assert_eq!(
+            value,
+            json!({
+                "status": "found",
+                "session_id": "s1",
+                "message": "found 1 image",
+                "images": [{
+                    "id": "img-1",
+                    "turn_id": "turn-1",
+                    "assistant_text": "done",
+                    "data_url": "data:image/png;base64,aGVsbG8=",
+                    "output_format": "png",
+                    "revised_prompt": "prompt",
+                    "timestamp": "2026-07-25T12:00:00Z"
+                }]
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ImageOutputResult>(value).unwrap(),
+            result
+        );
     }
 }

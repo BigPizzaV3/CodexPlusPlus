@@ -5,7 +5,10 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::models::{DeleteResult, DeleteStatus, ExportResult, ExportStatus, SessionRef};
+use crate::models::{
+    DeleteResult, DeleteStatus, ExportResult, ExportStatus, ImageOutputResult, ImageOutputStatus,
+    SessionRef,
+};
 use crate::settings::{BackendSettings, SettingsStore};
 use crate::status::StatusStore;
 use crate::user_scripts::UserScriptManager;
@@ -106,6 +109,7 @@ pub trait BridgeDataService: Send + Sync {
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult>;
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
+    async fn image_outputs(&self, session: SessionRef) -> anyhow::Result<ImageOutputResult>;
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value>;
     async fn find_archived_thread_by_title(
         &self,
@@ -229,6 +233,9 @@ pub async fn handle_bridge_request(
                 .export_markdown(session_from_payload(&payload))
                 .await,
         ),
+        "/image-outputs" => {
+            result_value(ctx.data.image_outputs(session_from_payload(&payload)).await)
+        }
         "/thread-usage-history" => {
             ctx.data
                 .thread_usage_history(session_from_payload(&payload))
@@ -575,6 +582,15 @@ impl BridgeDataService for UnavailableDataService {
             message: "Markdown export service is not wired in core launcher hooks".to_string(),
             filename: None,
             markdown: None,
+        })
+    }
+
+    async fn image_outputs(&self, session: SessionRef) -> anyhow::Result<ImageOutputResult> {
+        Ok(ImageOutputResult {
+            status: ImageOutputStatus::Failed,
+            session_id: session.session_id,
+            message: "Image output service is not wired in core launcher hooks".to_string(),
+            images: Vec::new(),
         })
     }
 

@@ -1263,6 +1263,27 @@
       .codex-plus-form-message[data-status="ok"] { color: #34d399; }
       .codex-plus-form-message[data-status="failed"] { color: #f87171; }
       .codex-plus-form-message[data-status="loading"] { color: #fbbf24; }
+      .codex-plus-image-output-list {
+        box-sizing: border-box;
+        width: min(100%, 720px);
+        margin: 12px 0 0;
+        display: grid;
+        gap: 12px;
+      }
+      .codex-plus-image-output {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      .codex-plus-image-output img {
+        display: block;
+        width: 100%;
+        max-height: min(70vh, 720px);
+        object-fit: contain;
+        border: 1px solid rgba(148, 163, 184, .28);
+        border-radius: 8px;
+        background: rgba(15, 23, 42, .08);
+      }
       .codex-plus-backend-status { display: grid; gap: 4px; min-width: 132px; justify-items: end; }
       .codex-plus-backend-label { color: #a1a1aa; font-size: 12px; }
       .codex-plus-backend-label[data-status="ok"] { color: #34d399; }
@@ -8776,6 +8797,273 @@
     showToast(result.message || "导出失败", null);
   }
 
+  function imageOutputRuntime() {
+    if (!window.__codexPlusImageOutputRuntime || typeof window.__codexPlusImageOutputRuntime !== "object") {
+      window.__codexPlusImageOutputRuntime = {
+        activeSessionId: "",
+        pending: false,
+        refreshAfterPending: false,
+        timer: 0,
+        lastFetchAt: 0,
+        signatureBySession: Object.create(null),
+        imagesBySession: Object.create(null),
+      };
+    }
+    if (!window.__codexPlusImageOutputRuntime.imagesBySession || typeof window.__codexPlusImageOutputRuntime.imagesBySession !== "object") {
+      window.__codexPlusImageOutputRuntime.imagesBySession = Object.create(null);
+    }
+    return window.__codexPlusImageOutputRuntime;
+  }
+
+  function removeStaleImageOutputLists(activeSessionId, activeGroupKeys = null) {
+    document.querySelectorAll("[data-codex-plus-image-output-list]").forEach((list) => {
+      if (!activeSessionId || list.dataset.codexPlusImageOutputSession !== activeSessionId) {
+        list.remove();
+        return;
+      }
+      if (activeGroupKeys && !activeGroupKeys.has(list.dataset.codexPlusImageOutputGroup || "")) {
+        list.remove();
+      }
+    });
+  }
+
+  function isImageOutputContentCandidate(node) {
+    if (!node?.isConnected) return false;
+    if (node.tagName === "SPAN") return false;
+    if (node.closest?.("[data-codex-plus-image-output-list]")) return false;
+    if (node.closest?.(".composer-surface-chrome, .ProseMirror, [role='textbox']")) return false;
+    if (node.closest?.("[data-testid='source-panel'], [class*='thread-floating-content']")) return false;
+    const text = String(node.innerText || node.textContent || "").trim();
+    return text.length > 0;
+  }
+
+  function imageOutputMarkdownSelector() {
+    return [
+      ".prose",
+      "[data-message-content]",
+      '[data-testid*="message-content"]',
+      '[class*="_markdownContent_"]',
+    ].join(", ");
+  }
+
+  function imageOutputContentAnchorForAssistant(assistant, markdownSelector) {
+    const contentCandidates = Array.from(assistant.querySelectorAll?.(markdownSelector) || [])
+      .filter(isImageOutputContentCandidate);
+    return contentCandidates[contentCandidates.length - 1] || assistant;
+  }
+
+  function imageOutputAssistantAnchors(root) {
+    const markdownSelector = imageOutputMarkdownSelector();
+    const assistantMessages = Array.from(root?.querySelectorAll?.('[data-message-author-role="assistant"]') || [])
+      .filter((node) => node.isConnected && !node.closest?.("[data-codex-plus-image-output-list]"));
+    if (assistantMessages.length) {
+      return assistantMessages.map((assistant) => imageOutputContentAnchorForAssistant(assistant, markdownSelector));
+    }
+    const contentCandidates = Array.from(root?.querySelectorAll?.(markdownSelector) || [])
+      .filter(isImageOutputContentCandidate);
+    if (contentCandidates.length) return contentCandidates;
+    const turnCandidates = Array.from(root?.querySelectorAll?.('[data-testid="conversation-turn"]') || [])
+      .filter(isImageOutputContentCandidate);
+    return turnCandidates;
+  }
+
+  function normalizeImageOutputText(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
+  }
+
+  function imageOutputAssistantText(images) {
+    return normalizeImageOutputText(images.find((image) => normalizeImageOutputText(image?.assistant_text))?.assistant_text);
+  }
+
+  function imageOutputAnchor(root, images, groupIndex, groupCount) {
+    const anchors = imageOutputAssistantAnchors(root);
+    const assistantText = imageOutputAssistantText(images);
+    if (assistantText) {
+      const matched = anchors.find((anchor) => normalizeImageOutputText(anchor.innerText || anchor.textContent).includes(assistantText));
+      if (matched) return matched;
+      const prefix = assistantText.slice(0, 120);
+      if (prefix.length >= 12) {
+        const prefixMatched = anchors.find((anchor) => normalizeImageOutputText(anchor.innerText || anchor.textContent).includes(prefix));
+        if (prefixMatched) return prefixMatched;
+      }
+      return null;
+    }
+    const fallbackIndex = Math.max(0, anchors.length - Math.max(1, groupCount) + groupIndex);
+    return anchors[fallbackIndex] || anchors[anchors.length - 1] || null;
+  }
+
+  function cssEscapeValue(value) {
+    if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(value);
+    return String(value).replace(/["\\]/g, "\\$&");
+  }
+
+  function imageOutputGroupKey(image, index) {
+    return String(image?.turn_id || image?.id || `image-${index + 1}`);
+  }
+
+  function imageOutputGroups(images) {
+    const groups = [];
+    const groupByKey = new Map();
+    images.forEach((image, index) => {
+      const key = imageOutputGroupKey(image, index);
+      let group = groupByKey.get(key);
+      if (!group) {
+        group = { key, images: [] };
+        groupByKey.set(key, group);
+        groups.push(group);
+      }
+      group.images.push(image);
+    });
+    return groups;
+  }
+
+  function ensureImageOutputList(root, sessionId, groupKey, anchor) {
+    let list = root.querySelector?.(`[data-codex-plus-image-output-list][data-codex-plus-image-output-session="${cssEscapeValue(sessionId)}"][data-codex-plus-image-output-group="${cssEscapeValue(groupKey)}"]`);
+    if (!list?.isConnected) {
+      list = document.createElement("div");
+      list.className = "codex-plus-image-output-list";
+      list.dataset.codexPlusImageOutputList = "true";
+      list.dataset.codexPlusImageOutputSession = sessionId;
+      list.dataset.codexPlusImageOutputGroup = groupKey;
+    }
+    const parent = anchor || root;
+    if (list.parentElement !== parent) parent.appendChild(list);
+    return list;
+  }
+
+  function imageOutputListSignature(sessionId) {
+    const root = conversationRoot();
+    const lists = Array.from(root?.querySelectorAll?.(`[data-codex-plus-image-output-list][data-codex-plus-image-output-session="${cssEscapeValue(sessionId)}"]`) || [])
+      .filter((list) => list.isConnected);
+    if (!lists.length) return "";
+    return lists.map((list) => {
+      const images = Array.from(list.querySelectorAll("[data-codex-plus-image-output-id]")).map((figure) => {
+        const id = figure.dataset.codexPlusImageOutputId || "";
+        const dataUrlLength = String(figure.querySelector("img")?.src || "").length;
+        return `${id}:${dataUrlLength}`;
+      }).join("|");
+      return `${list.dataset.codexPlusImageOutputGroup || ""}[${images}]`;
+    }).join("||");
+  }
+
+  function imageOutputRenderSignature(images) {
+    return imageOutputGroups(Array.isArray(images) ? images : []).map((group) => {
+      const groupImages = group.images.map((image, index) => {
+        const id = String(image?.id || `image-${index + 1}`);
+        return `${id}:${String(image?.data_url || "").length}`;
+      }).join("|");
+      return `${group.key}[${groupImages}]`;
+    }).join("||");
+  }
+
+  function imageOutputListsNeedReposition(sessionId, images) {
+    const root = conversationRoot();
+    if (!root?.isConnected) return true;
+    const groups = imageOutputGroups(Array.isArray(images) ? images : []);
+    return groups.some((group, groupIndex) => {
+      const anchor = imageOutputAnchor(root, group.images, groupIndex, groups.length);
+      if (!anchor?.isConnected) return true;
+      const list = root.querySelector?.(`[data-codex-plus-image-output-list][data-codex-plus-image-output-session="${cssEscapeValue(sessionId)}"][data-codex-plus-image-output-group="${cssEscapeValue(group.key)}"]`);
+      return !list?.isConnected || list.parentElement !== anchor;
+    });
+  }
+
+  function renderImageOutputs(sessionId, images) {
+    const root = conversationRoot();
+    if (!root?.isConnected) return false;
+    const groups = imageOutputGroups(Array.isArray(images) ? images : []);
+    const resolvedGroups = groups.map((group, groupIndex) => ({
+      group,
+      anchor: imageOutputAnchor(root, group.images, groupIndex, groups.length),
+    })).filter((entry) => entry.anchor?.isConnected);
+    const activeGroupKeys = new Set(resolvedGroups.map((entry) => entry.group.key));
+    removeStaleImageOutputLists(sessionId, activeGroupKeys);
+    resolvedGroups.forEach(({ group, anchor }) => {
+      const list = ensureImageOutputList(root, sessionId, group.key, anchor);
+      const seen = new Set();
+      group.images.forEach((image, index) => {
+        const id = String(image?.id || `image-${index + 1}`);
+        const dataUrl = String(image?.data_url || "");
+        if (!id || !dataUrl.startsWith("data:image/")) return;
+        seen.add(id);
+        let figure = list.querySelector(`[data-codex-plus-image-output-id="${cssEscapeValue(id)}"]`);
+        if (!figure) {
+          figure = document.createElement("figure");
+          figure.className = "codex-plus-image-output";
+          figure.dataset.codexPlusImageOutputId = id;
+          const img = document.createElement("img");
+          img.loading = "lazy";
+          img.decoding = "async";
+          img.alt = String(image?.revised_prompt || "Generated image");
+          figure.appendChild(img);
+          list.appendChild(figure);
+        }
+        const img = figure.querySelector("img");
+        if (img && img.src !== dataUrl) img.src = dataUrl;
+      });
+      list.querySelectorAll("[data-codex-plus-image-output-id]").forEach((figure) => {
+        if (!seen.has(figure.dataset.codexPlusImageOutputId || "")) figure.remove();
+      });
+    });
+    return resolvedGroups.length === groups.length;
+  }
+
+  async function refreshImageOutputs() {
+    const runtime = imageOutputRuntime();
+    const ref = currentSessionRef();
+    const sessionId = validThreadScrollSessionKey(ref.session_id);
+    removeStaleImageOutputLists(sessionId);
+    if (!sessionId) return;
+    if (runtime.pending) {
+      runtime.refreshAfterPending = true;
+      return;
+    }
+    const now = Date.now();
+    const cachedSignature = runtime.signatureBySession[sessionId] || "";
+    const cachedImages = runtime.imagesBySession?.[sessionId] || [];
+    if (runtime.activeSessionId === sessionId && now - finiteNonNegativeNumber(runtime.lastFetchAt) < 2500 && (!cachedSignature || (imageOutputListSignature(sessionId) === cachedSignature && !imageOutputListsNeedReposition(sessionId, cachedImages)))) return;
+    runtime.pending = true;
+    runtime.activeSessionId = sessionId;
+    runtime.lastFetchAt = now;
+    try {
+      const result = await postJson("/image-outputs", { session_id: sessionId, title: ref.title || "" });
+      if (sessionId !== validThreadScrollSessionKey(currentSessionRef().session_id)) {
+        runtime.refreshAfterPending = true;
+        return;
+      }
+      const images = Array.isArray(result?.images) ? result.images : [];
+      const signature = imageOutputRenderSignature(images);
+      if (result?.status === "found" && (runtime.signatureBySession[sessionId] !== signature || imageOutputListSignature(sessionId) !== signature || imageOutputListsNeedReposition(sessionId, images))) {
+        runtime.signatureBySession[sessionId] = signature;
+        runtime.imagesBySession[sessionId] = images;
+        const complete = renderImageOutputs(sessionId, images);
+        if (!complete && images.length) scheduleImageOutputsRefresh(400);
+        if (images.length) sendCodexPlusDiagnostic("image_outputs_rendered", { sessionId, count: images.length });
+      }
+    } catch (error) {
+      sendCodexPlusDiagnostic("image_outputs_refresh_failed", {
+        sessionId,
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+    } finally {
+      runtime.pending = false;
+      if (runtime.refreshAfterPending) {
+        runtime.refreshAfterPending = false;
+        scheduleImageOutputsRefresh(0);
+      }
+    }
+  }
+
+  function scheduleImageOutputsRefresh(delayMs = 150) {
+    const runtime = imageOutputRuntime();
+    clearTimeout(runtime.timer);
+    runtime.timer = setTimeout(() => {
+      runtime.timer = 0;
+      refreshImageOutputs();
+    }, delayMs);
+  }
+
   function sortStateFromMoveResult(result, ref, row) {
     const trustedSortMs = timestampMsFromPayload(result);
     return { sortMs: trustedSortMs || rowSortMs(row, ref), sortMsTrusted: !!trustedSortMs };
@@ -10416,6 +10704,7 @@
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
     schedulePluginAutoExpand();
+    scheduleImageOutputsRefresh();
   }
 
   function runScanStep(step) {
@@ -10433,7 +10722,7 @@
   }
 
   function isExtensionUiNode(node) {
-    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${projectMoveOverlayClass}, .${codexServiceTierBadgeClass}, .codex-zed-remote-button, .codex-zed-remote-toast, #codex-plus-menu`);
+    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .codex-plus-image-output-list, .${projectMoveOverlayClass}, .${codexServiceTierBadgeClass}, .codex-zed-remote-button, .codex-zed-remote-toast, #codex-plus-menu`);
   }
 
   function scanRelevantSelector() {

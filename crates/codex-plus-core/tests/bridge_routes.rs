@@ -4,7 +4,10 @@ use async_trait::async_trait;
 use codex_plus_core::launcher::{
     CodexLaunch, LaunchHooks, LaunchOptions, ProcessWaitStrategy, launch_and_inject_with_hooks,
 };
-use codex_plus_core::models::{DeleteResult, DeleteStatus, ExportResult, ExportStatus, SessionRef};
+use codex_plus_core::models::{
+    DeleteResult, DeleteStatus, ExportResult, ExportStatus, ImageOutput, ImageOutputResult,
+    ImageOutputStatus, SessionRef,
+};
 use codex_plus_core::routes::{
     BridgeContext, BridgeDataService, BridgeRuntimeService, BridgeSettingsService,
     CoreRuntimeService, handle_bridge_request,
@@ -78,6 +81,10 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/undo", json!({"undo_token": "undo-1"})),
         (
             "/export-markdown",
+            json!({"session_id": "s1", "title": "First"}),
+        ),
+        (
+            "/image-outputs",
             json!({"session_id": "s1", "title": "First"}),
         ),
         (
@@ -1329,6 +1336,23 @@ impl BridgeDataService for FakeData {
             message: "exported".to_string(),
             filename: Some("First.md".to_string()),
             markdown: Some("# First\n".to_string()),
+        })
+    }
+
+    async fn image_outputs(&self, session: SessionRef) -> anyhow::Result<ImageOutputResult> {
+        Ok(ImageOutputResult {
+            status: ImageOutputStatus::Found,
+            session_id: session.session_id,
+            message: "found".to_string(),
+            images: vec![ImageOutput {
+                id: "img-1".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                assistant_text: Some("done".to_string()),
+                data_url: "data:image/png;base64,aGVsbG8=".to_string(),
+                output_format: "png".to_string(),
+                revised_prompt: None,
+                timestamp: None,
+            }],
         })
     }
 

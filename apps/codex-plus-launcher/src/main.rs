@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use codex_plus_core::launcher::{
     BridgeReinjector, DefaultLaunchHooks, LaunchHooks, LaunchOptions, launch_and_inject_with_hooks,
 };
-use codex_plus_core::models::{DeleteResult, ExportResult, SessionRef};
+use codex_plus_core::models::{DeleteResult, ExportResult, ImageOutputResult, SessionRef};
 use codex_plus_core::routes::{BridgeContext, BridgeDataService, BridgeRuntimeService};
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
@@ -463,6 +463,15 @@ impl BridgeDataService for LauncherDataService {
         })
         .await
         .map_err(|error| anyhow::anyhow!("export markdown task failed: {error}"))
+    }
+
+    async fn image_outputs(&self, session: SessionRef) -> anyhow::Result<ImageOutputResult> {
+        let db_paths = self.candidate_db_paths();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::image_outputs_from_paths(db_paths, &session)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("image outputs task failed: {error}"))
     }
 
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value> {

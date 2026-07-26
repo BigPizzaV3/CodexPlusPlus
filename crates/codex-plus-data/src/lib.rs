@@ -1,9 +1,11 @@
 pub mod backup;
+pub mod image_outputs;
 pub mod markdown;
 pub mod provider_sync;
 pub mod storage;
 
 pub use backup::BackupStore;
+pub use image_outputs::{ImageOutputService, image_outputs_from_paths};
 pub use markdown::{MarkdownExportService, export_markdown_from_paths};
 pub use provider_sync::{
     ProviderSyncResult, ProviderSyncStatus, ProviderSyncTargetList, ProviderSyncTargetOption,
