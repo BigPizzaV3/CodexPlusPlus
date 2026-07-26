@@ -469,7 +469,7 @@
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "3";
   const codexAppServerModelRequestPatchVersion = "2";
-  const codexPluginMarketplaceUnlockVersion = "12";
+  const codexPluginMarketplaceUnlockVersion = "13";
   const codexPluginAutoExpandVersion = "1";
   const codexPluginAutoExpandMaxClicks = 80;
   const codexPluginAutoExpandClickDelayMs = 90;
@@ -3780,16 +3780,31 @@
       return params;
     }
     const next = { ...params };
+    const requestCwds = Array.isArray(next.cwds)
+      ? next.cwds.filter((cwd) => typeof cwd === "string" && cwd.trim())
+      : [];
+    if (requestCwds.length > 0) {
+      window.__codexPluginMarketplaceLastCwds = Array.from(new Set(requestCwds));
+    } else if (Array.isArray(window.__codexPluginMarketplaceLastCwds) && window.__codexPluginMarketplaceLastCwds.length > 0) {
+      next.cwds = [...window.__codexPluginMarketplaceLastCwds];
+    }
     const hadMarketplaceKinds = Object.prototype.hasOwnProperty.call(next, "marketplaceKinds");
-    const nextKinds = Array.isArray(next.marketplaceKinds)
+    let nextKinds = Array.isArray(next.marketplaceKinds)
       ? next.marketplaceKinds.map((kind) => restorePluginMarketplaceName(kind))
       : ["local"];
+    const remoteCatalogUnavailable = window.__codexPluginMarketplaceRemoteCatalogUnavailable === true;
+    if (remoteCatalogUnavailable) {
+      nextKinds = nextKinds.filter((kind) => kind !== "created-by-me-remote" && kind !== "shared-with-me");
+    }
+    if (!nextKinds.includes("local")) nextKinds.push("local");
     if (!nextKinds.includes("vertical")) nextKinds.push("vertical");
     next.marketplaceKinds = Array.from(new Set(nextKinds));
     sendCodexPlusDiagnostic("plugin_marketplace_request_expanded", {
       hadMarketplaceKinds,
       marketplaceKinds: next.marketplaceKinds,
       cwdCount: Array.isArray(next.cwds) ? next.cwds.length : 0,
+      cwdRestored: requestCwds.length === 0 && Array.isArray(next.cwds) && next.cwds.length > 0,
+      remoteCatalogUnavailable,
     });
     return next;
   }
@@ -4047,6 +4062,37 @@
     return result;
   }
 
+  function pluginMarketplaceErrorText(value, visited = new WeakSet(), depth = 0) {
+    if (typeof value === "string") return value;
+    if (!value || typeof value !== "object" || depth > 4 || visited.has(value)) return "";
+    visited.add(value);
+    const parts = [];
+    for (const key of ["message", "error", "detail", "cause", "data", "response"]) {
+      const text = pluginMarketplaceErrorText(value[key], visited, depth + 1);
+      if (text) parts.push(text);
+    }
+    return parts.join(" ");
+  }
+
+  function pluginMarketplaceRemoteAuthError(value) {
+    const text = pluginMarketplaceErrorText(value).toLowerCase();
+    return text.includes("chatgpt authentication required for remote plugin catalog") && text.includes("api key auth is not supported");
+  }
+
+  function markPluginMarketplaceRemoteCatalogUnavailable(error) {
+    window.__codexPluginMarketplaceRemoteCatalogUnavailable = true;
+    sendCodexPlusDiagnostic("plugin_marketplace_remote_auth_fallback", {
+      errorMessage: pluginMarketplaceErrorText(error),
+      rememberedCwdCount: Array.isArray(window.__codexPluginMarketplaceLastCwds)
+        ? window.__codexPluginMarketplaceLastCwds.length
+        : 0,
+    });
+  }
+
+  function localPluginMarketplaceFallbackResult() {
+    return patchPluginMarketplaceResult("list-plugins", { marketplaces: [] });
+  }
+
   function pluginAutoExpandVisibleElement(el) {
     if (!(el instanceof HTMLElement) || !el.isConnected) return false;
     const style = getComputedStyle(el);
@@ -4166,6 +4212,10 @@
         const result = await originalSendRequest(method, requestParams, options);
         return patchPluginMarketplaceResult(requestMethod, result);
       } catch (error) {
+        if (requestMethod === "list-plugins" && pluginMarketplaceRemoteAuthError(error)) {
+          markPluginMarketplaceRemoteCatalogUnavailable(error);
+          return localPluginMarketplaceFallbackResult();
+        }
         if (requestMethod === "install-plugin") {
           sendCodexPlusDiagnostic("plugin_install_request_failed", {
             method: String(method || ""),
@@ -4265,8 +4315,17 @@
       }
       if (typeof data.bodyJsonString !== "string" || !data.bodyJsonString.trim()) return false;
       try {
-        const result = JSON.parse(data.bodyJsonString);
-        if (result && typeof result === "object") {
+        let result = JSON.parse(data.bodyJsonString);
+        if (pluginMarketplaceRemoteAuthError(result?.error || result)) {
+          markPluginMarketplaceRemoteCatalogUnavailable(result?.error || result);
+          const fallback = localPluginMarketplaceFallbackResult();
+          if (result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "id")) {
+            delete result.error;
+            result.result = fallback;
+          } else {
+            result = fallback;
+          }
+        } else if (result && typeof result === "object") {
           patchPluginMarketplaceResult("list-plugins", result);
           patchPluginMarketplaceResult("list-plugins", result.data);
         }
@@ -4292,11 +4351,35 @@
       if (!requestIds.has(requestId)) return false;
       requestIds.delete(requestId);
     }
+    if (pluginMarketplaceRemoteAuthError(message?.error)) {
+      markPluginMarketplaceRemoteCatalogUnavailable(message.error);
+      delete message.error;
+      message.result = localPluginMarketplaceFallbackResult();
+      return true;
+    }
     const result = message?.result;
     if (!result || typeof result !== "object") return false;
     patchPluginMarketplaceResult("list-plugins", result);
     patchPluginMarketplaceResult("list-plugins", result.data);
     return true;
+  }
+
+  if (window.__CODEX_PLUS_TEST_PLUGIN_MARKETPLACE__) {
+    window.__codexPlusPluginMarketplaceTest = {
+      patchRequestParams: patchPluginMarketplaceRequestParams,
+      patchRequestMessage: patchPluginMarketplaceRequestMessage,
+      patchResponseData: patchPluginMarketplaceResponseData,
+      remoteAuthError: pluginMarketplaceRemoteAuthError,
+      localFallback: localPluginMarketplaceFallbackResult,
+      remoteCatalogUnavailable: () => window.__codexPluginMarketplaceRemoteCatalogUnavailable === true,
+      reset: () => {
+        delete window.__codexPluginMarketplaceLastCwds;
+        delete window.__codexPluginMarketplaceRemoteCatalogUnavailable;
+        window.__codexPluginMarketplaceRequestIds = new Set();
+        window.__codexPluginMarketplaceFetchRequestIds = new Set();
+      },
+    };
+    return;
   }
 
   function clearPluginMarketplaceQueryCache() {

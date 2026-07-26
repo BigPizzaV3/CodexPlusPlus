@@ -899,7 +899,7 @@ fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
 fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
     assert!(!script.contains("function pluginMarketplaceAliasForName"));
     assert!(
         !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
@@ -911,7 +911,7 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
 fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
     assert!(script.contains("source.includes(\"!u(e.marketplaceName)||e.marketplaceName===r\")"));
     assert!(script.contains("source.includes(\"!t.includes(e.name)\")"));
@@ -923,7 +923,7 @@ fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
 fn injection_script_expands_api_key_plugin_marketplace_requests() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
     assert!(script.contains("installPluginMarketplaceRequestPatch"));
     assert!(script.contains("installPluginMarketplaceBridgePatch"));
     assert!(script.contains("installPluginBuildFlavorFilterPatch"));
@@ -943,13 +943,15 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("message.type === \"fetch\""));
     assert!(script.contains("data?.type === \"fetch-response\""));
     assert!(script.contains("__codexPluginMarketplaceFetchRequestIds"));
-    assert!(script.contains("const nextKinds = Array.isArray(next.marketplaceKinds)"));
+    assert!(script.contains("let nextKinds = Array.isArray(next.marketplaceKinds)"));
+    assert!(script.contains("if (!nextKinds.includes(\"local\")) nextKinds.push(\"local\")"));
     assert!(script.contains("if (!nextKinds.includes(\"vertical\")) nextKinds.push(\"vertical\")"));
     assert!(script.contains("next.marketplaceKinds = Array.from(new Set(nextKinds))"));
     assert!(script.contains("patchPluginMarketplaceResult"));
     assert!(script.contains("__CODEX_PLUS_PLUGIN_MARKETPLACES__"));
     assert!(script.contains("mergeLocalPluginMarketplaces(result)"));
     assert!(script.contains("plugin_marketplace_local_merged"));
+    assert!(script.contains("plugin_marketplace_remote_auth_fallback"));
     assert!(script.contains("cloned.marketplaceName = marketplaceName"));
     assert!(script.contains("cloned.marketplacePath = marketplaceName"));
     assert!(script.contains("restorePluginMarketplaceName"));
@@ -1001,6 +1003,133 @@ fn injection_script_logs_marketplace_grouping_diagnostics() {
     assert!(script.contains("marketplaces: result.marketplaces.map"));
     assert!(script.contains("pluginMarketplaceCounts"));
     assert!(script.contains("remoteMarketplaceName"));
+}
+
+#[test]
+fn injection_script_recovers_plugin_search_from_remote_auth_errors() {
+    let cases = run_plugin_marketplace_search_contract_harness();
+
+    assert_eq!(cases["initialKinds"], json!(["local", "vertical"]));
+    assert_eq!(
+        cases["searchKinds"],
+        json!(["created-by-me-remote", "vertical", "local"])
+    );
+    assert_eq!(cases["searchCwds"], json!(["C:/workspace"]));
+    assert_eq!(cases["responsePatched"], true);
+    assert_eq!(cases["responseHasError"], false);
+    assert_eq!(cases["fallbackMarketplaceNames"], json!(["fixture-local"]));
+    assert_eq!(cases["fallbackPluginNames"], json!(["alpha"]));
+    assert_eq!(cases["remoteUnavailable"], true);
+    assert_eq!(cases["subsequentKinds"], json!(["vertical", "local"]));
+    assert_eq!(cases["subsequentCwds"], json!(["C:/workspace"]));
+    assert_eq!(
+        cases["chatGptKinds"],
+        json!(["created-by-me-remote", "vertical", "local"])
+    );
+    assert_eq!(cases["unrelatedErrorMatched"], false);
+}
+
+fn run_plugin_marketplace_search_contract_harness() -> serde_json::Value {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("renderer-inject.js");
+    let harness_path = temp.path().join("plugin-marketplace-harness.cjs");
+    std::fs::write(&script_path, assets::injection_script(57321))
+        .expect("injection script should be written");
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    write!(
+        harness,
+        r#"
+const scriptPath = {script_path};
+const store = new Map();
+function node() {{
+  return {{
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
+    closest() {{ return null; }},
+    classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
+    dataset: {{}}, style: {{}}, children: [], isConnected: true, textContent: "", innerHTML: "",
+  }};
+}}
+globalThis.window = globalThis;
+window.__CODEX_PLUS_TEST_PLUGIN_MARKETPLACE__ = true;
+window.addEventListener = () => {{}};
+window.removeEventListener = () => {{}};
+window.dispatchEvent = () => true;
+globalThis.document = {{
+  scripts: [], documentElement: node(), body: node(), createElement: () => node(),
+  getElementById: () => null, querySelector: () => null, querySelectorAll: () => [],
+  addEventListener() {{}}, removeEventListener() {{}},
+}};
+globalThis.localStorage = {{
+  getItem: (key) => store.has(key) ? store.get(key) : null,
+  setItem: (key, value) => store.set(key, String(value)), removeItem: (key) => store.delete(key),
+}};
+globalThis.sessionStorage = globalThis.localStorage;
+globalThis.location = {{ href: "https://codex.test/index.html", pathname: "/index.html", search: "", hash: "" }};
+window.location = globalThis.location;
+globalThis.navigator = {{ userAgent: "node-test", sendBeacon: () => false }};
+globalThis.performance = {{ getEntriesByType: () => [] }};
+globalThis.fetch = async () => ({{ ok: true, json: async () => ({{}}) }});
+require(scriptPath);
+window.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = [{{
+  name: "fixture-local",
+  displayName: "Fixture Local",
+  path: "C:/fixture/marketplace.json",
+  plugins: [{{ id: "alpha@fixture-local", name: "alpha", marketplaceName: "fixture-local" }}],
+}}];
+const api = window.__codexPlusPluginMarketplaceTest;
+api.reset();
+const initial = api.patchRequestParams("list-plugins", {{ cwds: ["C:/workspace"] }});
+const searchMessage = api.patchRequestMessage({{
+  type: "mcp-request",
+  request: {{
+    id: "search-1",
+    method: "vscode://codex/list-plugins",
+    params: {{ marketplaceKinds: ["created-by-me-remote", "vertical"] }},
+  }},
+}});
+const remoteAuthMessage = "list remote plugin catalog: chatgpt authentication required for remote plugin catalog; api key auth is not supported";
+const response = {{
+  type: "mcp-response",
+  message: {{ id: "search-1", error: {{ code: -32600, message: remoteAuthMessage }} }},
+}};
+const responsePatched = api.patchResponseData(response);
+const subsequent = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote", "vertical"] }});
+const fallbackMarketplaces = response.message.result?.marketplaces || [];
+api.reset();
+const chatGpt = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote", "vertical"] }});
+const cases = {{
+  initialKinds: initial.marketplaceKinds,
+  searchKinds: searchMessage.request.params.marketplaceKinds,
+  searchCwds: searchMessage.request.params.cwds,
+  responsePatched,
+  responseHasError: Object.prototype.hasOwnProperty.call(response.message, "error"),
+  fallbackMarketplaceNames: fallbackMarketplaces.map((marketplace) => marketplace.name),
+  fallbackPluginNames: fallbackMarketplaces.flatMap((marketplace) => marketplace.plugins || []).map((plugin) => plugin.name),
+  remoteUnavailable: subsequent.marketplaceKinds.includes("created-by-me-remote") === false,
+  subsequentKinds: subsequent.marketplaceKinds,
+  subsequentCwds: subsequent.cwds,
+  chatGptKinds: chatGpt.marketplaceKinds,
+  unrelatedErrorMatched: api.remoteAuthError({{ message: "network unavailable" }}),
+}};
+process.stdout.write(JSON.stringify(cases));
+"#,
+        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+            .expect("script path should serialize")
+    )
+    .expect("harness should be written");
+
+    let output = std::process::Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should execute plugin marketplace harness");
+    assert!(
+        output.status.success(),
+        "plugin marketplace harness failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout)
+        .expect("plugin marketplace harness output should be JSON")
 }
 
 #[test]
