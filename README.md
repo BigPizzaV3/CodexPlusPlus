@@ -161,7 +161,7 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
 
 ## 交流与支持
 
-欢迎加入 Codex++ 交流群（QQ群：830629290），反馈问题、交流使用体验或提出新功能建议。
+欢迎加入 <a href="https://qm.qq.com/q/Erf1F1zwqs">Codex++ 交流 3 群（QQ群：619480492）</a>，反馈问题、交流使用体验或提出新功能建议。
 
 微信群：<a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">点击这里获取最新微信群二维码</a>。
 
