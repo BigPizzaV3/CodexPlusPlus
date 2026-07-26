@@ -12,7 +12,9 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use codex_plus_core::protocol_proxy::open_responses_proxy_request_with_settings_and_client_context;
+use codex_plus_core::protocol_proxy::{
+    UpstreamWireApi, open_responses_proxy_request_with_settings_and_client_context,
+};
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 
 const JSON_RESPONSE: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 35\r\nconnection: close\r\n\r\n{\"id\":\"resp_1\",\"object\":\"response\"}";
@@ -83,6 +85,51 @@ async fn model_declared_with_a_context_suffix_still_routes_to_its_provider() {
         upstream.finish().header("authorization"),
         Some("Bearer sk-mimo")
     );
+}
+
+#[tokio::test]
+async fn routed_provider_keeps_its_own_upstream_protocol() {
+    let _lock = routing_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _settings_path = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let chat_upstream = MockUpstream::start();
+    let settings = routing_settings(vec![
+        RelayProfile {
+            protocol: RelayProtocol::ChatCompletions,
+            ..third_party_profile(
+                "chat",
+                &format!("{}/v1", chat_upstream.base_url()),
+                "sk-chat",
+                "chat-only-model",
+            )
+        },
+        third_party_profile(
+            "responses",
+            UNREACHABLE_BASE_URL,
+            "sk-responses",
+            "responses-model",
+        ),
+    ]);
+
+    let result = open_responses_proxy_request_with_settings_and_client_context(
+        r#"{"model":"chat-only-model","input":"hi","stream":false}"#,
+        settings,
+        None,
+        "/v1/responses",
+        &[header("authorization", "Bearer official-token")],
+    )
+    .await
+    .unwrap();
+
+    // The per-provider 上游协议 toggle still decides the wire format under routing.
+    assert_eq!(result.wire_api, UpstreamWireApi::ChatCompletions);
+    let request = chat_upstream.finish();
+    assert_eq!(request.path, "/v1/chat/completions");
+    assert_eq!(request.header("authorization"), Some("Bearer sk-chat"));
+    let body = request.json();
+    assert_eq!(body["model"], "chat-only-model");
+    assert!(body["messages"].is_array(), "{body}");
+    assert!(body.get("input").is_none(), "{body}");
 }
 
 #[tokio::test]
@@ -166,16 +213,23 @@ async fn unmatched_model_keeps_the_compact_endpoint() {
 }
 
 #[tokio::test]
-async fn model_bound_to_two_providers_is_rejected_with_both_names() {
+async fn model_sold_by_two_relays_goes_to_the_first_one_listed() {
     let _lock = routing_test_lock();
     let temp = tempfile::tempdir().unwrap();
     let _settings_path = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let upstream = MockUpstream::start();
+    // Relay APIs commonly resell the same model; that must not fail the request.
     let settings = routing_settings(vec![
-        third_party_profile("provider-a", UNREACHABLE_BASE_URL, "sk-a", "shared-model"),
+        third_party_profile(
+            "provider-a",
+            &format!("{}/v1", upstream.base_url()),
+            "sk-a",
+            "shared-model",
+        ),
         third_party_profile("provider-b", UNREACHABLE_BASE_URL, "sk-b", "shared-model"),
     ]);
 
-    let error = open_responses_proxy_request_with_settings_and_client_context(
+    let result = open_responses_proxy_request_with_settings_and_client_context(
         r#"{"model":"shared-model","input":"hi","stream":false}"#,
         settings,
         None,
@@ -183,13 +237,13 @@ async fn model_bound_to_two_providers_is_rejected_with_both_names() {
         &[header("authorization", "Bearer official-token")],
     )
     .await
-    .err()
-    .expect("a model bound to two providers must not be routed")
-    .to_string();
+    .unwrap();
 
-    assert!(error.contains("同时存在于多个供应商"), "{error}");
-    assert!(error.contains("provider-a"), "{error}");
-    assert!(error.contains("provider-b"), "{error}");
+    assert_eq!(result.status_code, 200);
+    assert_eq!(
+        upstream.finish().header("authorization"),
+        Some("Bearer sk-a")
+    );
 }
 
 #[tokio::test]

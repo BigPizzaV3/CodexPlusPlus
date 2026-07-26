@@ -571,7 +571,7 @@ pub async fn open_responses_proxy_request_with_settings_and_client_context(
             .get("model")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        match settings.relay_profile_for_model(model)? {
+        match settings.relay_profile_for_model(model) {
             Some(relay) => vec![relay],
             None => {
                 return open_official_responses_proxy_request(

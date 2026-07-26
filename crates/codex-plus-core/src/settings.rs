@@ -660,17 +660,23 @@ impl BackendSettings {
             .cloned()
     }
 
-    /// Resolve a model to exactly one ordinary third-party relay profile.
+    /// Resolve a model to the third-party relay profile that serves it.
     ///
     /// `model_list` is the routing declaration: one model slug per line. Plain
     /// official profiles are intentionally excluded so an unmatched model can
     /// fall back to the native ChatGPT/Codex login route. Aggregate profiles are
     /// also excluded here to avoid proxy recursion through the same local port.
-    pub fn relay_profile_for_model(&self, model: &str) -> anyhow::Result<Option<RelayProfile>> {
+    ///
+    /// Relay APIs commonly resell the same model, so several providers declaring
+    /// e.g. `claude-sonnet-4-6` is expected rather than a configuration error.
+    /// The first match in `relay_profiles` order wins — the same one the model
+    /// catalog already collapses the duplicate slug onto — and the providers it
+    /// shadows go to the diagnostic log so an unexpected choice stays traceable.
+    pub fn relay_profile_for_model(&self, model: &str) -> Option<RelayProfile> {
         let (model, _) = crate::model_suffix::parse_model_suffix(model);
         let model = model.trim();
         if model.is_empty() {
-            return Ok(None);
+            return None;
         }
 
         let mut matches = self
@@ -689,34 +695,37 @@ impl BackendSettings {
                     .filter(|value| !value.is_empty())
                     .map(crate::model_suffix::parse_model_suffix)
                     .any(|(slug, _)| slug == model)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+            });
 
-        match matches.len() {
-            0 => Ok(None),
-            1 => Ok(matches.pop()),
-            _ => {
-                let names = matches
-                    .iter()
-                    .map(|profile| {
-                        if profile.name.trim().is_empty() {
-                            profile.id.as_str()
-                        } else {
-                            profile.name.as_str()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("、");
-                anyhow::bail!("模型 {model} 同时存在于多个供应商中：{names}")
-            }
+        let selected = matches.next()?;
+        let shadowed = matches.map(relay_profile_label).collect::<Vec<_>>();
+        if !shadowed.is_empty() {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "model_routing.duplicate_model_binding",
+                serde_json::json!({
+                    "model": model,
+                    "selectedId": selected.id,
+                    "selected": relay_profile_label(selected),
+                    "shadowed": shadowed,
+                }),
+            );
         }
+        Some(selected.clone())
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
         self.model_routing_enabled
             || self.active_aggregate_relay_profile().is_some()
             || self.active_relay_profile().protocol == RelayProtocol::ChatCompletions
+    }
+}
+
+/// Human-facing name for a relay profile, falling back to its id.
+fn relay_profile_label(profile: &RelayProfile) -> &str {
+    if profile.name.trim().is_empty() {
+        profile.id.as_str()
+    } else {
+        profile.name.as_str()
     }
 }
 
@@ -2558,20 +2567,14 @@ experimental_bearer_token = "sk-existing""#
 
         let relay = settings
             .relay_profile_for_model("claude-sonnet-4-6")
-            .unwrap()
             .unwrap();
         assert_eq!(relay.id, "claude");
-        assert!(
-            settings
-                .relay_profile_for_model("gpt-5.6")
-                .unwrap()
-                .is_none()
-        );
+        assert!(settings.relay_profile_for_model("gpt-5.6").is_none());
         assert!(settings.active_relay_uses_protocol_proxy());
     }
 
     #[test]
-    fn model_routing_ignores_plain_official_profile_and_rejects_duplicates() {
+    fn model_routing_ignores_plain_official_profile_and_prefers_the_first_duplicate() {
         let settings = BackendSettings {
             model_routing_enabled: true,
             relay_profiles: vec![
@@ -2601,15 +2604,38 @@ experimental_bearer_token = "sk-existing""#
             ..BackendSettings::default()
         };
 
-        assert!(
-            settings
-                .relay_profile_for_model("gpt-5.6")
-                .unwrap()
-                .is_none()
+        // The plain official profile never captures a model.
+        assert!(settings.relay_profile_for_model("gpt-5.6").is_none());
+        // Both A and B resell "same-model"; the earlier profile wins.
+        assert_eq!(
+            settings.relay_profile_for_model("same-model").unwrap().id,
+            "a"
         );
-        let error = settings.relay_profile_for_model("same-model").unwrap_err();
-        assert!(error.to_string().contains("Provider A"));
-        assert!(error.to_string().contains("Provider B"));
+    }
+
+    #[test]
+    fn model_routing_duplicate_winner_follows_relay_profile_order() {
+        let profile = |id: &str| RelayProfile {
+            id: id.to_string(),
+            name: id.to_uppercase(),
+            relay_mode: RelayMode::PureApi,
+            model_list: "claude-sonnet-4-6".to_string(),
+            ..RelayProfile::default()
+        };
+        let settings = BackendSettings {
+            model_routing_enabled: true,
+            relay_profiles: vec![profile("b"), profile("a")],
+            ..BackendSettings::default()
+        };
+
+        // Reordering the provider list is how the user picks the winner.
+        assert_eq!(
+            settings
+                .relay_profile_for_model("claude-sonnet-4-6")
+                .unwrap()
+                .id,
+            "b"
+        );
     }
 
     #[test]
