@@ -922,7 +922,15 @@ impl LaunchHooks for DefaultLaunchHooks {
             }
             CodexLaunch::PackagedActivation { process_id, .. } => {
                 if let Some(process_id) = process_id {
-                    wait_for_windows_process_id(*process_id).await?;
+                    if let Err(error) = wait_for_windows_process_id(*process_id).await {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "launcher.packaged_process_wait_failed_nonfatal",
+                            serde_json::json!({
+                                "process_id": process_id,
+                                "message": error.to_string()
+                            }),
+                        );
+                    }
                 }
             }
         }
