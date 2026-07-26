@@ -104,3 +104,69 @@ pub fn is_codex_page_target(target: &CdpTarget) -> bool {
     let haystack = format!("{} {}", target.title, target.url).to_lowercase();
     haystack.contains("codex")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target(target_type: &str, title: &str, url: &str, ws: Option<&str>) -> CdpTarget {
+        CdpTarget {
+            id: "t".to_string(),
+            target_type: target_type.to_string(),
+            title: title.to_string(),
+            url: url.to_string(),
+            web_socket_debugger_url: ws.map(str::to_string),
+        }
+    }
+
+    // The CSP bypass in `bridge::install_bridge` (Page.setBypassCSP) is per-CDP-session and
+    // therefore only affects whichever target `install_bridge` attaches to. That target is
+    // exclusively chosen by `pick_injectable_codex_page_target`, so these tests pin down the
+    // scope guarantee: injection (and the CSP relaxation riding on it) never reaches a
+    // non-Codex or non-page target.
+
+    #[test]
+    fn pick_selects_the_codex_page_and_skips_a_non_codex_page() {
+        let targets = vec![
+            target("page", "Some Website", "https://example.com", Some("ws://x/1")),
+            target("page", "Codex", "app://-/index.html", Some("ws://x/2")),
+        ];
+        let picked = pick_injectable_codex_page_target(&targets).expect("codex page present");
+        assert_eq!(picked.web_socket_debugger_url.as_deref(), Some("ws://x/2"));
+    }
+
+    #[test]
+    fn pick_rejects_when_only_non_codex_pages_exist() {
+        let targets = vec![
+            target("page", "Gmail", "https://mail.google.com", Some("ws://x/1")),
+            target("page", "Docs", "https://docs.example.com", Some("ws://x/2")),
+        ];
+        assert!(
+            pick_injectable_codex_page_target(&targets).is_err(),
+            "no Codex page => no injection target => CSP is never bypassed on other pages"
+        );
+    }
+
+    #[test]
+    fn pick_rejects_a_page_without_a_websocket_url() {
+        let targets = vec![target("page", "Codex", "app://-/index.html", None)];
+        assert!(pick_injectable_codex_page_target(&targets).is_err());
+    }
+
+    #[test]
+    fn codex_named_but_non_page_targets_are_not_injectable() {
+        // A worker/iframe whose title mentions "codex" must not be treated as an injectable page.
+        assert!(!is_injectable_page_target(&target(
+            "service_worker",
+            "codex worker",
+            "",
+            Some("ws://x/1")
+        )));
+        assert!(!is_codex_page_target(&target(
+            "iframe",
+            "Codex helper",
+            "app://-/frame",
+            Some("ws://x/1")
+        )));
+    }
+}
