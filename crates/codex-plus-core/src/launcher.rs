@@ -1,5 +1,7 @@
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +24,13 @@ const POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS: &[u64] = &[0, 5, 15, 30, 60, 120, 
 const POST_LAUNCH_COMPUTER_USE_GUARD_STABLE_ATTEMPTS: usize = 3;
 static PET_OVERLAY_SYNC_FAILED: AtomicBool = AtomicBool::new(false);
 static PET_CURSOR_DRIVER_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// Asynchronous callback used by the bridge watchdog to restore a launcher-specific bridge.
+///
+/// Callers that install a custom [`crate::routes::BridgeContext`] should configure this callback
+/// before starting the watchdog. Without one, the watchdog falls back to the core bridge injector.
+pub type BridgeReinjector =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexLaunch {
@@ -217,6 +226,7 @@ pub struct DefaultLaunchHooks {
     child: Mutex<Option<Child>>,
     helper: Mutex<Option<HelperRuntime>>,
     bridge_watchdog: Mutex<Option<BridgeWatchdogRuntime>>,
+    bridge_reinjector: Mutex<Option<BridgeReinjector>>,
     computer_use_guard_watchdog: Mutex<Option<ComputerUseGuardWatchdogRuntime>>,
     computer_use_guard_artifacts: Mutex<Option<crate::computer_use_guard::GuardArtifacts>>,
 }
@@ -478,6 +488,11 @@ impl IntoLaunchHooks for DefaultLaunchHooks {
 impl DefaultLaunchHooks {
     pub fn shared() -> Arc<dyn LaunchHooks> {
         Arc::new(Self::default())
+    }
+
+    /// Configures the launcher-specific callback used by subsequent watchdog reinjections.
+    pub async fn set_bridge_reinjector(&self, reinjector: BridgeReinjector) {
+        *self.bridge_reinjector.lock().await = Some(reinjector);
     }
 }
 
@@ -790,6 +805,7 @@ impl LaunchHooks for DefaultLaunchHooks {
         retry_injection(debug_port, helper_port).await
     }
     async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+        let bridge_reinjector = self.bridge_reinjector.lock().await.clone();
         let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             #[cfg(windows)]
@@ -818,6 +834,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                                 debug_port,
                                 helper_port,
                                 identity_changed,
+                                bridge_reinjector.clone(),
                             ),
                         );
                         record_pet_overlay_sync_result(debug_port, helper_port, pet_result);
@@ -2236,7 +2253,7 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
 }
 
 pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> bool {
-    check_and_reinject_bridge_inner(debug_port, helper_port, false).await
+    check_and_reinject_bridge_inner(debug_port, helper_port, false, None).await
 }
 
 pub fn browser_identity_changed(previous: Option<&str>, current: &str) -> bool {
@@ -2247,6 +2264,7 @@ async fn check_and_reinject_bridge_inner(
     debug_port: u16,
     helper_port: u16,
     browser_identity_changed: bool,
+    bridge_reinjector: Option<BridgeReinjector>,
 ) -> bool {
     let healthy = if browser_identity_changed {
         false
@@ -2278,7 +2296,10 @@ async fn check_and_reinject_bridge_inner(
             "browser_identity_changed": browser_identity_changed
         }),
     );
-    match retry_injection(debug_port, helper_port).await {
+    let default_reinjector: BridgeReinjector =
+        Arc::new(move || Box::pin(async move { retry_injection(debug_port, helper_port).await }));
+    let reinject_result = run_bridge_reinjector(bridge_reinjector, default_reinjector).await;
+    match reinject_result {
         Ok(()) => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "bridge.reinject_ok",
@@ -2300,6 +2321,16 @@ async fn check_and_reinject_bridge_inner(
             );
             false
         }
+    }
+}
+
+async fn run_bridge_reinjector(
+    bridge_reinjector: Option<BridgeReinjector>,
+    default_reinjector: BridgeReinjector,
+) -> anyhow::Result<()> {
+    match bridge_reinjector {
+        Some(reinject) => reinject().await,
+        None => default_reinjector().await,
     }
 }
 
@@ -2970,6 +3001,44 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    fn counted_reinjector(calls: Arc<AtomicUsize>) -> BridgeReinjector {
+        Arc::new(move || {
+            let calls = calls.clone();
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn bridge_reinjector_prefers_launcher_callback() {
+        let launcher_calls = Arc::new(AtomicUsize::new(0));
+        let default_calls = Arc::new(AtomicUsize::new(0));
+
+        run_bridge_reinjector(
+            Some(counted_reinjector(launcher_calls.clone())),
+            counted_reinjector(default_calls.clone()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(launcher_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(default_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn bridge_reinjector_falls_back_to_core_callback() {
+        let default_calls = Arc::new(AtomicUsize::new(0));
+
+        run_bridge_reinjector(None, counted_reinjector(default_calls.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(default_calls.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn http_body_framing_rejects_ambiguous_or_unsupported_headers() {

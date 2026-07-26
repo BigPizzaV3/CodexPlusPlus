@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use codex_plus_core::launcher::{
-    DefaultLaunchHooks, LaunchHooks, LaunchOptions, launch_and_inject_with_hooks,
+    BridgeReinjector, DefaultLaunchHooks, LaunchHooks, LaunchOptions, launch_and_inject_with_hooks,
 };
 use codex_plus_core::models::{DeleteResult, ExportResult, SessionRef};
 use codex_plus_core::routes::{BridgeContext, BridgeDataService, BridgeRuntimeService};
@@ -16,6 +16,7 @@ struct LauncherHooks {
     core: Arc<DefaultLaunchHooks>,
     data: Arc<LauncherDataService>,
     runtime: Arc<LauncherRuntimeService>,
+    bridge_context: Arc<Mutex<Option<BridgeContext>>>,
 }
 
 impl Default for LauncherHooks {
@@ -27,7 +28,18 @@ impl Default for LauncherHooks {
                 9229,
                 default_user_script_manager(),
             )),
+            bridge_context: Arc::new(Mutex::new(None)),
         }
+    }
+}
+
+impl LauncherHooks {
+    fn watchdog_bridge_context(&self) -> anyhow::Result<BridgeContext> {
+        self.bridge_context
+            .lock()
+            .map_err(|_| anyhow::anyhow!("bridge context lock poisoned"))?
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("bridge context is not initialized"))
     }
 }
 
@@ -326,11 +338,16 @@ impl LaunchHooks for LauncherHooks {
         app_dir: &Path,
     ) -> anyhow::Result<Option<BridgeContext>> {
         self.runtime.set_debug_port(debug_port);
-        Ok(Some(BridgeContext::core_with_data_and_app_dir(
+        let ctx = BridgeContext::core_with_data_and_app_dir(
             self.runtime.clone(),
             self.data.clone(),
             app_dir.to_path_buf(),
-        )))
+        );
+        *self
+            .bridge_context
+            .lock()
+            .map_err(|_| anyhow::anyhow!("bridge context lock poisoned"))? = Some(ctx.clone());
+        Ok(Some(ctx))
     }
 
     async fn inject_bridge(
@@ -347,6 +364,16 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+        let ctx = self.watchdog_bridge_context()?;
+        let runtime = self.runtime.clone();
+        let reinjector: BridgeReinjector = Arc::new(move || {
+            let ctx = ctx.clone();
+            let runtime = runtime.clone();
+            Box::pin(
+                async move { inject_with_context(debug_port, helper_port, ctx, runtime).await },
+            )
+        });
+        self.core.set_bridge_reinjector(reinjector).await;
         self.core
             .start_bridge_watchdog(debug_port, helper_port)
             .await
@@ -814,7 +841,9 @@ mod tests {
         let source = include_str!("main.rs");
 
         assert!(source.contains("async fn start_bridge_watchdog"));
-        assert!(source.contains(".start_bridge_watchdog(debug_port, helper_port)"));
+        assert!(source.contains("self.watchdog_bridge_context()?"));
+        assert!(source.contains("set_bridge_reinjector(reinjector)"));
+        assert!(source.contains("inject_with_context(debug_port, helper_port, ctx, runtime)"));
         assert!(source.contains("async fn ensure_computer_use_config"));
         assert!(source.contains("self.core.ensure_computer_use_config(settings).await"));
         assert!(source.contains("async fn ensure_plugin_marketplace_config"));
@@ -822,6 +851,44 @@ mod tests {
         assert!(source.contains("async fn start_computer_use_guard_watchdog"));
         assert!(source.contains("self.core"));
         assert!(source.contains(".start_computer_use_guard_watchdog(settings)"));
+    }
+
+    #[tokio::test]
+    async fn watchdog_reuses_bridge_context_with_data_service() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "codex-plus-launcher-watchdog-test-{}",
+            std::process::id()
+        ));
+        let hooks = LauncherHooks {
+            core: Arc::new(DefaultLaunchHooks::default()),
+            data: Arc::new(LauncherDataService {
+                db_path: test_dir.join("state.sqlite"),
+                backup_dir: test_dir.join("backups"),
+            }),
+            runtime: Arc::new(LauncherRuntimeService::new(
+                9229,
+                UserScriptManager::new(
+                    test_dir.join("builtin"),
+                    test_dir.join("user"),
+                    test_dir.join("settings.json"),
+                ),
+            )),
+            bridge_context: Arc::new(Mutex::new(None)),
+        };
+
+        hooks.bridge_context(9229, &test_dir).await.unwrap();
+        let ctx = hooks.watchdog_bridge_context().unwrap();
+        let result = codex_plus_core::routes::handle_bridge_request(
+            ctx,
+            "/move-thread-workspace",
+            json!({"session_id": "missing", "title": "Missing", "target_cwd": "/new"}),
+        )
+        .await;
+
+        assert_ne!(
+            result["message"],
+            "Move workspace service is not wired in core launcher hooks"
+        );
     }
 }
 
