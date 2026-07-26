@@ -6868,6 +6868,9 @@ function PendingProviderImportDialog({
           <Metric label={t("模式")} value={providerImportRelayModeLabel(request.relayMode)} />
           <Metric label="API Key" value={maskSecret(request.apiKey)} />
         </div>
+        <div className="hint-line" role="note">
+          {t("安全提示：网页链接中的自定义 config.toml 和 auth.json 不会执行；管理工具只会使用上方字段生成受管配置。")}
+        </div>
         <Toolbar>
           <Button onClick={onConfirm}>
             <Download className="h-4 w-4" />
