@@ -29,7 +29,11 @@ pub fn switch_relay_profile_in_home(
 
     let original_settings = store.load().unwrap_or_default();
     let live_snapshot = LiveFilesSnapshot::capture(home).context("读取当前 Codex 实时配置失败")?;
-    if !previous_active_relay_id.trim().is_empty()
+    // Under per-model routing the live config.toml belongs to the router, not to
+    // the previously active profile — backfilling it would overwrite that
+    // profile's stored provider config with the router's.
+    if !selected_settings.model_routing_enabled
+        && !previous_active_relay_id.trim().is_empty()
         && previous_active_relay_id != selected_settings.active_relay_id
     {
         backfill_profile_before_switch(home, &mut selected_settings, previous_active_relay_id)?;
@@ -132,8 +136,27 @@ fn apply_selected_relay_profile(
     home: &Path,
     settings: &BackendSettings,
 ) -> anyhow::Result<RelaySwitchResult> {
-    let relay = settings.active_relay_profile();
     let common_config = relay_combined_common_config(settings);
+    // Editing or switching a provider must not knock Codex off the router; the
+    // routed provider set is rebuilt from the settings that were just saved.
+    if settings.model_routing_enabled {
+        let router = crate::relay_config::model_router_profile(settings, home);
+        let result =
+            crate::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+                home,
+                &router,
+                &common_config,
+                settings.computer_use_guard_enabled,
+            )?;
+        let status = relay_config_status_from_home(home);
+        return Ok(RelaySwitchResult {
+            settings: settings.clone(),
+            configured: status.configured,
+            backup_path: result.backup_path,
+        });
+    }
+
+    let relay = settings.active_relay_profile();
     let result = if relay.relay_mode == RelayMode::Official && !relay.official_mix_api_key {
         let auth_contents =
             (!relay.auth_contents.trim().is_empty()).then_some(relay.auth_contents.as_str());

@@ -360,6 +360,106 @@ fn switch_captures_safe_app_state_before_writing_provider_config() {
     );
 }
 
+#[test]
+fn switch_keeps_codex_on_the_router_while_model_routing_is_enabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    // What the launcher left behind: Codex pointed at the local router.
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model = "claude-sonnet-4-6"
+model_provider = "codex-plus-router"
+
+[model_providers.codex-plus-router]
+name = "Codex++ Model Router"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "http://127.0.0.1:57321/v1"
+"#,
+    )
+    .unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let profiles = vec![
+        pure_profile("a", "https://a.example/v1", "sk-a"),
+        pure_profile("b", "https://b.example/v1", "sk-b"),
+    ];
+    let original = BackendSettings {
+        model_routing_enabled: true,
+        active_relay_id: "a".to_string(),
+        relay_profiles: profiles.clone(),
+        ..BackendSettings::default()
+    };
+    store.save(&original).unwrap();
+    let next = BackendSettings {
+        model_routing_enabled: true,
+        active_relay_id: "b".to_string(),
+        relay_profiles: profiles,
+        ..BackendSettings::default()
+    };
+
+    let result = switch_relay_profile_in_home(&store, &home, next, "a").unwrap();
+    let live = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    let stored = store.load().unwrap();
+    let previous = stored
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "a")
+        .unwrap();
+
+    assert!(result.configured);
+    assert!(live.contains(r#"model_provider = "codex-plus-router""#));
+    assert!(live.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    // The router's live config must not be backfilled onto the profile it replaced.
+    assert!(previous.config_contents.contains("https://a.example/v1"));
+    assert!(!previous.config_contents.contains("codex-plus-router"));
+}
+
+#[test]
+fn switch_restores_per_profile_config_after_model_routing_is_turned_off() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model_provider = "codex-plus-router"
+
+[model_providers.codex-plus-router]
+name = "Codex++ Model Router"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "http://127.0.0.1:57321/v1"
+"#,
+    )
+    .unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let profiles = vec![
+        pure_profile("a", "https://a.example/v1", "sk-a"),
+        pure_profile("b", "https://b.example/v1", "sk-b"),
+    ];
+    store
+        .save(&BackendSettings {
+            model_routing_enabled: true,
+            active_relay_id: "a".to_string(),
+            relay_profiles: profiles.clone(),
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let next = BackendSettings {
+        model_routing_enabled: false,
+        active_relay_id: "b".to_string(),
+        relay_profiles: profiles,
+        ..BackendSettings::default()
+    };
+
+    let result = switch_relay_profile_in_home(&store, &home, next, "a").unwrap();
+    let live = std::fs::read_to_string(home.join("config.toml")).unwrap();
+
+    assert!(result.configured);
+    assert!(live.contains(r#"base_url = "https://b.example/v1""#));
+    assert!(!live.contains("codex-plus-router"));
+}
+
 fn pure_profile(id: &str, base_url: &str, key: &str) -> RelayProfile {
     RelayProfile {
         id: id.to_string(),

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 
 use codex_plus_core::model_catalog::{
@@ -114,6 +115,7 @@ experimental_bearer_token = "ark-key"
 
 #[tokio::test]
 async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
+    let _lock = codex_home_test_lock();
     let temp = tempfile::tempdir().unwrap();
     let codex_home = temp.path().join("codex-home");
     std::fs::create_dir_all(&codex_home).unwrap();
@@ -372,6 +374,179 @@ base_url = "{}"
 
 fn write_config(home: &Path, contents: &str) {
     std::fs::write(home.join("config.toml"), contents.trim_start()).unwrap();
+}
+
+/// Serializes the tests that repoint `CODEX_HOME` and the settings path, both of
+/// which are process-wide.
+fn codex_home_test_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+struct CodexHomeGuard {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl CodexHomeGuard {
+    fn set(home: &Path) -> Self {
+        let previous = std::env::var_os("CODEX_HOME");
+        unsafe {
+            std::env::set_var("CODEX_HOME", home);
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for CodexHomeGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => unsafe { std::env::set_var("CODEX_HOME", value) },
+            None => unsafe { std::env::remove_var("CODEX_HOME") },
+        }
+    }
+}
+
+struct SettingsPathGuard {
+    previous: Option<PathBuf>,
+}
+
+impl SettingsPathGuard {
+    fn set(path: PathBuf) -> Self {
+        Self {
+            previous: codex_plus_core::paths::set_settings_path_for_tests(Some(path)),
+        }
+    }
+}
+
+impl Drop for SettingsPathGuard {
+    fn drop(&mut self) {
+        codex_plus_core::paths::set_settings_path_for_tests(self.previous.take());
+    }
+}
+
+/// The three profiles the routing tests share: a plain official profile plus two
+/// third-party providers, one of which pins its context window with a suffix.
+fn model_routing_profiles() -> Vec<RelayProfile> {
+    vec![
+        RelayProfile {
+            id: "official".to_string(),
+            name: "ChatGPT".to_string(),
+            relay_mode: RelayMode::Official,
+            ..RelayProfile::default()
+        },
+        RelayProfile {
+            id: "mimo".to_string(),
+            name: "MiMo".to_string(),
+            relay_mode: RelayMode::PureApi,
+            base_url: "https://mimo.test/v1".to_string(),
+            model_list: "mimo-v2.5-pro[1M]".to_string(),
+            ..RelayProfile::default()
+        },
+        RelayProfile {
+            id: "claude".to_string(),
+            name: "Claude API".to_string(),
+            relay_mode: RelayMode::PureApi,
+            base_url: "https://claude.test/v1".to_string(),
+            model_list: "claude-sonnet-4-6".to_string(),
+            ..RelayProfile::default()
+        },
+    ]
+}
+
+/// Writes the catalog the launcher generates for the router: Codex's official
+/// models merged with every routed model.
+fn write_router_catalog(codex_home: &Path) {
+    std::fs::create_dir_all(codex_home.join("model-catalogs")).unwrap();
+    std::fs::write(
+        codex_home
+            .join("model-catalogs")
+            .join("codex-plus-router.json"),
+        r#"{"models":[
+            {"slug":"gpt-5.6-codex","context_window":272000},
+            {"slug":"gpt-5.6","context_window":272000},
+            {"slug":"claude-sonnet-4-6","context_window":200000},
+            {"slug":"mimo-v2.5-pro","context_window":1000000}
+        ]}"#,
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn model_catalog_lists_official_and_third_party_models_when_routing_is_enabled() {
+    let _lock = codex_home_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let codex_home = temp.path().join("codex-home");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    write_router_catalog(&codex_home);
+    let settings_path = temp.path().join("settings.json");
+    let _settings_guard = SettingsPathGuard::set(settings_path.clone());
+    let _home_guard = CodexHomeGuard::set(&codex_home);
+
+    SettingsStore::new(settings_path)
+        .save(&BackendSettings {
+            model_routing_enabled: true,
+            active_relay_id: "official".to_string(),
+            relay_profiles: model_routing_profiles(),
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let result = read_codex_model_catalog().await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["model_provider"], "codex-plus-router");
+    assert_eq!(result["provider_name"], "Codex++ Model Router");
+    // Official models first, then each provider's declared models. `mimo-v2.5-pro`
+    // and `claude-sonnet-4-6` are in the generated catalog too, but the routed
+    // profile owns them, so they appear once each rather than twice.
+    assert_eq!(
+        result["models"],
+        json!([
+            "gpt-5.6-codex",
+            "gpt-5.6",
+            "mimo-v2.5-pro",
+            "claude-sonnet-4-6"
+        ])
+    );
+    assert_eq!(result["sources"][0]["type"], "official_model_catalog");
+    assert_eq!(result["sources"][0]["models"], 2);
+    assert_eq!(result["sources"][1]["type"], "model_route");
+    assert_eq!(result["sources"][1]["name"], "MiMo");
+    assert_eq!(result["sources"][2]["name"], "Claude API");
+    // The plain official profile is not a route of its own.
+    assert_eq!(result["sources"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn model_catalog_keeps_per_profile_behaviour_when_routing_is_disabled() {
+    let _lock = codex_home_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let codex_home = temp.path().join("codex-home");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    // Left over from a previous routing session; it must not leak into the
+    // per-profile catalog once the switch is off again.
+    write_router_catalog(&codex_home);
+    let settings_path = temp.path().join("settings.json");
+    let _settings_guard = SettingsPathGuard::set(settings_path.clone());
+    let _home_guard = CodexHomeGuard::set(&codex_home);
+
+    SettingsStore::new(settings_path)
+        .save(&BackendSettings {
+            model_routing_enabled: false,
+            active_relay_id: "mimo".to_string(),
+            relay_profiles: model_routing_profiles(),
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let result = read_codex_model_catalog().await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["model_provider"], "mimo");
+    assert_eq!(result["provider_name"], "MiMo");
+    assert_eq!(result["models"], json!(["mimo-v2.5-pro"]));
+    assert_eq!(result["sources"][0]["type"], "relay_profile_model_list");
+    assert_eq!(result["sources"].as_array().unwrap().len(), 1);
 }
 
 struct ModelsServer {

@@ -17,6 +17,9 @@ const API_KEY_ENV_KEYS: &[&str] = &[
     "CODEX_PLUS_API_KEY",
     "OPENAI_API_KEY",
 ];
+/// Catalog the launcher generates for the per-model router; mirrors
+/// `relay_config::model_router_profile`'s profile id.
+const MODEL_ROUTER_CATALOG_RELATIVE: &str = "model-catalogs/codex-plus-router.json";
 
 #[derive(Debug, Clone)]
 struct ModelSource {
@@ -86,10 +89,27 @@ fn model_routing_catalog_value(home: &Path, settings: &BackendSettings) -> Value
         })
         .collect::<Vec<_>>();
 
-    let models = unique_strings(
+    let routed_models = unique_strings(
         routed_profiles
             .iter()
             .flat_map(|profile| relay_profile_model_ids(profile))
+            .collect(),
+    );
+    // Official models keep their own entry so the model picker shows both routes;
+    // a slug a third-party profile also declares stays owned by that profile.
+    let routed_slugs = routed_models
+        .iter()
+        .map(|model| crate::model_suffix::parse_model_suffix(model).0)
+        .collect::<HashSet<_>>();
+    let official_models = official_catalog_model_ids(home)
+        .into_iter()
+        .filter(|slug| !routed_slugs.contains(slug))
+        .collect::<Vec<_>>();
+    let models = unique_strings(
+        official_models
+            .iter()
+            .cloned()
+            .chain(routed_models.iter().cloned())
             .collect(),
     );
     let (_, effective, _) = load_codex_config(&home.join("config.toml"));
@@ -107,26 +127,35 @@ fn model_routing_catalog_value(home: &Path, settings: &BackendSettings) -> Value
         String::new()
     };
     let model_metadata = model_ui_metadata_map(&models);
-    let sources = routed_profiles
-        .iter()
-        .map(|profile| {
-            let provider_name = if profile.name.trim().is_empty() {
-                profile.id.trim()
-            } else {
-                profile.name.trim()
-            };
-            let count = relay_profile_model_ids(profile).len();
-            json!({
-                "id": format!("relay-profile:{}", profile.id),
-                "type": "model_route",
-                "name": provider_name,
-                "base_url": profile.base_url.trim(),
-                "status": "ok",
-                "models": count,
-                "responses_api": responses_api_status("unknown", "", "")
-            })
+    let mut sources = Vec::new();
+    if !official_models.is_empty() {
+        sources.push(json!({
+            "id": "codex-official",
+            "type": "official_model_catalog",
+            "name": "ChatGPT 官方",
+            "base_url": "",
+            "status": "ok",
+            "models": official_models.len(),
+            "responses_api": responses_api_status("unknown", "", "")
+        }));
+    }
+    sources.extend(routed_profiles.iter().map(|profile| {
+        let provider_name = if profile.name.trim().is_empty() {
+            profile.id.trim()
+        } else {
+            profile.name.trim()
+        };
+        let count = relay_profile_model_ids(profile).len();
+        json!({
+            "id": format!("relay-profile:{}", profile.id),
+            "type": "model_route",
+            "name": provider_name,
+            "base_url": profile.base_url.trim(),
+            "status": "ok",
+            "models": count,
+            "responses_api": responses_api_status("unknown", "", "")
         })
-        .collect::<Vec<_>>();
+    }));
 
     json!({
         "status": if models.is_empty() { "not_configured" } else { "ok" },
@@ -175,6 +204,33 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
         ],
         "responses_api": responses_api_status("unknown", "", "")
     })
+}
+
+/// Official model slugs Codex itself offers while per-model routing is on.
+///
+/// The launcher writes `model-catalogs/codex-plus-router.json` with Codex's own
+/// catalog merged with every routed model, so reading it back yields exactly the
+/// set Codex's model picker sees. `models_cache.json` is the upstream cache used
+/// before that file has been generated (first launch after enabling routing).
+fn official_catalog_model_ids(home: &Path) -> Vec<String> {
+    catalog_slugs_from_file(&home.join(MODEL_ROUTER_CATALOG_RELATIVE))
+        .or_else(|| catalog_slugs_from_file(&home.join("models_cache.json")))
+        .unwrap_or_default()
+}
+
+fn catalog_slugs_from_file(path: &Path) -> Option<Vec<String>> {
+    let value = serde_json::from_str::<Value>(&std::fs::read_to_string(path).ok()?).ok()?;
+    Some(unique_strings(
+        value
+            .get("models")?
+            .as_array()?
+            .iter()
+            .filter_map(|model| model.get("slug").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|slug| !slug.is_empty())
+            .map(ToString::to_string)
+            .collect(),
+    ))
 }
 
 fn relay_profile_model_ids(profile: &RelayProfile) -> Vec<String> {
@@ -911,7 +967,8 @@ mod model_routing_catalog_tests {
             ..BackendSettings::default()
         };
 
-        let catalog = model_routing_catalog_value(Path::new("/tmp/codex"), &settings);
+        let home = tempfile::tempdir().unwrap();
+        let catalog = model_routing_catalog_value(home.path(), &settings);
         let models = catalog["models"].as_array().unwrap();
         let values = models.iter().filter_map(Value::as_str).collect::<Vec<_>>();
 
@@ -920,5 +977,77 @@ mod model_routing_catalog_tests {
         assert!(values.contains(&"shared"));
         assert!(!values.contains(&"gpt-5.6"));
         assert_eq!(values.iter().filter(|value| **value == "shared").count(), 1);
+    }
+
+    #[test]
+    fn routing_catalog_merges_official_models_from_generated_router_catalog() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("model-catalogs")).unwrap();
+        // What the launcher generates: official models plus every routed model.
+        std::fs::write(
+            home.path().join(MODEL_ROUTER_CATALOG_RELATIVE),
+            r#"{"models":[
+                {"slug":"gpt-5.6-codex","context_window":272000},
+                {"slug":"gpt-5.6","context_window":272000},
+                {"slug":"mimo-v2.5-pro","context_window":1000000}
+            ]}"#,
+        )
+        .unwrap();
+        let settings = BackendSettings {
+            model_routing_enabled: true,
+            relay_profiles: vec![RelayProfile {
+                id: "mimo".to_string(),
+                name: "MiMo".to_string(),
+                relay_mode: RelayMode::PureApi,
+                model_list: "mimo-v2.5-pro[1M]".to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        let catalog = model_routing_catalog_value(home.path(), &settings);
+        let values = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+
+        assert_eq!(values, ["gpt-5.6-codex", "gpt-5.6", "mimo-v2.5-pro[1M]"]);
+        assert_eq!(catalog["status"], "ok");
+        assert_eq!(catalog["sources"][0]["type"], "official_model_catalog");
+        assert_eq!(catalog["sources"][0]["models"], 2);
+        assert_eq!(catalog["sources"][1]["type"], "model_route");
+    }
+
+    #[test]
+    fn routing_catalog_falls_back_to_models_cache_before_first_router_catalog() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("models_cache.json"),
+            r#"{"models":[{"slug":"gpt-5.6-codex"}]}"#,
+        )
+        .unwrap();
+        let settings = BackendSettings {
+            model_routing_enabled: true,
+            relay_profiles: vec![RelayProfile {
+                id: "claude".to_string(),
+                name: "Claude API".to_string(),
+                relay_mode: RelayMode::PureApi,
+                model_list: "claude-sonnet-4-6".to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        let catalog = model_routing_catalog_value(home.path(), &settings);
+        let values = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+
+        assert_eq!(values, ["gpt-5.6-codex", "claude-sonnet-4-6"]);
     }
 }

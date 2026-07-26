@@ -489,7 +489,19 @@ pub fn is_audio_transcriptions_proxy_path(path: &str) -> bool {
 }
 
 const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+/// Redirects the official (unmatched-model) route away from chatgpt.com. Used by
+/// the routing tests and by anyone pointing Codex++ at a ChatGPT-compatible
+/// gateway; unset means the real backend.
+const OFFICIAL_BASE_URL_ENV: &str = "CODEX_PLUS_OFFICIAL_BASE_URL";
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
+
+fn official_codex_base_url() -> String {
+    std::env::var(OFFICIAL_BASE_URL_ENV)
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| CHATGPT_CODEX_BASE_URL.to_string())
+}
 
 pub async fn open_responses_proxy_request(
     body: &str,
@@ -537,7 +549,11 @@ pub async fn open_responses_proxy_request_with_client_context(
     .await
 }
 
-async fn open_responses_proxy_request_with_settings_and_client_context(
+/// Full `/v1/responses` entry point: picks the route (third-party relay vs. the
+/// native ChatGPT login) from `settings` and the request's `model`, and carries
+/// the caller's headers through so the official route can reuse Codex's own
+/// authorization.
+pub async fn open_responses_proxy_request_with_settings_and_client_context(
     body: &str,
     settings: crate::settings::BackendSettings,
     original_user_agent: Option<&str>,
@@ -801,10 +817,11 @@ fn official_responses_url(request_path: &str) -> String {
     let path = request_path
         .split_once('?')
         .map_or(request_path, |(path, _)| path);
+    let base_url = official_codex_base_url();
     if path.trim_end_matches('/').ends_with("/responses/compact") {
-        format!("{CHATGPT_CODEX_BASE_URL}/responses/compact")
+        format!("{base_url}/responses/compact")
     } else {
-        format!("{CHATGPT_CODEX_BASE_URL}/responses")
+        format!("{base_url}/responses")
     }
 }
 
@@ -4303,14 +4320,29 @@ mod model_routing_tests {
     use super::*;
 
     #[test]
+    fn official_route_defaults_to_the_chatgpt_codex_backend() {
+        assert_eq!(
+            CHATGPT_CODEX_BASE_URL,
+            "https://chatgpt.com/backend-api/codex"
+        );
+    }
+
+    #[test]
     fn official_route_preserves_responses_and_compact_paths() {
+        // Resolved rather than hardcoded so a CODEX_PLUS_OFFICIAL_BASE_URL in the
+        // environment cannot turn this into a false failure.
+        let base_url = official_codex_base_url();
         assert_eq!(
             official_responses_url("/v1/responses"),
-            "https://chatgpt.com/backend-api/codex/responses"
+            format!("{base_url}/responses")
         );
         assert_eq!(
             official_responses_url("/v1/responses/compact"),
-            "https://chatgpt.com/backend-api/codex/responses/compact"
+            format!("{base_url}/responses/compact")
+        );
+        assert_eq!(
+            official_responses_url("/v1/responses/compact?stream=true"),
+            format!("{base_url}/responses/compact")
         );
     }
 
