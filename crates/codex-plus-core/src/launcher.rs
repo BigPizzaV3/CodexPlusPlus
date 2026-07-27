@@ -411,9 +411,6 @@ fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
 }
 
 fn remote_control_provider_proxy_enabled(settings: &BackendSettings) -> bool {
-    if !settings.relay_profiles_enabled {
-        return false;
-    }
     let profile = settings.active_relay_profile();
     profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key
 }
