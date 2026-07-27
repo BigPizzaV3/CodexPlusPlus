@@ -873,24 +873,12 @@
   });
   rootObserver.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: [
-      "class",
-      "data-theme",
-      "data-appearance",
-      "data-color-mode",
-      "style",
-    ],
+    attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode", "style"],
   });
   if (document.body) {
     rootObserver.observe(document.body, {
       attributes: true,
-      attributeFilter: [
-        "class",
-        "data-theme",
-        "data-appearance",
-        "data-color-mode",
-        "style",
-      ],
+      attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode", "style"],
     });
   }
   const timer = setInterval(() => ensure(), 4000);
