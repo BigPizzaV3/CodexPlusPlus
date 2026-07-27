@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio_tungstenite::connect_async;
@@ -80,13 +82,91 @@ pub async fn evaluate_script_with_await_promise(
 ) -> anyhow::Result<Value> {
     let socket = connect_cdp_websocket(websocket_url).await?;
     let mut session = CdpSession::new(socket);
-    session
+    let response = session
         .send_command(
             1,
             "Runtime.evaluate",
             runtime_evaluate_params_with_await_promise(script, await_promise),
         )
+        .await?;
+    ensure_runtime_evaluate_succeeded(response)
+}
+
+pub fn capture_screenshot_params() -> Value {
+    json!({
+        "format": "png",
+        "fromSurface": true,
+        "captureBeyondViewport": false,
+    })
+}
+
+pub async fn send_cdp_command(
+    websocket_url: &str,
+    method: &str,
+    params: Value,
+) -> anyhow::Result<Value> {
+    let socket = connect_cdp_websocket(websocket_url).await?;
+    let mut session = CdpSession::new(socket);
+    session
+        .send_command(next_message_id(), method, params)
         .await
+}
+
+pub async fn capture_page_screenshot(
+    websocket_url: &str,
+    output_path: &Path,
+) -> anyhow::Result<u64> {
+    let response = send_cdp_command(
+        websocket_url,
+        "Page.captureScreenshot",
+        capture_screenshot_params(),
+    )
+    .await?;
+    let encoded = response
+        .get("result")
+        .and_then(|result| result.get("data"))
+        .and_then(Value::as_str)
+        .filter(|data| !data.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Page.captureScreenshot returned no image data"))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .context("failed to decode screenshot PNG")?;
+    if !bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
+        bail!("Page.captureScreenshot returned invalid PNG data");
+    }
+    crate::settings::atomic_write(output_path, &bytes)
+        .with_context(|| format!("failed to save screenshot {}", output_path.display()))?;
+    Ok(bytes.len() as u64)
+}
+
+pub async fn run_periodic_evaluations<F>(
+    websocket_url: &str,
+    period: Duration,
+    mut next_expression: F,
+) -> anyhow::Result<()>
+where
+    F: FnMut() -> anyhow::Result<Option<String>>,
+{
+    let socket = connect_cdp_websocket(websocket_url).await?;
+    let mut session = CdpSession::new(socket);
+    let mut interval = tokio::time::interval(period);
+    loop {
+        interval.tick().await;
+        let Some(expression) = next_expression()? else {
+            return Ok(());
+        };
+        let response = session
+            .send_command(
+                next_message_id(),
+                "Runtime.evaluate",
+                runtime_evaluate_params(&expression),
+            )
+            .await?;
+        let response = ensure_runtime_evaluate_succeeded(response)?;
+        if runtime_evaluate_result_is_false(&response) {
+            bail!("periodic Runtime.evaluate reported unavailable capability");
+        }
+    }
 }
 
 pub async fn add_script_to_new_documents(
@@ -205,6 +285,11 @@ async fn connect_cdp_websocket(
 ) -> anyhow::Result<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 > {
+    let parsed = reqwest::Url::parse(websocket_url).context("invalid CDP WebSocket URL")?;
+    let port = parsed
+        .port()
+        .ok_or_else(|| anyhow::anyhow!("CDP WebSocket URL must include an explicit port"))?;
+    crate::cdp::validate_cdp_websocket_url(websocket_url, port)?;
     let (socket, _) = tokio::time::timeout(CDP_CONNECT_TIMEOUT, connect_async(websocket_url))
         .await
         .with_context(|| {
@@ -503,6 +588,24 @@ fn command_result(response: Value, method: &str, message_id: u64) -> anyhow::Res
         bail!("CDP command {method} id {message_id} failed: {error}");
     }
     Ok(response)
+}
+
+fn ensure_runtime_evaluate_succeeded(response: Value) -> anyhow::Result<Value> {
+    if let Some(exception) = response
+        .get("result")
+        .and_then(|result| result.get("exceptionDetails"))
+    {
+        bail!("Runtime.evaluate raised an exception: {exception}");
+    }
+    Ok(response)
+}
+
+fn runtime_evaluate_result_is_false(response: &Value) -> bool {
+    response
+        .get("result")
+        .and_then(|result| result.get("result"))
+        .and_then(|result| result.get("value"))
+        .is_some_and(|value| value == false)
 }
 
 fn extract_string_field(input: &str, field: &str) -> Option<String> {

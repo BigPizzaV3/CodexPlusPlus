@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use codex_plus_core::install::SILENT_BINARY;
 use codex_plus_core::models::{DeleteResult, SessionRef};
+use codex_plus_core::relay_environment::RelayEnvironmentReport;
 use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
 use codex_plus_core::settings::{BackendSettings, RelayProfile, SettingsStore};
 use codex_plus_core::status::{LaunchStatus, StatusStore};
@@ -15,11 +17,6 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::install::{self, InstallActionResult, InstallOptions};
-
-fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(())).lock().expect("test env lock poisoned")
-}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CommandResult<T>
@@ -61,6 +58,57 @@ pub struct SettingsPayload {
     pub settings: BackendSettings,
     pub settings_path: String,
     pub user_scripts: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DreamSkinImagePayload {
+    pub path: String,
+    pub content_type: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DreamSkinRuntimeRequest {
+    pub debug_port: u16,
+    #[serde(default = "default_dream_skin_helper_port")]
+    pub helper_port: u16,
+    #[serde(default)]
+    pub screenshot_path: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DreamSkinThemeActivationRequest {
+    pub draft: codex_plus_core::dream_skin_library::DreamSkinThemeDraft,
+    pub debug_port: u16,
+    #[serde(default = "default_dream_skin_helper_port")]
+    pub helper_port: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DreamSkinThemeActivationPayload {
+    pub library: codex_plus_core::dream_skin_library::DreamSkinThemeLibrary,
+    pub runtime: codex_plus_core::dream_skin_runtime::DreamSkinRuntimeStatus,
+    pub saved_for_next_launch: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DreamSkinMarketPayload {
+    pub schema_version: u8,
+    pub updated_at: String,
+    pub repository_url: String,
+    pub cached: bool,
+    pub warning: String,
+    pub themes: Vec<codex_plus_core::dream_skin_market::DreamSkinMarketTheme>,
+}
+
+struct ManagedDreamSkinImageBackup {
+    path: PathBuf,
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -112,6 +160,25 @@ pub struct LocalSessionsPayload {
     pub db_path: String,
     pub db_paths: Vec<String>,
     pub sessions: Vec<codex_plus_data::LocalSession>,
+    pub offset: usize,
+    pub limit: usize,
+    pub has_more: bool,
+}
+
+const DEFAULT_LOCAL_SESSIONS_PAGE_SIZE: usize = 50;
+const MAX_LOCAL_SESSIONS_PAGE_SIZE: usize = 100;
+
+fn default_local_sessions_page_size() -> usize {
+    DEFAULT_LOCAL_SESSIONS_PAGE_SIZE
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListLocalSessionsRequest {
+    #[serde(default)]
+    pub offset: usize,
+    #[serde(default = "default_local_sessions_page_size")]
+    pub limit: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -321,6 +388,8 @@ pub struct LogsPayload {
     pub path: String,
     pub text: String,
     pub lines: usize,
+    pub truncated: bool,
+    pub file_size: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -440,7 +509,7 @@ pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 #[tauri::command]
 pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     codex_plus_core::watcher::stop_launcher_processes_and_wait();
-    codex_plus_core::watcher::stop_codex_processes_and_wait();
+    codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
     spawn_codex_plus_launch(request, "Codex 已请求重启，启动任务正在后台运行。")
 }
 
@@ -475,25 +544,16 @@ fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> Co
 }
 
 fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
-    let launcher = codex_plus_core::install::companion_binary_path(SILENT_BINARY);
-    let mut command = std::process::Command::new(&launcher);
+    let mut args = Vec::new();
     if !request.app_path.trim().is_empty() {
-        command.arg("--app-path").arg(request.app_path.trim());
+        args.push("--app-path".to_string());
+        args.push(request.app_path.trim().to_string());
     }
-    command
-        .arg("--debug-port")
-        .arg(request.debug_port.to_string())
-        .arg("--helper-port")
-        .arg(request.helper_port.to_string());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| anyhow::anyhow!("无法启动 {}：{error}", launcher.to_string_lossy()))
+    args.push("--debug-port".to_string());
+    args.push(request.debug_port.to_string());
+    args.push("--helper-port".to_string());
+    args.push(request.helper_port.to_string());
+    codex_plus_core::install::spawn_companion(SILENT_BINARY, &args).map(|_| ())
 }
 
 #[tauri::command]
@@ -504,16 +564,15 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
 #[tauri::command]
 pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
     let settings = normalize_settings_before_save(settings);
-    match SettingsStore::default().save(&settings) {
-        Ok(()) => {
-            let wrapper_message = refresh_cli_wrapper_after_settings_save(&settings);
-            settings_payload(
-                &format!("设置已保存。{wrapper_message}"),
-                "设置保存后重新读取失败",
-            )
-        }
-        Err(error) => failed(
-            &format!("保存设置失败：{error}"),
+    let store = SettingsStore::default();
+    let previous = store.load().unwrap_or_default();
+    let dream_skin_enabled = settings.enhancements_enabled && settings.codex_app_dream_skin_enabled;
+    if let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
+        dream_skin_enabled,
+        &settings.codex_app_dream_skin_theme_config,
+    ) {
+        return failed(
+            &format!("保存皮肤基础主题失败：{error}"),
             SettingsPayload {
                 settings,
                 settings_path: codex_plus_core::paths::default_settings_path()
@@ -521,7 +580,646 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
                     .to_string(),
                 user_scripts: user_script_inventory(),
             },
+        );
+    }
+    match store.save(&settings) {
+        Ok(()) => settings_payload("设置已保存。", "设置保存后重新读取失败"),
+        Err(error) => {
+            let _ = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
+                previous.enhancements_enabled && previous.codex_app_dream_skin_enabled,
+                &previous.codex_app_dream_skin_theme_config,
+            );
+            failed(
+                &format!("保存设置失败：{error}"),
+                SettingsPayload {
+                    settings,
+                    settings_path: codex_plus_core::paths::default_settings_path()
+                        .to_string_lossy()
+                        .to_string(),
+                    user_scripts: user_script_inventory(),
+                },
+            )
+        }
+    }
+}
+
+#[tauri::command]
+pub fn import_dream_skin_image(path: String) -> CommandResult<DreamSkinImagePayload> {
+    let source = PathBuf::from(path.trim());
+    let state_dir = codex_plus_core::paths::default_app_state_dir();
+    let store = SettingsStore::default();
+    let previous = store.load().unwrap_or_default();
+    let previous_path = PathBuf::from(previous.codex_app_dream_skin_image_path.trim());
+    let previous_backup = managed_dream_skin_image_backup(&previous_path, &state_dir).ok();
+
+    let imported = match codex_plus_core::dream_skin::import_dream_skin_image(&source, &state_dir) {
+        Ok(path) => path,
+        Err(error) => {
+            return failed(
+                &format!("导入皮肤图片失败：{error}"),
+                empty_dream_skin_image_payload(),
+            );
+        }
+    };
+    if let Err(error) = store.update(json!({
+        "codexAppDreamSkinImagePath": imported.to_string_lossy()
+    })) {
+        let _ = codex_plus_core::dream_skin::clear_managed_dream_skin_image(&state_dir);
+        if let Some(backup) = previous_backup {
+            let _ = restore_managed_dream_skin_image_backup(backup);
+        }
+        return failed(
+            &format!("保存皮肤图片设置失败：{error}"),
+            empty_dream_skin_image_payload(),
+        );
+    }
+
+    let size_bytes = fs::metadata(&imported)
+        .map(|metadata| metadata.len())
+        .unwrap_or_default();
+    ok(
+        "皮肤图片已导入。",
+        DreamSkinImagePayload {
+            path: imported.to_string_lossy().to_string(),
+            content_type: dream_skin_content_type(&imported).to_string(),
+            size_bytes,
+        },
+    )
+}
+
+#[tauri::command]
+pub fn reset_dream_skin_image() -> CommandResult<DreamSkinImagePayload> {
+    let state_dir = codex_plus_core::paths::default_app_state_dir();
+    let store = SettingsStore::default();
+    let previous = store.load().unwrap_or_default();
+    if let Err(error) = store.update(json!({ "codexAppDreamSkinImagePath": "" })) {
+        return failed(
+            &format!("恢复默认皮肤图片失败：{error}"),
+            empty_dream_skin_image_payload(),
+        );
+    }
+    if let Err(error) = codex_plus_core::dream_skin::clear_managed_dream_skin_image(&state_dir) {
+        let _ = store.update(json!({
+            "codexAppDreamSkinImagePath": previous.codex_app_dream_skin_image_path
+        }));
+        return failed(
+            &format!("清理自定义皮肤图片失败：{error}"),
+            empty_dream_skin_image_payload(),
+        );
+    }
+    ok("已恢复目标项目默认图片。", empty_dream_skin_image_payload())
+}
+
+#[tauri::command]
+pub fn list_dream_skin_themes()
+-> CommandResult<codex_plus_core::dream_skin_library::DreamSkinThemeLibrary> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    match current_dream_skin_library(&settings) {
+        Ok(library) => ok("Dream Skin 主题库已加载。", library),
+        Err(error) => failed(
+            &format!("读取 Dream Skin 主题库失败：{error}"),
+            empty_dream_skin_library(&settings),
         ),
+    }
+}
+
+#[tauri::command]
+pub async fn refresh_dream_skin_market() -> CommandResult<DreamSkinMarketPayload> {
+    let state_dir = codex_plus_core::paths::default_app_state_dir();
+    match codex_plus_core::dream_skin_market::load_market(&state_dir).await {
+        Ok(load) => {
+            let message = if load.cached {
+                "已加载主题市场缓存。"
+            } else {
+                "主题市场已刷新。"
+            };
+            ok(message, dream_skin_market_payload(load))
+        }
+        Err(error) => failed(
+            &format!("主题市场加载失败：{error}"),
+            empty_dream_skin_market_payload(),
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn install_dream_skin_market_theme(id: String) -> CommandResult<DreamSkinMarketPayload> {
+    let id = id.trim();
+    if id.is_empty() {
+        return failed("主题 ID 不能为空。", empty_dream_skin_market_payload());
+    }
+    let state_dir = codex_plus_core::paths::default_app_state_dir();
+    let load = match codex_plus_core::dream_skin_market::load_market(&state_dir).await {
+        Ok(load) => load,
+        Err(error) => {
+            return failed(
+                &format!("主题市场加载失败：{error}"),
+                empty_dream_skin_market_payload(),
+            );
+        }
+    };
+    let Some(theme) = load.manifest.themes.iter().find(|theme| theme.id == id) else {
+        return failed(
+            "主题市场清单中未找到该主题。",
+            dream_skin_market_payload(load),
+        );
+    };
+    if let Err(error) =
+        codex_plus_core::dream_skin_market::install_market_theme(&state_dir, theme).await
+    {
+        return failed(
+            &format!("安装市场主题失败：{error}"),
+            dream_skin_market_payload(load),
+        );
+    }
+    let manifest =
+        codex_plus_core::dream_skin_market::enrich_market_manifest(&state_dir, load.manifest);
+    ok(
+        "主题已安装到“我的主题”。",
+        DreamSkinMarketPayload {
+            schema_version: manifest.schema_version,
+            updated_at: manifest.updated_at,
+            repository_url: codex_plus_core::dream_skin_market::DEFAULT_MARKET_REPOSITORY_URL
+                .to_string(),
+            cached: load.cached,
+            warning: load.warning.unwrap_or_default(),
+            themes: manifest.themes,
+        },
+    )
+}
+
+#[tauri::command]
+pub fn load_dream_skin_theme(
+    id: String,
+) -> CommandResult<codex_plus_core::dream_skin_library::DreamSkinThemeDraft> {
+    match codex_plus_core::dream_skin_library::load_stored_dream_skin_theme(
+        &codex_plus_core::paths::default_app_state_dir(),
+        id.trim(),
+    ) {
+        Ok(draft) => ok("Dream Skin 主题已加载。", draft),
+        Err(error) => failed(
+            &format!("加载 Dream Skin 主题失败：{error}"),
+            builtin_dream_skin_draft(),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn create_dream_skin_theme(
+    path: String,
+) -> CommandResult<codex_plus_core::dream_skin_library::DreamSkinThemeDraft> {
+    let source = PathBuf::from(path.trim());
+    match codex_plus_core::dream_skin_library::create_dream_skin_theme_from_image(
+        &source,
+        &codex_plus_core::paths::default_app_state_dir(),
+    ) {
+        Ok(draft) => ok("Dream Skin 主题已创建。", draft),
+        Err(error) => failed(
+            &format!("创建 Dream Skin 主题失败：{error}"),
+            builtin_dream_skin_draft(),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn save_dream_skin_theme(
+    draft: codex_plus_core::dream_skin_library::DreamSkinThemeDraft,
+) -> CommandResult<codex_plus_core::dream_skin_library::DreamSkinThemeLibrary> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    match codex_plus_core::dream_skin_library::save_dream_skin_theme(
+        &codex_plus_core::paths::default_app_state_dir(),
+        &draft,
+    ) {
+        Ok(_) => match current_dream_skin_library(&settings) {
+            Ok(library) => ok("Dream Skin 主题已保存。", library),
+            Err(error) => failed(
+                &format!("主题已保存，但刷新主题库失败：{error}"),
+                empty_dream_skin_library(&settings),
+            ),
+        },
+        Err(error) => failed(
+            &format!("保存 Dream Skin 主题失败：{error}"),
+            current_dream_skin_library(&settings)
+                .unwrap_or_else(|_| empty_dream_skin_library(&settings)),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn rename_dream_skin_theme(
+    id: String,
+    name: String,
+) -> CommandResult<codex_plus_core::dream_skin_library::DreamSkinThemeLibrary> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    match codex_plus_core::dream_skin_library::rename_dream_skin_theme(
+        &codex_plus_core::paths::default_app_state_dir(),
+        id.trim(),
+        name.trim(),
+    ) {
+        Ok(_) => match current_dream_skin_library(&settings) {
+            Ok(library) => ok("Dream Skin 主题已重命名。", library),
+            Err(error) => failed(
+                &format!("主题已重命名，但刷新主题库失败：{error}"),
+                empty_dream_skin_library(&settings),
+            ),
+        },
+        Err(error) => failed(
+            &format!("重命名 Dream Skin 主题失败：{error}"),
+            current_dream_skin_library(&settings)
+                .unwrap_or_else(|_| empty_dream_skin_library(&settings)),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn delete_dream_skin_theme(
+    id: String,
+) -> CommandResult<codex_plus_core::dream_skin_library::DreamSkinThemeLibrary> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    match codex_plus_core::dream_skin_library::delete_dream_skin_theme(
+        &codex_plus_core::paths::default_app_state_dir(),
+        id.trim(),
+        Some(settings.codex_app_dream_skin_theme_config.id.as_str()),
+    ) {
+        Ok(()) => match current_dream_skin_library(&settings) {
+            Ok(library) => ok("Dream Skin 主题已删除。", library),
+            Err(error) => failed(
+                &format!("主题已删除，但刷新主题库失败：{error}"),
+                empty_dream_skin_library(&settings),
+            ),
+        },
+        Err(error) => failed(
+            &format!("删除 Dream Skin 主题失败：{error}"),
+            current_dream_skin_library(&settings)
+                .unwrap_or_else(|_| empty_dream_skin_library(&settings)),
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn activate_dream_skin_theme(
+    request: DreamSkinThemeActivationRequest,
+) -> CommandResult<DreamSkinThemeActivationPayload> {
+    let state_dir = codex_plus_core::paths::default_app_state_dir();
+    let store = SettingsStore::default();
+    let previous = store.load().unwrap_or_default();
+    let previous_runtime_signature =
+        codex_plus_core::assets::dream_skin_runtime_content_signature(&previous);
+    let previous_path = PathBuf::from(previous.codex_app_dream_skin_image_path.trim());
+    let previous_backup = managed_dream_skin_image_backup(&previous_path, &state_dir).ok();
+    let activation = match codex_plus_core::dream_skin_library::prepare_dream_skin_activation(
+        &state_dir,
+        &request.draft,
+    ) {
+        Ok(activation) => activation,
+        Err(error) => {
+            return failed(
+                &format!("准备 Dream Skin 主题失败：{error}"),
+                failed_dream_skin_activation_payload(&previous, request.debug_port).await,
+            );
+        }
+    };
+    let theme = serde_json::to_value(&activation.config).unwrap_or_else(|_| json!({}));
+    let saved = store.update(json!({
+        "codexAppDreamSkinThemeConfig": theme,
+        "codexAppDreamSkinImagePath": activation.active_image_path
+    }));
+    let settings = match saved {
+        Ok(settings) => settings,
+        Err(error) => {
+            let _ = codex_plus_core::dream_skin::clear_managed_dream_skin_image(&state_dir);
+            if let Some(backup) = previous_backup {
+                let _ = restore_managed_dream_skin_image_backup(backup);
+            }
+            let _ = store.save(&previous);
+            return failed(
+                &format!("保存 Dream Skin 活动主题失败：{error}"),
+                failed_dream_skin_activation_payload(&previous, request.debug_port).await,
+            );
+        }
+    };
+
+    let should_apply = settings.enhancements_enabled
+        && settings.codex_app_dream_skin_enabled
+        && !settings.codex_app_dream_skin_paused;
+    let theme_changed = previous_runtime_signature
+        != codex_plus_core::assets::dream_skin_runtime_content_signature(&settings);
+    let (runtime, saved_for_next_launch, message) = if should_apply {
+        if let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
+            true,
+            &settings.codex_app_dream_skin_theme_config,
+        ) {
+            (
+                codex_plus_core::dream_skin_runtime::dream_skin_status(request.debug_port).await,
+                true,
+                format!("主题已保存，下次启动生效；同步基础主题失败：{error}"),
+            )
+        } else if theme_changed {
+            (
+                codex_plus_core::dream_skin_runtime::DreamSkinRuntimeStatus::pending_restart(
+                    true, false,
+                ),
+                true,
+                "主题已保存；为避免不同主题样式残留，需要重启 Codex 后完整切换。".to_string(),
+            )
+        } else {
+            match codex_plus_core::dream_skin_runtime::apply_dream_skin_live(
+                request.debug_port,
+                request.helper_port,
+            )
+            .await
+            {
+                Ok(runtime) => (runtime, false, "Dream Skin 主题已应用。".to_string()),
+                Err(error) => (
+                    codex_plus_core::dream_skin_runtime::dream_skin_status(request.debug_port)
+                        .await,
+                    true,
+                    format!("主题已保存，下次启动生效；实时应用失败：{error}"),
+                ),
+            }
+        }
+    } else {
+        (
+            codex_plus_core::dream_skin_runtime::dream_skin_status(request.debug_port).await,
+            true,
+            "主题已保存，下次启用或启动 Codex 时生效。".to_string(),
+        )
+    };
+    let library = current_dream_skin_library(&settings)
+        .unwrap_or_else(|_| empty_dream_skin_library(&settings));
+    ok(
+        &message,
+        DreamSkinThemeActivationPayload {
+            library,
+            runtime,
+            saved_for_next_launch,
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn dream_skin_status(
+    request: DreamSkinRuntimeRequest,
+) -> CommandResult<codex_plus_core::dream_skin_runtime::DreamSkinRuntimeStatus> {
+    ok(
+        "Dream Skin 状态已刷新。",
+        codex_plus_core::dream_skin_runtime::dream_skin_status(request.debug_port).await,
+    )
+}
+
+#[tauri::command]
+pub async fn apply_dream_skin(
+    request: DreamSkinRuntimeRequest,
+) -> CommandResult<codex_plus_core::dream_skin_runtime::DreamSkinRuntimeStatus> {
+    let store = SettingsStore::default();
+    let settings = match store.update(json!({ "codexAppDreamSkinPaused": false })) {
+        Ok(settings) => settings,
+        Err(error) => {
+            return failed(
+                &format!("更新 Dream Skin 状态失败：{error}"),
+                codex_plus_core::dream_skin_runtime::DreamSkinRuntimeStatus::not_running(
+                    true, false,
+                ),
+            );
+        }
+    };
+    if !settings.enhancements_enabled || !settings.codex_app_dream_skin_enabled {
+        return failed(
+            "请先启用 Codex增强和 Dream Skin。",
+            codex_plus_core::dream_skin_runtime::dream_skin_status(request.debug_port).await,
+        );
+    }
+    if let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
+        true,
+        &settings.codex_app_dream_skin_theme_config,
+    ) {
+        return failed(
+            &format!("同步 Dream Skin 基础主题失败：{error}"),
+            codex_plus_core::dream_skin_runtime::dream_skin_status(request.debug_port).await,
+        );
+    }
+    match codex_plus_core::dream_skin_runtime::apply_dream_skin_live(
+        request.debug_port,
+        request.helper_port,
+    )
+    .await
+    {
+        Ok(status) => ok("Dream Skin 已应用。", status),
+        Err(error) => failed(
+            &format!("实时应用失败，下次启动会继续应用：{error}"),
+            codex_plus_core::dream_skin_runtime::DreamSkinRuntimeStatus::not_running(true, false),
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn restore_dream_skin(
+    request: DreamSkinRuntimeRequest,
+) -> CommandResult<codex_plus_core::dream_skin_runtime::DreamSkinRuntimeStatus> {
+    let store = SettingsStore::default();
+    if let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
+        false,
+        &codex_plus_core::settings::DreamSkinThemeConfig::default(),
+    ) {
+        return failed(
+            &format!("恢复 Codex 原始外观失败：{error}"),
+            codex_plus_core::dream_skin_runtime::dream_skin_status(request.debug_port).await,
+        );
+    }
+    if let Err(error) = store.update(json!({
+        "codexAppDreamSkinEnabled": false,
+        "codexAppDreamSkinPaused": false
+    })) {
+        return failed(
+            &format!("保存恢复状态失败：{error}"),
+            codex_plus_core::dream_skin_runtime::DreamSkinRuntimeStatus::not_running(false, false),
+        );
+    }
+    let live = codex_plus_core::dream_skin_runtime::pause_dream_skin_live(request.debug_port).await;
+    let status =
+        codex_plus_core::dream_skin_runtime::DreamSkinRuntimeStatus::pending_restart(false, false);
+    match live {
+        Ok(()) => ok("外观配置已恢复，重启 Codex 后完整生效。", status),
+        Err(error) => ok(
+            &format!("外观配置已恢复，重启 Codex 后完整生效；当前无法清理实时皮肤：{error}"),
+            status,
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn reset_dream_skin_theme() -> CommandResult<SettingsPayload> {
+    let store = SettingsStore::default();
+    let previous = store.load().unwrap_or_default();
+    let theme = serde_json::to_value(codex_plus_core::settings::DreamSkinThemeConfig::default())
+        .unwrap_or_else(|_| json!({}));
+    if let Err(error) = store.update(json!({
+        "codexAppDreamSkinThemeConfig": theme,
+        "codexAppDreamSkinImagePath": ""
+    })) {
+        return failed(
+            &format!("恢复默认 Dream Skin 主题失败：{error}"),
+            fallback_settings_payload(),
+        );
+    }
+    if let Err(error) = codex_plus_core::dream_skin::clear_managed_dream_skin_image(
+        &codex_plus_core::paths::default_app_state_dir(),
+    ) {
+        let previous_theme = serde_json::to_value(&previous.codex_app_dream_skin_theme_config)
+            .unwrap_or_else(|_| json!({}));
+        let _ = store.update(json!({
+            "codexAppDreamSkinThemeConfig": previous_theme,
+            "codexAppDreamSkinImagePath": previous.codex_app_dream_skin_image_path
+        }));
+        return failed(
+            &format!("清理自定义 Dream Skin 图片失败：{error}"),
+            fallback_settings_payload(),
+        );
+    }
+    settings_payload("已恢复目标项目默认主题。", "恢复后重新读取设置失败")
+}
+
+#[tauri::command]
+pub async fn verify_dream_skin(
+    request: DreamSkinRuntimeRequest,
+) -> CommandResult<codex_plus_core::dream_skin_runtime::DreamSkinVerification> {
+    let screenshot = request
+        .screenshot_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(Path::new);
+    match codex_plus_core::dream_skin_runtime::verify_dream_skin(request.debug_port, screenshot)
+        .await
+    {
+        Ok(result) if result.pass => ok("Dream Skin 实机验证通过。", result),
+        Ok(result) => failed("Dream Skin 实机验证未通过。", result),
+        Err(error) => failed(
+            &format!("Dream Skin 实机验证失败：{error}"),
+            codex_plus_core::dream_skin_runtime::DreamSkinVerification {
+                state: codex_plus_core::dream_skin_runtime::DreamSkinState::NotRunning,
+                pass: false,
+                version: None,
+                checks: Vec::new(),
+                screenshot_path: None,
+                raw: json!({}),
+            },
+        ),
+    }
+}
+
+fn dream_skin_market_payload(
+    load: codex_plus_core::dream_skin_market::DreamSkinMarketLoad,
+) -> DreamSkinMarketPayload {
+    DreamSkinMarketPayload {
+        schema_version: load.manifest.schema_version,
+        updated_at: load.manifest.updated_at,
+        repository_url: codex_plus_core::dream_skin_market::DEFAULT_MARKET_REPOSITORY_URL
+            .to_string(),
+        cached: load.cached,
+        warning: load.warning.unwrap_or_default(),
+        themes: load.manifest.themes,
+    }
+}
+
+fn empty_dream_skin_market_payload() -> DreamSkinMarketPayload {
+    DreamSkinMarketPayload {
+        schema_version: 1,
+        updated_at: String::new(),
+        repository_url: codex_plus_core::dream_skin_market::DEFAULT_MARKET_REPOSITORY_URL
+            .to_string(),
+        cached: false,
+        warning: String::new(),
+        themes: Vec::new(),
+    }
+}
+
+fn default_dream_skin_helper_port() -> u16 {
+    codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT
+}
+
+fn current_dream_skin_library(
+    settings: &BackendSettings,
+) -> anyhow::Result<codex_plus_core::dream_skin_library::DreamSkinThemeLibrary> {
+    codex_plus_core::dream_skin_library::list_dream_skin_themes(
+        &codex_plus_core::paths::default_app_state_dir(),
+        settings,
+    )
+}
+
+fn builtin_dream_skin_draft() -> codex_plus_core::dream_skin_library::DreamSkinThemeDraft {
+    codex_plus_core::dream_skin_library::DreamSkinThemeDraft {
+        config: codex_plus_core::settings::DreamSkinThemeConfig::default(),
+        image_path: String::new(),
+        builtin: true,
+    }
+}
+
+fn empty_dream_skin_library(
+    settings: &BackendSettings,
+) -> codex_plus_core::dream_skin_library::DreamSkinThemeLibrary {
+    codex_plus_core::dream_skin_library::DreamSkinThemeLibrary {
+        themes: Vec::new(),
+        active_draft: codex_plus_core::dream_skin_library::DreamSkinThemeDraft {
+            config: settings.codex_app_dream_skin_theme_config.clone(),
+            image_path: settings.codex_app_dream_skin_image_path.clone(),
+            builtin: false,
+        },
+    }
+}
+
+async fn failed_dream_skin_activation_payload(
+    settings: &BackendSettings,
+    debug_port: u16,
+) -> DreamSkinThemeActivationPayload {
+    DreamSkinThemeActivationPayload {
+        library: current_dream_skin_library(settings)
+            .unwrap_or_else(|_| empty_dream_skin_library(settings)),
+        runtime: codex_plus_core::dream_skin_runtime::dream_skin_status(debug_port).await,
+        saved_for_next_launch: false,
+    }
+}
+
+fn empty_dream_skin_image_payload() -> DreamSkinImagePayload {
+    DreamSkinImagePayload {
+        path: String::new(),
+        content_type: String::new(),
+        size_bytes: 0,
+    }
+}
+
+fn managed_dream_skin_image_backup(
+    path: &Path,
+    state_dir: &Path,
+) -> anyhow::Result<ManagedDreamSkinImageBackup> {
+    if !codex_plus_core::dream_skin::is_managed_dream_skin_image(path, state_dir) {
+        anyhow::bail!("Dream Skin image is not managed by Codex++");
+    }
+    Ok(ManagedDreamSkinImageBackup {
+        path: path.to_path_buf(),
+        bytes: fs::read(path)?,
+    })
+}
+
+fn restore_managed_dream_skin_image_backup(
+    backup: ManagedDreamSkinImageBackup,
+) -> anyhow::Result<()> {
+    codex_plus_core::settings::atomic_write(&backup.path, &backup.bytes)
+}
+
+fn dream_skin_content_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("bmp") => "image/bmp",
+        _ => "application/octet-stream",
     }
 }
 
@@ -650,14 +1348,23 @@ pub fn dismiss_pending_provider_import() -> CommandResult<PendingProviderImportP
 }
 
 #[tauri::command]
-pub fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
+pub fn list_local_sessions(
+    request: Option<ListLocalSessionsRequest>,
+) -> CommandResult<LocalSessionsPayload> {
+    let request = request.unwrap_or(ListLocalSessionsRequest {
+        offset: 0,
+        limit: DEFAULT_LOCAL_SESSIONS_PAGE_SIZE,
+    });
+    let offset = request.offset;
+    let limit = request.limit.clamp(1, MAX_LOCAL_SESSIONS_PAGE_SIZE);
+    let fetch_limit = offset.saturating_add(limit).saturating_add(1);
     let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
     let mut sessions = Vec::new();
     let mut errors = Vec::new();
     for db_path in &db_paths {
         let adapter = local_session_adapter(db_path);
-        match adapter.list_local_sessions() {
+        match adapter.list_local_sessions_limited(fetch_limit) {
             Ok(mut items) => sessions.append(&mut items),
             Err(error) if db_path.exists() => {
                 errors.push(format!("{}: {error}", db_path.to_string_lossy()));
@@ -673,6 +1380,8 @@ pub fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
     });
     let mut seen_session_ids = std::collections::HashSet::new();
     sessions.retain(|session| seen_session_ids.insert(session.id.clone()));
+    let has_more = sessions.len() > offset.saturating_add(limit);
+    let sessions = sessions.into_iter().skip(offset).take(limit).collect();
     let payload = LocalSessionsPayload {
         db_path: db_paths
             .first()
@@ -683,10 +1392,17 @@ pub fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
             .map(|path| path.to_string_lossy().to_string())
             .collect(),
         sessions,
+        offset,
+        limit,
+        has_more,
     };
+    let page = offset / limit + 1;
     if errors.is_empty() {
         ok(
-            &format!("已读取 {} 个本地会话。", payload.sessions.len()),
+            &format!(
+                "已读取第 {page} 页，共 {} 个本地会话。",
+                payload.sessions.len()
+            ),
             payload,
         )
     } else {
@@ -1171,11 +1887,72 @@ fn merge_manual_provider_sync_targets(
 }
 
 #[tauri::command]
+pub async fn preview_session_index_cleanup() -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        codex_plus_data::preview_session_index_cleanup(None)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("session index cleanup preview task failed: {error}"))
+    .and_then(|result| result);
+    match result {
+        Ok(preview) => ok(
+            &format!(
+                "发现 {} 条仅存在于任务索引中的候选记录。",
+                preview.candidates.len()
+            ),
+            json!({
+                "snapshotSha256": preview.snapshot_sha256,
+                "candidates": preview.candidates,
+            }),
+        ),
+        Err(error) => failed(&format!("预览失效任务索引失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn apply_session_index_cleanup(
+    snapshot_sha256: String,
+    thread_ids: Vec<String>,
+) -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_data::apply_session_index_cleanup(None, &snapshot_sha256, &thread_ids)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("session index cleanup task failed: {error}"));
+    match result {
+        Ok(Ok(cleanup)) => ok(
+            &format!(
+                "已清理 {} 条失效任务索引；原索引已完整备份。",
+                cleanup.pruned_entries
+            ),
+            json!({
+                "prunedEntries": cleanup.pruned_entries,
+                "backupDir": cleanup.backup_dir,
+            }),
+        ),
+        Ok(Err(error)) => {
+            let backup_hint = error
+                .backup_dir
+                .as_ref()
+                .map(|path| format!(" 备份目录：{}。", path.to_string_lossy()))
+                .unwrap_or_default();
+            failed(
+                &format!("清理失效任务索引失败：{}{backup_hint}", error.message),
+                json!({ "backupDir": error.backup_dir }),
+            )
+        }
+        Err(error) => failed(&format!("清理失效任务索引失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
 pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResult<Value> {
     let target_provider = target_provider
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let target_for_settings = target_provider.clone();
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    prepare_codex_app_state_before_provider_switch(&home, "manager.sync_providers_now.before");
     let result = tauri::async_runtime::spawn_blocking(move || {
         codex_plus_data::run_provider_sync_with_target(None, target_provider.as_deref())
     })
@@ -1188,6 +1965,10 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
                     target_for_settings
                         .as_deref()
                         .unwrap_or(&sync.target_provider),
+                );
+                finish_codex_app_state_after_provider_switch(
+                    &home,
+                    "manager.sync_providers_now.after",
                 );
             }
             ok(
@@ -1206,6 +1987,7 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
                     "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
                     "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
                     "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
+                    "sqliteCatalogRowsInserted": sync.sqlite_catalog_rows_inserted,
                     "updatedWorkspaceRoots": sync.updated_workspace_roots,
                     "encryptedContentWarning": sync.encrypted_content_warning,
                     "backupDir": sync.backup_dir,
@@ -1383,20 +2165,6 @@ pub async fn repair_shortcuts() -> InstallActionResult {
     tauri::async_runtime::spawn_blocking(install::repair_shortcuts)
         .await
         .unwrap_or_else(|error| install_background_failure("修复快捷方式", error))
-}
-
-#[tauri::command]
-pub fn repair_backend() -> CommandResult<SettingsPayload> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    let message = match codex_plus_core::cli_wrapper::ensure_cli_wrapper(&settings) {
-        Ok(Some(install)) => format!(
-            "后端已修复，命令包装器已指向 {}。",
-            install.real_codex.to_string_lossy()
-        ),
-        Ok(None) => "后端已修复，命令包装器当前未启用。".to_string(),
-        Err(error) => format!("后端修复部分失败：{error}"),
-    };
-    settings_payload(&message, "修复后重新读取设置失败")
 }
 
 #[tauri::command]
@@ -1713,12 +2481,14 @@ pub fn disable_watcher() -> CommandResult<WatcherPayload> {
 pub fn read_latest_logs(request: LogRequest) -> CommandResult<LogsPayload> {
     let path = codex_plus_core::paths::default_diagnostic_log_path();
     match read_tail(&path, request.lines) {
-        Ok(text) => ok(
+        Ok(tail) => ok(
             "日志已读取。",
             LogsPayload {
                 path: path.to_string_lossy().to_string(),
-                text,
+                text: tail.text,
                 lines: request.lines,
+                truncated: tail.truncated,
+                file_size: tail.file_size,
             },
         ),
         Err(error) => failed(
@@ -1727,6 +2497,35 @@ pub fn read_latest_logs(request: LogRequest) -> CommandResult<LogsPayload> {
                 path: path.to_string_lossy().to_string(),
                 text: String::new(),
                 lines: request.lines,
+                truncated: false,
+                file_size: 0,
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn clear_logs() -> CommandResult<LogsPayload> {
+    let path = codex_plus_core::paths::default_diagnostic_log_path();
+    match codex_plus_core::diagnostic_log::clear_diagnostic_log() {
+        Ok(()) => ok(
+            "日志已清理。",
+            LogsPayload {
+                path: path.to_string_lossy().to_string(),
+                text: String::new(),
+                lines: 0,
+                truncated: false,
+                file_size: 0,
+            },
+        ),
+        Err(error) => failed(
+            &format!("清理日志失败：{error}"),
+            LogsPayload {
+                path: path.to_string_lossy().to_string(),
+                text: String::new(),
+                lines: 0,
+                truncated: false,
+                file_size: 0,
             },
         ),
     }
@@ -1768,6 +2567,7 @@ pub fn reset_image_overlay_settings() -> CommandResult<SettingsPayload> {
     settings.codex_app_image_overlay_enabled = defaults.codex_app_image_overlay_enabled;
     settings.codex_app_image_overlay_path = defaults.codex_app_image_overlay_path;
     settings.codex_app_image_overlay_opacity = defaults.codex_app_image_overlay_opacity;
+    settings.codex_app_image_overlay_fit_mode = defaults.codex_app_image_overlay_fit_mode;
     let settings = normalize_settings_before_save(settings);
     match store.save(&settings) {
         Ok(()) => settings_payload("图片覆盖层设置已重置。", "图片覆盖层重置后重新读取失败"),
@@ -1821,6 +2621,17 @@ pub fn check_env_conflicts() -> CommandResult<EnvConflictsPayload> {
         "检测到可能覆盖 Codex 供应商配置的 OPENAI 环境变量。"
     };
     ok(message, EnvConflictsPayload { conflicts })
+}
+
+#[tauri::command]
+pub fn check_relay_environment() -> CommandResult<RelayEnvironmentReport> {
+    let report = codex_plus_core::relay_environment::inspect_relay_environment();
+    let message = if report.all_passed() {
+        "中转站环境配置检测全部通过。"
+    } else {
+        "检测到可能影响中转站配置的环境问题。"
+    };
+    ok(message, report)
 }
 
 #[tauri::command]
@@ -2536,10 +3347,18 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
             relay_payload(status, None),
         );
     }
+    prepare_codex_app_state_before_provider_switch(&home, "manager.apply_relay_injection.before");
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
     if settings.active_aggregate_relay_profile().is_some() {
-        return apply_aggregate_relay_injection_to_home(&home);
+        let response = apply_aggregate_relay_injection_to_home(&home);
+        if response.status == "ok" {
+            finish_codex_app_state_after_provider_switch(
+                &home,
+                "manager.apply_relay_injection.aggregate",
+            );
+        }
+        return response;
     }
     if relay_has_complete_files(&relay) {
         return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
@@ -2549,6 +3368,10 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
             settings.computer_use_guard_enabled,
         ) {
             Ok(result) => {
+                finish_codex_app_state_after_provider_switch(
+                    &home,
+                    "manager.apply_relay_injection.profile",
+                );
                 let status = codex_plus_core::relay_config::relay_status_from_home(&home);
                 log_relay_apply_result(
                     "manager.apply_relay_injection.ok",
@@ -2603,6 +3426,10 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
     ) {
         Ok(result) => {
+            finish_codex_app_state_after_provider_switch(
+                &home,
+                "manager.apply_relay_injection.generated",
+            );
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             log_relay_apply_result(
                 "manager.apply_relay_injection.ok",
@@ -2671,6 +3498,10 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
             relay_payload(status, None),
         );
     }
+    prepare_codex_app_state_before_provider_switch(
+        &home,
+        "manager.apply_pure_api_injection.before",
+    );
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_pure_api_injection", &settings, &relay);
     if relay_has_complete_files(&relay) {
@@ -2681,6 +3512,10 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
             settings.computer_use_guard_enabled,
         ) {
             Ok(result) => {
+                finish_codex_app_state_after_provider_switch(
+                    &home,
+                    "manager.apply_pure_api_injection.profile",
+                );
                 let status = codex_plus_core::relay_config::relay_status_from_home(&home);
                 log_relay_apply_result(
                     "manager.apply_pure_api_injection.ok",
@@ -2725,6 +3560,10 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
         codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
     ) {
         Ok(result) => {
+            finish_codex_app_state_after_provider_switch(
+                &home,
+                "manager.apply_pure_api_injection.generated",
+            );
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             log_relay_apply_result(
                 "manager.apply_pure_api_injection.ok",
@@ -2767,6 +3606,7 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
     log_manager_event("manager.clear_relay_injection.start", json!({}));
+    prepare_codex_app_state_before_provider_switch(&home, "manager.clear_relay_injection.before");
     let auth_contents = (relay.relay_mode == codex_plus_core::settings::RelayMode::Official
         && !relay.official_mix_api_key
         && !relay.auth_contents.trim().is_empty())
@@ -2774,6 +3614,10 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
     match codex_plus_core::relay_config::clear_relay_config_to_home_with_auth(&home, auth_contents)
     {
         Ok(result) => {
+            finish_codex_app_state_after_provider_switch(
+                &home,
+                "manager.clear_relay_injection.after",
+            );
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             log_manager_event(
                 "manager.clear_relay_injection.ok",
@@ -2802,6 +3646,14 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
             )
         }
     }
+}
+
+fn prepare_codex_app_state_before_provider_switch(home: &Path, source: &str) {
+    codex_plus_core::codex_app_state::capture_app_state_snapshot_nonfatal(home, source);
+}
+
+fn finish_codex_app_state_after_provider_switch(home: &Path, source: &str) {
+    codex_plus_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(home, source);
 }
 
 fn relay_has_complete_files(relay: &codex_plus_core::settings::RelayProfile) -> bool {
@@ -2880,17 +3732,6 @@ fn sanitize_manager_event(event: &str) -> String {
         suffix.to_string()
     } else {
         format!("manager.ui.{suffix}")
-    }
-}
-
-fn refresh_cli_wrapper_after_settings_save(settings: &BackendSettings) -> String {
-    match codex_plus_core::cli_wrapper::ensure_cli_wrapper(settings) {
-        Ok(Some(install)) => format!(
-            " 命令包装器已更新：{}。",
-            install.real_codex.to_string_lossy()
-        ),
-        Ok(None) => String::new(),
-        Err(error) => format!(" 但命令包装器更新失败：{error}。"),
     }
 }
 
@@ -3239,11 +4080,46 @@ fn watcher_payload() -> WatcherPayload {
     }
 }
 
-fn read_tail(path: &Path, max_lines: usize) -> std::io::Result<String> {
-    let contents = fs::read_to_string(path)?;
+const MAX_LOG_TAIL_READ_BYTES: u64 = 2 * 1024 * 1024;
+
+#[derive(Debug, Clone)]
+struct TailRead {
+    text: String,
+    truncated: bool,
+    file_size: u64,
+}
+
+fn read_tail(path: &Path, max_lines: usize) -> std::io::Result<TailRead> {
+    let mut file = fs::File::open(path)?;
+    let file_size = file.metadata()?.len();
+    if max_lines == 0 || file_size == 0 {
+        return Ok(TailRead {
+            text: String::new(),
+            truncated: false,
+            file_size,
+        });
+    }
+
+    let read_len = MAX_LOG_TAIL_READ_BYTES.min(file_size);
+    let start = file_size - read_len;
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::with_capacity(read_len as usize);
+    file.read_to_end(&mut bytes)?;
+    let truncated = start > 0;
+    if truncated {
+        if let Some(pos) = bytes.iter().position(|byte| *byte == b'\n') {
+            bytes.drain(..=pos);
+        }
+    }
+
+    let contents = String::from_utf8_lossy(&bytes);
     let mut lines = contents.lines().rev().take(max_lines).collect::<Vec<_>>();
     lines.reverse();
-    Ok(lines.join("\n"))
+    Ok(TailRead {
+        text: lines.join("\n"),
+        truncated,
+        file_size,
+    })
 }
 
 fn path_state(path: Option<PathBuf>) -> PathState {
@@ -3301,6 +4177,76 @@ fn default_log_lines() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static CODEX_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_codex_home_for_test() -> std::sync::MutexGuard<'static, ()> {
+        CODEX_HOME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn provider_switch_state_helpers_restore_only_safe_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("codex-home");
+        std::fs::create_dir(&home).unwrap();
+        let state_path = home.join(".codex-global-state.json");
+        std::fs::write(
+            &state_path,
+            json!({
+                "electron-saved-workspace-roots": ["C:/work/app"],
+                "thread-writable-roots": {"thread-1": ["C:/work/app"]},
+                "electron-persisted-atom-state": {
+                    "default-service-tier": "priority",
+                    "electron:onboarding-workspace-autolaunch-applied": true,
+                    "heartbeat-thread-permissions-by-id": {"thread-1": "do-not-copy"},
+                    "prompt-history": ["do-not-copy"]
+                },
+                "provider-token-cache": "do-not-copy"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        prepare_codex_app_state_before_provider_switch(&home, "test.before");
+        std::fs::write(
+            &state_path,
+            json!({"electron-saved-workspace-roots": ["D:/fresh/app"]}).to_string(),
+        )
+        .unwrap();
+        finish_codex_app_state_after_provider_switch(&home, "test.after");
+
+        let state: Value =
+            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+        assert_eq!(
+            state["electron-saved-workspace-roots"],
+            json!(["D:\\fresh\\app", "C:\\work\\app"])
+        );
+        assert_eq!(
+            state["thread-writable-roots"]["thread-1"],
+            json!(["C:/work/app"])
+        );
+        assert_eq!(
+            state["electron-persisted-atom-state"]["default-service-tier"],
+            "priority"
+        );
+        assert_eq!(
+            state["electron-persisted-atom-state"]["electron:onboarding-workspace-autolaunch-applied"],
+            true
+        );
+        assert!(state.get("provider-token-cache").is_none());
+        assert!(
+            state["electron-persisted-atom-state"]
+                .get("heartbeat-thread-permissions-by-id")
+                .is_none()
+        );
+        assert!(
+            state["electron-persisted-atom-state"]
+                .get("prompt-history")
+                .is_none()
+        );
+    }
 
     #[test]
     fn backend_version_returns_structured_payload() {
@@ -3388,6 +4334,163 @@ mod tests {
         if result.payload.text.is_empty() {
             assert_eq!(result.status, "failed");
         }
+    }
+
+    #[test]
+    fn dream_skin_image_payload_does_not_expose_image_bytes() {
+        let payload = DreamSkinImagePayload {
+            path: "managed/current.png".to_string(),
+            content_type: "image/png".to_string(),
+            size_bytes: 42,
+        };
+
+        let value = serde_json::to_value(payload).unwrap();
+
+        assert!(value.get("bytes").is_none());
+        assert_eq!(value["contentType"], "image/png");
+        assert_eq!(value["sizeBytes"], 42);
+    }
+
+    #[test]
+    fn dream_skin_theme_library_payload_does_not_expose_image_bytes() {
+        let settings = BackendSettings::default();
+        let library = empty_dream_skin_library(&settings);
+
+        let encoded = serde_json::to_string(&library).unwrap();
+
+        assert!(!encoded.contains("\"bytes\""));
+        assert!(!encoded.contains("data:image"));
+        assert!(!encoded.contains("apiKey"));
+    }
+
+    #[test]
+    fn dream_skin_image_backup_restores_after_managed_files_are_cleared() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path();
+        let image_path = state_dir.join("dream-skin/theme/current.png");
+        std::fs::create_dir_all(image_path.parent().unwrap()).unwrap();
+        std::fs::write(&image_path, b"old-image").unwrap();
+        let backup = managed_dream_skin_image_backup(&image_path, state_dir).unwrap();
+        codex_plus_core::dream_skin::clear_managed_dream_skin_image(state_dir).unwrap();
+
+        restore_managed_dream_skin_image_backup(backup).unwrap();
+
+        assert_eq!(std::fs::read(image_path).unwrap(), b"old-image");
+    }
+
+    #[test]
+    fn dream_skin_commands_are_registered_with_tauri() {
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).unwrap();
+
+        for command in [
+            "commands::dream_skin_status",
+            "commands::import_dream_skin_image",
+            "commands::reset_dream_skin_theme",
+            "commands::apply_dream_skin",
+            "commands::restore_dream_skin",
+            "commands::verify_dream_skin",
+            "commands::list_dream_skin_themes",
+            "commands::refresh_dream_skin_market",
+            "commands::install_dream_skin_market_theme",
+            "commands::load_dream_skin_theme",
+            "commands::create_dream_skin_theme",
+            "commands::save_dream_skin_theme",
+            "commands::rename_dream_skin_theme",
+            "commands::delete_dream_skin_theme",
+            "commands::activate_dream_skin_theme",
+        ] {
+            assert!(source.contains(command), "missing Tauri command {command}");
+        }
+    }
+
+    #[test]
+    fn dream_skin_tray_actions_reuse_core_lifecycle() {
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).unwrap();
+
+        for expected in [
+            "tray_apply_dream_skin",
+            "apply_dream_skin_live",
+            "sync_default_dream_skin_base_theme",
+        ] {
+            assert!(
+                source.contains(expected),
+                "missing tray lifecycle entry {expected}"
+            );
+        }
+        assert!(!source.contains("tray_pause_dream_skin"));
+        assert!(!source.contains("pause_dream_skin_from_tray"));
+        assert!(source.contains("!settings.codex_app_dream_skin_paused"));
+    }
+
+    #[test]
+    fn dream_skin_theme_reset_rollback_preserves_unknown_settings_fields() {
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands.rs"))
+                .unwrap();
+        let start = source.find("pub fn reset_dream_skin_theme").unwrap();
+        let end = source[start..]
+            .find("pub async fn verify_dream_skin")
+            .unwrap()
+            + start;
+        let reset_source = &source[start..end];
+
+        assert!(!reset_source.contains("store.save(&previous)"));
+        assert!(reset_source.contains("codexAppDreamSkinThemeConfig"));
+        assert!(reset_source.contains("codexAppDreamSkinImagePath"));
+    }
+
+    #[test]
+    fn dream_skin_theme_activation_rolls_back_image_and_settings_on_save_failure() {
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands.rs"))
+                .unwrap();
+        let start = source
+            .find("pub async fn activate_dream_skin_theme")
+            .unwrap();
+        let end = source[start..]
+            .find("pub async fn dream_skin_status")
+            .map(|offset| start + offset)
+            .unwrap();
+        let activation = &source[start..end];
+
+        assert!(activation.contains("previous_backup"));
+        assert!(activation.contains("clear_managed_dream_skin_image"));
+        assert!(activation.contains("restore_managed_dream_skin_image_backup"));
+        assert!(activation.contains("store.save(&previous)"));
+        assert!(activation.contains("previous_runtime_signature"));
+        assert!(activation.contains("theme_changed"));
+        assert!(activation.contains("pending_restart"));
+    }
+
+    #[test]
+    fn read_tail_returns_requested_lines_from_file_end() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("codex-plus.log");
+        std::fs::write(&path, "one\ntwo\nthree\nfour\n").unwrap();
+
+        let result = read_tail(&path, 2).unwrap();
+
+        assert_eq!(result.text, "three\nfour");
+        assert_eq!(result.file_size, 19);
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn read_tail_does_not_load_prefix_when_log_is_large() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("codex-plus.log");
+        let mut contents = String::from("prefix-should-not-appear\n");
+        contents.push_str(&"x".repeat((MAX_LOG_TAIL_READ_BYTES as usize) + 128));
+        contents.push_str("\nlast-1\nlast-2\n");
+        std::fs::write(&path, contents).unwrap();
+
+        let result = read_tail(&path, 2).unwrap();
+
+        assert_eq!(result.text, "last-1\nlast-2");
+        assert!(result.truncated);
+        assert!(!result.text.contains("prefix-should-not-appear"));
     }
 
     #[test]
@@ -3494,7 +4597,7 @@ mod tests {
 
     #[test]
     fn env_conflict_commands_ignore_codex_home_and_remove_openai_vars() {
-        let _lock = test_env_lock();
+        let _codex_home_guard = lock_codex_home_for_test();
         let test_openai_name = "OPENAI_CODEX_PLUS_ENV_CONFLICT_TEST";
         let previous_openai = std::env::var_os(test_openai_name);
         let previous_codex_home = std::env::var_os("CODEX_HOME");
@@ -3546,7 +4649,7 @@ mod tests {
 
     #[test]
     fn delete_local_session_falls_back_when_requested_db_no_longer_contains_thread() {
-        let _lock = test_env_lock();
+        let _codex_home_guard = lock_codex_home_for_test();
         let temp = tempfile::tempdir().unwrap();
         let previous_codex_home = std::env::var_os("CODEX_HOME");
         let codex_home = temp.path().join("codex-home");
@@ -3613,7 +4716,7 @@ mod tests {
 
     #[test]
     fn list_local_sessions_deduplicates_threads_across_current_and_legacy_dbs() {
-        let _lock = test_env_lock();
+        let _codex_home_guard = lock_codex_home_for_test();
         let temp = tempfile::tempdir().unwrap();
         let previous_codex_home = std::env::var_os("CODEX_HOME");
         let codex_home = temp.path().join("codex-home");
@@ -3627,8 +4730,7 @@ mod tests {
         unsafe {
             std::env::set_var("CODEX_HOME", &codex_home);
         }
-        let result = list_local_sessions();
-        restore_codex_home(previous_codex_home);
+        let result = list_local_sessions(None);
 
         assert_eq!(result.status, "ok");
         assert_eq!(result.payload.sessions.len(), 1);
@@ -3638,11 +4740,74 @@ mod tests {
             result.payload.sessions[0].db_path,
             legacy_db.to_string_lossy()
         );
+
+        rusqlite::Connection::open(&current_db)
+            .unwrap()
+            .execute("INSERT INTO threads VALUES ('t2', '', 'Newest', 300)", [])
+            .unwrap();
+        rusqlite::Connection::open(&legacy_db)
+            .unwrap()
+            .execute("INSERT INTO threads VALUES ('t3', '', 'Oldest', 50)", [])
+            .unwrap();
+
+        let first_page = list_local_sessions(Some(ListLocalSessionsRequest {
+            offset: 0,
+            limit: 2,
+        }));
+        assert_eq!(first_page.payload.sessions.len(), 2);
+        assert_eq!(first_page.payload.sessions[0].id, "t2");
+        assert_eq!(first_page.payload.sessions[1].id, "t1");
+        assert!(first_page.payload.has_more);
+
+        let second_page = list_local_sessions(Some(ListLocalSessionsRequest {
+            offset: 2,
+            limit: 2,
+        }));
+        restore_codex_home(previous_codex_home);
+
+        assert_eq!(second_page.payload.sessions.len(), 1);
+        assert_eq!(second_page.payload.sessions[0].id, "t3");
+        assert!(!second_page.payload.has_more);
+    }
+
+    #[test]
+    fn list_local_sessions_ignores_relation_only_thread_reference_dbs() {
+        let _codex_home_guard = lock_codex_home_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        let codex_home = temp.path().join("codex-home");
+        let sqlite_dir = codex_home.join("sqlite");
+        std::fs::create_dir_all(&sqlite_dir).unwrap();
+        let session_db = sqlite_dir.join("state_5.sqlite");
+        let relation_db = sqlite_dir.join("codex-related.db");
+        create_minimal_thread_db(&session_db, "t1", "Current Thread", 100);
+        let relation = rusqlite::Connection::open(&relation_db).unwrap();
+        relation
+            .execute(
+                "CREATE TABLE local_thread_catalog (thread_id TEXT PRIMARY KEY)",
+                [],
+            )
+            .unwrap();
+        relation
+            .execute("INSERT INTO local_thread_catalog VALUES ('t1')", [])
+            .unwrap();
+        drop(relation);
+
+        unsafe {
+            std::env::set_var("CODEX_HOME", &codex_home);
+        }
+        let result = list_local_sessions(None);
+        restore_codex_home(previous_codex_home);
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.payload.sessions.len(), 1);
+        assert_eq!(result.payload.sessions[0].id, "t1");
+        assert_eq!(result.payload.sessions[0].title, "Current Thread");
     }
 
     #[test]
     fn delete_local_session_removes_duplicate_threads_from_all_candidate_dbs() {
-        let _lock = test_env_lock();
+        let _codex_home_guard = lock_codex_home_for_test();
         let temp = tempfile::tempdir().unwrap();
         let previous_codex_home = std::env::var_os("CODEX_HOME");
         let codex_home = temp.path().join("codex-home");
@@ -3781,6 +4946,27 @@ mod tests {
     }
 
     #[test]
+    fn normalize_settings_before_save_preserves_manual_relay_mode_for_pure_api_profile() {
+        let settings = BackendSettings {
+            active_relay_id: "api".to_string(),
+            launch_mode: codex_plus_core::settings::LaunchMode::Relay,
+            relay_profiles: vec![RelayProfile {
+                id: "api".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        let normalized = normalize_settings_before_save(settings);
+
+        assert_eq!(
+            normalized.launch_mode,
+            codex_plus_core::settings::LaunchMode::Relay
+        );
+    }
+
+    #[test]
     fn reset_image_overlay_settings_preserves_supplier_settings() {
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
@@ -3790,6 +4976,7 @@ mod tests {
             codex_app_image_overlay_enabled: true,
             codex_app_image_overlay_path: "C:\\Users\\me\\Pictures\\overlay.png".to_string(),
             codex_app_image_overlay_opacity: 42,
+            codex_app_image_overlay_fit_mode: "fill".to_string(),
             active_relay_id: "supplier-a".to_string(),
             relay_profiles: vec![RelayProfile {
                 id: "supplier-a".to_string(),
@@ -3809,6 +4996,10 @@ mod tests {
         assert!(!result.payload.settings.codex_app_image_overlay_enabled);
         assert_eq!(result.payload.settings.codex_app_image_overlay_path, "");
         assert_eq!(result.payload.settings.codex_app_image_overlay_opacity, 35);
+        assert_eq!(
+            result.payload.settings.codex_app_image_overlay_fit_mode,
+            "fit"
+        );
         assert_eq!(result.payload.settings.active_relay_id, "supplier-a");
         assert_eq!(result.payload.settings.relay_profiles.len(), 1);
         assert_eq!(result.payload.settings.relay_profiles[0].id, "supplier-a");

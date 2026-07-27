@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "mythic-guardian-noir",
+  "name": "Mythic Guardian Noir",
+  "brandSubtitle": "CODEX DREAM SKIN",
+  "tagline": "暗黑神话感皮肤，左侧留暗场给代码和对话。",
+  "projectPrefix": "project · ",
+  "projectLabel": "◉  Select project",
+  "statusText": "SKIN ONLINE",
+  "quote": "ENTER FOCUS MODE",
+  "image": "background.png",
+  "colors": {
+    "background": "#0f1110",
+    "panel": "rgba(22, 22, 20, 0.86)",
+    "panelAlt": "rgba(33, 29, 24, 0.82)",
+    "accent": "#b97a37",
+    "accentAlt": "#d3a85b",
+    "secondary": "#6f4a31",
+    "highlight": "#c8a15d",
+    "text": "#f4eee4",
+    "muted": "#b7aa98",
+    "line": "rgba(211, 168, 91, 0.24)"
+  },
+  "promoTitle": "Mythic Guardian Noir",
+  "promoSub": "原创暗黑神话感皮肤图和可复用主题配置。",
+  "promoUrl": "https://codex-theme-gallery.howardhua.chatgpt.site"
+}

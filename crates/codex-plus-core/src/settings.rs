@@ -87,6 +87,18 @@ pub struct RelayProfile {
         skip_serializing_if = "String::is_empty"
     )]
     pub model_windows: String,
+    #[serde(rename = "modelVlm", default, skip_serializing_if = "String::is_empty")]
+    pub model_vlm: String,
+    #[serde(
+        rename = "vlmApiKey",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub vlm_api_key: String,
+    #[serde(rename = "vlmModel", default)]
+    pub vlm_model: String,
+    #[serde(rename = "vlmBaseUrl", default)]
+    pub vlm_base_url: String,
     #[serde(
         rename = "userAgent",
         default,
@@ -148,6 +160,10 @@ impl Default for RelayProfile {
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
             model_windows: String::new(),
+            model_vlm: String::new(),
+            vlm_api_key: String::new(),
+            vlm_model: String::new(),
+            vlm_base_url: String::new(),
             user_agent: String::new(),
         }
     }
@@ -177,6 +193,127 @@ pub enum RelayMode {
     MixedApi,
     PureApi,
     Aggregate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DreamSkinColors {
+    pub background: String,
+    pub panel: String,
+    pub panel_alt: String,
+    pub accent: String,
+    pub accent_alt: String,
+    pub secondary: String,
+    pub highlight: String,
+    pub text: String,
+    pub muted: String,
+    pub line: String,
+}
+
+impl Default for DreamSkinColors {
+    fn default() -> Self {
+        Self {
+            background: "#F7F4F5".to_string(),
+            panel: "#FFFFFF".to_string(),
+            panel_alt: "#FFF7F8".to_string(),
+            accent: "#E25563".to_string(),
+            accent_alt: "#F07A86".to_string(),
+            secondary: "#F3A8AF".to_string(),
+            highlight: "#C93D4C".to_string(),
+            text: "#2B2224".to_string(),
+            muted: "#8A7A7D".to_string(),
+            line: "rgba(196, 120, 128, .22)".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DreamSkinThemeConfig {
+    #[serde(default = "default_dream_skin_schema_version")]
+    pub schema_version: u8,
+    #[serde(default = "default_dream_skin_id")]
+    pub id: String,
+    #[serde(default = "default_dream_skin_name")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub style_preset: String,
+    #[serde(default = "default_dream_skin_brand_subtitle")]
+    pub brand_subtitle: String,
+    #[serde(default = "default_dream_skin_tagline")]
+    pub tagline: String,
+    #[serde(default = "default_dream_skin_project_prefix")]
+    pub project_prefix: String,
+    #[serde(default = "default_dream_skin_project_label")]
+    pub project_label: String,
+    #[serde(default = "default_dream_skin_status_text")]
+    pub status_text: String,
+    #[serde(default = "default_dream_skin_quote")]
+    pub quote: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colors: Option<DreamSkinColors>,
+    #[serde(flatten)]
+    pub extra_fields: Map<String, Value>,
+}
+
+impl Default for DreamSkinThemeConfig {
+    fn default() -> Self {
+        let mut extra_fields = Map::new();
+        #[cfg(windows)]
+        {
+            extra_fields.insert(
+                "image".to_string(),
+                Value::String("dream-reference.jpg".to_string()),
+            );
+            extra_fields.insert("appearance".to_string(), Value::String("auto".to_string()));
+            extra_fields.insert(
+                "art".to_string(),
+                serde_json::json!({
+                    "focusX": 0.72,
+                    "focusY": 0.45,
+                    "safeArea": "left",
+                    "taskMode": "ambient"
+                }),
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            extra_fields.insert(
+                "image".to_string(),
+                Value::String("portal-hero.png".to_string()),
+            );
+            extra_fields.insert(
+                "promoTitle".to_string(),
+                Value::String("感谢 Passion8 赞助".to_string()),
+            );
+            extra_fields.insert(
+                "promoSub".to_string(),
+                Value::String("passion8.cc".to_string()),
+            );
+            extra_fields.insert(
+                "promoUrl".to_string(),
+                Value::String("https://passion8.cc/register?aff=TuPe".to_string()),
+            );
+        }
+        Self {
+            schema_version: default_dream_skin_schema_version(),
+            id: default_dream_skin_id(),
+            name: default_dream_skin_name(),
+            style_preset: String::new(),
+            brand_subtitle: default_dream_skin_brand_subtitle(),
+            tagline: default_dream_skin_tagline(),
+            project_prefix: default_dream_skin_project_prefix(),
+            project_label: default_dream_skin_project_label(),
+            status_text: default_dream_skin_status_text(),
+            quote: default_dream_skin_quote(),
+            colors: if cfg!(windows) {
+                None
+            } else {
+                Some(DreamSkinColors::default())
+            },
+            extra_fields,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -239,6 +376,8 @@ pub struct BackendSettings {
     pub codex_app_native_menu_localization: bool,
     #[serde(rename = "codexAppServiceTierControls", default = "default_true")]
     pub codex_app_service_tier_controls: bool,
+    #[serde(rename = "codexAppPetRealMouseLook", default)]
+    pub codex_app_pet_real_mouse_look: bool,
     #[serde(rename = "codexAppStepwiseEnabled", default)]
     pub codex_app_stepwise_enabled: bool,
     #[serde(rename = "codexAppStepwiseDirectSend", default)]
@@ -289,6 +428,26 @@ pub struct BackendSettings {
         deserialize_with = "deserialize_image_overlay_opacity"
     )]
     pub codex_app_image_overlay_opacity: u8,
+    #[serde(
+        rename = "codexAppImageOverlayFitMode",
+        default = "default_image_overlay_fit_mode",
+        deserialize_with = "deserialize_image_overlay_fit_mode"
+    )]
+    pub codex_app_image_overlay_fit_mode: String,
+    #[serde(rename = "codexAppDreamSkinEnabled", default)]
+    pub codex_app_dream_skin_enabled: bool,
+    #[serde(rename = "codexAppDreamSkinPaused", default)]
+    pub codex_app_dream_skin_paused: bool,
+    #[serde(
+        rename = "codexAppDreamSkinTheme",
+        default = "default_dream_skin_theme",
+        deserialize_with = "deserialize_dream_skin_theme"
+    )]
+    pub codex_app_dream_skin_theme: String,
+    #[serde(rename = "codexAppDreamSkinThemeConfig", default)]
+    pub codex_app_dream_skin_theme_config: DreamSkinThemeConfig,
+    #[serde(rename = "codexAppDreamSkinImagePath", default)]
+    pub codex_app_dream_skin_image_path: String,
     #[serde(rename = "codexGoalsEnabled", default)]
     pub codex_goals_enabled: bool,
     #[serde(rename = "launchMode", default)]
@@ -311,18 +470,6 @@ pub struct BackendSettings {
     pub active_aggregate_relay_id: String,
     #[serde(rename = "relayTestModel", default = "default_relay_test_model")]
     pub relay_test_model: String,
-    #[serde(rename = "cliWrapperEnabled", default)]
-    pub cli_wrapper_enabled: bool,
-    #[serde(rename = "cliWrapperBaseUrl", default)]
-    pub cli_wrapper_base_url: String,
-    #[serde(rename = "cliWrapperApiKey", default)]
-    pub cli_wrapper_api_key: String,
-    #[serde(
-        rename = "cliWrapperApiKeyEnv",
-        default = "default_api_key_env",
-        deserialize_with = "empty_as_default_api_key_env"
-    )]
-    pub cli_wrapper_api_key_env: String,
 }
 
 impl Default for BackendSettings {
@@ -357,6 +504,7 @@ impl Default for BackendSettings {
             codex_app_native_menu_placement: true,
             codex_app_native_menu_localization: true,
             codex_app_service_tier_controls: true,
+            codex_app_pet_real_mouse_look: false,
             codex_app_stepwise_enabled: false,
             codex_app_stepwise_direct_send: false,
             codex_app_stepwise_base_url: String::new(),
@@ -370,6 +518,12 @@ impl Default for BackendSettings {
             codex_app_image_overlay_enabled: false,
             codex_app_image_overlay_path: String::new(),
             codex_app_image_overlay_opacity: default_image_overlay_opacity(),
+            codex_app_image_overlay_fit_mode: default_image_overlay_fit_mode(),
+            codex_app_dream_skin_enabled: false,
+            codex_app_dream_skin_paused: false,
+            codex_app_dream_skin_theme: default_dream_skin_theme(),
+            codex_app_dream_skin_theme_config: DreamSkinThemeConfig::default(),
+            codex_app_dream_skin_image_path: String::new(),
             codex_goals_enabled: false,
             launch_mode: LaunchMode::Patch,
             relay_base_url: default_relay_base_url(),
@@ -381,10 +535,6 @@ impl Default for BackendSettings {
             aggregate_relay_profiles: Vec::new(),
             active_aggregate_relay_id: String::new(),
             relay_test_model: default_relay_test_model(),
-            cli_wrapper_enabled: false,
-            cli_wrapper_base_url: String::new(),
-            cli_wrapper_api_key: String::new(),
-            cli_wrapper_api_key_env: default_api_key_env(),
         }
     }
 }
@@ -425,6 +575,10 @@ impl BackendSettings {
                 model_insert_mode: RelayModelInsertMode::Patch,
                 model_list: String::new(),
                 model_windows: String::new(),
+                model_vlm: String::new(),
+                vlm_api_key: String::new(),
+                vlm_model: String::new(),
+                vlm_base_url: String::new(),
                 user_agent: String::new(),
             };
         }
@@ -470,6 +624,10 @@ impl BackendSettings {
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
             model_windows: String::new(),
+            model_vlm: String::new(),
+            vlm_api_key: String::new(),
+            vlm_model: String::new(),
+            vlm_base_url: String::new(),
             user_agent: String::new(),
         }
     }
@@ -505,10 +663,6 @@ impl BackendSettings {
     }
 }
 
-pub fn default_api_key_env() -> String {
-    "CUSTOM_OPENAI_API_KEY".to_string()
-}
-
 pub fn default_stepwise_api_key_env() -> String {
     "CODEX_STEPWISE_API_KEY".to_string()
 }
@@ -535,6 +689,120 @@ fn default_image_overlay_opacity() -> u8 {
 
 fn clamp_image_overlay_opacity(value: u8) -> u8 {
     value.clamp(1, 100)
+}
+
+pub fn default_image_overlay_fit_mode() -> String {
+    "fit".to_string()
+}
+
+fn normalize_image_overlay_fit_mode(value: &str) -> String {
+    match value {
+        "fill" | "fit" | "stretch" | "tile" | "center" => value.to_string(),
+        _ => default_image_overlay_fit_mode(),
+    }
+}
+
+pub fn default_dream_skin_theme() -> String {
+    "pink".to_string()
+}
+
+fn default_dream_skin_schema_version() -> u8 {
+    1
+}
+
+#[cfg(windows)]
+fn default_dream_skin_id() -> String {
+    "preset-arina-hashimoto".to_string()
+}
+
+#[cfg(not(windows))]
+fn default_dream_skin_id() -> String {
+    "custom-1784123441349".to_string()
+}
+
+#[cfg(windows)]
+fn default_dream_skin_name() -> String {
+    "桥本有菜".to_string()
+}
+
+#[cfg(not(windows))]
+fn default_dream_skin_name() -> String {
+    "Dream Skin".to_string()
+}
+
+pub fn resolve_dream_skin_style_preset(id: &str, style_preset: &str) -> String {
+    let style_preset = style_preset.trim();
+    if !style_preset.is_empty() && style_preset != "dream-original" {
+        return style_preset.to_string();
+    }
+
+    match id.trim() {
+        "caishen-lite" => "caishen-lite",
+        "caishen-max" => "caishen-max",
+        "caishen-readable" => "caishen-readable",
+        "export-night" => "export-night",
+        "global-founder-bright" => "global-founder-bright",
+        "mythic-guardian-noir" => "mythic-guardian-noir",
+        "codex-snow-skin" => "codex-snow",
+        "glass-vision" => "glass-vision",
+        "preset-midnight-aurora" => "midnight-aurora",
+        "preset-amber-dusk" => "amber-dusk",
+        "preset-forest-mist" => "forest-mist",
+        "preset-cyber-neon" => "cyber-neon",
+        "preset-sakura-dawn" => "sakura-dawn",
+        _ => "dream-original",
+    }
+    .to_string()
+}
+
+fn default_dream_skin_brand_subtitle() -> String {
+    "CODEX DREAM SKIN".to_string()
+}
+
+#[cfg(windows)]
+fn default_dream_skin_tagline() -> String {
+    "把柔光与玫瑰带进今天的工作台。".to_string()
+}
+
+#[cfg(not(windows))]
+fn default_dream_skin_tagline() -> String {
+    "把喜欢的画面变成可交互的 Codex 工作台。".to_string()
+}
+
+fn default_dream_skin_project_prefix() -> String {
+    "选择项目 · ".to_string()
+}
+
+fn default_dream_skin_project_label() -> String {
+    "◉  选择项目".to_string()
+}
+
+#[cfg(windows)]
+fn default_dream_skin_status_text() -> String {
+    "DREAM SKIN ONLINE".to_string()
+}
+
+#[cfg(not(windows))]
+fn default_dream_skin_status_text() -> String {
+    "THEME ONLINE".to_string()
+}
+
+#[cfg(windows)]
+fn default_dream_skin_quote() -> String {
+    "MAKE SOMETHING WONDERFUL".to_string()
+}
+
+#[cfg(not(windows))]
+fn default_dream_skin_quote() -> String {
+    "Make something wonderful".to_string()
+}
+
+fn normalize_dream_skin_theme(value: &str) -> String {
+    match value.trim() {
+        "pink" | "luckyGod" | "redWhite" | "clearGlass" | "inspiration" | "purpleNight"
+        | "miku" | "blackGold" => value.trim().to_string(),
+        _ => default_dream_skin_theme(),
+    }
 }
 
 pub fn clamp_stepwise_max_items(value: u8) -> u8 {
@@ -577,16 +845,6 @@ pub fn default_aggregate_member_weight() -> u32 {
     1
 }
 
-pub fn empty_as_default_api_key_env<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = Option::<String>::deserialize(deserializer)?;
-    Ok(value
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(default_api_key_env))
-}
-
 pub fn empty_as_default_stepwise_api_key_env<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -604,6 +862,24 @@ where
     Ok(Option::<u8>::deserialize(deserializer)?
         .map(clamp_image_overlay_opacity)
         .unwrap_or_else(default_image_overlay_opacity))
+}
+
+fn deserialize_image_overlay_fit_mode<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?
+        .map(|value| normalize_image_overlay_fit_mode(&value))
+        .unwrap_or_else(default_image_overlay_fit_mode))
+}
+
+fn deserialize_dream_skin_theme<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?
+        .map(|value| normalize_dream_skin_theme(&value))
+        .unwrap_or_else(default_dream_skin_theme))
 }
 
 fn deserialize_stepwise_max_items<'de, D>(deserializer: D) -> Result<u8, D::Error>
@@ -798,6 +1074,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppNativeMenuPlacement");
     merge_bool_setting(target, source, "codexAppNativeMenuLocalization");
     merge_bool_setting(target, source, "codexAppServiceTierControls");
+    merge_bool_setting(target, source, "codexAppPetRealMouseLook");
     merge_bool_setting(target, source, "codexAppStepwiseEnabled");
     merge_bool_setting(target, source, "codexAppStepwiseDirectSend");
     if let Some(value) = source
@@ -897,6 +1174,37 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             Value::Number(serde_json::Number::from(clamp_image_overlay_opacity(value))),
         );
     }
+    if let Some(value) = source
+        .get("codexAppImageOverlayFitMode")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppImageOverlayFitMode".to_string(),
+            Value::String(normalize_image_overlay_fit_mode(value)),
+        );
+    }
+    merge_bool_setting(target, source, "codexAppDreamSkinEnabled");
+    merge_bool_setting(target, source, "codexAppDreamSkinPaused");
+    if let Some(value) = source.get("codexAppDreamSkinTheme").and_then(Value::as_str) {
+        target.insert(
+            "codexAppDreamSkinTheme".to_string(),
+            Value::String(normalize_dream_skin_theme(value)),
+        );
+    }
+    if let Some(value) = source.get("codexAppDreamSkinThemeConfig")
+        && serde_json::from_value::<DreamSkinThemeConfig>(value.clone()).is_ok()
+    {
+        target.insert("codexAppDreamSkinThemeConfig".to_string(), value.clone());
+    }
+    if let Some(value) = source
+        .get("codexAppDreamSkinImagePath")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppDreamSkinImagePath".to_string(),
+            Value::String(value.trim().to_string()),
+        );
+    }
     if let Some(value) = source.get("codexGoalsEnabled").and_then(Value::as_bool) {
         target.insert("codexGoalsEnabled".to_string(), Value::Bool(value));
     }
@@ -966,31 +1274,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
                 default_relay_test_model()
             } else {
                 value.trim().to_string()
-            }),
-        );
-    }
-    if let Some(value) = source.get("cliWrapperEnabled").and_then(Value::as_bool) {
-        target.insert("cliWrapperEnabled".to_string(), Value::Bool(value));
-    }
-    if let Some(value) = source.get("cliWrapperBaseUrl").and_then(Value::as_str) {
-        target.insert(
-            "cliWrapperBaseUrl".to_string(),
-            Value::String(value.to_string()),
-        );
-    }
-    if let Some(value) = source.get("cliWrapperApiKey").and_then(Value::as_str) {
-        target.insert(
-            "cliWrapperApiKey".to_string(),
-            Value::String(value.to_string()),
-        );
-    }
-    if let Some(value) = source.get("cliWrapperApiKeyEnv").and_then(Value::as_str) {
-        target.insert(
-            "cliWrapperApiKeyEnv".to_string(),
-            Value::String(if value.is_empty() {
-                default_api_key_env()
-            } else {
-                value.to_string()
             }),
         );
     }
@@ -1111,6 +1394,17 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     }
     settings.codex_app_image_overlay_opacity =
         clamp_image_overlay_opacity(settings.codex_app_image_overlay_opacity);
+    settings.codex_app_image_overlay_fit_mode =
+        normalize_image_overlay_fit_mode(&settings.codex_app_image_overlay_fit_mode);
+    settings.codex_app_dream_skin_theme =
+        normalize_dream_skin_theme(&settings.codex_app_dream_skin_theme);
+    if settings.codex_app_dream_skin_theme_config == DreamSkinThemeConfig::default()
+        && settings.codex_app_dream_skin_theme != default_dream_skin_theme()
+    {
+        settings.codex_app_dream_skin_theme_config.id = settings.codex_app_dream_skin_theme.clone();
+    }
+    settings.codex_app_dream_skin_image_path =
+        settings.codex_app_dream_skin_image_path.trim().to_string();
     settings.codex_app_stepwise_base_url = settings
         .codex_app_stepwise_base_url
         .trim()
@@ -1183,7 +1477,7 @@ fn normalize_text_config(contents: String) -> String {
     }
 }
 
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create directory {}", parent.display()))?;
@@ -1192,13 +1486,50 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let temp_path = temp_path_for(path);
     fs::write(&temp_path, bytes)
         .with_context(|| format!("failed to write temp file {}", temp_path.display()))?;
-    fs::rename(&temp_path, path).with_context(|| {
-        format!(
-            "failed to replace {} with {}",
-            path.display(),
-            temp_path.display()
-        )
-    })?;
+    if let Err(error) = replace_file(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error).with_context(|| {
+            format!(
+                "failed to replace {} with {}",
+                path.display(),
+                temp_path.display()
+            )
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, target: &Path) -> anyhow::Result<()> {
+    fs::rename(source, target)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, target: &Path) -> anyhow::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    use windows::core::PCWSTR;
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    unsafe {
+        MoveFileExW(
+            PCWSTR(source.as_ptr()),
+            PCWSTR(target.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )?;
+    }
     Ok(())
 }
 
@@ -1231,6 +1562,19 @@ mod tests {
     }
 
     #[test]
+    fn atomic_write_replaces_existing_file_and_removes_temp_file() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, b"old").unwrap();
+
+        atomic_write(&path, b"new").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert!(!dir.join("settings.json.tmp").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn settings_default_matches_expected_behavior() {
         let settings = BackendSettings::default();
         assert!(!settings.provider_sync_enabled);
@@ -1257,8 +1601,6 @@ mod tests {
         assert_eq!(settings.relay_profiles[0].relay_mode, RelayMode::Official);
         assert!(settings.relay_common_config_contents.is_empty());
         assert_eq!(settings.relay_test_model, default_relay_test_model());
-        assert!(!settings.cli_wrapper_enabled);
-        assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert!(!settings.codex_app_stepwise_enabled);
         assert!(!settings.codex_app_stepwise_direct_send);
         assert!(settings.codex_app_stepwise_base_url.is_empty());
@@ -1275,7 +1617,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_deserialize_uses_existing_json_keys() {
+    fn settings_deserialize_ignores_removed_cli_wrapper_keys() {
         let settings: BackendSettings = serde_json::from_str(
             r#"{"codexAppPath":"C:\\Portable\\Codex\\app","providerSyncEnabled":true,"codexGoalsEnabled":true,"cliWrapperEnabled":true,"cliWrapperBaseUrl":"https://example.test","cliWrapperApiKey":"sk-test","cliWrapperApiKeyEnv":""}"#,
         )
@@ -1283,12 +1625,13 @@ mod tests {
         assert_eq!(settings.codex_app_path, r"C:\Portable\Codex\app");
         assert!(settings.provider_sync_enabled);
         assert!(settings.codex_goals_enabled);
-        assert!(settings.cli_wrapper_enabled);
-        assert_eq!(settings.cli_wrapper_base_url, "https://example.test");
-        assert_eq!(settings.cli_wrapper_api_key, "sk-test");
-        assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.codex_extra_args.is_empty());
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert!(saved.get("cliWrapperEnabled").is_none());
+        assert!(saved.get("cliWrapperBaseUrl").is_none());
+        assert!(saved.get("cliWrapperApiKey").is_none());
+        assert!(saved.get("cliWrapperApiKeyEnv").is_none());
     }
 
     #[test]
@@ -1705,10 +2048,6 @@ experimental_bearer_token = "sk-existing""#
         let store = SettingsStore::new(dir.join("nested").join("settings.json"));
         let settings = BackendSettings {
             provider_sync_enabled: true,
-            cli_wrapper_enabled: true,
-            cli_wrapper_base_url: "https://example.test".to_string(),
-            cli_wrapper_api_key: "sk-test".to_string(),
-            cli_wrapper_api_key_env: "CUSTOM_ENV".to_string(),
             codex_extra_args: vec!["--force_high_performance_gpu".to_string()],
             ..BackendSettings::default()
         };
@@ -1782,10 +2121,6 @@ experimental_bearer_token = "sk-existing""#
         let store = SettingsStore::new(dir.join("settings.json"));
         let initial = BackendSettings {
             provider_sync_enabled: false,
-            cli_wrapper_enabled: true,
-            cli_wrapper_base_url: "https://old.test".to_string(),
-            cli_wrapper_api_key: "old-key".to_string(),
-            cli_wrapper_api_key_env: "OLD_ENV".to_string(),
             ..BackendSettings::default()
         };
         store.save(&initial).unwrap();
@@ -1800,11 +2135,11 @@ experimental_bearer_token = "sk-existing""#
             "codexAppThreadIdBadge": true,
             "codexAppNativeMenuLocalization": false,
             "codexAppServiceTierControls": true,
+            "codexAppPetRealMouseLook": true,
             "codexGoalsEnabled": true,
             "relayBaseUrl": "https://relay.example.test/v1",
             "relayApiKey": "sk-relay",
             "codexExtraArgs": ["--force_high_performance_gpu", "", "  ", " --enable-gpu "],
-            "cliWrapperApiKeyEnv": "",
             "unknownKey": "ignored"
             }))
             .unwrap();
@@ -1817,6 +2152,7 @@ experimental_bearer_token = "sk-existing""#
         assert!(updated.codex_app_thread_id_badge);
         assert!(!updated.codex_app_native_menu_localization);
         assert!(updated.codex_app_service_tier_controls);
+        assert!(updated.codex_app_pet_real_mouse_look);
         assert!(updated.codex_goals_enabled);
         assert_eq!(updated.relay_base_url, "https://relay.example.test/v1");
         assert_eq!(updated.relay_api_key, "sk-relay");
@@ -1827,10 +2163,6 @@ experimental_bearer_token = "sk-existing""#
                 "--enable-gpu".to_string(),
             ]
         );
-        assert!(updated.cli_wrapper_enabled);
-        assert_eq!(updated.cli_wrapper_base_url, "https://old.test");
-        assert_eq!(updated.cli_wrapper_api_key, "old-key");
-        assert_eq!(updated.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert_eq!(store.load().unwrap(), updated);
     }
 
@@ -1843,7 +2175,8 @@ experimental_bearer_token = "sk-existing""#
             .update(json!({
                 "codexAppImageOverlayEnabled": true,
                 "codexAppImageOverlayPath": "C:\\Users\\me\\Pictures\\overlay.png",
-                "codexAppImageOverlayOpacity": 42
+                "codexAppImageOverlayOpacity": 42,
+                "codexAppImageOverlayFitMode": "fill"
             }))
             .unwrap();
 
@@ -1853,7 +2186,74 @@ experimental_bearer_token = "sk-existing""#
             r"C:\Users\me\Pictures\overlay.png"
         );
         assert_eq!(updated.codex_app_image_overlay_opacity, 42);
+        assert_eq!(updated.codex_app_image_overlay_fit_mode, "fill");
         assert_eq!(store.load().unwrap(), updated);
+    }
+
+    #[test]
+    fn settings_store_defaults_invalid_image_overlay_fit_mode_to_fit() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "codexAppImageOverlayFitMode": "unknown"
+            }))
+            .unwrap();
+
+        assert_eq!(updated.codex_app_image_overlay_fit_mode, "fit");
+    }
+
+    #[test]
+    fn settings_store_update_persists_dream_skin_settings() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "codexAppDreamSkinEnabled": true,
+                "codexAppDreamSkinTheme": "miku",
+                "codexAppDreamSkinImagePath": " C:\\Users\\me\\Pictures\\dream.webp "
+            }))
+            .unwrap();
+
+        assert!(updated.codex_app_dream_skin_enabled);
+        assert_eq!(updated.codex_app_dream_skin_theme, "miku");
+        assert_eq!(
+            updated.codex_app_dream_skin_image_path,
+            r"C:\Users\me\Pictures\dream.webp"
+        );
+        assert_eq!(store.load().unwrap(), updated);
+    }
+
+    #[test]
+    fn settings_store_defaults_invalid_dream_skin_theme_to_pink() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "codexAppDreamSkinTheme": "unknown"
+            }))
+            .unwrap();
+
+        assert_eq!(updated.codex_app_dream_skin_theme, "pink");
+    }
+
+    #[test]
+    fn legacy_market_theme_ids_resolve_to_layout_presets() {
+        assert_eq!(
+            resolve_dream_skin_style_preset("preset-cyber-neon", "dream-original"),
+            "cyber-neon"
+        );
+        assert_eq!(
+            resolve_dream_skin_style_preset("codex-snow-skin", ""),
+            "codex-snow"
+        );
+        assert_eq!(
+            resolve_dream_skin_style_preset("custom-theme", "dream-original"),
+            "dream-original"
+        );
     }
 
     #[test]

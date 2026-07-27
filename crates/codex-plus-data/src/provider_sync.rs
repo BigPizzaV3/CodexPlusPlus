@@ -1,6 +1,7 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, params_from_iter, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,8 +31,38 @@ pub struct ProviderSyncResult {
     pub sqlite_provider_rows_updated: usize,
     pub sqlite_user_event_rows_updated: usize,
     pub sqlite_cwd_rows_updated: usize,
+    pub sqlite_catalog_rows_inserted: usize,
     pub updated_workspace_roots: usize,
     pub encrypted_content_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionIndexCleanupCandidate {
+    pub id: String,
+    pub thread_name: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionIndexCleanupPreview {
+    pub snapshot_sha256: String,
+    pub candidates: Vec<SessionIndexCleanupCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionIndexCleanupResult {
+    pub pruned_entries: usize,
+    pub backup_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct SessionIndexCleanupApplyError {
+    pub message: String,
+    pub backup_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -97,22 +128,47 @@ struct AppliedSessionChanges {
     skipped_locked_rollout_files: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+struct SessionIndexPlan {
+    path: PathBuf,
+    original_bytes: Vec<u8>,
+    original_text: String,
+    snapshot_sha256: String,
+    candidates: Vec<SessionIndexCleanupCandidate>,
+}
+
 #[derive(Debug, Default)]
 struct SqliteUpdateCounts {
     provider_rows: usize,
     user_event_rows: usize,
     cwd_rows: usize,
+    catalog_insert_rows: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CatalogRepairThread {
+    id: String,
+    display_title: String,
+    source_created_at: f64,
+    source_updated_at: f64,
+    cwd: String,
+    source_kind: String,
+    source_detail: String,
+    model_provider: String,
+    git_branch: Option<String>,
+    thread_source: Option<String>,
 }
 
 impl SqliteUpdateCounts {
     fn total(&self) -> usize {
-        self.provider_rows + self.user_event_rows + self.cwd_rows
+        self.provider_rows + self.user_event_rows + self.cwd_rows + self.catalog_insert_rows
     }
 
     fn add(&mut self, other: Self) {
         self.provider_rows += other.provider_rows;
         self.user_event_rows += other.user_event_rows;
         self.cwd_rows += other.cwd_rows;
+        self.catalog_insert_rows += other.catalog_insert_rows;
     }
 }
 
@@ -186,16 +242,21 @@ pub fn run_provider_sync_with_target(
             .filter_map(|change| Some((change.thread_id.clone()?, change.cwd.clone()?)))
             .filter(|(thread_id, _)| !projectless_thread_ids.contains(thread_id))
             .collect::<HashMap<_, _>>();
-        let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+        let sqlite_paths = provider_sync_db_paths(&home);
         let sqlite_update_count = count_sqlite_updates_for_paths(
             &sqlite_paths,
             &target_provider,
             &thread_ids_with_user_events,
             &cwd_by_thread_id,
         )?;
+        let catalog_insert_count =
+            count_missing_local_thread_catalog_rows(&sqlite_paths, &target_provider)?;
         let global_state_update_count =
             count_global_state_updates(&home.join(".codex-global-state.json"))?;
-        if rewrite_changes.is_empty() && sqlite_update_count == 0 && global_state_update_count == 0
+        if rewrite_changes.is_empty()
+            && sqlite_update_count == 0
+            && catalog_insert_count == 0
+            && global_state_update_count == 0
         {
             let mut synced = result(
                 ProviderSyncStatus::Synced,
@@ -218,6 +279,9 @@ pub fn run_provider_sync_with_target(
                 &thread_ids_with_user_events,
                 &cwd_by_thread_id,
             )?;
+            let mut sqlite_updates = sqlite_updates;
+            sqlite_updates.catalog_insert_rows =
+                repair_missing_local_thread_catalog_rows(&sqlite_paths, &target_provider)?;
             let updated_workspace_roots =
                 apply_global_state_update(&home.join(".codex-global-state.json"))?;
             prune_backups(&home)?;
@@ -247,6 +311,7 @@ pub fn run_provider_sync_with_target(
         synced.sqlite_provider_rows_updated = sqlite_updates.provider_rows;
         synced.sqlite_user_event_rows_updated = sqlite_updates.user_event_rows;
         synced.sqlite_cwd_rows_updated = sqlite_updates.cwd_rows;
+        synced.sqlite_catalog_rows_inserted = sqlite_updates.catalog_insert_rows;
         synced.updated_workspace_roots = updated_workspace_roots;
         synced.encrypted_content_warning = encrypted_content_warning;
         Ok(synced)
@@ -283,6 +348,7 @@ fn result(
         sqlite_provider_rows_updated: 0,
         sqlite_user_event_rows_updated: 0,
         sqlite_cwd_rows_updated: 0,
+        sqlite_catalog_rows_inserted: 0,
         updated_workspace_roots: 0,
         encrypted_content_warning: None,
     }
@@ -293,6 +359,16 @@ fn dirs_home() -> PathBuf {
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn provider_sync_db_paths(home: &Path) -> Vec<PathBuf> {
+    let mut paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(home);
+    for path in codex_plus_core::codex_sqlite::codex_thread_reference_db_paths_from_home(home) {
+        if !paths.iter().any(|candidate| candidate == &path) {
+            paths.push(path);
+        }
+    }
+    paths
 }
 
 pub fn load_provider_sync_targets(codex_home: Option<&Path>) -> ProviderSyncTargetList {
@@ -328,7 +404,7 @@ pub fn load_provider_sync_targets(codex_home: Option<&Path>) -> ProviderSyncTarg
     if let Ok(ids) = rollout_provider_ids(&home) {
         add_sources(&mut sources, ids, ProviderSyncTargetSource::Rollout);
     }
-    for db_path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home) {
+    for db_path in provider_sync_db_paths(&home) {
         if let Ok(ids) = sqlite_provider_ids(&db_path) {
             add_sources(&mut sources, ids, ProviderSyncTargetSource::Sqlite);
         }
@@ -594,6 +670,314 @@ fn rollout_files(home: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+fn collect_live_thread_ids(
+    home: &Path,
+    sqlite_paths: &[PathBuf],
+) -> anyhow::Result<HashSet<String>> {
+    let mut ids = HashSet::new();
+    for path in rollout_files(home)? {
+        if let Some(id) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(rollout_thread_id_from_filename)
+        {
+            ids.insert(id);
+        }
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if is_locked_io_error(&error) => continue,
+            Err(error) => return Err(error.into()),
+        };
+        for segment in text.split_inclusive('\n') {
+            let (line, _) = split_line_ending(segment);
+            let Ok(record) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if record.get("type").and_then(Value::as_str) != Some("session_meta") {
+                continue;
+            }
+            if let Some(id) = record
+                .get("payload")
+                .and_then(Value::as_object)
+                .and_then(|payload| payload.get("id"))
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+            {
+                ids.insert(id.to_string());
+            }
+        }
+    }
+    for path in sqlite_paths {
+        ids.extend(sqlite_thread_ids(path)?);
+    }
+    Ok(ids)
+}
+
+fn rollout_thread_id_from_filename(name: &str) -> Option<String> {
+    let stem = name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
+    let bytes = stem.as_bytes();
+    if bytes.len() < 36 {
+        return None;
+    }
+    let candidate = &stem[stem.len() - 36..];
+    let valid = candidate
+        .chars()
+        .enumerate()
+        .all(|(index, ch)| match index {
+            8 | 13 | 18 | 23 => ch == '-',
+            _ => ch.is_ascii_hexdigit(),
+        });
+    valid.then(|| candidate.to_string())
+}
+
+fn sqlite_thread_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
+    if !path.exists() {
+        return Ok(HashSet::new());
+    }
+    let db = Connection::open(path)?;
+    let mut ids = HashSet::new();
+    for (table, column) in [
+        ("threads", "id"),
+        ("local_thread_catalog", "thread_id"),
+        ("automation_runs", "thread_id"),
+        ("inbox_items", "thread_id"),
+        ("sessions", "id"),
+        ("messages", "session_id"),
+        ("thread_dynamic_tools", "thread_id"),
+        ("thread_goals", "thread_id"),
+        ("thread_spawn_edges", "parent_thread_id"),
+        ("thread_spawn_edges", "child_thread_id"),
+        ("stage1_outputs", "thread_id"),
+        ("agent_job_items", "assigned_thread_id"),
+    ] {
+        if !table_columns(&db, table)?.contains(column) {
+            continue;
+        }
+        let mut stmt = db.prepare(&format!(
+            "SELECT DISTINCT {column} FROM {table} WHERE COALESCE({column}, '') <> ''"
+        ))?;
+        ids.extend(
+            stmt.query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<HashSet<_>>>()?,
+        );
+    }
+    Ok(ids)
+}
+
+fn plan_session_index_cleanup(
+    path: &Path,
+    live_thread_ids: &HashSet<String>,
+) -> anyhow::Result<Option<SessionIndexPlan>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let original_bytes = fs::read(path)?;
+    let original_text = String::from_utf8(original_bytes.clone())?;
+    let mut candidates = Vec::new();
+    for segment in original_text.split_inclusive('\n') {
+        let (line, _) = split_line_ending(segment);
+        if let Some(candidate) = known_session_index_candidate(line)
+            && !live_thread_ids.contains(&candidate.id)
+        {
+            candidates.push(candidate);
+        }
+    }
+    Ok(Some(SessionIndexPlan {
+        path: path.to_path_buf(),
+        snapshot_sha256: sha256_hex(&original_bytes),
+        original_bytes,
+        original_text,
+        candidates,
+    }))
+}
+
+fn known_session_index_candidate(line: &str) -> Option<SessionIndexCleanupCandidate> {
+    let record = serde_json::from_str::<Value>(line).ok()?;
+    let object = record.as_object()?;
+    if object.len() != 3
+        || !["id", "thread_name", "updated_at"]
+            .iter()
+            .all(|key| object.contains_key(*key))
+    {
+        return None;
+    }
+    let id = object.get("id")?.as_str()?.trim();
+    let thread_name = object.get("thread_name")?.as_str()?;
+    let updated_at = object.get("updated_at")?.as_str()?;
+    if id.is_empty() || updated_at.trim().is_empty() {
+        return None;
+    }
+    Some(SessionIndexCleanupCandidate {
+        id: id.to_string(),
+        thread_name: thread_name.to_string(),
+        updated_at: updated_at.to_string(),
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn filtered_session_index_text(
+    plan: &SessionIndexPlan,
+    selected_ids: &HashSet<String>,
+) -> (String, usize) {
+    let mut next_text = String::with_capacity(plan.original_text.len());
+    let mut removed_entries = 0;
+    for segment in plan.original_text.split_inclusive('\n') {
+        let (line, line_ending) = split_line_ending(segment);
+        let remove = known_session_index_candidate(line)
+            .is_some_and(|candidate| selected_ids.contains(&candidate.id));
+        if remove {
+            removed_entries += 1;
+        } else {
+            next_text.push_str(line);
+            next_text.push_str(line_ending);
+        }
+    }
+    (next_text, removed_entries)
+}
+
+pub fn preview_session_index_cleanup(
+    codex_home: Option<&Path>,
+) -> anyhow::Result<SessionIndexCleanupPreview> {
+    let home = codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dirs_home().join(".codex"));
+    let sqlite_paths =
+        codex_plus_core::codex_sqlite::codex_thread_reference_db_paths_from_home(&home);
+    let live_thread_ids = collect_live_thread_ids(&home, &sqlite_paths)?;
+    let plan = plan_session_index_cleanup(&home.join("session_index.jsonl"), &live_thread_ids)?;
+    Ok(match plan {
+        Some(plan) => SessionIndexCleanupPreview {
+            snapshot_sha256: plan.snapshot_sha256,
+            candidates: plan.candidates,
+        },
+        None => SessionIndexCleanupPreview {
+            snapshot_sha256: sha256_hex(&[]),
+            candidates: Vec::new(),
+        },
+    })
+}
+
+pub fn apply_session_index_cleanup(
+    codex_home: Option<&Path>,
+    expected_snapshot_sha256: &str,
+    confirmed_thread_ids: &[String],
+) -> Result<SessionIndexCleanupResult, SessionIndexCleanupApplyError> {
+    let require_stopped_app = codex_home.is_none();
+    if require_stopped_app {
+        ensure_codex_app_stopped(None)?;
+    }
+    let home = codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dirs_home().join(".codex"));
+    let lock_dir = home.join("tmp/provider-sync.lock");
+    acquire_lock(&lock_dir).map_err(|error| cleanup_apply_error(error, None))?;
+    let result = (|| {
+        let sqlite_paths =
+            codex_plus_core::codex_sqlite::codex_thread_reference_db_paths_from_home(&home);
+        let live_thread_ids = collect_live_thread_ids(&home, &sqlite_paths)
+            .map_err(|error| cleanup_apply_error(error, None))?;
+        let plan = plan_session_index_cleanup(&home.join("session_index.jsonl"), &live_thread_ids)
+            .map_err(|error| cleanup_apply_error(error, None))?
+            .ok_or_else(|| cleanup_apply_error("session_index.jsonl 不存在，无法清理", None))?;
+        if plan.snapshot_sha256 != expected_snapshot_sha256 {
+            return Err(cleanup_apply_error(
+                "session_index.jsonl 已在预览后发生变化；为避免覆盖 Codex 新内容，本次清理已中止，请重新预览",
+                None,
+            ));
+        }
+        let candidate_ids = plan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.id.as_str())
+            .collect::<HashSet<_>>();
+        let selected_ids = confirmed_thread_ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .map(ToString::to_string)
+            .collect::<HashSet<_>>();
+        if selected_ids
+            .iter()
+            .any(|id| !candidate_ids.contains(id.as_str()))
+        {
+            return Err(cleanup_apply_error(
+                "确认列表已过期或包含非候选任务；本次清理未执行，请重新预览",
+                None,
+            ));
+        }
+        let (next_text, removed_entries) = filtered_session_index_text(&plan, &selected_ids);
+        if removed_entries == 0 {
+            return Ok(SessionIndexCleanupResult {
+                pruned_entries: 0,
+                backup_dir: None,
+            });
+        }
+        let backup_dir = create_session_index_cleanup_backup(&home, &plan, removed_entries)?;
+        let current_bytes = fs::read(&plan.path)
+            .map_err(|error| cleanup_apply_error(error, Some(backup_dir.clone())))?;
+        if current_bytes != plan.original_bytes {
+            return Err(cleanup_apply_error(
+                "session_index.jsonl 在写入前再次发生变化；未覆盖 Codex 新内容，请重新预览",
+                Some(backup_dir),
+            ));
+        }
+        if require_stopped_app {
+            ensure_codex_app_stopped(Some(backup_dir.clone()))?;
+        }
+        codex_plus_core::settings::atomic_write(&plan.path, next_text.as_bytes()).map_err(
+            |error| {
+                cleanup_apply_error(
+                    format!(
+                        "原子写入 session_index.jsonl 失败；原文件未被主动覆盖，可从备份目录手动恢复：{error}"
+                    ),
+                    Some(backup_dir.clone()),
+                )
+            },
+        )?;
+        let _ = prune_backups(&home);
+        Ok(SessionIndexCleanupResult {
+            pruned_entries: removed_entries,
+            backup_dir: Some(backup_dir),
+        })
+    })();
+    let _ = release_lock(&lock_dir);
+    result
+}
+
+fn ensure_codex_app_stopped(
+    backup_dir: Option<PathBuf>,
+) -> Result<(), SessionIndexCleanupApplyError> {
+    let running_processes =
+        codex_plus_core::watcher::find_session_index_cleanup_blocking_processes();
+    if running_processes.is_empty() {
+        return Ok(());
+    }
+    Err(cleanup_apply_error(
+        format!(
+            "Codex App / ChatGPT 仍在运行（进程：{}）；请完全退出 App 后重新预览并确认清理",
+            running_processes
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        backup_dir,
+    ))
+}
+
+fn cleanup_apply_error(
+    message: impl std::fmt::Display,
+    backup_dir: Option<PathBuf>,
+) -> SessionIndexCleanupApplyError {
+    SessionIndexCleanupApplyError {
+        message: message.to_string(),
+        backup_dir,
+    }
+}
+
 fn rollout_provider_ids(home: &Path) -> anyhow::Result<Vec<String>> {
     let mut ids = HashSet::new();
     for path in rollout_files(home)? {
@@ -716,7 +1100,7 @@ fn create_backup(
     }
     let db_dir = backup_dir.join("db");
     let mut db_files = Vec::new();
-    for db_path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(home) {
+    for db_path in provider_sync_db_paths(home) {
         for source in codex_plus_core::codex_sqlite::codex_sqlite_sidecar_paths(&db_path) {
             if !source.exists() {
                 continue;
@@ -756,6 +1140,36 @@ fn create_backup(
             "managedBy": "Codex++ provider sync"
         }))?,
     )?;
+    Ok(backup_dir)
+}
+
+fn create_session_index_cleanup_backup(
+    home: &Path,
+    plan: &SessionIndexPlan,
+    removed_entries: usize,
+) -> Result<PathBuf, SessionIndexCleanupApplyError> {
+    let backup_root = home.join("backups_state/provider-sync");
+    let mut backup_dir = backup_root.join(timestamp_name());
+    let mut suffix = 0;
+    while backup_dir.exists() {
+        suffix += 1;
+        backup_dir = backup_root.join(format!("{}-{suffix}", timestamp_name()));
+    }
+    fs::create_dir_all(&backup_dir).map_err(|error| cleanup_apply_error(error, None))?;
+    fs::write(backup_dir.join("session_index.jsonl"), &plan.original_bytes)
+        .map_err(|error| cleanup_apply_error(error, Some(backup_dir.clone())))?;
+    let metadata = serde_json::to_string_pretty(&json!({
+        "version": 1,
+        "namespace": "provider-sync-session-index-cleanup",
+        "codexHome": home.to_string_lossy(),
+        "createdAt": chrono::Utc::now().to_rfc3339(),
+        "snapshotSha256": plan.snapshot_sha256,
+        "prunedSessionIndexEntries": removed_entries,
+        "managedBy": "Codex++ provider sync"
+    }))
+    .map_err(|error| cleanup_apply_error(error, Some(backup_dir.clone())))?;
+    fs::write(backup_dir.join("metadata.json"), metadata)
+        .map_err(|error| cleanup_apply_error(error, Some(backup_dir.clone())))?;
     Ok(backup_dir)
 }
 
@@ -810,18 +1224,20 @@ fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
         return Ok(Vec::new());
     }
     let db = Connection::open(path)?;
-    let columns = table_columns(&db, "threads")?;
-    if !columns.contains("model_provider") {
-        return Ok(Vec::new());
-    }
-    let mut stmt = db.prepare(
-        "SELECT DISTINCT COALESCE(model_provider, '') FROM threads WHERE COALESCE(model_provider, '') <> ''",
-    )?;
     let mut ids = HashSet::new();
-    for item in stmt.query_map([], |row| row.get::<_, String>(0))? {
-        let id = item?;
-        if is_valid_provider_id_for_discovery(&id) {
-            ids.insert(id);
+    for table in ["threads", "local_thread_catalog"] {
+        let columns = table_columns(&db, table)?;
+        if !columns.contains("model_provider") {
+            continue;
+        }
+        let mut stmt = db.prepare(&format!(
+            "SELECT DISTINCT COALESCE(model_provider, '') FROM {table} WHERE COALESCE(model_provider, '') <> ''"
+        ))?;
+        for item in stmt.query_map([], |row| row.get::<_, String>(0))? {
+            let id = item?;
+            if is_valid_provider_id_for_discovery(&id) {
+                ids.insert(id);
+            }
         }
     }
     Ok(sorted_provider_ids(ids))
@@ -838,14 +1254,22 @@ fn count_sqlite_updates(
     }
     let db = Connection::open(path)?;
     let columns = table_columns(&db, "threads")?;
-    if !columns.contains("model_provider") {
-        return Ok(0);
+    let catalog_columns = table_columns(&db, "local_thread_catalog")?;
+    let mut total = 0;
+    if columns.contains("model_provider") {
+        total += db.query_row(
+            "SELECT COUNT(*) FROM threads WHERE COALESCE(model_provider, '') <> ?1",
+            [target_provider],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
     }
-    let mut total: usize = db.query_row(
-        "SELECT COUNT(*) FROM threads WHERE COALESCE(model_provider, '') <> ?1",
-        [target_provider],
-        |row| row.get::<_, i64>(0),
-    )? as usize;
+    if catalog_columns.contains("model_provider") {
+        total += db.query_row(
+            "SELECT COUNT(*) FROM local_thread_catalog WHERE COALESCE(model_provider, '') <> ?1",
+            [target_provider],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+    }
     if columns.contains("has_user_event") {
         for thread_id in user_event_thread_ids {
             total += db.query_row(
@@ -896,15 +1320,24 @@ fn apply_sqlite_update(
     }
     let mut db = Connection::open(path)?;
     let columns = table_columns(&db, "threads")?;
-    if !columns.contains("model_provider") {
+    let catalog_columns = table_columns(&db, "local_thread_catalog")?;
+    if !columns.contains("model_provider") && !catalog_columns.contains("model_provider") {
         return Ok(SqliteUpdateCounts::default());
     }
     let tx = db.transaction()?;
     let mut counts = SqliteUpdateCounts::default();
-    counts.provider_rows = tx.execute(
-        "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
-        [target_provider],
-    )?;
+    if columns.contains("model_provider") {
+        counts.provider_rows += tx.execute(
+            "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
+            [target_provider],
+        )?;
+    }
+    if catalog_columns.contains("model_provider") {
+        counts.provider_rows += tx.execute(
+            "UPDATE local_thread_catalog SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
+            [target_provider],
+        )?;
+    }
     if columns.contains("has_user_event") {
         for thread_id in user_event_thread_ids {
             counts.user_event_rows += tx.execute(
@@ -941,6 +1374,403 @@ fn apply_sqlite_update_for_paths(
         )?);
     }
     Ok(total)
+}
+
+fn count_missing_local_thread_catalog_rows(
+    paths: &[PathBuf],
+    target_provider: &str,
+) -> anyhow::Result<usize> {
+    let source_threads = collect_catalog_repair_threads(paths, target_provider)?;
+    if source_threads.is_empty() {
+        return Ok(0);
+    }
+    let mut total = 0;
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let db = Connection::open(path)?;
+        let columns = table_columns(&db, "local_thread_catalog")?;
+        if !catalog_supports_repair(&columns) {
+            continue;
+        }
+        let host_id = local_catalog_host_id(&db)?;
+        for thread in source_threads.values() {
+            if !local_catalog_contains_thread(&db, &host_id, &thread.id)? {
+                total += 1;
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn repair_missing_local_thread_catalog_rows(
+    paths: &[PathBuf],
+    target_provider: &str,
+) -> anyhow::Result<usize> {
+    let source_threads = collect_catalog_repair_threads(paths, target_provider)?;
+    if source_threads.is_empty() {
+        return Ok(0);
+    }
+    let mut total_inserted = 0;
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let mut db = Connection::open(path)?;
+        let columns = table_columns(&db, "local_thread_catalog")?;
+        if !catalog_supports_repair(&columns) {
+            continue;
+        }
+        let sync_columns = table_columns(&db, "local_thread_catalog_sync_state")?;
+        let metadata_columns = table_columns(&db, "local_thread_catalog_metadata")?;
+        let host_id = local_catalog_host_id(&db)?;
+        let mut observation_sequence = local_catalog_max_observation_sequence(&db)?;
+        let insert_columns = local_catalog_insert_columns(&columns);
+        let placeholders = std::iter::repeat_n("?", insert_columns.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let insert_sql = format!(
+            "INSERT OR IGNORE INTO local_thread_catalog ({}) VALUES ({})",
+            insert_columns.join(", "),
+            placeholders
+        );
+        let tx = db.transaction()?;
+        let mut inserted = 0;
+        let mut max_source_updated_at = 0.0_f64;
+        let mut threads = source_threads.values().collect::<Vec<_>>();
+        threads.sort_by(|left, right| left.id.cmp(&right.id));
+        for thread in threads {
+            observation_sequence += 1;
+            let values = local_catalog_insert_values(
+                &insert_columns,
+                &host_id,
+                thread,
+                observation_sequence,
+            );
+            let affected = tx.execute(&insert_sql, params_from_iter(values))?;
+            if affected > 0 {
+                inserted += affected;
+                max_source_updated_at = max_source_updated_at.max(thread.source_updated_at);
+            }
+        }
+        if inserted > 0 {
+            update_local_catalog_metadata(&tx, &metadata_columns, inserted)?;
+            update_local_catalog_sync_state(
+                &tx,
+                &sync_columns,
+                &host_id,
+                observation_sequence,
+                max_source_updated_at,
+            )?;
+        }
+        tx.commit()?;
+        total_inserted += inserted;
+    }
+    Ok(total_inserted)
+}
+
+fn collect_catalog_repair_threads(
+    paths: &[PathBuf],
+    target_provider: &str,
+) -> anyhow::Result<HashMap<String, CatalogRepairThread>> {
+    let mut threads = HashMap::new();
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let db = Connection::open(path)?;
+        let columns = table_columns(&db, "threads")?;
+        if !columns.contains("id") {
+            continue;
+        }
+        let display_title = coalesce_text_expr(
+            &columns,
+            &["name", "title", "preview", "first_user_message"],
+            "id",
+        );
+        let source_created_at = timestamp_expr(&columns, "created_at_ms", "created_at");
+        let source_updated_at = timestamp_expr(&columns, "updated_at_ms", "updated_at");
+        let cwd = text_expr(&columns, "cwd", "''");
+        let source_kind = coalesce_text_expr(&columns, &["source"], "'cli'");
+        let source_detail = text_expr(&columns, "rollout_path", "''");
+        let git_branch = text_expr(&columns, "git_branch", "NULL");
+        let thread_source = text_expr(&columns, "thread_source", "NULL");
+        let sql = format!(
+            "SELECT id, {display_title}, {source_created_at}, {source_updated_at}, {cwd}, {source_kind}, {source_detail}, {git_branch}, {thread_source} FROM threads WHERE COALESCE(id, '') <> ''"
+        );
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
+            Ok(CatalogRepairThread {
+                id: row.get(0)?,
+                display_title: row.get::<_, String>(1).unwrap_or_default(),
+                source_created_at: row.get::<_, f64>(2).unwrap_or_default(),
+                source_updated_at: row.get::<_, f64>(3).unwrap_or_default(),
+                cwd: row.get::<_, String>(4).unwrap_or_default(),
+                source_kind: row
+                    .get::<_, String>(5)
+                    .unwrap_or_else(|_| "cli".to_string()),
+                source_detail: row.get::<_, String>(6).unwrap_or_default(),
+                model_provider: target_provider.to_string(),
+                git_branch: row.get::<_, Option<String>>(7).unwrap_or(None),
+                thread_source: row.get::<_, Option<String>>(8).unwrap_or(None),
+            })
+        })?;
+        for item in rows {
+            let thread = item?;
+            let replace = threads
+                .get(&thread.id)
+                .map(|current: &CatalogRepairThread| {
+                    thread.source_updated_at > current.source_updated_at
+                })
+                .unwrap_or(true);
+            if replace {
+                threads.insert(thread.id.clone(), thread);
+            }
+        }
+    }
+    Ok(threads)
+}
+
+fn catalog_supports_repair(columns: &HashSet<String>) -> bool {
+    [
+        "host_id",
+        "thread_id",
+        "display_title",
+        "source_created_at",
+        "source_updated_at",
+        "cwd",
+        "source_kind",
+        "model_provider",
+        "observation_sequence",
+    ]
+    .iter()
+    .all(|column| columns.contains(*column))
+}
+
+fn local_catalog_host_id(db: &Connection) -> anyhow::Result<String> {
+    if !table_columns(db, "local_thread_catalog_hosts")?.contains("host_id") {
+        return Ok("local".to_string());
+    }
+    match db.query_row(
+        "SELECT host_id FROM local_thread_catalog_hosts ORDER BY host_id LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(host_id) if !host_id.trim().is_empty() => Ok(host_id),
+        Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => Ok("local".to_string()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn local_catalog_max_observation_sequence(db: &Connection) -> anyhow::Result<i64> {
+    if !table_columns(db, "local_thread_catalog")?.contains("observation_sequence") {
+        return Ok(0);
+    }
+    Ok(db.query_row(
+        "SELECT COALESCE(MAX(observation_sequence), 0) FROM local_thread_catalog",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?)
+}
+
+fn local_catalog_contains_thread(
+    db: &Connection,
+    host_id: &str,
+    thread_id: &str,
+) -> anyhow::Result<bool> {
+    Ok(db
+        .query_row(
+            "SELECT 1 FROM local_thread_catalog WHERE host_id = ?1 AND thread_id = ?2 LIMIT 1",
+            (host_id, thread_id),
+            |_| Ok(()),
+        )
+        .is_ok())
+}
+
+fn local_catalog_insert_columns(columns: &HashSet<String>) -> Vec<&'static str> {
+    let mut names = vec![
+        "host_id",
+        "thread_id",
+        "display_title",
+        "source_created_at",
+        "source_updated_at",
+        "cwd",
+        "source_kind",
+        "model_provider",
+        "observation_sequence",
+    ];
+    for optional in [
+        "source_detail",
+        "missing_candidate",
+        "git_branch",
+        "thread_source",
+    ] {
+        if columns.contains(optional) {
+            names.push(optional);
+        }
+    }
+    names
+}
+
+fn local_catalog_insert_values(
+    columns: &[&str],
+    host_id: &str,
+    thread: &CatalogRepairThread,
+    observation_sequence: i64,
+) -> Vec<SqlValue> {
+    columns
+        .iter()
+        .map(|column| match *column {
+            "host_id" => SqlValue::Text(host_id.to_string()),
+            "thread_id" => SqlValue::Text(thread.id.clone()),
+            "display_title" => SqlValue::Text(thread.display_title.clone()),
+            "source_created_at" => SqlValue::Real(thread.source_created_at),
+            "source_updated_at" => SqlValue::Real(thread.source_updated_at),
+            "cwd" => SqlValue::Text(thread.cwd.clone()),
+            "source_kind" => SqlValue::Text(thread.source_kind.clone()),
+            "source_detail" => SqlValue::Text(thread.source_detail.clone()),
+            "model_provider" => SqlValue::Text(thread.model_provider.clone()),
+            "git_branch" => thread
+                .git_branch
+                .clone()
+                .map(SqlValue::Text)
+                .unwrap_or(SqlValue::Null),
+            "thread_source" => thread
+                .thread_source
+                .clone()
+                .map(SqlValue::Text)
+                .unwrap_or(SqlValue::Null),
+            "observation_sequence" => SqlValue::Integer(observation_sequence),
+            "missing_candidate" => SqlValue::Integer(0),
+            _ => SqlValue::Null,
+        })
+        .collect()
+}
+
+fn update_local_catalog_metadata(
+    tx: &rusqlite::Transaction<'_>,
+    columns: &HashSet<String>,
+    inserted: usize,
+) -> anyhow::Result<()> {
+    if !columns.contains("catalog_revision") {
+        return Ok(());
+    }
+    let affected = tx.execute(
+        "UPDATE local_thread_catalog_metadata SET catalog_revision = catalog_revision + ?1",
+        [inserted as i64],
+    )?;
+    if affected == 0 && columns.contains("id") {
+        tx.execute(
+            "INSERT INTO local_thread_catalog_metadata (id, catalog_revision) VALUES (1, ?1)",
+            [inserted as i64],
+        )?;
+    }
+    Ok(())
+}
+
+fn update_local_catalog_sync_state(
+    tx: &rusqlite::Transaction<'_>,
+    columns: &HashSet<String>,
+    host_id: &str,
+    observation_sequence: i64,
+    max_source_updated_at: f64,
+) -> anyhow::Result<()> {
+    if !columns.contains("host_id") {
+        return Ok(());
+    }
+    let now = now_secs() as i64;
+    let mut assignments = Vec::new();
+    let mut values = Vec::new();
+    if columns.contains("initial_build_complete") {
+        assignments.push("initial_build_complete = 1");
+    }
+    if columns.contains("observation_sequence") {
+        assignments.push("observation_sequence = MAX(COALESCE(observation_sequence, 0), ?)");
+        values.push(SqlValue::Integer(observation_sequence));
+    }
+    if columns.contains("watermark_updated_at") {
+        assignments.push("watermark_updated_at = MAX(COALESCE(watermark_updated_at, 0), ?)");
+        values.push(SqlValue::Real(max_source_updated_at));
+    }
+    if columns.contains("last_full_reconciled_at") {
+        assignments.push("last_full_reconciled_at = MAX(COALESCE(last_full_reconciled_at, 0), ?)");
+        values.push(SqlValue::Integer(now));
+    }
+    if assignments.is_empty() {
+        return Ok(());
+    }
+    let update_sql = format!(
+        "UPDATE local_thread_catalog_sync_state SET {} WHERE host_id = ?",
+        assignments.join(", ")
+    );
+    let mut update_values = values.clone();
+    update_values.push(SqlValue::Text(host_id.to_string()));
+    let affected = tx.execute(&update_sql, params_from_iter(update_values))?;
+    if affected == 0 {
+        let mut insert_columns = vec!["host_id"];
+        let mut insert_values = vec![SqlValue::Text(host_id.to_string())];
+        if columns.contains("watermark_updated_at") {
+            insert_columns.push("watermark_updated_at");
+            insert_values.push(SqlValue::Real(max_source_updated_at));
+        }
+        if columns.contains("initial_build_complete") {
+            insert_columns.push("initial_build_complete");
+            insert_values.push(SqlValue::Integer(1));
+        }
+        if columns.contains("observation_sequence") {
+            insert_columns.push("observation_sequence");
+            insert_values.push(SqlValue::Integer(observation_sequence));
+        }
+        if columns.contains("last_full_reconciled_at") {
+            insert_columns.push("last_full_reconciled_at");
+            insert_values.push(SqlValue::Integer(now));
+        }
+        let placeholders = std::iter::repeat_n("?", insert_columns.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let insert_sql = format!(
+            "INSERT INTO local_thread_catalog_sync_state ({}) VALUES ({})",
+            insert_columns.join(", "),
+            placeholders
+        );
+        tx.execute(&insert_sql, params_from_iter(insert_values))?;
+    }
+    Ok(())
+}
+
+fn text_expr(columns: &HashSet<String>, column: &str, fallback: &str) -> String {
+    if columns.contains(column) {
+        format!("COALESCE({column}, {fallback})")
+    } else {
+        fallback.to_string()
+    }
+}
+
+fn coalesce_text_expr(columns: &HashSet<String>, candidates: &[&str], fallback: &str) -> String {
+    let mut parts = candidates
+        .iter()
+        .filter(|column| columns.contains(**column))
+        .map(|column| format!("NULLIF({column}, '')"))
+        .collect::<Vec<_>>();
+    parts.push(fallback.to_string());
+    if parts.len() == 1 {
+        parts.remove(0)
+    } else {
+        format!("COALESCE({})", parts.join(", "))
+    }
+}
+
+fn timestamp_expr(columns: &HashSet<String>, ms_column: &str, seconds_column: &str) -> String {
+    if columns.contains(ms_column) {
+        format!("COALESCE({ms_column} / 1000.0, 0)")
+    } else if columns.contains(seconds_column) {
+        format!(
+            "CASE WHEN COALESCE({seconds_column}, 0) > 9999999999 THEN {seconds_column} / 1000.0 ELSE COALESCE({seconds_column}, 0) END"
+        )
+    } else {
+        "0".to_string()
+    }
 }
 
 fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {

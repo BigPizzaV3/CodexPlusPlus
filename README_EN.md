@@ -16,7 +16,7 @@
   <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8DB">
 </p>
 
-Codex++ is an external enhancement launcher and manager for the Codex App. It does not modify the original Codex installation. Instead, it starts Codex externally and injects enhancements through the Chromium DevTools Protocol.
+Codex++ is an external launcher and manager for the OpenAI Codex / ChatGPT desktop app. It uses the Chromium DevTools Protocol and a local helper for provider switching, protocol conversion, session management, and UI enhancements without modifying the official app's `app.asar` or installation files.
 
 ## Quick Start
 
@@ -28,10 +28,10 @@ Download the latest installer from [GitHub Releases](https://github.com/BigPizza
 
 After installation, two entry points are available:
 
-- `Codex++`: a silent launcher. It does not show the manager UI and only starts Codex with Codex++ injection.
-- `Codex++ Manager`: a Tauri control panel for launch, diagnostics, repair, updates, relay injection, enhancements, and user scripts.
+- `Codex++`: silently starts the official desktop app with saved provider settings and enhancements.
+- `Codex++ Manager`: manages providers, models, tools, sessions, enhancements, scripts, updates, and diagnostics.
 
-The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG installs `/Applications/Codex++.app` and `/Applications/Codex++ 管理工具.app`.
+For first-time setup, open the manager, verify the detected app path, configure a provider and optional enhancements, then launch through `Codex++`. The Windows installer creates Desktop and Start Menu shortcuts. The macOS DMG installs `/Applications/Codex++.app` and `/Applications/Codex++ 管理工具.app`.
 
 ## Sponsors
 
@@ -42,7 +42,7 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 </p>
 <p align="center">
   <a href="https://jojocode.com/"><strong>JOJO Code | Official Codex++ Relay</strong></a><br>
-  The official Codex++ relay service, focused on stable access and cost-effective pricing. JOJO Code supports GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2, and more for daily development, team collaboration, and long-running project workflows.
+  The official Codex++ relay service, focused on stable access and cost-effective pricing. JOJO Code supports the full GPT-5.6 family, Fable 5, Sonnet 5, GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2, and more for daily development, team collaboration, and long-running project workflows.
 </p>
 
 <p align="center">
@@ -59,7 +59,7 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
         <img src="docs/images/sponsor-jojocode.png" alt="JOJO Code" width="150">
       </a>
     </td>
-    <td><a href="https://jojocode.com/"><strong>JOJO Code | Official Codex++ Relay</strong></a><br>Thanks to JOJO Code for sponsoring this project. JOJO Code is the official Codex++ relay service with cost-effective pricing and stable, easy-to-configure Codex API access. It supports GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2, and more for daily development, quick setup, team collaboration, and continuous use.</td>
+    <td><a href="https://jojocode.com/"><strong>JOJO Code | Official Codex++ Relay</strong></a><br>Thanks to JOJO Code for sponsoring this project. JOJO Code is the official Codex++ relay service with cost-effective pricing and stable, easy-to-configure Codex API access. It supports the full GPT-5.6 family, Fable 5, Sonnet 5, GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2, and more for daily development, quick setup, team collaboration, and continuous use.</td>
   </tr>
   <tr>
     <td align="center">
@@ -95,14 +95,6 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
   </tr>
   <tr>
     <td align="center">
-      <a href="https://github.com/Liuchun-oss/codelf-agent">
-        <img src="docs/images/sponsor-codelf.png" alt="Codelf" width="110">
-      </a>
-    </td>
-    <td><a href="https://github.com/Liuchun-oss/codelf-agent"><strong>Codelf</strong></a><br>Codelf is a desktop app with an autonomous AI Agent and a full editor. It can help users build projects, organize materials, operate local apps, and work with multiple AI model providers through natural language, with direct access in China and high context-cache efficiency.</td>
-  </tr>
-  <tr>
-    <td align="center">
       <a href="https://xc.y1yun.net/">
         <img src="docs/images/sponsor-yiyun-tech.jpg" alt="Yiyun Technology" width="150">
       </a>
@@ -133,84 +125,83 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
     </td>
     <td><a href="https://smallice.xyz/register?aff=FSNMGR2THBLN"><strong>Smallice | AI Relay</strong></a><br>Thanks to Smallice for sponsoring this project! Smallice is one key to all the language models worth calling: a unified endpoint that acts as a quiet foundation layer beneath your applications. Whether you call Claude, GPT, Gemini, or DeepSeek, the request shape stays consistent. <a href="https://smallice.xyz/register?aff=FSNMGR2THBLN">Register through this link</a> to get started.</td>
   </tr>
+  <tr>
+    <td align="center">
+      <a href="https://hb-api.online/register?aff=8KA2ZKWNHND8">
+        <img src="docs/images/sponsor-baikewei-ai.jpg" alt="Baikewei AI" width="150">
+      </a>
+    </td>
+    <td><a href="https://hb-api.online/register?aff=8KA2ZKWNHND8"><strong>Baikewei AI</strong></a><br>Baikewei AI is an all-in-one large-model API platform for developers, teams, and AI tool users. It supports Claude, OpenAI, Gemini, Codex, and other mainstream model capabilities, with stable relay access, flexible billing, usage statistics, balance management, and APIs for Claude Code, Codex, image generation, automation scripts, and intelligent applications. New users can claim free credit and start integrating immediately.</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://api.sublyx.org/register?aff=JMNUFYR8XAH6">
+        <img src="docs/images/sponsor-sublyx.png" alt="Sublyx" width="220">
+      </a>
+    </td>
+    <td><a href="https://api.sublyx.org/register?aff=JMNUFYR8XAH6"><strong>Sublyx | AI API Gateway</strong></a><br>Thanks to Sublyx for sponsoring this project! Sublyx is an AI API aggregation gateway for developers and teams. One API Key provides unified access to OpenAI, Claude, Gemini, and other leading model services through OpenAI-compatible and Anthropic Messages-compatible APIs. It works with Codex, Claude Code, Cherry Studio, the OpenAI SDK, and other common development tools. The platform provides a unified console, usage management, stable routes, and pay-as-you-go billing for individual development, team collaboration, and Agent workflows. Codex++ users who <a href="https://api.sublyx.org/register?aff=JMNUFYR8XAH6">register through this link</a> and use promo code <code>CDXPP</code> receive an additional $10 in usage credit.</td>
+  </tr>
 </table>
 
+## Community and Support
 
-## Highlights
+Join the Codex++ community (QQ group: 830629290) to report issues, share feedback, or suggest features.
 
-- Rust backend and silent launcher with no extra runtime requirement.
-- Tauri + React manager with dark/light theme support.
-- External CDP injection. No `app.asar` patching and no DLL writes into the Codex installation.
-- Relay injection mode with multiple relay profiles, `CodexPlusPlus` provider configuration, and a one-click switch back to official ChatGPT login mode.
-- Traditional enhancement mode with plugin marketplace unlock, session delete, Markdown export, project move, and more.
-- Paste fix: when pasting from Word or other rich-text sources into the Codex composer, only keep the plain text so Codex does not treat the clipboard content as an image or file attachment. Off by default; requires a Codex relaunch to take effect.
-  - **Usage note**: after toggling in the manager, click the "保存增强设置" / "Save enhancement settings" button to persist, then restart Codex++ for the change to take effect.
-- Independent user script management with startup injection.
-- Provider Sync to keep historical sessions visible after switching providers.
-- Zed open entry detects remote SSH context and opens the matching remote file in Zed Remote Development from Codex.
-- Per-model context window configuration: the "Model list" is split into two columns, model name on the left and context window (e.g. `1M`, `200K`, or `1000000`) on the right. Codex++ auto-generates `model_catalog_json` and injects it into `config.toml`; the matching window is applied when you switch models. Leave the window empty to use Codex's default length.
-- Upstream worktree creation: create new worktrees from `upstream/<base-branch>` after fetching the remote branch, reducing conflicts caused by stale local HEAD state.
-- GitHub Release updates. Both the manager and silent launcher can detect available updates.
-- Windows single instance, no console window, administrator manifest, and system Desktop path detection.
-- Separate macOS x64 and arm64 DMGs. The silent launcher hides its Dock icon.
+WeChat: <a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">get the latest group QR code</a>.
 
-## Relay Injection
+<img src="docs/images/discussion-group-qr.jpg" alt="Codex++ WeChat group QR code" width="260">
 
-Relay injection is for users who are already logged in with an official ChatGPT account in Codex/ChatGPT and want model requests to go through a custom compatible API.
+Telegram: <https://t.me/CodexPlusPlus>
 
-The boundary of this hybrid mode is:
+Friendly link: <a href="https://linux.do">LINUX DO</a>
 
-- The official ChatGPT/Codex login state still owns Codex App account features and the plugin entry.
-- The relay profile only controls the Base URL, key, and model names used for model requests.
-- The compatible API provider is not tied to any specific vendor; it only needs to match the selected upstream protocol and Codex configuration.
-- Clearing API mode should return Codex to the official login mode so the official account and plugins keep working.
+If Codex++ helps you, you can support its continued maintenance.
 
-Before applying relay injection, run a minimal preflight:
+<p align="center">
+  <img src="docs/images/sponsor-alipay.jpg" alt="Alipay sponsor QR code" width="220">
+  <img src="docs/images/sponsor-wechat.jpg" alt="WeChat sponsor QR code" width="220">
+</p>
 
-1. Make sure Codex has detected the ChatGPT login state and the plugin entry is available.
-2. Confirm the custom Base URL is reachable and supports the selected upstream protocol, such as a Responses-compatible endpoint.
-3. Test the target key with the smallest useful auth probe, such as a model-list request or a short message request.
-4. Only record whether the key exists and whether auth passed. Do not paste real keys into logs, screenshots, or issues.
-5. Make sure `~/.codex/config.toml` has a backup so clearing API mode can safely roll back.
+## Current Features
 
-In the manager's Relay Injection page:
+| Area | Capabilities |
+| --- | --- |
+| Provider configuration | Official login, official login plus API, pure API, and aggregate providers; Responses / Chat Completions; model tests, model discovery, Provider Doctor, cc-switch and deep-link imports |
+| Models and context | Per-model context windows, auto-compact limits, `model_catalog_json`, shared config, and per-provider MCP, Skill, and Plugin selection |
+| Session management | Local session scanning, bulk deletion, Markdown export, token usage history, Provider metadata sync, and backups |
+| Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, Chinese locale, fast startup, conversation width and scroll restore, service-tier controls, Goals, Stepwise, and image overlay |
+| Development workflow | Project move, Upstream worktree creation, thread IDs, and Zed Remote project discovery and opening |
+| Scripts and maintenance | User script installation and toggles, app detection, shortcuts, Watcher, environment cleanup, logs, diagnostics, health checks, and Release updates |
 
-1. Make sure ChatGPT login status is detected.
-2. Add one or more relay profiles with Base URL and Key.
-3. Select the active profile and apply relay injection.
-4. Launch `Codex++`.
+Every UI enhancement is independently configurable. Disabling the global enhancement switch still leaves Codex++ available as a provider and launch manager.
 
-Codex++ writes configuration similar to this into `~/.codex/config.toml`:
+## Provider Modes
 
-```toml
-model_provider = "CodexPlusPlus"
+Official login, mixed API, and pure API are stored and switched separately:
 
-[model_providers.CodexPlusPlus]
-name = "CodexPlusPlus"
-wire_api = "responses"
-requires_openai_auth = true
-base_url = "https://example.com/v1"
-experimental_bearer_token = "sk-..."
-```
+| Mode | Purpose | Authentication boundary |
+| --- | --- | --- |
+| Official login | Use only the official ChatGPT / Codex account | Removes custom providers and API keys while preserving official login state |
+| Official login + API | Keep official account features and plugins while routing model requests to a compatible API | Stores the key as a provider bearer token, not in pure API `auth.json` |
+| Pure API | Use a custom Base URL and key without an official account | Maintains independent `config.toml` and API-key auth without mixing official credentials |
+| Aggregate provider | Route across multiple ordinary API providers | Supports failover, conversation round-robin, request round-robin, and weighted round-robin |
 
-To return to the official login mode, use the clear API mode button in the Relay Injection page. This removes `OPENAI_API_KEY` related configuration and switches Codex back to official ChatGPT authentication.
+Each provider can configure Responses or Chat Completions, model lists, a test model, User-Agent, context windows, auto-compact limits, and enabled MCP servers, Skills, and Plugins. Chat Completions can be converted locally into the Responses protocol used by Codex.
 
-## Enhancements
+Per-model windows accept values such as `1M`, `200K`, or plain integers. Codex++ generates a dedicated `model_catalog_json` for Codex.
 
-Enhancements are controlled in the manager. Enhancement injection is enabled by default. When disabled, Codex++ will not inject its menu or scripts.
+Provider switching saves the current profile before applying the target profile. Real API keys remain local and should never be posted in logs, screenshots, or issues.
 
-When relay injection mode is active, plugin marketplace unlock is unnecessary, and the UI will say so. Other enhancements, including session delete, export, move, paste fix, recommendations, and user scripts, can still be used.
+## Codex Enhancements
 
-## Recommendations
+- Session delete, bulk delete, Markdown export, and project move actions.
+- Plugin marketplace unlock, plugin auto-expand, and model whitelist handling.
+- Plain-text paste, forced Chinese locale, startup acceleration, and native menu localization.
+- Conversation width, scroll restoration, thread IDs, service-tier controls, and Goals.
+- Stepwise suggestions with a separate API, model, item count, and timeout.
+- Upstream worktrees, Zed Remote, custom image overlays, and user scripts.
 
-Recommended content is loaded from:
-
-```text
-https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json
-https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json
-```
-
-Requests automatically append a `?v=timestamp` cache buster to avoid stale CDN content. Slow recommendation loading does not mark the backend connection as failed.
+Settings that depend on renderer injection generally require saving and restarting Codex++.
 
 ## Updates and Packages
 
@@ -230,17 +221,11 @@ The manager's About page can check and start updates. When the silent launcher f
 
 ### The Codex++ menu does not appear
 
-Make sure Codex was launched from the `Codex++` entry instead of the original Codex entry. You can also inspect the Diagnostics and Logs pages in the manager.
+Launch through the `Codex++` entry instead of opening the official app directly. Check the detected app path, launch status, and diagnostic logs in the manager's Maintenance and About pages.
 
-### The plugin says the backend is disconnected
+### Requests fail after switching providers
 
-First test the helper endpoint:
-
-```powershell
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:57321/backend/status -Body "{}" -ContentType "application/json"
-```
-
-If the endpoint works but the plugin still times out, it is usually a Codex page CDP bridge or script cache issue. Restart Codex++, or check manager logs for `renderer.script_loaded`, `bridge.request`, and `bridge.response`.
+Run the model test or Provider Doctor from the provider detail page. Verify that the protocol, Base URL, key, and test model match. Pure API and official-login-plus-API use different authentication locations; do not manually copy `auth.json` between them.
 
 ### How is Upstream worktree different from Codex native creation?
 
@@ -263,15 +248,13 @@ Yes. Releases provide both `macos-x64.dmg` and `macos-arm64.dmg`. Intel Macs sho
 ## Development
 
 ```bash
-# Frontend checks
 cd apps/codex-plus-manager
-npm install
+npm ci
 npm run check
 npm run vite:build
 
-# Rust checks
 cd ../..
-cargo fmt --check
+cargo fmt --all -- --check
 cargo test
 cargo build --release
 ```
@@ -292,23 +275,14 @@ scripts/installer/
   macos/package-dmg.sh          macOS DMG packager
 ```
 
-## Community and Support
+## License
 
-Join the Codex++ discussion group to report issues, share usage notes, or suggest features:
+Copyright (C) 2026 BigPizzaV3
 
-WeChat group: [get the latest QR code](https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#).
+CodexPlusPlus is licensed under the [GNU Affero General Public License v3.0](LICENSE), SPDX identifier `AGPL-3.0-only`. Modified versions that are distributed or offered to users over a network must provide the corresponding source code as required by AGPLv3.
 
-If Codex++ has helped you, you can buy me a coffee or send a small tip to support continued maintenance.
+The license covers CodexPlusPlus code only. It does not grant rights to OpenAI, ChatGPT, Codex trademarks, application assets, or other third-party content.
 
-<p align="center">
-  <img src="docs/images/sponsor-alipay.jpg" alt="Alipay sponsor QR code" width="220">
-  <img src="docs/images/sponsor-wechat.jpg" alt="WeChat sponsor QR code" width="220">
-</p>
+## Compatibility
 
-## Friendly Links
-
-- [LINUX DO](https://linux.do)
-
-## Notes
-
-Codex++ is an external enhancement tool and does not modify original Codex App files. If a future Codex App update changes page structure, the injection script may need updates.
+Codex++ depends on the official desktop app's page structure, CDP behavior, and local data formats. Official app updates may require injection updates. Keep backups before changing provider configuration or local session data.

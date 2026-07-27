@@ -32,6 +32,15 @@ fn manager_uses_single_instance_guard_before_starting_tauri() {
 }
 
 #[test]
+fn manager_repeated_launch_activates_existing_window() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+
+    assert!(lib_rs.contains("focus_existing_manager_window();"));
+    assert!(lib_rs.contains("windows_activate_process_window"));
+}
+
+#[test]
 fn manager_main_window_uses_default_window_icon_explicitly() {
     let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
         .expect("read manager lib.rs");
@@ -330,4 +339,29 @@ fn manager_no_longer_exposes_mobile_control() {
     assert!(!app_tsx.contains("手机控制"));
     assert!(!app_tsx.contains("mobileRelayServers"));
     assert!(!app_tsx.contains("MobileControlScreen"));
+}
+
+#[test]
+fn manager_ui_no_longer_exposes_command_wrapper_or_startup_marketplace_prompt() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+
+    assert!(!app_tsx.contains("启用 Codex 命令包装器"));
+    assert!(!app_tsx.contains("修复后端"));
+    assert!(!app_tsx.contains("repairBackend"));
+    assert!(!app_tsx.contains("await checkPluginMarketplacePrompt()"));
+}
+
+#[test]
+fn manager_update_install_keeps_visible_progress_bar() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+
+    assert!(app_tsx.contains("下载并运行安装包"));
+    assert!(app_tsx.contains("updateInstallProgress"));
+    assert!(app_tsx.contains("安装包更新进度"));
+    assert!(app_tsx.contains("completedTitle={t(\"上次更新结果\")}"));
+    assert!(app_tsx.contains("progress={updateInstallProgress}"));
 }

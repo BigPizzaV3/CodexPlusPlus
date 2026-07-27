@@ -5,7 +5,10 @@ use codex_plus_core::watcher::{
 };
 
 #[cfg(windows)]
-use codex_plus_core::watcher::{WindowsProcessInfo, find_codex_processes_from_snapshot};
+use codex_plus_core::watcher::{
+    WindowsProcessInfo, find_codex_processes_from_snapshot,
+    find_session_index_cleanup_blocking_processes_from_snapshot,
+};
 
 #[test]
 fn cdp_listening_returns_true_for_bound_loopback_port() {
@@ -84,6 +87,30 @@ fn codex_process_filter_keeps_only_windowsapps_codex_processes() {
     ];
 
     assert_eq!(codex_process_ids(processes), vec![11]);
+}
+
+#[test]
+fn codex_process_filter_keeps_chatgpt_desktop_package_processes() {
+    let processes = [
+        (
+            21,
+            r"C:\Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_1.2026.133.0_x64__abc\app\ChatGPT.exe",
+        ),
+        (
+            22,
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_26.707.3748.0_x64__abc\app\ChatGPT.exe",
+        ),
+        (
+            23,
+            r"C:\Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_1.2026.133.0_x64__abc\app\resources\ChatGPT.exe",
+        ),
+        (
+            24,
+            r"C:\Program Files\WindowsApps\Other.ChatGPT_1.0.0.0_x64__abc\app\ChatGPT.exe",
+        ),
+    ];
+
+    assert_eq!(codex_process_ids(processes), vec![21, 22]);
 }
 
 #[test]
@@ -182,9 +209,9 @@ fn find_codex_processes_combines_store_and_local_installs() {
         WindowsProcessInfo {
             process_id: 11,
             parent_process_id: 0,
-            exe_file: "Codex.exe".to_string(),
+            exe_file: "ChatGPT.exe".to_string(),
             executable_path: Some(std::path::PathBuf::from(
-                r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0.0_x64__abc\app\Codex.exe",
+                r"C:\Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_1.2026.133.0_x64__abc\app\ChatGPT.exe",
             )),
         },
         WindowsProcessInfo {
@@ -198,6 +225,47 @@ fn find_codex_processes_combines_store_and_local_installs() {
     ];
 
     assert_eq!(find_codex_processes_from_snapshot(&processes), vec![11, 42]);
+}
+
+#[cfg(windows)]
+#[test]
+fn session_index_cleanup_process_guard_blocks_desktop_apps_but_not_cli() {
+    let processes = [
+        WindowsProcessInfo {
+            process_id: 11,
+            parent_process_id: 0,
+            exe_file: "ChatGPT.exe".to_string(),
+            executable_path: Some(std::path::PathBuf::from(
+                r"C:\Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_1.2026.133.0_x64__abc\app\ChatGPT.exe",
+            )),
+        },
+        WindowsProcessInfo {
+            process_id: 12,
+            parent_process_id: 0,
+            exe_file: "ChatGPT.exe".to_string(),
+            executable_path: Some(std::path::PathBuf::from(r"D:\Portable\ChatGPT\ChatGPT.exe")),
+        },
+        WindowsProcessInfo {
+            process_id: 13,
+            parent_process_id: 0,
+            exe_file: "Codex.exe".to_string(),
+            executable_path: Some(std::path::PathBuf::from(r"D:\Portable\Codex\Codex.exe")),
+        },
+        WindowsProcessInfo {
+            process_id: 14,
+            parent_process_id: 0,
+            exe_file: "codex.exe".to_string(),
+            executable_path: Some(std::path::PathBuf::from(
+                r"C:\Users\me\AppData\Roaming\npm\node_modules\@openai\codex\bin\codex.exe",
+            )),
+        },
+    ];
+
+    assert_eq!(
+        find_session_index_cleanup_blocking_processes_from_snapshot(&processes),
+        vec![11, 12, 13]
+    );
+    assert_eq!(find_codex_processes_from_snapshot(&processes), vec![11, 13]);
 }
 
 #[cfg(windows)]

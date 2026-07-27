@@ -6,17 +6,315 @@ use std::path::Path;
 use crate::settings::BackendSettings;
 
 const RENDERER_SCRIPT: &str = include_str!("../../../assets/inject/renderer-inject.js");
+#[cfg(windows)]
+const DREAM_TARGET_CSS: &str =
+    include_str!("../../../assets/inject/upstream/dream-skin/windows/dream-skin.css");
+#[cfg(not(windows))]
+const DREAM_TARGET_CSS: &str =
+    include_str!("../../../assets/inject/upstream/dream-skin/macos/dream-skin.css");
+#[cfg(windows)]
+const DREAM_TARGET_RENDERER: &str =
+    include_str!("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js");
+#[cfg(not(windows))]
+const DREAM_TARGET_RENDERER: &str =
+    include_str!("../../../assets/inject/upstream/dream-skin/macos/renderer-inject.js");
+#[cfg(windows)]
+const CIDALA_TARGET_CSS: &str =
+    include_str!("../../../assets/inject/upstream/cidala-tiger/windows/dream-skin.css");
+#[cfg(not(windows))]
+const CIDALA_TARGET_CSS: &str =
+    include_str!("../../../assets/inject/upstream/cidala-tiger/macos/dream-skin.css");
+#[cfg(windows)]
+const CIDALA_TARGET_RENDERER: &str =
+    include_str!("../../../assets/inject/upstream/cidala-tiger/windows/renderer-inject.js");
+#[cfg(not(windows))]
+const CIDALA_TARGET_RENDERER: &str =
+    include_str!("../../../assets/inject/upstream/cidala-tiger/macos/renderer-inject.js");
+const CODEX_SNOW_CSS: &str =
+    include_str!("../../../assets/inject/upstream/snow-skin/dream-skin.css");
+const CODEX_SNOW_RENDERER: &str =
+    include_str!("../../../assets/inject/upstream/snow-skin/renderer-inject.js");
+const GLASS_VISION_CSS: &str =
+    include_str!("../../../assets/inject/upstream/glass-vision/glass-vision.css");
+const GLASS_VISION_RENDERER: &str =
+    include_str!("../../../assets/inject/upstream/glass-vision/renderer-inject.js");
+#[cfg(windows)]
+const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
+    include_bytes!("../../../assets/inject/upstream/dream-skin/windows/dream-reference.jpg");
+#[cfg(not(windows))]
+const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
+    include_bytes!("../../../assets/inject/upstream/dream-skin/macos/portal-hero.png");
+const PET_REAL_MOUSE_SCRIPT: &str = include_str!("../../../assets/inject/pet-real-mouse-inject.js");
 const STEPWISE_SCRIPT: &str = include_str!("../../../assets/inject/stepwise-inject.js");
 const SPONSOR_ALIPAY: &[u8] = include_bytes!("../../../assets/images/sponsor-alipay.jpg");
 const SPONSOR_WECHAT: &[u8] = include_bytes!("../../../assets/images/sponsor-wechat.jpg");
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
+const DREAM_SKIN_RENDERER_REVISION: &str = "17";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT
 }
 
+pub fn dream_skin_default_image() -> (&'static str, &'static [u8]) {
+    #[cfg(windows)]
+    return ("image/jpeg", DREAM_SKIN_DEFAULT_IMAGE);
+    #[cfg(not(windows))]
+    return ("image/png", DREAM_SKIN_DEFAULT_IMAGE);
+}
+
+pub fn dream_skin_art_data_uri(settings: &BackendSettings) -> String {
+    if !settings.codex_app_dream_skin_enabled {
+        return String::new();
+    }
+    let custom_path = settings.codex_app_dream_skin_image_path.trim();
+    if !custom_path.is_empty()
+        && crate::dream_skin::is_managed_dream_skin_image(
+            Path::new(custom_path),
+            &crate::paths::default_app_state_dir(),
+        )
+        && let Some(data_uri) = image_file_data_uri(Path::new(custom_path))
+    {
+        return data_uri;
+    }
+    let (content_type, image) = dream_skin_default_image();
+    image_data_uri(content_type, image)
+}
+
+fn dream_skin_platform() -> &'static str {
+    if cfg!(windows) { "windows" } else { "macos" }
+}
+
+fn uses_cidala_target_engine(style_preset: &str) -> bool {
+    matches!(
+        style_preset,
+        "midnight-aurora" | "amber-dusk" | "forest-mist" | "cyber-neon" | "sakura-dawn"
+    )
+}
+
+fn dream_skin_target_assets(
+    settings: &BackendSettings,
+) -> (&'static str, &'static str, &'static str) {
+    let theme = &settings.codex_app_dream_skin_theme_config;
+    let style_preset =
+        crate::settings::resolve_dream_skin_style_preset(&theme.id, &theme.style_preset);
+    match style_preset.as_str() {
+        "codex-snow" => ("snow", CODEX_SNOW_RENDERER, CODEX_SNOW_CSS),
+        "glass-vision" => ("glass-vision", GLASS_VISION_RENDERER, GLASS_VISION_CSS),
+        value if uses_cidala_target_engine(value) => {
+            ("cidala-tiger", CIDALA_TARGET_RENDERER, CIDALA_TARGET_CSS)
+        }
+        _ => ("dream-skin", DREAM_TARGET_RENDERER, DREAM_TARGET_CSS),
+    }
+}
+
+fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: bool) -> String {
+    if !settings.codex_app_dream_skin_enabled || settings.codex_app_dream_skin_paused {
+        return String::new();
+    }
+
+    let (engine, renderer, css) = dream_skin_target_assets(settings);
+    let theme = serde_json::to_string(&settings.codex_app_dream_skin_theme_config)
+        .expect("dream skin target theme should serialize");
+    let style_revision = dream_skin_content_signature(css.as_bytes());
+    let payload_revision =
+        dream_skin_target_payload_signature(settings, engine, &style_revision, &theme);
+    let mut payload = renderer
+        .replace("__DREAM_CSS_JSON__", &serde_json::to_string(css).unwrap())
+        .replace("__DREAM_ART_JSON__", "window.__CODEX_PLUS_DREAM_SKIN_ART__")
+        .replace(
+            "__DREAM_THEME_JSON__",
+            "window.__CODEX_PLUS_DREAM_SKIN_THEME__",
+        )
+        .replace(
+            "__DREAM_VERSION_JSON__",
+            &serde_json::to_string("2.1.0-snow.1").unwrap(),
+        )
+        .replace(
+            "__GLASS_VISION_CSS_JSON__",
+            &serde_json::to_string(css).unwrap(),
+        )
+        .replace(
+            "__GLASS_VISION_ART_JSON__",
+            "window.__CODEX_PLUS_DREAM_SKIN_ART__",
+        )
+        .replace(
+            "__DREAM_SKIN_CSS_JSON__",
+            &serde_json::to_string(css).unwrap(),
+        )
+        .replace(
+            "__DREAM_SKIN_ART_JSON__",
+            "window.__CODEX_PLUS_DREAM_SKIN_ART__",
+        )
+        .replace(
+            "__DREAM_SKIN_THEME_JSON__",
+            "window.__CODEX_PLUS_DREAM_SKIN_THEME__",
+        )
+        .replace(
+            "__DREAM_SKIN_VERSION_JSON__",
+            &serde_json::to_string("1.2.0").unwrap(),
+        )
+        .replace(
+            "__DREAM_SKIN_STYLE_REVISION_JSON__",
+            &serde_json::to_string(&style_revision).unwrap(),
+        )
+        .replace(
+            "__DREAM_SKIN_PAYLOAD_REVISION_JSON__",
+            &serde_json::to_string(&payload_revision).unwrap(),
+        );
+    if payload.contains("__DREAM_") || payload.contains("__GLASS_VISION_") {
+        panic!("dream skin target renderer contains unresolved placeholders");
+    }
+
+    let art_assignment = include_art.then(|| {
+        format!(
+            "window.__CODEX_PLUS_DREAM_SKIN_ART__ = {};\n",
+            serde_json::to_string(&dream_skin_art_data_uri(settings))
+                .expect("dream skin target art should serialize")
+        )
+    });
+    payload = format!(
+        "(() => {{\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_CLEAR_DREAM_SKIN__?.();\n{}window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__ = {};\nconst result = {};\nconst state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;\nif (state) {{\n  state.version = `codex-plus:${{String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || 'unknown')}}:${{window.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__}}:r${{window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__}}`;\n  state.observer?.disconnect?.();\n  if (state.timer) clearInterval(state.timer);\n  state.observer = null;\n  state.timer = null;\n}}\nwindow.__CODEX_PLUS_DREAM_SKIN_PAYLOAD_SIGNATURE__ = {};\nreturn result;\n}})()",
+        art_assignment.unwrap_or_default(),
+        serde_json::to_string(&dream_skin_art_content_signature(settings)).unwrap(),
+        theme,
+        serde_json::to_string(DREAM_SKIN_RENDERER_REVISION).unwrap(),
+        serde_json::to_string(engine).unwrap(),
+        payload,
+        serde_json::to_string(&payload_revision).unwrap(),
+    );
+    payload
+}
+
+fn dream_skin_target_payload_signature(
+    settings: &BackendSettings,
+    engine: &str,
+    style_revision: &str,
+    theme: &str,
+) -> String {
+    dream_skin_content_signature(
+        format!(
+            "{engine}:{style_revision}:{}:{theme}",
+            dream_skin_art_content_signature(settings)
+        )
+        .as_bytes(),
+    )
+}
+
 pub fn stepwise_script() -> &'static str {
     STEPWISE_SCRIPT
+}
+
+pub fn pet_real_mouse_script() -> &'static str {
+    PET_REAL_MOUSE_SCRIPT
+}
+
+const PET_V2_SPRITE_DETECTION_SCRIPT: &str = r#"
+  const isV2Sprite = async (mascot) => {
+    if (!mascot) return false;
+    if (Array.from(mascot.querySelectorAll("img")).some((image) =>
+      image.naturalWidth === 1536 && image.naturalHeight === 2288
+    )) return true;
+    for (const element of [mascot, ...mascot.querySelectorAll("*")]) {
+      const background = getComputedStyle(element).backgroundImage || "";
+      const match = background.match(/url\(["']?([^"')]+)/i);
+      if (!match) continue;
+      const source = match[1];
+      const cacheKey = "__codexPlusPetV2SpriteProbe";
+      let probe = window[cacheKey];
+      if (!probe || probe.source !== source) {
+        probe = { source, valid: false, pending: true };
+        probe.promise = (async () => {
+          try {
+            const image = new Image();
+            image.src = source;
+            await image.decode();
+            return image.naturalWidth === 1536 && image.naturalHeight === 2288;
+          } catch {
+            return false;
+          }
+        })().then((valid) => {
+          probe.valid = valid;
+          probe.pending = false;
+          return valid;
+        });
+        window[cacheKey] = probe;
+      }
+      const wasPending = probe.pending;
+      const valid = wasPending ? await probe.promise : probe.valid;
+      if (wasPending) {
+        const currentBackground = getComputedStyle(element).backgroundImage || "";
+        const currentMatch = currentBackground.match(/url\(["']?([^"')]+)/i);
+        if (currentMatch?.[1] !== source) continue;
+      }
+      if (window[cacheKey] === probe && valid) return true;
+    }
+    return false;
+  };
+"#;
+
+pub fn pet_real_mouse_capability_probe_script() -> String {
+    let mut script = String::from(
+        r#"
+(async () => {
+  const mascot = document.querySelector('[data-avatar-mascot="true"]');
+"#,
+    );
+    script.push_str(PET_V2_SPRITE_DETECTION_SCRIPT);
+    script.push_str(
+        r#"
+  if (!await isV2Sprite(mascot)) return false;
+  const urls = [
+    ...Array.from(document.scripts || []).map((script) => script.src),
+    ...Array.from(document.querySelectorAll("link[href]") || []).map((link) => link.href),
+    ...performance.getEntriesByType("resource").map((entry) => entry.name),
+  ].filter((url) => url && url.includes("/assets/") && url.split("?")[0].endsWith(".js"));
+  let dispatcherUrl = urls.find((url) => url.includes("vscode-api-"));
+  if (!dispatcherUrl) {
+    for (const url of urls) {
+      try {
+        const source = await fetch(url).then((response) => response.ok ? response.text() : "");
+        const match = source.match(/["'](\.\/(?:assets\/)?vscode-api-[^"']+\.js)["']/);
+        if (match) {
+          dispatcherUrl = new URL(match[1], url).href;
+          break;
+        }
+      } catch {
+      }
+    }
+  }
+  if (!dispatcherUrl) return false;
+  try {
+    const module = await import(dispatcherUrl);
+    return Object.values(module || {}).some((value) => value
+      && typeof value.dispatchHostMessage === "function"
+      && typeof value.subscribe === "function");
+  } catch {
+    return false;
+  }
+})()
+"#,
+    );
+    script
+}
+
+pub fn pet_real_mouse_update_script(x: i32, y: i32) -> String {
+    let mut script = String::from(
+        r#"(async () => {
+  const mascot = document.querySelector('[data-avatar-mascot="true"]');
+"#,
+    );
+    script.push_str(PET_V2_SPRITE_DETECTION_SCRIPT);
+    script.push_str(&format!(
+        r#"
+  return await isV2Sprite(mascot)
+    && window.__codexPlusPetRealMouseLook?.updateScreenPoint?.({{ x: {x}, y: {y} }}) === true;
+}})()"#
+    ));
+    script
+}
+
+pub fn pet_real_mouse_stop_script() -> &'static str {
+    "window.__codexPlusPetRealMouseLook?.stop?.();"
 }
 
 pub fn sponsor_image_data_uris() -> Value {
@@ -34,25 +332,78 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let helper_url = format!("http://127.0.0.1:{helper_port}");
     let sponsor_images = sponsor_image_data_uris();
     let image_overlay = image_overlay_config(helper_port, settings);
+    let dream_skin_art = dream_skin_art_data_uri(settings);
+    let dream_skin_art_signature = dream_skin_art_content_signature(settings);
+    let dream_skin_theme = &settings.codex_app_dream_skin_theme_config;
+    let dream_skin_target_runtime = dream_skin_target_runtime_script(settings, false);
     let plugin_marketplaces = local_plugin_marketplaces();
     let paste_fix = paste_fix_enabled_config(settings);
     let force_chinese_locale = force_chinese_locale_config(settings);
     let fast_startup = fast_startup_config(settings);
     format!(
-        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_FAST_STARTUP__ = {};\n{}\n{}",
+        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = {};\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_FAST_STARTUP__ = {};\n{}\n{}\n{}",
         serde_json::to_string(&helper_url).expect("helper URL should serialize"),
         serde_json::to_string(&sponsor_images).expect("sponsor images should serialize"),
         serde_json::to_string(crate::version::VERSION).expect("version should serialize"),
         serde_json::to_string(DIAGNOSTIC_BUILD_ID).expect("build id should serialize"),
         serde_json::to_string(&image_overlay).expect("image overlay config should serialize"),
         serde_json::to_string(&plugin_marketplaces).expect("plugin marketplaces should serialize"),
+        serde_json::to_string(dream_skin_platform()).expect("dream skin platform should serialize"),
+        serde_json::to_string(DREAM_SKIN_RENDERER_REVISION)
+            .expect("dream skin renderer revision should serialize"),
+        serde_json::to_string(&dream_skin_art).expect("dream skin art should serialize"),
+        serde_json::to_string(&dream_skin_art_signature)
+            .expect("dream skin art signature should serialize"),
+        serde_json::to_string(dream_skin_theme).expect("dream skin theme should serialize"),
         serde_json::to_string(&paste_fix).expect("paste fix config should serialize"),
         serde_json::to_string(&force_chinese_locale)
             .expect("force Chinese locale config should serialize"),
         serde_json::to_string(&fast_startup).expect("fast startup config should serialize"),
         renderer_script(),
         stepwise_script(),
+        dream_skin_target_runtime,
     )
+}
+
+pub fn dream_skin_live_update_probe_script() -> String {
+    format!(
+        "(() => {{ const state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__; if (window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__ !== {} || !state) return null; state.ensure?.(); return JSON.stringify({{ artSignature: String(window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ || ''), payloadSignature: String(window.__CODEX_PLUS_DREAM_SKIN_PAYLOAD_SIGNATURE__ || '') }}); }})()",
+        serde_json::to_string(DREAM_SKIN_RENDERER_REVISION)
+            .expect("dream skin renderer revision should serialize")
+    )
+}
+
+pub fn dream_skin_live_update_script(settings: &BackendSettings, include_art: bool) -> String {
+    dream_skin_target_runtime_script(settings, include_art)
+}
+
+pub fn dream_skin_art_content_signature(settings: &BackendSettings) -> String {
+    let custom_path = settings.codex_app_dream_skin_image_path.trim();
+    if !custom_path.is_empty()
+        && crate::dream_skin::is_managed_dream_skin_image(
+            Path::new(custom_path),
+            &crate::paths::default_app_state_dir(),
+        )
+        && let Ok(bytes) = std::fs::read(custom_path)
+    {
+        return dream_skin_content_signature(&bytes);
+    }
+    dream_skin_content_signature(DREAM_SKIN_DEFAULT_IMAGE)
+}
+
+pub fn dream_skin_runtime_content_signature(settings: &BackendSettings) -> String {
+    let (engine, _, css) = dream_skin_target_assets(settings);
+    let theme = serde_json::to_string(&settings.codex_app_dream_skin_theme_config)
+        .expect("dream skin target theme should serialize");
+    let style_revision = dream_skin_content_signature(css.as_bytes());
+    dream_skin_target_payload_signature(settings, engine, &style_revision, &theme)
+}
+
+fn dream_skin_content_signature(value: &[u8]) -> String {
+    let hash = value.iter().fold(2_166_136_261_u32, |hash, byte| {
+        (hash ^ u32::from(*byte)).wrapping_mul(16_777_619)
+    });
+    format!("{}-{hash:x}", value.len())
 }
 
 fn local_plugin_marketplaces() -> Value {
@@ -148,6 +499,12 @@ fn expand_local_plugin_marketplace(
             .entry("id".to_string())
             .or_insert_with(|| Value::String(format!("{plugin_name}@{marketplace_name}")));
         plugin_object
+            .entry("marketplaceName".to_string())
+            .or_insert_with(|| Value::String(marketplace_name.clone()));
+        plugin_object
+            .entry("marketplacePath".to_string())
+            .or_insert_with(|| Value::String(marketplace_name.clone()));
+        plugin_object
             .entry("keywords".to_string())
             .or_insert_with(|| Value::Array(Vec::new()));
         plugin_object.insert(
@@ -242,6 +599,7 @@ pub fn image_overlay_config(helper_port: u16, settings: &BackendSettings) -> Val
     json!({
         "enabled": enabled && !data_url.is_empty(),
         "opacity": f64::from(settings.codex_app_image_overlay_opacity.clamp(1, 100)) / 100.0,
+        "fitMode": settings.codex_app_image_overlay_fit_mode.as_str(),
         "dataUrl": data_url,
         "imageUrl": if enabled {
             format!("http://127.0.0.1:{helper_port}/overlay/image")
@@ -295,6 +653,17 @@ fn image_content_type(path: &Path) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_overlay_config_includes_fit_mode() {
+        let settings = BackendSettings {
+            codex_app_image_overlay_fit_mode: "fill".to_string(),
+            ..BackendSettings::default()
+        };
+        let config = image_overlay_config(57321, &settings);
+
+        assert_eq!(config["fitMode"].as_str(), Some("fill"));
+    }
 
     #[test]
     fn local_plugin_marketplaces_includes_api_marketplace_snapshot() {
@@ -364,6 +733,14 @@ mod tests {
         assert_eq!(
             array[2]["plugins"][0]["interface"]["displayName"].as_str(),
             Some("Product Design")
+        );
+        assert_eq!(
+            array[2]["plugins"][0]["marketplaceName"].as_str(),
+            Some("openai-curated-remote")
+        );
+        assert_eq!(
+            array[2]["plugins"][0]["marketplacePath"].as_str(),
+            Some("openai-curated-remote")
         );
     }
 }

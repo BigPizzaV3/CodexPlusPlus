@@ -1,5 +1,6 @@
 use codex_plus_data::{
-    ProviderSyncStatus, ProviderSyncTargetSource, load_provider_sync_targets, run_provider_sync,
+    ProviderSyncStatus, ProviderSyncTargetSource, apply_session_index_cleanup,
+    load_provider_sync_targets, preview_session_index_cleanup, run_provider_sync,
     run_provider_sync_with_target,
 };
 use rusqlite::Connection;
@@ -21,6 +22,15 @@ fn write_rollout(path: &Path, provider: &str, thread_id: &str, cwd: &str) {
     });
     let event = json!({"type": "event_msg", "payload": {"type": "user_message"}});
     fs::write(path, format!("{first}\n{event}\n")).unwrap();
+}
+
+fn session_index_line(id: &str, title: &str) -> String {
+    json!({
+        "id": id,
+        "thread_name": title,
+        "updated_at": "2026-07-13T12:00:00.000Z"
+    })
+    .to_string()
 }
 
 fn write_rollout_with_providers(path: &Path, providers: &[&str], thread_id: &str, cwd: &str) {
@@ -69,6 +79,77 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
         db.execute(
             "INSERT INTO threads VALUES (?1, ?2, ?3, 1, 'C:/workspace')",
             (id, provider, archived),
+        )
+        .unwrap();
+    }
+}
+
+fn create_local_thread_catalog_db(path: &Path, rows: &[(&str, &str)]) {
+    let db = Connection::open(path).unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog (
+            host_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            display_title TEXT NOT NULL,
+            source_created_at REAL NOT NULL,
+            source_updated_at REAL NOT NULL,
+            cwd TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_detail TEXT,
+            model_provider TEXT NOT NULL,
+            git_branch TEXT,
+            observation_sequence INTEGER NOT NULL,
+            missing_candidate INTEGER NOT NULL DEFAULT 0,
+            thread_source TEXT,
+            PRIMARY KEY (host_id, thread_id)
+        )",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog_hosts (host_id TEXT PRIMARY KEY, host_kind TEXT NOT NULL)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog_hosts VALUES ('local', 'local')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog_metadata (id INTEGER PRIMARY KEY, catalog_revision INTEGER NOT NULL DEFAULT 0)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog_metadata VALUES (1, 0)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog_sync_state (
+            host_id TEXT PRIMARY KEY,
+            watermark_updated_at REAL,
+            initial_build_complete INTEGER NOT NULL DEFAULT 0,
+            observation_sequence INTEGER NOT NULL DEFAULT 0,
+            last_full_reconciled_at INTEGER
+        )",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog_sync_state VALUES ('local', 100, 1, 0, 100)",
+        [],
+    )
+    .unwrap();
+    for (index, (thread_id, provider)) in rows.iter().enumerate() {
+        db.execute(
+            "INSERT INTO local_thread_catalog (
+                host_id, thread_id, display_title, source_created_at, source_updated_at, cwd,
+                source_kind, source_detail, model_provider, git_branch, observation_sequence,
+                missing_candidate, thread_source
+            ) VALUES ('local', ?1, ?1, 100, 100, 'C:/workspace', 'cli', '', ?2, NULL, ?3, 0, 'user')",
+            (thread_id, provider, index as i64 + 1),
         )
         .unwrap();
     }
@@ -348,6 +429,128 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
     );
     let backup_dir = result.backup_dir.unwrap();
     assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
+}
+
+#[test]
+fn provider_sync_updates_and_discovers_local_thread_catalog() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    let db_path = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&db_path, &[("thread-1", "openai"), ("thread-2", "custom")]);
+
+    let targets = load_provider_sync_targets(Some(&home));
+    let ids = targets
+        .targets
+        .iter()
+        .map(|target| target.id.as_str())
+        .collect::<Vec<_>>();
+    assert!(ids.contains(&"openai"));
+    assert!(ids.contains(&"custom"));
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.sqlite_rows_updated, 2);
+    assert_eq!(result.sqlite_provider_rows_updated, 2);
+    let db = Connection::open(&db_path).unwrap();
+    let remaining = db
+        .query_row(
+            "SELECT COUNT(*) FROM local_thread_catalog WHERE model_provider <> 'apigather'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0);
+    let backup_dir = result.backup_dir.unwrap();
+    assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
+}
+
+#[test]
+fn provider_sync_repairs_missing_local_thread_catalog_rows_from_threads() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    let state_db = home.join("state_5.sqlite");
+    let db = Connection::open(&state_db).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            model_provider TEXT,
+            archived INTEGER,
+            has_user_event INTEGER,
+            cwd TEXT,
+            title TEXT,
+            rollout_path TEXT,
+            source TEXT,
+            created_at_ms INTEGER,
+            updated_at_ms INTEGER,
+            thread_source TEXT,
+            git_branch TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads VALUES (
+            'thread-1', 'old-provider', 0, 1, 'C:/workspace', 'Thread One',
+            'C:/rollout.jsonl', 'cli', 100000, 200000, 'user', 'main'
+        )",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&catalog_db, &[]);
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.sqlite_catalog_rows_inserted, 1);
+    assert_eq!(result.sqlite_rows_updated, 2);
+    let db = Connection::open(&catalog_db).unwrap();
+    let row = db
+        .query_row(
+            "SELECT display_title, source_created_at, source_updated_at, cwd, source_kind, source_detail, model_provider, git_branch, thread_source FROM local_thread_catalog WHERE thread_id = 'thread-1'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(row.0, "Thread One");
+    assert_eq!(row.1, 100.0);
+    assert_eq!(row.2, 200.0);
+    assert_eq!(row.3, "C:/workspace");
+    assert_eq!(row.4, "cli");
+    assert_eq!(row.5, "C:/rollout.jsonl");
+    assert_eq!(row.6, "apigather");
+    assert_eq!(row.7, "main");
+    assert_eq!(row.8, "user");
+    let sync_state = db
+        .query_row(
+            "SELECT initial_build_complete, watermark_updated_at >= 200, observation_sequence FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+        )
+        .unwrap();
+    assert_eq!(sync_state.0, 1);
+    assert_eq!(sync_state.1, 1);
+    assert_eq!(sync_state.2, 1);
 }
 
 #[test]
@@ -774,5 +977,251 @@ fn provider_sync_preserves_rollout_mtime() {
     assert!(
         drift < Duration::from_secs(2),
         "mtime drifted by {drift:?}, expected < 2s"
+    );
+}
+
+#[test]
+fn provider_sync_never_prunes_unconfirmed_or_delayed_index_entries() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let stale_id = "019f4e36-490e-7ae0-8e78-a8b3ab33a428";
+    let original_index = format!("{}\n", session_index_line(stale_id, "可能仍在云端同步"));
+    fs::write(home.join("session_index.jsonl"), &original_index).unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(
+        fs::read_to_string(home.join("session_index.jsonl")).unwrap(),
+        original_index
+    );
+    let preview = preview_session_index_cleanup(Some(&home)).unwrap();
+    assert_eq!(preview.candidates.len(), 1);
+    assert_eq!(
+        fs::read_to_string(home.join("session_index.jsonl")).unwrap(),
+        original_index
+    );
+}
+
+#[test]
+fn session_index_cleanup_preserves_all_local_sources_and_unknown_records() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    let rollout_id = "019f480d-bbc6-7b62-8a46-99597db8bde7";
+    let threads_id = "019f4844-43aa-7862-b51c-e04d5686700e";
+    let catalog_id = "019f52f8-7c7e-7bd3-91f0-d662451867be";
+    let automation_id = "019f52f8-7c7e-7bd3-91f0-d662451867bf";
+    let inbox_id = "019f52f8-7c7e-7bd3-91f0-d662451867c0";
+    let stale_id = "019f4e36-490e-7ae0-8e78-a8b3ab33a428";
+    let rollout = home.join(format!(
+        "sessions/rollout-2026-07-12T04-57-28-{rollout_id}.jsonl"
+    ));
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    fs::write(&rollout, "{\"type\":\"event_msg\"}\n").unwrap();
+    create_state_db_with_providers(&home.join("state_5.sqlite"), &[(threads_id, "custom", 0)]);
+    let db = Connection::open(sqlite_dir.join("codex-dev.db")).unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog (thread_id TEXT PRIMARY KEY)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE automation_runs (thread_id TEXT PRIMARY KEY)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE inbox_items (id TEXT PRIMARY KEY, thread_id TEXT)",
+        [],
+    )
+    .unwrap();
+    db.execute("INSERT INTO local_thread_catalog VALUES (?1)", [catalog_id])
+        .unwrap();
+    db.execute("INSERT INTO automation_runs VALUES (?1)", [automation_id])
+        .unwrap();
+    db.execute("INSERT INTO inbox_items VALUES ('item-1', ?1)", [inbox_id])
+        .unwrap();
+    drop(db);
+    let unknown = json!({"id": "future-record", "kind": "cloud_task"}).to_string();
+    let malformed = "not-json";
+    let original_index = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{unknown}\n{malformed}\n",
+        session_index_line(rollout_id, "rollout"),
+        session_index_line(threads_id, "threads"),
+        session_index_line(catalog_id, "catalog"),
+        session_index_line(automation_id, "automation"),
+        session_index_line(inbox_id, "inbox"),
+        session_index_line(stale_id, "stale"),
+    );
+    fs::write(home.join("session_index.jsonl"), &original_index).unwrap();
+
+    let preview = preview_session_index_cleanup(Some(&home)).unwrap();
+
+    assert_eq!(preview.candidates.len(), 1);
+    assert_eq!(preview.candidates[0].id, stale_id);
+    let result = apply_session_index_cleanup(
+        Some(&home),
+        &preview.snapshot_sha256,
+        &[stale_id.to_string()],
+    )
+    .unwrap();
+    assert_eq!(result.pruned_entries, 1);
+    let next_index = fs::read_to_string(home.join("session_index.jsonl")).unwrap();
+    for id in [rollout_id, threads_id, catalog_id, automation_id, inbox_id] {
+        assert!(next_index.contains(id));
+    }
+    assert!(!next_index.contains(stale_id));
+    assert!(next_index.contains(&unknown));
+    assert!(next_index.contains(malformed));
+    let backup = result.backup_dir.expect("cleanup backup");
+    assert_eq!(
+        fs::read_to_string(backup.join("session_index.jsonl")).unwrap(),
+        original_index
+    );
+}
+
+#[test]
+fn session_index_cleanup_aborts_when_codex_changes_index_after_preview() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    let stale_id = "019f4e36-490e-7ae0-8e78-a8b3ab33a428";
+    fs::write(
+        home.join("session_index.jsonl"),
+        format!("{}\n", session_index_line(stale_id, "stale")),
+    )
+    .unwrap();
+    let preview = preview_session_index_cleanup(Some(&home)).unwrap();
+    let new_id = "019f5e36-490e-7ae0-8e78-a8b3ab33a429";
+    let changed = format!(
+        "{}\n{}\n",
+        session_index_line(stale_id, "stale"),
+        session_index_line(new_id, "Codex 新建任务"),
+    );
+    fs::write(home.join("session_index.jsonl"), &changed).unwrap();
+
+    let error = apply_session_index_cleanup(
+        Some(&home),
+        &preview.snapshot_sha256,
+        &[stale_id.to_string()],
+    )
+    .unwrap_err();
+
+    assert!(error.message.contains("发生变化"));
+    assert!(error.backup_dir.is_none());
+    assert_eq!(
+        fs::read_to_string(home.join("session_index.jsonl")).unwrap(),
+        changed
+    );
+}
+
+#[test]
+fn session_index_preview_preserves_relation_only_sqlite_thread_references() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    let db = Connection::open(sqlite_dir.join("codex-related.db")).unwrap();
+    db.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)", [])
+        .unwrap();
+    db.execute("CREATE TABLE messages (session_id TEXT)", [])
+        .unwrap();
+    db.execute("CREATE TABLE thread_dynamic_tools (thread_id TEXT)", [])
+        .unwrap();
+    db.execute("CREATE TABLE thread_goals (thread_id TEXT)", [])
+        .unwrap();
+    db.execute(
+        "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT)",
+        [],
+    )
+    .unwrap();
+    db.execute("CREATE TABLE stage1_outputs (thread_id TEXT)", [])
+        .unwrap();
+    db.execute("CREATE TABLE agent_job_items (assigned_thread_id TEXT)", [])
+        .unwrap();
+    let ids = [
+        "019f6000-0000-7000-8000-000000000001",
+        "019f6000-0000-7000-8000-000000000002",
+        "019f6000-0000-7000-8000-000000000003",
+        "019f6000-0000-7000-8000-000000000004",
+        "019f6000-0000-7000-8000-000000000005",
+        "019f6000-0000-7000-8000-000000000006",
+        "019f6000-0000-7000-8000-000000000007",
+        "019f6000-0000-7000-8000-000000000008",
+    ];
+    db.execute("INSERT INTO sessions VALUES (?1)", [ids[0]])
+        .unwrap();
+    db.execute("INSERT INTO messages VALUES (?1)", [ids[1]])
+        .unwrap();
+    db.execute("INSERT INTO thread_dynamic_tools VALUES (?1)", [ids[2]])
+        .unwrap();
+    db.execute("INSERT INTO thread_goals VALUES (?1)", [ids[3]])
+        .unwrap();
+    db.execute(
+        "INSERT INTO thread_spawn_edges VALUES (?1, ?2)",
+        [ids[4], ids[5]],
+    )
+    .unwrap();
+    db.execute("INSERT INTO stage1_outputs VALUES (?1)", [ids[6]])
+        .unwrap();
+    db.execute("INSERT INTO agent_job_items VALUES (?1)", [ids[7]])
+        .unwrap();
+    drop(db);
+
+    let relation_db = sqlite_dir.join("codex-related.db");
+    assert!(
+        !codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home)
+            .contains(&relation_db),
+        "relation-only databases must not enter the shared local-session path list"
+    );
+    assert!(
+        codex_plus_core::codex_sqlite::codex_thread_reference_db_paths_from_home(&home)
+            .contains(&relation_db),
+        "ghost-index cleanup must still discover relation-only thread references"
+    );
+    let index = ids
+        .iter()
+        .map(|id| session_index_line(id, "related"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(home.join("session_index.jsonl"), index).unwrap();
+
+    let preview = preview_session_index_cleanup(Some(&home)).unwrap();
+
+    assert!(preview.candidates.is_empty());
+}
+
+#[test]
+fn session_index_cleanup_write_failure_reports_backup_and_preserves_original() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    let stale_id = "019f4e36-490e-7ae0-8e78-a8b3ab33a428";
+    let original = format!("{}\n", session_index_line(stale_id, "stale"));
+    fs::write(home.join("session_index.jsonl"), &original).unwrap();
+    let preview = preview_session_index_cleanup(Some(&home)).unwrap();
+    fs::create_dir(home.join("session_index.jsonl.tmp")).unwrap();
+
+    let error = apply_session_index_cleanup(
+        Some(&home),
+        &preview.snapshot_sha256,
+        &[stale_id.to_string()],
+    )
+    .unwrap_err();
+
+    assert!(error.message.contains("原子写入"));
+    let backup = error.backup_dir.expect("failure must expose backup");
+    assert_eq!(
+        fs::read_to_string(backup.join("session_index.jsonl")).unwrap(),
+        original
+    );
+    assert_eq!(
+        fs::read_to_string(home.join("session_index.jsonl")).unwrap(),
+        original
     );
 }

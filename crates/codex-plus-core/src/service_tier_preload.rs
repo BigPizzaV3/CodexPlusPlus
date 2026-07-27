@@ -115,6 +115,22 @@ function patchReadServiceTierAsset(source) {
         "return n===`chatgpt`?(await e.query.fetch(Gd,{authMethod:n,hostId:t})).requirements?.featureRequirements?.fast_mode!==!1:!1",
         "return n===`chatgpt`?(await e.query.fetch(Gd,{authMethod:n,hostId:t})).requirements?.featureRequirements?.fast_mode!==!1:n===`apikey`",
       ],
+      [
+        "return n===`chatgpt`?(await e.query.fetch(wu,{authMethod:n,hostId:t})).requirements?.featureRequirements?.fast_mode!==!1:!1",
+        "return n===`chatgpt`?(await e.query.fetch(wu,{authMethod:n,hostId:t})).requirements?.featureRequirements?.fast_mode!==!1:n===`apikey`",
+      ],
+      [
+        /return ([A-Za-z_$][\w$]*)===`chatgpt`\?\(await ([A-Za-z_$][\w$]*)\.query\.fetch\(([A-Za-z_$][\w$]*),\{authMethod:\1,hostId:([A-Za-z_$][\w$]*)\}\)\)\.requirements\?\.featureRequirements\?\.fast_mode!==!1:!1/,
+        "return $1===`chatgpt`?(await $2.query.fetch($3,{authMethod:$1,hostId:$4})).requirements?.featureRequirements?.fast_mode!==!1:$1===`apikey`",
+      ],
+      [
+        "if(n!==`chatgpt`)return!1;let r=await J8n(t,{priority:`critical`});return e.query.setData($E,{authMethod:n,hostId:t},r),r.requirements?.featureRequirements?.fast_mode!==!1",
+        "if(n!==`chatgpt`)return n===`apikey`;let r=await J8n(t,{priority:`critical`});return e.query.setData($E,{authMethod:n,hostId:t},r),r.requirements?.featureRequirements?.fast_mode!==!1",
+      ],
+      [
+        /if\(([A-Za-z_$][\w$]*)!==`chatgpt`\)return!1;let ([A-Za-z_$][\w$]*)=await ([A-Za-z_$][\w$]*)\(/,
+        "if($1!==`chatgpt`)return $1===`apikey`;let $2=await $3(",
+      ],
     ],
     "read service tier auth gate"
   );
@@ -137,6 +153,18 @@ function patchReadServiceTierAsset(source) {
         "return o.service_tier==null?jd(await fQe(t,n??o.model),o.service_tier,r):jd(null,o.service_tier,r)",
         "return o.service_tier==null?jd(await fQe(t,n??o.model),o.service_tier,r):jd(await fQe(t,n??o.model),o.service_tier,r)",
       ],
+      [
+        "return o.service_tier==null?gu(await EKe(t,n??o.model),o.service_tier,r):gu(null,o.service_tier,r)",
+        "return o.service_tier==null?gu(await EKe(t,n??o.model),o.service_tier,r):gu(await EKe(t,n??o.model),o.service_tier,r)",
+      ],
+      [
+        "return o.service_tier==null?Zer(await IWi(t,n??o.model),o.service_tier,r):Zer(null,o.service_tier,r)",
+        "return o.service_tier==null?Zer(await IWi(t,n??o.model),o.service_tier,r):Zer(await IWi(t,n??o.model),o.service_tier,r)",
+      ],
+      [
+        /return ([A-Za-z_$][\w$]*)\.service_tier==null\?([A-Za-z_$][\w$]*)\(await ([A-Za-z_$][\w$]*)\(([^)]*?\?\?\1\.model)\),\1\.service_tier,([A-Za-z_$][\w$]*)\):\2\(null,\1\.service_tier,\5\)/,
+        "return $1.service_tier==null?$2(await $3($4),$1.service_tier,$5):$2(await $3($4),$1.service_tier,$5)",
+      ],
     ],
     "read service tier explicit config model lookup"
   );
@@ -151,11 +179,19 @@ function replaceOnce(source, from, to, label) {
 
 function replaceOneOf(source, variants, label) {
   for (const [from, to] of variants) {
-    if (source.includes(to)) {
-      return source;
+    if (typeof from === "string") {
+      if (source.includes(to)) {
+        return source;
+      }
+      if (source.includes(from)) {
+        return source.replace(from, to);
+      }
+      continue;
     }
-    if (source.includes(from)) {
-      return source.replace(from, to);
+    if (from instanceof RegExp) {
+      if (from.test(source)) {
+        return source.replace(from, to);
+      }
     }
   }
   throw new Error(`${label} pattern not found`);
@@ -321,6 +357,10 @@ mod tests {
         assert!(script.contains("a=i?.authMethod===`chatgpt`||i?.authMethod===`apikey`"));
         assert!(script.contains("e.query.fetch(Gd,{authMethod:n,hostId:t})"));
         assert!(script.contains("jd(await fQe(t,n??o.model),o.service_tier,r)"));
+        assert!(script.contains("e.query.fetch(wu,{authMethod:n,hostId:t})"));
+        assert!(script.contains("gu(await EKe(t,n??o.model),o.service_tier,r)"));
+        assert!(script.contains("Zer(await IWi(t,n??o.model),o.service_tier,r)"));
+        assert!(script.contains("from instanceof RegExp"));
         assert!(script.contains("n===`apikey`"));
     }
 }

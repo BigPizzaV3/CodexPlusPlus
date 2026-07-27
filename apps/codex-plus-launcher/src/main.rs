@@ -2,14 +2,12 @@
 
 use anyhow::{Context, Result};
 use codex_plus_core::launcher::{
-    DefaultLaunchHooks, LaunchHooks, LaunchOptions, launch_and_inject_with_hooks,
+    BridgeReinjector, DefaultLaunchHooks, LaunchHooks, LaunchOptions, launch_and_inject_with_hooks,
 };
 use codex_plus_core::models::{DeleteResult, ExportResult, SessionRef};
 use codex_plus_core::routes::{BridgeContext, BridgeDataService, BridgeRuntimeService};
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -18,6 +16,7 @@ struct LauncherHooks {
     core: Arc<DefaultLaunchHooks>,
     data: Arc<LauncherDataService>,
     runtime: Arc<LauncherRuntimeService>,
+    bridge_context: Arc<Mutex<Option<BridgeContext>>>,
 }
 
 impl Default for LauncherHooks {
@@ -29,12 +28,36 @@ impl Default for LauncherHooks {
                 9229,
                 default_user_script_manager(),
             )),
+            bridge_context: Arc::new(Mutex::new(None)),
         }
+    }
+}
+
+impl LauncherHooks {
+    fn watchdog_bridge_context(&self) -> anyhow::Result<BridgeContext> {
+        self.bridge_context
+            .lock()
+            .map_err(|_| anyhow::anyhow!("bridge context lock poisoned"))?
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("bridge context is not initialized"))
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if let Err(error) = launcher_main().await {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.failed",
+            json!({
+                "message": error.to_string()
+            }),
+        );
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn launcher_main() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let helper_only = args.iter().any(|arg| arg == "--helper-only");
     let options = parse_launch_options(args.iter());
@@ -135,6 +158,7 @@ fn should_recover_stale_launcher(debug_port: u16) -> bool {
 
 async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {
     let hooks = LauncherHooks::default();
+    let helper_port = hooks.select_helper_port(options.helper_port);
     let settings = hooks.load_settings().await?;
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
     let launch_result = hooks
@@ -146,7 +170,7 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
         )
         .await;
     if settings.enhancements_enabled {
-        hooks.start_helper(options.helper_port).await?;
+        hooks.start_helper(helper_port).await?;
     }
     let process_ids = codex_plus_core::watcher::find_codex_processes();
     let mut activated = false;
@@ -161,14 +185,14 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
     }
     let injection_ready = if settings.enhancements_enabled {
         hooks
-            .ensure_injection(options.debug_port, options.helper_port, &app_dir)
+            .ensure_injection(options.debug_port, helper_port, &app_dir)
             .await
     } else {
         false
     };
     if injection_ready {
         hooks
-            .start_bridge_watchdog(options.debug_port, options.helper_port)
+            .start_bridge_watchdog(options.debug_port, helper_port)
             .await?;
         hooks.write_status("running").await;
     } else if settings.enhancements_enabled {
@@ -179,7 +203,8 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
         json!({
             "app_dir": app_dir.to_string_lossy(),
             "debug_port": options.debug_port,
-            "helper_port": options.helper_port,
+            "helper_port": helper_port,
+            "requested_helper_port": options.helper_port,
             "process_ids": process_ids,
             "activated": activated,
             "injection_ready": injection_ready,
@@ -211,17 +236,12 @@ async fn notify_manager_when_update_available() -> anyhow::Result<bool> {
 }
 
 fn open_manager_with_update_prompt() -> anyhow::Result<()> {
-    let manager_path = manager_exe_path();
-    let mut command = std::process::Command::new(&manager_path);
-    command.arg("--show-update");
-    #[cfg(windows)]
-    {
-        command.creation_flags(codex_plus_core::windows_create_no_window());
-    }
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
+    codex_plus_core::install::spawn_companion(
+        codex_plus_core::install::MANAGER_BINARY,
+        ["--show-update"],
+    )
+    .map(|_| ())
+    .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
 }
 
 fn parse_launch_options<I, S>(args: I) -> LaunchOptions
@@ -333,11 +353,16 @@ impl LaunchHooks for LauncherHooks {
         app_dir: &Path,
     ) -> anyhow::Result<Option<BridgeContext>> {
         self.runtime.set_debug_port(debug_port);
-        Ok(Some(BridgeContext::core_with_data_and_app_dir(
+        let ctx = BridgeContext::core_with_data_and_app_dir(
             self.runtime.clone(),
             self.data.clone(),
             app_dir.to_path_buf(),
-        )))
+        );
+        *self
+            .bridge_context
+            .lock()
+            .map_err(|_| anyhow::anyhow!("bridge context lock poisoned"))? = Some(ctx.clone());
+        Ok(Some(ctx))
     }
 
     async fn inject_bridge(
@@ -351,6 +376,22 @@ impl LaunchHooks for LauncherHooks {
 
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         self.core.inject(debug_port, helper_port).await
+    }
+
+    async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+        let ctx = self.watchdog_bridge_context()?;
+        let runtime = self.runtime.clone();
+        let reinjector: BridgeReinjector = Arc::new(move || {
+            let ctx = ctx.clone();
+            let runtime = runtime.clone();
+            Box::pin(
+                async move { inject_with_context(debug_port, helper_port, ctx, runtime).await },
+            )
+        });
+        self.core.set_bridge_reinjector(reinjector).await;
+        self.core
+            .start_bridge_watchdog(debug_port, helper_port)
+            .await
     }
 
     async fn start_computer_use_guard_watchdog(
@@ -488,10 +529,12 @@ impl LauncherDataService {
     }
 
     fn storage_adapter(&self) -> codex_plus_data::SQLiteStorageAdapter {
+        let allowed_db_paths = self.candidate_db_paths();
         codex_plus_data::SQLiteStorageAdapter::new(
             self.db_path.clone(),
             codex_plus_data::BackupStore::new(self.backup_dir.clone()),
         )
+        .with_allowed_db_paths(allowed_db_paths)
     }
 }
 
@@ -523,6 +566,14 @@ impl LauncherRuntimeService {
 impl BridgeRuntimeService for LauncherRuntimeService {
     async fn user_script_inventory(&self) -> anyhow::Result<Value> {
         self.user_scripts.inventory()
+    }
+
+    async fn user_script_inventory_with_runtime_status(
+        &self,
+        payload: Value,
+    ) -> anyhow::Result<Value> {
+        self.user_scripts
+            .inventory_with_runtime_status(payload.get("runtime_status"))
     }
 
     async fn set_user_scripts_enabled(&self, enabled: bool) -> anyhow::Result<Value> {
@@ -563,23 +614,14 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     }
 
     async fn open_manager(&self) -> anyhow::Result<Value> {
-        let manager_path = manager_exe_path();
-        #[cfg(windows)]
-        {
-            std::process::Command::new(&manager_path)
-                .creation_flags(codex_plus_core::windows_create_no_window())
-                .spawn()
-                .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
-        }
-        #[cfg(not(windows))]
-        {
-            std::process::Command::new(&manager_path)
-                .spawn()
-                .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
-        }
+        let target = codex_plus_core::install::spawn_companion(
+            codex_plus_core::install::MANAGER_BINARY,
+            std::iter::empty::<&str>(),
+        )
+        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
         Ok(json!({
             "status": "ok",
-            "path": manager_path.to_string_lossy()
+            "path": target
         }))
     }
 
@@ -587,10 +629,6 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         Ok(
             json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION}),
         )
-    }
-
-    async fn repair_backend(&self) -> anyhow::Result<Value> {
-        self.backend_status().await
     }
 
     async fn codex_model_catalog(&self) -> anyhow::Result<Value> {
@@ -751,10 +789,6 @@ fn open_url(url: &str) -> anyhow::Result<()> {
     }
 }
 
-fn manager_exe_path() -> PathBuf {
-    codex_plus_core::install::companion_binary_path(codex_plus_core::install::MANAGER_BINARY)
-}
-
 fn default_user_script_manager() -> UserScriptManager {
     let config_dir = default_user_scripts_config_dir();
     UserScriptManager::new(
@@ -818,9 +852,13 @@ mod tests {
     }
 
     #[test]
-    fn launcher_hooks_forward_computer_use_guard_methods() {
+    fn launcher_hooks_forward_runtime_watchdogs_and_computer_use_guard_methods() {
         let source = include_str!("main.rs");
 
+        assert!(source.contains("async fn start_bridge_watchdog"));
+        assert!(source.contains("self.watchdog_bridge_context()?"));
+        assert!(source.contains("set_bridge_reinjector(reinjector)"));
+        assert!(source.contains("inject_with_context(debug_port, helper_port, ctx, runtime)"));
         assert!(source.contains("async fn ensure_computer_use_config"));
         assert!(source.contains("self.core.ensure_computer_use_config(settings).await"));
         assert!(source.contains("async fn ensure_plugin_marketplace_config"));
@@ -830,14 +868,41 @@ mod tests {
         assert!(source.contains(".start_computer_use_guard_watchdog(settings)"));
     }
 
-    #[test]
-    fn manager_update_prompt_uses_sidecar_manager_binary_name() {
-        let path = manager_exe_path();
+    #[tokio::test]
+    async fn watchdog_reuses_bridge_context_with_data_service() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "codex-plus-launcher-watchdog-test-{}",
+            std::process::id()
+        ));
+        let hooks = LauncherHooks {
+            core: Arc::new(DefaultLaunchHooks::default()),
+            data: Arc::new(LauncherDataService {
+                db_path: test_dir.join("state.sqlite"),
+                backup_dir: test_dir.join("backups"),
+            }),
+            runtime: Arc::new(LauncherRuntimeService::new(
+                9229,
+                UserScriptManager::new(
+                    test_dir.join("builtin"),
+                    test_dir.join("user"),
+                    test_dir.join("settings.json"),
+                ),
+            )),
+            bridge_context: Arc::new(Mutex::new(None)),
+        };
 
-        assert!(
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.contains(codex_plus_core::install::MANAGER_BINARY))
+        hooks.bridge_context(9229, &test_dir).await.unwrap();
+        let ctx = hooks.watchdog_bridge_context().unwrap();
+        let result = codex_plus_core::routes::handle_bridge_request(
+            ctx,
+            "/move-thread-workspace",
+            json!({"session_id": "missing", "title": "Missing", "target_cwd": "/new"}),
+        )
+        .await;
+
+        assert_ne!(
+            result["message"],
+            "Move workspace service is not wired in core launcher hooks"
         );
     }
 }

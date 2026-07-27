@@ -43,6 +43,7 @@
     lastAssistantHash: "",
     lastAssistantAt: 0,
     currentHash: "",
+    lastScanStatus: "",
     bridgeCache: new Map(),
     bridgePendingHash: "",
     bridgeStatus: "idle",
@@ -278,6 +279,9 @@
     if (name === "sun") {
       return `<svg aria-hidden="true" viewBox="0 0 24 24"><circle ${common} cx="12" cy="12" r="4.3"/><path ${common} d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.35 5.35 6.9 6.9M17.1 17.1l1.55 1.55M18.65 5.35 17.1 6.9M6.9 17.1l-1.55 1.55"/></svg>`;
     }
+    if (name === "refresh") {
+      return `<svg aria-hidden="true" viewBox="0 0 24 24"><path ${common} d="M20 11a8 8 0 0 0-14.1-5.2L4 8"/><path ${common} d="M4 4v4h4"/><path ${common} d="M4 13a8 8 0 0 0 14.1 5.2L20 16"/><path ${common} d="M20 20v-4h-4"/></svg>`;
+    }
     return `<svg aria-hidden="true" viewBox="0 0 24 24"><path ${common} d="M6 6l12 12M18 6 6 18"/></svg>`;
   }
 
@@ -499,6 +503,11 @@
       .csw-icon:hover {
         background: var(--csw-soft);
         color: var(--csw-text);
+      }
+
+      .csw-icon:disabled {
+        cursor: not-allowed;
+        opacity: .42;
       }
 
       .csw-icon svg {
@@ -1000,10 +1009,13 @@
     state.popover.dataset.open = state.open ? "true" : "false";
     if (!state.open) return;
 
+    const refreshBlocked = state.bridgeStatus === "pending" || chatBusy();
+    const refreshTitle = refreshBlocked ? "生成结束后可重新生成" : "重新生成";
     state.popover.innerHTML = `
       <div class="csw-head">
         <div class="csw-title">Stepwise</div>
         <div class="csw-tabs">
+          <button class="csw-icon" type="button" data-action="refresh" title="${escapeAttr(refreshTitle)}" aria-label="${escapeAttr(refreshTitle)}" ${refreshBlocked ? "disabled" : ""}>${iconSvg("refresh")}</button>
           <button class="csw-icon" type="button" data-action="theme" title="${escapeAttr(themeLabel())}" aria-label="${escapeAttr(themeLabel())}">${themeIcon()}</button>
           <button class="csw-icon" type="button" data-action="settings-toggle" data-active="${state.activeTab === "settings"}" title="设置" aria-label="设置">${iconSvg("settings")}</button>
           <button class="csw-icon" type="button" data-action="close" aria-label="关闭">×</button>
@@ -1021,6 +1033,7 @@
       state.open = false;
       renderFloat();
     });
+    state.popover.querySelector("[data-action='refresh']")?.addEventListener("click", () => forceRefreshStepwise());
     state.popover.querySelector("[data-action='theme']")?.addEventListener("click", toggleCodexTheme);
 
     if (state.activeTab === "settings") attachSettingsEvents();
@@ -1382,6 +1395,13 @@
     });
   }
 
+  function setScanStatus(status, details = {}) {
+    const key = `${status}:${JSON.stringify(details)}`;
+    if (state.lastScanStatus === key) return;
+    state.lastScanStatus = key;
+    pushDiagnostic(`scan:${status}`, details);
+  }
+
   function composerBusy(target) {
     let current = target?.parentElement || null;
     for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
@@ -1421,6 +1441,45 @@
   function actionButton(node) {
     const label = normalizeText(node.getAttribute("aria-label") || node.textContent || "");
     return /^(复制|喜欢|不喜欢|从此处开始分叉|挂钩|copy|like|dislike|fork)/i.test(label);
+  }
+
+  function classTokenMatch(node, token) {
+    return node instanceof Element && Array.from(node.classList || []).some((className) => className === token);
+  }
+
+  function assistantBubbleCandidates() {
+    const root = chatRoot();
+    if (!root) return [];
+
+    return Array.from(root.querySelectorAll(".group.flex.min-w-0.flex-col"))
+      .filter((node) => {
+        if (!(node instanceof HTMLElement)) return false;
+        if (state.root?.contains(node)) return false;
+        if (classTokenMatch(node, "items-end")) return false;
+        const text = directText(node);
+        if (text.length < 24 || text.length > MAX_TEXT_LENGTH) return false;
+        return true;
+      })
+      .map((node) => ({
+        node,
+        role: "assistant",
+        text: elementText(node),
+      }));
+  }
+
+  function latestMessageByDocumentOrder(candidates) {
+    return candidates
+      .filter((item) => item?.node instanceof Node && item.text?.length > 8)
+      .sort((left, right) => {
+        if (left.node === right.node) return 0;
+        const position = left.node.compareDocumentPosition(right.node);
+        if (position & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+        if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+        if (left.node.contains(right.node)) return -1;
+        if (right.node.contains(left.node)) return 1;
+        return 0;
+      })
+      .at(-1) || null;
   }
 
   function actionRowForMessage(root) {
@@ -1482,15 +1541,17 @@
   }
 
   function findLatestAssistantMessage() {
+    const candidates = [];
     const rows = allActionRows();
-    for (let index = rows.length - 1; index >= 0; index -= 1) {
+    for (let index = 0; index < rows.length; index += 1) {
       const node = assistantContainerForActionRow(rows[index]);
       const text = elementText(node);
-      if (text.length > 8) return { node, role: "assistant", text };
+      if (text.length > 8) candidates.push({ node, role: "assistant", text });
     }
 
-    const fallback = messageCandidates().filter((item) => item.role === "assistant");
-    return fallback[fallback.length - 1] || null;
+    candidates.push(...messageCandidates().filter((item) => item.role === "assistant"));
+    candidates.push(...assistantBubbleCandidates());
+    return latestMessageByDocumentOrder(candidates);
   }
 
   function findPreviousUserText(assistantNode) {
@@ -1747,6 +1808,52 @@
       });
   }
 
+  function forceRefreshStepwise() {
+    if (!isCurrentInstance()) return;
+    if (state.bridgeStatus === "pending") {
+      setScanStatus("manual-refresh-pending", {});
+      return;
+    }
+    if (chatBusy()) {
+      if (!state.prompts.length) state.bridgeError = "回答生成中，结束后再刷新";
+      setScanStatus("manual-refresh-busy", {});
+      renderFloat();
+      return;
+    }
+
+    const message = findLatestAssistantMessage();
+    if (!message) {
+      state.bridgeError = "未找到可用于生成的回答";
+      state.prompts = [];
+      setScanStatus("manual-refresh-no-assistant", {});
+      renderFloat();
+      return;
+    }
+
+    const stepwisePayload = extractStepwisePayload(message);
+    hideStepwisePayload(message.node);
+    const assistantText = shortText(stepwisePayload.textWithoutPayload || message.text);
+    const userText = findPreviousUserText(message.node);
+    const bridgeKey = bridgeRequestKey(userText, assistantText);
+    if (bridgeKey) state.bridgeCache.delete(bridgeKey);
+
+    state.lastAssistantHash = hashText(assistantText);
+    state.lastAssistantAt = 0;
+    state.currentHash = `${state.lastAssistantHash}:manual-refresh`;
+    state.prompts = [];
+    state.bridgeError = "";
+    setScanStatus("manual-refresh", { hash: state.lastAssistantHash, textLength: assistantText.length });
+    requestBridgeStepwise(bridgeKey, userText, assistantText);
+    renderFloat();
+  }
+
+  function clearPromptsForNewAssistant(hash) {
+    state.currentHash = `${hash}:pending`;
+    state.prompts = [];
+    state.bridgeError = "";
+    renderFloat();
+  }
+
   function setNativeValue(element, value) {
     const prototype = Object.getPrototypeOf(element);
     const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
@@ -1928,8 +2035,9 @@
     installFloat();
 
     if (!chatSurfaceReady()) {
-      pushDiagnostic("scan:not-ready", {
-        hasChatRoot: Boolean(chatRoot()),
+      setScanStatus("not-ready", {
+        hasRoot: Boolean(chatRoot()),
+        composerCount: composerCandidates().length,
         busy: chatBusy(),
       });
       renderFloat();
@@ -1938,7 +2046,7 @@
 
     const message = findLatestAssistantMessage();
     if (!message) {
-      pushDiagnostic("scan:no-assistant-message", {
+      setScanStatus("no-assistant-message", {
         messageCandidateCount: messageCandidates().length,
         actionRowCount: allActionRows().length,
       });
@@ -1956,11 +2064,14 @@
     if (hash !== state.lastAssistantHash) {
       state.lastAssistantHash = hash;
       state.lastAssistantAt = now;
+      if (state.prompts.length || state.currentHash) clearPromptsForNewAssistant(hash);
+      setScanStatus("assistant-changed", { hash, textLength: assistantText.length });
       scheduleScan(STREAM_IDLE_MS + 120);
       return;
     }
 
     if (now - state.lastAssistantAt < STREAM_IDLE_MS) {
+      setScanStatus("assistant-settling", { hash });
       scheduleScan(STREAM_IDLE_MS);
       return;
     }
@@ -1979,6 +2090,11 @@
       });
       requestBridgeStepwise(bridgeKey, userText, assistantText);
     }
+    setScanStatus("ready", {
+      hash,
+      bridgeCached: Boolean(bridgeResult),
+      promptCount: prompts.length,
+    });
 
     const nextHash = hashText(prompts.map((item) => `${item.label}\n${item.prompt}`).join("\n\n"));
     if (state.currentHash !== `${hash}:${nextHash}`) {
