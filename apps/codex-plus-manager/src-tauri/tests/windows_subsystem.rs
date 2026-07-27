@@ -365,3 +365,14 @@ fn manager_update_install_keeps_visible_progress_bar() {
     assert!(app_tsx.contains("completedTitle={t(\"上次更新结果\")}"));
     assert!(app_tsx.contains("progress={updateInstallProgress}"));
 }
+
+#[test]
+fn model_routing_provider_edits_keep_the_live_router_config() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+
+    assert!(app_tsx.contains("if (!switchSettings.modelRoutingEnabled)"));
+    assert!(app_tsx.contains("if (form.modelRoutingEnabled)"));
+    assert!(app_tsx.contains("await actions.switchRelayProfile(next, form.activeRelayId)"));
+}

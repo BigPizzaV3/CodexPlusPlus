@@ -2208,7 +2208,9 @@ export function App() {
       showNotice(t("供应商配置可能不正确"), validationError, "failed");
       return;
     }
-    switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
+    if (!switchSettings.modelRoutingEnabled) {
+      switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
+    }
     const selectedAfterSave = activeRelayProfile(switchSettings);
     const command = relayProfileSwitchCommand(selectedAfterSave);
 
@@ -5393,14 +5395,18 @@ function RelayProfileDetail({
     const next = isNew
       ? addRelayProfile(form, normalizedDraft)
       : updateRelayProfile(form, profile.id, normalizedDraft);
-    await onFormChange(next);
-    if (isActive && relayProfileUsesLiveFiles(normalizedDraft)) {
-      await actions.saveRelayFile(
-        "config",
-        effectiveRelayConfigPreview(normalizedDraft, form, normalizedDraft),
-        true,
-      );
-      await actions.saveRelayFile("auth", normalizedDraft.authContents, true);
+    if (form.modelRoutingEnabled) {
+      await actions.switchRelayProfile(next, form.activeRelayId);
+    } else {
+      await onFormChange(next);
+      if (isActive && relayProfileUsesLiveFiles(normalizedDraft)) {
+        await actions.saveRelayFile(
+          "config",
+          effectiveRelayConfigPreview(normalizedDraft, form, normalizedDraft),
+          true,
+        );
+        await actions.saveRelayFile("auth", normalizedDraft.authContents, true);
+      }
     }
     onSaved?.();
   };
