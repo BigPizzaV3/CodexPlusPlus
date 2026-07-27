@@ -5,10 +5,39 @@ use codex_plus_data::{
 };
 use rusqlite::Connection;
 use serde_json::json;
+use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 use tempfile::tempdir;
+
+static CODEX_HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct CodexHomeEnvGuard {
+    previous: Option<OsString>,
+}
+
+impl CodexHomeEnvGuard {
+    fn set(path: &Path) -> Self {
+        let previous = std::env::var_os("CODEX_HOME");
+        unsafe {
+            std::env::set_var("CODEX_HOME", path);
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for CodexHomeEnvGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var("CODEX_HOME", value),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+        }
+    }
+}
 
 fn write_rollout(path: &Path, provider: &str, thread_id: &str, cwd: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -153,6 +182,21 @@ fn create_local_thread_catalog_db(path: &Path, rows: &[(&str, &str)]) {
         )
         .unwrap();
     }
+}
+
+#[test]
+fn provider_sync_targets_default_to_codex_home_env() {
+    let _lock = CODEX_HOME_ENV_LOCK.lock().unwrap();
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join("custom-codex-home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let _guard = CodexHomeEnvGuard::set(&home);
+
+    let targets = load_provider_sync_targets(None);
+
+    assert_eq!(targets.current_provider, "custom");
+    assert!(targets.targets.iter().any(|target| target.id == "custom"));
 }
 
 #[test]
