@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::io::Read;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -314,7 +315,8 @@ where
                 );
             }
         }
-        let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings);
+        let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings)
+            || remote_control_provider_proxy_enabled(&settings);
         if protocol_proxy_enabled {
             helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
         }
@@ -406,6 +408,14 @@ where
 
 fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
     settings.active_relay_uses_protocol_proxy()
+}
+
+fn remote_control_provider_proxy_enabled(settings: &BackendSettings) -> bool {
+    if !settings.relay_profiles_enabled {
+        return false;
+    }
+    let profile = settings.active_relay_profile();
+    profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key
 }
 
 fn select_native_menu_inspector_port(debug_port: u16) -> u16 {
@@ -1029,6 +1039,7 @@ async fn handle_helper_connection(
     let path = raw_path.split('?').next().unwrap_or(raw_path);
     let request_user_agent = header_value_from_headers(&request_headers, "user-agent");
     let request_content_type = header_value_from_headers(&request_headers, "content-type");
+    let request_content_encoding = header_value_from_headers(&request_headers, "content-encoding");
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
 
     let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -1054,8 +1065,57 @@ async fn handle_helper_connection(
         )
         .await;
     }
-    let request_body = String::from_utf8_lossy(&request.body);
+    if crate::protocol_proxy::is_responses_proxy_path(path) && method == "GET" {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "status": "upgrade_required",
+            "message": "WebSocket transport is not supported by the local protocol proxy; retry with HTTP."
+        }))?;
+        write_http_response(
+            &mut stream,
+            "426 Upgrade Required",
+            "application/json; charset=utf-8",
+            &body,
+        )
+        .await?;
+        log_helper_response(
+            "helper.responses_websocket_upgrade_required",
+            method,
+            path,
+            "426 Upgrade Required",
+            remote_addr_text,
+        );
+        stream.shutdown().await?;
+        return Ok(());
+    }
     if crate::protocol_proxy::is_responses_proxy_path(path) && method == "POST" {
+        let request_body = match decode_protocol_proxy_request_body(
+            &request.body,
+            request_content_encoding.as_deref(),
+        ) {
+            Ok(body) => body,
+            Err(error) => {
+                let body = serde_json::to_vec(&serde_json::json!({
+                    "status": "failed",
+                    "message": error.to_string()
+                }))?;
+                write_http_response(
+                    &mut stream,
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    &body,
+                )
+                .await?;
+                log_helper_response(
+                    "helper.protocol_proxy_decode_failed",
+                    method,
+                    path,
+                    "400 Bad Request",
+                    remote_addr_text,
+                );
+                stream.shutdown().await?;
+                return Ok(());
+            }
+        };
         return handle_protocol_proxy_connection(
             &mut stream,
             &request_body,
@@ -1066,6 +1126,7 @@ async fn handle_helper_connection(
         )
         .await;
     }
+    let request_body = String::from_utf8_lossy(&request.body);
     if crate::protocol_proxy::is_chat_completions_proxy_path(path) && method == "POST" {
         return handle_chat_completions_proxy_connection(
             &mut stream,
@@ -1186,6 +1247,30 @@ async fn handle_helper_connection(
     }
     stream.shutdown().await?;
     Ok(())
+}
+
+fn decode_protocol_proxy_request_body(
+    body: &[u8],
+    content_encoding: Option<&str>,
+) -> anyhow::Result<String> {
+    let encoding = content_encoding.unwrap_or_default().trim();
+    let decoded = if encoding.is_empty() || encoding.eq_ignore_ascii_case("identity") {
+        body.to_vec()
+    } else if encoding.eq_ignore_ascii_case("zstd") {
+        let decoder = zstd::stream::read::Decoder::new(std::io::Cursor::new(body))?;
+        let mut limited = decoder.take((MAX_HTTP_BODY_BYTES + 1) as u64);
+        let mut decoded = Vec::new();
+        limited.read_to_end(&mut decoded)?;
+        if decoded.len() > MAX_HTTP_BODY_BYTES {
+            anyhow::bail!("解压后的请求体超过大小限制");
+        }
+        decoded
+    } else {
+        anyhow::bail!("不支持的 Content-Encoding：{encoding}");
+    };
+
+    String::from_utf8(decoded)
+        .map_err(|error| anyhow::anyhow!("Responses 请求体不是 UTF-8：{error}"))
 }
 
 fn overlay_image_response() -> (String, Vec<u8>, String, &'static str) {
@@ -1376,9 +1461,10 @@ async fn handle_protocol_proxy_connection(
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
-    let upstream = match crate::protocol_proxy::open_responses_proxy_request(
+    let upstream = match crate::protocol_proxy::open_responses_proxy_request_for_path(
         request_body,
         request_user_agent,
+        path,
     )
     .await
     {
@@ -3157,6 +3243,124 @@ mod tests {
         let response = send_raw_helper_request(&request).await;
 
         assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 400 Bad Request"));
+    }
+
+    #[tokio::test]
+    async fn helper_returns_426_for_responses_websocket_upgrade() {
+        let response = send_raw_helper_request(
+            b"GET /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+        )
+        .await;
+
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 426 Upgrade Required"));
+    }
+
+    #[test]
+    fn protocol_proxy_request_body_decodes_zstd() {
+        let body = br#"{"model":"gpt-5.6-sol","input":"probe","stream":false}"#;
+        let compressed = zstd::stream::encode_all(std::io::Cursor::new(body), 3).unwrap();
+
+        let decoded = decode_protocol_proxy_request_body(&compressed, Some("zstd")).unwrap();
+
+        assert_eq!(decoded.as_bytes(), body);
+        assert!(decode_protocol_proxy_request_body(body, Some("gzip")).is_err());
+    }
+
+    #[tokio::test]
+    async fn helper_replaces_chatgpt_auth_when_proxying_zstd_responses_request() {
+        let _settings_guard = crate::paths::settings_path_test_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let previous_settings_path =
+            crate::paths::set_settings_path_for_tests(Some(settings_path.clone()));
+        let upstream_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let upstream_addr = upstream_listener.local_addr().unwrap();
+        let settings = serde_json::json!({
+            "relayProfilesEnabled": true,
+            "relayProfiles": [{
+                "id": "remote-control",
+                "name": "Remote Control Relay",
+                "baseUrl": format!("http://{upstream_addr}/v1"),
+                "upstreamBaseUrl": format!("http://{upstream_addr}/v1"),
+                "apiKey": "sk-upstream",
+                "protocol": "responses",
+                "relayMode": "official",
+                "officialMixApiKey": true
+            }],
+            "activeRelayId": "remote-control"
+        });
+        std::fs::write(settings_path, serde_json::to_vec_pretty(&settings).unwrap()).unwrap();
+
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = upstream_listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let mut expected_len = None;
+            loop {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "upstream request ended before body completed");
+                request.extend_from_slice(&buffer[..read]);
+                if expected_len.is_none() {
+                    if let Some(header_end) = find_header_end(&request) {
+                        let headers = String::from_utf8_lossy(&request[..header_end]);
+                        let content_length = header_value_from_headers(&headers, "content-length")
+                            .unwrap()
+                            .parse::<usize>()
+                            .unwrap();
+                        expected_len = Some(header_end + 4 + content_length);
+                    }
+                }
+                if expected_len.is_some_and(|length| request.len() >= length) {
+                    break;
+                }
+            }
+            let response_body = br#"{"id":"resp_remote","object":"response"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(response_body).await.unwrap();
+            request
+        });
+
+        let body = br#"{"model":"gpt-5.6-sol","input":"probe","stream":false}"#;
+        let compressed = zstd::stream::encode_all(std::io::Cursor::new(body), 3).unwrap();
+        let helper_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let helper_addr = helper_listener.local_addr().unwrap();
+        let helper = tokio::spawn(async move {
+            let (stream, remote_addr) = helper_listener.accept().await.unwrap();
+            handle_helper_connection(stream, Some(remote_addr))
+                .await
+                .unwrap();
+        });
+        let mut client = tokio::net::TcpStream::connect(helper_addr).await.unwrap();
+        let headers = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: {helper_addr}\r\nAuthorization: Bearer chatgpt-secret\r\nContent-Type: application/json\r\nContent-Encoding: zstd\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            compressed.len()
+        );
+        client.write_all(headers.as_bytes()).await.unwrap();
+        client.write_all(&compressed).await.unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200 OK"));
+
+        helper.await.unwrap();
+        let upstream_request = upstream.await.unwrap();
+        let header_end = find_header_end(&upstream_request).unwrap();
+        let upstream_headers =
+            String::from_utf8_lossy(&upstream_request[..header_end]).to_ascii_lowercase();
+        assert!(upstream_headers.starts_with("post /v1/responses http/1.1"));
+        assert!(upstream_headers.contains("authorization: bearer sk-upstream"));
+        assert!(!upstream_headers.contains("chatgpt-secret"));
+        let upstream_body: serde_json::Value =
+            serde_json::from_slice(&upstream_request[header_end + 4..]).unwrap();
+        assert_eq!(upstream_body["model"], "gpt-5.6-sol");
+        crate::paths::set_settings_path_for_tests(previous_settings_path);
     }
 
     async fn send_raw_helper_request(request: &[u8]) -> Vec<u8> {

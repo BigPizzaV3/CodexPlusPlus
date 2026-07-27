@@ -35,3 +35,4 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 winresource = "0.1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+zstd = "0.13"

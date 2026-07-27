@@ -608,6 +608,37 @@ fn codex_base_url_for_protocol(base_url: &str, protocol: RelayProtocol, proxy_po
     }
 }
 
+const OPENAI_BASE_URL_KEY: &str = "openai_base_url";
+
+fn managed_openai_base_url() -> String {
+    crate::protocol_proxy::local_responses_proxy_base_url(
+        crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+    )
+}
+
+fn update_remote_control_openai_base_url(doc: &mut DocumentMut, enabled: bool) {
+    let managed = managed_openai_base_url();
+    let current = doc
+        .get(OPENAI_BASE_URL_KEY)
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .map(ToString::to_string);
+
+    if enabled {
+        if current.as_deref().is_none_or(|value| value == managed) {
+            doc[OPENAI_BASE_URL_KEY] = toml_edit::value(managed);
+        }
+    } else if current.as_deref() == Some(managed.as_str()) {
+        doc.as_table_mut().remove(OPENAI_BASE_URL_KEY);
+    }
+}
+
+fn remove_managed_remote_control_openai_base_url(contents: &str) -> anyhow::Result<String> {
+    let mut doc = parse_toml_document(contents)?;
+    update_remote_control_openai_base_url(&mut doc, false);
+    Ok(normalize_optional_toml(doc))
+}
+
 pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResult> {
     clear_relay_config_to_home_with_auth(home, None)
 }
@@ -647,6 +678,7 @@ pub fn clear_relay_config_to_home_with_auth_and_computer_use_guard(
     ] {
         updated = remove_root_key(&updated, key);
     }
+    updated = remove_managed_remote_control_openai_base_url(&updated)?;
     let backup_path = write_codex_live_atomic(
         home,
         Some(&updated),
@@ -748,6 +780,7 @@ pub fn extract_common_config_from_config(config_text: &str) -> anyhow::Result<St
         "model",
         "model_provider",
         "base_url",
+        OPENAI_BASE_URL_KEY,
         "model_catalog_json",
         CHAT_UPSTREAM_BASE_URL_KEY,
     ] {
@@ -1277,6 +1310,7 @@ fn sanitize_common_config_text_fallback(common_config: &str) -> String {
                     "model"
                         | "model_provider"
                         | "base_url"
+                        | OPENAI_BASE_URL_KEY
                         | "model_catalog_json"
                         | CHAT_UPSTREAM_BASE_URL_KEY
                 ) {
@@ -2054,6 +2088,10 @@ pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
 
 fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(&profile.config_contents)?;
+    update_remote_control_openai_base_url(
+        &mut doc,
+        profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key,
+    );
     let provider_id = active_or_default_provider_id(&doc);
     set_provider_id(&mut doc, &provider_id);
 
