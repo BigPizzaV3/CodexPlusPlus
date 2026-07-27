@@ -1471,7 +1471,11 @@ impl LaunchHooks for ContextHooks {
         self.event(format!("status:{status}"));
     }
 
-    async fn wait_for_codex_exit(&self, _launch: &CodexLaunch) -> anyhow::Result<()> {
+    async fn wait_for_codex_exit(
+        &self,
+        _launch: &CodexLaunch,
+        _debug_port: u16,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 
