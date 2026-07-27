@@ -81,6 +81,7 @@ import {
   type ModelWindowRow,
 } from "./model-windows";
 import { resolveProviderSyncCompletion } from "./provider-sync-flow";
+import { configHasFeature, setFeatureInConfig } from "./relay-features";
 import {
   defaultDreamSkinTheme,
   defaultDreamSkinColors,
@@ -5723,15 +5724,33 @@ function RelayProfileEditor({
         <Field className="relay-field-goals" label={t("Codex 目标")}>
           <label className="inline-check">
             <input
-              checked={configHasCodexGoalsFeature(profile.configContents)}
+              checked={configHasFeature(profile.configContents, "goals")}
               onChange={(event) =>
                 updateDraft({
-                  configContents: setCodexGoalsFeatureInConfig(profile.configContents, event.currentTarget.checked),
+                  configContents: setFeatureInConfig(profile.configContents, "goals", event.currentTarget.checked),
                 })
               }
               type="checkbox"
             />
             <span>{t("启用目标功能")}</span>
+          </label>
+        </Field>
+        <Field className="relay-field-voice" label={t("实时语音聊天")}>
+          <label className="inline-check">
+            <input
+              checked={configHasFeature(profile.configContents, "realtime_conversation")}
+              onChange={(event) =>
+                updateDraft({
+                  configContents: setFeatureInConfig(
+                    profile.configContents,
+                    "realtime_conversation",
+                    event.currentTarget.checked,
+                  ),
+                })
+              }
+              type="checkbox"
+            />
+            <span>{t("启用语音聊天")}</span>
           </label>
         </Field>
         <div className="relay-advanced-toggle">
@@ -7283,70 +7302,6 @@ function filterContextEntriesBySelection(entries: CodexContextEntries, selection
   };
 }
 
-function configHasCodexGoalsFeature(configContents: string): boolean {
-  let inFeatures = false;
-  for (const line of configContents.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (/^\[features\]$/.test(trimmed)) {
-      inFeatures = true;
-      continue;
-    }
-    if (inFeatures && /^\[[^\]]+\]$/.test(trimmed)) {
-      inFeatures = false;
-    }
-    if (inFeatures && /^goals\s*=\s*true\b/.test(trimmed)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function setCodexGoalsFeatureInConfig(configContents: string, enabled: boolean): string {
-  const lines = configContents.split(/\r?\n/);
-  const next: string[] = [];
-  let inFeatures = false;
-  let sawFeatures = false;
-  let featuresHasGoals = false;
-
-  const maybeInsertGoals = () => {
-    if (enabled && sawFeatures && !featuresHasGoals) {
-      next.push("goals = true");
-      featuresHasGoals = true;
-    }
-  };
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (/^\[features\]$/.test(trimmed)) {
-      if (inFeatures) maybeInsertGoals();
-      inFeatures = true;
-      sawFeatures = true;
-      featuresHasGoals = false;
-      next.push(line);
-      continue;
-    }
-    if (inFeatures && /^\[[^\]]+\]$/.test(trimmed)) {
-      maybeInsertGoals();
-      inFeatures = false;
-    }
-    if (inFeatures && /^goals\s*=/.test(trimmed)) {
-      if (enabled && !featuresHasGoals) {
-        next.push("goals = true");
-        featuresHasGoals = true;
-      }
-      continue;
-    }
-    next.push(line);
-  }
-
-  if (inFeatures) maybeInsertGoals();
-  if (enabled && !sawFeatures) {
-    const trimmed = ensureTrailingNewline(next.join("\n").trimEnd());
-    return joinTomlSections([trimmed, "[features]\ngoals = true"]);
-  }
-
-  return ensureTrailingNewline(next.join("\n").trimEnd());
-}
 
 function effectiveRelayConfigPreview(profile: RelayProfile, settings: BackendSettings, contextProfile = profile): string {
   const entries = contextEntriesForProfile(settings, contextProfile);

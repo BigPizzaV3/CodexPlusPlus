@@ -1387,6 +1387,10 @@ body {
   grid-column: 1;
 }
 
+.relay-field-voice {
+  grid-column: 1;
+}
+
 .relay-advanced-toggle {
   grid-column: 1;
 }
