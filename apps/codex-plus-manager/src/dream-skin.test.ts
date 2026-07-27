@@ -102,6 +102,20 @@ describe("dream skin theme helpers", () => {
     assert.match(renderer, /ensureDreamSkinCompanion\(\s*window\.__CODEX_PLUS_DREAM_SKIN_THEME__/);
   });
 
+  it("aligns tall companion images by rendered height with a wider vertical offset range", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+
+    assert.match(renderer, /companion\.naturalWidth/);
+    assert.match(renderer, /companion\.naturalHeight/);
+    assert.match(renderer, /composer\.rect\.bottom - renderedHeight \+ config\.offsetY/);
+    assert.match(renderer, /window\.innerHeight - renderedHeight - edge/);
+    assert.match(renderer, /const offsetY = Math\.max\(-160, Math\.min\(Number\(companion\.offsetY\) \|\| 0, 160\)\)/);
+    assert.match(app, /min=\{-160\}/);
+    assert.match(app, /max=\{160\}/);
+    assert.match(app, /Math\.max\(-160, Math\.min\(160, Number\(event\.currentTarget\.value\) \|\| 0\)\)/);
+  });
+
   it("keeps the Windows skin active when the sidebar is hidden", async () => {
     const renderer = await readFile(
       new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url),

@@ -1651,7 +1651,7 @@
     const width = Math.max(48, Math.min(Number(companion.width) || 96, 160));
     const side = ["left", "right"].includes(companion.side) ? companion.side : "auto";
     const offsetX = Math.max(-48, Math.min(Number(companion.offsetX) || 0, 48));
-    const offsetY = Math.max(-48, Math.min(Number(companion.offsetY) || 0, 48));
+    const offsetY = Math.max(-160, Math.min(Number(companion.offsetY) || 0, 160));
     return { dataUrl, width, side, offsetX, offsetY };
   }
 
@@ -1689,7 +1689,14 @@
       });
       document.body.appendChild(companion);
     }
-    if (companion.src !== config.dataUrl) companion.src = config.dataUrl;
+    if (companion.src !== config.dataUrl) {
+      companion.onload = () => ensureDreamSkinCompanion(theme);
+      companion.src = config.dataUrl;
+    }
+
+    const renderedHeight = companion.naturalWidth > 0 && companion.naturalHeight > 0
+      ? Math.min(160, config.width * companion.naturalHeight / companion.naturalWidth)
+      : config.width;
 
     const gap = 12;
     const edge = 8;
@@ -1711,8 +1718,8 @@
     const top = Math.max(
       edge,
       Math.min(
-        composer.rect.bottom - config.width + config.offsetY,
-        window.innerHeight - config.width - edge,
+        composer.rect.bottom - renderedHeight + config.offsetY,
+        window.innerHeight - renderedHeight - edge,
       ),
     );
     companion.style.width = `${config.width}px`;

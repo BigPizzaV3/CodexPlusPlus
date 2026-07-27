@@ -3995,11 +3995,11 @@ function DreamSkinScreen({
                     <Input
                       disabled={!companionDataUrl}
                       inputMode="numeric"
-                      max={48}
-                      min={-48}
+                      max={160}
+                      min={-160}
                       type="number"
                       value={companion?.offsetY ?? 4}
-                      onChange={(event) => updateCompanion({ offsetY: Math.max(-48, Math.min(48, Number(event.currentTarget.value) || 0)) })}
+                      onChange={(event) => updateCompanion({ offsetY: Math.max(-160, Math.min(160, Number(event.currentTarget.value) || 0)) })}
                     />
                   </Field>
                 </div>
