@@ -3299,10 +3299,10 @@
     refreshCodexServiceTierControls();
   }
 
-  function withBackendTimeout(request) {
+  function withBackendTimeout(request, timeoutMs = 2000, message = "后端检查超时") {
     return Promise.race([
       request,
-      new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "后端检查超时", timeout: true }), 2000)),
+      new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message, timeout: true }), timeoutMs)),
     ]);
   }
 
@@ -8805,6 +8805,7 @@
         refreshAfterPending: false,
         timer: 0,
         lastFetchAt: 0,
+        pendingSince: 0,
         signatureBySession: Object.create(null),
         imagesBySession: Object.create(null),
       };
@@ -8812,6 +8813,7 @@
     if (!window.__codexPlusImageOutputRuntime.imagesBySession || typeof window.__codexPlusImageOutputRuntime.imagesBySession !== "object") {
       window.__codexPlusImageOutputRuntime.imagesBySession = Object.create(null);
     }
+    window.__codexPlusImageOutputRuntime.pendingSince = finiteNonNegativeNumber(window.__codexPlusImageOutputRuntime.pendingSince);
     return window.__codexPlusImageOutputRuntime;
   }
 
@@ -9008,25 +9010,48 @@
     return resolvedGroups.length === groups.length;
   }
 
+  function clearStaleImageOutputRequest(runtime, now = Date.now()) {
+    if (!runtime.pending) return false;
+    if (runtime.pendingSince && now - runtime.pendingSince < 12000) return false;
+    runtime.pending = false;
+    runtime.pendingSince = 0;
+    runtime.refreshAfterPending = false;
+    sendCodexPlusDiagnostic("image_outputs_stale_request_cleared", {
+      activeSessionId: runtime.activeSessionId || "",
+    });
+    return true;
+  }
+
   async function refreshImageOutputs() {
     const runtime = imageOutputRuntime();
     const ref = currentSessionRef();
     const sessionId = validThreadScrollSessionKey(ref.session_id);
     removeStaleImageOutputLists(sessionId);
     if (!sessionId) return;
+    const now = Date.now();
+    clearStaleImageOutputRequest(runtime, now);
     if (runtime.pending) {
       runtime.refreshAfterPending = true;
       return;
     }
-    const now = Date.now();
     const cachedSignature = runtime.signatureBySession[sessionId] || "";
     const cachedImages = runtime.imagesBySession?.[sessionId] || [];
-    if (runtime.activeSessionId === sessionId && now - finiteNonNegativeNumber(runtime.lastFetchAt) < 2500 && (!cachedSignature || (imageOutputListSignature(sessionId) === cachedSignature && !imageOutputListsNeedReposition(sessionId, cachedImages)))) return;
+    if (runtime.activeSessionId === sessionId && now - finiteNonNegativeNumber(runtime.lastFetchAt) < 2500) {
+      if (cachedSignature && (imageOutputListSignature(sessionId) !== cachedSignature || imageOutputListsNeedReposition(sessionId, cachedImages))) {
+        renderImageOutputs(sessionId, cachedImages);
+      }
+      return;
+    }
     runtime.pending = true;
+    runtime.pendingSince = now;
     runtime.activeSessionId = sessionId;
     runtime.lastFetchAt = now;
     try {
-      const result = await postJson("/image-outputs", { session_id: sessionId, title: ref.title || "" });
+      const result = await withBackendTimeout(
+        postJson("/image-outputs", { session_id: sessionId, title: ref.title || "" }),
+        10000,
+        "图片输出请求超时",
+      );
       if (sessionId !== validThreadScrollSessionKey(currentSessionRef().session_id)) {
         runtime.refreshAfterPending = true;
         return;
@@ -9036,8 +9061,7 @@
       if (result?.status === "found" && (runtime.signatureBySession[sessionId] !== signature || imageOutputListSignature(sessionId) !== signature || imageOutputListsNeedReposition(sessionId, images))) {
         runtime.signatureBySession[sessionId] = signature;
         runtime.imagesBySession[sessionId] = images;
-        const complete = renderImageOutputs(sessionId, images);
-        if (!complete && images.length) scheduleImageOutputsRefresh(400);
+        renderImageOutputs(sessionId, images);
         if (images.length) sendCodexPlusDiagnostic("image_outputs_rendered", { sessionId, count: images.length });
       }
     } catch (error) {
@@ -9048,6 +9072,7 @@
       });
     } finally {
       runtime.pending = false;
+      runtime.pendingSince = 0;
       if (runtime.refreshAfterPending) {
         runtime.refreshAfterPending = false;
         scheduleImageOutputsRefresh(0);
@@ -9062,6 +9087,29 @@
       runtime.timer = 0;
       refreshImageOutputs();
     }, delayMs);
+  }
+
+  function recoverImageOutputs() {
+    if (document.visibilityState === "hidden") return;
+    const runtime = imageOutputRuntime();
+    const sessionId = validThreadScrollSessionKey(currentSessionRef().session_id);
+    if (!sessionId) return;
+    clearStaleImageOutputRequest(runtime);
+    const cachedImages = runtime.imagesBySession?.[sessionId] || [];
+    if (cachedImages.length) renderImageOutputs(sessionId, cachedImages);
+    scheduleImageOutputsRefresh(0);
+  }
+
+  function installImageOutputRecovery() {
+    window.removeEventListener("focus", window.__codexPlusImageOutputFocusHandler, true);
+    document.removeEventListener("visibilitychange", window.__codexPlusImageOutputVisibilityHandler, true);
+    window.__codexPlusImageOutputFocusHandler = recoverImageOutputs;
+    window.__codexPlusImageOutputVisibilityHandler = () => {
+      if (document.visibilityState === "visible") recoverImageOutputs();
+    };
+    window.addEventListener("focus", window.__codexPlusImageOutputFocusHandler, true);
+    document.addEventListener("visibilitychange", window.__codexPlusImageOutputVisibilityHandler, true);
+    clearStaleImageOutputRequest(imageOutputRuntime());
   }
 
   function sortStateFromMoveResult(result, ref, row) {
@@ -10779,6 +10827,15 @@
     });
   }
 
+  function mutationsRemovedImageOutputList(mutations) {
+    return (mutations || []).some((mutation) => Array.from(mutation.removedNodes).some((node) => (
+      node.nodeType === 1 && (
+        node.matches?.("[data-codex-plus-image-output-list]") ||
+        node.querySelector?.("[data-codex-plus-image-output-list]")
+      )
+    )));
+  }
+
   function runScheduledScan() {
     window.__codexSessionDeleteScanPending = false;
     clearTimeout(window.__codexSessionDeleteScanTimer);
@@ -10790,6 +10847,9 @@
     window.__codexSessionDeleteLastMutations = mutations;
     scheduleZedRemoteMenuRefresh(mutations);
     schedulePluginAutoExpand();
+    if (document.visibilityState !== "hidden" && mutationsRemovedImageOutputList(mutations)) {
+      scheduleImageOutputsRefresh(100);
+    }
     if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
     window.__codexSessionDeleteScanPending = true;
@@ -10801,6 +10861,7 @@
   if (!window.__CODEX_PLUS_TEST_PROJECTLESS__) void loadCodexProjectlessMainWindowSetting();
   installUpstreamBranchDropdownAdapter();
   installUpstreamWorktreeNativeAdapter();
+  installImageOutputRecovery();
   scan();
   window.__codexProjectMoveApplyProjection = applyProjectMoveProjection;
   window.__codexProjectMoveReadProjection = readProjectMoveProjection;
