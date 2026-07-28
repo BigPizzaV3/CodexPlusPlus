@@ -1273,6 +1273,11 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("patchStatsigModelDynamicConfig"));
     assert!(script.contains("patchModelJsonResponse"));
     assert!(script.contains("installAppServerModelRequestPatch"));
+    assert!(script.contains("loadAppServerRequestCandidates"));
+    assert!(script.contains("appServerFallbackAssetUrls"));
+    assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"3\""));
+
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
     assert!(script.contains("send-cli-request-for-host"));
@@ -1359,7 +1364,14 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("当前 thread"));
     assert!(script.contains("standard"));
     assert!(script.contains("fast"));
-    assert!(script.contains("[\"setting-storage-\", \"vscode-api-\"]"));
+    assert!(script.contains("[\"setting-storage-\", \"app-initial-\"]"));
+    assert!(script.contains("[\"setting-storage-\", \"vscode-api-\", \"app-initial-\"]"));
+    assert!(script.contains("[\"vscode-api-\", \"app-initial-\"]"));
+    assert!(script.contains("codexSettingStorageFromModule"));
+    assert!(script.contains("codexStateApiFromModule"));
+    assert!(script.contains("message.type === \"fetch\""));
+    assert!(script.contains("vscode://codex/"));
+    assert!(script.contains("./(?:assets/)?"));
     assert!(script.contains("dispatcher export unavailable"));
     assert!(!script.contains("data-codex-max-reasoning-control"));
     assert!(!script.contains("codexAppMaxReasoningOverride"));
@@ -1386,6 +1398,23 @@ fn injection_script_discovers_vscode_api_asset_without_hardcoded_hash() {
     assert!(script.contains("fetch(src"));
     assert!(!script.contains("vscode-api-Dc9pX2Bc.js"));
     assert!(!script.contains("import(\"./assets/vscode-api-"));
+}
+
+#[test]
+fn injection_script_discovers_app_server_request_clients_without_hardcoded_hash() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("loadAppServerRequestCandidates"));
+    assert!(script.contains("appServerFallbackAssetUrls"));
+    assert!(script.contains("[\"use-host-config-\", \"app-server-manager-signals-\"]"));
+    assert!(script.contains("loadOptionalCodexAppModule(assetPrefix)"));
+    assert!(script.contains("candidateCount: candidates.length"));
+    assert!(script.contains("discovery:"));
+    // Keep legacy lookup as first attempt, but never hardcode the old hashed filename.
+    assert!(
+        !script.contains("app-server-manager-signals-C1h8B-R-.js")
+            || script.contains("refreshRecentConversationsForHost")
+    );
 }
 
 #[test]
@@ -1432,6 +1461,15 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
 
     assert_eq!(cases["startConversation"]["serviceTier"], "priority");
+    assert_eq!(cases["fetchStartConversation"]["serviceTier"], "priority");
+    assert_eq!(
+        cases["fetchSendCliRequest"]["params"]["serviceTier"],
+        "priority"
+    );
+    assert_eq!(
+        cases["fetchSendCliRequest"]["params"]["service_tier"],
+        "priority"
+    );
     assert_eq!(cases["solFastAvailability"]["supported"], true);
     assert_eq!(cases["solDescriptor"]["defaultReasoningEffort"], "low");
     assert_eq!(
@@ -1443,7 +1481,13 @@ fn injection_script_applies_fast_service_tier_contract() {
         "ultra"
     );
     assert_eq!(cases["dispatcherFromSingleton"], true);
+    assert_eq!(cases["dispatcherFromCurrentSingleton"], true);
     assert_eq!(cases["dispatcherFromClass"], true);
+    assert_eq!(cases["legacySettingStorage"], true);
+    assert_eq!(cases["currentSettingStorage"], true);
+    assert_eq!(cases["capabilitySettingStorage"], true);
+    assert_eq!(cases["legacyStateApi"], true);
+    assert_eq!(cases["currentStateApi"], true);
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
@@ -1540,6 +1584,30 @@ const startConversation = api.requestOverride({{
   threadId: "thread-12345678",
   model: "gpt-5.5",
 }});
+const fetchStartConversationEnvelope = api.requestOverride({{
+  type: "fetch",
+  url: "vscode://codex/start-conversation",
+  body: JSON.stringify({{
+    threadId: "thread-12345678",
+    model: "gpt-5.5",
+    serviceTier: null,
+  }}),
+}});
+const fetchStartConversation = JSON.parse(fetchStartConversationEnvelope.body);
+const fetchSendCliRequestEnvelope = api.requestOverride({{
+  type: "fetch",
+  url: "vscode://codex/send-cli-request-for-host",
+  body: {{
+    hostId: "local",
+    method: "thread/start",
+    params: {{
+      threadId: "thread-12345678",
+      model: "gpt-5.5",
+      service_tier: null,
+    }},
+  }},
+}});
+const fetchSendCliRequest = fetchSendCliRequestEnvelope.body;
 
 api.setModelCatalog({{
   status: "ok",
@@ -1575,12 +1643,61 @@ api.setModelCatalog({{
 const solDescriptor = api.modelDescriptor("gpt-5.6-sol");
 const singletonDispatcher = {{ dispatchMessage() {{}}, subscribe() {{}} }};
 const dispatcherFromSingleton = api.dispatcherFromModule({{ current: singletonDispatcher }}) === singletonDispatcher;
+const currentSingletonDispatcher = {{ dispatchMessage() {{}}, subscribe() {{}} }};
+const dispatcherFromCurrentSingleton = api.dispatcherFromModule({{
+  decoy: singletonDispatcher,
+  idt: currentSingletonDispatcher,
+}}) === currentSingletonDispatcher;
 class DispatcherClass {{
   static instance = new DispatcherClass();
   static getInstance() {{ return this.instance; }}
   dispatchMessage() {{}}
 }}
 const dispatcherFromClass = api.dispatcherFromModule({{ current: DispatcherClass }}) === DispatcherClass.instance;
+const legacyGetSetting = async () => "legacy-get";
+const legacySetSetting = async () => "legacy-set";
+const legacySettingStorageValue = api.settingStorageFromModule({{
+  n: legacyGetSetting,
+  s: legacySetSetting,
+}}, "setting-storage-");
+const legacySettingStorage = legacySettingStorageValue.n === legacyGetSetting
+  && legacySettingStorageValue.s === legacySetSetting;
+const wrongCurrentGetSetting = async () => "wrong-current-get";
+const wrongCurrentSetSetting = async () => "wrong-current-set";
+const currentGetSetting = async (setting) => {{
+  const marker = "get-setting";
+  const params = {{ key: setting.key }};
+  return marker && params && "current-get";
+}};
+const currentSetSetting = async (setting, value) => {{
+  const marker = "set-setting";
+  const params = {{ key: setting.key, value }};
+  return marker && params && "current-set";
+}};
+const currentSettingStorageValue = api.settingStorageFromModule({{
+  n: wrongCurrentGetSetting,
+  s: wrongCurrentSetSetting,
+  jut: currentGetSetting,
+  Put: currentSetSetting,
+}}, "app-initial-");
+const currentSettingStorage = currentSettingStorageValue.n === currentGetSetting
+  && currentSettingStorageValue.s === currentSetSetting;
+const capabilitySettingStorageValue = api.settingStorageFromModule({{
+  randomGetter: currentGetSetting,
+  randomSetter: currentSetSetting,
+}}, "app-initial-");
+const capabilitySettingStorage = capabilitySettingStorageValue.n === currentGetSetting
+  && capabilitySettingStorageValue.s === currentSetSetting;
+const legacyStateCall = async () => "legacy-state";
+const currentStateCall = async () => "current-state";
+const legacyStateApi = api.stateApiFromModule({{
+  n: legacyStateCall,
+  qut: currentStateCall,
+}}, "vscode-api-") === legacyStateCall;
+const currentStateApi = api.stateApiFromModule({{
+  n: legacyStateCall,
+  qut: currentStateCall,
+}}, "app-initial-") === currentStateCall;
 
 process.stdout.write(JSON.stringify({{
   supportedFast,
@@ -1589,10 +1706,18 @@ process.stdout.write(JSON.stringify({{
   turnWithoutModelDiagnosticModel,
   customInheritUnsupported,
   startConversation,
+  fetchStartConversation,
+  fetchSendCliRequest,
   solFastAvailability,
   solDescriptor,
   dispatcherFromSingleton,
+  dispatcherFromCurrentSingleton,
   dispatcherFromClass,
+  legacySettingStorage,
+  currentSettingStorage,
+  capabilitySettingStorage,
+  legacyStateApi,
+  currentStateApi,
 }}));
 "#,
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
