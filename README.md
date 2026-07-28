@@ -87,11 +87,11 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
   <tr>
     <td align="center">
-      <a href="https://www.0029.org/?promo=AFF11F">
-        <img src="docs/images/sponsor-0029.svg" alt="0029 云桥" height="80">
+      <a href="https://www.quya.org/?promo=CODEX">
+        <img src="docs/images/sponsor-0029.svg" alt="quya.org 云桥" height="80">
       </a>
     </td>
-    <td><a href="https://www.0029.org/?promo=AFF11F"><strong>0029云桥｜codex api中转站(gpt5.5 gpt-image-2)</strong></a><br>支持个人和企业接入。包月套餐/按量计费，Pro/Plus 号池，全站接口稳定可用，7×24 小时技术支持！</td>
+    <td><a href="https://www.quya.org/?promo=CODEX"><strong>quya.org 云桥｜一站式 AI 中转平台</strong></a><br>quya.org 云桥（原 0029.org）是一个集成 Claude Code、Codex 以及 Gemini 最新模型的一站式中转平台，为你提供稳定、高效且高性价比的 AI 中转服务。本站提供灵活的包月套餐/按量计费计划，国内直连，无需魔法，极速响应。支持个人和企业接入，价格最低为官方 0.12 折。</td>
   </tr>
   <tr>
     <td align="center">
