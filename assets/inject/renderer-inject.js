@@ -467,7 +467,7 @@
   const codexThreadServiceTierKey = "codexThreadServiceTierOverrides";
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
-  const codexServiceTierRequestOverrideVersion = "3";
+  const codexServiceTierRequestOverrideVersion = "4";
   const codexAppServerModelRequestPatchVersion = "2";
   const codexPluginMarketplaceUnlockVersion = "12";
   const codexPluginAutoExpandVersion = "1";
@@ -2266,7 +2266,7 @@
       try {
         const text = await fetch(src).then((response) => response.ok ? response.text() : "");
         const escaped = namePart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const match = text.match(new RegExp(`["'](\\./assets/${escaped}[^"']+\\.js)["']`));
+        const match = text.match(new RegExp(`["'](\\./(?:assets/)?${escaped}[^"']+\\.js)["']`));
         if (!match) continue;
         return new URL(match[1], src).href;
       } catch {
@@ -2300,12 +2300,54 @@
     }
   }
 
-  async function codexSettingStorageModule() {
-    const module = await loadCodexAppModule("setting-storage-");
-    if (typeof module.n !== "function" || typeof module.s !== "function") {
-      throw new Error("Codex setting-storage 接口不可用");
+  function codexSettingStorageFromModule(module, assetPrefix = "") {
+    const values = module && typeof module === "object" ? Object.values(module) : [];
+    const functionSource = (candidate) => {
+      if (typeof candidate !== "function") return "";
+      try {
+        return String(candidate);
+      } catch (_) {
+        return "";
+      }
+    };
+    const getSettingByCapability = () => values.find((candidate) => {
+      const source = functionSource(candidate);
+      return source.includes("get-setting") && source.includes("params") && source.includes("key");
+    });
+    const setSettingByCapability = () => values.find((candidate) => {
+      const source = functionSource(candidate);
+      return source.includes("set-setting") && source.includes("params") && source.includes("key");
+    });
+    let getSetting = null;
+    let setSetting = null;
+    if (assetPrefix.startsWith("setting-storage-")) {
+      getSetting = typeof module?.n === "function" ? module.n : getSettingByCapability();
+      setSetting = typeof module?.s === "function" ? module.s : setSettingByCapability();
+    } else if (assetPrefix.startsWith("app-initial-")) {
+      getSetting = typeof module?.jut === "function" ? module.jut : getSettingByCapability();
+      setSetting = typeof module?.Put === "function" ? module.Put : setSettingByCapability();
+    } else {
+      getSetting = getSettingByCapability();
+      setSetting = setSettingByCapability();
     }
-    return module;
+    return typeof getSetting === "function" && typeof setSetting === "function"
+      ? { n: getSetting, s: setSetting, assetPrefix }
+      : null;
+  }
+
+  async function codexSettingStorageModule() {
+    const errors = [];
+    for (const assetPrefix of ["setting-storage-", "app-initial-"]) {
+      try {
+        const module = await loadCodexAppModule(assetPrefix);
+        const settingStorage = codexSettingStorageFromModule(module, assetPrefix);
+        if (settingStorage) return settingStorage;
+        errors.push(`${assetPrefix}: setting exports unavailable`);
+      } catch (error) {
+        errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+      }
+    }
+    throw new Error(`Codex setting-storage 接口不可用 (${errors.join("; ")})`);
   }
 
   async function getCodexServiceTierSetting() {
@@ -2885,9 +2927,41 @@
     return nextParams;
   }
 
-  function codexServiceTierRequestOverride(message) {
+  function codexServiceTierRequestOverride(message, skipFetchEnvelope = false) {
     if (!codexPlusSettings().serviceTierControls) return message;
     if (!message || typeof message !== "object") return message;
+    if (!skipFetchEnvelope && message.type === "fetch" && typeof message.url === "string") {
+      const urlPrefix = "vscode://codex/";
+      if (!message.url.startsWith(urlPrefix)) return message;
+      const requestType = message.url.slice(urlPrefix.length).split(/[?#]/, 1)[0];
+      let params = null;
+      let bodyWasString = false;
+      if (typeof message.body === "string") {
+        try {
+          params = JSON.parse(message.body);
+          bodyWasString = true;
+        } catch (_) {
+          return message;
+        }
+      } else if (message.body && typeof message.body === "object") {
+        params = message.body;
+      } else {
+        return message;
+      }
+      if (!params || typeof params !== "object" || Array.isArray(params)) return message;
+      const bodyHadType = Object.prototype.hasOwnProperty.call(params, "type");
+      const originalBodyType = params.type;
+      const logicalMessage = { ...params, type: requestType };
+      const patchedMessage = codexServiceTierRequestOverride(logicalMessage, true);
+      if (patchedMessage === logicalMessage) return message;
+      const nextParams = { ...patchedMessage };
+      delete nextParams.type;
+      if (bodyHadType) nextParams.type = originalBodyType;
+      return {
+        ...message,
+        body: bodyWasString ? JSON.stringify(nextParams) : nextParams,
+      };
+    }
     if (message.type === "send-cli-request-for-host") {
       const method = String(message.method || "");
       const params = applyCodexServiceTierRequestOverride(method, message.params);
@@ -2930,6 +3004,13 @@
   }
 
   function codexServiceTierDispatcherFromModule(module) {
+    const directSingleton = module?.idt;
+    if (directSingleton
+        && typeof directSingleton === "object"
+        && typeof directSingleton.dispatchMessage === "function"
+        && typeof directSingleton.subscribe === "function") {
+      return directSingleton;
+    }
     const values = module && typeof module === "object" ? Object.values(module) : [];
     const singleton = values.find((candidate) => candidate
       && typeof candidate === "object"
@@ -2946,7 +3027,7 @@
     if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
     const loadDispatcher = async () => {
       const errors = [];
-      for (const assetPrefix of ["setting-storage-", "vscode-api-"]) {
+      for (const assetPrefix of ["setting-storage-", "vscode-api-", "app-initial-"]) {
         try {
           const module = await loadCodexAppModule(assetPrefix);
           const dispatcher = codexServiceTierDispatcherFromModule(module);
@@ -5396,11 +5477,32 @@
   let chatsSortSignature = "";
   let chatsSortLastFetchAt = 0;
 
+  function codexStateApiFromModule(module, assetPrefix = "") {
+    if (assetPrefix.startsWith("vscode-api-")) {
+      return typeof module?.n === "function" ? module.n : null;
+    }
+    if (assetPrefix.startsWith("app-initial-")) {
+      return typeof module?.qut === "function" ? module.qut : null;
+    }
+    return null;
+  }
+
   async function codexStateApi() {
-    codexStateApiPromise = codexStateApiPromise || loadCodexAppModule("vscode-api-");
-    const api = await codexStateApiPromise;
-    if (typeof api.n !== "function") throw new Error("Codex 状态 API 不可用");
-    return api.n;
+    codexStateApiPromise = codexStateApiPromise || (async () => {
+      const errors = [];
+      for (const assetPrefix of ["vscode-api-", "app-initial-"]) {
+        try {
+          const api = await loadCodexAppModule(assetPrefix);
+          const call = codexStateApiFromModule(api, assetPrefix);
+          if (typeof call === "function") return call;
+          errors.push(`${assetPrefix}: state export unavailable`);
+        } catch (error) {
+          errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+        }
+      }
+      throw new Error(`Codex 状态 API 不可用 (${errors.join("; ")})`);
+    })();
+    return await codexStateApiPromise;
   }
 
   async function codexStateCall(method, params) {
@@ -5887,6 +5989,8 @@
           ...state,
         }));
       },
+      settingStorageFromModule: codexSettingStorageFromModule,
+      stateApiFromModule: codexStateApiFromModule,
       dispatcherFromModule: codexServiceTierDispatcherFromModule,
     };
     return;
