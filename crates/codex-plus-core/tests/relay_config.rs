@@ -7,13 +7,69 @@ use codex_plus_core::relay_config::{
     backfill_relay_profile_from_home, backfill_relay_profile_from_home_with_common,
     chatgpt_auth_status_from_home, clear_relay_config_to_home,
     clear_relay_config_to_home_with_auth, delete_context_entry_from_common_config,
-    extract_common_config_from_config, filter_common_config_for_selection,
-    list_context_entries_from_common_config, normalize_relay_profile_for_storage,
-    relay_config_status_from_home, sanitize_common_config_contents,
-    set_codex_goals_feature_in_home, strip_common_config_from_config,
-    sync_live_config_context_entries, upsert_context_entry_in_common_config,
+    ensure_protocol_proxy_config_in_home, extract_common_config_from_config,
+    filter_common_config_for_selection, list_context_entries_from_common_config,
+    normalize_relay_profile_for_storage, relay_config_status_from_home,
+    sanitize_common_config_contents, set_codex_goals_feature_in_home,
+    strip_common_config_from_config, sync_live_config_context_entries,
+    upsert_context_entry_in_common_config,
 };
 use codex_plus_core::settings::{RelayContextSelection, RelayMode, RelayProfile, RelayProtocol};
+
+#[test]
+fn protocol_proxy_startup_rewrites_only_the_active_provider_to_the_selected_helper_port() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-responses".to_string(),
+        protocol: RelayProtocol::Responses,
+        relay_mode: RelayMode::PureApi,
+        config_contents: "model_provider = \"custom\"\n".to_string(),
+        ..RelayProfile::default()
+    };
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+
+[model_providers.unrelated]
+base_url = "https://keep.example/v1"
+"#,
+    )
+    .unwrap();
+
+    let changed = ensure_protocol_proxy_config_in_home(temp.path(), &profile, 58_000).unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(changed);
+    assert!(config.contains(r#"base_url = "http://127.0.0.1:58000/v1""#));
+    assert!(config.contains(r#"base_url = "https://keep.example/v1""#));
+    assert!(!config.contains("57321"));
+}
+
+#[test]
+fn responses_profile_never_treats_the_local_protocol_proxy_as_its_upstream() {
+    let profile = RelayProfile {
+        protocol: RelayProtocol::Responses,
+        base_url: "https://relay.example/v1".to_string(),
+        upstream_base_url: "https://relay.example/v1".to_string(),
+        config_contents: r#"model_provider = "custom"
+
+[model_providers.custom]
+base_url = "http://127.0.0.1:58000/v1"
+"#
+        .to_string(),
+        ..RelayProfile::default()
+    };
+
+    assert_eq!(
+        codex_plus_core::relay_config::relay_profile_base_url(&profile),
+        "https://relay.example/v1"
+    );
+}
 
 fn write_remote_plugin_marketplace_snapshot(home: &std::path::Path) {
     let root = home.join(".tmp").join("plugins-remote");

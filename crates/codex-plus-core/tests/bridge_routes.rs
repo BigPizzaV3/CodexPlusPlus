@@ -34,6 +34,10 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/backend/status", json!({})),
         ("/codex-model-catalog", json!({})),
         ("/codex-config-model", json!({})),
+        (
+            "/token-usage/events",
+            json!({"includeRollout": false, "days": 1, "limit": 1}),
+        ),
         ("/ads", json!({})),
         ("/zed-remote/status", json!({})),
         (
@@ -105,6 +109,13 @@ async fn bridge_routes_cover_all_current_paths() {
             "{path} should be routed"
         );
     }
+}
+
+#[tokio::test]
+async fn token_usage_prices_route_is_not_exposed() {
+    let result = handle_bridge_request(test_context(), "/token-usage/prices", json!({})).await;
+
+    assert_eq!(result["message"], "Unknown bridge path");
 }
 
 #[tokio::test]
@@ -793,7 +804,7 @@ async fn core_runtime_manager_route_attempts_to_open_manager_binary() {
 }
 
 #[tokio::test]
-async fn bridge_backend_status_writes_diagnostic_log() {
+async fn bridge_backend_status_keeps_specific_diagnostic_without_high_frequency_envelopes() {
     let temp = tempfile::tempdir().unwrap();
     let log_path = temp.path().join("codex-plus.log");
     codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
@@ -806,9 +817,9 @@ async fn bridge_backend_status_writes_diagnostic_log() {
 
     assert_eq!(result["status"], "ok");
     let contents = std::fs::read_to_string(&log_path).unwrap();
-    assert!(contents.contains("bridge.request"));
+    assert!(!contents.contains("bridge.request"));
+    assert!(!contents.contains("bridge.response"));
     assert!(contents.contains("bridge.backend_status_ok"));
-    assert!(contents.contains("/backend/status"));
     codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
 }
 

@@ -608,6 +608,89 @@ fn codex_base_url_for_protocol(base_url: &str, protocol: RelayProtocol, proxy_po
     }
 }
 
+pub fn ensure_protocol_proxy_config_in_home(
+    home: &Path,
+    profile: &RelayProfile,
+    helper_port: u16,
+) -> anyhow::Result<bool> {
+    let config_path = home.join("config.toml");
+    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+    if existing.trim().is_empty() {
+        anyhow::bail!("Codex config.toml 不存在，无法启用协议代理");
+    }
+    let provider_id = parse_toml_document(&profile.config_contents)
+        .ok()
+        .and_then(|document| active_provider_id(&document))
+        .or_else(|| {
+            parse_toml_document(&existing)
+                .ok()
+                .and_then(|document| active_provider_id(&document))
+        })
+        .unwrap_or_else(|| RELAY_PROVIDER.to_string());
+    let local_base_url = crate::protocol_proxy::local_responses_proxy_base_url(helper_port);
+    let (updated, found_provider, changed) =
+        replace_provider_base_url_text(&existing, &provider_id, &local_base_url);
+    if !found_provider {
+        anyhow::bail!("config.toml 中未找到当前模型供应商 {provider_id}");
+    }
+    if changed {
+        crate::settings::atomic_write(&config_path, updated.as_bytes())?;
+    }
+    Ok(changed)
+}
+
+fn replace_provider_base_url_text(
+    config: &str,
+    provider_id: &str,
+    base_url: &str,
+) -> (String, bool, bool) {
+    let target_plain = format!("[model_providers.{provider_id}]");
+    let target_quoted = format!("[model_providers.\"{provider_id}\"]");
+    let mut output = Vec::new();
+    let mut in_target = false;
+    let mut found_provider = false;
+    let mut replaced = false;
+    let mut modified = false;
+
+    for line in config.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if in_target && !replaced {
+                output.push(format!("base_url = \"{base_url}\""));
+                replaced = true;
+                modified = true;
+            }
+            in_target = trimmed == target_plain || trimmed == target_quoted;
+            found_provider |= in_target;
+        }
+        if in_target
+            && trimmed
+                .split_once('=')
+                .is_some_and(|(key, _)| key.trim() == "base_url")
+        {
+            let indent = line.len().saturating_sub(line.trim_start().len());
+            let replacement = format!("{}base_url = \"{base_url}\"", " ".repeat(indent));
+            modified |= line != replacement;
+            output.push(replacement);
+            replaced = true;
+        } else {
+            output.push(line.to_string());
+        }
+    }
+    if in_target && !replaced {
+        output.push(format!("base_url = \"{base_url}\""));
+        modified = true;
+    }
+    let newline = if config.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut updated = output.join(newline);
+    updated.push_str(newline);
+    (updated, found_provider, found_provider && modified)
+}
+
 pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResult> {
     clear_relay_config_to_home_with_auth(home, None)
 }
@@ -2001,10 +2084,10 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
             crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
         );
     }
+    if !profile.upstream_base_url.trim().is_empty() {
+        return profile.upstream_base_url.trim().to_string();
+    }
     if profile.protocol == RelayProtocol::ChatCompletions {
-        if !profile.upstream_base_url.trim().is_empty() {
-            return profile.upstream_base_url.trim().to_string();
-        }
         if let Some(value) = root_key_string(&profile.config_contents, CHAT_UPSTREAM_BASE_URL_KEY)
             .filter(|value| !value.trim().is_empty())
         {
@@ -2017,13 +2100,15 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
     let provider_base_url = provider_string_from_config(&profile.config_contents, "base_url")
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_default();
-    if profile.protocol == RelayProtocol::ChatCompletions
-        && provider_base_url
-            == crate::protocol_proxy::local_responses_proxy_base_url(
-                crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
-            )
-    {
-        String::new()
+    if crate::protocol_proxy::is_local_responses_proxy_base_url(&provider_base_url) {
+        let saved_base_url = profile.base_url.trim();
+        if saved_base_url.is_empty()
+            || crate::protocol_proxy::is_local_responses_proxy_base_url(saved_base_url)
+        {
+            String::new()
+        } else {
+            saved_base_url.to_string()
+        }
     } else if !provider_base_url.is_empty() {
         provider_base_url
     } else {

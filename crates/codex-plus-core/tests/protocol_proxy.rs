@@ -13,6 +13,7 @@ use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
     RelayMode, RelayProfile,
 };
+use codex_plus_core::token_usage::ResponsesSseUsageTracker;
 use serde_json::json;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -21,6 +22,53 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[test]
+fn responses_usage_tracker_extracts_chunked_completed_usage() {
+    let request = json!({"model": "gpt-5.6-terra", "stream": true});
+    let mut tracker = ResponsesSseUsageTracker::with_request(&request);
+    let event = concat!(
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{",
+        "\"id\":\"resp_123\",\"model\":\"gpt-5.6-terra\",\"status\":\"completed\",",
+        "\"usage\":{\"input_tokens\":300000,\"input_tokens_details\":{\"cached_tokens\":280000},",
+        "\"cache_creation_input_tokens\":1200,\"output_tokens\":900,",
+        "\"output_tokens_details\":{\"reasoning_tokens\":250},\"total_tokens\":300900}}}\n\n"
+    );
+
+    for chunk in event.as_bytes().chunks(17) {
+        tracker.push_bytes(chunk);
+    }
+    let captured = tracker.finish();
+
+    assert_eq!(captured.response_id, "resp_123");
+    assert_eq!(captured.model, "gpt-5.6-terra");
+    assert_eq!(captured.status, "completed");
+    assert!(!captured.usage_missing);
+    assert_eq!(captured.usage.input, 300_000);
+    assert_eq!(captured.usage.cached_input, 280_000);
+    assert_eq!(captured.usage.cache_write, 1_200);
+    assert_eq!(captured.usage.output, 900);
+    assert_eq!(captured.usage.reasoning, 250);
+}
+
+#[test]
+fn responses_usage_tracker_marks_terminal_event_without_usage() {
+    let request = json!({"model": "test-model", "stream": true});
+    let mut tracker = ResponsesSseUsageTracker::with_request(&request);
+    tracker.push_bytes(
+        br#"event: response.failed
+data: {"type":"response.failed","response":{"id":"resp_missing","status":"failed"}}
+
+"#,
+    );
+
+    let captured = tracker.finish();
+
+    assert_eq!(captured.response_id, "resp_missing");
+    assert_eq!(captured.status, "failed");
+    assert!(captured.usage_missing);
+}
 
 #[test]
 fn responses_request_converts_to_chat_completions() {

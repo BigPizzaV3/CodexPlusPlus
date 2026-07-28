@@ -1,4 +1,4 @@
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -7,9 +7,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 static TEST_LOG_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+static DIAGNOSTIC_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-const MAX_DIAGNOSTIC_LOG_BYTES: u64 = 50 * 1024 * 1024;
-const COMPACTED_DIAGNOSTIC_LOG_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_DIAGNOSTIC_LOG_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_DIAGNOSTIC_LOG_ARCHIVES: usize = 3;
 
 #[derive(Debug, Clone, Serialize)]
 struct DiagnosticRecord {
@@ -20,6 +21,13 @@ struct DiagnosticRecord {
 }
 
 pub fn append_diagnostic_log(event: &str, detail: impl Serialize) -> std::io::Result<()> {
+    if !should_persist_event(event) {
+        return Ok(());
+    }
+    let _guard = DIAGNOSTIC_LOG_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| std::io::Error::other("diagnostic log lock poisoned"))?;
     let path = diagnostic_log_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -48,7 +56,7 @@ pub fn append_diagnostic_log(event: &str, detail: impl Serialize) -> std::io::Re
         .to_string()
     });
 
-    compact_diagnostic_log_if_needed(&path)?;
+    rotate_diagnostic_log(&path, MAX_DIAGNOSTIC_LOG_BYTES, MAX_DIAGNOSTIC_LOG_ARCHIVES)?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -58,8 +66,16 @@ pub fn append_diagnostic_log(event: &str, detail: impl Serialize) -> std::io::Re
 }
 
 pub fn clear_diagnostic_log() -> std::io::Result<()> {
+    let _guard = DIAGNOSTIC_LOG_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| std::io::Error::other("diagnostic log lock poisoned"))?;
     let path = diagnostic_log_path();
-    clear_diagnostic_log_path(&path)
+    clear_diagnostic_log_path(&path)?;
+    for index in 1..=MAX_DIAGNOSTIC_LOG_ARCHIVES {
+        clear_diagnostic_log_path(&diagnostic_log_archive_path(&path, index))?;
+    }
+    Ok(())
 }
 
 fn clear_diagnostic_log_path(path: &Path) -> std::io::Result<()> {
@@ -94,41 +110,44 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn compact_diagnostic_log_if_needed(path: &PathBuf) -> std::io::Result<()> {
-    compact_diagnostic_log(
-        path,
-        MAX_DIAGNOSTIC_LOG_BYTES,
-        COMPACTED_DIAGNOSTIC_LOG_BYTES,
+fn should_persist_event(event: &str) -> bool {
+    !matches!(
+        event,
+        "bridge.request" | "bridge.response" | "bridge.resolve_start" | "bridge.resolve_ok"
     )
 }
 
-fn compact_diagnostic_log(
-    path: &PathBuf,
-    max_bytes: u64,
-    compacted_bytes: u64,
-) -> std::io::Result<()> {
+fn rotate_diagnostic_log(path: &Path, max_bytes: u64, archives: usize) -> std::io::Result<()> {
     let len = match std::fs::metadata(path) {
         Ok(metadata) => metadata.len(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    if len <= max_bytes {
+    if len < max_bytes {
         return Ok(());
     }
 
-    let keep = compacted_bytes.min(len);
-    let mut file = std::fs::File::open(path)?;
-    file.seek(SeekFrom::Start(len - keep))?;
-    let mut tail = Vec::with_capacity(keep as usize);
-    file.read_to_end(&mut tail)?;
-    drop(file);
-    if len > keep {
-        if let Some(pos) = tail.iter().position(|byte| *byte == b'\n') {
-            tail.drain(..=pos);
+    for index in (1..=archives).rev() {
+        let destination = diagnostic_log_archive_path(path, index);
+        if destination.exists() {
+            std::fs::remove_file(&destination)?;
+        }
+        let source = if index == 1 {
+            path.to_path_buf()
+        } else {
+            diagnostic_log_archive_path(path, index - 1)
+        };
+        if source.exists() {
+            std::fs::rename(source, destination)?;
         }
     }
+    Ok(())
+}
 
-    crate::settings::atomic_write(path, &tail).map_err(std::io::Error::other)
+fn diagnostic_log_archive_path(path: &Path, index: usize) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".{index}"));
+    PathBuf::from(name)
 }
 
 #[cfg(test)]
@@ -136,15 +155,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compact_diagnostic_log_keeps_tail_and_drops_partial_first_line() {
+    fn rotate_diagnostic_log_renames_files_and_keeps_three_archives() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("codex-plus.log");
-        std::fs::write(&path, "line-1\nline-2\nline-3\nline-4\n").unwrap();
+        for index in 1..=4 {
+            std::fs::write(&path, format!("line-{index}\n")).unwrap();
+            rotate_diagnostic_log(&path, 1, 3).unwrap();
+        }
 
-        compact_diagnostic_log(&path, 12, 16).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(format!("{}.1", path.display())).unwrap(),
+            "line-4\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(format!("{}.2", path.display())).unwrap(),
+            "line-3\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(format!("{}.3", path.display())).unwrap(),
+            "line-2\n"
+        );
+        assert!(!std::path::Path::new(&format!("{}.4", path.display())).exists());
+    }
 
-        let contents = std::fs::read_to_string(path).unwrap();
-        assert_eq!(contents, "line-3\nline-4\n");
+    #[test]
+    fn high_frequency_success_events_are_not_persisted() {
+        for event in [
+            "bridge.request",
+            "bridge.response",
+            "bridge.resolve_start",
+            "bridge.resolve_ok",
+        ] {
+            assert!(!should_persist_event(event));
+        }
+        assert!(should_persist_event("bridge.resolve_failed"));
+        assert!(should_persist_event(
+            "protocol_proxy.usage_ledger_write_failed"
+        ));
     }
 
     #[test]

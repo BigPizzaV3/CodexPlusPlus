@@ -6,6 +6,7 @@ const SETTINGS_FILE: &str = "settings.json";
 const LATEST_STATUS_FILE: &str = "latest-status.json";
 const DIAGNOSTIC_LOG_FILE: &str = "codex-plus.log";
 const PENDING_PROVIDER_IMPORT_FILE: &str = "pending-provider-import.json";
+const TOKEN_USAGE_PROXY_LEDGER_FILE: &str = "token-usage-responses.jsonl";
 
 pub fn default_app_state_dir() -> PathBuf {
     if let Some(home_dir) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
@@ -32,6 +33,10 @@ pub fn default_diagnostic_log_path() -> PathBuf {
 
 pub fn default_pending_provider_import_path() -> PathBuf {
     default_app_state_dir().join(PENDING_PROVIDER_IMPORT_FILE)
+}
+
+pub fn default_token_usage_proxy_ledger_path() -> PathBuf {
+    default_app_state_dir().join(TOKEN_USAGE_PROXY_LEDGER_FILE)
 }
 
 fn settings_path_for_tests() -> Option<PathBuf> {

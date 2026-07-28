@@ -658,8 +658,16 @@ impl BackendSettings {
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
-        self.active_aggregate_relay_profile().is_some()
-            || self.active_relay_profile().protocol == RelayProtocol::ChatCompletions
+        if self.active_aggregate_relay_profile().is_some() {
+            return true;
+        }
+        let relay = self.active_relay_profile();
+        let relay_mode_uses_api =
+            relay.relay_mode != RelayMode::Official || relay.official_mix_api_key;
+        relay_mode_uses_api
+            && !crate::relay_config::relay_profile_base_url(&relay)
+                .trim()
+                .is_empty()
     }
 }
 

@@ -475,6 +475,42 @@ fn launcher_does_not_override_codex_app_environment() {
 }
 
 #[test]
+fn active_responses_api_relay_uses_protocol_proxy() {
+    let settings = BackendSettings {
+        relay_profiles: vec![RelayProfile {
+            id: "responses-relay".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+            protocol: RelayProtocol::Responses,
+            base_url: "https://relay.example/v1".to_string(),
+            api_key: "test-key".to_string(),
+            ..RelayProfile::default()
+        }],
+        active_relay_id: "responses-relay".to_string(),
+        ..BackendSettings::default()
+    };
+
+    assert!(settings.active_relay_uses_protocol_proxy());
+}
+
+#[test]
+fn protocol_proxy_usage_capture_has_bounded_idle_and_absolute_stream_lifetimes() {
+    let source = include_str!("../src/launcher.rs");
+    let proxy_handler = source
+        .split("async fn handle_protocol_proxy_connection")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("async fn handle_audio_transcriptions_proxy_connection")
+                .next()
+        })
+        .expect("protocol proxy handler should exist");
+
+    assert!(!proxy_handler.contains("Duration::from_secs(20)"));
+    assert!(proxy_handler.contains("PROTOCOL_PROXY_STREAM_IDLE_TIMEOUT"));
+    assert!(proxy_handler.contains("PROTOCOL_PROXY_STREAM_MAX_DURATION"));
+    assert!(proxy_handler.contains("tokio::time::timeout"));
+}
+
+#[test]
 fn launcher_prepares_projectless_main_window_when_enhancements_are_enabled() {
     let source = include_str!("../src/launcher.rs");
 
@@ -1391,14 +1427,15 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
 
     let before_stop = events.lock().unwrap().clone();
     assert!(before_stop.contains(&"select-helper:58000".to_string()));
-    assert!(before_stop.contains(&"start-helper:57321".to_string()));
-    assert!(!before_stop.contains(&"inject:9229:57321".to_string()));
+    assert!(before_stop.contains(&"ensure-protocol-proxy:58000".to_string()));
+    assert!(before_stop.contains(&"start-helper:58000".to_string()));
+    assert!(!before_stop.contains(&"inject:9229:58000".to_string()));
 
     handle.wait_for_codex_exit().await.unwrap();
 
     let after_stop = events.lock().unwrap().clone();
     assert!(after_stop.contains(&"wait-codex".to_string()));
-    assert!(after_stop.contains(&"shutdown-helper:57321".to_string()));
+    assert!(after_stop.contains(&"shutdown-helper:58000".to_string()));
 }
 
 #[tokio::test]
@@ -1683,6 +1720,15 @@ impl LaunchHooks for FakeHooks {
             return Ok(());
         }
         self.event("apply-relay");
+        Ok(())
+    }
+
+    async fn ensure_protocol_proxy_config(
+        &self,
+        _settings: &BackendSettings,
+        helper_port: u16,
+    ) -> anyhow::Result<()> {
+        self.event(format!("ensure-protocol-proxy:{helper_port}"));
         Ok(())
     }
 

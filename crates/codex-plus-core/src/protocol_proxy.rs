@@ -130,6 +130,16 @@ pub fn local_responses_proxy_base_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/v1")
 }
 
+pub fn is_local_responses_proxy_base_url(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value.trim()) else {
+        return false;
+    };
+    url.scheme() == "http"
+        && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
+        && url.port().is_some()
+        && url.path().trim_end_matches('/') == "/v1"
+}
+
 pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     let mut result = json!({});
 
@@ -576,6 +586,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 );
                 crate::relay_rotation::record_relay_request_failure(&settings);
                 if has_more_candidates {
+                    let _ =
+                        crate::token_usage::append_proxy_retry_attempt(&request_json, attempt + 1);
                     continue;
                 }
                 return Err(error).with_context(|| {
@@ -625,6 +637,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 response: upstream,
             });
         }
+        let _ = crate::token_usage::append_proxy_retry_attempt(&request_json, attempt + 1);
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "protocol_proxy.upstream_failover",
             json!({

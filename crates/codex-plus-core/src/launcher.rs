@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -24,6 +24,8 @@ const POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS: &[u64] = &[0, 5, 15, 30, 60, 120, 
 const POST_LAUNCH_COMPUTER_USE_GUARD_STABLE_ATTEMPTS: usize = 3;
 static PET_OVERLAY_SYNC_FAILED: AtomicBool = AtomicBool::new(false);
 static PET_CURSOR_DRIVER_FAILED: AtomicBool = AtomicBool::new(false);
+const PROTOCOL_PROXY_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const PROTOCOL_PROXY_STREAM_MAX_DURATION: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Asynchronous callback used by the bridge watchdog to restore a launcher-specific bridge.
 ///
@@ -147,6 +149,13 @@ pub trait LaunchHooks: Send + Sync {
     async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
     }
+    async fn ensure_protocol_proxy_config(
+        &self,
+        _settings: &BackendSettings,
+        _helper_port: u16,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn ensure_computer_use_config(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
     }
@@ -266,7 +275,7 @@ where
 {
     let hooks = hooks.into_launch_hooks();
     let debug_port = hooks.select_debug_port(options.debug_port);
-    let mut helper_port = hooks.select_helper_port(options.helper_port);
+    let helper_port = hooks.select_helper_port(options.helper_port);
     let settings = hooks.load_settings().await?;
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
     let status_store = options.status_store.clone();
@@ -323,7 +332,9 @@ where
         }
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings);
         if protocol_proxy_enabled {
-            helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
+            hooks
+                .ensure_protocol_proxy_config(&settings, helper_port)
+                .await?;
         }
         if settings.enhancements_enabled || protocol_proxy_enabled {
             hooks.start_helper(helper_port).await?;
@@ -576,6 +587,20 @@ impl LaunchHooks for DefaultLaunchHooks {
             &common_config,
             settings.computer_use_guard_enabled,
         )?;
+        Ok(())
+    }
+
+    async fn ensure_protocol_proxy_config(
+        &self,
+        settings: &BackendSettings,
+        helper_port: u16,
+    ) -> anyhow::Result<()> {
+        if !settings.relay_profiles_enabled {
+            return Ok(());
+        }
+        let profile = settings.active_relay_profile();
+        let home = crate::relay_config::default_codex_home_dir();
+        crate::relay_config::ensure_protocol_proxy_config_in_home(&home, &profile, helper_port)?;
         Ok(())
     }
 
@@ -1390,6 +1415,11 @@ async fn handle_protocol_proxy_connection(
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
+    let fallback_model = request_json
+        .as_ref()
+        .and_then(|value| value.get("model"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Unknown");
     let upstream = match crate::protocol_proxy::open_responses_proxy_request(
         request_body,
         request_user_agent,
@@ -1398,6 +1428,12 @@ async fn handle_protocol_proxy_connection(
     {
         Ok(upstream) => upstream,
         Err(error) => {
+            persist_protocol_proxy_usage(crate::token_usage::CapturedResponseUsage {
+                model: fallback_model.to_string(),
+                status: "failed".to_string(),
+                usage_missing: true,
+                ..crate::token_usage::CapturedResponseUsage::default()
+            });
             let body = serde_json::to_vec(
                 &serde_json::json!({                     "status": "failed",                     "message": error.to_string()                 }),
             )?;
@@ -1428,6 +1464,11 @@ async fn handle_protocol_proxy_connection(
             &upstream_content_type,
             &upstream_body,
         );
+        persist_protocol_proxy_usage(crate::token_usage::captured_response_usage_from_value(
+            &error,
+            fallback_model,
+            "failed",
+        ));
         let body = serde_json::to_vec(&error)?;
         write_http_response(stream, &status, "application/json; charset=utf-8", &body).await?;
         log_helper_response(
@@ -1440,17 +1481,45 @@ async fn handle_protocol_proxy_connection(
         stream.shutdown().await?;
         return Ok(());
     }
+
     if upstream.is_stream {
-        write_http_stream_headers(stream, "200 OK", "text/event-stream; charset=utf-8").await?;
+        let mut downstream_open =
+            write_http_stream_headers(stream, "200 OK", "text/event-stream; charset=utf-8")
+                .await
+                .is_ok();
+        let tracker_request = request_json.clone().unwrap_or_default();
+        let mut usage_tracker =
+            crate::token_usage::ResponsesSseUsageTracker::with_request(&tracker_request);
+        let stream_started = Instant::now();
         if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
             let mut bytes_stream = upstream.response.bytes_stream();
-            while let Some(chunk) = bytes_stream.next().await {
-                if let Ok(bytes) = chunk {
-                    stream.write_all(&bytes).await?;
-                } else {
+            loop {
+                let remaining =
+                    PROTOCOL_PROXY_STREAM_MAX_DURATION.saturating_sub(stream_started.elapsed());
+                if remaining.is_zero() {
                     break;
                 }
+                let wait = PROTOCOL_PROXY_STREAM_IDLE_TIMEOUT.min(remaining);
+                let Ok(next) = tokio::time::timeout(wait, bytes_stream.next()).await else {
+                    break;
+                };
+                let Some(chunk) = next else {
+                    break;
+                };
+                match chunk {
+                    Ok(bytes) => {
+                        usage_tracker.push_bytes(&bytes);
+                        if downstream_open && stream.write_all(&bytes).await.is_err() {
+                            downstream_open = false;
+                        }
+                        if usage_tracker.is_terminal() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
             }
+            persist_protocol_proxy_usage(usage_tracker.finish());
             log_helper_response(
                 "helper.protocol_proxy_stream_ok",
                 method,
@@ -1458,7 +1527,9 @@ async fn handle_protocol_proxy_connection(
                 "200 OK",
                 remote_addr_text,
             );
-            stream.shutdown().await?;
+            if downstream_open {
+                let _ = stream.shutdown().await;
+            }
             return Ok(());
         }
         let mut converter = request_json
@@ -1466,13 +1537,30 @@ async fn handle_protocol_proxy_connection(
             .map(crate::protocol_proxy::ChatSseToResponsesConverter::with_request)
             .unwrap_or_default();
         let mut bytes_stream = upstream.response.bytes_stream();
-        let mut stream_failed = false;
-        while let Some(chunk) = bytes_stream.next().await {
+        loop {
+            let remaining =
+                PROTOCOL_PROXY_STREAM_MAX_DURATION.saturating_sub(stream_started.elapsed());
+            if remaining.is_zero() {
+                break;
+            }
+            let wait = PROTOCOL_PROXY_STREAM_IDLE_TIMEOUT.min(remaining);
+            let Ok(next) = tokio::time::timeout(wait, bytes_stream.next()).await else {
+                break;
+            };
+            let Some(chunk) = next else {
+                break;
+            };
             match chunk {
                 Ok(bytes) => {
                     let converted = converter.push_bytes(&bytes);
                     if !converted.is_empty() {
-                        stream.write_all(&converted).await?;
+                        usage_tracker.push_bytes(&converted);
+                        if downstream_open && stream.write_all(&converted).await.is_err() {
+                            downstream_open = false;
+                        }
+                        if usage_tracker.is_terminal() {
+                            break;
+                        }
                     }
                 }
                 Err(error) => {
@@ -1481,19 +1569,23 @@ async fn handle_protocol_proxy_connection(
                         Some("stream_error".to_string()),
                     );
                     if !failed.is_empty() {
-                        stream.write_all(&failed).await?;
+                        usage_tracker.push_bytes(&failed);
+                        if downstream_open {
+                            let _ = stream.write_all(&failed).await;
+                        }
                     }
-                    stream_failed = true;
                     break;
                 }
             }
         }
-        if !stream_failed {
-            let tail = converter.finish();
-            if !tail.is_empty() {
-                stream.write_all(&tail).await?;
+        let tail = converter.finish();
+        if !tail.is_empty() {
+            usage_tracker.push_bytes(&tail);
+            if downstream_open && stream.write_all(&tail).await.is_err() {
+                downstream_open = false;
             }
         }
+        persist_protocol_proxy_usage(usage_tracker.finish());
         log_helper_response(
             "helper.protocol_proxy_stream_ok",
             method,
@@ -1501,11 +1593,20 @@ async fn handle_protocol_proxy_connection(
             "200 OK",
             remote_addr_text,
         );
-        stream.shutdown().await?;
+        if downstream_open {
+            let _ = stream.shutdown().await;
+        }
         return Ok(());
     }
     let upstream_body = upstream.response.bytes().await?;
     if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
+        if let Ok(response_json) = serde_json::from_slice::<serde_json::Value>(&upstream_body) {
+            persist_protocol_proxy_usage(crate::token_usage::captured_response_usage_from_value(
+                &response_json,
+                fallback_model,
+                "completed",
+            ));
+        }
         write_http_response(
             stream,
             "200 OK",
@@ -1533,6 +1634,11 @@ async fn handle_protocol_proxy_connection(
     } else {
         crate::protocol_proxy::chat_completion_to_response(chat_json)?
     };
+    persist_protocol_proxy_usage(crate::token_usage::captured_response_usage_from_value(
+        &response_json,
+        fallback_model,
+        "completed",
+    ));
     let body = serde_json::to_vec(&response_json)?;
     write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body).await?;
     log_helper_response(
@@ -1544,6 +1650,20 @@ async fn handle_protocol_proxy_connection(
     );
     stream.shutdown().await?;
     Ok(())
+}
+
+fn persist_protocol_proxy_usage(captured: crate::token_usage::CapturedResponseUsage) {
+    if let Err(error) = crate::token_usage::append_proxy_usage_record(&captured) {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "protocol_proxy.usage_ledger_write_failed",
+            serde_json::json!({
+                "model": captured.model,
+                "status": captured.status,
+                "usageMissing": captured.usage_missing,
+                "error": error.to_string()
+            }),
+        );
+    }
 }
 async fn handle_audio_transcriptions_proxy_connection(
     stream: &mut tokio::net::TcpStream,
