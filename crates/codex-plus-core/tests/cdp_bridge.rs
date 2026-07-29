@@ -1123,6 +1123,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("patchModelArray"));
     assert!(script.contains("patchStatsigModelDynamicConfig"));
     assert!(script.contains("patchModelJsonResponse"));
+    assert!(script.contains("modelJsonResponseLooksPatchable"));
     assert!(script.contains("installAppServerModelRequestPatch"));
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
@@ -1138,8 +1139,13 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("model_whitelist_refresh_scheduled"));
     assert!(script.contains("available_models"));
     assert!(script.contains("modelWhitelistUnlock"));
-    assert!(script.contains("isWorkspaceChromeNode"));
     assert!(script.contains("refreshCodexModelWhitelistFromScan"));
+    assert!(script.contains("codexPlusModelListRequestIds.size === 0"));
+    assert!(!script.contains("function patchReactModelState"));
+    assert!(!script.contains("function patchObjectGraphForModels"));
+    assert!(!script.contains("window.dispatchEvent = function patchedCodexPlusDispatchEvent"));
+    assert!(script.contains("String(name) === \"107580212\""));
+    assert!(script.contains("window.addEventListener(\"codex-message-from-view\""));
     assert!(!script.contains("querySelectorAll(\"button, [role='menu']"));
 }
 
