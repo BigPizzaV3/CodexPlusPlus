@@ -6470,13 +6470,37 @@
     return changed;
   }
 
+  function modelJsonResponseLooksPatchable(payload) {
+    if (!payload || typeof payload !== "object") return false;
+    const descriptorArrays = [
+      payload.models,
+      payload.data,
+      payload.result,
+      payload.pages?.[0]?.data,
+      payload.result?.data,
+      payload.result?.models,
+      payload.message?.result?.data,
+      payload.message?.result?.models,
+    ];
+    if (descriptorArrays.some((value) => modelArrayLooksPatchable(value))) return true;
+    const hasModelContainerSignal = "defaultModel" in payload
+      || "default_model" in payload
+      || "availableModels" in payload
+      || "available_models" in payload
+      || "hiddenModels" in payload
+      || "hidden_models" in payload
+      || "modelMetadata" in payload
+      || "model_metadata" in payload;
+    return hasModelContainerSignal && Array.isArray(payload.models)
+      && payload.models.every((value) => typeof value === "string");
+  }
+
   async function patchModelJsonResponse(payload) {
     if (!codexPlusModelUnlockEnabled()) return payload;
     if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-    if (!payload || typeof payload !== "object") return payload;
+    if (!modelJsonResponseLooksPatchable(payload)) return payload;
     try {
       patchModelContainer(payload);
-      patchObjectGraphForModels(payload, new WeakSet(), 0);
     } catch (error) {
       window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
       window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
@@ -6538,7 +6562,7 @@
         const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
         client.getDynamicConfig = (name, options) => {
           const result = originalGetDynamicConfig(name, options);
-          return patchStatsigModelDynamicConfig(result);
+          return String(name) === "107580212" ? patchStatsigModelDynamicConfig(result) : result;
         };
         client.__codexPlusModelWhitelistPatched = true;
       }
@@ -6549,93 +6573,29 @@
     });
   }
 
-  function patchObjectGraphForModels(root, visited, depth = 0) {
-    if (!root || typeof root !== "object" || visited.has(root) || depth > 5) return false;
-    visited.add(root);
-    let changed = patchModelContainer(root);
-    if (root instanceof Element || root === window || root === document || root === document.body || root === document.documentElement) return changed;
-    for (const key of Object.keys(root)) {
-      if (key === "ownerDocument" || key === "parentElement" || key === "parentNode" || key === "children" || key === "childNodes") continue;
-      let value;
-      try {
-        value = root[key];
-      } catch {
-        continue;
-      }
-      if (value && typeof value === "object" && patchObjectGraphForModels(value, visited, depth + 1)) changed = true;
-    }
-    return changed;
-  }
-
-  function reactFiberKeys(element) {
-    return Object.keys(element).filter((key) => key.startsWith("__reactFiber") || key.startsWith("__reactInternalInstance") || key.startsWith("__reactProps"));
-  }
-
-  function isWorkspaceChromeNode(node) {
-    if (!node || node.nodeType !== 1) return false;
-    if (node.closest?.('[data-app-action-sidebar-section-heading="Chats"], [data-app-action-sidebar-section-heading="Projects"], [data-app-action-sidebar-thread-id], [data-app-action-sidebar-project-row], [data-app-action-sidebar-project-id]')) {
-      return false;
-    }
-    return !!node.closest?.("main aside");
-  }
-
-  function patchReactModelStateNodes() {
-    const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
-    return [document.body, ...document.querySelectorAll(selector)].filter((node) => node && !isWorkspaceChromeNode(node));
-  }
-
-  function shouldScheduleReactModelStatePatch(mutations) {
-    if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
-    if (!mutations) return false;
-    const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
-    return mutations.some((mutation) => [...mutation.addedNodes].some((node) => {
-      if (node.nodeType !== 1 || isWorkspaceChromeNode(node)) return false;
-      return !!node.matches?.(selector) || !!node.querySelector?.(selector);
-    }));
-  }
-
-  function schedulePatchReactModelState() {
-    if (window.__codexPlusReactModelStatePatchPending) return;
-    window.__codexPlusReactModelStatePatchPending = true;
-    clearTimeout(window.__codexPlusReactModelStatePatchTimer);
-    window.__codexPlusReactModelStatePatchTimer = setTimeout(() => {
-      window.__codexPlusReactModelStatePatchPending = false;
-      window.__codexPlusReactModelStatePatchTimer = null;
-      patchReactModelState();
-    }, 120);
-  }
-
-  function patchReactModelState() {
-    const visited = new WeakSet();
-    const nodes = patchReactModelStateNodes();
-    let changed = false;
-    for (const node of nodes.slice(0, 220)) {
-      for (const key of reactFiberKeys(node)) {
-        if (patchObjectGraphForModels(node[key], visited)) changed = true;
-      }
-    }
-    return changed;
-  }
-
   function patchAppServerModelMessages() {
     if (window.__codexPlusModelMessagePatchInstalled) return;
     window.__codexPlusModelMessagePatchInstalled = true;
-    const originalDispatchEvent = window.dispatchEvent;
-    window.dispatchEvent = function patchedCodexPlusDispatchEvent(event) {
+    window.addEventListener("codex-message-from-view", (event) => {
       try {
         const detail = event?.detail;
         const request = detail?.request;
-        if (event?.type === "codex-message-from-view" && detail?.type === "mcp-request" && request?.method === "model/list") {
+        if (detail?.type === "mcp-request" && request?.method === "model/list") {
           request.params = { ...(request.params || {}), includeHidden: true };
-          if (request.id != null) codexPlusModelListRequestIds.add(String(request.id));
+          if (request.id != null) {
+            const requestId = String(request.id);
+            codexPlusModelListRequestIds.add(requestId);
+            if (codexPlusModelListRequestIds.size > 64) {
+              codexPlusModelListRequestIds.delete(codexPlusModelListRequestIds.values().next().value);
+            }
+            window.setTimeout(() => codexPlusModelListRequestIds.delete(requestId), 30_000);
+          }
         }
-        if (event?.type === "message") patchMcpModelResponseData(event.data);
       } catch (error) {
         window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
         window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
       }
-      return originalDispatchEvent.call(this, event);
-    };
+    }, true);
 
     window.addEventListener("message", (event) => {
       try {
@@ -6648,12 +6608,16 @@
   }
 
   function patchMcpModelResponseData(data) {
+    if (!codexPlusModelUnlockEnabled()) return false;
     if (data?.type !== "mcp-response") return false;
     const message = data.message || data.response;
     const requestId = message?.id != null ? String(message.id) : "";
-    if (codexPlusModelListRequestIds.size > 0 && !codexPlusModelListRequestIds.has(requestId)) return false;
+    if (codexPlusModelListRequestIds.size === 0 || !codexPlusModelListRequestIds.has(requestId)) return false;
     codexPlusModelListRequestIds.delete(requestId);
-    return patchModelContainer(data) || patchModelContainer(message) || patchModelContainer(message?.result) || patchModelContainer(message?.result?.data);
+    let changed = false;
+    if (patchModelArray(message?.result?.data, true)) changed = true;
+    if (patchModelArray(message?.result?.models, true)) changed = true;
+    return changed;
   }
 
   function appServerModelRequestMethod(method, params) {
@@ -6673,8 +6637,6 @@
       if (Array.isArray(result)) patchModelArray(result, true);
       if (Array.isArray(result?.data)) patchModelArray(result.data, true);
       if (Array.isArray(result?.models)) patchModelArray(result.models, true);
-      patchModelContainer(result);
-      patchObjectGraphForModels(result, new WeakSet(), 0);
       sendCodexPlusDiagnostic("model_app_server_result_patched", {
         method,
         modelCount: Array.isArray(result?.data) ? result.data.length : Array.isArray(result?.models) ? result.models.length : Array.isArray(result) ? result.length : null,
@@ -6851,16 +6813,14 @@
 
   function runCodexModelWhitelistRefreshPass() {
     if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
-    let changed = false;
     try {
       patchStatsigModelWhitelist();
-      if (patchReactModelState()) changed = true;
       installAppServerModelRequestPatch();
     } catch (error) {
       window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
       window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
     }
-    return changed;
+    return false;
   }
 
   function scheduleCodexModelWhitelistRefresh(durationMs = 2500) {
@@ -6893,11 +6853,7 @@
       loadCodexModelCatalog();
       return;
     }
-    if (shouldScheduleReactModelStatePatch(mutations)) {
-      scheduleCodexModelWhitelistRefresh();
-    } else {
-      runCodexModelWhitelistRefreshPass();
-    }
+    runCodexModelWhitelistRefreshPass();
   }
 
   function threadIdVariants(sessionId) {
