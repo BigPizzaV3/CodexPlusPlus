@@ -485,6 +485,53 @@ fn official_mix_api_profile_does_not_generate_auth_api_key() {
             .config_contents
             .contains(r#"experimental_bearer_token = "sk-mix""#)
     );
+    assert!(
+        profile
+            .config_contents
+            .contains(r#"openai_base_url = "http://127.0.0.1:57321/v1""#)
+    );
+}
+
+#[test]
+fn pure_api_profile_does_not_write_remote_control_openai_base_url() {
+    let mut profile = RelayProfile {
+        relay_mode: RelayMode::PureApi,
+        base_url: "https://relay.example/v1".to_string(),
+        api_key: "sk-pure".to_string(),
+        config_contents: r#"openai_base_url = "http://127.0.0.1:57321/v1"
+model_provider = "custom"
+"#
+        .to_string(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    assert!(!profile.config_contents.contains("openai_base_url"));
+}
+
+#[test]
+fn official_mix_profile_preserves_user_openai_base_url_override() {
+    let mut profile = RelayProfile {
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        base_url: "https://relay.example/v1".to_string(),
+        api_key: "sk-mix".to_string(),
+        config_contents: r#"openai_base_url = "https://user-openai.example/v1"
+model_provider = "custom"
+"#
+        .to_string(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    assert!(
+        profile
+            .config_contents
+            .contains(r#"openai_base_url = "https://user-openai.example/v1""#)
+    );
+    assert!(!profile.config_contents.contains("127.0.0.1:57321"));
 }
 
 #[test]
@@ -3021,6 +3068,40 @@ experimental_bearer_token = "sk-official-mix"
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(config.contains(r#"experimental_bearer_token = "sk-official-mix""#));
     assert!(config.contains("requires_openai_auth = true"));
+    assert!(config.contains(r#"openai_base_url = "http://127.0.0.1:57321/v1""#));
+}
+
+#[test]
+fn clear_relay_config_removes_only_managed_openai_base_url() {
+    let managed = tempfile::tempdir().unwrap();
+    std::fs::write(
+        managed.path().join("config.toml"),
+        r#"openai_base_url = "http://127.0.0.1:57321/v1"
+model_provider = "custom"
+
+[model_providers.custom]
+base_url = "https://relay.example/v1"
+"#,
+    )
+    .unwrap();
+    clear_relay_config_to_home(managed.path()).unwrap();
+    let config = std::fs::read_to_string(managed.path().join("config.toml")).unwrap();
+    assert!(!config.contains("openai_base_url"));
+
+    let custom = tempfile::tempdir().unwrap();
+    std::fs::write(
+        custom.path().join("config.toml"),
+        r#"openai_base_url = "https://user-openai.example/v1"
+model_provider = "custom"
+
+[model_providers.custom]
+base_url = "https://relay.example/v1"
+"#,
+    )
+    .unwrap();
+    clear_relay_config_to_home(custom.path()).unwrap();
+    let config = std::fs::read_to_string(custom.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"openai_base_url = "https://user-openai.example/v1""#));
 }
 
 #[test]
