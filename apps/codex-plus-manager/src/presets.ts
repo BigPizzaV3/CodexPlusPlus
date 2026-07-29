@@ -102,13 +102,13 @@ export const PRESETS: ProviderPreset[] = [
   {
     id: "minimax",
     name: "MiniMax",
-    websiteUrl: "https://platform.minimaxi.com",
-    apiKeyUrl: "https://platform.minimaxi.com/subscribe/coding-plan",
+    websiteUrl: "https://platform.minimax.io",
+    apiKeyUrl: "https://platform.minimax.io/subscribe/coding-plan",
     category: "cn_official",
-    baseUrl: "https://api.minimaxi.com/v1",
+    baseUrl: "https://api.minimax.io/v1",
     protocol: "chatCompletions",
-    model: "MiniMax-M2.7",
-    modelList: ["MiniMax-M2.7"],
+    model: "MiniMax-M3",
+    modelList: ["MiniMax-M3", "MiniMax-M2.7"],
   },
   {
     id: "volcano-ark",
