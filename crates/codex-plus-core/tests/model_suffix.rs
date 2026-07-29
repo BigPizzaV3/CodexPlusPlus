@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use codex_plus_core::model_suffix::{
-    build_model_catalog_json, collect_catalog_entries, model_ui_metadata, parse_model_suffix,
+    build_model_catalog_json, build_model_catalog_json_with_template, collect_catalog_entries,
+    model_ui_metadata, parse_model_suffix,
 };
 
 #[test]
@@ -141,7 +142,28 @@ fn build_catalog_json_uses_runtime_compatible_gpt56_metadata() {
         assert!(!efforts.contains(&"minimal"));
         assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
         assert_eq!(model["service_tiers"][0]["id"], "priority");
+        assert_eq!(model["supports_search_tool"], true);
+        assert_eq!(model["use_responses_lite"], true);
     }
+}
+
+#[test]
+fn build_catalog_json_preserves_template_responses_lite_behavior() {
+    let entries = collect_catalog_entries("official-model", &HashMap::new(), "official-model");
+    let template = serde_json::json!({
+        "slug": "official-template",
+        "supports_search_tool": true,
+        "use_responses_lite": true
+    });
+    let catalog: serde_json::Value = serde_json::from_str(&build_model_catalog_json_with_template(
+        &entries,
+        None,
+        Some(&template),
+    ))
+    .unwrap();
+
+    assert_eq!(catalog["models"][0]["use_responses_lite"], true);
+    assert_eq!(catalog["models"][0]["supports_search_tool"], true);
 }
 
 #[test]

@@ -204,7 +204,7 @@ pub fn build_model_catalog_json(
     entries: &[ModelCatalogEntry],
     fallback_window: Option<u64>,
 ) -> String {
-    build_model_catalog_json_with_template(entries, fallback_window, None)
+    build_model_catalog_json_with_capabilities(entries, fallback_window, None, None)
 }
 
 /// 使用指定模板（或内置 bundled 模板）构建 catalog。
@@ -213,6 +213,18 @@ pub fn build_model_catalog_json_with_template(
     entries: &[ModelCatalogEntry],
     fallback_window: Option<u64>,
     template: Option<&Value>,
+) -> String {
+    build_model_catalog_json_with_capabilities(entries, fallback_window, template, None)
+}
+
+/// 使用显式 provider capability 构建 catalog。
+/// `use_responses_lite_override` 仅由明确知道 provider wire capability 的调用方传入；
+/// 通用 builder 默认保留模板中的原始 Lite 行为。
+pub(crate) fn build_model_catalog_json_with_capabilities(
+    entries: &[ModelCatalogEntry],
+    fallback_window: Option<u64>,
+    template: Option<&Value>,
+    use_responses_lite_override: Option<bool>,
 ) -> String {
     let models: Vec<Value> = entries
         .iter()
@@ -241,6 +253,9 @@ pub fn build_model_catalog_json_with_template(
             model["priority"] = json!(1000 + index);
             model["visibility"] = json!("list");
             model["supported_in_api"] = json!(true);
+            if let Some(use_responses_lite) = use_responses_lite_override {
+                model["use_responses_lite"] = json!(use_responses_lite);
+            }
             if !has_model_metadata {
                 model["additional_speed_tiers"] = json!([]);
                 model["service_tiers"] = json!([]);
