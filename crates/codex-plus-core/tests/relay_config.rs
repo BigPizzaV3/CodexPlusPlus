@@ -926,8 +926,12 @@ fn extracts_codex_common_config_without_provider_fields() {
         r#"model = "gpt-5"
 model_provider = "custom"
 base_url = "https://root-provider.example/v1"
+openai_base_url = "https://openai-provider.example/v1"
+chatgpt_base_url = "https://chatgpt-provider.example/backend-api"
 model_catalog_json = "C:\\Users\\me\\.codex\\model-catalogs\\relay-a.json"
 OPENAI_API_KEY = "sk-root"
+CUSTOM_API_KEY = "sk-custom"
+model_reasoning_effort = "high"
 
 [model_providers.custom]
 name = "custom"
@@ -953,14 +957,46 @@ path = "C:\\Tools\\plugin"
     assert!(!extracted.contains("model ="));
     assert!(!extracted.contains("model_catalog_json"));
     assert!(!extracted.contains("base_url = \"https://root-provider.example/v1\""));
-    assert!(extracted.contains("OPENAI_API_KEY = \"sk-root\""));
+    assert!(!extracted.contains("openai_base_url"));
+    assert!(!extracted.contains("chatgpt_base_url"));
+    assert!(!extracted.contains("OPENAI_API_KEY"));
+    assert!(!extracted.contains("CUSTOM_API_KEY"));
+    assert!(extracted.contains("model_reasoning_effort = \"high\""));
     assert!(!extracted.contains("[model_providers"));
+}
+
+#[test]
+fn excluded_provider_fields_remain_in_profile_config_after_extraction() {
+    let config = r#"model_provider = "custom"
+openai_base_url = "https://openai-provider.example/v1"
+chatgpt_base_url = "https://chatgpt-provider.example/backend-api"
+OPENAI_API_KEY = "sk-root"
+CUSTOM_API_KEY = "sk-custom"
+approval_policy = "never"
+
+[model_providers.custom]
+base_url = "https://relay.example/v1"
+"#;
+    let common = extract_common_config_from_config(config).unwrap();
+    let profile = strip_common_config_from_config(config, &common).unwrap();
+
+    assert_eq!(common, "approval_policy = \"never\"\n");
+    assert!(profile.contains("openai_base_url"));
+    assert!(profile.contains("chatgpt_base_url"));
+    assert!(profile.contains("OPENAI_API_KEY"));
+    assert!(profile.contains("CUSTOM_API_KEY"));
+    assert!(profile.contains("[model_providers.custom]"));
+    assert!(!profile.contains("approval_policy"));
 }
 
 #[test]
 fn sanitizes_model_catalog_json_from_common_config() {
     let sanitized = sanitize_common_config_contents(
         r#"model_catalog_json = "C:\\Users\\me\\.codex\\model-catalogs\\relay-a.json"
+openai_base_url = "https://openai-provider.example/v1"
+chatgpt_base_url = "https://chatgpt-provider.example/backend-api"
+OPENAI_API_KEY = "sk-root"
+CUSTOM_API_KEY = "sk-custom"
 model_reasoning_effort = "high"
 
 [features]
@@ -969,6 +1005,10 @@ goals = true
     );
 
     assert!(!sanitized.contains("model_catalog_json"));
+    assert!(!sanitized.contains("openai_base_url"));
+    assert!(!sanitized.contains("chatgpt_base_url"));
+    assert!(!sanitized.contains("OPENAI_API_KEY"));
+    assert!(!sanitized.contains("CUSTOM_API_KEY"));
     assert!(sanitized.contains("model_reasoning_effort = \"high\""));
     assert!(sanitized.contains("[features]"));
     assert!(sanitized.contains("goals = true"));
@@ -979,11 +1019,19 @@ fn sanitizes_model_catalog_json_from_invalid_common_config() {
     let sanitized = sanitize_common_config_contents(
         r#"model_catalog_json = "C:\\Users\\me\\.codex\\model-catalogs\\relay-a.json"
 model_catalog_json = 'C:\Users\me\.codex\model-catalogs\relay-b.json'
+"openai_base_url" = "https://openai-provider.example/v1"
+chatgpt_base_url = "https://chatgpt-provider.example/backend-api"
+OPENAI_API_KEY = "sk-root"
+CUSTOM_API_KEY = "sk-custom"
 model_reasoning_effort = "high"
 "#,
     );
 
     assert!(!sanitized.contains("model_catalog_json"));
+    assert!(!sanitized.contains("openai_base_url"));
+    assert!(!sanitized.contains("chatgpt_base_url"));
+    assert!(!sanitized.contains("OPENAI_API_KEY"));
+    assert!(!sanitized.contains("CUSTOM_API_KEY"));
     assert!(sanitized.contains("model_reasoning_effort = \"high\""));
 }
 

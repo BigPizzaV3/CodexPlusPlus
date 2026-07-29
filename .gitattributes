@@ -10,3 +10,7 @@
 # Preserve the original Snow Skin asset line endings for byte-exact bundling.
 assets/inject/upstream/snow-skin/*.js text eol=lf
 assets/inject/upstream/snow-skin/*.css text eol=lf
+
+# Keep byte-exact macOS theme assets identical on every checkout platform.
+assets/inject/upstream/*/macos/*.js text eol=lf
+assets/inject/upstream/*/macos/*.css text eol=lf
