@@ -2,8 +2,9 @@ use base64::Engine;
 use codex_plus_core::assets;
 use codex_plus_core::bridge::{self, BRIDGE_BINDING_NAME};
 use codex_plus_core::cdp::{
-    CdpTarget, is_avatar_overlay_page_target, is_primary_codex_page_target, list_targets,
-    pick_injectable_codex_page_target, pick_page_target, validate_cdp_websocket_url,
+    CdpTarget, is_avatar_overlay_page_target, is_primary_codex_page_target,
+    is_quick_chat_page_target, list_targets, pick_injectable_codex_page_target, pick_page_target,
+    validate_cdp_websocket_url,
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -2212,6 +2213,96 @@ fn primary_target_selection_skips_v1_and_v2_overlay_candidates() {
     let selected = pick_injectable_codex_page_target(&targets).unwrap();
 
     assert_eq!(selected.id, "main");
+}
+
+#[test]
+fn quick_chat_target_detection_is_narrow() {
+    for url in [
+        "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat",
+        "app://-/index.html?initialRoute=/chatgpt/quick-chat",
+        "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat-prewarm",
+        "app://-/index.html?initialRoute=/chatgpt/quick-chat-prewarm",
+        "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat%2Fconversation-123",
+        "app://-/index.html?initialRoute=/chatgpt/quick-chat/conversation-123",
+    ] {
+        let quick_chat = target("quick-chat", "page", "Codex", url, Some("ws://quick-chat"));
+
+        assert!(is_quick_chat_page_target(&quick_chat));
+        assert!(!is_primary_codex_page_target(&quick_chat));
+    }
+
+    assert!(!is_quick_chat_page_target(&target(
+        "external",
+        "page",
+        "Codex",
+        "https://example.test/chatgpt/quick-chat-prewarm",
+        Some("ws://external"),
+    )));
+    assert!(!is_quick_chat_page_target(&target(
+        "other-param",
+        "page",
+        "Codex",
+        "app://-/index.html?next=initialRoute%3D%252Fchatgpt%252Fquick-chat-prewarm",
+        Some("ws://other-param"),
+    )));
+    assert!(!is_quick_chat_page_target(&target(
+        "similar-route",
+        "page",
+        "Codex",
+        "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chatty",
+        Some("ws://similar-route"),
+    )));
+}
+
+#[test]
+fn primary_target_selection_skips_quick_chat_candidate() {
+    let targets = vec![
+        target(
+            "quick-chat",
+            "page",
+            "Codex",
+            "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat%2Fconversation-123",
+            Some("ws://quick-chat"),
+        ),
+        target(
+            "quick-chat-prewarm",
+            "page",
+            "Codex",
+            "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat-prewarm",
+            Some("ws://quick-chat-prewarm"),
+        ),
+        target(
+            "main",
+            "page",
+            "Codex",
+            "app://-/index.html",
+            Some("ws://main"),
+        ),
+    ];
+
+    let selected = pick_injectable_codex_page_target(&targets).unwrap();
+
+    assert_eq!(selected.id, "main");
+}
+
+#[test]
+fn quick_chat_only_target_is_not_injectable_as_codex_main_page() {
+    let targets = vec![target(
+        "quick-chat",
+        "page",
+        "Codex",
+        "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat-prewarm",
+        Some("ws://quick-chat"),
+    )];
+
+    let error = pick_injectable_codex_page_target(&targets)
+        .expect_err("Quick Chat helper renderer must not be selected for injection");
+
+    assert!(
+        error
+            .to_string()
+            .contains("No injectable Codex page target found")
+    );
 }
 
 #[test]

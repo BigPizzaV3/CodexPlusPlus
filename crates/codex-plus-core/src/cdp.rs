@@ -282,17 +282,38 @@ pub fn is_codex_page_target(target: &CdpTarget) -> bool {
 }
 
 pub fn is_primary_codex_page_target(target: &CdpTarget) -> bool {
-    is_codex_page_target(target) && !is_avatar_overlay_page_target(target)
+    is_codex_page_target(target)
+        && !is_avatar_overlay_page_target(target)
+        && !is_quick_chat_page_target(target)
 }
 
 pub fn is_avatar_overlay_page_target(target: &CdpTarget) -> bool {
+    initial_route(target).is_some_and(|route| route.eq_ignore_ascii_case("/avatar-overlay"))
+}
+
+pub fn is_quick_chat_page_target(target: &CdpTarget) -> bool {
+    initial_route(target).is_some_and(|route| {
+        let route = route.to_ascii_lowercase();
+        route == "/chatgpt/quick-chat"
+            || route == "/chatgpt/quick-chat-prewarm"
+            || route.starts_with("/chatgpt/quick-chat/")
+    })
+}
+
+fn initial_route(target: &CdpTarget) -> Option<String> {
     if !is_injectable_page_target(target) {
-        return false;
+        return None;
     }
-    let url = target.url.trim().to_ascii_lowercase();
-    url.starts_with("app://-/index.html?")
-        && (url.contains("initialroute=%2favatar-overlay")
-            || url.contains("initialroute=/avatar-overlay"))
+    let url = reqwest::Url::parse(target.url.trim()).ok()?;
+    if !url.scheme().eq_ignore_ascii_case("app")
+        || url.host_str() != Some("-")
+        || !url.path().eq_ignore_ascii_case("/index.html")
+    {
+        return None;
+    }
+    url.query_pairs()
+        .find(|(key, _)| key.eq_ignore_ascii_case("initialRoute"))
+        .map(|(_, value)| value.into_owned())
 }
 
 fn is_chatgpt_desktop_page(title: &str, url: &str) -> bool {
@@ -366,6 +387,18 @@ mod endpoint_tests {
         let (port, server) = serve_once(|port| {
             format!(
                 r#"[{{"id":"chatgpt","type":"page","title":"ChatGPT","url":"https://chatgpt.com/","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
+            )
+        });
+
+        assert!(!endpoint_available(port));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn endpoint_available_rejects_quick_chat_only_target() {
+        let (port, server) = serve_once(|port| {
+            format!(
+                r#"[{{"id":"quick-chat","type":"page","title":"Codex","url":"app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat-prewarm","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
             )
         });
 
