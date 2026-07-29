@@ -135,12 +135,20 @@ fn write_bundle(bundle: &MacosAppBundle) -> anyhow::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn copy_icon(resources: &Path) -> anyhow::Result<()> {
-    let source = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|path| path.join("codex-plus-plus.png"));
-    if let Some(source) = source.filter(|path| path.exists()) {
-        fs::copy(source, resources.join("codex-plus-plus.png"))?;
+    let source = std::env::current_exe().ok().and_then(|executable| {
+        let macos = executable.parent()?;
+        let contents = macos.parent()?;
+        let bundled_icon = contents.join("Resources/codex-plus-plus.icns");
+        bundled_icon.exists().then_some(bundled_icon).or_else(|| {
+            let sidecar_icon = macos.join("codex-plus-plus.icns");
+            sidecar_icon.exists().then_some(sidecar_icon)
+        })
+    });
+    if let Some(source) = source {
+        let target = resources.join("codex-plus-plus.icns");
+        if source != target {
+            fs::copy(source, target)?;
+        }
     }
     Ok(())
 }
@@ -178,7 +186,7 @@ fn info_plist(display_name: &str, executable_name: &str, identifier_suffix: &str
   <key>CFBundleExecutable</key>
   <string>{executable_name}</string>
   <key>CFBundleIconFile</key>
-  <string>codex-plus-plus.png</string>
+  <string>codex-plus-plus.icns</string>
   <key>LSUIElement</key>
   <true/>
   <key>LSMinimumSystemVersion</key>
