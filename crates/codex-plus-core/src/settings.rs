@@ -105,6 +105,14 @@ pub struct RelayProfile {
         skip_serializing_if = "String::is_empty"
     )]
     pub user_agent: String,
+    #[serde(rename = "sub2apiEnabled", default)]
+    pub sub2api_enabled: bool,
+    #[serde(
+        rename = "sub2apiMultiplier",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub sub2api_multiplier: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -165,6 +173,8 @@ impl Default for RelayProfile {
             vlm_model: String::new(),
             vlm_base_url: String::new(),
             user_agent: String::new(),
+            sub2api_enabled: false,
+            sub2api_multiplier: String::new(),
         }
     }
 }
@@ -580,6 +590,8 @@ impl BackendSettings {
                 vlm_model: String::new(),
                 vlm_base_url: String::new(),
                 user_agent: String::new(),
+                sub2api_enabled: false,
+                sub2api_multiplier: String::new(),
             };
         }
 
@@ -629,6 +641,8 @@ impl BackendSettings {
             vlm_model: String::new(),
             vlm_base_url: String::new(),
             user_agent: String::new(),
+            sub2api_enabled: false,
+            sub2api_multiplier: String::new(),
         }
     }
 

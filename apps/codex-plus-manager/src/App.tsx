@@ -22,6 +22,7 @@ import {
   ArrowRight,
   Bell,
   CheckCircle2,
+  ChevronDown,
   Camera,
   CircleArrowUp,
   Copy,
@@ -265,6 +266,8 @@ export type RelayProfile = {
   vlmModel: string;
   vlmBaseUrl: string;
   userAgent: string;
+  sub2apiEnabled: boolean;
+  sub2apiMultiplier: string;
   aggregate?: RelayAggregateConfig | null;
 };
 
@@ -458,6 +461,18 @@ type StepwiseTestResult = CommandResult<{
 type RelayProfileModelsResult = CommandResult<{
   models: string[];
   endpoint: string;
+}>;
+
+type Sub2ApiBillingResult = CommandResult<{
+  endpoint: string;
+  groupRateMultiplier: number;
+  userRateMultiplier?: number | null;
+  resolvedRateMultiplier: number;
+  peakRateEnabled: boolean;
+  peakRateMultiplier?: number | null;
+  appliedPeakMultiplier?: number | null;
+  effectiveRateMultiplier: number;
+  observedAt: string;
 }>;
 
 type ProviderDoctorCheck = {
@@ -838,6 +853,8 @@ const defaultSettings: BackendSettings = {
       vlmModel: "",
       vlmBaseUrl: "",
       userAgent: "",
+      sub2apiEnabled: false,
+      sub2apiMultiplier: "",
     },
   ],
   relayCommonConfigContents: "",
@@ -2170,6 +2187,12 @@ export function App() {
     return result && isSuccessStatus(result.status) ? result.models : null;
   };
 
+  const fetchSub2ApiBilling = async (profile: RelayProfile) => {
+    const result = await run(() => call<Sub2ApiBillingResult>("fetch_sub2api_billing", { profile }));
+    if (result) showNotice("Sub2API", result.message, result.status);
+    return result && isSuccessStatus(result.status) ? result : null;
+  };
+
   const switchOfficialMode = async () => {
     const switched = await clearRelayInjection(true);
     if (!switched) return;
@@ -2615,6 +2638,7 @@ export function App() {
       diagnoseRelayProfile,
       testStepwiseSettings,
       fetchRelayProfileModels,
+      fetchSub2ApiBilling,
       switchRelayProfile,
       relaySwitching,
       switchOfficialMode,
@@ -2965,6 +2989,7 @@ type Actions = {
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
   testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
+  fetchSub2ApiBilling: (profile: RelayProfile) => Promise<Sub2ApiBillingResult | null>;
   switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
   relaySwitching: boolean;
   switchOfficialMode: () => Promise<void>;
@@ -3514,17 +3539,17 @@ function EnhanceScreen({
           <TaskProgressBox progress={remotePluginMarketplaceProgress} title={t("官方远端插件缓存进度")} />
           <div className="zed-remote-settings">
             <Field label={t("Zed 默认打开策略")}>
-              <select
-                className="select-input"
+              <AppSelect
                 disabled={!masterEnabled}
-                onChange={(event) => onFormChange({ ...form, zedRemoteOpenStrategy: event.currentTarget.value as ZedOpenStrategy })}
+                onChange={(value) => onFormChange({ ...form, zedRemoteOpenStrategy: value })}
+                options={[
+                  { value: "addToFocusedWorkspace", label: t("加入当前工作区") },
+                  { value: "reuseWindow", label: t("复用窗口") },
+                  { value: "newWindow", label: t("新窗口") },
+                  { value: "default", label: t("Zed 默认行为") },
+                ]}
                 value={form.zedRemoteOpenStrategy}
-              >
-                <option value="addToFocusedWorkspace">{t("加入当前工作区")}</option>
-                <option value="reuseWindow">{t("复用窗口")}</option>
-                <option value="newWindow">{t("新窗口")}</option>
-                <option value="default">{t("Zed 默认行为")}</option>
-              </select>
+              />
             </Field>
           </div>
           <div className="hint-line">
@@ -3969,16 +3994,16 @@ function DreamSkinScreen({
                     />
                   </Field>
                   <Field label={t("显示位置") }>
-                    <select
-                      className="select-input"
+                    <AppSelect
                       disabled={!companionDataUrl}
                       value={companion?.side ?? "right"}
-                      onChange={(event) => updateCompanion({ side: event.currentTarget.value as "auto" | "left" | "right" })}
-                    >
-                      <option value="auto">{t("自动")}</option>
-                      <option value="left">{t("左侧")}</option>
-                      <option value="right">{t("右侧")}</option>
-                    </select>
+                      onChange={(value) => updateCompanion({ side: value })}
+                      options={[
+                        { value: "auto", label: t("自动") },
+                        { value: "left", label: t("左侧") },
+                        { value: "right", label: t("右侧") },
+                      ]}
+                    />
                   </Field>
                   <Field label={t("水平偏移") }>
                     <Input
@@ -4346,16 +4371,16 @@ function ZedRemoteScreen({
           </div>
           <div className="zed-remote-settings">
             <Field label={t("默认打开策略")}>
-              <select
-                className="select-input"
-                onChange={(event) => onFormChange({ ...form, zedRemoteOpenStrategy: event.currentTarget.value as ZedOpenStrategy })}
+              <AppSelect
+                onChange={(value) => onFormChange({ ...form, zedRemoteOpenStrategy: value })}
+                options={[
+                  { value: "addToFocusedWorkspace", label: t("加入当前工作区") },
+                  { value: "reuseWindow", label: t("复用窗口") },
+                  { value: "newWindow", label: t("新窗口") },
+                  { value: "default", label: t("Zed 默认行为") },
+                ]}
                 value={form.zedRemoteOpenStrategy}
-              >
-                <option value="addToFocusedWorkspace">{t("加入当前工作区")}</option>
-                <option value="reuseWindow">{t("复用窗口")}</option>
-                <option value="newWindow">{t("新窗口")}</option>
-                <option value="default">{t("Zed 默认行为")}</option>
-              </select>
+              />
             </Field>
             <label className="switch-row compact">
               <input
@@ -4595,19 +4620,19 @@ function SessionsScreen({
           </div>
           <div className="form-row">
             <Field label={t("同步目标")}>
-              <select
-                className="select-input"
+              <AppSelect
                 disabled={providerSyncProgress.active || !(providerSyncTargets?.targets ?? []).length}
                 value={selectedProviderSyncTarget}
-                onChange={(event) => actions.setProviderSyncTarget(event.currentTarget.value)}
-              >
-                {(providerSyncTargets?.targets ?? []).map((target) => (
-                  <option key={target.id} value={target.id}>
-                    {target.id}{t("（")}{providerSyncTargetLabel(target)}{t("）")}
-                  </option>
-                ))}
-                {!(providerSyncTargets?.targets ?? []).length ? <option value="">{t("当前配置 provider")}</option> : null}
-              </select>
+                onChange={(value) => actions.setProviderSyncTarget(value)}
+                options={
+                  (providerSyncTargets?.targets ?? []).length
+                    ? (providerSyncTargets?.targets ?? []).map((target) => ({
+                        value: target.id,
+                        label: `${target.id}${t("（")}${providerSyncTargetLabel(target)}${t("）")}`,
+                      }))
+                    : [{ value: "", label: t("当前配置 provider"), disabled: true }]
+                }
+              />
             </Field>
           </div>
           <Toolbar>
@@ -5129,22 +5154,22 @@ function SettingsScreen({
               />
             </Field>
             <Field label={t("背景适配方式")}>
-              <select
-                className="select-input"
+              <AppSelect
                 value={form.codexAppImageOverlayFitMode}
-                onChange={(event) =>
+                onChange={(value) =>
                   onFormChange({
                     ...form,
-                    codexAppImageOverlayFitMode: event.currentTarget.value as ImageOverlayFitMode,
+                    codexAppImageOverlayFitMode: value,
                   })
                 }
-              >
-                <option value="fill">{t("填充")}</option>
-                <option value="fit">{t("适应")}</option>
-                <option value="stretch">{t("拉伸")}</option>
-                <option value="tile">{t("平铺")}</option>
-                <option value="center">{t("居中")}</option>
-              </select>
+                options={[
+                  { value: "fill", label: t("填充") },
+                  { value: "fit", label: t("适应") },
+                  { value: "stretch", label: t("拉伸") },
+                  { value: "tile", label: t("平铺") },
+                  { value: "center", label: t("居中") },
+                ]}
+              />
             </Field>
           </div>
           <Toolbar>
@@ -5338,6 +5363,9 @@ function SortableRelayProfileCard({
       <span className="relay-summary">
         <strong>{profile.name || t("未命名供应商")}</strong>
         <small>{relayModeLabel(profile.relayMode)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
+        {profile.sub2apiEnabled ? (
+          <small className="relay-sub2api-rate">{relaySub2ApiMultiplierLabel(profile)}</small>
+        ) : null}
       </span>
       <span className="relay-card-actions">
         <Button
@@ -5635,6 +5663,8 @@ function RelayProfileEditor({
   }
 
   const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
+  const sub2apiBaseUrl = profile.upstreamBaseUrl.trim() || profile.baseUrl.trim();
+  const canFetchSub2ApiRate = profile.sub2apiEnabled && Boolean(sub2apiBaseUrl && profile.apiKey.trim());
   const updateDraft = (patch: Partial<RelayProfile>) => {
     onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
   };
@@ -5664,6 +5694,14 @@ function RelayProfileEditor({
     );
     setDoctorResult(result);
     setDoctorRunning(false);
+  };
+  const fetchSub2ApiRate = async () => {
+    const result = await actions.fetchSub2ApiBilling(deriveRelayProfileFromFiles(profile));
+    if (!result) return;
+    updateDraft({
+      sub2apiEnabled: true,
+      sub2apiMultiplier: formatMultiplierValue(result.effectiveRateMultiplier),
+    });
   };
   return (
     <div className="relay-profile-editor">
@@ -5698,17 +5736,16 @@ function RelayProfileEditor({
           />
         </Field>
         <Field className="relay-field-mode" label={t("接入模式")}>
-          <select
-            className="field-select"
+          <AppSelect
             value={profile.relayMode}
-            onChange={(event) => {
-              const relayMode = event.currentTarget.value as RelayMode;
+            onChange={(relayMode) => {
               updateDraft(relayMode === "official" ? { relayMode, officialMixApiKey: false } : { relayMode });
             }}
-          >
-            <option value="official">{t("官方登录")}</option>
-            <option value="pureApi">{t("纯 API")}</option>
-          </select>
+            options={[
+              { value: "official", label: t("官方登录") },
+              { value: "pureApi", label: t("纯 API") },
+            ]}
+          />
         </Field>
         <Field className="relay-field-config-model" label={t("配置模型")}>
           <Input
@@ -5820,6 +5857,44 @@ function RelayProfileEditor({
                 </button>
               </div>
             </Field>
+            <Field className="relay-field-sub2api" label="Sub2API">
+              <div className="sub2api-field">
+                <label className="inline-check">
+                  <input
+                    checked={profile.sub2apiEnabled}
+                    onChange={(event) => {
+                      const checked = event.currentTarget.checked;
+                      updateDraft({
+                        sub2apiEnabled: checked,
+                        sub2apiMultiplier: checked ? profile.sub2apiMultiplier || "" : "",
+                      });
+                      if (checked && sub2apiBaseUrl && profile.apiKey.trim()) {
+                        void fetchSub2ApiRate();
+                      }
+                    }}
+                    type="checkbox"
+                  />
+                  <span>{t("尝试从sub2api获取倍率显示")}</span>
+                </label>
+                <Button
+                  disabled={!canFetchSub2ApiRate}
+                  onClick={() => void fetchSub2ApiRate()}
+                  size="sm"
+                  type="button"
+                  variant="secondary"
+                >
+                  <Download className="h-4 w-4" />
+                  {t("获取倍率")}
+                </Button>
+              </div>
+              <p className="field-hint">
+                {profile.sub2apiEnabled
+                  ? profile.sub2apiMultiplier.trim()
+                    ? tf("当前缓存倍率：{0}x", [profile.sub2apiMultiplier.trim()])
+                    : t("保存前可先尝试从 /v1/sub2api/billing 获取上游倍率。")
+                  : t("非 Sub2API 供应商不会请求或显示倍率。")}
+              </p>
+            </Field>
           </div>
         ) : null}
         {showApiFields ? (
@@ -5869,18 +5944,19 @@ function RelayProfileEditor({
                     </Button>
                   </div>
                   <div className="relay-model-row-actions">
-                    <select
-                      className="field-select text-xs"
+                    <AppSelect
+                      className="text-xs"
                       value={row.imageHandling}
                       disabled={vlmUnsupportedProtocol}
-                      onChange={(e) => updateModelWindowRow(index, { imageHandling: e.currentTarget.value as ImageHandling })}
+                      onChange={(value) => updateModelWindowRow(index, { imageHandling: value })}
+                      options={[
+                        { value: "", label: t("纯文本模型请配置此项"), disabled: true },
+                        { value: "send-as-is", label: "send-as-is", title: t("原样发送图片") },
+                        { value: "strip", label: "strip images", title: t("为纯文本模型移除消息中的图片") },
+                        { value: "vlm", label: "VLM analysis", title: t("为纯文本模型配置图片分析路由") },
+                      ]}
                       title={vlmUnsupportedProtocol ? t("VLM 仅支持 Chat Completions 协议和聚合模式") : ""}
-                    >
-                      <option value="" disabled>{t("纯文本模型请配置此项")}</option>
-                      <option value="send-as-is" title={t("原样发送图片")}>send-as-is</option>
-                      <option value="strip" title={t("为纯文本模型移除消息中的图片")}>strip images</option>
-                      <option value="vlm" title={t("为纯文本模型配置图片分析路由")}>VLM analysis</option>
-                    </select>
+                    />
                     <span className="relay-model-row-hint">{t("多模态模型（支持图片输入的模型）请保持 send-as-is。")}</span>
                   </div>
                 </div>
@@ -6047,17 +6123,11 @@ function AggregateRelayProfileEditor({
           />
         </Field>
         <Field className="aggregate-strategy-field" label={t("聚合策略")}>
-          <select
-            className="field-select"
+          <AppSelect
             value={aggregate.strategy}
-            onChange={(event) => updateAggregate({ ...aggregate, strategy: event.currentTarget.value as RelayAggregateStrategy })}
-          >
-            {aggregateStrategyOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+            onChange={(value) => updateAggregate({ ...aggregate, strategy: value })}
+            options={aggregateStrategyOptions.map((option) => ({ value: option.value, label: option.label }))}
+          />
         </Field>
       </div>
       <div className="aggregate-strategy-grid">
@@ -6272,16 +6342,12 @@ function ContextEntryEditor({
     <div className="context-editor">
       <div className="context-editor-fields">
         <Field label={t("类型")}>
-          <select
-            className="field-select"
+          <AppSelect
             disabled={!!entry}
             value={draftKind}
-            onChange={(event) => setDraftKind(event.currentTarget.value as ContextKind)}
-          >
-            {contextKindOptions.map((option) => (
-              <option key={option.kind} value={option.kind}>{option.label}</option>
-            ))}
-          </select>
+            onChange={(value) => setDraftKind(value)}
+            options={contextKindOptions.map((option) => ({ value: option.kind, label: option.label }))}
+          />
         </Field>
         <Field label="ID">
           <Input
@@ -6932,6 +6998,79 @@ function Field({ label, children, className = "" }: { label: string; children: R
       <span>{label}</span>
       {children}
     </Label>
+  );
+}
+
+type AppSelectOption<T extends string> = {
+  value: T;
+  label: ReactNode;
+  disabled?: boolean;
+  title?: string;
+};
+
+function AppSelect<T extends string>({
+  value,
+  options,
+  onChange,
+  disabled = false,
+  className = "",
+  title = "",
+}: {
+  value: T;
+  options: AppSelectOption<T>[];
+  onChange: (value: T) => void;
+  disabled?: boolean;
+  className?: string;
+  title?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = options.find((option) => option.value === value) || options[0];
+  const selectOption = (option: AppSelectOption<T>) => {
+    if (option.disabled) return;
+    onChange(option.value);
+    setOpen(false);
+  };
+  return (
+    <div
+      className={`app-select ${open ? "open" : ""} ${disabled ? "disabled" : ""} ${className}`.trim()}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
+      <button
+        aria-expanded={open}
+        className="app-select-trigger"
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+        title={title}
+        type="button"
+      >
+        <span>{selected?.label ?? value}</span>
+        <ChevronDown className="h-4 w-4" />
+      </button>
+      {open && !disabled ? (
+        <div className="app-select-menu" role="listbox">
+          {options.map((option) => (
+            <button
+              aria-selected={option.value === value}
+              className={`app-select-option ${option.value === value ? "selected" : ""}`}
+              disabled={option.disabled}
+              key={option.value}
+              onClick={() => selectOption(option)}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                selectOption(option);
+              }}
+              title={option.title}
+              type="button"
+            >
+              {option.value === value ? <CheckCircle2 className="h-4 w-4" /> : <span className="app-select-option-spacer" />}
+              <span>{option.label}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -7760,6 +7899,8 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             vlmModel: "",
             vlmBaseUrl: "",
             userAgent: "",
+            sub2apiEnabled: false,
+            sub2apiMultiplier: "",
           },
         ];
   const activeRelayId = profiles.some((profile) => profile.id === settings.activeRelayId)
@@ -7835,6 +7976,8 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         autoCompactLimit: "",
         modelList: "",
         modelWindows: "",
+        sub2apiEnabled: false,
+        sub2apiMultiplier: "",
       },
       null,
     );
@@ -7863,6 +8006,8 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     modelList: profile.modelList || "",
     modelWindows: profile.modelWindows || "",
     userAgent: profile.userAgent || "",
+    sub2apiEnabled: profile.sub2apiEnabled === true,
+    sub2apiMultiplier: profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     aggregate: null,
   };
   return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
@@ -7963,6 +8108,18 @@ function relayProfileConfigBrief(profile: RelayProfile): string {
   }
   if (profile.relayMode === "official") return profile.officialMixApiKey ? t("混入 API Key") : t("不写 API 文件");
   return profile.baseUrl || t("未填写 URL");
+}
+
+function relaySub2ApiMultiplierLabel(profile: RelayProfile): string {
+  const multiplier = profile.sub2apiMultiplier.trim();
+  return multiplier ? tf("Sub2API 倍率 {0}x", [multiplier]) : t("Sub2API 倍率未获取");
+}
+
+function formatMultiplierValue(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "";
+  let text = value.toFixed(4);
+  while (text.includes(".") && text.endsWith("0")) text = text.slice(0, -1);
+  return text.endsWith(".") ? text.slice(0, -1) : text;
 }
 
 function relayProfileModeHelp(profile: RelayProfile): string {
@@ -8497,6 +8654,8 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     vlmModel: "",
     vlmBaseUrl: "",
     userAgent: "",
+    sub2apiEnabled: false,
+    sub2apiMultiplier: "",
   };
   return withGeneratedRelayFiles(next);
 }
@@ -8531,6 +8690,8 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       vlmModel: "",
       vlmBaseUrl: "",
       userAgent: "",
+      sub2apiEnabled: false,
+      sub2apiMultiplier: "",
       aggregate: {
         strategy: "failover",
         members: candidates.slice(0, 1).map((profile) => ({ profileId: profile.id, weight: 1 })),
@@ -8651,6 +8812,8 @@ function normalizeAggregateRelayProfile(profile: RelayProfile, settings: Backend
     officialMixApiKey: false,
     configContents: "",
     authContents: "",
+    sub2apiEnabled: false,
+    sub2apiMultiplier: "",
     aggregate,
   };
 }

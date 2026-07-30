@@ -1453,6 +1453,8 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             vlm_model: String::new(),
             vlm_base_url: String::new(),
             user_agent: String::new(),
+            sub2api_enabled: false,
+            sub2api_multiplier: String::new(),
         }],
         active_relay_id: "relay-chat".to_string(),
         ..BackendSettings::default()
