@@ -11,6 +11,13 @@
 assets/inject/upstream/snow-skin/*.js text eol=lf
 assets/inject/upstream/snow-skin/*.css text eol=lf
 
+# Keep all byte-exact theme assets identical on Windows checkouts.
+assets/inject/upstream/*/windows/*.js text eol=lf
+assets/inject/upstream/*/windows/*.css text eol=lf
+assets/inject/upstream/*/*.js text eol=lf
+assets/inject/upstream/*/*.css text eol=lf
+assets/inject/upstream/skin-packs/packs/*/theme.json text eol=lf
+
 # Keep byte-exact macOS theme assets identical on every checkout platform.
 assets/inject/upstream/*/macos/*.js text eol=lf
 assets/inject/upstream/*/macos/*.css text eol=lf
