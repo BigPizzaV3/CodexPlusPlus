@@ -1192,7 +1192,7 @@
   async function openManager() {
     state.settingsStatus = "正在打开 Codex++ Manager...";
     renderFloat();
-    const payload = await bridgeCall("/manager/open", {});
+    const payload = await bridgeCall("/manager/open-transient", {});
     if (!isCurrentInstance()) return;
     state.settingsStatus = payload?.status === "ok" ? "已打开 Manager" : payload?.message || "打开失败";
     renderFloat();

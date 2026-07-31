@@ -626,6 +626,18 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         }))
     }
 
+    async fn open_transient_manager(&self) -> anyhow::Result<Value> {
+        let target = codex_plus_core::install::spawn_companion(
+            codex_plus_core::install::MANAGER_BINARY,
+            ["--transient"],
+        )
+        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
+        Ok(json!({
+            "status": "ok",
+            "path": target
+        }))
+    }
+
     async fn backend_status(&self) -> anyhow::Result<Value> {
         Ok(
             json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION}),

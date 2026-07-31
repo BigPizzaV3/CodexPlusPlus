@@ -773,6 +773,13 @@ fn stepwise_exposes_manual_refresh_without_refreshing_busy_chats() {
 }
 
 #[test]
+fn stepwise_opens_manager_as_transient_window() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("bridgeCall(\"/manager/open-transient\", {})"));
+}
+
+#[test]
 fn injection_script_defers_backend_mapped_toggles_until_settings_load() {
     let script = assets::injection_script(57321);
 
