@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -313,7 +313,14 @@ pub fn stop_launcher_processes() {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn stop_launcher_processes() {
+    for process_id in find_launcher_processes() {
+        let _ = terminate_macos_process(process_id);
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn stop_launcher_processes() {}
 
 #[cfg(windows)]
@@ -336,7 +343,17 @@ pub fn stop_launcher_processes_and_wait() {
     );
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn stop_launcher_processes_and_wait() {
+    terminate_macos_processes_and_wait(
+        find_launcher_processes(),
+        || find_launcher_processes(),
+        RESTART_STOP_WAIT_TIMEOUT_MS,
+        RESTART_STOP_WAIT_INTERVAL_MS,
+    );
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn stop_launcher_processes_and_wait() {}
 
 #[cfg(windows)]
@@ -346,8 +363,15 @@ pub fn stop_codex_processes() {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn stop_codex_processes() {}
+
+#[cfg(target_os = "macos")]
+pub fn stop_codex_processes() {
+    for process_id in find_codex_processes() {
+        let _ = terminate_macos_process(process_id);
+    }
+}
 
 #[cfg(windows)]
 pub fn stop_codex_processes_and_wait() {
@@ -358,8 +382,131 @@ pub fn stop_codex_processes_and_wait() {
     );
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn stop_codex_processes_and_wait() {
+    terminate_macos_processes_and_wait(
+        find_codex_processes(),
+        || find_codex_processes(),
+        RESTART_STOP_WAIT_TIMEOUT_MS,
+        RESTART_STOP_WAIT_INTERVAL_MS,
+    );
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn stop_codex_processes_and_wait() {}
+
+#[cfg(target_os = "macos")]
+pub fn stop_codex_processes_for_debug_port_and_wait(debug_port: u16) {
+    terminate_macos_processes_and_wait(
+        find_macos_codex_processes_for_debug_port(debug_port),
+        || find_macos_codex_processes_for_debug_port(debug_port),
+        RESTART_STOP_WAIT_TIMEOUT_MS,
+        RESTART_STOP_WAIT_INTERVAL_MS,
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn stop_codex_processes_for_debug_port_and_wait(_debug_port: u16) {
+    stop_codex_processes_and_wait();
+}
+
+#[cfg(target_os = "macos")]
+fn terminate_macos_processes_and_wait<F>(
+    process_ids: Vec<u32>,
+    mut find_processes: F,
+    timeout_ms: u64,
+    interval_ms: u64,
+) where
+    F: FnMut() -> Vec<u32>,
+{
+    if process_ids.is_empty() {
+        return;
+    }
+    for process_id in &process_ids {
+        let _ = terminate_macos_process(*process_id);
+    }
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let remaining = process_ids_still_running(&process_ids, find_processes());
+        if remaining.is_empty() || std::time::Instant::now() >= deadline {
+            if !remaining.is_empty() {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "watcher.stop_wait_timeout",
+                    serde_json::json!({
+                        "remaining_process_ids": remaining,
+                        "timeout_ms": timeout_ms,
+                        "platform": "macos"
+                    }),
+                );
+            }
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(interval_ms));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn terminate_macos_process(process_id: u32) -> std::io::Result<()> {
+    Command::new("kill")
+        .arg(process_id.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+fn find_launcher_processes() -> Vec<u32> {
+    std::process::Command::new("pgrep")
+        .args(["-x", crate::install::SILENT_BINARY])
+        .output()
+        .ok()
+        .into_iter()
+        .flat_map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|value| value.trim().parse::<u32>().ok())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn find_macos_codex_processes_for_debug_port(debug_port: u16) -> Vec<u32> {
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-axo", "pid=,args="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    macos_codex_process_ids_for_debug_port(
+        String::from_utf8_lossy(&output.stdout).lines(),
+        debug_port,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn macos_codex_process_ids_for_debug_port<'a>(
+    process_lines: impl IntoIterator<Item = &'a str>,
+    debug_port: u16,
+) -> Vec<u32> {
+    let debug_flag = format!("remote-debugging-port={debug_port}");
+    let mut ids = process_lines
+        .into_iter()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            let (pid, args) = trimmed.split_once(char::is_whitespace)?;
+            let process_id = pid.parse::<u32>().ok()?;
+            let is_desktop_main = (args.contains(".app/Contents/MacOS/ChatGPT")
+                || args.contains(".app/Contents/MacOS/Codex"))
+                && !args.contains("/Helpers/");
+            (is_desktop_main && args.contains(&debug_flag)).then_some(process_id)
+        })
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
 
 #[cfg(windows)]
 fn terminate_and_wait_for_exit(process_ids: Vec<u32>, timeout_ms: u64, interval_ms: u64) {

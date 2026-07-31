@@ -58,7 +58,7 @@ pub fn run() {
             }
             let main_window = main_window_builder.build()?;
             install_tray(app)?;
-            register_main_window_events(main_window);
+            register_main_window_events(main_window, startup_is_transient());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -142,6 +142,7 @@ pub fn run() {
             commands::diagnose_relay_profile,
             commands::test_stepwise_settings,
             commands::fetch_relay_profile_models,
+            commands::fetch_sub2api_billing,
             commands::switch_relay_profile,
             commands::apply_relay_injection,
             commands::apply_pure_api_injection,
@@ -214,10 +215,14 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     Ok(())
 }
 
-fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
+fn register_main_window_events<R: tauri::Runtime>(
+    window: tauri::WebviewWindow<R>,
+    transient: bool,
+) {
     let event_window = window.clone();
     let minimized_window = event_window.clone();
     let close_event_window = event_window.clone();
+    let close_event_app = event_window.app_handle().clone();
 
     event_window.on_window_event(move |event| match event {
         WindowEvent::Resized(_) => {
@@ -230,11 +235,21 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
                 return;
             }
 
+            if transient {
+                APP_EXITING.store(true, Ordering::SeqCst);
+                close_event_app.exit(0);
+                return;
+            }
+
             api.prevent_close();
             let _ = close_event_window.hide();
         }
         _ => {}
     });
+}
+
+fn startup_is_transient() -> bool {
+    std::env::args().any(|arg| arg == "--transient")
 }
 
 #[tauri::command]

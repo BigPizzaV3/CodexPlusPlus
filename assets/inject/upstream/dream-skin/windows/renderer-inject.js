@@ -29,6 +29,10 @@
     "--dream-image-luma",
   ];
   const HOME_UTILITY_CLASS = "dream-home-utility";
+  const AUX_PANEL_LAYER_CLASS = "dream-aux-panel-layer";
+  const AUX_PANEL_RIGHT_CLASS = "dream-aux-panel-right";
+  const AUX_PANEL_BOTTOM_CLASS = "dream-aux-panel-bottom";
+  const AUX_PANEL_CLASSES = [AUX_PANEL_LAYER_CLASS, AUX_PANEL_RIGHT_CLASS, AUX_PANEL_BOTTOM_CLASS];
   const installToken = {};
   let samplingNativeShell = false;
   let observer = null;
@@ -275,6 +279,12 @@
     return "light";
   };
 
+  const clearAuxiliaryPanelClasses = () => {
+    for (const candidate of document.querySelectorAll(`.${AUX_PANEL_LAYER_CLASS}`)) {
+      candidate.classList.remove(...AUX_PANEL_CLASSES);
+    }
+  };
+
   const clearSkinDom = () => {
     const root = document.documentElement;
     root?.classList.remove(...ROOT_CLASSES);
@@ -283,6 +293,7 @@
     document.querySelectorAll(".dream-task").forEach((node) => node.classList.remove("dream-task"));
     document.querySelectorAll(".dream-home-shell").forEach((node) => node.classList.remove("dream-home-shell"));
     document.querySelectorAll(`.${HOME_UTILITY_CLASS}`).forEach((node) => node.classList.remove(HOME_UTILITY_CLASS));
+    clearAuxiliaryPanelClasses();
     document.getElementById(STYLE_ID)?.remove();
     document.getElementById(CHROME_ID)?.remove();
   };
@@ -321,14 +332,44 @@
     root.style.setProperty("--dream-image-luma", profile.luma.toFixed(3));
   };
 
+  const reconcileAuxiliaryPanels = (shellMain) => {
+    const shellRect = shellMain.getBoundingClientRect();
+    const activeLayers = new Set();
+
+    for (const tabs of document.querySelectorAll('[data-app-shell-tabs="true"]')) {
+      const rect = tabs.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) continue;
+
+      const roleClass = rect.top >= shellRect.top + shellRect.height * .5
+        && rect.width >= shellRect.width * .65
+        ? AUX_PANEL_BOTTOM_CLASS
+        : rect.left >= shellRect.left + shellRect.width * .45
+          && rect.height >= shellRect.height * .45
+          ? AUX_PANEL_RIGHT_CLASS
+          : null;
+      if (!roleClass) continue;
+
+      for (let layer = tabs, depth = 0; layer && depth < 3; layer = layer.parentElement, depth += 1) {
+        const layerRect = layer.getBoundingClientRect();
+        if (Math.abs(layerRect.x - rect.x) > 3 || Math.abs(layerRect.y - rect.y) > 3
+          || Math.abs(layerRect.width - rect.width) > 3 || Math.abs(layerRect.height - rect.height) > 3) break;
+        layer.classList.add(AUX_PANEL_LAYER_CLASS, roleClass);
+        activeLayers.add(layer);
+      }
+    }
+
+    for (const candidate of document.querySelectorAll(`.${AUX_PANEL_LAYER_CLASS}`)) {
+      if (!activeLayers.has(candidate)) candidate.classList.remove(...AUX_PANEL_CLASSES);
+    }
+  };
+
   const ensure = () => {
     if (window.__CODEX_DREAM_SKIN_DISABLED__) return;
     const root = document.documentElement;
     if (!root || !document.body) return;
 
     const shellMain = document.querySelector("main.main-surface");
-    const shellSidebar = document.querySelector("aside.app-shell-left-panel");
-    if (!shellMain || !shellSidebar) {
+    if (!shellMain) {
       clearSkinDom();
       return;
     }
@@ -358,6 +399,7 @@
     }
     for (const candidate of utilityBars) candidate.classList.add(HOME_UTILITY_CLASS);
     shellMain.classList.toggle("dream-home-shell", Boolean(home));
+    reconcileAuxiliaryPanels(shellMain);
 
     let chrome = document.getElementById(CHROME_ID);
     if (!chrome || chrome.parentElement !== document.body) {

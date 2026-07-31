@@ -20,7 +20,7 @@ use codex_plus_core::launcher::{WindowsProcessControlStrategy, windows_process_c
 use codex_plus_core::ports::{
     select_packaged_codex_debug_port_with, select_platform_loopback_port_with,
 };
-use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol};
+use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 use codex_plus_core::status::StatusStore;
 
 #[test]
@@ -772,9 +772,17 @@ fn ports_windows_falls_back_to_ephemeral_when_requested_is_busy() {
 
 #[test]
 fn ports_windows_packaged_debug_falls_back_to_ephemeral_when_requested_is_busy() {
-    let selected = select_packaged_codex_debug_port_with(9229, true, |_| false, || 43001);
+    let selected =
+        select_packaged_codex_debug_port_with(9229, true, |_| false, |_| false, || 43001);
 
     assert_eq!(selected, 43001);
+}
+
+#[test]
+fn ports_windows_packaged_debug_keeps_requested_when_existing_cdp_is_available() {
+    let selected = select_packaged_codex_debug_port_with(9229, true, |_| false, |_| true, || 43001);
+
+    assert_eq!(selected, 9229);
 }
 
 #[test]
@@ -1136,6 +1144,88 @@ async fn launch_lifecycle_skips_computer_use_guard_by_default() {
 }
 
 #[tokio::test]
+async fn official_mix_responses_profile_starts_fixed_protocol_proxy_without_enhancements() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
+        enhancements_enabled: false,
+        relay_profiles_enabled: true,
+        active_relay_id: "official-mix".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "official-mix".to_string(),
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            protocol: RelayProtocol::Responses,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    });
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 58123,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    let events = events.lock().unwrap().clone();
+    assert!(events.contains(&"select-helper:58123".to_string()));
+    assert!(events.contains(&"start-helper:57321".to_string()));
+    assert!(events.contains(&"shutdown-helper:57321".to_string()));
+    assert!(!events.iter().any(|event| event.starts_with("inject:")));
+}
+
+#[tokio::test]
+async fn official_mix_responses_profile_keeps_proxy_when_profile_switching_is_disabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
+        enhancements_enabled: false,
+        relay_profiles_enabled: false,
+        active_relay_id: "official-mix".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "official-mix".to_string(),
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            protocol: RelayProtocol::Responses,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    });
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 58123,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    let events = events.lock().unwrap().clone();
+    assert!(events.contains(&"select-helper:58123".to_string()));
+    assert!(events.contains(&"start-helper:57321".to_string()));
+    assert!(events.contains(&"shutdown-helper:57321".to_string()));
+    assert!(!events.iter().any(|event| event.starts_with("inject:")));
+}
+
+#[tokio::test]
 async fn launch_lifecycle_does_not_apply_relay_profile_before_launching_codex() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
@@ -1401,6 +1491,8 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             vlm_model: String::new(),
             vlm_base_url: String::new(),
             user_agent: String::new(),
+            sub2api_enabled: false,
+            sub2api_multiplier: String::new(),
         }],
         active_relay_id: "relay-chat".to_string(),
         ..BackendSettings::default()
@@ -1794,7 +1886,11 @@ impl LaunchHooks for FakeHooks {
         self.event(format!("status:{status}"));
     }
 
-    async fn wait_for_codex_exit(&self, _launch: &CodexLaunch) -> anyhow::Result<()> {
+    async fn wait_for_codex_exit(
+        &self,
+        _launch: &CodexLaunch,
+        _debug_port: u16,
+    ) -> anyhow::Result<()> {
         self.event("wait-codex");
         Ok(())
     }

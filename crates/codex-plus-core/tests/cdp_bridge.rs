@@ -2,8 +2,9 @@ use base64::Engine;
 use codex_plus_core::assets;
 use codex_plus_core::bridge::{self, BRIDGE_BINDING_NAME};
 use codex_plus_core::cdp::{
-    CdpTarget, is_avatar_overlay_page_target, is_primary_codex_page_target, list_targets,
-    pick_injectable_codex_page_target, pick_page_target, validate_cdp_websocket_url,
+    CdpTarget, is_avatar_overlay_page_target, is_primary_codex_page_target,
+    is_quick_chat_page_target, list_targets, pick_injectable_codex_page_target, pick_page_target,
+    validate_cdp_websocket_url,
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -84,21 +85,127 @@ fn pet_real_mouse_script_uses_cdp_push_and_native_avatar_event() {
     assert!(script.contains("nativeCursorActive"));
     assert!(script.contains("transport: \"cdp-push\""));
     assert!(script.contains("updateScreenPoint(point)"));
-    assert!(script.contains("mascot.matches(\":hover\")"));
-    assert!(script.contains("document.elementFromPoint(localPoint.x, localPoint.y)"));
+    assert!(script.contains("localPoint.x >= bounds.left"));
+    assert!(script.contains("localPoint.y <= bounds.bottom"));
+    assert!(!script.contains("document.elementFromPoint"));
     assert!(script.contains("if (mascotHovered)"));
-    assert!(
-        script
-            .contains("document.visibilityState !== \"visible\" || dragging || nativeCursorActive")
-    );
+    assert!(script.contains(
+        "document.visibilityState !== \"visible\" || interaction.active() || nativeCursorActive"
+    ));
     assert!(script.contains("sendPoint(null).catch(disableUpdates)"));
     assert!(script.contains("void cleared.catch(disableUpdates)"));
     assert!(script.contains("dispatcher.dispatchHostMessage({ type: eventType, point: null })"));
+    assert!(script.contains("__codexPlusPetInteraction"));
+    assert!(script.contains("setPointerCapture"));
+    assert!(script.contains("releasePointerCapture"));
+    assert!(script.contains("mascotAtPoint"));
+    assert!(script.contains("if (!ownsPointer) return"));
+    assert!(script.contains("document.addEventListener(\"pointermove\", onPointerMove, true)"));
     assert!(script.contains("movementHoldMs = 1400"));
     assert!(script.contains("activationRadius = 480"));
     assert!(!script.contains("/pet/cursor-position"));
     assert!(!script.contains("X-Codex-Plus-Pet-Token"));
     assert!(script.contains("delete window.__codexPlusPetRealMouseLook"));
+    assert!(script.contains("retired during dispatcher setup"));
+    assert!(script.contains("nextUnsubscribe?.()"));
+    assert!(script.contains("const runtimeVersion = \"7\""));
+}
+
+#[test]
+fn pet_real_mouse_cancel_releases_pointer_capture_on_blur_and_stop() {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("pet-real-mouse.js");
+    let harness_path = temp.path().join("pet-real-mouse-cancel-harness.cjs");
+    std::fs::write(&script_path, assets::pet_real_mouse_script())
+        .expect("pet real-mouse script should be written");
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    write!(
+        harness,
+        r#"
+const scriptPath = {script_path};
+const documentListeners = new Map();
+const windowListeners = new Map();
+const setCalls = [];
+const releaseCalls = [];
+
+class MockElement {{
+  closest(selector) {{ return selector === '[data-avatar-mascot="true"]' ? this : null; }}
+  getBoundingClientRect() {{ return {{ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 }}; }}
+  setPointerCapture(pointerId) {{ setCalls.push(pointerId); }}
+  releasePointerCapture(pointerId) {{ releaseCalls.push(pointerId); }}
+}}
+
+const mascot = new MockElement();
+globalThis.Element = MockElement;
+globalThis.window = globalThis;
+window.screenX = 0;
+window.screenY = 0;
+window.addEventListener = (type, listener) => windowListeners.set(type, listener);
+window.removeEventListener = (type, listener) => {{
+  if (windowListeners.get(type) === listener) windowListeners.delete(type);
+}};
+globalThis.document = {{
+  scripts: [],
+  visibilityState: "visible",
+  querySelector: (selector) => selector === '[data-avatar-mascot="true"]' ? mascot : null,
+  querySelectorAll: () => [],
+  addEventListener: (type, listener) => documentListeners.set(type, listener),
+  removeEventListener: (type, listener) => {{
+    if (documentListeners.get(type) === listener) documentListeners.delete(type);
+  }},
+}};
+globalThis.performance = {{ getEntriesByType: () => [] }};
+
+require(scriptPath);
+const runtime = window.__codexPlusPetRealMouseLook;
+const pointerEvent = (pointerId) => ({{
+  pointerId,
+  target: mascot,
+  clientX: 50,
+  clientY: 50,
+  preventDefault() {{}},
+}});
+
+documentListeners.get("pointerdown")(pointerEvent(7));
+windowListeners.get("blur")();
+const activeAfterBlur = runtime.isVisualOverrideActive();
+
+documentListeners.get("pointerdown")(pointerEvent(8));
+documentListeners.get("pointerup")(pointerEvent(9));
+const activeAfterForeignPointer = runtime.isVisualOverrideActive();
+runtime.stop();
+
+process.stdout.write(JSON.stringify({{
+  setCalls,
+  releaseCalls,
+  activeAfterBlur,
+  activeAfterForeignPointer,
+  runtimeRemoved: window.__codexPlusPetRealMouseLook == null,
+}}));
+"#,
+        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+            .expect("script path should serialize")
+    )
+    .expect("harness should be written");
+    drop(harness);
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should run pet pointer-cancel harness");
+    assert!(
+        output.status.success(),
+        "node harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("harness stdout should be JSON");
+    assert_eq!(result["setCalls"], json!([7, 8]));
+    assert_eq!(result["releaseCalls"], json!([7, 8]));
+    assert_eq!(result["activeAfterBlur"], false);
+    assert_eq!(result["activeAfterForeignPointer"], true);
+    assert_eq!(result["runtimeRemoved"], true);
 }
 
 #[test]
@@ -666,6 +773,13 @@ fn stepwise_exposes_manual_refresh_without_refreshing_busy_chats() {
 }
 
 #[test]
+fn stepwise_opens_manager_as_transient_window() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("bridgeCall(\"/manager/open-transient\", {})"));
+}
+
+#[test]
 fn injection_script_defers_backend_mapped_toggles_until_settings_load() {
     let script = assets::injection_script(57321);
 
@@ -793,7 +907,7 @@ fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
 fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"14\""));
     assert!(!script.contains("function pluginMarketplaceAliasForName"));
     assert!(
         !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
@@ -805,7 +919,7 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
 fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"14\""));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
     assert!(script.contains("source.includes(\"!u(e.marketplaceName)||e.marketplaceName===r\")"));
     assert!(script.contains("source.includes(\"!t.includes(e.name)\")"));
@@ -817,7 +931,7 @@ fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
 fn injection_script_expands_api_key_plugin_marketplace_requests() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"14\""));
     assert!(script.contains("installPluginMarketplaceRequestPatch"));
     assert!(script.contains("installPluginMarketplaceBridgePatch"));
     assert!(script.contains("installPluginBuildFlavorFilterPatch"));
@@ -837,13 +951,19 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("message.type === \"fetch\""));
     assert!(script.contains("data?.type === \"fetch-response\""));
     assert!(script.contains("__codexPluginMarketplaceFetchRequestIds"));
-    assert!(script.contains("const nextKinds = Array.isArray(next.marketplaceKinds)"));
+    assert!(script.contains("__codexPluginMarketplaceFetchRequestProfiles"));
+    assert!(script.contains("__codexPluginMarketplaceRequestProfiles"));
+    assert!(script.contains("pluginMarketplaceRequestProfile"));
+    assert!(script.contains("remoteOnlyPluginMarketplaceFallbackResult"));
+    assert!(script.contains("let nextKinds = Array.isArray(next.marketplaceKinds)"));
+    assert!(script.contains("if (!nextKinds.includes(\"local\")) nextKinds.push(\"local\")"));
     assert!(script.contains("if (!nextKinds.includes(\"vertical\")) nextKinds.push(\"vertical\")"));
     assert!(script.contains("next.marketplaceKinds = Array.from(new Set(nextKinds))"));
     assert!(script.contains("patchPluginMarketplaceResult"));
     assert!(script.contains("__CODEX_PLUS_PLUGIN_MARKETPLACES__"));
     assert!(script.contains("mergeLocalPluginMarketplaces(result)"));
     assert!(script.contains("plugin_marketplace_local_merged"));
+    assert!(script.contains("plugin_marketplace_remote_auth_fallback"));
     assert!(script.contains("cloned.marketplaceName = marketplaceName"));
     assert!(script.contains("cloned.marketplacePath = marketplaceName"));
     assert!(script.contains("restorePluginMarketplaceName"));
@@ -895,6 +1015,150 @@ fn injection_script_logs_marketplace_grouping_diagnostics() {
     assert!(script.contains("marketplaces: result.marketplaces.map"));
     assert!(script.contains("pluginMarketplaceCounts"));
     assert!(script.contains("remoteMarketplaceName"));
+}
+
+#[test]
+fn injection_script_recovers_plugin_search_from_remote_auth_errors() {
+    let cases = run_plugin_marketplace_search_contract_harness();
+
+    assert_eq!(cases["initialKinds"], json!(["local", "vertical"]));
+    assert_eq!(cases["searchKinds"], json!(["created-by-me-remote"]));
+    assert_eq!(cases["searchCwds"], serde_json::Value::Null);
+    assert_eq!(cases["searchRemoteOnly"], true);
+    assert_eq!(cases["responsePatched"], true);
+    assert_eq!(cases["responseHasError"], false);
+    assert_eq!(cases["fallbackMarketplaceNames"], json!([]));
+    assert_eq!(cases["fallbackPluginNames"], json!([]));
+    assert_eq!(cases["fallbackFeaturedPluginIds"], json!([]));
+    assert_eq!(cases["fallbackMarketplaceLoadErrors"], json!([]));
+    assert_eq!(cases["remoteUnavailable"], true);
+    assert_eq!(cases["subsequentKinds"], json!(["created-by-me-remote"]));
+    assert_eq!(cases["subsequentCwds"], serde_json::Value::Null);
+    assert_eq!(
+        cases["generalAfterFallbackKinds"],
+        json!(["local", "vertical"])
+    );
+    assert_eq!(cases["generalAfterFallbackCwds"], json!(["C:/workspace"]));
+    assert_eq!(
+        cases["localFallbackMarketplaceNames"],
+        json!(["fixture-local"])
+    );
+    assert_eq!(cases["localFallbackPluginNames"], json!(["alpha"]));
+    assert_eq!(cases["chatGptKinds"], json!(["created-by-me-remote"]));
+    assert_eq!(cases["unrelatedErrorMatched"], false);
+}
+
+fn run_plugin_marketplace_search_contract_harness() -> serde_json::Value {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("renderer-inject.js");
+    let harness_path = temp.path().join("plugin-marketplace-harness.cjs");
+    std::fs::write(&script_path, assets::injection_script(57321))
+        .expect("injection script should be written");
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    write!(
+        harness,
+        r#"
+const scriptPath = {script_path};
+const store = new Map();
+function node() {{
+  return {{
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
+    closest() {{ return null; }},
+    classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
+    dataset: {{}}, style: {{}}, children: [], isConnected: true, textContent: "", innerHTML: "",
+  }};
+}}
+globalThis.window = globalThis;
+window.__CODEX_PLUS_TEST_PLUGIN_MARKETPLACE__ = true;
+window.addEventListener = () => {{}};
+window.removeEventListener = () => {{}};
+window.dispatchEvent = () => true;
+globalThis.document = {{
+  scripts: [], documentElement: node(), body: node(), createElement: () => node(),
+  getElementById: () => null, querySelector: () => null, querySelectorAll: () => [],
+  addEventListener() {{}}, removeEventListener() {{}},
+}};
+globalThis.localStorage = {{
+  getItem: (key) => store.has(key) ? store.get(key) : null,
+  setItem: (key, value) => store.set(key, String(value)), removeItem: (key) => store.delete(key),
+}};
+globalThis.sessionStorage = globalThis.localStorage;
+globalThis.location = {{ href: "https://codex.test/index.html", pathname: "/index.html", search: "", hash: "" }};
+window.location = globalThis.location;
+globalThis.navigator = {{ userAgent: "node-test", sendBeacon: () => false }};
+globalThis.performance = {{ getEntriesByType: () => [] }};
+globalThis.fetch = async () => ({{ ok: true, json: async () => ({{}}) }});
+require(scriptPath);
+window.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = [{{
+  name: "fixture-local",
+  displayName: "Fixture Local",
+  path: "C:/fixture/marketplace.json",
+  plugins: [{{ id: "alpha@fixture-local", name: "alpha", marketplaceName: "fixture-local" }}],
+}}];
+const api = window.__codexPlusPluginMarketplaceTest;
+api.reset();
+const initial = api.patchRequestParams("list-plugins", {{ cwds: ["C:/workspace"] }});
+const searchMessage = api.patchRequestMessage({{
+  type: "mcp-request",
+  request: {{
+    id: "search-1",
+    method: "vscode://codex/list-plugins",
+    params: {{ marketplaceKinds: ["created-by-me-remote"] }},
+  }},
+}});
+const remoteAuthMessage = "list remote plugin catalog: chatgpt authentication required for remote plugin catalog; api key auth is not supported";
+const response = {{
+  type: "mcp-response",
+  message: {{ id: "search-1", error: {{ code: -32600, message: remoteAuthMessage }} }},
+}};
+const responsePatched = api.patchResponseData(response);
+const subsequent = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote"] }});
+const generalAfterFallback = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote", "local", "vertical"] }});
+const fallbackMarketplaces = response.message.result?.marketplaces || [];
+const localFallbackMarketplaces = api.localFallback().marketplaces || [];
+const remoteUnavailable = api.remoteCatalogUnavailable();
+api.reset();
+const chatGpt = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote"] }});
+const cases = {{
+  initialKinds: initial.marketplaceKinds,
+  searchKinds: searchMessage.request.params.marketplaceKinds,
+  searchCwds: searchMessage.request.params.cwds ?? null,
+  searchRemoteOnly: api.requestProfile({{ marketplaceKinds: ["created-by-me-remote"] }}).remoteOnly,
+  responsePatched,
+  responseHasError: Object.prototype.hasOwnProperty.call(response.message, "error"),
+  fallbackMarketplaceNames: fallbackMarketplaces.map((marketplace) => marketplace.name),
+  fallbackPluginNames: fallbackMarketplaces.flatMap((marketplace) => marketplace.plugins || []).map((plugin) => plugin.name),
+  fallbackFeaturedPluginIds: response.message.result?.featuredPluginIds || [],
+  fallbackMarketplaceLoadErrors: response.message.result?.marketplaceLoadErrors || [],
+  remoteUnavailable,
+  subsequentKinds: subsequent.marketplaceKinds,
+  subsequentCwds: subsequent.cwds ?? null,
+  generalAfterFallbackKinds: generalAfterFallback.marketplaceKinds,
+  generalAfterFallbackCwds: generalAfterFallback.cwds,
+  localFallbackMarketplaceNames: localFallbackMarketplaces.map((marketplace) => marketplace.name),
+  localFallbackPluginNames: localFallbackMarketplaces.flatMap((marketplace) => marketplace.plugins || []).map((plugin) => plugin.name),
+  chatGptKinds: chatGpt.marketplaceKinds,
+  unrelatedErrorMatched: api.remoteAuthError({{ message: "network unavailable" }}),
+}};
+process.stdout.write(JSON.stringify(cases));
+"#,
+        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+            .expect("script path should serialize")
+    )
+    .expect("harness should be written");
+
+    let output = std::process::Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should execute plugin marketplace harness");
+    assert!(
+        output.status.success(),
+        "plugin marketplace harness failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout)
+        .expect("plugin marketplace harness output should be JSON")
 }
 
 #[test]
@@ -1016,7 +1280,13 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("patchModelArray"));
     assert!(script.contains("patchStatsigModelDynamicConfig"));
     assert!(script.contains("patchModelJsonResponse"));
+    assert!(script.contains("modelJsonResponseLooksPatchable"));
     assert!(script.contains("installAppServerModelRequestPatch"));
+    assert!(script.contains("loadAppServerRequestCandidates"));
+    assert!(script.contains("appServerFallbackAssetUrls"));
+    assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"3\""));
+
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
     assert!(script.contains("send-cli-request-for-host"));
@@ -1026,8 +1296,13 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("model_whitelist_refresh_scheduled"));
     assert!(script.contains("available_models"));
     assert!(script.contains("modelWhitelistUnlock"));
-    assert!(script.contains("isWorkspaceChromeNode"));
     assert!(script.contains("refreshCodexModelWhitelistFromScan"));
+    assert!(script.contains("codexPlusModelListRequestIds.size === 0"));
+    assert!(!script.contains("function patchReactModelState"));
+    assert!(!script.contains("function patchObjectGraphForModels"));
+    assert!(!script.contains("window.dispatchEvent = function patchedCodexPlusDispatchEvent"));
+    assert!(script.contains("String(name) === \"107580212\""));
+    assert!(script.contains("window.addEventListener(\"codex-message-from-view\""));
     assert!(!script.contains("querySelectorAll(\"button, [role='menu']"));
 }
 
@@ -1103,7 +1378,14 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("当前 thread"));
     assert!(script.contains("standard"));
     assert!(script.contains("fast"));
-    assert!(script.contains("[\"setting-storage-\", \"vscode-api-\"]"));
+    assert!(script.contains("[\"setting-storage-\", \"app-initial-\"]"));
+    assert!(script.contains("[\"setting-storage-\", \"vscode-api-\", \"app-initial-\"]"));
+    assert!(script.contains("[\"vscode-api-\", \"app-initial-\"]"));
+    assert!(script.contains("codexSettingStorageFromModule"));
+    assert!(script.contains("codexStateApiFromModule"));
+    assert!(script.contains("message.type === \"fetch\""));
+    assert!(script.contains("vscode://codex/"));
+    assert!(script.contains("./(?:assets/)?"));
     assert!(script.contains("dispatcher export unavailable"));
     assert!(!script.contains("data-codex-max-reasoning-control"));
     assert!(!script.contains("codexAppMaxReasoningOverride"));
@@ -1130,6 +1412,23 @@ fn injection_script_discovers_vscode_api_asset_without_hardcoded_hash() {
     assert!(script.contains("fetch(src"));
     assert!(!script.contains("vscode-api-Dc9pX2Bc.js"));
     assert!(!script.contains("import(\"./assets/vscode-api-"));
+}
+
+#[test]
+fn injection_script_discovers_app_server_request_clients_without_hardcoded_hash() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("loadAppServerRequestCandidates"));
+    assert!(script.contains("appServerFallbackAssetUrls"));
+    assert!(script.contains("[\"use-host-config-\", \"app-server-manager-signals-\"]"));
+    assert!(script.contains("loadOptionalCodexAppModule(assetPrefix)"));
+    assert!(script.contains("candidateCount: candidates.length"));
+    assert!(script.contains("discovery:"));
+    // Keep legacy lookup as first attempt, but never hardcode the old hashed filename.
+    assert!(
+        !script.contains("app-server-manager-signals-C1h8B-R-.js")
+            || script.contains("refreshRecentConversationsForHost")
+    );
 }
 
 #[test]
@@ -1176,6 +1475,15 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
 
     assert_eq!(cases["startConversation"]["serviceTier"], "priority");
+    assert_eq!(cases["fetchStartConversation"]["serviceTier"], "priority");
+    assert_eq!(
+        cases["fetchSendCliRequest"]["params"]["serviceTier"],
+        "priority"
+    );
+    assert_eq!(
+        cases["fetchSendCliRequest"]["params"]["service_tier"],
+        "priority"
+    );
     assert_eq!(cases["solFastAvailability"]["supported"], true);
     assert_eq!(cases["solDescriptor"]["defaultReasoningEffort"], "low");
     assert_eq!(
@@ -1187,7 +1495,13 @@ fn injection_script_applies_fast_service_tier_contract() {
         "ultra"
     );
     assert_eq!(cases["dispatcherFromSingleton"], true);
+    assert_eq!(cases["dispatcherFromCurrentSingleton"], true);
     assert_eq!(cases["dispatcherFromClass"], true);
+    assert_eq!(cases["legacySettingStorage"], true);
+    assert_eq!(cases["currentSettingStorage"], true);
+    assert_eq!(cases["capabilitySettingStorage"], true);
+    assert_eq!(cases["legacyStateApi"], true);
+    assert_eq!(cases["currentStateApi"], true);
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
@@ -1284,6 +1598,30 @@ const startConversation = api.requestOverride({{
   threadId: "thread-12345678",
   model: "gpt-5.5",
 }});
+const fetchStartConversationEnvelope = api.requestOverride({{
+  type: "fetch",
+  url: "vscode://codex/start-conversation",
+  body: JSON.stringify({{
+    threadId: "thread-12345678",
+    model: "gpt-5.5",
+    serviceTier: null,
+  }}),
+}});
+const fetchStartConversation = JSON.parse(fetchStartConversationEnvelope.body);
+const fetchSendCliRequestEnvelope = api.requestOverride({{
+  type: "fetch",
+  url: "vscode://codex/send-cli-request-for-host",
+  body: {{
+    hostId: "local",
+    method: "thread/start",
+    params: {{
+      threadId: "thread-12345678",
+      model: "gpt-5.5",
+      service_tier: null,
+    }},
+  }},
+}});
+const fetchSendCliRequest = fetchSendCliRequestEnvelope.body;
 
 api.setModelCatalog({{
   status: "ok",
@@ -1319,12 +1657,61 @@ api.setModelCatalog({{
 const solDescriptor = api.modelDescriptor("gpt-5.6-sol");
 const singletonDispatcher = {{ dispatchMessage() {{}}, subscribe() {{}} }};
 const dispatcherFromSingleton = api.dispatcherFromModule({{ current: singletonDispatcher }}) === singletonDispatcher;
+const currentSingletonDispatcher = {{ dispatchMessage() {{}}, subscribe() {{}} }};
+const dispatcherFromCurrentSingleton = api.dispatcherFromModule({{
+  decoy: singletonDispatcher,
+  idt: currentSingletonDispatcher,
+}}) === currentSingletonDispatcher;
 class DispatcherClass {{
   static instance = new DispatcherClass();
   static getInstance() {{ return this.instance; }}
   dispatchMessage() {{}}
 }}
 const dispatcherFromClass = api.dispatcherFromModule({{ current: DispatcherClass }}) === DispatcherClass.instance;
+const legacyGetSetting = async () => "legacy-get";
+const legacySetSetting = async () => "legacy-set";
+const legacySettingStorageValue = api.settingStorageFromModule({{
+  n: legacyGetSetting,
+  s: legacySetSetting,
+}}, "setting-storage-");
+const legacySettingStorage = legacySettingStorageValue.n === legacyGetSetting
+  && legacySettingStorageValue.s === legacySetSetting;
+const wrongCurrentGetSetting = async () => "wrong-current-get";
+const wrongCurrentSetSetting = async () => "wrong-current-set";
+const currentGetSetting = async (setting) => {{
+  const marker = "get-setting";
+  const params = {{ key: setting.key }};
+  return marker && params && "current-get";
+}};
+const currentSetSetting = async (setting, value) => {{
+  const marker = "set-setting";
+  const params = {{ key: setting.key, value }};
+  return marker && params && "current-set";
+}};
+const currentSettingStorageValue = api.settingStorageFromModule({{
+  n: wrongCurrentGetSetting,
+  s: wrongCurrentSetSetting,
+  jut: currentGetSetting,
+  Put: currentSetSetting,
+}}, "app-initial-");
+const currentSettingStorage = currentSettingStorageValue.n === currentGetSetting
+  && currentSettingStorageValue.s === currentSetSetting;
+const capabilitySettingStorageValue = api.settingStorageFromModule({{
+  randomGetter: currentGetSetting,
+  randomSetter: currentSetSetting,
+}}, "app-initial-");
+const capabilitySettingStorage = capabilitySettingStorageValue.n === currentGetSetting
+  && capabilitySettingStorageValue.s === currentSetSetting;
+const legacyStateCall = async () => "legacy-state";
+const currentStateCall = async () => "current-state";
+const legacyStateApi = api.stateApiFromModule({{
+  n: legacyStateCall,
+  qut: currentStateCall,
+}}, "vscode-api-") === legacyStateCall;
+const currentStateApi = api.stateApiFromModule({{
+  n: legacyStateCall,
+  qut: currentStateCall,
+}}, "app-initial-") === currentStateCall;
 
 process.stdout.write(JSON.stringify({{
   supportedFast,
@@ -1333,10 +1720,18 @@ process.stdout.write(JSON.stringify({{
   turnWithoutModelDiagnosticModel,
   customInheritUnsupported,
   startConversation,
+  fetchStartConversation,
+  fetchSendCliRequest,
   solFastAvailability,
   solDescriptor,
   dispatcherFromSingleton,
+  dispatcherFromCurrentSingleton,
   dispatcherFromClass,
+  legacySettingStorage,
+  currentSettingStorage,
+  capabilitySettingStorage,
+  legacyStateApi,
+  currentStateApi,
 }}));
 "#,
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
@@ -1981,6 +2376,96 @@ fn primary_target_selection_skips_v1_and_v2_overlay_candidates() {
     let selected = pick_injectable_codex_page_target(&targets).unwrap();
 
     assert_eq!(selected.id, "main");
+}
+
+#[test]
+fn quick_chat_target_detection_is_narrow() {
+    for url in [
+        "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat",
+        "app://-/index.html?initialRoute=/chatgpt/quick-chat",
+        "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat-prewarm",
+        "app://-/index.html?initialRoute=/chatgpt/quick-chat-prewarm",
+        "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat%2Fconversation-123",
+        "app://-/index.html?initialRoute=/chatgpt/quick-chat/conversation-123",
+    ] {
+        let quick_chat = target("quick-chat", "page", "Codex", url, Some("ws://quick-chat"));
+
+        assert!(is_quick_chat_page_target(&quick_chat));
+        assert!(!is_primary_codex_page_target(&quick_chat));
+    }
+
+    assert!(!is_quick_chat_page_target(&target(
+        "external",
+        "page",
+        "Codex",
+        "https://example.test/chatgpt/quick-chat-prewarm",
+        Some("ws://external"),
+    )));
+    assert!(!is_quick_chat_page_target(&target(
+        "other-param",
+        "page",
+        "Codex",
+        "app://-/index.html?next=initialRoute%3D%252Fchatgpt%252Fquick-chat-prewarm",
+        Some("ws://other-param"),
+    )));
+    assert!(!is_quick_chat_page_target(&target(
+        "similar-route",
+        "page",
+        "Codex",
+        "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chatty",
+        Some("ws://similar-route"),
+    )));
+}
+
+#[test]
+fn primary_target_selection_skips_quick_chat_candidate() {
+    let targets = vec![
+        target(
+            "quick-chat",
+            "page",
+            "Codex",
+            "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat%2Fconversation-123",
+            Some("ws://quick-chat"),
+        ),
+        target(
+            "quick-chat-prewarm",
+            "page",
+            "Codex",
+            "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat-prewarm",
+            Some("ws://quick-chat-prewarm"),
+        ),
+        target(
+            "main",
+            "page",
+            "Codex",
+            "app://-/index.html",
+            Some("ws://main"),
+        ),
+    ];
+
+    let selected = pick_injectable_codex_page_target(&targets).unwrap();
+
+    assert_eq!(selected.id, "main");
+}
+
+#[test]
+fn quick_chat_only_target_is_not_injectable_as_codex_main_page() {
+    let targets = vec![target(
+        "quick-chat",
+        "page",
+        "Codex",
+        "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat-prewarm",
+        Some("ws://quick-chat"),
+    )];
+
+    let error = pick_injectable_codex_page_target(&targets)
+        .expect_err("Quick Chat helper renderer must not be selected for injection");
+
+    assert!(
+        error
+            .to_string()
+            .contains("No injectable Codex page target found")
+    );
 }
 
 #[test]

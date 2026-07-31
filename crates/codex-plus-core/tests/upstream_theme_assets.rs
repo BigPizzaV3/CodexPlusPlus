@@ -19,15 +19,15 @@ fn bundled_target_renderers_and_styles_remain_byte_exact() {
     for (path, hash) in [
         (
             "assets/inject/upstream/dream-skin/windows/renderer-inject.js",
-            "97C1F062F6695C19469E851390974121F29C66B690C4790E761C0E1F82586EF1",
+            "D9383160DB0A71CE8219A845D3C300AFDDC874932B533FE3550DA723125E38A5",
         ),
         (
             "assets/inject/upstream/dream-skin/windows/dream-skin.css",
-            "3CEF5BD3D536EDA5F1802B325B9727668B6701BE51C9BA613AB7734D203BFCD9",
+            "99DD5DA043DCE71766E4C01BECA22A123284BA5DCD72D75AA9D36B4549B7D542",
         ),
         (
             "assets/inject/upstream/dream-skin/macos/renderer-inject.js",
-            "806D23E953CE356DA621E164467141E7CA8B28235562F4252386FDABF952A5B5",
+            "2704C39506C66554C3529BF0D15B876B4AEC2DD9A36B1796AB43E19C33A046FC",
         ),
         (
             "assets/inject/upstream/dream-skin/macos/dream-skin.css",
@@ -43,7 +43,7 @@ fn bundled_target_renderers_and_styles_remain_byte_exact() {
         ),
         (
             "assets/inject/upstream/cidala-tiger/macos/renderer-inject.js",
-            "09F5BF89BFD8DA90E0E3FD74CA840AD417B63BDF6E5DFDBCB720FD1A6B1FF54E",
+            "21FAF1DC0A3EBE78D8D972182CACE62BD93D5D0E5841725398A4A524EF2BC20B",
         ),
         (
             "assets/inject/upstream/cidala-tiger/macos/dream-skin.css",

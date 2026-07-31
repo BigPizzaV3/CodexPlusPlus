@@ -25,6 +25,7 @@ toml.workspace = true
 toml_edit.workspace = true
 uuid.workspace = true
 zip.workspace = true
+zstd.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

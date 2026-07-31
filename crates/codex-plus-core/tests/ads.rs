@@ -65,13 +65,17 @@ fn normalizes_remote_ads_for_plugin_and_manager_rendering() {
     }));
 
     assert_eq!(payload["version"], json!(1));
-    assert_eq!(payload["ads"].as_array().unwrap().len(), 4);
+    assert_eq!(payload["ads"].as_array().unwrap().len(), 6);
     assert_eq!(payload["ads"][0]["type"], json!("sponsor"));
     assert_eq!(payload["ads"][1]["id"], json!("cubence"));
     assert_eq!(payload["ads"][1]["type"], json!("sponsor"));
-    assert_eq!(payload["ads"][2]["id"], json!("ergou-api"));
+    assert_eq!(payload["ads"][2]["id"], json!("quya-cloud-bridge"));
     assert_eq!(payload["ads"][2]["type"], json!("sponsor"));
-    assert_eq!(payload["ads"][3]["type"], json!("normal"));
+    assert_eq!(payload["ads"][3]["id"], json!("deepkey-api-key"));
+    assert_eq!(payload["ads"][3]["type"], json!("sponsor"));
+    assert_eq!(payload["ads"][4]["id"], json!("ergou-api"));
+    assert_eq!(payload["ads"][4]["type"], json!("sponsor"));
+    assert_eq!(payload["ads"][5]["type"], json!("normal"));
 }
 
 #[test]
@@ -111,20 +115,43 @@ fn builtin_sponsors_are_appended_after_remote_sponsors_with_ergou_last() {
             .unwrap()
             .starts_with("data:image/png;base64,")
     );
-    assert_eq!(ads[2]["id"], json!("ergou-api"));
-    assert_eq!(ads[2]["title"], json!("二狗 API"));
-    assert_eq!(
-        ads[2]["url"],
-        json!("https://ergouapi.com/r/gh-codexplusplus")
-    );
+    assert_eq!(ads[2]["id"], json!("quya-cloud-bridge"));
+    assert_eq!(ads[2]["title"], json!("quya.org 云桥"));
+    assert_eq!(ads[2]["url"], json!("https://www.quya.org/?promo=CODEX"));
     assert_eq!(ads[2]["expires_at"], json!("2026-08-02T23:59:59+08:00"));
     assert!(
         ads[2]["image"]
             .as_str()
             .unwrap()
+            .starts_with("data:image/svg+xml;base64,")
+    );
+    assert_eq!(ads[3]["id"], json!("deepkey-api-key"));
+    assert_eq!(ads[3]["title"], json!("deepkey｜API KEY"));
+    assert_eq!(
+        ads[3]["url"],
+        json!("https://deepkey.top/register?aff=DNVc")
+    );
+    assert_eq!(ads[3]["expires_at"], json!("2026-08-25T23:59:59+08:00"));
+    assert!(
+        ads[3]["image"]
+            .as_str()
+            .unwrap()
             .starts_with("data:image/png;base64,")
     );
-    assert_eq!(ads[3]["id"], json!("remote-normal"));
+    assert_eq!(ads[4]["id"], json!("ergou-api"));
+    assert_eq!(ads[4]["title"], json!("二狗 API"));
+    assert_eq!(
+        ads[4]["url"],
+        json!("https://ergouapi.com/r/gh-codexplusplus")
+    );
+    assert_eq!(ads[4]["expires_at"], json!("2026-08-02T23:59:59+08:00"));
+    assert!(
+        ads[4]["image"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,")
+    );
+    assert_eq!(ads[5]["id"], json!("remote-normal"));
 }
 
 #[test]
@@ -182,6 +209,13 @@ fn normalizes_known_remote_sponsors_with_local_logos() {
                 "url": "https://example.test/baikewei"
             },
             {
+                "id": "deepkey-api-key",
+                "type": "sponsor",
+                "title": "deepkey",
+                "description": "远端推荐内容",
+                "url": "https://example.test/deepkey"
+            },
+            {
                 "id": "jojocode-codex-relay",
                 "type": "sponsor",
                 "title": "JOJO Code",
@@ -198,6 +232,7 @@ fn normalizes_known_remote_sponsors_with_local_logos() {
         "0029-token-bridge",
         "apikey-fun-ai-relay",
         "runapi-openrouter-alternative",
+        "deepkey-api-key",
     ] {
         let ad = ads.iter().find(|ad| ad["id"] == json!(id)).unwrap();
         assert!(

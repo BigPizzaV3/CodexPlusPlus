@@ -9,8 +9,10 @@ const RAWCHAT_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-rawcha
 const RUNAPI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-runapi.png");
 const BAIKEWEI_AI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-baikewei-ai.jpg");
 const CUBENCE_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-cubence.png");
+const DEEPKEY_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-deepkey.png");
 const ERGOU_API_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-ergou-api.png");
 const BUILTIN_SPONSOR_EXPIRES_AT: &str = "2026-08-02T23:59:59+08:00";
+const DEEPKEY_SPONSOR_EXPIRES_AT: &str = "2026-08-25T23:59:59+08:00";
 
 pub const DEFAULT_AD_LIST_URLS: [&str; 2] = [
     "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
@@ -72,6 +74,7 @@ fn known_remote_logo(id: &str) -> Option<(&'static str, &'static [u8])> {
         "rawchat-codex-relay" => Some(("image/svg+xml", RAWCHAT_IMAGE)),
         "runapi-openrouter-alternative" => Some(("image/png", RUNAPI_IMAGE)),
         "baikewei-ai" => Some(("image/jpeg", BAIKEWEI_AI_IMAGE)),
+        "deepkey-api-key" => Some(("image/png", DEEPKEY_IMAGE)),
         _ => None,
     }
 }
@@ -89,7 +92,33 @@ fn append_builtin_sponsors(ads: &mut Vec<Value>) {
             "感谢 Cubence 对本项目的支持。Cubence 是一家致力为客户提供稳定、高效的 API 中转服务商。从 25 年 9 月运营至今，提供了 Claude Code、Codex、Gemini 等多种模型支持。Cubence 为本开源项目多用户提供了特别的专属优惠 CODEXPLUSPLUS，在首次购买时享受 8.8 折优惠！",
             "https://cubence.com?source=codexplusplus",
             CUBENCE_IMAGE,
+            "image/png",
             &["Claude Code", "Codex / Gemini", "CODEXPLUSPLUS 8.8 折"],
+            BUILTIN_SPONSOR_EXPIRES_AT,
+        ),
+        builtin_sponsor(
+            "quya-cloud-bridge",
+            "quya.org 云桥",
+            "quya.org 云桥（原 0029.org）是一个集成 Claude Code、Codex 以及 Gemini 最新模型的一站式中转平台，为你提供稳定、高效且高性价比的 AI 中转服务。本站提供灵活的包月套餐/按量计费计划，国内直连，无需魔法，极速响应。支持个人和企业接入，价格最低为官方 0.12 折。",
+            "https://www.quya.org/?promo=CODEX",
+            TOKEN_BRIDGE_IMAGE,
+            "image/svg+xml",
+            &[
+                "Claude Code / Codex / Gemini",
+                "国内直连",
+                "最低官方 0.12 折",
+            ],
+            BUILTIN_SPONSOR_EXPIRES_AT,
+        ),
+        builtin_sponsor(
+            "deepkey-api-key",
+            "deepkey｜API KEY",
+            "感谢 deepkey 赞助本项目！deepkey 起初只是连接顶级算力的上游供应商，凭借稳定低价的接口被学生群体发现并口口相传。随着开发者与学子的涌入，这里不再只是 API 的搬运工，而是共同探讨提示词工程、分享创新应用的温暖社区。从工具到伙伴，deepkey 见证了无数灵感的诞生与落地。通过链接注册进入群聊，可享受福利并与小伙伴们一起探讨。",
+            "https://deepkey.top/register?aff=DNVc",
+            DEEPKEY_IMAGE,
+            "image/png",
+            &["稳定低价", "提示词工程社区", "注册进群享福利"],
+            DEEPKEY_SPONSOR_EXPIRES_AT,
         ),
         builtin_sponsor(
             "ergou-api",
@@ -97,7 +126,9 @@ fn append_builtin_sponsors(ads: &mut Vec<Value>) {
             "二狗，稳如老狗的 AI API 中转站。全站 0.1x~0.2x 超低倍率，提供 Claude/GPT/Gemini 等多个国内外 100% 纯血大模型接口，顶级 IPLC 线路 + 住宅双 ISP 冗余，确保全国范围稳定低延迟访问。欢迎各位开发者、工作室注册使用。",
             "https://ergouapi.com/r/gh-codexplusplus",
             ERGOU_API_IMAGE,
+            "image/png",
             &["0.1x~0.2x", "Claude / GPT / Gemini", "IPLC + 双 ISP"],
+            BUILTIN_SPONSOR_EXPIRES_AT,
         ),
     ];
     let mut cursor = insert_at;
@@ -120,7 +151,9 @@ fn builtin_sponsor(
     description: &str,
     url: &str,
     image: &[u8],
+    image_mime: &str,
     highlights: &[&str],
+    expires_at: &str,
 ) -> Value {
     let mut sponsor = Map::new();
     sponsor.insert("id".to_string(), json!(id));
@@ -128,8 +161,8 @@ fn builtin_sponsor(
     sponsor.insert("title".to_string(), json!(title));
     sponsor.insert("description".to_string(), json!(description));
     sponsor.insert("url".to_string(), json!(url));
-    sponsor.insert("expires_at".to_string(), json!(BUILTIN_SPONSOR_EXPIRES_AT));
-    sponsor.insert("image".to_string(), json!(data_uri("image/png", image)));
+    sponsor.insert("expires_at".to_string(), json!(expires_at));
+    sponsor.insert("image".to_string(), json!(data_uri(image_mime, image)));
     sponsor.insert("highlights".to_string(), json!(highlights));
     Value::Object(sponsor)
 }

@@ -37,6 +37,7 @@ pub mod script_market;
 pub mod settings;
 pub mod status;
 pub mod stepwise;
+pub mod sub2api;
 pub mod update;
 pub mod upstream_worktree;
 pub mod user_scripts;

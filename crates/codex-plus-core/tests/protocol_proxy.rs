@@ -2,12 +2,14 @@ use codex_plus_core::protocol_proxy::{
     ChatSseToResponsesConverter, audio_transcriptions_url, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
     chat_sse_to_responses_sse_with_request, is_audio_transcriptions_proxy_path,
-    is_chat_completions_proxy_path, is_models_proxy_path, is_responses_proxy_path, models_url,
-    open_audio_transcriptions_proxy_request, open_chat_completions_proxy_request,
-    open_models_proxy_request, open_responses_proxy_request,
-    open_responses_proxy_request_with_settings, responses_error_from_upstream,
-    responses_to_chat_completions, send_upstream_request_with_header_timeout,
-    upstream_header_timeout, upstream_http_client, upstream_stream_header_timeout,
+    is_chat_completions_proxy_path, is_models_proxy_path, is_responses_compact_proxy_path,
+    is_responses_proxy_path, models_url, open_audio_transcriptions_proxy_request,
+    open_chat_completions_proxy_request, open_models_proxy_request, open_responses_proxy_request,
+    open_responses_proxy_request_with_settings,
+    open_responses_proxy_request_with_settings_for_path, responses_compact_url,
+    responses_error_from_upstream, responses_to_chat_completions,
+    send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
+    upstream_stream_header_timeout,
 };
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
@@ -121,6 +123,8 @@ fn proxy_route_matchers_accept_ccswitch_codex_aliases() {
     ] {
         assert!(is_responses_proxy_path(path), "{path}");
     }
+    assert!(is_responses_compact_proxy_path("/v1/responses/compact"));
+    assert!(!is_responses_compact_proxy_path("/v1/responses"));
 
     for path in [
         "/chat/completions",
@@ -143,6 +147,73 @@ fn proxy_route_matchers_accept_ccswitch_codex_aliases() {
     ] {
         assert!(is_audio_transcriptions_proxy_path(path), "{path}");
     }
+}
+
+#[test]
+fn responses_compact_url_preserves_compact_endpoint() {
+    assert_eq!(
+        responses_compact_url("https://api.example.test/v1"),
+        "https://api.example.test/v1/responses/compact"
+    );
+    assert_eq!(
+        responses_compact_url("https://api.example.test/v1/responses"),
+        "https://api.example.test/v1/responses/compact"
+    );
+    assert_eq!(
+        responses_compact_url("https://api.example.test/v1/responses/compact"),
+        "https://api.example.test/v1/responses/compact"
+    );
+}
+
+#[tokio::test]
+async fn responses_compact_request_keeps_compact_path_upstream() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = [0; 4096];
+        let read = stream.read(&mut buffer).await.unwrap();
+        let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_1\",\"object\":\"response\"}",
+            )
+            .await
+            .unwrap();
+        request
+    });
+    let settings = BackendSettings {
+        active_relay_id: "compact".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "compact".to_string(),
+            name: "compact".to_string(),
+            base_url: format!("http://{addr}/v1"),
+            api_key: "sk-compact".to_string(),
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+
+    let result = open_responses_proxy_request_with_settings_for_path(
+        r#"{"model":"gpt-5-mini","input":"hi","stream":false}"#,
+        settings,
+        "/v1/responses/compact",
+    )
+    .await
+    .unwrap();
+    let request = server.await.unwrap();
+
+    assert_eq!(result.status_code, 200);
+    assert!(request.starts_with("POST /v1/responses/compact HTTP/1.1"));
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-compact")
+    );
 }
 
 #[test]

@@ -467,9 +467,9 @@
   const codexThreadServiceTierKey = "codexThreadServiceTierOverrides";
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
-  const codexServiceTierRequestOverrideVersion = "3";
-  const codexAppServerModelRequestPatchVersion = "2";
-  const codexPluginMarketplaceUnlockVersion = "12";
+  const codexServiceTierRequestOverrideVersion = "4";
+  const codexAppServerModelRequestPatchVersion = "3";
+  const codexPluginMarketplaceUnlockVersion = "14";
   const codexPluginAutoExpandVersion = "1";
   const codexPluginAutoExpandMaxClicks = 80;
   const codexPluginAutoExpandClickDelayMs = 90;
@@ -1636,7 +1636,7 @@
 
   function dreamSkinCompanionConfig(theme) {
     const companion = theme && theme.companion;
-    if (!companion || typeof companion !== "object") return null;
+    if (!companion || typeof companion !== "object" || companion.enabled === false) return null;
     const dataUrl = typeof companion.dataUrl === "string" ? companion.dataUrl.trim() : "";
     const prefix = dreamSkinCompanionDataUrlPrefixes.find((candidate) =>
       dataUrl.toLowerCase().startsWith(candidate));
@@ -1651,12 +1651,12 @@
     const width = Math.max(48, Math.min(Number(companion.width) || 96, 160));
     const side = ["left", "right"].includes(companion.side) ? companion.side : "auto";
     const offsetX = Math.max(-48, Math.min(Number(companion.offsetX) || 0, 48));
-    const offsetY = Math.max(-48, Math.min(Number(companion.offsetY) || 0, 48));
+    const offsetY = Math.max(-160, Math.min(Number(companion.offsetY) || 0, 160));
     return { dataUrl, width, side, offsetX, offsetY };
   }
 
   function visibleDreamSkinComposer() {
-    return [...document.querySelectorAll(".composer-footer")]
+    return [...document.querySelectorAll(".composer-footer, .composer-surface-chrome")]
       .map((node) => ({ node, rect: node.getBoundingClientRect?.() }))
       .filter(({ rect }) => rect && rect.width > 200 && rect.height > 0)
       .sort((left, right) => right.rect.bottom - left.rect.bottom)[0] || null;
@@ -1689,7 +1689,14 @@
       });
       document.body.appendChild(companion);
     }
-    if (companion.src !== config.dataUrl) companion.src = config.dataUrl;
+    if (companion.src !== config.dataUrl) {
+      companion.onload = () => ensureDreamSkinCompanion(theme);
+      companion.src = config.dataUrl;
+    }
+
+    const renderedHeight = companion.naturalWidth > 0 && companion.naturalHeight > 0
+      ? Math.min(160, config.width * companion.naturalHeight / companion.naturalWidth)
+      : config.width;
 
     const gap = 12;
     const edge = 8;
@@ -1711,8 +1718,8 @@
     const top = Math.max(
       edge,
       Math.min(
-        composer.rect.bottom - config.width + config.offsetY,
-        window.innerHeight - config.width - edge,
+        composer.rect.bottom - renderedHeight + config.offsetY,
+        window.innerHeight - renderedHeight - edge,
       ),
     );
     companion.style.width = `${config.width}px`;
@@ -2037,6 +2044,9 @@
       } else {
         const state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
         state?.ensure?.();
+        ensureDreamSkinCompanion(
+          window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig,
+        );
       }
       return;
     }
@@ -2247,25 +2257,41 @@
   const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
   ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].forEach((model) => codexServiceTierSupportedFastModels.add(model));
 
-  function codexAppAssetUrl(namePart) {
-    const urls = [
+  function uniqueCodexAppAssetUrls(urls) {
+    return Array.from(new Set((urls || []).filter((url) => typeof url === "string" && url.includes("/assets/") && url.split("?")[0].endsWith(".js"))));
+  }
+
+  function codexAppAssetCandidateUrls() {
+    return uniqueCodexAppAssetUrls([
       ...Array.from(document.scripts || []).map((script) => script.src),
       ...Array.from(document.querySelectorAll("link[href]") || []).map((link) => link.href),
       ...performance.getEntriesByType("resource").map((entry) => entry.name),
-    ].filter(Boolean);
-    return urls.find((url) => url.includes("/assets/") && url.includes(namePart) && url.split("?")[0].endsWith(".js")) || "";
+    ]);
+  }
+
+  function codexAppAssetUrl(namePart) {
+    if (!namePart) return "";
+    return codexAppAssetCandidateUrls().find((url) => url.includes(namePart)) || "";
   }
 
   async function codexAppAssetUrlFromScriptText(namePart) {
-    const scripts = Array.from(document.scripts || []).map((script) => script.src).filter(Boolean);
+    if (!namePart) return "";
+    const scripts = codexAppAssetCandidateUrls();
+    const escaped = String(namePart).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const patterns = [
+      new RegExp(`["'](\\./(?:assets/)?${escaped}[^"']+\\.js)["']`),
+      new RegExp(`["'](\\.?/assets/${escaped}[^"']+\\.js)["']`),
+      new RegExp(`["']([^"']*/assets/${escaped}[^"']+\\.js)["']`),
+    ];
     for (const src of scripts) {
-      if (!src.includes("/assets/") || !src.split("?")[0].endsWith(".js")) continue;
       try {
         const text = await fetch(src).then((response) => response.ok ? response.text() : "");
-        const escaped = namePart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const match = text.match(new RegExp(`["'](\\./assets/${escaped}[^"']+\\.js)["']`));
-        if (!match) continue;
-        return new URL(match[1], src).href;
+        if (!text) continue;
+        for (const pattern of patterns) {
+          const match = text.match(pattern);
+          if (!match) continue;
+          return new URL(match[1], src).href;
+        }
       } catch {
       }
     }
@@ -2297,12 +2323,142 @@
     }
   }
 
-  async function codexSettingStorageModule() {
-    const module = await loadCodexAppModule("setting-storage-");
-    if (typeof module.n !== "function" || typeof module.s !== "function") {
-      throw new Error("Codex setting-storage 接口不可用");
+  function appServerFallbackAssetUrls() {
+    const urls = codexAppAssetCandidateUrls();
+    const preferred = urls.filter((url) => {
+      const name = (url.split("/").pop() || "").toLowerCase();
+      return /use-host-config|app-server-manager-signals|app-initial|app-main|page-|chatg|signals|server-manager|gwqc41kz|c1urrgy0|hsvsqcnf/.test(name);
+    });
+    // Prefer known request-client modules, then the larger application bundles.
+    preferred.sort((left, right) => {
+      const score = (url) => {
+        const name = (url.split("/").pop() || "").toLowerCase();
+        if (name.includes("use-host-config")) return 0;
+        if (name.includes("app-server-manager-signals")) return 1;
+        if (name.includes("gwqc41kz") || name.includes("c1urrgy0") || name.includes("hsvsqcnf")) return 2;
+        if (name.includes("app-initial") && name.includes("app-main")) return 3;
+        if (name.includes("app-main")) return 4;
+        return 5;
+      };
+      return score(left) - score(right) || right.length - left.length;
+    });
+    return preferred.slice(0, 16);
+  }
+
+  function collectAppServerRequestCandidatesFromModule(module) {
+    const candidates = [];
+    const seen = new Set();
+    const push = (value) => {
+      if (!value || typeof value !== "object" || seen.has(value)) return;
+      seen.add(value);
+      candidates.push(value);
+    };
+    for (const value of Object.values(module || {})) {
+      push(value);
+      if (!value || typeof value !== "object") continue;
+      if (typeof value.get === "function") {
+        try { push(value.get()); } catch {}
+        try { push(value.get("local")); } catch {}
+      }
+      try {
+        for (const nested of Object.values(value).slice(0, 100)) push(nested);
+      } catch {}
     }
-    return module;
+    return candidates;
+  }
+
+  async function loadAppServerRequestModules() {
+    const modules = [];
+    const sources = [];
+    const seenModules = new Set();
+    const seenUrls = new Set();
+    const pushModule = (module, source) => {
+      if (!module || typeof module !== "object" || seenModules.has(module)) return;
+      seenModules.add(module);
+      modules.push(module);
+      sources.push(source);
+    };
+    for (const assetPrefix of ["use-host-config-", "app-server-manager-signals-"]) {
+      try {
+        const module = await loadOptionalCodexAppModule(assetPrefix);
+        if (module) pushModule(module, assetPrefix);
+      } catch {
+      }
+    }
+    for (const url of appServerFallbackAssetUrls()) {
+      if (seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      try {
+        pushModule(await import(url), url);
+      } catch {
+      }
+    }
+    return { modules, sources };
+  }
+
+  async function loadAppServerRequestCandidates() {
+    const { modules, sources } = await loadAppServerRequestModules();
+    const candidates = [];
+    const seen = new Set();
+    for (const module of modules) {
+      for (const candidate of collectAppServerRequestCandidatesFromModule(module)) {
+        if (seen.has(candidate)) continue;
+        seen.add(candidate);
+        candidates.push(candidate);
+      }
+    }
+    const usedFallback = sources.some((source) => !source.endsWith("-"));
+    return { modules, candidates, sources, discovery: usedFallback ? "fallback" : "named-assets" };
+  }
+
+  function codexSettingStorageFromModule(module, assetPrefix = "") {
+    const values = module && typeof module === "object" ? Object.values(module) : [];
+    const functionSource = (candidate) => {
+      if (typeof candidate !== "function") return "";
+      try {
+        return String(candidate);
+      } catch (_) {
+        return "";
+      }
+    };
+    const getSettingByCapability = () => values.find((candidate) => {
+      const source = functionSource(candidate);
+      return source.includes("get-setting") && source.includes("params") && source.includes("key");
+    });
+    const setSettingByCapability = () => values.find((candidate) => {
+      const source = functionSource(candidate);
+      return source.includes("set-setting") && source.includes("params") && source.includes("key");
+    });
+    let getSetting = null;
+    let setSetting = null;
+    if (assetPrefix.startsWith("setting-storage-")) {
+      getSetting = typeof module?.n === "function" ? module.n : getSettingByCapability();
+      setSetting = typeof module?.s === "function" ? module.s : setSettingByCapability();
+    } else if (assetPrefix.startsWith("app-initial-")) {
+      getSetting = typeof module?.jut === "function" ? module.jut : getSettingByCapability();
+      setSetting = typeof module?.Put === "function" ? module.Put : setSettingByCapability();
+    } else {
+      getSetting = getSettingByCapability();
+      setSetting = setSettingByCapability();
+    }
+    return typeof getSetting === "function" && typeof setSetting === "function"
+      ? { n: getSetting, s: setSetting, assetPrefix }
+      : null;
+  }
+
+  async function codexSettingStorageModule() {
+    const errors = [];
+    for (const assetPrefix of ["setting-storage-", "app-initial-"]) {
+      try {
+        const module = await loadCodexAppModule(assetPrefix);
+        const settingStorage = codexSettingStorageFromModule(module, assetPrefix);
+        if (settingStorage) return settingStorage;
+        errors.push(`${assetPrefix}: setting exports unavailable`);
+      } catch (error) {
+        errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+      }
+    }
+    throw new Error(`Codex setting-storage 接口不可用 (${errors.join("; ")})`);
   }
 
   async function getCodexServiceTierSetting() {
@@ -2882,9 +3038,41 @@
     return nextParams;
   }
 
-  function codexServiceTierRequestOverride(message) {
+  function codexServiceTierRequestOverride(message, skipFetchEnvelope = false) {
     if (!codexPlusSettings().serviceTierControls) return message;
     if (!message || typeof message !== "object") return message;
+    if (!skipFetchEnvelope && message.type === "fetch" && typeof message.url === "string") {
+      const urlPrefix = "vscode://codex/";
+      if (!message.url.startsWith(urlPrefix)) return message;
+      const requestType = message.url.slice(urlPrefix.length).split(/[?#]/, 1)[0];
+      let params = null;
+      let bodyWasString = false;
+      if (typeof message.body === "string") {
+        try {
+          params = JSON.parse(message.body);
+          bodyWasString = true;
+        } catch (_) {
+          return message;
+        }
+      } else if (message.body && typeof message.body === "object") {
+        params = message.body;
+      } else {
+        return message;
+      }
+      if (!params || typeof params !== "object" || Array.isArray(params)) return message;
+      const bodyHadType = Object.prototype.hasOwnProperty.call(params, "type");
+      const originalBodyType = params.type;
+      const logicalMessage = { ...params, type: requestType };
+      const patchedMessage = codexServiceTierRequestOverride(logicalMessage, true);
+      if (patchedMessage === logicalMessage) return message;
+      const nextParams = { ...patchedMessage };
+      delete nextParams.type;
+      if (bodyHadType) nextParams.type = originalBodyType;
+      return {
+        ...message,
+        body: bodyWasString ? JSON.stringify(nextParams) : nextParams,
+      };
+    }
     if (message.type === "send-cli-request-for-host") {
       const method = String(message.method || "");
       const params = applyCodexServiceTierRequestOverride(method, message.params);
@@ -2927,6 +3115,13 @@
   }
 
   function codexServiceTierDispatcherFromModule(module) {
+    const directSingleton = module?.idt;
+    if (directSingleton
+        && typeof directSingleton === "object"
+        && typeof directSingleton.dispatchMessage === "function"
+        && typeof directSingleton.subscribe === "function") {
+      return directSingleton;
+    }
     const values = module && typeof module === "object" ? Object.values(module) : [];
     const singleton = values.find((candidate) => candidate
       && typeof candidate === "object"
@@ -2943,7 +3138,7 @@
     if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
     const loadDispatcher = async () => {
       const errors = [];
-      for (const assetPrefix of ["setting-storage-", "vscode-api-"]) {
+      for (const assetPrefix of ["setting-storage-", "vscode-api-", "app-initial-"]) {
         try {
           const module = await loadCodexAppModule(assetPrefix);
           const dispatcher = codexServiceTierDispatcherFromModule(module);
@@ -3148,7 +3343,10 @@
   }
 
   async function loadUserScripts(path = "/user-scripts/list", payload = {}) {
-    const result = await postJson(path, payload);
+    const requestPayload = path === "/user-scripts/list"
+      ? { ...payload, runtime_status: window.__codexPlusUserScripts?.scripts || {} }
+      : payload;
+    const result = await postJson(path, requestPayload);
     if (result?.scripts) {
       codexPlusUserScripts = result;
       renderUserScripts();
@@ -3767,6 +3965,23 @@
     removeDuplicateCodexPlusMenus(menu);
   }
 
+  const codexPluginRemoteOnlyMarketplaceKinds = new Set(["created-by-me-remote", "shared-with-me"]);
+
+  function pluginMarketplaceRequestProfile(params) {
+    const marketplaceKinds = Array.isArray(params?.marketplaceKinds)
+      ? Array.from(new Set(params.marketplaceKinds.map((kind) => restorePluginMarketplaceName(kind))))
+      : [];
+    const hasRemoteOnlyKind = marketplaceKinds.some((kind) => codexPluginRemoteOnlyMarketplaceKinds.has(kind));
+    const hasLocalKind = marketplaceKinds.includes("local");
+    const hasOtherKind = marketplaceKinds.some(
+      (kind) => !codexPluginRemoteOnlyMarketplaceKinds.has(kind) && kind !== "vertical"
+    );
+    return {
+      marketplaceKinds,
+      remoteOnly: hasRemoteOnlyKind && !hasLocalKind && !hasOtherKind,
+    };
+  }
+
   function patchPluginMarketplaceRequestParams(method, params) {
     if (method === "list-plugins") {
       if (!params || typeof params !== "object") return params;
@@ -3774,16 +3989,35 @@
       return params;
     }
     const next = { ...params };
+    const requestProfile = pluginMarketplaceRequestProfile(next);
+    const requestCwds = Array.isArray(next.cwds)
+      ? next.cwds.filter((cwd) => typeof cwd === "string" && cwd.trim())
+      : [];
+    if (requestCwds.length > 0) {
+      window.__codexPluginMarketplaceLastCwds = Array.from(new Set(requestCwds));
+    } else if (!requestProfile.remoteOnly && Array.isArray(window.__codexPluginMarketplaceLastCwds) && window.__codexPluginMarketplaceLastCwds.length > 0) {
+      next.cwds = [...window.__codexPluginMarketplaceLastCwds];
+    }
     const hadMarketplaceKinds = Object.prototype.hasOwnProperty.call(next, "marketplaceKinds");
-    const nextKinds = Array.isArray(next.marketplaceKinds)
+    let nextKinds = Array.isArray(next.marketplaceKinds)
       ? next.marketplaceKinds.map((kind) => restorePluginMarketplaceName(kind))
       : ["local"];
-    if (!nextKinds.includes("vertical")) nextKinds.push("vertical");
+    const remoteCatalogUnavailable = window.__codexPluginMarketplaceRemoteCatalogUnavailable === true;
+    if (!requestProfile.remoteOnly && remoteCatalogUnavailable) {
+      nextKinds = nextKinds.filter((kind) => kind !== "created-by-me-remote" && kind !== "shared-with-me");
+    }
+    if (!requestProfile.remoteOnly) {
+      if (!nextKinds.includes("local")) nextKinds.push("local");
+      if (!nextKinds.includes("vertical")) nextKinds.push("vertical");
+    }
     next.marketplaceKinds = Array.from(new Set(nextKinds));
     sendCodexPlusDiagnostic("plugin_marketplace_request_expanded", {
       hadMarketplaceKinds,
       marketplaceKinds: next.marketplaceKinds,
       cwdCount: Array.isArray(next.cwds) ? next.cwds.length : 0,
+      cwdRestored: requestCwds.length === 0 && Array.isArray(next.cwds) && next.cwds.length > 0,
+      remoteCatalogUnavailable,
+      remoteOnly: requestProfile.remoteOnly,
     });
     return next;
   }
@@ -4002,13 +4236,14 @@
     return next;
   }
 
-  function patchPluginMarketplaceResult(method, result) {
+  function patchPluginMarketplaceResult(method, result, options = {}) {
     if (method !== "list-plugins") return result;
+    const mergeLocal = options.mergeLocal !== false;
     let patchedCount = 0;
     try {
       const pluginMarketplaceCounts = {};
       if (Array.isArray(result?.marketplaces)) {
-        mergeLocalPluginMarketplaces(result);
+        if (mergeLocal) mergeLocalPluginMarketplaces(result);
         result.marketplaces.forEach((marketplace) => {
           if (Array.isArray(marketplace?.plugins)) {
             marketplace.plugins.forEach((plugin) => {
@@ -4027,6 +4262,7 @@
             remoteMarketplaceName: marketplace?.remoteMarketplaceName || null,
           })),
           pluginMarketplaceCounts,
+          mergeLocal,
         });
       }
       if (patchedCount > 0) {
@@ -4039,6 +4275,49 @@
       });
     }
     return result;
+  }
+
+  function pluginMarketplaceErrorText(value, visited = new WeakSet(), depth = 0) {
+    if (typeof value === "string") return value;
+    if (!value || typeof value !== "object" || depth > 4 || visited.has(value)) return "";
+    visited.add(value);
+    const parts = [];
+    for (const key of ["message", "error", "detail", "cause", "data", "response"]) {
+      const text = pluginMarketplaceErrorText(value[key], visited, depth + 1);
+      if (text) parts.push(text);
+    }
+    return parts.join(" ");
+  }
+
+  function pluginMarketplaceRemoteAuthError(value) {
+    const text = pluginMarketplaceErrorText(value).toLowerCase();
+    return text.includes("chatgpt authentication required for remote plugin catalog") && text.includes("api key auth is not supported");
+  }
+
+  function markPluginMarketplaceRemoteCatalogUnavailable(error) {
+    window.__codexPluginMarketplaceRemoteCatalogUnavailable = true;
+    sendCodexPlusDiagnostic("plugin_marketplace_remote_auth_fallback", {
+      errorMessage: pluginMarketplaceErrorText(error),
+      rememberedCwdCount: Array.isArray(window.__codexPluginMarketplaceLastCwds)
+        ? window.__codexPluginMarketplaceLastCwds.length
+        : 0,
+    });
+  }
+
+  function pluginMarketplaceFallbackResult(mergeLocal = true) {
+    return patchPluginMarketplaceResult("list-plugins", {
+      marketplaces: [],
+      marketplaceLoadErrors: [],
+      featuredPluginIds: [],
+    }, { mergeLocal });
+  }
+
+  function localPluginMarketplaceFallbackResult() {
+    return pluginMarketplaceFallbackResult(true);
+  }
+
+  function remoteOnlyPluginMarketplaceFallbackResult() {
+    return pluginMarketplaceFallbackResult(false);
   }
 
   function pluginAutoExpandVisibleElement(el) {
@@ -4143,7 +4422,9 @@
     client.__codexPluginMarketplaceOriginalSendRequest = originalSendRequest;
     client.sendRequest = async function codexPluginMarketplacePatchedSendRequest(method, params, options) {
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
-      const requestParams = patchPluginMarketplaceRequestParams(requestMethod, restorePluginMarketplaceRequestParams(params, requestMethod));
+      const restoredRequestParams = restorePluginMarketplaceRequestParams(params, requestMethod);
+      const requestProfile = pluginMarketplaceRequestProfile(restoredRequestParams);
+      const requestParams = patchPluginMarketplaceRequestParams(requestMethod, restoredRequestParams);
       if (requestMethod === "install-plugin") {
         sendCodexPlusDiagnostic("plugin_install_request_debug", {
           method: String(method || ""),
@@ -4158,8 +4439,14 @@
       }
       try {
         const result = await originalSendRequest(method, requestParams, options);
-        return patchPluginMarketplaceResult(requestMethod, result);
+        return patchPluginMarketplaceResult(requestMethod, result, { mergeLocal: !requestProfile.remoteOnly });
       } catch (error) {
+        if (requestMethod === "list-plugins" && pluginMarketplaceRemoteAuthError(error)) {
+          markPluginMarketplaceRemoteCatalogUnavailable(error);
+          return requestProfile.remoteOnly
+            ? remoteOnlyPluginMarketplaceFallbackResult()
+            : localPluginMarketplaceFallbackResult();
+        }
         if (requestMethod === "install-plugin") {
           sendCodexPlusDiagnostic("plugin_install_request_failed", {
             method: String(method || ""),
@@ -4194,13 +4481,15 @@
       } else if (requestBody && typeof requestBody === "object") {
         params = requestBody;
       }
-      const requestParams = patchPluginMarketplaceRequestParams(
-        requestMethod,
-        restorePluginMarketplaceRequestParams(params, requestMethod)
-      );
+      const restoredRequestParams = restorePluginMarketplaceRequestParams(params, requestMethod);
+      const requestProfile = pluginMarketplaceRequestProfile(restoredRequestParams);
+      const requestParams = patchPluginMarketplaceRequestParams(requestMethod, restoredRequestParams);
       if (requestMethod === "list-plugins" && message.requestId != null) {
         window.__codexPluginMarketplaceFetchRequestIds = window.__codexPluginMarketplaceFetchRequestIds || new Set();
-        window.__codexPluginMarketplaceFetchRequestIds.add(String(message.requestId));
+        const requestId = String(message.requestId);
+        window.__codexPluginMarketplaceFetchRequestIds.add(requestId);
+        window.__codexPluginMarketplaceFetchRequestProfiles = window.__codexPluginMarketplaceFetchRequestProfiles || new Map();
+        window.__codexPluginMarketplaceFetchRequestProfiles.set(requestId, requestProfile);
       }
       if (requestParams === params) return message;
       if (requestMethod === "install-plugin") {
@@ -4223,13 +4512,15 @@
     if (message.type === "mcp-request" && message.request && typeof message.request === "object") {
       const requestMethod = appServerModelRequestMethod(String(message.request.method || ""), message.request.params);
       if (requestMethod !== "list-plugins" && requestMethod !== "install-plugin") return message;
-      const requestParams = patchPluginMarketplaceRequestParams(
-        requestMethod,
-        restorePluginMarketplaceRequestParams(message.request.params, requestMethod)
-      );
+      const restoredRequestParams = restorePluginMarketplaceRequestParams(message.request.params, requestMethod);
+      const requestProfile = pluginMarketplaceRequestProfile(restoredRequestParams);
+      const requestParams = patchPluginMarketplaceRequestParams(requestMethod, restoredRequestParams);
       if (requestMethod === "list-plugins" && message.request.id != null) {
         window.__codexPluginMarketplaceRequestIds = window.__codexPluginMarketplaceRequestIds || new Set();
-        window.__codexPluginMarketplaceRequestIds.add(String(message.request.id));
+        const requestId = String(message.request.id);
+        window.__codexPluginMarketplaceRequestIds.add(requestId);
+        window.__codexPluginMarketplaceRequestProfiles = window.__codexPluginMarketplaceRequestProfiles || new Map();
+        window.__codexPluginMarketplaceRequestProfiles.set(requestId, requestProfile);
       }
       if (requestParams === message.request.params) return message;
       if (requestMethod === "install-plugin") {
@@ -4253,16 +4544,31 @@
     if (data?.type === "fetch-response") {
       const requestId = data.requestId != null ? String(data.requestId) : "";
       const requestIds = window.__codexPluginMarketplaceFetchRequestIds;
+      const requestProfiles = window.__codexPluginMarketplaceFetchRequestProfiles;
+      const requestProfile = requestProfiles instanceof Map ? requestProfiles.get(requestId) : null;
       if (requestIds instanceof Set && requestIds.size > 0) {
         if (!requestIds.has(requestId)) return false;
         requestIds.delete(requestId);
       }
+      if (requestProfiles instanceof Map) requestProfiles.delete(requestId);
       if (typeof data.bodyJsonString !== "string" || !data.bodyJsonString.trim()) return false;
       try {
-        const result = JSON.parse(data.bodyJsonString);
-        if (result && typeof result === "object") {
-          patchPluginMarketplaceResult("list-plugins", result);
-          patchPluginMarketplaceResult("list-plugins", result.data);
+        let result = JSON.parse(data.bodyJsonString);
+        if (pluginMarketplaceRemoteAuthError(result?.error || result)) {
+          markPluginMarketplaceRemoteCatalogUnavailable(result?.error || result);
+          const fallback = requestProfile?.remoteOnly
+            ? remoteOnlyPluginMarketplaceFallbackResult()
+            : localPluginMarketplaceFallbackResult();
+          if (result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "id")) {
+            delete result.error;
+            result.result = fallback;
+          } else {
+            result = fallback;
+          }
+        } else if (result && typeof result === "object") {
+          const patchOptions = { mergeLocal: requestProfile?.remoteOnly !== true };
+          patchPluginMarketplaceResult("list-plugins", result, patchOptions);
+          patchPluginMarketplaceResult("list-plugins", result.data, patchOptions);
         }
         data.bodyJsonString = JSON.stringify(result);
         return true;
@@ -4282,15 +4588,49 @@
     }
     const requestId = message?.id != null ? String(message.id) : "";
     const requestIds = window.__codexPluginMarketplaceRequestIds;
+    const requestProfiles = window.__codexPluginMarketplaceRequestProfiles;
+    const requestProfile = requestProfiles instanceof Map ? requestProfiles.get(requestId) : null;
     if (requestIds instanceof Set && requestIds.size > 0) {
       if (!requestIds.has(requestId)) return false;
       requestIds.delete(requestId);
     }
+    if (requestProfiles instanceof Map) requestProfiles.delete(requestId);
+    if (pluginMarketplaceRemoteAuthError(message?.error)) {
+      markPluginMarketplaceRemoteCatalogUnavailable(message.error);
+      delete message.error;
+      message.result = requestProfile?.remoteOnly
+        ? remoteOnlyPluginMarketplaceFallbackResult()
+        : localPluginMarketplaceFallbackResult();
+      return true;
+    }
     const result = message?.result;
     if (!result || typeof result !== "object") return false;
-    patchPluginMarketplaceResult("list-plugins", result);
-    patchPluginMarketplaceResult("list-plugins", result.data);
+    const patchOptions = { mergeLocal: requestProfile?.remoteOnly !== true };
+    patchPluginMarketplaceResult("list-plugins", result, patchOptions);
+    patchPluginMarketplaceResult("list-plugins", result.data, patchOptions);
     return true;
+  }
+
+  if (window.__CODEX_PLUS_TEST_PLUGIN_MARKETPLACE__) {
+    window.__codexPlusPluginMarketplaceTest = {
+      patchRequestParams: patchPluginMarketplaceRequestParams,
+      patchRequestMessage: patchPluginMarketplaceRequestMessage,
+      patchResponseData: patchPluginMarketplaceResponseData,
+      remoteAuthError: pluginMarketplaceRemoteAuthError,
+      localFallback: localPluginMarketplaceFallbackResult,
+      remoteOnlyFallback: remoteOnlyPluginMarketplaceFallbackResult,
+      requestProfile: pluginMarketplaceRequestProfile,
+      remoteCatalogUnavailable: () => window.__codexPluginMarketplaceRemoteCatalogUnavailable === true,
+      reset: () => {
+        delete window.__codexPluginMarketplaceLastCwds;
+        delete window.__codexPluginMarketplaceRemoteCatalogUnavailable;
+        window.__codexPluginMarketplaceRequestIds = new Set();
+        window.__codexPluginMarketplaceFetchRequestIds = new Set();
+        window.__codexPluginMarketplaceRequestProfiles = new Map();
+        window.__codexPluginMarketplaceFetchRequestProfiles = new Map();
+      },
+    };
+    return;
   }
 
   function clearPluginMarketplaceQueryCache() {
@@ -4382,28 +4722,26 @@
     if (!codexPlusSettings().pluginMarketplaceUnlock) return;
     const patch = async () => {
       try {
-        const module = await loadCodexAppModule("app-server-manager-signals-");
-        const candidates = Object.values(module).filter((value) => value && typeof value === "object");
+        const { modules, candidates, sources, discovery } = await loadAppServerRequestCandidates();
         let patchedCount = 0;
         for (const candidate of candidates) {
           if (patchPluginMarketplaceRequestClient(candidate)) patchedCount += 1;
-          if (typeof candidate.sendRequest !== "function" && typeof candidate.get === "function") {
-            try {
-              if (patchPluginMarketplaceRequestClient(candidate.get())) patchedCount += 1;
-            } catch {
-            }
-          }
         }
         if (patchedCount > 0) {
           window.__codexPluginMarketplaceUnlockInstalled = codexPluginMarketplaceUnlockVersion;
           sendCodexPlusDiagnostic("plugin_marketplace_request_patch_installed", {
+            moduleCount: modules.length,
             candidateCount: candidates.length,
             patchedCount,
+            sources,
+            discovery,
           });
         } else {
           sendCodexPlusDiagnostic("plugin_marketplace_request_patch_not_found", {
-            exportCount: Object.keys(module || {}).length,
+            moduleCount: modules.length,
             candidateCount: candidates.length,
+            sources,
+            discovery,
           });
         }
       } catch (error) {
@@ -5390,11 +5728,32 @@
   let chatsSortSignature = "";
   let chatsSortLastFetchAt = 0;
 
+  function codexStateApiFromModule(module, assetPrefix = "") {
+    if (assetPrefix.startsWith("vscode-api-")) {
+      return typeof module?.n === "function" ? module.n : null;
+    }
+    if (assetPrefix.startsWith("app-initial-")) {
+      return typeof module?.qut === "function" ? module.qut : null;
+    }
+    return null;
+  }
+
   async function codexStateApi() {
-    codexStateApiPromise = codexStateApiPromise || loadCodexAppModule("vscode-api-");
-    const api = await codexStateApiPromise;
-    if (typeof api.n !== "function") throw new Error("Codex 状态 API 不可用");
-    return api.n;
+    codexStateApiPromise = codexStateApiPromise || (async () => {
+      const errors = [];
+      for (const assetPrefix of ["vscode-api-", "app-initial-"]) {
+        try {
+          const api = await loadCodexAppModule(assetPrefix);
+          const call = codexStateApiFromModule(api, assetPrefix);
+          if (typeof call === "function") return call;
+          errors.push(`${assetPrefix}: state export unavailable`);
+        } catch (error) {
+          errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+        }
+      }
+      throw new Error(`Codex 状态 API 不可用 (${errors.join("; ")})`);
+    })();
+    return await codexStateApiPromise;
   }
 
   async function codexStateCall(method, params) {
@@ -5881,6 +6240,8 @@
           ...state,
         }));
       },
+      settingStorageFromModule: codexSettingStorageFromModule,
+      stateApiFromModule: codexStateApiFromModule,
       dispatcherFromModule: codexServiceTierDispatcherFromModule,
     };
     return;
@@ -6109,13 +6470,37 @@
     return changed;
   }
 
+  function modelJsonResponseLooksPatchable(payload) {
+    if (!payload || typeof payload !== "object") return false;
+    const descriptorArrays = [
+      payload.models,
+      payload.data,
+      payload.result,
+      payload.pages?.[0]?.data,
+      payload.result?.data,
+      payload.result?.models,
+      payload.message?.result?.data,
+      payload.message?.result?.models,
+    ];
+    if (descriptorArrays.some((value) => modelArrayLooksPatchable(value))) return true;
+    const hasModelContainerSignal = "defaultModel" in payload
+      || "default_model" in payload
+      || "availableModels" in payload
+      || "available_models" in payload
+      || "hiddenModels" in payload
+      || "hidden_models" in payload
+      || "modelMetadata" in payload
+      || "model_metadata" in payload;
+    return hasModelContainerSignal && Array.isArray(payload.models)
+      && payload.models.every((value) => typeof value === "string");
+  }
+
   async function patchModelJsonResponse(payload) {
     if (!codexPlusModelUnlockEnabled()) return payload;
     if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-    if (!payload || typeof payload !== "object") return payload;
+    if (!modelJsonResponseLooksPatchable(payload)) return payload;
     try {
       patchModelContainer(payload);
-      patchObjectGraphForModels(payload, new WeakSet(), 0);
     } catch (error) {
       window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
       window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
@@ -6177,7 +6562,7 @@
         const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
         client.getDynamicConfig = (name, options) => {
           const result = originalGetDynamicConfig(name, options);
-          return patchStatsigModelDynamicConfig(result);
+          return String(name) === "107580212" ? patchStatsigModelDynamicConfig(result) : result;
         };
         client.__codexPlusModelWhitelistPatched = true;
       }
@@ -6188,93 +6573,29 @@
     });
   }
 
-  function patchObjectGraphForModels(root, visited, depth = 0) {
-    if (!root || typeof root !== "object" || visited.has(root) || depth > 5) return false;
-    visited.add(root);
-    let changed = patchModelContainer(root);
-    if (root instanceof Element || root === window || root === document || root === document.body || root === document.documentElement) return changed;
-    for (const key of Object.keys(root)) {
-      if (key === "ownerDocument" || key === "parentElement" || key === "parentNode" || key === "children" || key === "childNodes") continue;
-      let value;
-      try {
-        value = root[key];
-      } catch {
-        continue;
-      }
-      if (value && typeof value === "object" && patchObjectGraphForModels(value, visited, depth + 1)) changed = true;
-    }
-    return changed;
-  }
-
-  function reactFiberKeys(element) {
-    return Object.keys(element).filter((key) => key.startsWith("__reactFiber") || key.startsWith("__reactInternalInstance") || key.startsWith("__reactProps"));
-  }
-
-  function isWorkspaceChromeNode(node) {
-    if (!node || node.nodeType !== 1) return false;
-    if (node.closest?.('[data-app-action-sidebar-section-heading="Chats"], [data-app-action-sidebar-section-heading="Projects"], [data-app-action-sidebar-thread-id], [data-app-action-sidebar-project-row], [data-app-action-sidebar-project-id]')) {
-      return false;
-    }
-    return !!node.closest?.("main aside");
-  }
-
-  function patchReactModelStateNodes() {
-    const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
-    return [document.body, ...document.querySelectorAll(selector)].filter((node) => node && !isWorkspaceChromeNode(node));
-  }
-
-  function shouldScheduleReactModelStatePatch(mutations) {
-    if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
-    if (!mutations) return false;
-    const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
-    return mutations.some((mutation) => [...mutation.addedNodes].some((node) => {
-      if (node.nodeType !== 1 || isWorkspaceChromeNode(node)) return false;
-      return !!node.matches?.(selector) || !!node.querySelector?.(selector);
-    }));
-  }
-
-  function schedulePatchReactModelState() {
-    if (window.__codexPlusReactModelStatePatchPending) return;
-    window.__codexPlusReactModelStatePatchPending = true;
-    clearTimeout(window.__codexPlusReactModelStatePatchTimer);
-    window.__codexPlusReactModelStatePatchTimer = setTimeout(() => {
-      window.__codexPlusReactModelStatePatchPending = false;
-      window.__codexPlusReactModelStatePatchTimer = null;
-      patchReactModelState();
-    }, 120);
-  }
-
-  function patchReactModelState() {
-    const visited = new WeakSet();
-    const nodes = patchReactModelStateNodes();
-    let changed = false;
-    for (const node of nodes.slice(0, 220)) {
-      for (const key of reactFiberKeys(node)) {
-        if (patchObjectGraphForModels(node[key], visited)) changed = true;
-      }
-    }
-    return changed;
-  }
-
   function patchAppServerModelMessages() {
     if (window.__codexPlusModelMessagePatchInstalled) return;
     window.__codexPlusModelMessagePatchInstalled = true;
-    const originalDispatchEvent = window.dispatchEvent;
-    window.dispatchEvent = function patchedCodexPlusDispatchEvent(event) {
+    window.addEventListener("codex-message-from-view", (event) => {
       try {
         const detail = event?.detail;
         const request = detail?.request;
-        if (event?.type === "codex-message-from-view" && detail?.type === "mcp-request" && request?.method === "model/list") {
+        if (detail?.type === "mcp-request" && request?.method === "model/list") {
           request.params = { ...(request.params || {}), includeHidden: true };
-          if (request.id != null) codexPlusModelListRequestIds.add(String(request.id));
+          if (request.id != null) {
+            const requestId = String(request.id);
+            codexPlusModelListRequestIds.add(requestId);
+            if (codexPlusModelListRequestIds.size > 64) {
+              codexPlusModelListRequestIds.delete(codexPlusModelListRequestIds.values().next().value);
+            }
+            window.setTimeout(() => codexPlusModelListRequestIds.delete(requestId), 30_000);
+          }
         }
-        if (event?.type === "message") patchMcpModelResponseData(event.data);
       } catch (error) {
         window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
         window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
       }
-      return originalDispatchEvent.call(this, event);
-    };
+    }, true);
 
     window.addEventListener("message", (event) => {
       try {
@@ -6287,12 +6608,16 @@
   }
 
   function patchMcpModelResponseData(data) {
+    if (!codexPlusModelUnlockEnabled()) return false;
     if (data?.type !== "mcp-response") return false;
     const message = data.message || data.response;
     const requestId = message?.id != null ? String(message.id) : "";
-    if (codexPlusModelListRequestIds.size > 0 && !codexPlusModelListRequestIds.has(requestId)) return false;
+    if (codexPlusModelListRequestIds.size === 0 || !codexPlusModelListRequestIds.has(requestId)) return false;
     codexPlusModelListRequestIds.delete(requestId);
-    return patchModelContainer(data) || patchModelContainer(message) || patchModelContainer(message?.result) || patchModelContainer(message?.result?.data);
+    let changed = false;
+    if (patchModelArray(message?.result?.data, true)) changed = true;
+    if (patchModelArray(message?.result?.models, true)) changed = true;
+    return changed;
   }
 
   function appServerModelRequestMethod(method, params) {
@@ -6312,8 +6637,6 @@
       if (Array.isArray(result)) patchModelArray(result, true);
       if (Array.isArray(result?.data)) patchModelArray(result.data, true);
       if (Array.isArray(result?.models)) patchModelArray(result.models, true);
-      patchModelContainer(result);
-      patchObjectGraphForModels(result, new WeakSet(), 0);
       sendCodexPlusDiagnostic("model_app_server_result_patched", {
         method,
         modelCount: Array.isArray(result?.data) ? result.data.length : Array.isArray(result?.models) ? result.models.length : Array.isArray(result) ? result.length : null,
@@ -6441,11 +6764,7 @@
     if (appServerModelRequestPatchDisabled) return;
     const patch = async () => {
       try {
-        const modules = [];
-        for (const assetPrefix of ["use-host-config-", "app-server-manager-signals-"]) {
-          const module = await loadOptionalCodexAppModule(assetPrefix);
-          if (module) modules.push({ assetPrefix, module });
-        }
+        const { modules, candidates, sources, discovery } = await loadAppServerRequestCandidates();
         if (modules.length === 0) {
           window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
           sendCodexPlusDiagnostic("model_app_server_request_patch_skipped", {
@@ -6453,38 +6772,26 @@
           });
           return;
         }
-        let candidateCount = 0;
         let patchedCount = 0;
-        const patchedAssets = [];
-        for (const { assetPrefix, module } of modules) {
-          const candidates = Object.values(module).filter((value) => value && typeof value === "object");
-          candidateCount += candidates.length;
-          let assetPatchedCount = 0;
-          for (const candidate of candidates) {
-            if (patchAppServerModelRequestClient(candidate)) assetPatchedCount += 1;
-            if (typeof candidate.sendRequest !== "function" && typeof candidate.get === "function") {
-              try {
-                if (patchAppServerModelRequestClient(candidate.get())) assetPatchedCount += 1;
-              } catch {
-              }
-            }
-          }
-          if (assetPatchedCount > 0) patchedAssets.push(assetPrefix);
-          patchedCount += assetPatchedCount;
+        for (const candidate of candidates) {
+          if (patchAppServerModelRequestClient(candidate)) patchedCount += 1;
         }
         if (patchedCount > 0) {
           appServerModelRequestPatchMissCount = 0;
           window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
           sendCodexPlusDiagnostic("model_app_server_request_patch_installed", {
-            candidateCount,
+            moduleCount: modules.length,
+            candidateCount: candidates.length,
             patchedCount,
-            assets: patchedAssets,
+            sources,
+            discovery,
           });
         } else {
           noteAppServerModelRequestPatchMiss("model_app_server_request_patch_not_found", {
-            exportCount: modules.reduce((count, entry) => count + Object.keys(entry.module || {}).length, 0),
-            candidateCount,
-            assets: modules.map((entry) => entry.assetPrefix),
+            moduleCount: modules.length,
+            candidateCount: candidates.length,
+            sources,
+            discovery,
           });
         }
       } catch (error) {
@@ -6506,16 +6813,14 @@
 
   function runCodexModelWhitelistRefreshPass() {
     if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
-    let changed = false;
     try {
       patchStatsigModelWhitelist();
-      if (patchReactModelState()) changed = true;
       installAppServerModelRequestPatch();
     } catch (error) {
       window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
       window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
     }
-    return changed;
+    return false;
   }
 
   function scheduleCodexModelWhitelistRefresh(durationMs = 2500) {
@@ -6548,11 +6853,7 @@
       loadCodexModelCatalog();
       return;
     }
-    if (shouldScheduleReactModelStatePatch(mutations)) {
-      scheduleCodexModelWhitelistRefresh();
-    } else {
-      runCodexModelWhitelistRefreshPass();
-    }
+    runCodexModelWhitelistRefreshPass();
   }
 
   function threadIdVariants(sessionId) {
