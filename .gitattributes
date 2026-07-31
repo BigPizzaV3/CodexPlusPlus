@@ -14,3 +14,8 @@ assets/inject/upstream/snow-skin/*.css text eol=lf
 # Keep byte-exact macOS theme assets identical on every checkout platform.
 assets/inject/upstream/*/macos/*.js text eol=lf
 assets/inject/upstream/*/macos/*.css text eol=lf
+
+# Keep every asset covered by upstream_theme_assets.rs byte-exact on Windows.
+assets/inject/upstream/**/*.js text eol=lf
+assets/inject/upstream/**/*.css text eol=lf
+assets/inject/upstream/skin-packs/packs/*/theme.json text eol=lf
