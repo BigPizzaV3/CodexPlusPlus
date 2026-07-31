@@ -392,6 +392,12 @@ pub struct LaunchRequest {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UserScriptReloadRequest {
+    pub debug_port: u16,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LogRequest {
     #[serde(default = "default_log_lines")]
     pub lines: usize,
@@ -2068,7 +2074,10 @@ pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
 }
 
 #[tauri::command]
-pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayload> {
+pub async fn install_market_script(
+    id: String,
+    debug_port: u16,
+) -> CommandResult<ScriptMarketPayload> {
     let trimmed = id.trim();
     if trimmed.is_empty() {
         return failed(
@@ -2094,10 +2103,13 @@ pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayl
     };
     let manager = default_user_script_manager();
     match script_market::install_market_script(&manager, script).await {
-        Ok(()) => ok(
-            "脚本已安装。",
-            script_market_payload_from_manifest(&manifest, "ok", "脚本已安装。"),
-        ),
+        Ok(()) => {
+            let message = script_change_reload_message("脚本已安装。", debug_port).await;
+            ok(
+                &message,
+                script_market_payload_from_manifest(&manifest, "ok", &message),
+            )
+        }
         Err(error) => failed(
             &format!("安装脚本失败：{error}"),
             script_market_payload_from_manifest(
@@ -2110,21 +2122,29 @@ pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayl
 }
 
 #[tauri::command]
-pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<SettingsPayload> {
+pub async fn set_user_script_enabled(
+    key: String,
+    enabled: bool,
+    debug_port: u16,
+) -> CommandResult<SettingsPayload> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
         return failed("脚本 key 不能为空。", fallback_settings_payload());
     }
     let manager = default_user_script_manager();
     match manager.set_script_enabled(trimmed, enabled) {
-        Ok(_) => settings_payload(
-            if enabled {
-                "脚本已启用。"
-            } else {
-                "脚本已禁用。"
-            },
-            "脚本启停失败",
-        ),
+        Ok(_) => {
+            let message = script_change_reload_message(
+                if enabled {
+                    "脚本已启用。"
+                } else {
+                    "脚本已禁用。"
+                },
+                debug_port,
+            )
+            .await;
+            settings_payload(&message, "脚本启停失败")
+        }
         Err(error) => failed(
             &format!("脚本启停失败：{error}"),
             fallback_settings_payload(),
@@ -2133,18 +2153,67 @@ pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<Sett
 }
 
 #[tauri::command]
-pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
+pub async fn delete_user_script(key: String, debug_port: u16) -> CommandResult<SettingsPayload> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
         return failed("脚本 key 不能为空。", fallback_settings_payload());
     }
     let manager = default_user_script_manager();
     match manager.delete_user_script(trimmed) {
-        Ok(_) => settings_payload("脚本已删除。", "脚本删除失败"),
+        Ok(_) => {
+            let message = script_change_reload_message("脚本已删除。", debug_port).await;
+            settings_payload(&message, "脚本删除失败")
+        }
         Err(error) => failed(
             &format!("脚本删除失败：{error}"),
             fallback_settings_payload(),
         ),
+    }
+}
+
+#[tauri::command]
+pub async fn reload_user_scripts(
+    request: UserScriptReloadRequest,
+) -> CommandResult<SettingsPayload> {
+    let debug_port = request.debug_port;
+    if debug_port == 0 {
+        return failed("Codex 调试端口无效。", fallback_settings_payload());
+    }
+
+    let result = reload_user_scripts_on_page(debug_port).await;
+
+    match result {
+        Ok(()) => settings_payload("用户脚本已热重载。", "脚本热重载失败"),
+        Err(error) => failed(
+            &format!("脚本热重载失败：{error}"),
+            fallback_settings_payload(),
+        ),
+    }
+}
+
+async fn reload_user_scripts_on_page(debug_port: u16) -> anyhow::Result<()> {
+    let manager = default_user_script_manager();
+    let bundle = manager.build_reload_bundle()?;
+    let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
+    let target = codex_plus_core::cdp::pick_injectable_codex_page_target(&targets)?;
+    let websocket_url = target
+        .web_socket_debugger_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("目标页面没有可用的 CDP WebSocket"))?;
+    codex_plus_core::bridge::evaluate_script(websocket_url, &bundle).await?;
+    Ok(())
+}
+
+async fn script_change_reload_message(message: &str, debug_port: u16) -> String {
+    match reload_user_scripts_on_page(debug_port).await {
+        Ok(()) => format!("{message} 已热重载当前页面。"),
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "user_scripts.change_reload_failed",
+                json!({ "debug_port": debug_port, "error": error.to_string() }),
+            );
+            format!("{message} 当前页面未能热重载，可点击“热重载”重试。")
+        }
     }
 }
 

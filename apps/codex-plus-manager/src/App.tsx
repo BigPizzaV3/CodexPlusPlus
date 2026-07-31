@@ -1021,7 +1021,8 @@ export function App() {
   };
 
   const installMarketScript = async (id: string) => {
-    const result = await run(() => call<ScriptMarketResult>("install_market_script", { id }));
+    const debugPort = overview?.latest_launch?.debug_port ?? parsePort(launchForm.debugPort, 9229);
+    const result = await run(() => call<ScriptMarketResult>("install_market_script", { id, debugPort }));
     if (result) {
       setScriptMarket(result);
       setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
@@ -1030,7 +1031,8 @@ export function App() {
   };
 
   const setUserScriptEnabled = async (key: string, enabled: boolean) => {
-    const result = await run(() => call<SettingsResult>("set_user_script_enabled", { key, enabled }));
+    const debugPort = overview?.latest_launch?.debug_port ?? parsePort(launchForm.debugPort, 9229);
+    const result = await run(() => call<SettingsResult>("set_user_script_enabled", { key, enabled, debugPort }));
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
@@ -1042,11 +1044,25 @@ export function App() {
     const script = settings?.user_scripts?.scripts?.find((item) => item.key === key);
     const name = script?.name || key;
     if (!window.confirm(tf("删除脚本“{0}”？此操作会移除本地脚本文件。", [name]))) return;
-    const result = await run(() => call<SettingsResult>("delete_user_script", { key }));
+    const debugPort = overview?.latest_launch?.debug_port ?? parsePort(launchForm.debugPort, 9229);
+    const result = await run(() => call<SettingsResult>("delete_user_script", { key, debugPort }));
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
       showResultNotice(t("本地脚本"), result);
+    }
+  };
+
+  const reloadUserScripts = async () => {
+    const debugPort = overview?.latest_launch?.debug_port ?? parsePort(launchForm.debugPort, 9229);
+    const result = await run(() => call<SettingsResult>("reload_user_scripts", { request: { debugPort } }));
+    if (result) {
+      setSettings(result);
+      setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
+      showResultNotice(t("脚本市场"), {
+        ...result,
+        message: isSuccessStatus(result.status) ? t("用户脚本已热重载。") : result.message,
+      });
     }
   };
 
@@ -2620,6 +2636,7 @@ export function App() {
       installMarketScript,
       setUserScriptEnabled,
       deleteUserScript,
+      reloadUserScripts,
       refreshLocalSessions,
       deleteLocalSession,
       deleteLocalSessions,
@@ -2966,6 +2983,7 @@ type Actions = {
   installMarketScript: (id: string) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
   deleteUserScript: (key: string) => Promise<void>;
+  reloadUserScripts: () => Promise<void>;
   refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
@@ -4503,6 +4521,10 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
             <Button onClick={() => void actions.refreshCurrent()} variant="secondary">
               <RefreshCw className="h-4 w-4" />
               {t("刷新本地")}
+            </Button>
+            <Button onClick={() => void actions.reloadUserScripts()} variant="secondary">
+              <RotateCcw className="h-4 w-4" />
+              {t("热重载")}
             </Button>
           </Toolbar>
         </CardContent>

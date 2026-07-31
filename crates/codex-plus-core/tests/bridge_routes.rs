@@ -762,6 +762,91 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
 }
 
 #[tokio::test]
+async fn core_runtime_toggling_user_script_reloads_current_page_bundle() {
+    let temp = tempfile::tempdir().unwrap();
+    let user_dir = temp.path().join("user");
+    std::fs::create_dir_all(&user_dir).unwrap();
+    std::fs::write(user_dir.join("demo.js"), "window.demoReloaded = true;").unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        user_dir,
+        temp.path().join("user_scripts.json"),
+    );
+    let evaluated = Arc::new(Mutex::new(Vec::<String>::new()));
+    let runtime = CoreRuntimeService::new(9229, StatusStore::default())
+        .with_user_scripts(manager)
+        .with_user_script_evaluator({
+            let evaluated = evaluated.clone();
+            Arc::new(move |websocket_url, script| {
+                evaluated
+                    .lock()
+                    .unwrap()
+                    .push(format!("{websocket_url}:{script}"));
+                Ok(json!({"status": "ok"}))
+            })
+        })
+        .with_websocket_url("ws://page");
+    let ctx = BridgeContext::core_with_data(Arc::new(runtime), Arc::new(FakeData::default()));
+
+    let toggled = handle_bridge_request(
+        ctx,
+        "/user-scripts/set-script-enabled",
+        json!({"key": "user:demo.js", "enabled": true}),
+    )
+    .await;
+
+    assert_eq!(toggled["scripts"][0]["enabled"], true);
+    let evaluated = evaluated.lock().unwrap();
+    assert_eq!(evaluated.len(), 1);
+    assert!(evaluated[0].contains("window.demoReloaded = true;"));
+}
+
+#[test]
+fn user_script_reload_bundle_resets_runtime_registry_before_enabled_scripts() {
+    let temp = tempfile::tempdir().unwrap();
+    let user_dir = temp.path().join("user");
+    std::fs::create_dir_all(&user_dir).unwrap();
+    std::fs::write(user_dir.join("demo.js"), "window.reloadVersion = 2;").unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        user_dir,
+        temp.path().join("user_scripts.json"),
+    );
+
+    let bundle = manager.build_reload_bundle().unwrap();
+
+    assert!(bundle.contains("codex-plus-user-scripts-before-reload"));
+    assert!(bundle.contains("window.__codexPlusUserScripts = { scripts: {} }"));
+    assert!(bundle.contains("window.reloadVersion = 2;"));
+    assert!(
+        bundle
+            .find("window.__codexPlusUserScripts = { scripts: {} }")
+            .unwrap()
+            < bundle.find("window.reloadVersion = 2;").unwrap()
+    );
+}
+
+#[test]
+fn user_script_reload_bundle_clears_runtime_when_all_scripts_are_disabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let user_dir = temp.path().join("user");
+    std::fs::create_dir_all(&user_dir).unwrap();
+    std::fs::write(user_dir.join("demo.js"), "window.shouldNotReload = true;").unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        user_dir,
+        temp.path().join("user_scripts.json"),
+    );
+    manager.set_global_enabled(false).unwrap();
+
+    let bundle = manager.build_reload_bundle().unwrap();
+
+    assert!(bundle.contains("codex-plus-user-scripts-before-reload"));
+    assert!(bundle.contains("window.__codexPlusUserScripts = { scripts: {} }"));
+    assert!(!bundle.contains("window.shouldNotReload = true;"));
+}
+
+#[tokio::test]
 async fn core_runtime_open_devtools_uses_inspector_url_opener() {
     let opened = Arc::new(Mutex::new(Vec::<String>::new()));
     let runtime = CoreRuntimeService::new(9229, StatusStore::default())

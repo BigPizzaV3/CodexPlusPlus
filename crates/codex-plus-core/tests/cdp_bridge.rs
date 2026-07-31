@@ -2318,6 +2318,32 @@ fn pick_injectable_codex_page_target_accepts_chatgpt_desktop_error_page() {
 }
 
 #[test]
+fn pick_injectable_codex_page_target_prefers_native_app_over_manager_page() {
+    let targets = vec![
+        target(
+            "manager",
+            "page",
+            "Codex++ 管理工具",
+            "http://127.0.0.1:1420/",
+            Some("ws://manager"),
+        ),
+        target(
+            "main",
+            "page",
+            "Codex",
+            "app://-/index.html",
+            Some("ws://main"),
+        ),
+    ];
+
+    let picked = pick_injectable_codex_page_target(&targets)
+        .expect("native Codex app page should outrank the manager page");
+
+    assert_eq!(picked.id, "main");
+    assert!(!is_primary_codex_page_target(&targets[0]));
+}
+
+#[test]
 fn avatar_overlay_target_detection_is_narrow() {
     let overlay = target(
         "avatar",

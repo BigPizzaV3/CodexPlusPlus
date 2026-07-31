@@ -561,6 +561,15 @@ impl LauncherRuntimeService {
     fn set_websocket_url(&self, websocket_url: &str) {
         *self.websocket_url.lock().unwrap() = Some(websocket_url.to_string());
     }
+
+    async fn reload_user_scripts_now(&self) -> anyhow::Result<Value> {
+        let bundle = self.user_scripts.build_reload_bundle()?;
+        let websocket_url = self.websocket_url.lock().unwrap().clone();
+        if let Some(websocket_url) = websocket_url {
+            codex_plus_core::bridge::evaluate_script(&websocket_url, &bundle).await?;
+        }
+        self.user_scripts.inventory()
+    }
 }
 
 #[async_trait::async_trait]
@@ -579,26 +588,21 @@ impl BridgeRuntimeService for LauncherRuntimeService {
 
     async fn set_user_scripts_enabled(&self, enabled: bool) -> anyhow::Result<Value> {
         self.user_scripts.set_global_enabled(enabled)?;
-        self.user_scripts.inventory()
+        self.reload_user_scripts_now().await
     }
 
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value> {
         self.user_scripts.set_script_enabled(&key, enabled)?;
-        self.user_scripts.inventory()
+        self.reload_user_scripts_now().await
     }
 
     async fn delete_user_script(&self, key: String) -> anyhow::Result<Value> {
         self.user_scripts.delete_user_script(&key)?;
-        self.user_scripts.inventory()
+        self.reload_user_scripts_now().await
     }
 
     async fn reload_user_scripts(&self) -> anyhow::Result<Value> {
-        let bundle = self.user_scripts.build_enabled_bundle()?;
-        let websocket_url = self.websocket_url.lock().unwrap().clone();
-        if let Some(websocket_url) = websocket_url.filter(|_| !bundle.trim().is_empty()) {
-            codex_plus_core::bridge::evaluate_script(&websocket_url, &bundle).await?;
-        }
-        self.user_scripts.inventory()
+        self.reload_user_scripts_now().await
     }
 
     async fn open_devtools(&self) -> anyhow::Result<Value> {
@@ -743,10 +747,7 @@ async fn try_inject_with_context(
         .load()
         .unwrap_or_default();
     let script = codex_plus_core::assets::injection_script_with_settings(helper_port, &settings);
-    let user_bundle = runtime
-        .user_scripts
-        .build_enabled_bundle()
-        .unwrap_or_default();
+    let user_bundle = runtime.user_scripts.build_enabled_bundle()?;
     let new_document_scripts = if user_bundle.is_empty() {
         vec![script]
     } else {
@@ -763,7 +764,8 @@ async fn try_inject_with_context(
         }),
         &new_document_scripts,
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 fn default_codex_db_path() -> PathBuf {
@@ -879,6 +881,16 @@ mod tests {
         assert!(source.contains("async fn start_computer_use_guard_watchdog"));
         assert!(source.contains("self.core"));
         assert!(source.contains(".start_computer_use_guard_watchdog(settings)"));
+    }
+
+    #[test]
+    fn launcher_uses_event_driven_user_script_reload_without_file_polling() {
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("build_reload_bundle"));
+        assert!(!source.contains("start_user_script_hot_reload_watchdog"));
+        assert!(!source.contains("user_scripts.snapshot()"));
+        assert!(!source.contains("tokio::time::interval(std::time::Duration::from_secs(1))"));
     }
 
     #[tokio::test]

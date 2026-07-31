@@ -9,6 +9,16 @@ use serde_json::{Map, Value, json};
 
 use crate::script_market::MarketScript;
 
+const USER_SCRIPT_RELOAD_PRELUDE: &str = r#"
+(() => {
+  const registry = window.__codexPlusUserScripts;
+  if (registry) {
+    window.dispatchEvent(new CustomEvent("codex-plus-user-scripts-before-reload", { detail: registry }));
+  }
+  window.__codexPlusUserScripts = { scripts: {} };
+})();
+"#;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UserScriptConfig {
     pub enabled: bool,
@@ -212,6 +222,13 @@ impl UserScriptManager {
             blocks.push(wrap_script(&script, &source));
         }
         Ok(blocks.join("\n"))
+    }
+
+    pub fn build_reload_bundle(&self) -> anyhow::Result<String> {
+        Ok(format!(
+            "{USER_SCRIPT_RELOAD_PRELUDE}\n{}",
+            self.build_enabled_bundle()?
+        ))
     }
 
     fn scan_scripts(

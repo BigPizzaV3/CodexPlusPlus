@@ -257,6 +257,15 @@ pub fn pick_injectable_codex_page_target(targets: &[CdpTarget]) -> anyhow::Resul
         .iter()
         .filter(|target| is_injectable_page_target(target))
     {
+        if is_preferred_codex_page_target(target) {
+            return Ok(target.clone());
+        }
+    }
+
+    for target in targets
+        .iter()
+        .filter(|target| is_injectable_page_target(target))
+    {
         if is_primary_codex_page_target(target) {
             return Ok(target.clone());
         }
@@ -274,17 +283,36 @@ pub fn is_injectable_page_target(target: &CdpTarget) -> bool {
 }
 
 pub fn is_codex_page_target(target: &CdpTarget) -> bool {
-    if target.target_type != "page" {
+    if target.target_type != "page" || is_codex_plus_manager_page(target) {
         return false;
     }
     let haystack = format!("{} {}", target.title, target.url).to_lowercase();
     haystack.contains("codex") || is_chatgpt_desktop_page(&target.title, &target.url)
 }
 
+fn is_codex_plus_manager_page(target: &CdpTarget) -> bool {
+    let title = target.title.trim().to_lowercase();
+    title.contains("codex++") && (title.contains("manager") || title.contains("管理工具"))
+}
+
 pub fn is_primary_codex_page_target(target: &CdpTarget) -> bool {
     is_codex_page_target(target)
         && !is_avatar_overlay_page_target(target)
         && !is_quick_chat_page_target(target)
+}
+
+fn is_preferred_codex_page_target(target: &CdpTarget) -> bool {
+    is_primary_codex_page_target(target)
+        && (is_codex_app_page(target) || is_chatgpt_desktop_page(&target.title, &target.url))
+}
+
+fn is_codex_app_page(target: &CdpTarget) -> bool {
+    let Ok(url) = reqwest::Url::parse(target.url.trim()) else {
+        return false;
+    };
+    url.scheme().eq_ignore_ascii_case("app")
+        && url.host_str() == Some("-")
+        && url.path().eq_ignore_ascii_case("/index.html")
 }
 
 pub fn is_avatar_overlay_page_target(target: &CdpTarget) -> bool {

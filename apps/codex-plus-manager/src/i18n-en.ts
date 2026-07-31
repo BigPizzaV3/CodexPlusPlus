@@ -329,6 +329,8 @@ export const EN_PLAIN: Record<string, string> = {
   "刷新当前页面": "Refresh current page",
   "刷新推荐": "Refresh recommendations",
   "刷新本地": "Refresh local",
+  "热重载": "Hot reload",
+  "用户脚本已热重载。": "User scripts hot reloaded.",
   "刷新项目": "Refresh projects",
   "加入当前工作区": "Add to current workspace",
   "包含版本、路径、设置和平台信息": "Includes version, paths, settings and platform info",

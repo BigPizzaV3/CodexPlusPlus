@@ -356,6 +356,37 @@ fn manager_ui_no_longer_exposes_command_wrapper_or_startup_marketplace_prompt() 
 }
 
 #[test]
+fn manager_script_market_exposes_manual_hot_reload_command() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+    let commands_rs = std::fs::read_to_string(manifest_dir.join("src/commands.rs"))
+        .expect("read manager commands.rs");
+    let lib_rs =
+        std::fs::read_to_string(manifest_dir.join("src/lib.rs")).expect("read manager lib.rs");
+
+    assert!(app_tsx.contains("const reloadUserScripts = async ()"));
+    assert!(
+        app_tsx
+            .contains("call<SettingsResult>(\"reload_user_scripts\", { request: { debugPort } })")
+    );
+    assert!(app_tsx.contains("actions.reloadUserScripts()"));
+    assert!(app_tsx.contains("{t(\"热重载\")}"));
+    assert!(commands_rs.contains("pub async fn reload_user_scripts("));
+    assert!(commands_rs.contains("pub struct UserScriptReloadRequest"));
+    assert!(commands_rs.contains("async fn reload_user_scripts_on_page("));
+    assert!(commands_rs.contains("async fn script_change_reload_message("));
+    assert!(
+        app_tsx.contains("call<ScriptMarketResult>(\"install_market_script\", { id, debugPort })")
+    );
+    assert!(app_tsx.contains(
+        "call<SettingsResult>(\"set_user_script_enabled\", { key, enabled, debugPort })"
+    ));
+    assert!(app_tsx.contains("call<SettingsResult>(\"delete_user_script\", { key, debugPort })"));
+    assert!(lib_rs.contains("commands::reload_user_scripts"));
+}
+
+#[test]
 fn manager_update_install_keeps_visible_progress_bar() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
