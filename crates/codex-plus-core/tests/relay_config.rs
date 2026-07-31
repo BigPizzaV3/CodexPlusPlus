@@ -1365,6 +1365,113 @@ experimental_bearer_token = "sk-new"
 }
 
 #[test]
+fn apply_relay_profile_replaces_cc_switch_catalog_from_profile_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        model: "deepseek-v4-pro".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "deepseek-v4-pro"
+model_catalog_json = "cc-switch-model-catalog.json"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        model_list: "deepseek-v4-pro".to_string(),
+        model_windows: r#"{"deepseek-v4-pro":"1000000"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-a.json""#));
+    assert!(!config.contains("cc-switch-model-catalog.json"));
+
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(temp.path().join("model-catalogs/relay-a.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(catalog["models"][0]["slug"], "deepseek-v4-pro");
+    assert_eq!(catalog["models"][0]["context_window"], 1_000_000);
+}
+
+#[test]
+fn apply_relay_profile_replaces_cc_switch_catalog_from_live_config() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "model_catalog_json = \"C:\\\\Users\\\\test\\\\.codex\\\\cc-switch-model-catalog.json\"\n",
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        model: "deepseek-v4-pro".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "deepseek-v4-pro"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        model_list: "deepseek-v4-pro".to_string(),
+        model_windows: r#"{"deepseek-v4-pro":"500000"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-a.json""#));
+    assert!(!config.contains("cc-switch-model-catalog.json"));
+}
+
+#[test]
+fn apply_relay_profile_replaces_cc_switch_catalog_without_custom_model_windows() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        model: "qwen3-coder".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "qwen3-coder"
+model_catalog_json = "cc-switch-model-catalog.json"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        model_list: "qwen3-coder".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(!config.contains("model_catalog_json"));
+    assert!(!config.contains("cc-switch-model-catalog.json"));
+    assert!(!temp.path().join("model-catalogs").exists());
+}
+
+#[test]
 fn apply_relay_profile_does_not_carry_previous_managed_model_catalog() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
