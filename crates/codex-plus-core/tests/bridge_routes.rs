@@ -11,7 +11,9 @@ use codex_plus_core::routes::{
 };
 use codex_plus_core::settings::BackendSettings;
 use codex_plus_core::status::StatusStore;
-use codex_plus_core::user_scripts::UserScriptManager;
+use codex_plus_core::user_scripts::{
+    UserScriptManager, user_script_presence_expression, user_script_presence_from_evaluation,
+};
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -799,6 +801,44 @@ async fn core_runtime_toggling_user_script_reloads_current_page_bundle() {
     let evaluated = evaluated.lock().unwrap();
     assert_eq!(evaluated.len(), 1);
     assert!(evaluated[0].contains("window.demoReloaded = true;"));
+}
+
+#[test]
+fn user_script_startup_presence_check_only_includes_enabled_scripts() {
+    let temp = tempfile::tempdir().unwrap();
+    let user_dir = temp.path().join("user");
+    std::fs::create_dir_all(&user_dir).unwrap();
+    std::fs::write(user_dir.join("enabled.js"), "window.enabled = true;").unwrap();
+    std::fs::write(user_dir.join("disabled.js"), "window.disabled = true;").unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        user_dir,
+        temp.path().join("user_scripts.json"),
+    );
+    manager
+        .set_script_enabled("user:disabled.js", false)
+        .unwrap();
+
+    let keys = manager.enabled_script_keys().unwrap();
+    let expression = user_script_presence_expression(&keys).unwrap();
+
+    assert_eq!(keys, vec!["user:enabled.js"]);
+    assert!(expression.contains(r#"["user:enabled.js"]"#));
+    assert!(!expression.contains("user:disabled.js"));
+
+    manager.set_global_enabled(false).unwrap();
+    assert!(manager.enabled_script_keys().unwrap().is_empty());
+}
+
+#[test]
+fn user_script_startup_presence_check_reads_boolean_cdp_result() {
+    let present = json!({"result": {"result": {"value": true}}});
+    let missing = json!({"result": {"result": {"value": false}}});
+    let malformed = json!({"result": {"result": {"type": "undefined"}}});
+
+    assert!(user_script_presence_from_evaluation(&present).unwrap());
+    assert!(!user_script_presence_from_evaluation(&missing).unwrap());
+    assert!(user_script_presence_from_evaluation(&malformed).is_err());
 }
 
 #[test]

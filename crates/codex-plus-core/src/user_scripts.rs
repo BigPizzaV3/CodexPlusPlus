@@ -231,6 +231,19 @@ impl UserScriptManager {
         ))
     }
 
+    pub fn enabled_script_keys(&self) -> anyhow::Result<Vec<String>> {
+        let config = self.load_config();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter(|script| script.enabled)
+            .map(|script| script.key)
+            .collect())
+    }
+
     fn scan_scripts(
         &self,
         config: &UserScriptConfig,
@@ -338,6 +351,24 @@ struct UserScriptFile {
     source: String,
     path: PathBuf,
     enabled: bool,
+}
+
+pub fn user_script_presence_expression(expected_keys: &[String]) -> anyhow::Result<String> {
+    let expected_keys = serde_json::to_string(expected_keys)?;
+    Ok(format!(
+        r#"(() => {{
+  const scripts = window.__codexPlusUserScripts && window.__codexPlusUserScripts.scripts;
+  const expected = {expected_keys};
+  return !!scripts && expected.every((key) => Object.prototype.hasOwnProperty.call(scripts, key));
+}})()"#
+    ))
+}
+
+pub fn user_script_presence_from_evaluation(response: &Value) -> anyhow::Result<bool> {
+    response
+        .pointer("/result/result/value")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| anyhow::anyhow!("user script startup check returned no boolean result"))
 }
 
 fn wrap_script(script: &UserScriptFile, source: &str) -> String {

@@ -6,10 +6,15 @@ use codex_plus_core::launcher::{
 };
 use codex_plus_core::models::{DeleteResult, ExportResult, SessionRef};
 use codex_plus_core::routes::{BridgeContext, BridgeDataService, BridgeRuntimeService};
-use codex_plus_core::user_scripts::UserScriptManager;
+use codex_plus_core::user_scripts::{
+    UserScriptManager, user_script_presence_expression, user_script_presence_from_evaluation,
+};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+const USER_SCRIPT_STARTUP_CHECK_ATTEMPTS: usize = 3;
+const USER_SCRIPT_STARTUP_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Clone)]
 struct LauncherHooks {
@@ -562,6 +567,20 @@ impl LauncherRuntimeService {
         *self.websocket_url.lock().unwrap() = Some(websocket_url.to_string());
     }
 
+    fn is_current_user_script_target(&self, websocket_url: &str, expected_keys: &[String]) -> bool {
+        let target_matches = self
+            .websocket_url
+            .lock()
+            .unwrap()
+            .as_deref()
+            .is_some_and(|current| current == websocket_url);
+        target_matches
+            && self
+                .user_scripts
+                .enabled_script_keys()
+                .is_ok_and(|current| current == expected_keys)
+    }
+
     async fn reload_user_scripts_now(&self) -> anyhow::Result<Value> {
         let bundle = self.user_scripts.build_reload_bundle()?;
         let websocket_url = self.websocket_url.lock().unwrap().clone();
@@ -570,6 +589,87 @@ impl LauncherRuntimeService {
         }
         self.user_scripts.inventory()
     }
+
+    fn start_user_script_startup_check(
+        self: &Arc<Self>,
+        websocket_url: String,
+        expected_keys: Vec<String>,
+    ) {
+        if expected_keys.is_empty() {
+            return;
+        }
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(USER_SCRIPT_STARTUP_CHECK_DELAY).await;
+            let expression = match user_script_presence_expression(&expected_keys) {
+                Ok(expression) => expression,
+                Err(error) => {
+                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "user_scripts.startup_check_failed",
+                        json!({ "error": error.to_string() }),
+                    );
+                    return;
+                }
+            };
+
+            for attempt in 1..=USER_SCRIPT_STARTUP_CHECK_ATTEMPTS {
+                if !runtime.is_current_user_script_target(&websocket_url, &expected_keys) {
+                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "user_scripts.startup_check",
+                        json!({ "status": "obsolete", "attempt": attempt }),
+                    );
+                    return;
+                }
+                match user_scripts_are_present(&websocket_url, &expression).await {
+                    Ok(true) => {
+                        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                            "user_scripts.startup_check",
+                            json!({ "status": "ok", "attempt": attempt }),
+                        );
+                        return;
+                    }
+                    Ok(false) if attempt < USER_SCRIPT_STARTUP_CHECK_ATTEMPTS => {
+                        let bundle = match runtime.user_scripts.build_reload_bundle() {
+                            Ok(bundle) => bundle,
+                            Err(error) => {
+                                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                                    "user_scripts.startup_reload_failed",
+                                    json!({ "attempt": attempt, "error": error.to_string() }),
+                                );
+                                return;
+                            }
+                        };
+                        if let Err(error) =
+                            codex_plus_core::bridge::evaluate_script(&websocket_url, &bundle).await
+                        {
+                            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                                "user_scripts.startup_reload_failed",
+                                json!({ "attempt": attempt, "error": error.to_string() }),
+                            );
+                        }
+                    }
+                    Ok(false) => break,
+                    Err(error) => {
+                        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                            "user_scripts.startup_check_failed",
+                            json!({ "attempt": attempt, "error": error.to_string() }),
+                        );
+                    }
+                }
+                tokio::time::sleep(USER_SCRIPT_STARTUP_CHECK_DELAY).await;
+            }
+
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "user_scripts.startup_check",
+                json!({ "status": "missing", "expected_keys": expected_keys }),
+            );
+        });
+    }
+}
+
+async fn user_scripts_are_present(websocket_url: &str, expression: &str) -> anyhow::Result<bool> {
+    let response = codex_plus_core::bridge::evaluate_script(websocket_url, expression).await?;
+    user_script_presence_from_evaluation(&response)
 }
 
 #[async_trait::async_trait]
@@ -748,6 +848,7 @@ async fn try_inject_with_context(
         .unwrap_or_default();
     let script = codex_plus_core::assets::injection_script_with_settings(helper_port, &settings);
     let user_bundle = runtime.user_scripts.build_enabled_bundle()?;
+    let expected_user_script_keys = runtime.user_scripts.enabled_script_keys()?;
     let new_document_scripts = if user_bundle.is_empty() {
         vec![script]
     } else {
@@ -765,6 +866,7 @@ async fn try_inject_with_context(
         &new_document_scripts,
     )
     .await?;
+    runtime.start_user_script_startup_check(websocket_url.to_string(), expected_user_script_keys);
     Ok(())
 }
 
@@ -884,13 +986,24 @@ mod tests {
     }
 
     #[test]
-    fn launcher_uses_event_driven_user_script_reload_without_file_polling() {
+    fn launcher_uses_finite_user_script_startup_check_without_file_polling() {
         let source = include_str!("main.rs");
 
+        assert!(source.contains("start_user_script_startup_check"));
+        assert!(source.contains("USER_SCRIPT_STARTUP_CHECK_ATTEMPTS"));
+        assert!(source.contains("user_script_presence_expression"));
         assert!(source.contains("build_reload_bundle"));
-        assert!(!source.contains("start_user_script_hot_reload_watchdog"));
-        assert!(!source.contains("user_scripts.snapshot()"));
-        assert!(!source.contains("tokio::time::interval(std::time::Duration::from_secs(1))"));
+        for forbidden in [
+            ["start_user_script_hot_reload", "_watchdog"].concat(),
+            ["user_scripts.", "snapshot()"].concat(),
+            [
+                "tokio::time::interval(",
+                "std::time::Duration::from_secs(1))",
+            ]
+            .concat(),
+        ] {
+            assert!(!source.contains(&forbidden), "found {forbidden}");
+        }
     }
 
     #[tokio::test]
