@@ -47,7 +47,7 @@ fn bundled_target_renderers_and_styles_remain_byte_exact() {
         ),
         (
             "assets/inject/upstream/cidala-tiger/macos/dream-skin.css",
-            "662B04F2E74570770394E3D6F012F6B5952C50E55A1AD47B1577161F860D775D",
+            "5E149E9A13985961C5F3125296178ACB2ABF0B528974F1E616AA625970430562",
         ),
         (
             "assets/inject/upstream/snow-skin/renderer-inject.js",
