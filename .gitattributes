@@ -11,3 +11,5 @@
 assets/inject/upstream/**/*.js text eol=lf
 assets/inject/upstream/**/*.css text eol=lf
 assets/inject/upstream/**/*.json text eol=lf
+# Keep the skin-pack manifest covered explicitly for the upstream asset hash check.
+assets/inject/upstream/skin-packs/packs/*/theme.json text eol=lf
