@@ -832,8 +832,16 @@ pub fn merge_common_config_into_config(
     }
 
     let mut target_doc = parse_toml_document(config_text)?;
+    let profile_goals_override = target_doc
+        .get("features")
+        .and_then(Item::as_table_like)
+        .and_then(|features| features.get("goals"))
+        .and_then(Item::as_bool);
     let source_doc = parse_toml_document(trimmed)?;
     merge_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
+    if let Some(enabled) = profile_goals_override {
+        table_mut_or_insert(&mut target_doc, "features")?["goals"] = toml_edit::value(enabled);
+    }
     Ok(normalize_optional_toml(target_doc))
 }
 
@@ -2678,6 +2686,36 @@ fn account_label_from_jwt(token: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merge_common_config_preserves_explicit_profile_goals_override() {
+        let disabled = merge_common_config_into_config(
+            "[features]\ngoals = false\n",
+            "[features]\ngoals = true\nfast_mode = true\n",
+        )
+        .unwrap();
+        let disabled_doc = disabled.parse::<DocumentMut>().unwrap();
+        assert_eq!(disabled_doc["features"]["goals"].as_bool(), Some(false));
+        assert_eq!(disabled_doc["features"]["fast_mode"].as_bool(), Some(true));
+
+        let enabled = merge_common_config_into_config(
+            "[features]\ngoals = true\n",
+            "[features]\ngoals = false\nfast_mode = true\n",
+        )
+        .unwrap();
+        let enabled_doc = enabled.parse::<DocumentMut>().unwrap();
+        assert_eq!(enabled_doc["features"]["goals"].as_bool(), Some(true));
+        assert_eq!(enabled_doc["features"]["fast_mode"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn merge_common_config_uses_common_goals_without_profile_override() {
+        let merged =
+            merge_common_config_into_config("model = \"gpt-5\"\n", "[features]\ngoals = true\n")
+                .unwrap();
+        let doc = merged.parse::<DocumentMut>().unwrap();
+        assert_eq!(doc["features"]["goals"].as_bool(), Some(true));
+    }
 
     #[test]
     fn backfill_relay_profile_from_home_with_common_restores_template_provider_id() {
