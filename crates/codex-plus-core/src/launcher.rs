@@ -144,6 +144,9 @@ pub trait LaunchHooks: Send + Sync {
     fn select_debug_port(&self, requested: u16) -> u16;
     fn select_helper_port(&self, requested: u16) -> u16;
     async fn load_settings(&self) -> anyhow::Result<BackendSettings>;
+    async fn live_config_uses_model_router(&self) -> bool {
+        false
+    }
     async fn run_provider_sync(&self) -> anyhow::Result<()>;
     async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
@@ -322,7 +325,10 @@ where
                 );
             }
         }
-        if settings.model_routing_enabled {
+        let restore_previous_profile = settings.relay_profiles_enabled
+            && !settings.model_routing_enabled
+            && hooks.live_config_uses_model_router().await;
+        if settings.model_routing_enabled || restore_previous_profile {
             hooks.apply_active_relay_profile(&settings).await?;
         }
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings)
@@ -545,6 +551,10 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     async fn load_settings(&self) -> anyhow::Result<BackendSettings> {
         SettingsStore::default().load()
+    }
+
+    async fn live_config_uses_model_router(&self) -> bool {
+        live_config_uses_model_router(&crate::relay_config::default_codex_home_dir())
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
@@ -2406,6 +2416,16 @@ fn should_probe_launcher_cdp(is_windows: bool, has_codex_process: bool) -> bool 
     is_windows && !has_codex_process
 }
 
+fn live_config_uses_model_router(home: &Path) -> bool {
+    std::fs::read_to_string(home.join("config.toml"))
+        .ok()
+        .and_then(|contents| toml::from_str::<toml::Value>(&contents).ok())
+        .is_some_and(|document| {
+            document.get("model_provider").and_then(toml::Value::as_str)
+                == Some("codex-plus-router")
+        })
+}
+
 async fn check_and_reinject_bridge_inner(
     debug_port: u16,
     helper_port: u16,
@@ -3169,6 +3189,17 @@ mod tests {
         assert!(should_probe_launcher_cdp(true, false));
         assert!(!should_probe_launcher_cdp(true, true));
         assert!(!should_probe_launcher_cdp(false, false));
+    }
+
+    #[test]
+    fn detects_stale_model_router_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config.toml");
+        std::fs::write(&config, "model_provider = \"codex-plus-router\"\n").unwrap();
+        assert!(live_config_uses_model_router(temp.path()));
+
+        std::fs::write(&config, "model_provider = \"custom\"\n").unwrap();
+        assert!(!live_config_uses_model_router(temp.path()));
     }
 
     #[tokio::test]
