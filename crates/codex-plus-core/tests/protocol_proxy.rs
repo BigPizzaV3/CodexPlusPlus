@@ -290,6 +290,44 @@ fn responses_request_maps_developer_role_to_system_for_chat_upstream() {
 }
 
 #[test]
+fn responses_request_skips_additional_tools_without_content() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-chat",
+        "instructions": "You are helpful.",
+        "input": [
+            {
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [
+                    { "type": "custom", "name": "exec", "description": "Run a command" }
+                ]
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["messages"],
+        json!([
+            { "role": "system", "content": "You are helpful." },
+            { "role": "user", "content": "hello" }
+        ])
+    );
+    assert!(
+        converted["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|message| !message["content"].is_null())
+    );
+}
+
+#[test]
 fn responses_request_collapses_system_messages_to_head_for_strict_chat_upstreams() {
     let converted = responses_to_chat_completions(json!({
         "model": "MiniMax-M2.7",

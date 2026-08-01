@@ -2154,14 +2154,14 @@ fn append_responses_item(
         }
         _ => {
             flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
-            if item.get("role").is_some() || item.get("content").is_some() {
+            if let Some(content) = item.get("content") {
                 let role = responses_role_to_chat_role(item.get("role").and_then(Value::as_str));
+                if content.is_null() && role != "assistant" {
+                    return;
+                }
                 let mut message = json!({
                     "role": role,
-                    "content": responses_content_to_chat_content(
-                        role,
-                        item.get("content").unwrap_or(&Value::Null)
-                        )
+                    "content": responses_content_to_chat_content(role, content)
                 });
                 if role == "assistant" {
                     if !pending_reasoning.is_empty() && pending_tool_calls.is_empty() {
