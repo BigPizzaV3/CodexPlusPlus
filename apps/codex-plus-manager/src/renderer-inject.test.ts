@@ -18,5 +18,6 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /window\.top\s*!==\s*window/);
     assert.match(renderer, /!window\.electronBridge/);
     assert.ok(renderer.includes("/^app:\\\/\\\/\\-\\//i.test(window.location.href)"));
+    assert.match(renderer, /codexPlusIsNodeTestHarness/);
   });
 });
