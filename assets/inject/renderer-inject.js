@@ -1,4 +1,7 @@
 (() => {
+  // The launcher targets the Codex app page, but keep a renderer-side guard
+  // so this bundle cannot create UI in embedded browser documents.
+  if (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(window.location.href)) return;
   const codexPlusIsWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent || "");
 
   function installCodexPlusFastStartup() {

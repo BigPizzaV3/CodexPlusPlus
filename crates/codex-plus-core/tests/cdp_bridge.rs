@@ -58,6 +58,8 @@ fn screenshot_command_uses_png_from_surface() {
 fn injection_script_prefixes_helper_url_and_sponsor_images() {
     let script = assets::injection_script(57321);
 
+    assert!(script.contains("!window.electronBridge"));
+    assert!(script.contains(r#"!/^app:\/\/\-\//i.test(window.location.href)"#));
     assert!(script.contains("window.__CODEX_SESSION_DELETE_HELPER__"));
     assert!(script.contains("http://127.0.0.1:57321"));
     assert!(script.contains("window.__CODEX_PLUS_SPONSOR_IMAGES__"));
@@ -2277,6 +2279,51 @@ fn pick_injectable_codex_page_target_rejects_non_codex_pages() {
 
     let error = pick_injectable_codex_page_target(&targets)
         .expect_err("non-Codex page must not be selected for injection");
+
+    assert!(
+        error
+            .to_string()
+            .contains("No injectable Codex page target found")
+    );
+}
+
+#[test]
+fn pick_injectable_codex_page_target_ignores_embedded_browser_page_named_codex() {
+    let targets = vec![
+        target(
+            "browser-pr",
+            "page",
+            "Fix Codex++ menu anchoring · Pull Request",
+            "https://github.com/BigPizzaV3/CodexPlusPlus/pull/1743",
+            Some("ws://browser-pr"),
+        ),
+        target(
+            "main",
+            "page",
+            "Codex",
+            "app://-/index.html",
+            Some("ws://main"),
+        ),
+    ];
+
+    let picked = pick_injectable_codex_page_target(&targets)
+        .expect("Codex app page should win over embedded browser content");
+
+    assert_eq!(picked.id, "main");
+}
+
+#[test]
+fn pick_injectable_codex_page_target_rejects_embedded_browser_only_page() {
+    let targets = vec![target(
+        "browser-pr",
+        "page",
+        "Fix Codex++ menu anchoring · Pull Request",
+        "https://github.com/BigPizzaV3/CodexPlusPlus/pull/1743",
+        Some("ws://browser-pr"),
+    )];
+
+    let error = pick_injectable_codex_page_target(&targets)
+        .expect_err("embedded browser content must not be selected for injection");
 
     assert!(
         error
