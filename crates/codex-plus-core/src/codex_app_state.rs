@@ -264,6 +264,31 @@ pub fn prepare_projectless_main_window_nonfatal(home: &Path, source: &str) {
     }
 }
 
+pub fn ensure_builtin_plugin_state_after_provider_switch_nonfatal(home: &Path, source: &str) {
+    match crate::computer_use_guard::ensure_builtin_plugin_state_after_provider_switch(home) {
+        Ok(result) => {
+            if result.changed {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "codex_app_state.builtin_plugin_state_synced",
+                    json!({
+                        "source": source,
+                        "notifyPath": result.notify_exe.map(|path| path.to_string_lossy().to_string()),
+                    }),
+                );
+            }
+        }
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "codex_app_state.builtin_plugin_state_failed",
+                json!({
+                    "source": source,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+}
+
 fn load_global_state(home: &Path) -> anyhow::Result<Option<Map<String, Value>>> {
     let path = state_path(home);
     if !path.exists() {

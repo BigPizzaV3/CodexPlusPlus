@@ -336,7 +336,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let dream_skin_art_signature = dream_skin_art_content_signature(settings);
     let dream_skin_theme = &settings.codex_app_dream_skin_theme_config;
     let dream_skin_target_runtime = dream_skin_target_runtime_script(settings, false);
-    let plugin_marketplaces = local_plugin_marketplaces();
+    let plugin_marketplaces = local_plugin_marketplaces(settings.builtin_plugin_guard_enabled());
     let paste_fix = paste_fix_enabled_config(settings);
     let force_chinese_locale = force_chinese_locale_config(settings);
     let fast_startup = fast_startup_config(settings);
@@ -406,32 +406,50 @@ fn dream_skin_content_signature(value: &[u8]) -> String {
     format!("{}-{hash:x}", value.len())
 }
 
-fn local_plugin_marketplaces() -> Value {
+fn local_plugin_marketplaces(include_guarded_bundled: bool) -> Value {
     let home = crate::codex_home::default_codex_home_dir();
-    local_plugin_marketplaces_from_home(&home)
+    local_plugin_marketplaces_from_home(&home, include_guarded_bundled)
 }
 
-fn local_plugin_marketplaces_from_home(home: &Path) -> Value {
+fn local_plugin_marketplaces_from_home(home: &Path, include_guarded_bundled: bool) -> Value {
     let installed_plugins = installed_plugins_from_config(&home);
     let marketplace_dir = home
         .join(".tmp")
         .join("plugins")
         .join(".agents")
         .join("plugins");
-    let candidates = [
-        marketplace_dir.join("marketplace.json"),
-        marketplace_dir.join("api_marketplace.json"),
-        home.join(".tmp")
-            .join("plugins-remote")
-            .join(".agents")
-            .join("plugins")
-            .join("marketplace.json"),
-    ];
+    let mut candidates = Vec::new();
+    if include_guarded_bundled {
+        candidates.push((
+            home.join(".tmp")
+                .join("bundled-marketplaces")
+                .join("openai-bundled")
+                .join(".agents")
+                .join("plugins")
+                .join("marketplace.json"),
+            true,
+        ));
+    }
+    candidates.extend([
+        (marketplace_dir.join("marketplace.json"), false),
+        (marketplace_dir.join("api_marketplace.json"), false),
+        (
+            home.join(".tmp")
+                .join("plugins-remote")
+                .join(".agents")
+                .join("plugins")
+                .join("marketplace.json"),
+            false,
+        ),
+    ]);
     let marketplaces = candidates
         .iter()
-        .filter_map(|path| {
+        .filter_map(|(path, guarded_bundled_only)| {
             let text = std::fs::read_to_string(path).ok()?;
             let mut marketplace: Value = serde_json::from_str(&text).ok()?;
+            if *guarded_bundled_only && !retain_guarded_builtin_plugins(&mut marketplace) {
+                return None;
+            }
             expand_local_plugin_marketplace(&mut marketplace, path, &home, &installed_plugins);
             if let Some(object) = marketplace.as_object_mut() {
                 object
@@ -442,6 +460,25 @@ fn local_plugin_marketplaces_from_home(home: &Path) -> Value {
         })
         .collect::<Vec<_>>();
     Value::Array(marketplaces)
+}
+
+fn retain_guarded_builtin_plugins(marketplace: &mut Value) -> bool {
+    if marketplace.get("name").and_then(Value::as_str) != Some("openai-bundled") {
+        return false;
+    }
+    let Some(plugins) = marketplace.get_mut("plugins").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    plugins.retain(|plugin| {
+        let name = plugin.get("name").and_then(Value::as_str).or_else(|| {
+            plugin
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|id| id.split('@').next())
+        });
+        matches!(name, Some("browser" | "chrome" | "computer-use"))
+    });
+    !plugins.is_empty()
 }
 
 fn expand_local_plugin_marketplace(
@@ -669,6 +706,12 @@ mod tests {
     fn local_plugin_marketplaces_includes_api_marketplace_snapshot() {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path();
+        let bundled_marketplace_dir = home
+            .join(".tmp")
+            .join("bundled-marketplaces")
+            .join("openai-bundled")
+            .join(".agents")
+            .join("plugins");
         let marketplace_dir = home
             .join(".tmp")
             .join("plugins")
@@ -689,10 +732,16 @@ mod tests {
             .join("plugins-remote")
             .join("plugins")
             .join("product-design");
+        std::fs::create_dir_all(&bundled_marketplace_dir).unwrap();
         std::fs::create_dir_all(&marketplace_dir).unwrap();
         std::fs::create_dir_all(&remote_marketplace_dir).unwrap();
         std::fs::create_dir_all(api_plugin_dir.join(".codex-plugin")).unwrap();
         std::fs::create_dir_all(remote_plugin_dir.join(".codex-plugin")).unwrap();
+        std::fs::write(
+            bundled_marketplace_dir.join("marketplace.json"),
+            r#"{"name":"openai-bundled","plugins":[{"name":"browser"},{"name":"chrome"},{"name":"computer-use"},{"name":"latex"}]}"#,
+        )
+        .unwrap();
         std::fs::write(
             marketplace_dir.join("marketplace.json"),
             r#"{"name":"openai-curated","plugins":[{"name":"gmail"}]}"#,
@@ -719,28 +768,58 @@ mod tests {
         )
         .unwrap();
 
-        let marketplaces = local_plugin_marketplaces_from_home(home);
+        let marketplaces = local_plugin_marketplaces_from_home(home, true);
         let array = marketplaces.as_array().unwrap();
 
-        assert_eq!(array.len(), 3);
-        assert_eq!(array[0]["name"].as_str(), Some("openai-curated"));
-        assert_eq!(array[1]["name"].as_str(), Some("openai-api-curated"));
-        assert_eq!(array[2]["name"].as_str(), Some("openai-curated-remote"));
+        assert_eq!(array.len(), 4);
+        assert_eq!(array[0]["name"].as_str(), Some("openai-bundled"));
+        assert_eq!(array[0]["plugins"].as_array().unwrap().len(), 3);
+        assert_eq!(array[0]["plugins"][0]["name"].as_str(), Some("browser"));
+        assert_eq!(array[0]["plugins"][1]["name"].as_str(), Some("chrome"));
         assert_eq!(
-            array[1]["plugins"][0]["interface"]["displayName"].as_str(),
+            array[0]["plugins"][2]["name"].as_str(),
+            Some("computer-use")
+        );
+        assert_eq!(array[1]["name"].as_str(), Some("openai-curated"));
+        assert_eq!(array[2]["name"].as_str(), Some("openai-api-curated"));
+        assert_eq!(array[3]["name"].as_str(), Some("openai-curated-remote"));
+        assert_eq!(
+            array[2]["plugins"][0]["interface"]["displayName"].as_str(),
             Some("Build Web Apps")
         );
         assert_eq!(
-            array[2]["plugins"][0]["interface"]["displayName"].as_str(),
+            array[3]["plugins"][0]["interface"]["displayName"].as_str(),
             Some("Product Design")
         );
         assert_eq!(
-            array[2]["plugins"][0]["marketplaceName"].as_str(),
+            array[3]["plugins"][0]["marketplaceName"].as_str(),
             Some("openai-curated-remote")
         );
         assert_eq!(
-            array[2]["plugins"][0]["marketplacePath"].as_str(),
+            array[3]["plugins"][0]["marketplacePath"].as_str(),
             Some("openai-curated-remote")
         );
+    }
+
+    #[test]
+    fn local_plugin_marketplaces_omits_bundled_snapshot_when_guard_is_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundled_marketplace_dir = temp
+            .path()
+            .join(".tmp")
+            .join("bundled-marketplaces")
+            .join("openai-bundled")
+            .join(".agents")
+            .join("plugins");
+        std::fs::create_dir_all(&bundled_marketplace_dir).unwrap();
+        std::fs::write(
+            bundled_marketplace_dir.join("marketplace.json"),
+            r#"{"name":"openai-bundled","plugins":[{"name":"browser"}]}"#,
+        )
+        .unwrap();
+
+        let marketplaces = local_plugin_marketplaces_from_home(temp.path(), false);
+
+        assert!(marketplaces.as_array().unwrap().is_empty());
     }
 }

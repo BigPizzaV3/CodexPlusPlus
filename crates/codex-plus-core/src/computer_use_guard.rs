@@ -1,12 +1,13 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use toml_edit::{Array, DocumentMut, Item, Table};
 
 const BUNDLED_MARKETPLACE: &str = "openai-bundled";
-const BUNDLED_MARKETPLACE_PLUGINS: &[&str] = &["browser", "chrome", "computer-use", "latex"];
+const REQUIRED_BUNDLED_PLUGINS: &[&str] = &["browser", "chrome", "computer-use", "latex"];
 const COMPUTER_USE_PLUGINS: &[&str] = &[
     "browser@openai-bundled",
     "chrome@openai-bundled",
@@ -77,6 +78,13 @@ pub(crate) fn ensure_computer_use_config_with_artifacts(
     }
 }
 
+pub(crate) fn ensure_builtin_plugin_state_after_provider_switch(
+    home: &Path,
+) -> anyhow::Result<GuardResult> {
+    let artifacts = resolve_computer_use_guard_artifacts(home)?;
+    ensure_computer_use_config_with_artifacts(home, &artifacts)
+}
+
 #[cfg(windows)]
 fn ensure_computer_use_config_with_artifacts_windows(
     home: &Path,
@@ -102,6 +110,7 @@ fn ensure_computer_use_config_with_artifacts_windows(
     };
     let changed = updated.as_bytes() != existing.as_bytes();
     if changed {
+        backup_config_before_guard_write(home, &existing)?;
         crate::settings::atomic_write(&config_path, updated.as_bytes())?;
     }
     let runtime_compat = ensure_computer_use_runtime_exports_compat_windows(
@@ -219,6 +228,11 @@ pub(crate) fn guard_config_text_with_marketplace(
 
     let features = table_mut_or_insert(&mut doc, "features")?;
     features["js_repl"] = toml_edit::value(true);
+    features["local_shell"] = toml_edit::value(true);
+    features["computer_use"] = toml_edit::value(true);
+
+    let windows = table_mut_or_insert(&mut doc, "windows")?;
+    windows["sandbox"] = toml_edit::value("unelevated");
 
     for plugin_id in COMPUTER_USE_PLUGINS {
         ensure_plugin_enabled(&mut doc, plugin_id)?;
@@ -236,6 +250,28 @@ pub(crate) fn guard_config_text_with_marketplace(
     }
 
     Ok(ensure_trailing_newline(doc.to_string()))
+}
+
+#[cfg(windows)]
+fn backup_config_before_guard_write(
+    home: &Path,
+    existing: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let config_path = home.join("config.toml");
+    if existing.is_empty() && !config_path.is_file() {
+        return Ok(None);
+    }
+    let backup_dir = home.join("backups").join("computer-use-guard");
+    std::fs::create_dir_all(&backup_dir)?;
+    let backup_path = backup_dir.join(format!(
+        "config.toml.{}.bak",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    ));
+    std::fs::write(&backup_path, existing)?;
+    Ok(Some(backup_path))
 }
 
 pub(crate) fn find_computer_use_notify_exe(home: &Path) -> Option<PathBuf> {
@@ -535,20 +571,33 @@ fn path_from_configured_marketplace_source(source: &str) -> PathBuf {
 
 #[cfg(windows)]
 fn is_complete_openai_bundled_marketplace(path: &Path) -> bool {
-    if !path
+    let marketplace_path = path
         .join(".agents")
         .join("plugins")
-        .join("marketplace.json")
-        .is_file()
-    {
+        .join("marketplace.json");
+    let Ok(text) = std::fs::read_to_string(&marketplace_path) else {
         return false;
-    }
-    BUNDLED_MARKETPLACE_PLUGINS.iter().all(|plugin| {
-        path.join("plugins")
-            .join(plugin)
-            .join(".codex-plugin")
-            .join("plugin.json")
-            .is_file()
+    };
+    let Ok(marketplace) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    let Some(plugins) = marketplace
+        .get("plugins")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    REQUIRED_BUNDLED_PLUGINS.iter().all(|plugin| {
+        let listed = plugins
+            .iter()
+            .any(|entry| entry.get("name").and_then(serde_json::Value::as_str) == Some(*plugin));
+        listed
+            && path
+                .join("plugins")
+                .join(plugin)
+                .join(".codex-plugin")
+                .join("plugin.json")
+                .is_file()
     })
 }
 
@@ -588,7 +637,7 @@ fn cache_plugin_root(home: &Path, plugin: &str) -> PathBuf {
 
 #[cfg(windows)]
 fn can_build_marketplace_from_cache(home: &Path) -> bool {
-    BUNDLED_MARKETPLACE_PLUGINS
+    REQUIRED_BUNDLED_PLUGINS
         .iter()
         .all(|plugin| latest_cache_plugin_version(home, plugin).is_some())
 }
@@ -624,6 +673,12 @@ fn latest_cache_plugin_version(home: &Path, plugin: &str) -> Option<PathBuf> {
 
 #[cfg(windows)]
 fn build_marketplace_from_cache(home: &Path, staging: &Path) -> anyhow::Result<()> {
+    let plugins = cached_bundled_plugins(home);
+    for required in REQUIRED_BUNDLED_PLUGINS {
+        if !plugins.iter().any(|(name, _, _)| name == required) {
+            anyhow::bail!("missing cached {required} plugin for openai-bundled marketplace");
+        }
+    }
     let plugins_dir = staging.join("plugins");
     std::fs::create_dir_all(staging.join(".agents").join("plugins"))?;
     std::fs::create_dir_all(&plugins_dir)?;
@@ -632,41 +687,77 @@ fn build_marketplace_from_cache(home: &Path, staging: &Path) -> anyhow::Result<(
             .join(".agents")
             .join("plugins")
             .join("marketplace.json"),
-        bundled_marketplace_json().as_bytes(),
+        bundled_marketplace_json(&plugins).as_bytes(),
     )?;
-    for plugin in BUNDLED_MARKETPLACE_PLUGINS {
-        let Some(source) = latest_cache_plugin_version(home, plugin) else {
-            anyhow::bail!("missing cached {plugin} plugin for openai-bundled marketplace");
-        };
+    for (plugin, source, _) in plugins {
         copy_dir_recursive(&source, &plugins_dir.join(plugin))?;
     }
     Ok(())
 }
 
 #[cfg(windows)]
-fn bundled_marketplace_json() -> String {
-    let plugins = [
-        ("browser", "Engineering"),
-        ("chrome", "Productivity"),
-        ("computer-use", "Productivity"),
-        ("latex", "Research"),
-    ]
-    .into_iter()
-    .map(|(name, category)| {
-        serde_json::json!({
-            "name": name,
-            "source": {
-                "source": "local",
-                "path": format!("./plugins/{name}")
-            },
-            "policy": {
-                "installation": "AVAILABLE",
-                "authentication": "ON_INSTALL"
-            },
-            "category": category
+fn cached_bundled_plugins(home: &Path) -> Vec<(String, PathBuf, String)> {
+    let root = home.join("plugins").join("cache").join(BUNDLED_MARKETPLACE);
+    let mut plugins = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return plugins;
+    };
+    for entry in entries.flatten() {
+        let plugin_root = entry.path();
+        if !plugin_root.is_dir() {
+            continue;
+        }
+        let Some(name) = plugin_root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let Some(source) = latest_cache_plugin_version(home, &name) else {
+            continue;
+        };
+        let category = bundled_plugin_category(&source);
+        plugins.push((name, source, category));
+    }
+    plugins.sort_by(|left, right| left.0.cmp(&right.0));
+    plugins
+}
+
+#[cfg(windows)]
+fn bundled_plugin_category(plugin_root: &Path) -> String {
+    let manifest_path = plugin_root.join(".codex-plugin").join("plugin.json");
+    std::fs::read_to_string(manifest_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|manifest| {
+            manifest
+                .pointer("/interface/category")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
         })
-    })
-    .collect::<Vec<_>>();
+        .unwrap_or_else(|| "Productivity".to_string())
+}
+
+#[cfg(windows)]
+fn bundled_marketplace_json(plugin_sources: &[(String, PathBuf, String)]) -> String {
+    let plugins = plugin_sources
+        .iter()
+        .map(|(name, _, category)| {
+            serde_json::json!({
+                "name": name,
+                "source": {
+                    "source": "local",
+                    "path": format!("./plugins/{name}")
+                },
+                "policy": {
+                    "installation": "AVAILABLE",
+                    "authentication": "ON_INSTALL"
+                },
+                "category": category
+            })
+        })
+        .collect::<Vec<_>>();
     serde_json::to_string_pretty(&serde_json::json!({
         "name": BUNDLED_MARKETPLACE,
         "interface": {
@@ -791,6 +882,10 @@ mod tests {
 
         assert!(!updated.as_bytes().starts_with(&[0xef, 0xbb, 0xbf]));
         assert!(updated.contains("js_repl = true"));
+        assert!(updated.contains("local_shell = true"));
+        assert!(updated.contains("computer_use = true"));
+        assert!(updated.contains("[windows]"));
+        assert!(updated.contains("sandbox = \"unelevated\""));
         assert!(updated.contains("[plugins.\"browser@openai-bundled\"]"));
         assert!(updated.contains("[plugins.\"chrome@openai-bundled\"]"));
         assert!(updated.contains("[plugins.\"computer-use@openai-bundled\"]"));
@@ -814,6 +909,10 @@ mod tests {
 
         assert!(updated.contains("[features]"));
         assert!(updated.contains("js_repl = true"));
+        assert!(updated.contains("local_shell = true"));
+        assert!(updated.contains("computer_use = true"));
+        assert!(updated.contains("[windows]"));
+        assert!(updated.contains("sandbox = \"unelevated\""));
         for plugin_id in COMPUTER_USE_PLUGINS {
             assert!(updated.contains(&format!("[plugins.\"{plugin_id}\"]")));
         }
@@ -836,6 +935,45 @@ mod tests {
         assert_eq!(
             parsed["marketplaces"]["openai-bundled"]["source"].as_str(),
             Some(r"\\?\C:\Users\me\.codex\.tmp\bundled-marketplaces\openai-bundled")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ensure_computer_use_config_writes_backup_before_config_update() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let config_path = home.join("config.toml");
+        let original = "model = \"gpt-5\"\n";
+        std::fs::write(&config_path, original).unwrap();
+        let marketplace = home
+            .join(".tmp")
+            .join("bundled-marketplaces")
+            .join(BUNDLED_MARKETPLACE);
+        let artifacts = GuardArtifacts {
+            notify_exe: None,
+            marketplace_path: Some(marketplace),
+            sky_package_json: None,
+            runtime_exports_needed: false,
+        };
+
+        let result = ensure_computer_use_config_with_artifacts_windows(home, &artifacts).unwrap();
+
+        assert!(result.changed);
+        let updated = std::fs::read_to_string(&config_path).unwrap();
+        assert!(updated.contains("computer_use = true"));
+        assert!(updated.contains("[windows]"));
+        assert!(updated.contains("sandbox = \"unelevated\""));
+        assert!(updated.contains("[marketplaces.openai-bundled]"));
+        let backup_dir = home.join("backups").join("computer-use-guard");
+        let backups = std::fs::read_dir(&backup_dir)
+            .unwrap()
+            .flatten()
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(backups[0].path()).unwrap(),
+            original
         );
     }
 
@@ -1040,19 +1178,22 @@ mod tests {
             .join(".tmp")
             .join("bundled-marketplaces")
             .join(BUNDLED_MARKETPLACE);
-        std::fs::create_dir_all(active.join("plugins").join("chrome").join(".codex-plugin"))
-            .unwrap();
+        std::fs::create_dir_all(active.join(".agents").join("plugins")).unwrap();
         std::fs::write(
             active
+                .join(".agents")
                 .join("plugins")
-                .join("chrome")
-                .join(".codex-plugin")
-                .join("plugin.json"),
-            "{}",
+                .join("marketplace.json"),
+            r#"{"name":"openai-bundled","plugins":[{"name":"chrome"}]}"#,
         )
         .unwrap();
+        for plugin in REQUIRED_BUNDLED_PLUGINS {
+            let plugin_root = active.join("plugins").join(plugin).join(".codex-plugin");
+            std::fs::create_dir_all(&plugin_root).unwrap();
+            std::fs::write(plugin_root.join("plugin.json"), "{}").unwrap();
+        }
 
-        for plugin in BUNDLED_MARKETPLACE_PLUGINS {
+        for plugin in REQUIRED_BUNDLED_PLUGINS {
             let root = home
                 .join("plugins")
                 .join("cache")
@@ -1063,6 +1204,19 @@ mod tests {
             std::fs::write(root.join(".codex-plugin").join("plugin.json"), "{}").unwrap();
             std::fs::write(root.join("payload.txt"), plugin).unwrap();
         }
+        let visualize_root = home
+            .join("plugins")
+            .join("cache")
+            .join(BUNDLED_MARKETPLACE)
+            .join("visualize")
+            .join("1.0.11");
+        std::fs::create_dir_all(visualize_root.join(".codex-plugin")).unwrap();
+        std::fs::write(
+            visualize_root.join(".codex-plugin").join("plugin.json"),
+            r#"{"interface":{"category":"Productivity"}}"#,
+        )
+        .unwrap();
+        std::fs::write(visualize_root.join("payload.txt"), "visualize").unwrap();
 
         let repaired = ensure_openai_bundled_marketplace(home).unwrap().unwrap();
         assert_eq!(repaired, active);
@@ -1081,7 +1235,8 @@ mod tests {
         )
         .unwrap();
         assert!(marketplace.contains("\"computer-use\""));
-        for plugin in BUNDLED_MARKETPLACE_PLUGINS {
+        assert!(marketplace.contains("\"visualize\""));
+        for plugin in REQUIRED_BUNDLED_PLUGINS {
             assert!(
                 active
                     .join("plugins")
@@ -1096,6 +1251,11 @@ mod tests {
                 *plugin
             );
         }
+        assert_eq!(
+            std::fs::read_to_string(active.join("plugins").join("visualize").join("payload.txt"))
+                .unwrap(),
+            "visualize"
+        );
         let backup_count = std::fs::read_dir(active.parent().unwrap())
             .unwrap()
             .flatten()
@@ -1119,15 +1279,25 @@ mod tests {
         let configured = parent.join("openai-bundled.guard-staging-existing");
         std::fs::create_dir_all(active.join("plugins")).unwrap();
         std::fs::create_dir_all(configured.join(".agents").join("plugins")).unwrap();
+        let configured_plugins = REQUIRED_BUNDLED_PLUGINS
+            .iter()
+            .map(|name| {
+                (
+                    (*name).to_string(),
+                    PathBuf::new(),
+                    "Productivity".to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
         std::fs::write(
             configured
                 .join(".agents")
                 .join("plugins")
                 .join("marketplace.json"),
-            "{}",
+            bundled_marketplace_json(&configured_plugins),
         )
         .unwrap();
-        for plugin in BUNDLED_MARKETPLACE_PLUGINS {
+        for plugin in REQUIRED_BUNDLED_PLUGINS {
             let plugin_root = configured
                 .join("plugins")
                 .join(plugin)

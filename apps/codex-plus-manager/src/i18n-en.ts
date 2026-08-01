@@ -366,7 +366,7 @@ export const EN_PLAIN: Record<string, string> = {
   "启用": "Enable",
   "启用 Codex 图片覆盖层": "Enable Codex image overlay",
   "启用 Codex增强": "Enable Codex enhancements",
-  "启用 Windows Computer Use Guard": "Enable Windows Computer Use Guard",
+  "强制启用 Windows Computer Use Guard": "Force-enable Windows Computer Use Guard",
   "启用供应商配置切换": "Enable provider configuration switching",
   "启用此扩展项": "Enable this entry",
   "启用目标功能": "Enable goals feature",
@@ -793,8 +793,8 @@ export const EN_PLAIN: Record<string, string> = {
   "额外参数": "Extra arguments",
   "高级选项，默认关闭；当前实现不主动改写 Zed settings。": "Advanced option, off by default; the current implementation doesn't actively modify Zed settings.",
   "默认中转": "Default relay",
-  "默认关闭；开启后启动 Codex 时会自动保留官方 Computer Use 插件所需的 config.toml、bundled 插件和 notify 配置。":
-    "Off by default; when on, launching Codex automatically preserves the config.toml, bundled plugins and notify config required by the official Computer Use plugin.",
+  "插件市场解锁在完整增强模式下会自动准备 Browser、Chrome、Computer Use 的本地 bundled 状态；此开关用于在其他场景中强制执行同一守护。":
+    "Plugin marketplace unlock automatically prepares local bundled Browser, Chrome and Computer Use state in full enhancement mode; this switch force-runs the same guard in other scenarios.",
   "默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。":
     "The model name used by default when launching Codex; don't include a suffix. Configure context windows per model in the “Model list” below.",
   "默认关闭；无 VPN 时可开启，让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。":

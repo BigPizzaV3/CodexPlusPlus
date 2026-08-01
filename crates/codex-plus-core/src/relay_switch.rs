@@ -42,10 +42,7 @@ pub fn switch_relay_profile_in_home(
 
     match apply_selected_relay_profile(home, &selected_settings) {
         Ok(result) => {
-            crate::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
-                home,
-                "relay_switch.after",
-            );
+            finish_provider_switch_state_sync(home, &selected_settings, "relay_switch.after");
             Ok(result)
         }
         Err(error) => {
@@ -110,6 +107,40 @@ fn restore_optional_file(path: &Path, contents: Option<&[u8]>) -> anyhow::Result
     }
 }
 
+fn finish_provider_switch_state_sync(home: &Path, settings: &BackendSettings, source: &str) {
+    if settings.codex_app_plugin_marketplace_unlock {
+        match crate::plugin_marketplace::ensure_openai_curated_remote_marketplace_available(home) {
+            Ok(result) => {
+                if result.initialized || result.configured {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "relay_switch.remote_plugin_marketplace_ready",
+                        serde_json::json!({
+                            "source": source,
+                            "initialized": result.initialized,
+                            "configured": result.configured,
+                        }),
+                    );
+                }
+            }
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "relay_switch.remote_plugin_marketplace_failed",
+                    serde_json::json!({
+                        "source": source,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+    if settings.builtin_plugin_guard_enabled() {
+        crate::codex_app_state::ensure_builtin_plugin_state_after_provider_switch_nonfatal(
+            home, source,
+        );
+    }
+    crate::codex_app_state::sync_app_state_after_provider_switch_nonfatal(home, source);
+}
+
 fn backfill_profile_before_switch(
     home: &Path,
     settings: &mut BackendSettings,
@@ -140,7 +171,7 @@ fn apply_selected_relay_profile(
         crate::relay_config::clear_relay_config_to_home_with_auth_and_computer_use_guard(
             home,
             auth_contents,
-            settings.computer_use_guard_enabled,
+            settings.builtin_plugin_guard_enabled(),
         )?
     } else {
         validate_switch_profile_files(&relay)?;
@@ -148,7 +179,7 @@ fn apply_selected_relay_profile(
             home,
             &relay,
             &common_config,
-            settings.computer_use_guard_enabled,
+            settings.builtin_plugin_guard_enabled(),
         )?
     };
     let status = relay_config_status_from_home(home);

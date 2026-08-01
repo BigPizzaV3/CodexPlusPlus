@@ -964,6 +964,13 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("mergeLocalPluginMarketplaces(result)"));
     assert!(script.contains("plugin_marketplace_local_merged"));
     assert!(script.contains("plugin_marketplace_remote_auth_fallback"));
+    assert!(script.contains(
+        "marketplaceName === \"openai-bundled\" && !guardedBuiltinPluginNames.has(guardedBuiltinPluginName(plugin))"
+    ));
+    assert!(script.contains("patchGuardedBuiltinPluginAvailability"));
+    assert!(script.contains("plugin_builtin_availability_repaired"));
+    assert!(script.contains("new Set([\"browser\", \"chrome\", \"computer-use\"])"));
+    assert!(script.contains("installation: \"AVAILABLE\""));
     assert!(script.contains("cloned.marketplaceName = marketplaceName"));
     assert!(script.contains("cloned.marketplacePath = marketplaceName"));
     assert!(script.contains("restorePluginMarketplaceName"));
@@ -994,6 +1001,132 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(!script.contains("marketplace.path ="));
     assert!(!script.contains("codexPluginMarketplacePathAliasForName"));
     assert!(!script.contains("spoofAnyCodexAuthContext"));
+}
+
+#[test]
+fn injection_script_does_not_log_noop_plugin_auto_expand_cycles() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("if ((window.__codexPluginAutoExpandClicks || 0) > 0 || !!button)"));
+}
+
+#[test]
+fn injection_script_restores_only_missing_guarded_bundled_plugins() {
+    let cases = run_plugin_marketplace_merge_contract_harness();
+
+    assert_eq!(cases["addedPlugins"], 1);
+    assert_eq!(
+        cases["pluginNames"],
+        json!(["browser", "chrome", "computer-use", "latex", "visualize"])
+    );
+    assert_eq!(cases["browserAvailable"], true);
+    assert_eq!(cases["browserDisabled"], false);
+    assert_eq!(cases["browserInstallation"], "AVAILABLE");
+    assert_eq!(cases["latexCount"], 1);
+    assert_eq!(cases["visualizeCount"], 1);
+}
+
+fn run_plugin_marketplace_merge_contract_harness() -> serde_json::Value {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("renderer-inject.js");
+    let harness_path = temp.path().join("plugin-marketplace-harness.cjs");
+    std::fs::write(&script_path, assets::injection_script(57321))
+        .expect("injection script should be written");
+    std::fs::write(
+        &harness_path,
+        format!(
+            r#"
+const scriptPath = {script_path};
+const store = new Map();
+function node() {{
+  return {{
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
+    closest() {{ return null; }}, getBoundingClientRect() {{ return {{ width: 0, height: 0, top: 0, left: 0 }}; }},
+    classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
+    dataset: {{}}, style: {{}}, children: [], isConnected: true, textContent: "", innerHTML: "",
+  }};
+}}
+globalThis.window = globalThis;
+window.__CODEX_PLUS_TEST_PLUGIN_MARKETPLACE__ = true;
+window.addEventListener = () => {{}};
+window.removeEventListener = () => {{}};
+window.dispatchEvent = () => true;
+globalThis.Element = class Element {{}};
+globalThis.HTMLElement = class HTMLElement extends Element {{}};
+globalThis.HTMLAnchorElement = class HTMLAnchorElement extends HTMLElement {{}};
+globalThis.MutationObserver = class MutationObserver {{ observe() {{}} disconnect() {{}} }};
+globalThis.ResizeObserver = class ResizeObserver {{ observe() {{}} disconnect() {{}} }};
+globalThis.requestAnimationFrame = () => 0;
+globalThis.cancelAnimationFrame = () => {{}};
+globalThis.getComputedStyle = () => ({{ display: "none", visibility: "hidden", pointerEvents: "none" }});
+globalThis.document = {{
+  scripts: [], documentElement: node(), body: node(), createElement: () => node(),
+  getElementById: () => null, querySelector: () => null, querySelectorAll: () => [],
+  addEventListener() {{}}, removeEventListener() {{}},
+}};
+globalThis.localStorage = {{
+  getItem: (key) => store.has(key) ? store.get(key) : null,
+  setItem: (key, value) => store.set(key, String(value)), removeItem: (key) => store.delete(key),
+}};
+store.set("codexPlusSettings", JSON.stringify({{ modelWhitelistUnlock: false, pluginAutoExpand: false }}));
+globalThis.sessionStorage = globalThis.localStorage;
+globalThis.location = {{ href: "https://codex.test/index.html", pathname: "/index.html", search: "", hash: "" }};
+window.location = globalThis.location;
+globalThis.navigator = {{ userAgent: "node-test" }};
+globalThis.performance = {{ getEntriesByType: () => [] }};
+require(scriptPath);
+window.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = [{{
+  name: "openai-bundled",
+  plugins: [
+    {{ name: "browser", marketplaceName: "openai-bundled", policy: {{}} }},
+    {{ name: "chrome", marketplaceName: "openai-bundled", policy: {{}} }},
+    {{ name: "computer-use", marketplaceName: "openai-bundled", policy: {{}} }},
+    {{ name: "latex", marketplaceName: "openai-bundled" }},
+  ],
+}}];
+const api = window.__codexPlusPluginMarketplaceTest;
+const result = {{ marketplaces: [{{
+  name: "openai-bundled",
+  plugins: [
+    {{ name: "chrome", marketplaceName: "openai-bundled", hidden: true, disabled: true }},
+    {{ name: "computer-use", marketplaceName: "openai-bundled", hidden: true, disabled: true }},
+    {{ name: "latex", marketplaceName: "openai-bundled" }},
+    {{ name: "visualize", marketplaceName: "openai-bundled" }},
+  ],
+}}] }};
+const merge = api.mergeLocalPluginMarketplaces(result);
+const plugins = result.marketplaces[0].plugins;
+const browser = plugins.find((plugin) => plugin.name === "browser");
+const output = {{
+  addedPlugins: merge.addedPlugins,
+  pluginNames: plugins.map((plugin) => plugin.name).sort(),
+  browserAvailable: browser.available,
+  browserDisabled: browser.disabled,
+  browserInstallation: browser.policy.installation,
+  latexCount: plugins.filter((plugin) => plugin.name === "latex").length,
+  visualizeCount: plugins.filter((plugin) => plugin.name === "visualize").length,
+}};
+process.stdout.write(JSON.stringify(output));
+process.exit(0);
+"#,
+            script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+                .expect("script path should serialize")
+        ),
+    )
+    .expect("harness should be written");
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should run plugin marketplace harness");
+    assert!(
+        output.status.success(),
+        "node harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("harness stdout should be JSON")
 }
 
 #[test]

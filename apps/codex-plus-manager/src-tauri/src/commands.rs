@@ -1966,6 +1966,7 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
         .filter(|value| !value.is_empty());
     let target_for_settings = target_provider.clone();
     let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let settings = SettingsStore::default().load().unwrap_or_default();
     prepare_codex_app_state_before_provider_switch(&home, "manager.sync_providers_now.before");
     let result = tauri::async_runtime::spawn_blocking(move || {
         codex_plus_data::run_provider_sync_with_target(None, target_provider.as_deref())
@@ -1982,6 +1983,7 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
                 );
                 finish_codex_app_state_after_provider_switch(
                     &home,
+                    &settings,
                     "manager.sync_providers_now.after",
                 );
             }
@@ -3413,6 +3415,7 @@ fn provider_doctor_recommendation(checks: &[ProviderDoctorCheck]) -> String {
 pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let settings = SettingsStore::default().load().unwrap_or_default();
+    prepare_codex_app_state_before_provider_switch(&home, "manager.apply_relay_injection.before");
     if !settings.relay_profiles_enabled {
         let status = codex_plus_core::relay_config::relay_status_from_home(&home);
         return failed(
@@ -3420,29 +3423,30 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
             relay_payload(status, None),
         );
     }
-    prepare_codex_app_state_before_provider_switch(&home, "manager.apply_relay_injection.before");
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
     if settings.active_aggregate_relay_profile().is_some() {
-        let response = apply_aggregate_relay_injection_to_home(&home);
-        if response.status == "ok" {
+        let result = apply_aggregate_relay_injection_to_home(&home);
+        if result.status == "ok" {
             finish_codex_app_state_after_provider_switch(
                 &home,
+                &settings,
                 "manager.apply_relay_injection.aggregate",
             );
         }
-        return response;
+        return result;
     }
     if relay_has_complete_files(&relay) {
         return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
             &home,
             &relay,
             &relay_combined_common_config(&settings),
-            settings.computer_use_guard_enabled,
+            settings.builtin_plugin_guard_enabled(),
         ) {
             Ok(result) => {
                 finish_codex_app_state_after_provider_switch(
                     &home,
+                    &settings,
                     "manager.apply_relay_injection.profile",
                 );
                 let status = codex_plus_core::relay_config::relay_status_from_home(&home);
@@ -3501,6 +3505,7 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         Ok(result) => {
             finish_codex_app_state_after_provider_switch(
                 &home,
+                &settings,
                 "manager.apply_relay_injection.generated",
             );
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
@@ -3564,6 +3569,10 @@ fn apply_aggregate_relay_injection_to_home(home: &Path) -> CommandResult<RelayPa
 pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let settings = SettingsStore::default().load().unwrap_or_default();
+    prepare_codex_app_state_before_provider_switch(
+        &home,
+        "manager.apply_pure_api_injection.before",
+    );
     if !settings.relay_profiles_enabled {
         let status = codex_plus_core::relay_config::relay_status_from_home(&home);
         return failed(
@@ -3571,10 +3580,6 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
             relay_payload(status, None),
         );
     }
-    prepare_codex_app_state_before_provider_switch(
-        &home,
-        "manager.apply_pure_api_injection.before",
-    );
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_pure_api_injection", &settings, &relay);
     if relay_has_complete_files(&relay) {
@@ -3582,11 +3587,12 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
             &home,
             &relay,
             &relay_combined_common_config(&settings),
-            settings.computer_use_guard_enabled,
+            settings.builtin_plugin_guard_enabled(),
         ) {
             Ok(result) => {
                 finish_codex_app_state_after_provider_switch(
                     &home,
+                    &settings,
                     "manager.apply_pure_api_injection.profile",
                 );
                 let status = codex_plus_core::relay_config::relay_status_from_home(&home);
@@ -3635,6 +3641,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
         Ok(result) => {
             finish_codex_app_state_after_provider_switch(
                 &home,
+                &settings,
                 "manager.apply_pure_api_injection.generated",
             );
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
@@ -3689,6 +3696,7 @@ pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
         Ok(result) => {
             finish_codex_app_state_after_provider_switch(
                 &home,
+                &settings,
                 "manager.clear_relay_injection.after",
             );
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
@@ -3725,7 +3733,43 @@ fn prepare_codex_app_state_before_provider_switch(home: &Path, source: &str) {
     codex_plus_core::codex_app_state::capture_app_state_snapshot_nonfatal(home, source);
 }
 
-fn finish_codex_app_state_after_provider_switch(home: &Path, source: &str) {
+fn finish_codex_app_state_after_provider_switch(
+    home: &Path,
+    settings: &BackendSettings,
+    source: &str,
+) {
+    if settings.codex_app_plugin_marketplace_unlock {
+        match codex_plus_core::plugin_marketplace::ensure_openai_curated_remote_marketplace_available(
+            home,
+        ) {
+            Ok(result) => {
+                if result.initialized || result.configured {
+                    log_manager_event(
+                        "manager.remote_plugin_marketplace_ready",
+                        json!({
+                            "source": source,
+                            "initialized": result.initialized,
+                            "configured": result.configured,
+                        }),
+                    );
+                }
+            }
+            Err(error) => {
+                log_manager_event(
+                    "manager.remote_plugin_marketplace_failed",
+                    json!({
+                        "source": source,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+    if settings.builtin_plugin_guard_enabled() {
+        codex_plus_core::codex_app_state::ensure_builtin_plugin_state_after_provider_switch_nonfatal(
+            home, source,
+        );
+    }
     codex_plus_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(home, source);
 }
 
@@ -4288,7 +4332,8 @@ mod tests {
             json!({"electron-saved-workspace-roots": ["D:/fresh/app"]}).to_string(),
         )
         .unwrap();
-        finish_codex_app_state_after_provider_switch(&home, "test.after");
+        let settings = BackendSettings::default();
+        finish_codex_app_state_after_provider_switch(&home, &settings, "test.after");
 
         let state: Value =
             serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
@@ -5077,6 +5122,130 @@ mod tests {
         assert_eq!(result.payload.settings.relay_profiles.len(), 1);
         assert_eq!(result.payload.settings.relay_profiles[0].id, "supplier-a");
         assert_eq!(result.payload.settings.relay_profiles[0].api_key, "sk-test");
+    }
+
+    #[test]
+    fn provider_switch_state_helpers_restore_allowed_app_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("codex-home");
+        std::fs::create_dir(&home).unwrap();
+        let state_path = home.join(".codex-global-state.json");
+        std::fs::write(
+            &state_path,
+            json!({
+                "electron-saved-workspace-roots": ["C:/work/app"],
+                "thread-workspace-root-hints": {
+                    "thread-1": "C:/work/app"
+                },
+                "electron-persisted-atom-state": {
+                    "default-service-tier": "priority",
+                    "plugin-marketplace-unlocked": true,
+                    "prompt-history": ["secret"]
+                },
+                "computer-use-bundled-plugin-auto-install-disabled": true,
+                "prompt-history": ["secret"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        #[cfg(windows)]
+        {
+            let marketplace = home
+                .join(".tmp")
+                .join("bundled-marketplaces")
+                .join("openai-bundled");
+            std::fs::create_dir_all(marketplace.join(".agents").join("plugins")).unwrap();
+            std::fs::write(
+                marketplace
+                    .join(".agents")
+                    .join("plugins")
+                    .join("marketplace.json"),
+                json!({
+                    "name": "openai-bundled",
+                    "plugins": [
+                        {"name": "browser"},
+                        {"name": "chrome"},
+                        {"name": "computer-use"},
+                        {"name": "latex"}
+                    ]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            for plugin in ["browser", "chrome", "computer-use", "latex"] {
+                let plugin_root = marketplace
+                    .join("plugins")
+                    .join(plugin)
+                    .join(".codex-plugin");
+                std::fs::create_dir_all(&plugin_root).unwrap();
+                std::fs::write(plugin_root.join("plugin.json"), "{}").unwrap();
+            }
+        }
+        prepare_codex_app_state_before_provider_switch(&home, "test.before");
+        std::fs::write(
+            &state_path,
+            json!({"electron-saved-workspace-roots": ["D:/fresh/app"]}).to_string(),
+        )
+        .unwrap();
+        let settings = BackendSettings {
+            codex_app_plugin_marketplace_unlock: false,
+            computer_use_guard_enabled: true,
+            ..BackendSettings::default()
+        };
+
+        finish_codex_app_state_after_provider_switch(&home, &settings, "test.after");
+
+        let state: Value =
+            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+        assert_eq!(
+            state["electron-saved-workspace-roots"],
+            json!(["D:\\fresh\\app", "C:\\work\\app"])
+        );
+        assert_eq!(
+            state["thread-workspace-root-hints"]["thread-1"],
+            "C:/work/app"
+        );
+        assert_eq!(
+            state["electron-persisted-atom-state"]["default-service-tier"],
+            "priority"
+        );
+        assert!(
+            state["electron-persisted-atom-state"]
+                .get("plugin-marketplace-unlocked")
+                .is_none()
+        );
+        assert!(
+            state
+                .get("computer-use-bundled-plugin-auto-install-disabled")
+                .is_none()
+        );
+        assert!(state.get("prompt-history").is_none());
+        assert!(
+            state["electron-persisted-atom-state"]
+                .get("prompt-history")
+                .is_none()
+        );
+        assert!(
+            home.join("backups_state/app-state-sync/latest-safe-state.json")
+                .is_file()
+        );
+        #[cfg(windows)]
+        {
+            let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+            assert!(config.contains("[marketplaces.openai-bundled]"));
+            assert!(config.contains("[plugins.\"browser@openai-bundled\"]"));
+            assert!(config.contains("[plugins.\"chrome@openai-bundled\"]"));
+            assert!(config.contains("[plugins.\"computer-use@openai-bundled\"]"));
+            assert!(config.contains("computer_use = true"));
+            assert!(config.contains("sandbox = \"unelevated\""));
+        }
+        let backup_root = home.join("backups_state/app-state-sync");
+        let backup_count = std::fs::read_dir(&backup_root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().join(".codex-global-state.json").is_file())
+            .count();
+        assert_eq!(backup_count, 1);
     }
 
     #[test]

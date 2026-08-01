@@ -300,7 +300,7 @@ goals = true
 }
 
 #[test]
-fn switch_captures_safe_app_state_before_writing_provider_config() {
+fn switch_preserves_safe_app_state_and_builtin_plugin_recovery() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("codex");
     std::fs::create_dir(&home).unwrap();
@@ -309,14 +309,69 @@ fn switch_captures_safe_app_state_before_writing_provider_config() {
         serde_json::json!({
             "electron-saved-workspace-roots": ["C:/work/app"],
             "prompt-history": ["do-not-copy"],
+            "thread-workspace-root-hints": {
+                "thread-1": "C:/work/app"
+            },
+            "thread-projectless-output-directories": {
+                "thread-1": "C:/work/app/out"
+            },
+            "projectless-thread-ids": ["thread-1"],
             "electron-persisted-atom-state": {
                 "default-service-tier": "priority",
+                "plugin-marketplace-unlocked": true,
                 "provider-token-cache": "do-not-copy"
-            }
+            },
+            "computer-use-bundled-plugin-auto-install-disabled": true
         })
         .to_string(),
     )
     .unwrap();
+    #[cfg(windows)]
+    {
+        let marketplace = home
+            .join(".tmp")
+            .join("bundled-marketplaces")
+            .join("openai-bundled");
+        std::fs::create_dir_all(marketplace.join(".agents").join("plugins")).unwrap();
+        std::fs::write(
+            marketplace
+                .join(".agents")
+                .join("plugins")
+                .join("marketplace.json"),
+            serde_json::json!({
+                "name": "openai-bundled",
+                "plugins": [
+                    {"name": "browser"},
+                    {"name": "chrome"},
+                    {"name": "computer-use"},
+                    {"name": "latex"}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        for plugin in ["browser", "chrome", "computer-use", "latex"] {
+            let plugin_root = marketplace
+                .join("plugins")
+                .join(plugin)
+                .join(".codex-plugin");
+            std::fs::create_dir_all(&plugin_root).unwrap();
+            std::fs::write(plugin_root.join("plugin.json"), "{}").unwrap();
+        }
+    }
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://a.example/v1"
+"#,
+    )
+    .unwrap();
+    std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"sk-a"}"#).unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let original = BackendSettings {
         active_relay_id: "a".to_string(),
@@ -324,12 +379,16 @@ fn switch_captures_safe_app_state_before_writing_provider_config() {
             pure_profile("a", "https://a.example/v1", "sk-a"),
             pure_profile("b", "https://b.example/v1", "sk-b"),
         ],
+        codex_app_plugin_marketplace_unlock: true,
+        computer_use_guard_enabled: true,
         ..BackendSettings::default()
     };
     store.save(&original).unwrap();
     let next = BackendSettings {
         active_relay_id: "b".to_string(),
         relay_profiles: original.relay_profiles.clone(),
+        codex_app_plugin_marketplace_unlock: true,
+        computer_use_guard_enabled: true,
         ..BackendSettings::default()
     };
 
@@ -358,6 +417,45 @@ fn switch_captures_safe_app_state_before_writing_provider_config() {
             .get("provider-token-cache")
             .is_none()
     );
+    let state: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.join(".codex-global-state.json")).unwrap(),
+    )
+    .unwrap();
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert_eq!(
+        state["electron-persisted-atom-state"]["default-service-tier"],
+        "priority"
+    );
+    assert_eq!(
+        state["electron-persisted-atom-state"]["plugin-marketplace-unlocked"],
+        true
+    );
+    assert_eq!(
+        state["thread-workspace-root-hints"]["thread-1"],
+        "C:/work/app"
+    );
+    assert_eq!(
+        state["thread-projectless-output-directories"]["thread-1"],
+        "C:/work/app/out"
+    );
+    assert_eq!(
+        state["projectless-thread-ids"],
+        serde_json::json!(["thread-1"])
+    );
+    assert!(
+        home.join("backups_state/app-state-sync/latest-safe-state.json")
+            .is_file()
+    );
+    assert!(config.contains("[marketplaces.openai-curated-remote]"));
+    #[cfg(windows)]
+    {
+        assert!(config.contains("[marketplaces.openai-bundled]"));
+        assert!(config.contains("[plugins.\"browser@openai-bundled\"]"));
+        assert!(config.contains("[plugins.\"chrome@openai-bundled\"]"));
+        assert!(config.contains("[plugins.\"computer-use@openai-bundled\"]"));
+        assert!(config.contains("computer_use = true"));
+        assert!(config.contains("sandbox = \"unelevated\""));
+    }
 }
 
 fn pure_profile(id: &str, base_url: &str, key: &str) -> RelayProfile {

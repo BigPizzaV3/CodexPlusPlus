@@ -324,6 +324,16 @@ impl LaunchHooks for LauncherHooks {
         self.core.ensure_computer_use_config(settings).await
     }
 
+    async fn ensure_builtin_plugin_state_after_provider_switch(
+        &self,
+        settings: &codex_plus_core::settings::BackendSettings,
+        source: &str,
+    ) -> anyhow::Result<()> {
+        self.core
+            .ensure_builtin_plugin_state_after_provider_switch(settings, source)
+            .await
+    }
+
     async fn ensure_plugin_marketplace_config(
         &self,
         settings: &codex_plus_core::settings::BackendSettings,
@@ -874,6 +884,10 @@ mod tests {
         assert!(source.contains("inject_with_context(debug_port, helper_port, ctx, runtime)"));
         assert!(source.contains("async fn ensure_computer_use_config"));
         assert!(source.contains("self.core.ensure_computer_use_config(settings).await"));
+        assert!(source.contains("async fn ensure_builtin_plugin_state_after_provider_switch"));
+        assert!(
+            source.contains(".ensure_builtin_plugin_state_after_provider_switch(settings, source)")
+        );
         assert!(source.contains("async fn ensure_plugin_marketplace_config"));
         assert!(source.contains("self.core.ensure_plugin_marketplace_config(settings).await"));
         assert!(source.contains("async fn start_computer_use_guard_watchdog"));

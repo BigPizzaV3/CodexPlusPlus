@@ -675,6 +675,13 @@ impl BackendSettings {
         self.active_aggregate_relay_profile().is_some()
             || self.active_relay_profile().protocol == RelayProtocol::ChatCompletions
     }
+
+    pub fn builtin_plugin_guard_enabled(&self) -> bool {
+        self.computer_use_guard_enabled
+            || (self.enhancements_enabled
+                && self.launch_mode != LaunchMode::Relay
+                && self.codex_app_plugin_marketplace_unlock)
+    }
 }
 
 pub fn default_stepwise_api_key_env() -> String {
@@ -1596,6 +1603,7 @@ mod tests {
         assert!(settings.enhancements_enabled);
         assert!(!settings.computer_use_guard_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
+        assert!(settings.builtin_plugin_guard_enabled());
         assert!(settings.codex_app_plugin_auto_expand);
         assert!(!settings.codex_app_thread_id_badge);
         assert!(settings.codex_app_force_chinese_locale);
@@ -1628,6 +1636,41 @@ mod tests {
         assert_eq!(settings.codex_app_stepwise_max_input_chars, 6000);
         assert_eq!(settings.codex_app_stepwise_max_output_tokens, 500);
         assert_eq!(settings.codex_app_stepwise_timeout_ms, 8000);
+    }
+
+    #[test]
+    fn builtin_plugin_guard_follows_plugin_unlock_and_force_switch() {
+        assert!(BackendSettings::default().builtin_plugin_guard_enabled());
+
+        let disabled = BackendSettings {
+            codex_app_plugin_marketplace_unlock: false,
+            computer_use_guard_enabled: false,
+            ..BackendSettings::default()
+        };
+        assert!(!disabled.builtin_plugin_guard_enabled());
+
+        let force_enabled = BackendSettings {
+            codex_app_plugin_marketplace_unlock: false,
+            computer_use_guard_enabled: true,
+            ..BackendSettings::default()
+        };
+        assert!(force_enabled.builtin_plugin_guard_enabled());
+
+        let relay_mode = BackendSettings {
+            launch_mode: LaunchMode::Relay,
+            computer_use_guard_enabled: false,
+            codex_app_plugin_marketplace_unlock: true,
+            ..BackendSettings::default()
+        };
+        assert!(!relay_mode.builtin_plugin_guard_enabled());
+
+        let enhancements_disabled = BackendSettings {
+            enhancements_enabled: false,
+            computer_use_guard_enabled: false,
+            codex_app_plugin_marketplace_unlock: true,
+            ..BackendSettings::default()
+        };
+        assert!(!enhancements_disabled.builtin_plugin_guard_enabled());
     }
 
     #[test]

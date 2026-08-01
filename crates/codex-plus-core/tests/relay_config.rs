@@ -662,12 +662,15 @@ fn apply_relay_files_preserves_live_desktop_personalization_settings() {
         r#"model = "old"
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
-sandbox_workspace_write = ["C:/workspace"]
+
+[sandbox_workspace_write]
+network_access = true
 
 [desktop]
 composerEnterBehavior = "cmdAlways"
 followUpQueueMode = "queue"
 selected-avatar-id = "avatar-local"
+show-context-window-usage = false
 "#,
     )
     .unwrap();
@@ -677,7 +680,6 @@ selected-avatar-id = "avatar-local"
         r#"model_provider = "custom"
 sandbox_mode = "read-only"
 approval_policy = "on-request"
-sandbox_workspace_write = []
 
 [desktop]
 composerEnterBehavior = "enter"
@@ -711,8 +713,12 @@ experimental_bearer_token = "sk-a"
     assert_eq!(parsed["sandbox_mode"].as_str(), Some("danger-full-access"));
     assert_eq!(parsed["approval_policy"].as_str(), Some("never"));
     assert_eq!(
-        parsed["sandbox_workspace_write"].as_array().unwrap(),
-        &[toml::Value::String("C:/workspace".to_string())]
+        parsed["sandbox_workspace_write"]["network_access"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        parsed["desktop"]["show-context-window-usage"].as_bool(),
+        Some(false)
     );
     assert_eq!(
         parsed["model_providers"]["custom"]["base_url"].as_str(),

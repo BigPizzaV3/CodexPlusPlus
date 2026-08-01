@@ -4067,6 +4067,62 @@
     return String(plugin.name || plugin.id || plugin.pluginName || "").trim();
   }
 
+  const guardedBuiltinPluginNames = new Set(["browser", "chrome", "computer-use"]);
+
+  function guardedBuiltinPluginName(plugin) {
+    const key = pluginMarketplacePluginKey(plugin);
+    if (!key) return "";
+    return key.split("@")[0].trim();
+  }
+
+  function patchGuardedBuiltinPluginAvailability(plugin, source, marketplaceName) {
+    if (!plugin || typeof plugin !== "object") return false;
+    const restoredMarketplace = restorePluginMarketplaceName(
+      marketplaceName || plugin.marketplaceName || source?.marketplaceName || "",
+    );
+    const pluginName = guardedBuiltinPluginName(plugin) || guardedBuiltinPluginName(source);
+    if (restoredMarketplace !== "openai-bundled" || !guardedBuiltinPluginNames.has(pluginName)) return false;
+    let changed = false;
+    const assign = (key, value) => {
+      if (plugin[key] === value) return;
+      plugin[key] = value;
+      changed = true;
+    };
+    if (source && typeof source === "object") {
+      for (const key of ["description", "keywords", "source"]) {
+        if (plugin[key] == null && source[key] != null) {
+          const value = typeof source[key] === "object" ? cloneCodexPluginMarketplace(source[key]) : source[key];
+          assign(key, value);
+        }
+      }
+      if (source.interface && typeof source.interface === "object") {
+        const nextInterface = { ...source.interface, ...(plugin.interface || {}) };
+        if (JSON.stringify(nextInterface) !== JSON.stringify(plugin.interface || {})) assign("interface", nextInterface);
+      }
+    }
+    const policy = {
+      ...(plugin.policy || {}),
+      ...(source?.policy || {}),
+      installation: "AVAILABLE",
+      authentication: "ON_INSTALL",
+    };
+    if (JSON.stringify(policy) !== JSON.stringify(plugin.policy || {})) assign("policy", policy);
+    for (const [key, value] of [
+      ["hidden", false],
+      ["isHidden", false],
+      ["disabled", false],
+      ["isDisabled", false],
+      ["available", true],
+      ["isAvailable", true],
+    ]) assign(key, value);
+    for (const key of ["disabledReason", "disabled_reason", "unavailableReason", "unavailable_reason", "restrictionReason"]) {
+      if (plugin[key] == null) continue;
+      delete plugin[key];
+      changed = true;
+    }
+    return changed;
+  }
+
   function normalizeLocalPluginMarketplacePlugin(plugin, marketplaceName) {
     const cloned = cloneCodexPluginMarketplace(plugin);
     if (!cloned || typeof cloned !== "object") return null;
@@ -4086,15 +4142,25 @@
     if (!target || !source || !Array.isArray(source.plugins)) return 0;
     if (!Array.isArray(target.plugins)) target.plugins = [];
     const marketplaceName = restorePluginMarketplaceName(target.name || source.name || "");
-    const existing = new Set(target.plugins.map(pluginMarketplacePluginKey).filter(Boolean));
+    const existing = new Map(
+      target.plugins
+        .map((plugin) => [pluginMarketplacePluginKey(plugin), plugin])
+        .filter(([key]) => Boolean(key)),
+    );
     let added = 0;
     source.plugins.forEach((plugin) => {
+      if (marketplaceName === "openai-bundled" && !guardedBuiltinPluginNames.has(guardedBuiltinPluginName(plugin))) return;
       const key = pluginMarketplacePluginKey(plugin);
-      if (!key || existing.has(key)) return;
       const cloned = normalizeLocalPluginMarketplacePlugin(plugin, marketplaceName);
-      if (!cloned) return;
+      if (!key || !cloned) return;
+      const current = existing.get(key);
+      if (current) {
+        patchGuardedBuiltinPluginAvailability(current, cloned, marketplaceName);
+        return;
+      }
       target.plugins.push(cloned);
-      existing.add(key);
+      patchGuardedBuiltinPluginAvailability(cloned, cloned, marketplaceName);
+      existing.set(key, cloned);
       added += 1;
     });
     return added;
@@ -4125,8 +4191,11 @@
       }
       const cloned = cloneCodexPluginMarketplace(marketplace);
       if (!cloned) return;
-      cloned.plugins = Array.isArray(cloned.plugins)
-        ? cloned.plugins.map((plugin) => normalizeLocalPluginMarketplacePlugin(plugin, name)).filter(Boolean)
+      const sourcePlugins = Array.isArray(cloned.plugins)
+        ? cloned.plugins.filter((plugin) => name !== "openai-bundled" || guardedBuiltinPluginNames.has(guardedBuiltinPluginName(plugin)))
+        : [];
+      cloned.plugins = sourcePlugins.length
+        ? sourcePlugins.map((plugin) => normalizeLocalPluginMarketplacePlugin(plugin, name)).filter(Boolean)
         : [];
       result.marketplaces.push(cloned);
       byName.set(name, cloned);
@@ -4137,6 +4206,10 @@
       sendCodexPlusDiagnostic("plugin_marketplace_local_merged", { addedMarketplaces, addedPlugins });
     }
     return { addedMarketplaces, addedPlugins };
+  }
+
+  if (window.__CODEX_PLUS_TEST_PLUGIN_MARKETPLACE__) {
+    window.__codexPlusPluginMarketplaceTest = { mergeLocalPluginMarketplaces };
   }
 
   function restorePluginMarketplaceName(name) {
@@ -4242,6 +4315,7 @@
     let patchedCount = 0;
     try {
       const pluginMarketplaceCounts = {};
+      let repairedBuiltinPlugins = 0;
       if (Array.isArray(result?.marketplaces)) {
         if (mergeLocal) mergeLocalPluginMarketplaces(result);
         result.marketplaces.forEach((marketplace) => {
@@ -4249,6 +4323,7 @@
             marketplace.plugins.forEach((plugin) => {
               const name = plugin?.marketplaceName || marketplace?.name || "";
               if (name) pluginMarketplaceCounts[name] = (pluginMarketplaceCounts[name] || 0) + 1;
+              if (patchGuardedBuiltinPluginAvailability(plugin, null, name)) repairedBuiltinPlugins += 1;
             });
           }
           if (patchPluginMarketplaceObject(marketplace)) patchedCount += 1;
@@ -4267,6 +4342,9 @@
       }
       if (patchedCount > 0) {
         sendCodexPlusDiagnostic("plugin_marketplace_response_expanded", { patchedCount });
+      }
+      if (repairedBuiltinPlugins > 0) {
+        sendCodexPlusDiagnostic("plugin_builtin_availability_repaired", { repairedBuiltinPlugins });
       }
     } catch (error) {
       sendCodexPlusDiagnostic("plugin_marketplace_response_patch_failed", {
@@ -4400,11 +4478,13 @@
       const button = pluginAutoExpandButtonCandidates()[0];
       if (!button || window.__codexPluginAutoExpandClicks >= codexPluginAutoExpandMaxClicks) {
         window.__codexPluginAutoExpandRunning = false;
-        sendCodexPlusDiagnostic("plugin_auto_expand_finished", {
-          version: codexPluginAutoExpandVersion,
-          clicks: window.__codexPluginAutoExpandClicks || 0,
-          exhausted: !!button,
-        });
+        if ((window.__codexPluginAutoExpandClicks || 0) > 0 || !!button) {
+          sendCodexPlusDiagnostic("plugin_auto_expand_finished", {
+            version: codexPluginAutoExpandVersion,
+            clicks: window.__codexPluginAutoExpandClicks || 0,
+            exhausted: !!button,
+          });
+        }
         return;
       }
       window.__codexPluginAutoExpandClicks = (window.__codexPluginAutoExpandClicks || 0) + 1;
@@ -4613,6 +4693,7 @@
 
   if (window.__CODEX_PLUS_TEST_PLUGIN_MARKETPLACE__) {
     window.__codexPlusPluginMarketplaceTest = {
+      ...(window.__codexPlusPluginMarketplaceTest || {}),
       patchRequestParams: patchPluginMarketplaceRequestParams,
       patchRequestMessage: patchPluginMarketplaceRequestMessage,
       patchResponseData: patchPluginMarketplaceResponseData,

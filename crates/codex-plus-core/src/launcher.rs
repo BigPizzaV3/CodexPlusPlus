@@ -143,12 +143,22 @@ pub trait LaunchHooks: Send + Sync {
     ) -> anyhow::Result<PathBuf>;
     fn select_debug_port(&self, requested: u16) -> u16;
     fn select_helper_port(&self, requested: u16) -> u16;
+    fn codex_home(&self) -> PathBuf {
+        crate::relay_config::default_codex_home_dir()
+    }
     async fn load_settings(&self) -> anyhow::Result<BackendSettings>;
     async fn run_provider_sync(&self) -> anyhow::Result<()>;
     async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
     }
     async fn ensure_computer_use_config(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn ensure_builtin_plugin_state_after_provider_switch(
+        &self,
+        _settings: &BackendSettings,
+        _source: &str,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
     async fn ensure_plugin_marketplace_config(
@@ -276,7 +286,7 @@ where
     let mut keep_launched_on_error = false;
 
     let result: anyhow::Result<LaunchHandle> = async {
-        let home = crate::relay_config::default_codex_home_dir();
+        let home = hooks.codex_home();
         if settings.provider_sync_enabled {
             crate::codex_app_state::capture_app_state_snapshot_nonfatal(&home, "launcher.before");
             hooks.run_provider_sync().await?;
@@ -299,8 +309,22 @@ where
                 }),
             );
         }
-        if settings.computer_use_guard_enabled {
+        if settings.builtin_plugin_guard_enabled() {
             hooks.ensure_computer_use_config(&settings).await?;
+        }
+        if settings.provider_sync_enabled && settings.builtin_plugin_guard_enabled() {
+            hooks
+                .ensure_builtin_plugin_state_after_provider_switch(
+                    &settings,
+                    "launcher.before_launch",
+                )
+                .await?;
+        }
+        if settings.provider_sync_enabled {
+            crate::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
+                &home,
+                "launcher.before_launch",
+            );
         }
         match crate::codex_sqlite::sanitize_historical_model_suffixes(&home) {
             Ok(result) if result.updated > 0 => {
@@ -337,7 +361,7 @@ where
             .await?;
         launched = Some(launch.clone());
         keep_launched_on_error = true;
-        if settings.computer_use_guard_enabled {
+        if settings.builtin_plugin_guard_enabled() {
             hooks.start_computer_use_guard_watchdog(&settings).await?;
         }
 
@@ -573,7 +597,7 @@ impl LaunchHooks for DefaultLaunchHooks {
             crate::relay_config::clear_relay_config_to_home_with_auth_and_computer_use_guard(
                 &home,
                 auth_contents,
-                settings.computer_use_guard_enabled,
+                settings.builtin_plugin_guard_enabled(),
             )?;
             return Ok(());
         }
@@ -581,19 +605,34 @@ impl LaunchHooks for DefaultLaunchHooks {
             &home,
             &profile,
             &common_config,
-            settings.computer_use_guard_enabled,
+            settings.builtin_plugin_guard_enabled(),
         )?;
         Ok(())
     }
 
     async fn ensure_computer_use_config(&self, settings: &BackendSettings) -> anyhow::Result<()> {
-        if !settings.computer_use_guard_enabled {
+        if !settings.builtin_plugin_guard_enabled() {
             return Ok(());
         }
         let home = crate::relay_config::default_codex_home_dir();
         let artifacts = crate::computer_use_guard::resolve_computer_use_guard_artifacts(&home)?;
         crate::computer_use_guard::ensure_computer_use_config_with_artifacts(&home, &artifacts)?;
         *self.computer_use_guard_artifacts.lock().await = Some(artifacts);
+        Ok(())
+    }
+
+    async fn ensure_builtin_plugin_state_after_provider_switch(
+        &self,
+        settings: &BackendSettings,
+        source: &str,
+    ) -> anyhow::Result<()> {
+        if !settings.builtin_plugin_guard_enabled() {
+            return Ok(());
+        }
+        let home = crate::relay_config::default_codex_home_dir();
+        crate::codex_app_state::ensure_builtin_plugin_state_after_provider_switch_nonfatal(
+            &home, source,
+        );
         Ok(())
     }
 
@@ -611,7 +650,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                     let _ = crate::diagnostic_log::append_diagnostic_log(
                         "launcher.openai_curated_marketplace_configured",
                         serde_json::json!({
-                            "home": home,
+                            "home": home.to_string_lossy().to_string(),
                         }),
                     );
                 }
@@ -620,7 +659,30 @@ impl LaunchHooks for DefaultLaunchHooks {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "launcher.openai_curated_marketplace_config_failed",
                     serde_json::json!({
-                        "home": home,
+                        "home": home.to_string_lossy().to_string(),
+                        "message": error.to_string(),
+                    }),
+                );
+            }
+        }
+        match crate::plugin_marketplace::ensure_openai_curated_remote_marketplace_available(&home) {
+            Ok(result) => {
+                if result.initialized || result.configured {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.openai_curated_remote_marketplace_configured",
+                        serde_json::json!({
+                            "home": home.to_string_lossy().to_string(),
+                            "initialized": result.initialized,
+                            "configured": result.configured,
+                        }),
+                    );
+                }
+            }
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.openai_curated_remote_marketplace_config_failed",
+                    serde_json::json!({
+                        "home": home.to_string_lossy().to_string(),
                         "message": error.to_string(),
                     }),
                 );
@@ -801,6 +863,10 @@ impl LaunchHooks for DefaultLaunchHooks {
             .stderr(Stdio::null());
         #[cfg(windows)]
         child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
+        #[cfg(windows)]
+        if settings.builtin_plugin_guard_enabled() {
+            child_command.env("CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE", "1");
+        }
         let child = child_command
             .spawn()
             .with_context(|| format!("failed to launch Codex executable {executable}"))?;
@@ -879,7 +945,7 @@ impl LaunchHooks for DefaultLaunchHooks {
     ) -> anyhow::Result<()> {
         #[cfg(windows)]
         {
-            if !settings.computer_use_guard_enabled {
+            if !settings.builtin_plugin_guard_enabled() {
                 return Ok(());
             }
             let home = crate::relay_config::default_codex_home_dir();

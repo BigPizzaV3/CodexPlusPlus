@@ -3459,8 +3459,8 @@ function EnhanceScreen({
               type="checkbox"
             />
             <span>
-              <strong>{t("启用 Windows Computer Use Guard")}</strong>
-              <small>{t("默认关闭；开启后启动 Codex 时会自动保留官方 Computer Use 插件所需的 config.toml、bundled 插件和 notify 配置。")}</small>
+              <strong>{t("强制启用 Windows Computer Use Guard")}</strong>
+              <small>{t("插件市场解锁在完整增强模式下会自动准备 Browser、Chrome、Computer Use 的本地 bundled 状态；此开关用于在其他场景中强制执行同一守护。")}</small>
             </span>
             <ToggleVisual />
           </label>
