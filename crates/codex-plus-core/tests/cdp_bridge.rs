@@ -1307,6 +1307,138 @@ fn injection_script_refreshes_sidebar_after_session_undo() {
 }
 
 #[test]
+fn injection_script_guards_temporary_new_thread_ids_before_delete() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("function isClientNewThreadId(value)"));
+    assert!(script.contains("function normalizedCodexThreadUuid(value)"));
+    assert!(script.contains("function reactConversationIdFromRow(row)"));
+    assert!(script.contains("__reactFiber$"));
+    assert!(script.contains("props?.conversationId"));
+    assert!(!script.contains("props?.threadId || props?.sessionId"));
+    assert!(script.contains("|| /(?:^|[=/])(?:local:)?client-new-thread:/i.test(href)"));
+    assert!(script.contains(
+        "? canonicalHrefId || (!hrefIsTemporary ? reactConversationIdFromRow(row) : \"\")"
+    ));
+    assert!(script.contains("const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, sessionRefFromRow(row), event)"));
+    assert!(script.contains("会话仍在同步，请稍后重试"));
+    assert!(script.contains("attributeFilter: [\"data-app-action-sidebar-thread-id\", \"href\"]"));
+
+    let cases = run_session_ref_contract_harness();
+    assert_eq!(
+        cases["canonicalAttribute"],
+        "11111111-1111-4111-8111-111111111111"
+    );
+    assert_eq!(
+        cases["canonicalHref"],
+        "22222222-2222-4222-8222-222222222222"
+    );
+    assert_eq!(
+        cases["conversationId"],
+        "33333333-3333-4333-8333-333333333333"
+    );
+    assert_eq!(cases["unrelatedIds"], "");
+    assert_eq!(cases["temporaryHref"], "");
+}
+
+fn run_session_ref_contract_harness() -> serde_json::Value {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("renderer-inject.js");
+    let harness_path = temp.path().join("session-ref-harness.cjs");
+    std::fs::write(&script_path, assets::injection_script(57321))
+        .expect("injection script should be written");
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    write!(
+        harness,
+        r#"
+const scriptPath = {script_path};
+function node() {{
+  return {{
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
+    closest() {{ return null; }}, getAttribute() {{ return null; }},
+    classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
+    dataset: {{}}, style: {{}}, children: [], isConnected: true, textContent: "", innerHTML: "",
+  }};
+}}
+globalThis.window = globalThis;
+window.__CODEX_PLUS_TEST_SESSION_REF__ = true;
+window.addEventListener = () => {{}};
+window.removeEventListener = () => {{}};
+window.dispatchEvent = () => true;
+globalThis.MutationObserver = class {{ observe() {{}} disconnect() {{}} }};
+globalThis.ResizeObserver = class {{ observe() {{}} disconnect() {{}} }};
+globalThis.IntersectionObserver = class {{ observe() {{}} disconnect() {{}} }};
+globalThis.requestAnimationFrame = (callback) => setTimeout(callback, 0);
+globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
+globalThis.setInterval = () => 0;
+globalThis.clearInterval = () => {{}};
+globalThis.document = {{
+  scripts: [], documentElement: node(), body: node(), createElement: () => node(),
+  getElementById: () => null, querySelector: () => null, querySelectorAll: () => [],
+  addEventListener() {{}}, removeEventListener() {{}},
+}};
+globalThis.localStorage = {{ getItem: () => null, setItem() {{}}, removeItem() {{}} }};
+globalThis.sessionStorage = globalThis.localStorage;
+globalThis.location = {{ href: "https://codex.test/index.html", pathname: "/index.html", search: "", hash: "" }};
+window.location = globalThis.location;
+globalThis.navigator = {{ userAgent: "node-test", sendBeacon: () => false }};
+globalThis.performance = {{ getEntriesByType: () => [] }};
+globalThis.fetch = async () => ({{ ok: true, json: async () => ({{}}) }});
+require(scriptPath);
+
+const api = window.__codexPlusSessionRefTest;
+const placeholder = "local:client-new-thread:fixture";
+const row = (attributes, props = null) => {{
+  const value = {{
+    getAttribute: (name) => attributes[name] || null,
+    querySelector: () => null,
+    textContent: "Fixture",
+  }};
+  if (props) value.__reactFiber$fixture = {{ pendingProps: props, memoizedProps: null, return: null }};
+  return value;
+}};
+const sessionId = (value) => api.fromRow(value).session_id;
+const cases = {{
+  canonicalAttribute: sessionId(row({{ "data-app-action-sidebar-thread-id": "11111111-1111-4111-8111-111111111111" }})),
+  canonicalHref: sessionId(row({{
+    "data-app-action-sidebar-thread-id": placeholder,
+    href: "/thread/22222222-2222-4222-8222-222222222222",
+  }})),
+  conversationId: sessionId(row(
+    {{ "data-app-action-sidebar-thread-id": placeholder }},
+    {{ conversationId: "33333333-3333-4333-8333-333333333333" }},
+  )),
+  unrelatedIds: sessionId(row(
+    {{ "data-app-action-sidebar-thread-id": placeholder }},
+    {{ threadId: "44444444-4444-4444-8444-444444444444", sessionId: "55555555-5555-4555-8555-555555555555" }},
+  )),
+  temporaryHref: sessionId(row(
+    {{ "data-app-action-sidebar-thread-id": placeholder, href: "/thread/client-new-thread:fixture" }},
+    {{ conversationId: "66666666-6666-4666-8666-666666666666" }},
+  )),
+}};
+process.stdout.write(JSON.stringify(cases));
+process.exit(0);
+"#,
+        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+            .expect("script path should serialize")
+    )
+    .expect("harness should be written");
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should execute session reference harness");
+    assert!(
+        output.status.success(),
+        "session reference harness failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("session reference harness output should be JSON")
+}
+
+#[test]
 fn injection_script_moves_export_and_project_move_into_more_menu() {
     let script = assets::injection_script(57321).replace("\r\n", "\n");
 
