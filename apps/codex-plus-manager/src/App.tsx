@@ -1843,16 +1843,27 @@ export function App() {
       percent: 8,
       message: t("正在准备安装包下载…"),
     });
+    const startedAt = Date.now();
     const progressTimer = window.setInterval(() => {
       setUpdateInstallProgress((current) => {
         if (!current.active) return current;
-        const nextPercent = Math.min(92, current.percent + 10);
+        const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+        const nextPercent =
+          elapsedSeconds < 3
+            ? Math.min(24, current.percent + 4)
+            : elapsedSeconds < 15
+              ? Math.min(68, current.percent + 3)
+              : elapsedSeconds < 45
+                ? Math.min(86, current.percent + 1)
+                : Math.min(99, current.percent + 0.2);
         const message =
-          nextPercent < 32
+          elapsedSeconds < 3
             ? t("正在获取 GitHub Release 信息…")
-            : nextPercent < 72
+            : elapsedSeconds < 15
               ? t("正在下载安装包…")
-              : t("正在启动安装包…");
+              : elapsedSeconds < 45
+                ? t("正在写入安装包…")
+                : t("下载或启动耗时较长，请保持窗口打开；完成或失败后会自动更新状态。");
         return { ...current, percent: nextPercent, message };
       });
     }, 500);

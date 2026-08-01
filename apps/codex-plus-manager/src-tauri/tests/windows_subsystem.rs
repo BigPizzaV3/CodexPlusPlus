@@ -366,4 +366,6 @@ fn manager_update_install_keeps_visible_progress_bar() {
     assert!(app_tsx.contains("安装包更新进度"));
     assert!(app_tsx.contains("completedTitle={t(\"上次更新结果\")}"));
     assert!(app_tsx.contains("progress={updateInstallProgress}"));
+    assert!(app_tsx.contains("current.percent + 0.2"));
+    assert!(app_tsx.contains("下载或启动耗时较长"));
 }
