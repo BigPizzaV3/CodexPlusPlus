@@ -3043,7 +3043,7 @@ function OverviewScreen({
                 <span className="eyebrow">{t("项目赞助商")}</span>
                 <h2>JOJO Code</h2>
                 <p>
-                  {t("感谢 JOJO Code 对 Codex++ 项目的支持。JOJO Code 提供稳定、价格合理的 API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。")}
+                  {t("JOJO Code 提供稳定、价格合理的 API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。")}
                 </p>
               </div>
             </div>
