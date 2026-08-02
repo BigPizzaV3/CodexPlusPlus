@@ -81,6 +81,7 @@ import {
   type ImageHandling,
   type ModelWindowRow,
 } from "./model-windows";
+import { relayAuthForLiveDraft } from "./relay-live-files";
 import { resolveProviderSyncCompletion } from "./provider-sync-flow";
 import {
   defaultDreamSkinTheme,
@@ -5517,17 +5518,22 @@ function RelayProfileDetail({
   const isActive = !isNew && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
   useEffect(() => {
-    const nextDraft = isAggregateRelayProfile(profile)
+    const useLiveFiles = isActive && profileUsesLiveFiles && relayFiles;
+    const liveDraft = isAggregateRelayProfile(profile)
       ? normalizeAggregateRelayProfile(profile, form)
       : deriveRelayProfileFromFiles(
-          isActive && profileUsesLiveFiles && relayFiles
+          useLiveFiles
             ? {
               ...profile,
               configContents: relayFiles.configContents,
-              authContents: relayFiles.authContents,
+              authContents: relayAuthForLiveDraft(profile, relayFiles.authContents),
             }
             : profile,
         );
+    const storedApiKey = useLiveFiles ? profile.apiKey.trim() : "";
+    const nextDraft = useLiveFiles && !isAggregateRelayProfile(liveDraft)
+      ? applyRelayProfilePatchToFiles(liveDraft, { apiKey: storedApiKey })
+      : liveDraft;
     setDraft(nextDraft);
     setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm));
   }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
@@ -6512,7 +6518,11 @@ function RelayFileEditors({
         <div className="relay-file-head">
           <div>
             <strong>auth.json</strong>
-            <span>{isActive ? t("当前使用中：打开时从 ~/.codex/auth.json 回填，保存后会作为此供应商 auth 存档") : t("切换到此供应商时会写入 ~/.codex/auth.json")}</span>
+            <span>{isActive
+              ? profile.relayMode === "pureApi"
+                ? t("当前使用中：保留此供应商的 auth 存档，避免 Codex 登录密钥覆盖供应商密钥")
+                : t("当前使用中：打开时从 ~/.codex/auth.json 回填，保存后会作为此供应商 auth 存档")
+              : t("切换到此供应商时会写入 ~/.codex/auth.json")}</span>
           </div>
         </div>
         <SyncedTextarea
