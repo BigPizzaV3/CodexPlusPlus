@@ -2361,6 +2361,15 @@ fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
                     }
                 }
             }
+            "encrypted_content" => {
+                if let Some(value) = part
+                    .get("encrypted_content")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                {
+                    chat_parts.push(json!({ "type": "text", "text": value }));
+                }
+            }
             "refusal" => {
                 if let Some(value) = part.get("refusal").and_then(Value::as_str) {
                     if !value.is_empty() {
