@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run vite:dev",
     "beforeBuildCommand": "npm run vite:build",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
   "app": {
