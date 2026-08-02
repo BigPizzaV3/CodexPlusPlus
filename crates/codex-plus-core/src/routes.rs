@@ -70,12 +70,21 @@ pub trait BridgeSettingsService: Send + Sync {
 #[async_trait]
 pub trait BridgeRuntimeService: Send + Sync {
     async fn user_script_inventory(&self) -> anyhow::Result<Value>;
+    async fn user_script_inventory_with_runtime_status(
+        &self,
+        _payload: Value,
+    ) -> anyhow::Result<Value> {
+        self.user_script_inventory().await
+    }
     async fn set_user_scripts_enabled(&self, enabled: bool) -> anyhow::Result<Value>;
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value>;
     async fn delete_user_script(&self, key: String) -> anyhow::Result<Value>;
     async fn reload_user_scripts(&self) -> anyhow::Result<Value>;
     async fn open_devtools(&self) -> anyhow::Result<Value>;
     async fn open_manager(&self) -> anyhow::Result<Value>;
+    async fn open_transient_manager(&self) -> anyhow::Result<Value> {
+        self.open_manager().await
+    }
     async fn backend_status(&self) -> anyhow::Result<Value>;
     async fn codex_model_catalog(&self) -> anyhow::Result<Value>;
     async fn ads(&self) -> anyhow::Result<Value>;
@@ -132,7 +141,11 @@ pub async fn handle_bridge_request(
         "/settings/set" => {
             settings_value(&ctx, ctx.settings.set_settings(payload.clone()).await).await
         }
-        "/user-scripts/list" => ctx.runtime.user_script_inventory().await,
+        "/user-scripts/list" => {
+            ctx.runtime
+                .user_script_inventory_with_runtime_status(payload.clone())
+                .await
+        }
         "/user-scripts/set-enabled" => {
             let enabled = payload
                 .get("enabled")
@@ -163,6 +176,7 @@ pub async fn handle_bridge_request(
         "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
         "/devtools/open" => ctx.runtime.open_devtools().await,
         "/manager/open" => ctx.runtime.open_manager().await,
+        "/manager/open-transient" => ctx.runtime.open_transient_manager().await,
         "/backend/status" => ctx.runtime.backend_status().await,
         "/codex-model-catalog" | "/codex-config-model" => ctx.runtime.codex_model_catalog().await,
         "/diagnostics/log" => diagnostic_log_value(payload.clone()),
@@ -444,6 +458,15 @@ impl BridgeRuntimeService for CoreRuntimeService {
             crate::install::MANAGER_BINARY,
             std::iter::empty::<&str>(),
         )?;
+        Ok(json!({
+            "status": "ok",
+            "path": target
+        }))
+    }
+
+    async fn open_transient_manager(&self) -> anyhow::Result<Value> {
+        let target =
+            crate::install::spawn_companion(crate::install::MANAGER_BINARY, ["--transient"])?;
         Ok(json!({
             "status": "ok",
             "path": target

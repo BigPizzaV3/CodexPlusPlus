@@ -11,6 +11,16 @@ use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol};
 const RELAY_PROVIDER: &str = "custom";
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
 const CHAT_UPSTREAM_BASE_URL_KEY: &str = "codex_plus_chat_base_url";
+const PROVIDER_SPECIFIC_COMMON_ROOT_KEYS: &[&str] = &[
+    "model",
+    "model_provider",
+    "base_url",
+    "openai_base_url",
+    "chatgpt_base_url",
+    "model_catalog_json",
+    "OPENAI_API_KEY",
+    CHAT_UPSTREAM_BASE_URL_KEY,
+];
 const RESERVED_MODEL_PROVIDER_IDS: &[&str] = &[
     "amazon-bedrock",
     "openai",
@@ -608,6 +618,37 @@ fn codex_base_url_for_protocol(base_url: &str, protocol: RelayProtocol, proxy_po
     }
 }
 
+const OPENAI_BASE_URL_KEY: &str = "openai_base_url";
+
+fn managed_openai_base_url() -> String {
+    crate::protocol_proxy::local_responses_proxy_base_url(
+        crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+    )
+}
+
+fn update_remote_control_openai_base_url(doc: &mut DocumentMut, enabled: bool) {
+    let managed = managed_openai_base_url();
+    let current = doc
+        .get(OPENAI_BASE_URL_KEY)
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .map(ToString::to_string);
+
+    if enabled {
+        if current.as_deref().is_none_or(|value| value == managed) {
+            doc[OPENAI_BASE_URL_KEY] = toml_edit::value(managed);
+        }
+    } else if current.as_deref() == Some(managed.as_str()) {
+        doc.as_table_mut().remove(OPENAI_BASE_URL_KEY);
+    }
+}
+
+fn remove_managed_remote_control_openai_base_url(contents: &str) -> anyhow::Result<String> {
+    let mut doc = parse_toml_document(contents)?;
+    update_remote_control_openai_base_url(&mut doc, false);
+    Ok(normalize_optional_toml(doc))
+}
+
 pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResult> {
     clear_relay_config_to_home_with_auth(home, None)
 }
@@ -647,6 +688,7 @@ pub fn clear_relay_config_to_home_with_auth_and_computer_use_guard(
     ] {
         updated = remove_root_key(&updated, key);
     }
+    updated = remove_managed_remote_control_openai_base_url(&updated)?;
     let backup_path = write_codex_live_atomic(
         home,
         Some(&updated),
@@ -744,16 +786,7 @@ pub fn backfill_relay_profile_from_home_with_common(
 
 pub fn extract_common_config_from_config(config_text: &str) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(config_text)?;
-    for key in [
-        "model",
-        "model_provider",
-        "base_url",
-        "model_catalog_json",
-        CHAT_UPSTREAM_BASE_URL_KEY,
-    ] {
-        doc.as_table_mut().remove(key);
-    }
-    doc.as_table_mut().remove("model_providers");
+    remove_provider_specific_common_keys(doc.as_table_mut());
     Ok(normalize_optional_toml(doc))
 }
 
@@ -1239,16 +1272,33 @@ fn parse_toml_document(contents: &str) -> anyhow::Result<DocumentMut> {
 }
 
 fn remove_provider_specific_common_keys(table: &mut dyn TableLike) {
-    for key in [
-        "model",
-        "model_provider",
-        "base_url",
-        "model_catalog_json",
-        CHAT_UPSTREAM_BASE_URL_KEY,
-    ] {
+    for key in PROVIDER_SPECIFIC_COMMON_ROOT_KEYS {
         table.remove(key);
     }
+    let sensitive_keys: Vec<String> = table
+        .iter()
+        .map(|(key, _)| key.to_string())
+        .filter(|key| is_provider_credential_root_key(key))
+        .collect();
+    for key in sensitive_keys {
+        table.remove(&key);
+    }
     table.remove("model_providers");
+}
+
+fn is_provider_specific_common_root_key(key: &str) -> bool {
+    let key = key.trim().trim_matches(['\"', '\'']);
+    PROVIDER_SPECIFIC_COMMON_ROOT_KEYS.contains(&key) || is_provider_credential_root_key(key)
+}
+
+fn is_provider_credential_root_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    matches!(
+        key.as_str(),
+        "api_key" | "access_token" | "bearer_token" | "experimental_bearer_token"
+    ) || key.ends_with("_api_key")
+        || key.ends_with("_access_token")
+        || key.ends_with("_bearer_token")
 }
 
 fn sanitize_common_config_text_fallback(common_config: &str) -> String {
@@ -1271,15 +1321,7 @@ fn sanitize_common_config_text_fallback(common_config: &str) -> String {
 
         if in_root {
             if let Some((key, _)) = trimmed.split_once('=') {
-                let key = key.trim();
-                if matches!(
-                    key,
-                    "model"
-                        | "model_provider"
-                        | "base_url"
-                        | "model_catalog_json"
-                        | CHAT_UPSTREAM_BASE_URL_KEY
-                ) {
+                if is_provider_specific_common_root_key(key) {
                     continue;
                 }
             }
@@ -1514,16 +1556,30 @@ fn apply_model_catalog_to_config(
         "model-catalogs/{}.json",
         sanitize_catalog_filename(&profile.id)
     );
+    let custom_responses = custom_responses_provider(config_text);
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
     if let Some(existing) = root_key_string(config_text, "model_catalog_json") {
         if existing != catalog_relative {
+            if custom_responses
+                && copy_standard_responses_catalog(home, &existing, &catalog_relative)?
+            {
+                let mut doc = parse_toml_document(config_text)?;
+                doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+                return Ok(normalize_optional_toml(doc));
+            }
             return Ok(config_text.to_string());
         }
     }
     if let Some(external_catalog) = live_external_model_catalog(home) {
         let mut doc = parse_toml_document(config_text)?;
-        doc["model_catalog_json"] = toml_edit::value(external_catalog);
+        if custom_responses
+            && copy_standard_responses_catalog(home, &external_catalog, &catalog_relative)?
+        {
+            doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+        } else {
+            doc["model_catalog_json"] = toml_edit::value(external_catalog);
+        }
         return Ok(normalize_optional_toml(doc));
     }
     let (model_list, model_windows): (String, std::collections::HashMap<String, String>) =
@@ -1549,11 +1605,78 @@ fn apply_model_catalog_to_config(
     if let Some(parent) = catalog_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let catalog_json = crate::model_suffix::build_model_catalog_json(&entries, fallback);
+    // Only custom Responses providers need the standard Responses tool wire format. Official
+    // profiles and custom Chat Completions retain the model template's original Lite behavior.
+    let catalog_json = crate::model_suffix::build_model_catalog_json_with_capabilities(
+        &entries,
+        fallback,
+        None,
+        custom_responses.then_some(false),
+    );
     std::fs::write(&catalog_path, catalog_json)?;
     let mut doc = parse_toml_document(config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
     Ok(normalize_optional_toml(doc))
+}
+
+fn custom_responses_provider(config_text: &str) -> bool {
+    let Ok(doc) = parse_toml_document(config_text) else {
+        return false;
+    };
+    let Some(provider_id) = active_provider_id(&doc) else {
+        return false;
+    };
+    if !is_custom_provider_id(&provider_id) {
+        return false;
+    }
+    doc.get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get(&provider_id))
+        .and_then(Item::as_table_like)
+        .and_then(|provider| provider.get("wire_api"))
+        .and_then(Item::as_str)
+        .is_some_and(|wire_api| wire_api.trim().eq_ignore_ascii_case("responses"))
+}
+
+fn copy_standard_responses_catalog(
+    home: &Path,
+    source: &str,
+    target_relative: &str,
+) -> anyhow::Result<bool> {
+    let source_path = {
+        let path = Path::new(source);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            home.join(path)
+        }
+    };
+    let Ok(contents) = std::fs::read_to_string(source_path) else {
+        return Ok(false);
+    };
+    let Ok(mut catalog) = serde_json::from_str::<Value>(&contents) else {
+        return Ok(false);
+    };
+    let Some(models) = catalog.get_mut("models").and_then(Value::as_array_mut) else {
+        return Ok(false);
+    };
+    let mut changed = false;
+    for model in models {
+        if model.get("use_responses_lite").and_then(Value::as_bool) == Some(true) {
+            model["use_responses_lite"] = Value::Bool(false);
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(false);
+    }
+
+    let target = home.join(target_relative);
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(target, serde_json::to_string_pretty(&catalog)?)?;
+    Ok(true)
 }
 
 fn live_external_model_catalog(home: &Path) -> Option<String> {
@@ -2054,6 +2177,10 @@ pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
 
 fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(&profile.config_contents)?;
+    update_remote_control_openai_base_url(
+        &mut doc,
+        profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key,
+    );
     let provider_id = active_or_default_provider_id(&doc);
     set_provider_id(&mut doc, &provider_id);
 
@@ -2723,6 +2850,11 @@ fn unquote_toml_string(value: &str) -> String {
     value
         .strip_prefix('"')
         .and_then(|value| value.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+        })
         .unwrap_or(value)
         .to_string()
 }

@@ -87,11 +87,11 @@ For first-time setup, open the manager, verify the detected app path, configure 
   </tr>
   <tr>
     <td align="center">
-      <a href="https://www.0029.org/?promo=AFF11F">
-        <img src="docs/images/sponsor-0029.svg" alt="0029 Cloud Bridge" width="150">
+      <a href="https://www.quya.org/?promo=CODEX">
+        <img src="docs/images/sponsor-0029.svg" alt="quya.org Cloud Bridge" width="150">
       </a>
     </td>
-    <td><a href="https://www.0029.org/?promo=AFF11F"><strong>0029 Cloud Bridge | Codex API Relay Station (gpt5.5 gpt-image-2)</strong></a><br>Supports individual and enterprise access. Monthly plans and pay-as-you-go billing are available, with Pro/Plus account pools, stable site-wide APIs, and 24/7 technical support.</td>
+    <td><a href="https://www.quya.org/?promo=CODEX"><strong>quya.org Cloud Bridge | One-stop AI Relay Platform</strong></a><br>quya.org Cloud Bridge (formerly 0029.org) is a one-stop relay platform integrating the latest Claude Code, Codex, and Gemini models, providing stable, efficient, and cost-effective AI relay services. It offers flexible monthly plans and pay-as-you-go billing, direct access in China without extra network setup, and fast responses. Individual and enterprise access is supported, with prices as low as 0.12% of the official rate.</td>
   </tr>
   <tr>
     <td align="center">

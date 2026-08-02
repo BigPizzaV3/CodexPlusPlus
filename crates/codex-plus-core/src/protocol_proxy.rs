@@ -458,6 +458,17 @@ pub fn is_responses_proxy_path(path: &str) -> bool {
     )
 }
 
+pub fn is_responses_compact_proxy_path(path: &str) -> bool {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    matches!(
+        path,
+        "/responses/compact"
+            | "/v1/responses/compact"
+            | "/v1/v1/responses/compact"
+            | "/codex/v1/responses/compact"
+    )
+}
+
 pub fn is_chat_completions_proxy_path(path: &str) -> bool {
     let path = path.split_once('?').map_or(path, |(path, _)| path);
     matches!(
@@ -492,22 +503,46 @@ pub async fn open_responses_proxy_request(
     body: &str,
     original_user_agent: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
+    open_responses_proxy_request_for_path(body, original_user_agent, "/responses").await
+}
+
+pub async fn open_responses_proxy_request_for_path(
+    body: &str,
+    original_user_agent: Option<&str>,
+    request_path: &str,
+) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
-    open_responses_proxy_request_with_settings_and_user_agent(body, settings, original_user_agent)
-        .await
+    open_responses_proxy_request_with_settings_and_user_agent(
+        body,
+        settings,
+        original_user_agent,
+        request_path,
+    )
+    .await
 }
 
 pub async fn open_responses_proxy_request_with_settings(
     body: &str,
     settings: crate::settings::BackendSettings,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    open_responses_proxy_request_with_settings_and_user_agent(body, settings, None).await
+    open_responses_proxy_request_with_settings_and_user_agent(body, settings, None, "/responses")
+        .await
+}
+
+pub async fn open_responses_proxy_request_with_settings_for_path(
+    body: &str,
+    settings: crate::settings::BackendSettings,
+    request_path: &str,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    open_responses_proxy_request_with_settings_and_user_agent(body, settings, None, request_path)
+        .await
 }
 
 async fn open_responses_proxy_request_with_settings_and_user_agent(
     body: &str,
     settings: crate::settings::BackendSettings,
     original_user_agent: Option<&str>,
+    request_path: &str,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let request_json: Value = serde_json::from_str(body)?;
     let is_stream = request_json
@@ -526,7 +561,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     for (attempt, relay) in relays.into_iter().enumerate() {
         validate_upstream(&relay)?;
         let (endpoint, upstream_body, wire_api) =
-            upstream_request_parts(&relay, request_json.clone()).await?;
+            upstream_request_parts(&relay, request_json.clone(), request_path).await?;
         let has_more_candidates = attempt + 1 < relay_count;
         let header_timeout = response_header_timeout(is_stream);
         let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -824,7 +859,12 @@ pub fn strip_reasoning_in_place(body: &mut serde_json::Value, supports_reasoning
 async fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
     mut request_json: Value,
+    request_path: &str,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi)> {
+    let compact = is_responses_compact_proxy_path(request_path);
+    if compact && relay.protocol == RelayProtocol::ChatCompletions {
+        anyhow::bail!("Chat Completions 协议暂不支持 Responses compact 请求");
+    }
     let model = request_json
         .get("model")
         .and_then(Value::as_str)
@@ -914,6 +954,7 @@ async fn upstream_request_parts(
     };
     Ok((
         match relay.protocol {
+            RelayProtocol::Responses if compact => responses_compact_url(&relay.base_url),
             RelayProtocol::Responses => responses_url(&relay.base_url),
             RelayProtocol::ChatCompletions => chat_completions_url(&relay.base_url),
         },
@@ -1052,6 +1093,14 @@ pub fn chat_completions_url(base_url: &str) -> String {
 
 pub fn responses_url(base_url: &str) -> String {
     build_versioned_url(base_url, "/responses")
+}
+
+pub fn responses_compact_url(base_url: &str) -> String {
+    let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
+    if base.to_ascii_lowercase().ends_with("/responses/compact") {
+        return base.to_string();
+    }
+    format!("{}/compact", responses_url(base_url).trim_end_matches('/'))
 }
 
 pub fn audio_transcriptions_url(base_url: &str) -> String {
@@ -2131,14 +2180,14 @@ fn append_responses_item(
         }
         _ => {
             flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
-            if item.get("role").is_some() || item.get("content").is_some() {
+            if let Some(content) = item.get("content") {
                 let role = responses_role_to_chat_role(item.get("role").and_then(Value::as_str));
+                if content.is_null() && role != "assistant" {
+                    return;
+                }
                 let mut message = json!({
                     "role": role,
-                    "content": responses_content_to_chat_content(
-                        role,
-                        item.get("content").unwrap_or(&Value::Null)
-                        )
+                    "content": responses_content_to_chat_content(role, content)
                 });
                 if role == "assistant" {
                     if !pending_reasoning.is_empty() && pending_tool_calls.is_empty() {

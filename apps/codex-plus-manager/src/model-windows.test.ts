@@ -39,6 +39,8 @@ const _profileTypeCheck: RelayProfile = {
   vlmBaseUrl: "",
   vlmProtocol: "chatCompletions",
   userAgent: "",
+  sub2apiEnabled: false,
+  sub2apiMultiplier: "",
 };
 
 void _profileTypeCheck;

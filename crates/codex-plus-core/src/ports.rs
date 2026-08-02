@@ -77,6 +77,7 @@ pub fn select_packaged_codex_debug_port(requested: u16) -> u16 {
         requested,
         cfg!(windows),
         can_bind_loopback_port,
+        crate::cdp::endpoint_available,
         find_available_loopback_port,
     )
 }
@@ -85,9 +86,14 @@ pub fn select_packaged_codex_debug_port_with(
     requested: u16,
     is_windows: bool,
     can_bind: impl Fn(u16) -> bool,
+    is_existing_cdp: impl Fn(u16) -> bool,
     find_available: impl Fn() -> u16,
 ) -> u16 {
-    select_platform_loopback_port_with(requested, is_windows, can_bind, find_available)
+    if !is_windows || can_bind(requested) || is_existing_cdp(requested) {
+        requested
+    } else {
+        find_available()
+    }
 }
 
 pub fn select_platform_loopback_port_with(
@@ -208,11 +214,18 @@ fn acquire_resilient_loopback_port_guard_with(
         Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && can_connect(port) => {
             Err(error)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+        Err(error)
+            if error.kind() == std::io::ErrorKind::AddrInUse || port_bind_forbidden(&error) =>
+        {
             Ok(LoopbackPortGuard::fallback_lock(file, path))
         }
         Err(error) => Err(error),
     }
+}
+
+fn port_bind_forbidden(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
+        || matches!(error.raw_os_error(), Some(10013))
 }
 
 fn acquire_lock_guard(port: u16, state_dir: &Path) -> std::io::Result<(File, PathBuf)> {
@@ -320,6 +333,21 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(second.kind(), std::io::ErrorKind::WouldBlock);
+    }
+
+    #[test]
+    fn resilient_guard_uses_lock_fallback_when_port_bind_is_forbidden() {
+        let temp = tempfile::tempdir().unwrap();
+        let guard = acquire_resilient_loopback_port_guard_with(
+            57319,
+            temp.path(),
+            |_| Err(std::io::Error::from_raw_os_error(10013)),
+            |_| false,
+        )
+        .unwrap();
+
+        assert!(guard._listener.is_none());
+        assert!(guard.fallback_path().is_some());
     }
 
     #[test]

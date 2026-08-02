@@ -70,6 +70,11 @@ describe("dream skin theme helpers", () => {
       promoTitle: "Sponsor",
       promoSub: "sponsor.example",
       promoUrl: "https://sponsor.example",
+      companion: {
+        dataUrl: "data:image/webp;base64,UklGRg==",
+        width: 96,
+        side: "right",
+      },
       customTargetField: { nested: true },
     });
 
@@ -77,7 +82,80 @@ describe("dream skin theme helpers", () => {
     assert.equal(theme.stylePreset, undefined);
     assert.deepEqual(theme.art, { focusX: 0.72, focusY: 0.45, safeArea: "left", taskMode: "ambient" });
     assert.deepEqual(theme.palette, { accent: "#123456", custom: "keep" });
+    assert.deepEqual(theme.companion, {
+      dataUrl: "data:image/webp;base64,UklGRg==",
+      width: 96,
+      side: "right",
+    });
     assert.deepEqual(theme.customTargetField, { nested: true });
+  });
+
+  it("renders an optional image companion beside the visible composer", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /codex-dream-skin-companion/);
+    assert.match(renderer, /theme\.companion/);
+    assert.match(renderer, /\.composer-footer/);
+    assert.match(renderer, /\.composer-surface-chrome/);
+    assert.match(renderer, /data:image\/(?:png|jpeg|webp|gif);base64/);
+    assert.match(renderer, /removeDreamSkinCompanion/);
+    assert.match(renderer, /ensureDreamSkinCompanion\(\s*window\.__CODEX_PLUS_DREAM_SKIN_THEME__/);
+  });
+
+  it("aligns tall companion images by rendered height with a wider vertical offset range", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+
+    assert.match(renderer, /companion\.naturalWidth/);
+    assert.match(renderer, /companion\.naturalHeight/);
+    assert.match(renderer, /composer\.rect\.bottom - renderedHeight \+ config\.offsetY/);
+    assert.match(renderer, /window\.innerHeight - renderedHeight - edge/);
+    assert.match(renderer, /const offsetY = Math\.max\(-160, Math\.min\(Number\(companion\.offsetY\) \|\| 0, 160\)\)/);
+    assert.match(app, /min=\{-160\}/);
+    assert.match(app, /max=\{160\}/);
+    assert.match(app, /Math\.max\(-160, Math\.min\(160, Number\(event\.currentTarget\.value\) \|\| 0\)\)/);
+  });
+
+  it("keeps the Windows skin active when the sidebar is hidden", async () => {
+    const renderer = await readFile(
+      new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url),
+      "utf8",
+    );
+
+    assert.match(renderer, /const shellMain = document\.querySelector\("main\.main-surface"\)/);
+    assert.doesNotMatch(renderer, /!shellMain\s*\|\|\s*!shellSidebar/);
+  });
+
+  it("extends the Windows wallpaper treatment to right and bottom dock panels", async () => {
+    const renderer = await readFile(
+      new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url),
+      "utf8",
+    );
+    const css = await readFile(
+      new URL("../../../assets/inject/upstream/dream-skin/windows/dream-skin.css", import.meta.url),
+      "utf8",
+    );
+
+    assert.match(renderer, /\[data-app-shell-tabs="true"\]/);
+    assert.match(renderer, /dream-aux-panel-layer/);
+    assert.match(renderer, /dream-aux-panel-right/);
+    assert.match(renderer, /dream-aux-panel-bottom/);
+    assert.match(renderer, /clearAuxiliaryPanelClasses/);
+    assert.match(css, /\.dream-aux-panel-layer/);
+    assert.match(css, /\.dream-aux-panel-right/);
+    assert.match(css, /\.dream-aux-panel-bottom/);
+    assert.match(css, /\[data-codex-terminal="true"\]/);
+  });
+
+  it("exposes companion image controls in the theme editor", async () => {
+    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+
+    assert.match(app, /dream-skin-companion-controls/);
+    assert.match(app, /FileReader/);
+    assert.match(app, /companion\.dataUrl/);
+    assert.match(app, /companion\?\.offsetX/);
+    assert.match(app, /companion\?\.offsetY/);
+    assert.match(app, /companionEnabled/);
   });
 
   it("detects text, color, and image draft changes", () => {

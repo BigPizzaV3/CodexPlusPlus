@@ -31,6 +31,7 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/user-scripts/reload", json!({})),
         ("/devtools/open", json!({})),
         ("/manager/open", json!({})),
+        ("/manager/open-transient", json!({})),
         ("/backend/status", json!({})),
         ("/codex-model-catalog", json!({})),
         ("/codex-config-model", json!({})),
@@ -367,6 +368,10 @@ async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
         json!({"status": "ok", "opened": "manager"})
     );
     assert_eq!(
+        handle_bridge_request(ctx.clone(), "/manager/open-transient", json!({})).await,
+        json!({"status": "ok", "opened": "manager-transient"})
+    );
+    assert_eq!(
         handle_bridge_request(ctx.clone(), "/backend/status", json!({})).await,
         json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION})
     );
@@ -623,6 +628,41 @@ async fn user_script_manager_scans_and_persists_inventory_shape() {
         .unwrap(),
         json!({"enabled": false, "scripts": {}})
     );
+}
+
+#[tokio::test]
+async fn user_script_inventory_merges_renderer_runtime_status() {
+    let temp = tempfile::tempdir().unwrap();
+    let builtin_dir = temp.path().join("builtin");
+    let user_dir = temp.path().join("user");
+    std::fs::create_dir_all(&builtin_dir).unwrap();
+    std::fs::create_dir_all(&user_dir).unwrap();
+    std::fs::write(user_dir.join("loaded.js"), "window.loaded = true;").unwrap();
+    std::fs::write(user_dir.join("failed.js"), "throw new Error('boom');").unwrap();
+    let manager =
+        UserScriptManager::new(builtin_dir, user_dir, temp.path().join("user_scripts.json"));
+    let runtime_status = json!({
+        "user:loaded.js": {"status": "loaded", "error": ""},
+        "user:failed.js": {"status": "failed", "error": "boom"}
+    });
+
+    let inventory = manager
+        .inventory_with_runtime_status(Some(&runtime_status))
+        .unwrap();
+    let scripts = inventory["scripts"].as_array().unwrap();
+    let loaded = scripts
+        .iter()
+        .find(|script| script["key"] == "user:loaded.js")
+        .unwrap();
+    let failed = scripts
+        .iter()
+        .find(|script| script["key"] == "user:failed.js")
+        .unwrap();
+
+    assert_eq!(loaded["status"], "loaded");
+    assert_eq!(loaded["error"], "");
+    assert_eq!(failed["status"], "failed");
+    assert_eq!(failed["error"], "boom");
 }
 
 #[tokio::test]
@@ -1112,6 +1152,10 @@ impl BridgeRuntimeService for FakeRuntime {
         Ok(json!({"status": "ok", "opened": "manager"}))
     }
 
+    async fn open_transient_manager(&self) -> anyhow::Result<Value> {
+        Ok(json!({"status": "ok", "opened": "manager-transient"}))
+    }
+
     async fn backend_status(&self) -> anyhow::Result<Value> {
         Ok(
             json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION}),
@@ -1436,7 +1480,11 @@ impl LaunchHooks for ContextHooks {
         self.event(format!("status:{status}"));
     }
 
-    async fn wait_for_codex_exit(&self, _launch: &CodexLaunch) -> anyhow::Result<()> {
+    async fn wait_for_codex_exit(
+        &self,
+        _launch: &CodexLaunch,
+        _debug_port: u16,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 

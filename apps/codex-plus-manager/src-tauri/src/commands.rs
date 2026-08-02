@@ -353,6 +353,20 @@ pub struct RelayProfileModelsPayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Sub2ApiBillingPayload {
+    pub endpoint: String,
+    pub group_rate_multiplier: f64,
+    pub user_rate_multiplier: Option<f64>,
+    pub resolved_rate_multiplier: f64,
+    pub peak_rate_enabled: bool,
+    pub peak_rate_multiplier: Option<f64>,
+    pub applied_peak_multiplier: Option<f64>,
+    pub effective_rate_multiplier: f64,
+    pub observed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderDoctorCheck {
     pub id: String,
     pub title: String,
@@ -577,7 +591,7 @@ pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 #[tauri::command]
 pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     codex_plus_core::watcher::stop_launcher_processes_and_wait();
-    codex_plus_core::watcher::stop_codex_processes_and_wait();
+    codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
     spawn_codex_plus_launch(request, "Codex 已请求重启，启动任务正在后台运行。")
 }
 
@@ -2055,6 +2069,7 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
                     "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
                     "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
                     "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
+                    "sqliteCatalogRowsInserted": sync.sqlite_catalog_rows_inserted,
                     "updatedWorkspaceRoots": sync.updated_workspace_roots,
                     "encryptedContentWarning": sync.encrypted_content_warning,
                     "backupDir": sync.backup_dir,
@@ -3191,6 +3206,65 @@ pub async fn fetch_relay_profile_models(
             },
         ),
     }
+}
+
+#[tauri::command]
+pub async fn fetch_sub2api_billing(profile: RelayProfile) -> CommandResult<Sub2ApiBillingPayload> {
+    let profile_name = if profile.name.trim().is_empty() {
+        "未命名供应商"
+    } else {
+        profile.name.trim()
+    };
+    match codex_plus_core::sub2api::fetch_sub2api_billing_info(&profile).await {
+        Ok(info) => ok(
+            &format!(
+                "已从「{profile_name}」获取倍率：{}x。",
+                format_multiplier(info.effective_rate_multiplier)
+            ),
+            Sub2ApiBillingPayload {
+                endpoint: info.endpoint,
+                group_rate_multiplier: info.group_rate_multiplier,
+                user_rate_multiplier: info.user_rate_multiplier,
+                resolved_rate_multiplier: info.resolved_rate_multiplier,
+                peak_rate_enabled: info.peak_rate_enabled,
+                peak_rate_multiplier: info.peak_rate_multiplier,
+                applied_peak_multiplier: info.applied_peak_multiplier,
+                effective_rate_multiplier: info.effective_rate_multiplier,
+                observed_at: info.observed_at,
+            },
+        ),
+        Err(error) => failed(
+            &format!("从「{profile_name}」获取 sub2api 倍率失败：{error}"),
+            Sub2ApiBillingPayload {
+                endpoint: codex_plus_core::sub2api::sub2api_billing_endpoint(
+                    if profile.upstream_base_url.trim().is_empty() {
+                        profile.base_url.trim()
+                    } else {
+                        profile.upstream_base_url.trim()
+                    },
+                ),
+                group_rate_multiplier: 0.0,
+                user_rate_multiplier: None,
+                resolved_rate_multiplier: 0.0,
+                peak_rate_enabled: false,
+                peak_rate_multiplier: None,
+                applied_peak_multiplier: None,
+                effective_rate_multiplier: 0.0,
+                observed_at: String::new(),
+            },
+        ),
+    }
+}
+
+fn format_multiplier(value: f64) -> String {
+    let mut text = format!("{value:.4}");
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
 }
 
 #[tauri::command]
