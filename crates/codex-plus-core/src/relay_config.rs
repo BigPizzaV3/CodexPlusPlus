@@ -1683,10 +1683,12 @@ fn apply_model_catalog_to_config(
     let entries =
         crate::model_suffix::collect_catalog_entries(&model_list, &model_windows, &profile.model);
     // Known bundled metadata entries need a catalog even without a user-supplied window.
-    if !entries.iter().any(|entry| {
-        entry.suffix_window.is_some()
-            || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
-    }) {
+    if profile.id != "codex-plus-router"
+        && !entries.iter().any(|entry| {
+            entry.suffix_window.is_some()
+                || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
+        })
+    {
         return Ok(config_text.to_string());
     }
     let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
@@ -1719,13 +1721,26 @@ fn build_model_router_catalog_json(
     fallback: Option<u64>,
 ) -> String {
     let generated = crate::model_suffix::build_model_catalog_json(entries, fallback);
-    let routed_models = serde_json::from_str::<Value>(&generated)
+    let mut routed_models = serde_json::from_str::<Value>(&generated)
         .ok()
         .and_then(|value| value.get("models").and_then(Value::as_array).cloned())
         .unwrap_or_default();
     let mut models = catalog_models_from_file(&home.join("models_cache.json"))
         .or_else(|| catalog_models_from_file(current_catalog_path))
         .unwrap_or_default();
+    let official_slugs = models
+        .iter()
+        .filter_map(|model| model.get("slug").and_then(Value::as_str))
+        .collect::<HashSet<_>>();
+    for model in &mut routed_models {
+        if model
+            .get("slug")
+            .and_then(Value::as_str)
+            .is_some_and(|slug| official_slugs.contains(slug))
+        {
+            append_relay_display_suffix(model);
+        }
+    }
     let routed_slugs = routed_models
         .iter()
         .filter_map(|model| model.get("slug").and_then(Value::as_str))
@@ -1738,6 +1753,24 @@ fn build_model_router_catalog_json(
     });
     models.extend(routed_models);
     serde_json::to_string_pretty(&json!({ "models": models })).unwrap_or(generated)
+}
+
+fn append_relay_display_suffix(model: &mut Value) {
+    let Some(object) = model.as_object_mut() else {
+        return;
+    };
+    let display_name = object
+        .get("display_name")
+        .and_then(Value::as_str)
+        .or_else(|| object.get("slug").and_then(Value::as_str))
+        .unwrap_or_default();
+    if display_name.is_empty() || display_name.ends_with(" [中转]") {
+        return;
+    }
+    object.insert(
+        "display_name".to_string(),
+        Value::String(format!("{display_name} [中转]")),
+    );
 }
 
 fn catalog_models_from_file(path: &Path) -> Option<Vec<Value>> {

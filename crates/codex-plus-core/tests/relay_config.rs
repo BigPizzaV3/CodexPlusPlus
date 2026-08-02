@@ -3819,7 +3819,7 @@ fn model_router_catalog_merges_official_models_and_routed_windows() {
     let home = temp.path();
     std::fs::write(
         home.join("models_cache.json"),
-        r#"{"models":[{"slug":"gpt-official","context_window":272000}]}"#,
+        r#"{"models":[{"slug":"gpt-5.5","display_name":"GPT-5.5","context_window":272000}]}"#,
     )
     .unwrap();
     let settings = BackendSettings {
@@ -3836,7 +3836,7 @@ fn model_router_catalog_merges_official_models_and_routed_windows() {
                 id: "mimo".to_string(),
                 name: "MiMo".to_string(),
                 relay_mode: RelayMode::PureApi,
-                model_list: "mimo-v2.5-pro".to_string(),
+                model_list: "mimo-v2.5-pro\ngpt-5.5".to_string(),
                 model_windows: r#"{"mimo-v2.5-pro":"1M"}"#.to_string(),
                 ..RelayProfile::default()
             },
@@ -3845,7 +3845,7 @@ fn model_router_catalog_merges_official_models_and_routed_windows() {
     };
 
     let router = model_router_profile(&settings, home);
-    assert_eq!(router.model_list, "mimo-v2.5-pro");
+    assert_eq!(router.model_list, "mimo-v2.5-pro\ngpt-5.5");
     apply_relay_profile_to_home_with_switch_rules(home, &router, "").unwrap();
 
     let catalog: serde_json::Value = serde_json::from_str(
@@ -3853,7 +3853,12 @@ fn model_router_catalog_merges_official_models_and_routed_windows() {
     )
     .unwrap();
     let models = catalog["models"].as_array().unwrap();
-    assert!(models.iter().any(|model| model["slug"] == "gpt-official"));
+    assert!(models.iter().any(|model| model["slug"] == "gpt-5.5"));
+    let routed_official = models
+        .iter()
+        .find(|model| model["slug"] == "gpt-5.5")
+        .unwrap();
+    assert_eq!(routed_official["display_name"], "GPT-5.5 [中转]");
     let mimo = models
         .iter()
         .find(|model| model["slug"] == "mimo-v2.5-pro")
