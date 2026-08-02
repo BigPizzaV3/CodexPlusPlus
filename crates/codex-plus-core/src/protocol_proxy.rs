@@ -856,7 +856,7 @@ async fn upstream_request_parts(
             ImageHandling::Strip => {
                 for key in &["messages", "input"] {
                     if let Some(arr) = body.get_mut(key).and_then(Value::as_array_mut) {
-                        crate::vision::strip_images_only(arr);
+                        crate::vision::replace_images_with_path_placeholders(arr).await;
                     }
                 }
             }
@@ -881,6 +881,14 @@ async fn upstream_request_parts(
                                 &model,
                             )
                             .await;
+                        }
+                    }
+                } else {
+                    // VLM 配置不完整：不要静默 send-as-is，否则 image_url 会被
+                    // 直接发给纯文本模型。改为本地路径占位，交给读图 MCP 处理。
+                    for key in &["messages", "input"] {
+                        if let Some(arr) = body.get_mut(key).and_then(Value::as_array_mut) {
+                            crate::vision::replace_images_with_path_placeholders(arr).await;
                         }
                     }
                 }

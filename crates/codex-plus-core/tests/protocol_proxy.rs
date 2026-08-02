@@ -13,7 +13,7 @@ use codex_plus_core::protocol_proxy::{
 };
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
-    RelayMode, RelayProfile,
+    RelayMode, RelayProfile, RelayProtocol,
 };
 use serde_json::json;
 use std::io::{Read, Write};
@@ -213,6 +213,112 @@ async fn responses_compact_request_keeps_compact_path_upstream() {
         request
             .to_ascii_lowercase()
             .contains("authorization: bearer sk-compact")
+    );
+}
+
+#[tokio::test]
+async fn strip_mode_replaces_images_with_path_placeholders() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = [0; 8192];
+        let read = stream.read(&mut buffer).await.unwrap();
+        let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_1\",\"object\":\"response\"}",
+            )
+            .await
+            .unwrap();
+        request
+    });
+    let settings = BackendSettings {
+        active_relay_id: "strip".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "strip".to_string(),
+            name: "strip".to_string(),
+            base_url: format!("http://{addr}/v1"),
+            api_key: "sk-strip".to_string(),
+            protocol: RelayProtocol::ChatCompletions,
+            relay_mode: RelayMode::PureApi,
+            model_vlm: r#"{"deepseek-v4-flash":"strip"}"#.to_string(),
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+    let body = r#"{"model":"deepseek-v4-flash","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"look"},{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="}]}],"stream":false}"#;
+    let result = open_responses_proxy_request_with_settings(body, settings)
+        .await
+        .unwrap();
+    let request = server.await.unwrap();
+    assert_eq!(result.status_code, 200);
+    assert!(
+        !request.contains("\"image_url\""),
+        "strip mode should not send image_url upstream: {request}"
+    );
+    assert!(
+        request.contains("[图片文件: "),
+        "strip mode should include image path placeholder: {request}"
+    );
+    assert!(
+        request.contains("读图工具"),
+        "strip mode placeholder should guide MCP read: {request}"
+    );
+}
+
+#[tokio::test]
+async fn vlm_mode_incomplete_config_falls_back_to_path_placeholders() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = [0; 8192];
+        let read = stream.read(&mut buffer).await.unwrap();
+        let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_1\",\"object\":\"response\"}",
+            )
+            .await
+            .unwrap();
+        request
+    });
+    let settings = BackendSettings {
+        active_relay_id: "vlm-incomplete".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "vlm-incomplete".to_string(),
+            name: "vlm-incomplete".to_string(),
+            base_url: format!("http://{addr}/v1"),
+            api_key: "sk-vlm".to_string(),
+            protocol: RelayProtocol::ChatCompletions,
+            relay_mode: RelayMode::PureApi,
+            model_vlm: r#"{"deepseek-v4-flash":"vlm"}"#.to_string(),
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+    let body = r#"{"model":"deepseek-v4-flash","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"look"},{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="}]}],"stream":false}"#;
+    let result = open_responses_proxy_request_with_settings(body, settings)
+        .await
+        .unwrap();
+    let request = server.await.unwrap();
+    assert_eq!(result.status_code, 200);
+    assert!(
+        !request.contains("\"image_url\""),
+        "incomplete VLM config should not send image_url upstream: {request}"
+    );
+    assert!(
+        request.contains("[图片文件: "),
+        "incomplete VLM config should include image path placeholder: {request}"
+    );
+    assert!(
+        request.contains("读图工具"),
+        "incomplete VLM config placeholder should guide MCP read: {request}"
     );
 }
 

@@ -3,10 +3,13 @@
 /// Includes image-description cache, retry, concurrency limits,
 /// round-depth control, dynamic context-window overflow protection,
 /// and two-phase (sync + background) analysis with X-governed injection.
+use base64::Engine as _;
 use serde_json::Value;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -110,7 +113,7 @@ pub enum ImageHandling {
     /// 图片原样保留，不做任何处理（默认）。
     #[serde(rename = "send-as-is")]
     SendAsIs,
-    /// 剥离图片块，替换为占位符，不调 VLM。
+    /// 剥离图片块，替换为本地路径占位（由读图 MCP 读取），不调 VLM。
     #[serde(rename = "strip")]
     Strip,
     /// VLM 分析管线（两阶段：同步当前+黄金窗口，后台补深层）。
@@ -128,40 +131,6 @@ pub fn image_handling_mode(model: &str, model_vlm_json: &str) -> ImageHandling {
         }
     }
     ImageHandling::SendAsIs
-}
-
-/// 纯剥离模式：删除所有消息中的图片块，替换为 "[图片已省略]"。
-/// 不调 VLM，不入缓存，不注入描述。
-pub fn strip_images_only(messages: &mut [Value]) {
-    for msg in messages.iter_mut() {
-        let Some(content) = msg.get_mut("content") else {
-            continue;
-        };
-
-        match &content {
-            Value::Array(parts) => {
-                let mut new_content: Vec<Value> = Vec::new();
-                for part in parts.iter() {
-                    let is_image = part
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .map_or(false, |t| t == "image_url" || t == "input_image");
-                    if is_image {
-                        new_content
-                            .push(serde_json::json!({"type": "text", "text": "[图片已省略]"}));
-                    } else {
-                        new_content.push(part.clone());
-                    }
-                }
-                *content = Value::Array(new_content);
-            }
-            Value::String(s) => {
-                // 字符串 content 场景不会有图片，跳过
-                let _ = s;
-            }
-            _ => {}
-        }
-    }
 }
 
 // ── URL hashing ───────────────────────────────────────────────────────
@@ -433,7 +402,10 @@ pub async fn analyze_all(
     }
 
     if success_count == 0 {
-        return Err("all VLM calls failed (fail-closed: images preserved)".to_string());
+        return Err(
+            "all VLM calls failed (fail-closed: images replaced with path placeholders)"
+                .to_string(),
+        );
     }
 
     Ok(results)
@@ -496,6 +468,244 @@ pub fn inject_analysis(messages: &mut [Value], result: &Result<String, String>) 
         if msg.get("role").and_then(Value::as_str) == Some("user") {
             inject_text_into_user_message(msg, &text);
             break;
+        }
+    }
+}
+
+// ── Image path placeholder fallback ─────────────────────────────────
+
+/// 图片路径占位模板：给不支持视觉输入的模型提供本地文件路径，
+/// 让模型调用自身可用的读图工具（MCP）读取该路径查看图片。
+const IMAGE_PATH_PLACEHOLDER_FORMAT: &str = "[图片文件: {}] 用户刚刚发送了这张图片。请使用你可用的读图工具读取该文件路径来查看图片内容，不要在工作区中搜索或猜测其他图片文件。";
+/// 图片无法落地为可访问路径时的兜底文案。
+const IMAGE_PATH_UNAVAILABLE_TEXT: &str = "[图片文件不可访问，已省略]";
+/// 临时图片目录名（位于系统临时目录下）。
+const VISION_TEMP_IMAGES_DIR: &str = "codex-plus-vision-images";
+/// 下载图片大小上限（50MB）。
+const VISION_DOWNLOAD_MAX_BYTES: usize = 50 << 20;
+
+/// 进程内自增序号，避免同一纳秒内并发写临时图片撞名。
+static VISION_TEMP_IMAGE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 从单个 content part 中提取图片 URL（兼容 image_url 对象/字符串两种形态）。
+fn part_image_url(part: &Value) -> Option<String> {
+    let kind = part.get("type").and_then(Value::as_str).unwrap_or("");
+    if kind != "image_url" && kind != "input_image" {
+        return None;
+    }
+    let url = part
+        .pointer("/image_url/url")
+        .or_else(|| part.pointer("/image_url"))
+        .and_then(Value::as_str)?;
+    Some(url.to_string())
+}
+
+/// 从消息文本块中收集 Codex 自带的图片路径提示（`<image ... path="...">`）。
+/// Codex 桌面端会把粘贴图片写到 `%TEMP%\codex-clipboard-*.png`，
+/// 并在请求文本里附带 path，优先复用该路径，避免重复解码落盘。
+fn collect_image_path_hints(msg: &Value) -> Vec<String> {
+    let mut hints = Vec::new();
+    let Some(parts) = msg.get("content").and_then(Value::as_array) else {
+        return hints;
+    };
+    for part in parts {
+        let Some(text) = part.get("text").and_then(Value::as_str) else {
+            continue;
+        };
+        let marker = "path=\"";
+        for (idx, _) in text.match_indices(marker) {
+            let rest = &text[idx + marker.len()..];
+            if let Some(end) = rest.find('"') {
+                let path = rest[..end].trim().to_string();
+                if !path.is_empty() {
+                    hints.push(path);
+                }
+            }
+        }
+    }
+    hints
+}
+
+/// 把图片 URL 解析为读图工具可访问的本地路径。
+/// data URL → 解码写入临时文件；http(s) URL → 下载写入临时文件；
+/// 本地路径 → 校验存在后规范化返回。
+async fn image_url_to_local_path(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("data:") {
+        let (payload, mime) = decode_vision_data_url(trimmed)?;
+        return write_vision_temp_image(&payload, &mime).ok();
+    }
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        let (payload, mime) = download_vision_image(trimmed).await.ok()?;
+        return write_vision_temp_image(&payload, &mime).ok();
+    }
+    let path = std::path::Path::new(trimmed);
+    if path.is_file() {
+        return std::fs::canonicalize(path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .ok();
+    }
+    None
+}
+
+/// 解析 data:image/xxx;base64,.... 形式的图片 URL。
+fn decode_vision_data_url(raw: &str) -> Option<(Vec<u8>, String)> {
+    let comma = raw.find(',')?;
+    let header = &raw[..comma];
+    let mime = if let Some(meta) = header.strip_prefix("data:") {
+        meta.split(';')
+            .next()
+            .unwrap_or("image/png")
+            .trim()
+            .to_string()
+    } else {
+        "image/png".to_string()
+    };
+    let payload = base64::engine::general_purpose::STANDARD
+        .decode(raw[comma + 1..].trim())
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(raw[comma + 1..].trim()))
+        .ok()?;
+    if payload.is_empty() {
+        return None;
+    }
+    Some((
+        payload,
+        if mime.is_empty() {
+            "image/png".into()
+        } else {
+            mime
+        },
+    ))
+}
+
+/// 根据 MIME 返回临时文件扩展名。
+fn image_file_extension(mime: &str) -> &'static str {
+    match mime.to_ascii_lowercase().trim() {
+        "image/jpeg" => ".jpg",
+        "image/gif" => ".gif",
+        "image/webp" => ".webp",
+        "image/bmp" => ".bmp",
+        "image/tiff" => ".tiff",
+        "image/svg+xml" => ".svg",
+        _ => ".png",
+    }
+}
+
+/// 把图片字节写入系统临时目录下的专用目录，返回绝对路径。
+fn write_vision_temp_image(payload: &[u8], mime: &str) -> std::io::Result<String> {
+    if payload.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "image payload is empty",
+        ));
+    }
+    let dir = std::env::temp_dir().join(VISION_TEMP_IMAGES_DIR);
+    std::fs::create_dir_all(&dir)?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let seq = VISION_TEMP_IMAGE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!(
+        "img-{}-{}-{}{}",
+        nanos,
+        std::process::id(),
+        seq,
+        image_file_extension(mime)
+    ));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    file.write_all(payload)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// 下载 http(s) 图片到内存并返回 (字节, MIME)。
+async fn download_vision_image(url: &str) -> Result<(Vec<u8>, String), String> {
+    let client = crate::http_client::vlm_http_client_with_timeout(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(15),
+    )
+    .map_err(|e| format!("client: {e}"))?;
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("download image: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("download image: http {}", resp.status()));
+    }
+    let mime = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(';').next().unwrap_or(s).trim().to_string())
+        .filter(|s| s.starts_with("image/"))
+        .unwrap_or_else(|| "image/png".to_string());
+    let payload = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("read downloaded image: {e}"))?
+        .to_vec();
+    if payload.is_empty() || payload.len() > VISION_DOWNLOAD_MAX_BYTES {
+        return Err(format!(
+            "downloaded image size {} exceeds limit",
+            payload.len()
+        ));
+    }
+    Ok((payload, mime))
+}
+
+/// 把所有消息中的图片块替换为「本地路径占位」文字，保证纯文本模型收到的
+/// content 不再包含 image_url/input_image 块，同时保留路径供读图 MCP 读取。
+pub async fn replace_images_with_path_placeholders(messages: &mut [Value]) {
+    for msg in messages.iter_mut() {
+        let Some(content) = msg.get("content") else {
+            continue;
+        };
+        let Some(parts) = content.as_array() else {
+            continue;
+        };
+        let hints = collect_image_path_hints(msg);
+        let mut hint_index = 0usize;
+        let mut has_image = false;
+        let mut new_parts: Vec<Value> = Vec::with_capacity(parts.len());
+        for part in parts {
+            let Some(url) = part_image_url(part) else {
+                new_parts.push(part.clone());
+                continue;
+            };
+            has_image = true;
+            let lower = url.trim().to_ascii_lowercase();
+            let path = if lower.starts_with("http://") || lower.starts_with("https://") {
+                image_url_to_local_path(&url).await
+            } else if lower.starts_with("data:") {
+                // Codex 已把粘贴图写到 Temp，文本里带 path，优先复用；
+                // 拿不到有效路径时再解码 data URL 落盘。
+                let hinted = hints
+                    .get(hint_index)
+                    .filter(|p| std::path::Path::new(p).is_file());
+                match hinted {
+                    Some(p) => Some(p.clone()),
+                    None => image_url_to_local_path(&url).await,
+                }
+            } else {
+                image_url_to_local_path(&url).await
+            };
+            hint_index += 1;
+            let text = match path {
+                Some(p) => IMAGE_PATH_PLACEHOLDER_FORMAT.replace("{}", &p),
+                None => IMAGE_PATH_UNAVAILABLE_TEXT.to_string(),
+            };
+            new_parts.push(serde_json::json!({"type": "text", "text": text}));
+        }
+        if has_image {
+            *msg.get_mut("content").unwrap() = Value::Array(new_parts);
         }
     }
 }
@@ -675,7 +885,11 @@ pub async fn strip_image_blocks(
             .await
             .is_err()
         {
-            // 当前轮 VLM 全部失败 → fail-closed。
+            // 当前轮 VLM 全部失败 → 保留已命中的缓存描述，并把图片块替换为本地路径占位，
+            // 让纯文本模型通过读图 MCP 读取图片，而不是把 image_url 原样发给上游。
+            if let Some(desc) = descriptions.get(msg_idx) {
+                inject_text_into_user_message(&mut messages[*msg_idx], desc);
+            }
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "vlm_current_round_fail_closed",
                 json!({
@@ -683,6 +897,7 @@ pub async fn strip_image_blocks(
                     "is_current": true,
                 }),
             );
+            replace_images_with_path_placeholders(messages).await;
             return;
         }
     }
@@ -919,57 +1134,6 @@ mod tests {
     #[test]
     fn handling_mode_defaults_to_send_as_is_for_empty_string() {
         assert_eq!(image_handling_mode("gpt-4", ""), ImageHandling::SendAsIs);
-    }
-
-    // ── strip_images_only ─────────────────────────────────────────
-
-    #[test]
-    fn strip_images_only_removes_image_url_block() {
-        let mut messages = vec![serde_json::json!({
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "hello"},
-                {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
-            ]
-        })];
-        strip_images_only(&mut messages);
-        let parts = messages[0]["content"].as_array().unwrap();
-        assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0]["type"], "text");
-        assert_eq!(parts[0]["text"], "hello");
-        assert_eq!(parts[1]["type"], "text");
-        assert_eq!(parts[1]["text"], "[图片已省略]");
-    }
-
-    #[test]
-    fn strip_images_only_removes_input_image_block() {
-        let mut messages = vec![serde_json::json!({
-            "role": "user",
-            "content": [
-                {"type": "input_image", "image_url": "data:image/png;base64,abc"},
-            ]
-        })];
-        strip_images_only(&mut messages);
-        let parts = messages[0]["content"].as_array().unwrap();
-        assert_eq!(parts.len(), 1);
-        assert_eq!(parts[0]["type"], "text");
-        assert_eq!(parts[0]["text"], "[图片已省略]");
-    }
-
-    #[test]
-    fn strip_images_only_does_not_affect_send_as_is_messages() {
-        let mut messages = vec![serde_json::json!({
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "hello"},
-                {"type": "text", "text": "world"},
-            ]
-        })];
-        strip_images_only(&mut messages);
-        let parts = messages[0]["content"].as_array().unwrap();
-        assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0]["text"], "hello");
-        assert_eq!(parts[1]["text"], "world");
     }
 
     #[test]
@@ -1332,15 +1496,116 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn replace_images_with_path_placeholders_local_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let img_path = dir.path().join("sample.png");
+        std::fs::write(&img_path, b"fake-png-bytes").unwrap();
+        let canonical = std::fs::canonicalize(&img_path).unwrap();
+
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look"},
+                {"type": "image_url", "image_url": {"url": img_path.to_string_lossy()}},
+            ]
+        })];
+
+        replace_images_with_path_placeholders(&mut messages).await;
+
+        let parts = messages[0]["content"].as_array().unwrap();
+        let has_image = parts
+            .iter()
+            .any(|p| p.get("type").and_then(Value::as_str) == Some("image_url"));
+        assert!(!has_image, "image_url should be replaced");
+        let text = parts
+            .iter()
+            .filter_map(|p| p["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            text.contains(&canonical.to_string_lossy().to_string()),
+            "placeholder should contain resolved path: {text}"
+        );
+        assert!(
+            text.contains("读图工具"),
+            "placeholder should guide MCP read: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_images_with_path_placeholders_prefers_codex_clipboard_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let img_path = dir.path().join("codex-clipboard-test.png");
+        std::fs::write(&img_path, b"fake-png-bytes").unwrap();
+
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": format!("<image name=[Image #1] path=\"{}\" >", img_path.display())},
+                {"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8="},
+                {"type": "text", "text": "</image>"},
+            ]
+        })];
+
+        replace_images_with_path_placeholders(&mut messages).await;
+
+        let parts = messages[0]["content"].as_array().unwrap();
+        let has_image = parts
+            .iter()
+            .any(|p| p.get("type").and_then(Value::as_str) == Some("input_image"));
+        assert!(!has_image, "input_image should be replaced");
+        let text = parts
+            .iter()
+            .filter_map(|p| p["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            text.contains(&img_path.to_string_lossy().to_string()),
+            "placeholder should reuse Codex temp path: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_images_with_path_placeholders_data_url_writes_temp_file() {
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8="},
+            ]
+        })];
+
+        replace_images_with_path_placeholders(&mut messages).await;
+
+        let parts = messages[0]["content"].as_array().unwrap();
+        let has_image = parts
+            .iter()
+            .any(|p| p.get("type").and_then(Value::as_str) == Some("input_image"));
+        assert!(!has_image, "input_image should be replaced");
+        let text = parts.last().unwrap()["text"].as_str().unwrap();
+        assert!(
+            text.starts_with("[图片文件: "),
+            "path placeholder missing: {text}"
+        );
+        let path = text
+            .trim_start_matches("[图片文件: ")
+            .split(']')
+            .next()
+            .unwrap();
+        assert!(
+            std::path::Path::new(path).is_file(),
+            "placeholder path should exist: {path}"
+        );
+    }
+
+    #[tokio::test]
     async fn strip_image_blocks_unanalyzed_gets_placeholder() {
-        // 历史消息有大量图片但 VLM 服务不可达 → fail-closed → 图片保留但不注入占位符
-        // 注：VLM 服务不可达时 analyze_all 会返回 Err → strip_image_blocks 会 early return
-        // 所以这里验证的是：当 VLM 完全不可用时，图片不被删除。
+        // VLM 服务不可达 → fail-closed → 图片块被替换为本地路径占位，
+        // 由读图 MCP 按路径读取，而不是保留 image_url 发给纯文本模型。
         let mut messages = vec![serde_json::json!({
             "role": "user",
             "content": [
                 {"type": "text", "text": "test"},
-                {"type": "image_url", "image_url": {"url": "https://nonexistent.example.com/img.png"}},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}},
             ]
         })];
 
@@ -1352,19 +1617,21 @@ mod tests {
 
         strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4").await;
 
-        // fail-closed：图片保留
         let parts = messages[0]["content"].as_array().unwrap();
         let has_image = parts
             .iter()
             .any(|p| p.get("type").and_then(Value::as_str) == Some("image_url"));
+        assert!(!has_image, "image_url should be replaced on fail-closed");
+        let texts: Vec<&str> = parts.iter().filter_map(|p| p["text"].as_str()).collect();
+        let joined = texts.join(" ");
         assert!(
-            has_image,
-            "image should be preserved when VLM is unreachable (fail-closed)"
+            joined.contains("[图片文件:") || joined.contains("[图片文件不可访问"),
+            "path placeholder not found in: {joined}"
         );
     }
 
     /// 混合缓存命中/未命中 + VLM 不可达 → fail-closed。
-    /// 前 8 张在缓存中，后 7 张不在，VLM 不可达时全部图片保留。
+    /// 前 8 张在缓存中，后 7 张不在，VLM 不可达时全部图片替换为路径占位。
     #[tokio::test]
     async fn strip_image_blocks_mixed_cache_vlm_unreachable_fail_closed() {
         let mut messages: Vec<Value> = Vec::new();
@@ -1405,17 +1672,21 @@ mod tests {
 
         strip_image_blocks(&mut messages, &vlm_config, "{}", "900000", "gpt-4").await;
 
-        // VLM 不可达 → analyze_all 返回 Err → strip_image_blocks early return
-        // → fail-closed：全部图片保留，不注入任何描述。
-        let hist_parts = messages[1]["content"].as_array().unwrap();
-        let image_count = hist_parts
-            .iter()
-            .filter(|p| p.get("type").and_then(Value::as_str) == Some("image_url"))
-            .count();
-        assert_eq!(
-            image_count, 15,
-            "images preserved (fail-closed when VLM unreachable)"
-        );
+        // VLM 不可达 → analyze_all 返回 Err → strip_image_blocks 把全部图片
+        // 替换为本地路径占位，确保上游只收到 text 块。
+        for (idx, label) in [(0usize, "current"), (1usize, "history")] {
+            let parts = messages[idx]["content"].as_array().unwrap();
+            let has_image = parts
+                .iter()
+                .any(|p| p.get("type").and_then(Value::as_str) == Some("image_url"));
+            assert!(!has_image, "{label}: image_url should be replaced");
+            let texts: Vec<&str> = parts.iter().filter_map(|p| p["text"].as_str()).collect();
+            let joined = texts.join(" ");
+            assert!(
+                joined.contains("[图片文件:") || joined.contains("[图片文件不可访问"),
+                "{label}: path placeholder not found in: {joined}"
+            );
+        }
     }
 
     // ── multi-round history test ─────────────────────────────────
