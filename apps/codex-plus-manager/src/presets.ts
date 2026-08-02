@@ -163,6 +163,17 @@ export const PRESETS: ProviderPreset[] = [
 
   // ── 聚合/中转 ──
   {
+    id: "atlascloud",
+    name: "Atlas Cloud",
+    websiteUrl: "https://www.atlascloud.ai",
+    apiKeyUrl: "https://www.atlascloud.ai/console/api-keys",
+    category: "aggregator",
+    baseUrl: "https://api.atlascloud.ai/v1",
+    protocol: "chatCompletions",
+    model: "deepseek-ai/deepseek-v4-pro",
+    modelList: ["deepseek-ai/deepseek-v4-pro"],
+  },
+  {
     id: "jojocode",
     name: "JOJO Code",
     websiteUrl: "https://jojocode.com/",
