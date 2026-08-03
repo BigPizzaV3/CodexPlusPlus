@@ -1455,6 +1455,29 @@
     return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
   }
 
+  const codexPlusDreamSkinMainSurfaceMarker = "data-codex-plus-dream-skin-main-surface";
+
+  function ensureDreamSkinMainSurface() {
+    const existing = document.querySelector("main.main-surface");
+    if (existing) return existing;
+
+    const modularSurface = document.querySelector('main[class*="_MainContentSurface_"]');
+    const mainCandidates = modularSurface ? [] : [...document.querySelectorAll("main")];
+    const shellMain = modularSurface || (mainCandidates.length === 1 ? mainCandidates[0] : null);
+    if (!shellMain) return null;
+
+    shellMain.classList.add("main-surface");
+    shellMain.setAttribute(codexPlusDreamSkinMainSurfaceMarker, "true");
+    return shellMain;
+  }
+
+  function clearDreamSkinMainSurfaceCompatibility() {
+    document.querySelectorAll(`main[${codexPlusDreamSkinMainSurfaceMarker}="true"]`).forEach((node) => {
+      node.classList.remove("main-surface");
+      node.removeAttribute(codexPlusDreamSkinMainSurfaceMarker);
+    });
+  }
+
   function detectDreamSkinShellMode() {
     const root = document.documentElement;
     const body = document.body;
@@ -1493,7 +1516,7 @@
 
     const samples = [
       body,
-      document.querySelector("main.main-surface"),
+      ensureDreamSkinMainSurface(),
       document.querySelector("aside.app-shell-left-panel"),
     ].filter(Boolean);
     let lightVotes = 0;
@@ -1786,6 +1809,7 @@
     document.getElementById("codex-glass-vision-skin-chrome")?.remove();
     document.getElementById("codex-theme-chrome")?.remove();
     removeDreamSkinCompanion();
+    clearDreamSkinMainSurfaceCompatibility();
     const state = window.__CODEX_DREAM_SKIN_STATE__;
     const descriptor = state?.descriptor;
     if (descriptor) {
@@ -1928,7 +1952,7 @@
       if (window.__CODEX_DREAM_SKIN_DISABLED__) return;
       const root = document.documentElement;
       if (!root || !document.body) return;
-      const shellMain = document.querySelector("main.main-surface") || document.querySelector("main");
+      const shellMain = ensureDreamSkinMainSurface();
       if (!shellMain) {
         clearDreamSkinPresentation();
         return;
@@ -2038,6 +2062,7 @@
 
   function refreshDreamSkin() {
     const settings = codexPlusSettings();
+    if (settings.dreamSkinEnabled && !settings.dreamSkinPaused) ensureDreamSkinMainSurface();
     if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
       if (codexPlusBackendSettingsLoaded && (!settings.dreamSkinEnabled || settings.dreamSkinPaused)) {
         cleanupDreamSkin();
