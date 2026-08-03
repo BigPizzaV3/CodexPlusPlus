@@ -197,23 +197,39 @@ fn collect_urls(msg: &Value) -> Vec<String> {
     urls
 }
 
-/// 收集最近 `depth_limit` 轮对话（所有 user 消息，无论是否带图）中的带图消息（最新优先），
+fn is_vlm_message_role(msg: &Value) -> bool {
+    matches!(
+        msg.get("role").and_then(Value::as_str),
+        Some("user") | Some("tool")
+    )
+}
+
+fn latest_image_message_index(messages: &[Value]) -> Option<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, message)| is_vlm_message_role(message) && !collect_urls(message).is_empty())
+        .map(|(index, _)| index)
+}
+
+/// 收集最近 `depth_limit` 轮对话（user/tool 消息，无论是否带图）中的带图消息（最新优先），
 /// 返回 `(message_index, Vec<url>)`。
 fn collect_recent_image_messages(
     messages: &[Value],
     depth_limit: usize,
 ) -> Vec<(usize, Vec<String>)> {
-    // 1. 取最近 depth_limit 条 user 消息（全部，不限是否带图）
-    let user_indices: Vec<usize> = messages
+    // 1. 取最近 depth_limit 条 user/tool 消息（全部，不限是否带图）
+    let message_indices: Vec<usize> = messages
         .iter()
         .enumerate()
-        .filter(|(_, m)| m.get("role").and_then(Value::as_str) == Some("user"))
+        .filter(|(_, message)| is_vlm_message_role(message))
         .map(|(i, _)| i)
         .rev()
         .take(depth_limit)
         .collect();
     // 2. 在其中找出带图消息（已按最新优先排序）
-    user_indices
+    message_indices
         .into_iter()
         .map(|i| (i, collect_urls(&messages[i])))
         .filter(|(_, urls)| !urls.is_empty())
@@ -468,8 +484,8 @@ async fn background_analyze_and_cache(urls: &[String], config: &VlmConfig) {
 
 // ── Description injection ─────────────────────────────────────────────
 
-/// 向指定 user 消息末尾注入分析文本。
-fn inject_text_into_user_message(msg: &mut Value, text: &str) {
+/// 向指定 user/tool 消息末尾注入分析文本。
+fn inject_text_into_message(msg: &mut Value, text: &str) {
     match msg.get_mut("content") {
         Some(Value::Array(parts)) => {
             parts.push(serde_json::json!({"type": "text", "text": text}));
@@ -494,7 +510,7 @@ pub fn inject_analysis(messages: &mut [Value], result: &Result<String, String>) 
     };
     for msg in messages.iter_mut().rev() {
         if msg.get("role").and_then(Value::as_str) == Some("user") {
-            inject_text_into_user_message(msg, &text);
+            inject_text_into_message(msg, &text);
             break;
         }
     }
@@ -531,26 +547,21 @@ pub async fn strip_image_blocks(
     // 1 token 安全余量，防止零宽窗口。
     if available <= 1 {
         // 上下文已满：剥离图片释放空间，注入占位符告知模型图片被跳过（而非静默丢弃）。
-        let image_count: usize = messages
-            .iter()
-            .rev()
-            .filter(|m| m.get("role").and_then(Value::as_str) == Some("user"))
-            .take(1)
-            .flat_map(|m| collect_urls(m))
-            .count();
+        let latest_image_idx = latest_image_message_index(messages);
+        let image_count = latest_image_idx
+            .map(|index| collect_urls(&messages[index]).len())
+            .unwrap_or(0);
         strip_all_images(messages);
         if image_count > 0 {
-            inject_text_into_user_message(
-                messages
-                    .iter_mut()
-                    .rev()
-                    .find(|m| m.get("role").and_then(Value::as_str) == Some("user"))
-                    .expect("at least one user message exists"),
-                &format!(
-                    "\n[系统：当前轮次有 {} 张图片因上下文已满未完成 VLM 分析，图片已被清理以释放空间]",
-                    image_count
-                ),
-            );
+            if let Some(index) = latest_image_idx {
+                inject_text_into_message(
+                    &mut messages[index],
+                    &format!(
+                        "\n[系统：当前轮次有 {} 张图片因上下文已满未完成 VLM 分析，图片已被清理以释放空间]",
+                        image_count
+                    ),
+                );
+            }
         }
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "vlm_context_overflow",
@@ -573,17 +584,17 @@ pub async fn strip_image_blocks(
         return;
     }
 
-    // 3. 确定黄金窗口边界（最近 GOLDEN_WINDOW_DEPTH 轮 user 消息中最早一条的 index）。
+    // 3. 确定黄金窗口边界（最近 GOLDEN_WINDOW_DEPTH 条 user/tool 消息中最早一条的 index）。
     let golden_user_cutoff = {
-        let user_indices: Vec<usize> = messages
+        let message_indices: Vec<usize> = messages
             .iter()
             .enumerate()
-            .filter(|(_, m)| m.get("role").and_then(Value::as_str) == Some("user"))
+            .filter(|(_, message)| is_vlm_message_role(message))
             .map(|(i, _)| i)
             .rev()
             .take(GOLDEN_WINDOW_DEPTH)
             .collect();
-        user_indices.last().copied().unwrap_or(0)
+        message_indices.last().copied().unwrap_or(0)
     };
     let golden_total: usize = all_image_msgs
         .iter()
@@ -596,12 +607,8 @@ pub async fn strip_image_blocks(
         .map(|(_, urls)| urls.len())
         .sum(); // M
 
-    // 4. 分离当前轮（最后一条 user 消息）。
-    let current_round_msg_idx: Option<usize> = messages
-        .iter()
-        .rev()
-        .position(|m| m.get("role").and_then(Value::as_str) == Some("user"))
-        .map(|pos| messages.len() - 1 - pos);
+    // 4. 分离当前轮（最后一条带图的 user/tool 消息）。
+    let current_round_msg_idx = latest_image_message_index(messages);
 
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "vlm_strip_entry",
@@ -853,7 +860,7 @@ pub async fn strip_image_blocks(
     // 9. 注入描述文本。
     for (msg_idx, desc) in &descriptions {
         if *msg_idx < messages.len() {
-            inject_text_into_user_message(&mut messages[*msg_idx], desc);
+            inject_text_into_message(&mut messages[*msg_idx], desc);
         }
     }
 
@@ -1187,6 +1194,29 @@ mod tests {
         let result = collect_recent_image_messages(&msgs, 10);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, 1); // only user message
+    }
+
+    #[test]
+    fn collect_recent_image_messages_includes_tool_messages() {
+        let msgs: Vec<Value> = vec![
+            serde_json::json!({
+                "role": "user",
+                "content": [{"type": "text", "text": "open the page"}]
+            }),
+            serde_json::json!({
+                "role": "tool",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": {"url": "https://tool.example.com/screenshot.png"}
+                }]
+            }),
+        ];
+
+        let result = collect_recent_image_messages(&msgs, 10);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, 1);
+        assert_eq!(result[0].1, vec!["https://tool.example.com/screenshot.png"]);
     }
 
     #[test]
@@ -1754,6 +1784,63 @@ mod tests {
             last_text.contains("mock: E2E network call"),
             "VLM result not injected: {last_text}"
         );
+    }
+
+    #[tokio::test]
+    async fn strip_image_blocks_with_mock_vlm_processes_tool_images() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "mock: tool screenshot"}}]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let config = VlmConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: mock_server.uri(),
+        };
+
+        let mut messages = vec![
+            serde_json::json!({
+                "role": "user",
+                "content": "inspect the browser result"
+            }),
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": "call_browser",
+                "content": [
+                    {"type": "text", "text": "Browser screenshot:"},
+                    {"type": "image_url", "image_url": {"url": "https://tool-e2e.example.com/screenshot.png"}}
+                ]
+            }),
+        ];
+
+        strip_image_blocks(&mut messages, &config, "{}", "272000", "gpt-4").await;
+
+        let parts = messages[1]["content"].as_array().unwrap();
+        assert!(
+            parts.iter().all(|part| {
+                !matches!(
+                    part.get("type").and_then(Value::as_str),
+                    Some("image_url") | Some("input_image")
+                )
+            }),
+            "tool image should be stripped"
+        );
+        let tool_text = parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            tool_text.contains("mock: tool screenshot"),
+            "VLM result should be injected into the tool message: {tool_text}"
+        );
+        assert_eq!(messages[0]["content"], "inspect the browser result");
     }
 
     /// 超时 + 重试：mock 延迟 3s > test timeout(2s) → 超时重试后 500 → fail-closed。
