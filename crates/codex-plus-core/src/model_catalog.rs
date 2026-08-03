@@ -37,19 +37,14 @@ struct CodexConfig {
 pub async fn read_codex_model_catalog() -> Value {
     let home = codex_home_dir();
     let settings_path = crate::paths::default_settings_path();
-    if settings_path.exists() {
-        if let Ok(settings) = SettingsStore::new(settings_path).load() {
-            let profile = settings.active_relay_profile();
-            let catalog = relay_profile_model_catalog_value(&home, &profile);
-            if catalog
-                .get("models")
-                .and_then(Value::as_array)
-                .map_or(false, |m| !m.is_empty())
-            {
-                return catalog;
-            }
-        }
-    }
+    let active_profile = if settings_path.exists() {
+        SettingsStore::new(settings_path)
+            .load()
+            .ok()
+            .map(|settings| settings.active_relay_profile())
+    } else {
+        None
+    };
     let env = std::env::vars().collect::<HashMap<_, _>>();
     let client = match crate::http_client::proxied_client("CodexPlusPlus/1.0") {
         Ok(client) => client,
@@ -68,6 +63,19 @@ pub async fn read_codex_model_catalog() -> Value {
             });
         }
     };
+    if let Some(profile) = active_profile.as_ref() {
+        if relay_profile_model_source(profile).is_some() {
+            return relay_profile_model_catalog(&home, profile, &client).await;
+        }
+        let catalog = relay_profile_model_catalog_value(&home, profile);
+        if catalog
+            .get("models")
+            .and_then(Value::as_array)
+            .map_or(false, |models| !models.is_empty())
+        {
+            return catalog;
+        }
+    }
     read_codex_model_catalog_from_home(&home, &env, client).await
 }
 
@@ -109,12 +117,68 @@ fn relay_profile_model_ids(profile: &RelayProfile) -> Vec<String> {
         profile
             .model_list
             .split(['\r', '\n', ','])
-            .chain(std::iter::once(profile.model.as_str()))
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToString::to_string)
             .collect(),
     )
+}
+
+fn relay_profile_model_source(profile: &RelayProfile) -> Option<ModelSource> {
+    let base_url = if profile.upstream_base_url.trim().is_empty() {
+        profile.base_url.trim()
+    } else {
+        profile.upstream_base_url.trim()
+    };
+    if base_url.is_empty() {
+        return None;
+    }
+    Some(ModelSource {
+        source_id: format!("relay-profile:{}", profile.id),
+        source_type: "relay_profile".to_string(),
+        name: if profile.name.trim().is_empty() {
+            profile.id.clone()
+        } else {
+            profile.name.trim().to_string()
+        },
+        base_url: base_url.to_string(),
+        api_key: profile.api_key.trim().to_string(),
+    })
+}
+
+async fn relay_profile_model_catalog(
+    home: &Path,
+    profile: &RelayProfile,
+    client: &reqwest::Client,
+) -> Value {
+    let Some(source) = relay_profile_model_source(profile) else {
+        return relay_profile_model_catalog_value(home, profile);
+    };
+    let (models, mut source_status) = fetch_models_from_source(client, &source).await;
+    source_status["responses_api"] = responses_api_status("unknown", "", "");
+    let selected_model = profile.model.trim();
+    let default_model = models
+        .iter()
+        .find(|model| model.as_str() == selected_model)
+        .cloned()
+        .or_else(|| models.first().cloned())
+        .unwrap_or_default();
+    let model = if selected_model == default_model.as_str() {
+        selected_model.to_string()
+    } else {
+        String::new()
+    };
+    json!({
+        "status": if models.is_empty() { "failed" } else { "ok" },
+        "path": home.join("config.toml").to_string_lossy(),
+        "model": model,
+        "model_provider": profile.id.trim(),
+        "provider_name": source.name,
+        "default_model": default_model,
+        "models": models,
+        "sources": [source_status],
+        "responses_api": responses_api_status("unknown", "", "")
+    })
 }
 
 pub async fn read_codex_model_catalog_from_home(
@@ -154,17 +218,18 @@ pub async fn read_codex_model_catalog_from_home(
         });
     }
 
-    let mut sources = model_sources_from_environment(env, &auth_api_key);
-    if error.is_none() {
-        if let Some(source) = model_source_from_config(&config, &effective, env, &auth_api_key) {
-            if sources
-                .iter()
-                .all(|existing| trim_url(&existing.base_url) != trim_url(&source.base_url))
-            {
-                sources.push(source);
-            }
-        }
-    }
+    let sources = if error.is_none() {
+        model_source_from_config(&config, &effective, env, &auth_api_key)
+            .into_iter()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let sources = if sources.is_empty() {
+        model_sources_from_environment(env, &auth_api_key)
+    } else {
+        sources
+    };
 
     let mut source_statuses = Vec::new();
     let mut models = Vec::new();
@@ -175,7 +240,9 @@ pub async fn read_codex_model_catalog_from_home(
         source_statuses.push(source_status);
     }
     let (catalog_models, catalog_status) = models_from_config_model_catalog_json(home, &effective);
-    models.extend(catalog_models);
+    if sources.is_empty() {
+        models.extend(catalog_models);
+    }
     if let Some(status) = catalog_status {
         source_statuses.push(status);
     }
@@ -761,9 +828,6 @@ fn safe_url_for_status(url: &str) -> String {
     cleaned
 }
 
-fn trim_url(url: &str) -> String {
-    url.trim_end_matches('/').to_string()
-}
 
 fn string_value(value: Option<&String>) -> String {
     value

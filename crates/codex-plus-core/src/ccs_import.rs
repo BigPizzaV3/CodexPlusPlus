@@ -4,7 +4,7 @@ use anyhow::Context;
 use rusqlite::Connection;
 use serde_json::Value;
 
-use crate::settings::{RelayMode, RelayProfile, RelayProtocol};
+use crate::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +69,36 @@ pub fn imported_provider_identity(provider: &RelayProfile) -> String {
 
 pub fn provider_identity_from_ccs(provider: &CcsProviderImport) -> String {
     ccs_import_key(&provider.name, &provider.base_url)
+}
+
+pub fn append_new_relay_profiles_from_ccs(
+    settings: &mut BackendSettings,
+    providers: &[CcsProviderImport],
+) -> usize {
+    let mut existing_keys = settings
+        .relay_profiles
+        .iter()
+        .map(imported_provider_identity)
+        .collect::<std::collections::HashSet<_>>();
+    let mut existing_ids = settings
+        .relay_profiles
+        .iter()
+        .map(|profile| profile.id.clone())
+        .collect::<Vec<_>>();
+    let mut imported = 0usize;
+
+    for provider in providers {
+        let key = provider_identity_from_ccs(provider);
+        if !existing_keys.insert(key) {
+            continue;
+        }
+        let profile = relay_profile_from_ccs(provider, &existing_ids);
+        existing_ids.push(profile.id.clone());
+        settings.relay_profiles.push(profile);
+        imported += 1;
+    }
+
+    imported
 }
 
 pub fn relay_profile_from_ccs(
@@ -391,6 +421,53 @@ mod tests {
         assert_eq!(providers[0].base_url, "https://example.com/v1");
         assert_eq!(providers[0].api_key, "key-1");
         assert_eq!(providers[0].protocol, RelayProtocol::ChatCompletions);
+    }
+
+    #[test]
+    fn append_ccs_imports_preserves_existing_profiles_and_adds_only_new_ones() {
+        let existing = RelayProfile {
+            id: "existing".to_string(),
+            name: "Existing（ccswitch）".to_string(),
+            base_url: "https://existing.example/v1".to_string(),
+            upstream_base_url: "https://existing.example/v1".to_string(),
+            api_key: "existing-key".to_string(),
+            config_contents: "existing config".to_string(),
+            model: "existing-model".to_string(),
+            model_list: "existing-model".to_string(),
+            ..RelayProfile::default()
+        };
+        let mut settings = BackendSettings {
+            relay_profiles: vec![existing.clone()],
+            active_relay_id: existing.id.clone(),
+            ..BackendSettings::default()
+        };
+        let providers = vec![
+            CcsProviderImport {
+                source_id: "existing-source".to_string(),
+                name: "Existing".to_string(),
+                base_url: existing.base_url.clone(),
+                api_key: "replacement-key".to_string(),
+                protocol: RelayProtocol::Responses,
+                config_contents: "replacement config".to_string(),
+                auth_contents: "replacement auth".to_string(),
+            },
+            CcsProviderImport {
+                source_id: "new-source".to_string(),
+                name: "New".to_string(),
+                base_url: "https://new.example/v1".to_string(),
+                api_key: "new-key".to_string(),
+                protocol: RelayProtocol::Responses,
+                config_contents: "new config".to_string(),
+                auth_contents: "new auth".to_string(),
+            },
+        ];
+
+        let imported = append_new_relay_profiles_from_ccs(&mut settings, &providers);
+
+        assert_eq!(imported, 1);
+        assert_eq!(settings.relay_profiles[0], existing);
+        assert_eq!(settings.relay_profiles.len(), 2);
+        assert_eq!(settings.relay_profiles[1].name, "New（ccswitch）");
     }
 
     #[test]

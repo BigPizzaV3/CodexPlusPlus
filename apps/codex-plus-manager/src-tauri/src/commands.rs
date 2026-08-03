@@ -561,29 +561,8 @@ pub fn import_ccs_providers() -> CommandResult<SettingsPayload> {
 
     let store = SettingsStore::default();
     let mut settings = store.load().unwrap_or_default();
-    let mut existing_keys: Vec<String> = settings
-        .relay_profiles
-        .iter()
-        .map(codex_plus_core::ccs_import::imported_provider_identity)
-        .collect();
-    let mut existing_ids: Vec<String> = settings
-        .relay_profiles
-        .iter()
-        .map(|profile| profile.id.clone())
-        .collect();
-    let mut imported = 0usize;
-
-    for provider in providers {
-        let key = codex_plus_core::ccs_import::provider_identity_from_ccs(&provider);
-        if existing_keys.iter().any(|existing| existing == &key) {
-            continue;
-        }
-        let profile = codex_plus_core::ccs_import::relay_profile_from_ccs(&provider, &existing_ids);
-        existing_ids.push(profile.id.clone());
-        existing_keys.push(key);
-        settings.relay_profiles.push(profile);
-        imported += 1;
-    }
+    let imported =
+        codex_plus_core::ccs_import::append_new_relay_profiles_from_ccs(&mut settings, &providers);
 
     if imported == 0 {
         return settings_payload("没有新的 cc-switch 供应商配置需要导入。", "设置读取失败");

@@ -113,16 +113,24 @@ experimental_bearer_token = "ark-key"
 }
 
 #[tokio::test]
-async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
+async fn model_catalog_uses_active_relay_provider_models_only() {
     let temp = tempfile::tempdir().unwrap();
     let codex_home = temp.path().join("codex-home");
     std::fs::create_dir_all(&codex_home).unwrap();
     let settings_path = temp.path().join("settings.json");
+    let server = spawn_models_server(json!({
+        "data": [
+            {"id": "provider-model"},
+            {"id": "qwen3-coder"}
+        ]
+    }));
     let previous_codex_home = std::env::var_os("CODEX_HOME");
+    let previous_no_proxy = std::env::var_os("NO_PROXY");
     let previous_settings_path =
         codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path.clone()));
     unsafe {
         std::env::set_var("CODEX_HOME", &codex_home);
+        std::env::set_var("NO_PROXY", "127.0.0.1,localhost");
     }
 
     let result = async {
@@ -132,12 +140,14 @@ async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
                 relay_profiles: vec![RelayProfile {
                     id: "relay-a".to_string(),
                     name: "Relay A".to_string(),
-                    model: "qwen3-coder".to_string(),
-                    base_url: "https://example.test/v1".to_string(),
+                    model: "configured-only-model".to_string(),
+                    base_url: server.base_url.clone(),
+                    upstream_base_url: server.base_url.clone(),
+                    api_key: "relay-key".to_string(),
                     protocol: RelayProtocol::Responses,
                     relay_mode: RelayMode::MixedApi,
-                    model_list: "deepseek-coder\nqwen3-coder\nclaude-compatible".to_string(),
-                    config_contents: "model = \"qwen3-coder\"\n".to_string(),
+                    model_list: "manual-only-model\nqwen3-coder".to_string(),
+                    config_contents: "model = \"configured-only-model\"\n".to_string(),
                     ..RelayProfile::default()
                 }],
                 ..BackendSettings::default()
@@ -156,17 +166,24 @@ async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
             std::env::remove_var("CODEX_HOME");
         },
     }
+    match previous_no_proxy {
+        Some(value) => unsafe {
+            std::env::set_var("NO_PROXY", value);
+        },
+        None => unsafe {
+            std::env::remove_var("NO_PROXY");
+        },
+    }
     codex_plus_core::paths::set_settings_path_for_tests(previous_settings_path);
 
     assert_eq!(result["status"], "ok");
     assert_eq!(result["model_provider"], "relay-a");
-    assert_eq!(result["provider_name"], "Relay A");
-    assert_eq!(result["default_model"], "qwen3-coder");
-    assert_eq!(
-        result["models"],
-        json!(["qwen3-coder", "deepseek-coder", "claude-compatible"])
-    );
-    assert_eq!(result["sources"][0]["type"], "relay_profile_model_list");
+    assert_eq!(result["default_model"], "provider-model");
+    assert_eq!(result["models"], json!(["provider-model", "qwen3-coder"]));
+    assert_eq!(result["sources"][0]["type"], "relay_profile");
+    let requests = server.finish();
+    assert_eq!(requests[0].path, "/v1/models");
+    assert_eq!(requests[0].authorization, "Bearer relay-key");
 }
 
 #[tokio::test]
@@ -203,7 +220,7 @@ base_url = "{}/v1"
 }
 
 #[tokio::test]
-async fn model_catalog_merges_models_from_config_model_catalog_json() {
+async fn model_catalog_does_not_merge_local_catalog_into_provider_models() {
     let temp = tempfile::tempdir().unwrap();
     let server = spawn_models_server(json!({
         "data": [
@@ -252,8 +269,8 @@ experimental_bearer_token = "relay-key"
     .await;
 
     assert_eq!(result["status"], "ok");
-    assert_eq!(result["default_model"], "gpt-5.6");
-    assert_eq!(result["models"], json!(["qwen3-coder", "gpt-5.6"]));
+    assert_eq!(result["default_model"], "qwen3-coder");
+    assert_eq!(result["models"], json!(["qwen3-coder"]));
     server.finish();
 }
 
