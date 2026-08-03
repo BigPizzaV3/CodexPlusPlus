@@ -179,7 +179,10 @@ pub async fn handle_bridge_request(
         "/devtools/open" => ctx.runtime.open_devtools().await,
         "/manager/open" => ctx.runtime.open_manager().await,
         "/manager/open-transient" => ctx.runtime.open_transient_manager().await,
-        "/backend/status" => ctx.runtime.backend_status().await,
+        "/backend/status" => backend_status_value(
+            ctx.runtime.backend_status().await,
+            ctx.settings.get_settings().await,
+        ),
         "/codex-model-catalog" | "/codex-config-model" => ctx.runtime.codex_model_catalog().await,
         "/diagnostics/log" => diagnostic_log_value(payload.clone()),
         "/llm-proxy" => llm_proxy_value(payload.clone()).await,
@@ -648,6 +651,20 @@ async fn settings_value(
     let settings = result?;
     let codex_app_version = ctx.settings.codex_app_version().await.unwrap_or_default();
     settings_payload_value(settings, codex_app_version)
+}
+
+fn backend_status_value(
+    status: anyhow::Result<Value>,
+    settings: anyhow::Result<BackendSettings>,
+) -> anyhow::Result<Value> {
+    let mut status = status?;
+    if let Some(object) = status.as_object_mut() {
+        let hide = settings
+            .map(|settings| crate::assets::hide_official_usage_alert_config(&settings))
+            .unwrap_or(false);
+        object.insert("hideOfficialUsageAlert".to_string(), Value::Bool(hide));
+    }
+    Ok(status)
 }
 
 fn result_value<T>(result: anyhow::Result<T>) -> anyhow::Result<Value>

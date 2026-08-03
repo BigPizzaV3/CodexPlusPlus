@@ -268,6 +268,7 @@ export type RelayProfile = {
   protocol: RelayProtocol;
   relayMode: RelayMode;
   officialMixApiKey: boolean;
+  hideOfficialUsageAlert: boolean;
   testModel: string;
   configContents: string;
   authContents: string;
@@ -854,6 +855,7 @@ const defaultSettings: BackendSettings = {
       protocol: "responses",
       relayMode: "official",
       officialMixApiKey: false,
+      hideOfficialUsageAlert: false,
       testModel: "",
       configContents: "",
       authContents: "",
@@ -6228,6 +6230,21 @@ function RelayProfileEditor({
             <p className="field-hint">{t("当前继承公共配置；修改后将为该供应商保存独立设置。")}</p>
           ) : null}
         </Field>
+        {profile.relayMode === "official" ? (
+          <Field className="relay-field-official-usage-alert" label={t("官方登录")}>
+            <label className="inline-check">
+              <input
+                checked={profile.hideOfficialUsageAlert}
+                onChange={(event) => updateDraft({ hideOfficialUsageAlert: event.currentTarget.checked })}
+                type="checkbox"
+              />
+              <span>{t("关闭官方低额度提示")}</span>
+            </label>
+            <p className="field-hint">
+              {t("关闭后仍可从 Codex 左下角账户菜单查看官方剩余额度。")}
+            </p>
+          </Field>
+        ) : null}
         <div className="relay-advanced-toggle">
           <Button
             aria-expanded={showAdvanced}
@@ -8409,6 +8426,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             protocol: "responses" as RelayProtocol,
             relayMode: "official" as RelayMode,
             officialMixApiKey: false,
+            hideOfficialUsageAlert: false,
             testModel: "",
             configContents: "",
             authContents: "",
@@ -8489,6 +8507,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         protocol: "responses",
         relayMode: "aggregate",
         officialMixApiKey: false,
+        hideOfficialUsageAlert: false,
         testModel: profile.testModel || "",
         configContents: "",
         authContents: "",
@@ -8519,6 +8538,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
     relayMode,
     officialMixApiKey,
+    hideOfficialUsageAlert: profile.hideOfficialUsageAlert === true,
     testModel: profile.testModel || "",
     configContents: relayMode === "official" && !officialMixApiKey ? "" : profile.configContents || "",
     authContents: relayMode === "official" && !officialMixApiKey ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "",
@@ -9253,6 +9273,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     protocol: "responses" as RelayProtocol,
     relayMode: "official" as RelayMode,
     officialMixApiKey: false,
+    hideOfficialUsageAlert: false,
     testModel: "",
     configContents: "",
     authContents: "",
@@ -9290,6 +9311,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       protocol: "responses",
       relayMode: "aggregate",
       officialMixApiKey: false,
+      hideOfficialUsageAlert: false,
       testModel: "",
       configContents: "",
       authContents: "",
@@ -9429,6 +9451,7 @@ function normalizeAggregateRelayProfile(profile: RelayProfile, settings: Backend
     protocol: "responses",
     relayMode: "aggregate",
     officialMixApiKey: false,
+    hideOfficialUsageAlert: false,
     configContents: "",
     authContents: "",
     sub2apiEnabled: false,

@@ -518,6 +518,7 @@ fn official_mix_api_profile_does_not_generate_auth_api_key() {
     let mut profile = RelayProfile {
         relay_mode: RelayMode::Official,
         official_mix_api_key: true,
+        hide_official_usage_alert: false,
         base_url: "https://relay.example/v1".to_string(),
         api_key: "sk-mix".to_string(),
         ..RelayProfile::default()
@@ -571,6 +572,7 @@ fn official_mix_profile_preserves_user_openai_base_url_override() {
     let mut profile = RelayProfile {
         relay_mode: RelayMode::Official,
         official_mix_api_key: true,
+        hide_official_usage_alert: false,
         base_url: "https://relay.example/v1".to_string(),
         api_key: "sk-mix".to_string(),
         config_contents: r#"openai_base_url = "https://user-openai.example/v1"
@@ -595,6 +597,7 @@ fn official_mix_api_profile_does_not_take_api_key_from_auth() {
     let mut profile = RelayProfile {
         relay_mode: RelayMode::Official,
         official_mix_api_key: true,
+        hide_official_usage_alert: false,
         auth_contents: r#"{"OPENAI_API_KEY":"sk-pure-api"}"#.to_string(),
         config_contents: r#"model_provider = "custom"
 
@@ -622,6 +625,7 @@ fn official_mix_api_profile_removes_auth_api_key_on_storage() {
     let mut profile = RelayProfile {
         relay_mode: RelayMode::Official,
         official_mix_api_key: true,
+        hide_official_usage_alert: false,
         api_key: "sk-official-mix".to_string(),
         base_url: "https://relay.example/v1".to_string(),
         auth_contents: r#"{"OPENAI_API_KEY":"sk-pure-api","auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#.to_string(),
@@ -2572,6 +2576,7 @@ requires_openai_auth = true
         id: "official".to_string(),
         relay_mode: RelayMode::Official,
         official_mix_api_key: false,
+        hide_official_usage_alert: false,
         config_contents: String::new(),
         auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#
             .to_string(),
@@ -2615,6 +2620,7 @@ experimental_bearer_token = "sk-mix"
         id: "official".to_string(),
         relay_mode: RelayMode::Official,
         official_mix_api_key: false,
+        hide_official_usage_alert: false,
         config_contents: String::new(),
         auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"old"}}"#.to_string(),
         ..RelayProfile::default()
@@ -2656,6 +2662,7 @@ requires_openai_auth = true
         id: "official".to_string(),
         relay_mode: RelayMode::Official,
         official_mix_api_key: false,
+        hide_official_usage_alert: false,
         config_contents: String::new(),
         auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#
             .to_string(),
@@ -2698,6 +2705,7 @@ requires_openai_auth = true
         id: "official".to_string(),
         relay_mode: RelayMode::Official,
         official_mix_api_key: false,
+        hide_official_usage_alert: false,
         config_contents: String::new(),
         auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#
             .to_string(),
@@ -2741,6 +2749,7 @@ experimental_bearer_token = "sk-saved-mix"
         id: "official-mix".to_string(),
         relay_mode: RelayMode::Official,
         official_mix_api_key: true,
+        hide_official_usage_alert: false,
         config_contents: r#"model = "gpt-5"
 model_provider = "custom"
 
@@ -2800,6 +2809,7 @@ experimental_bearer_token = "333333333333333333333"
         id: "official-mix".to_string(),
         relay_mode: RelayMode::Official,
         official_mix_api_key: true,
+        hide_official_usage_alert: false,
         config_contents: r#"model = "gpt-5"
 model_provider = "custom"
 
@@ -3313,6 +3323,7 @@ fn apply_official_mix_profile_clears_live_auth_api_key_and_keeps_login() {
         id: "official-mix".to_string(),
         relay_mode: RelayMode::Official,
         official_mix_api_key: true,
+        hide_official_usage_alert: false,
         config_contents: r#"model = "gpt-5"
 model_provider = "custom"
 
@@ -3383,6 +3394,7 @@ fn apply_official_mix_profile_keeps_config_token_when_api_key_field_is_empty() {
         id: "official-mix".to_string(),
         relay_mode: RelayMode::Official,
         official_mix_api_key: true,
+        hide_official_usage_alert: false,
         config_contents: r#"model = "gpt-5"
 model_provider = "custom"
 

@@ -1162,6 +1162,9 @@ async fn handle_helper_connection(
                 "status": "ok",
                 "message": "后端已连接",
                 "version": crate::version::VERSION,
+                "hideOfficialUsageAlert": crate::assets::hide_official_usage_alert_config(
+                    &crate::settings::SettingsStore::default().load().unwrap_or_default()
+                ),
                 "transport": "http-helper"
             }))?,
             "application/json; charset=utf-8".to_string(),

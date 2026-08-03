@@ -829,6 +829,7 @@
       .codex-project-move-item-path { margin-top: 2px; color: #6b7280; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .codex-project-move-empty { padding: 18px 12px; color: #6b7280; text-align: center; }
       .codex-project-move-hidden { display: none !important; }
+      [data-codex-plus-usage-alert-hidden="true"] { display: none !important; }
       [data-codex-project-move-injected-list="true"] { display: flex; flex-direction: column; }
       .codex-archive-delete-all {
         border: 1px solid #ef4444;
@@ -3368,6 +3369,10 @@
     const nextStatus = await withBackendTimeout(postJson("/backend/status", {}));
     if (seq !== codexPlusBackendCheckSeq) return;
     codexPlusBackendStatus = nextStatus;
+    if (nextStatus?.status === "ok" && typeof nextStatus.hideOfficialUsageAlert === "boolean") {
+      window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus.hideOfficialUsageAlert;
+      refreshOfficialUsageAlertVisibility();
+    }
     if (nextStatus?.status !== "ok") {
       sendCodexPlusDiagnostic("backend_check_failed", {
         status: nextStatus?.status || "unknown",
@@ -9202,6 +9207,7 @@
 
   function scanLightweight() {
     installStyle();
+    refreshOfficialUsageAlertVisibility();
     installCodexServiceTierDispatcherPatch();
     installCodexPlusMenu();
     localizeCodexMenus();
@@ -9214,6 +9220,40 @@
     installThreadScrollRouteHooks();
     scheduleThreadScrollSync(true);
     refreshCodexServiceTierControls();
+  }
+
+  function officialUsageAlertHidden() {
+    return window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ === true;
+  }
+
+  function officialUsageAlertCards(scope = document) {
+    const root = scope?.querySelectorAll ? scope : document;
+    return Array.from(root.querySelectorAll('aside.app-shell-left-panel [role="status"][aria-live="polite"]')).filter((card) => {
+      if (!(card instanceof HTMLElement)) return false;
+      const progress = card.querySelector('progress[max="100"]');
+      if (!progress) return false;
+      const dismissButton = Array.from(card.querySelectorAll("button")).find((button) =>
+        /dismiss usage alert|关闭使用量提醒/i.test(button.getAttribute("aria-label") || ""),
+      );
+      return !!dismissButton;
+    });
+  }
+
+  function officialUsageAlertContainer(card) {
+    const parent = card.parentElement;
+    return parent?.children.length === 1 && parent.matches("div.w-full") ? parent : card;
+  }
+
+  function refreshOfficialUsageAlertVisibility() {
+    const hidden = officialUsageAlertHidden();
+    document.querySelectorAll('[data-codex-plus-usage-alert-hidden="true"]').forEach((container) => {
+      delete container.dataset.codexPlusUsageAlertHidden;
+    });
+    if (!hidden) return;
+    officialUsageAlertCards().forEach((card) => {
+      const container = officialUsageAlertContainer(card);
+      container.dataset.codexPlusUsageAlertHidden = "true";
+    });
   }
 
   let zedRemoteStatusPromise = null;
@@ -9830,6 +9870,7 @@
   function scanRelevantSelector() {
     return [
       selectors.sidebarThread,
+      'aside.app-shell-left-panel [role="status"][aria-live="polite"]',
       '[data-app-action-sidebar-section-heading="Chats"]',
       '[data-app-action-sidebar-section-heading="Projects"]',
       '[data-codex-project-move-row="true"]',
