@@ -35,6 +35,10 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/backend/status", json!({})),
         ("/codex-model-catalog", json!({})),
         ("/codex-config-model", json!({})),
+        (
+            "/llm-proxy",
+            json!({"url": "http://example.com", "method": "POST"}),
+        ),
         ("/ads", json!({})),
         ("/zed-remote/status", json!({})),
         (
@@ -106,6 +110,64 @@ async fn bridge_routes_cover_all_current_paths() {
             "{path} should be routed"
         );
     }
+}
+
+#[tokio::test]
+async fn llm_proxy_rejects_local_addresses() {
+    let ctx = test_context();
+
+    let result = handle_bridge_request(
+        ctx,
+        "/llm-proxy",
+        json!({
+            "url": "https://127.0.0.1/v1/chat/completions",
+            "method": "POST",
+            "headers": {"Authorization": "Bearer sk-test"},
+            "body": "{}"
+        }),
+    )
+    .await;
+
+    assert_eq!(result["status"], json!("failed"));
+    assert_eq!(result["message"], json!("Base URL 不得指向本机或私有网络"));
+}
+
+#[tokio::test]
+async fn llm_proxy_requires_https() {
+    let ctx = test_context();
+
+    let result = handle_bridge_request(
+        ctx,
+        "/llm-proxy",
+        json!({
+            "url": "http://api.example.com/v1/chat/completions",
+            "method": "POST",
+            "body": "{}"
+        }),
+    )
+    .await;
+
+    assert_eq!(result["status"], json!("failed"));
+    assert_eq!(result["message"], json!("Base URL 必须使用 HTTPS"));
+}
+
+#[tokio::test]
+async fn llm_proxy_rejects_non_post_methods() {
+    let ctx = test_context();
+
+    let result = handle_bridge_request(
+        ctx,
+        "/llm-proxy",
+        json!({
+            "url": "https://api.example.com/v1/chat/completions",
+            "method": "GET",
+            "body": "{}"
+        }),
+    )
+    .await;
+
+    assert_eq!(result["status"], json!("failed"));
+    assert_eq!(result["message"], json!("LLM Bridge 仅支持 POST 请求"));
 }
 
 #[tokio::test]
