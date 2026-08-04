@@ -1759,9 +1759,11 @@ fn injection_script_applies_projectless_main_window_contract() {
     assert!(script.contains("installCodexProjectlessNewTaskButtons"));
     assert!(script.contains("codexProjectlessMainWindowVersion = \"5\""));
     assert!(script.contains("generic-new-task-button"));
-    assert!(script.contains("loadCodexAppModule(\"projectless-thread-\")"));
+    assert!(script.contains("loadOptionalCodexAppModule(\"projectless-thread-\")"));
     assert!(script.contains("projectless_thread_start_overridden"));
+    assert!(script.contains("projectless_thread_start_override_skipped"));
     assert!(script.contains("projectless_app_server_start_overridden"));
+    assert!(script.contains("projectless_app_server_start_override_skipped"));
     assert!(script.contains("projectless_main_window_home_route_cleared"));
     assert!(script.contains("dispatcher.dispatchHostMessage"));
     assert!(script.contains("[\"use-host-config-\", \"app-server-manager-signals-\"]"));
@@ -1793,6 +1795,10 @@ fn injection_script_applies_projectless_main_window_contract() {
     assert_eq!(cases["dispatchedType"], "start-conversation");
     assert_eq!(cases["dispatchedWorkspaceKind"], "projectless");
     assert_eq!(cases["dispatchedCwd"], "C:/generated/work");
+    assert_eq!(cases["fallbackDispatchResult"], "sent");
+    assert_eq!(cases["fallbackDispatchedCount"], 1);
+    assert_eq!(cases["fallbackDispatchedWorkspaceKind"], "project");
+    assert_eq!(cases["fallbackDispatchedCwd"], "C:/recent-project");
     assert_eq!(cases["appServerRequestNeedsOverride"], true);
     assert_eq!(cases["appServerPatchedWorkspaceKind"], "projectless");
     assert_eq!(cases["appServerPatchedCwd"], "C:/generated/work");
@@ -1803,6 +1809,9 @@ fn injection_script_applies_projectless_main_window_contract() {
     assert_eq!(cases["appServerSentMethod"], "start-conversation");
     assert_eq!(cases["appServerSentWorkspaceKind"], "projectless");
     assert_eq!(cases["appServerSentCwd"], "C:/generated/work");
+    assert_eq!(cases["fallbackAppServerSentCount"], 2);
+    assert_eq!(cases["fallbackAppServerWorkspaceKind"], "project");
+    assert_eq!(cases["fallbackAppServerCwd"], "C:/recent-project");
     assert_eq!(cases["explicitProjectWins"], false);
     assert_eq!(cases["explicitProjectRequestIsUntouched"], false);
     assert_eq!(cases["disabledIsNoop"], false);
@@ -1930,6 +1939,17 @@ const appServerClient = {{
 }};
 api.patchAppServerClient(appServerClient);
 await appServerClient.sendRequest("start-conversation", appServerProjectRequest);
+const appServerSentCountBeforeFallback = appServerSent.length;
+api.setDraftContext(null);
+const fallbackDispatched = [];
+const fallbackDispatcher = {{
+  __codexServiceTierOriginalDispatchMessage(type, payload) {{
+    fallbackDispatched.push({{ type, payload }});
+    return "sent";
+  }},
+}};
+const fallbackDispatchResult = await api.dispatchMessage(fallbackDispatcher, "start-conversation", projectRequest);
+await appServerClient.sendRequest("start-conversation", appServerProjectRequest);
 api.setIntent("project", "test");
 const explicitProjectWins = api.shouldEnforce();
 const explicitProjectRequestIsUntouched = api.requestNeedsOverride(projectRequest);
@@ -1951,16 +1971,23 @@ process.stdout.write(JSON.stringify({{
   dispatchedType: dispatched[0]?.type,
   dispatchedWorkspaceKind: dispatched[0]?.payload?.workspaceKind,
   dispatchedCwd: dispatched[0]?.payload?.cwd,
+  fallbackDispatchResult,
+  fallbackDispatchedCount: fallbackDispatched.length,
+  fallbackDispatchedWorkspaceKind: fallbackDispatched[0]?.payload?.workspaceKind,
+  fallbackDispatchedCwd: fallbackDispatched[0]?.payload?.cwd,
   appServerRequestNeedsOverride,
   appServerPatchedWorkspaceKind: appServerPatchedRequest.workspaceKind,
   appServerPatchedCwd: appServerPatchedRequest.cwd,
   appServerPatchedHasProjectAssignment: Object.hasOwn(appServerPatchedRequest, "projectAssignment"),
   nestedAppServerWorkspaceKind: nestedAppServerPatchedRequest.params.workspaceKind,
   nestedAppServerCwd: nestedAppServerPatchedRequest.params.cwd,
-  appServerSentCount: appServerSent.length,
+  appServerSentCount: appServerSentCountBeforeFallback,
   appServerSentMethod: appServerSent[0]?.method,
   appServerSentWorkspaceKind: appServerSent[0]?.params?.workspaceKind,
   appServerSentCwd: appServerSent[0]?.params?.cwd,
+  fallbackAppServerSentCount: appServerSent.length,
+  fallbackAppServerWorkspaceKind: appServerSent[1]?.params?.workspaceKind,
+  fallbackAppServerCwd: appServerSent[1]?.params?.cwd,
   explicitProjectWins, explicitProjectRequestIsUntouched, disabledIsNoop,
 }}));
 process.exit(0);

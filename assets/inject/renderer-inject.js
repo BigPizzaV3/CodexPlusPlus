@@ -5804,6 +5804,8 @@
     contextRevision: 0,
     draftContext: null,
     contextPromise: null,
+    generatorUnavailableRevision: -1,
+    generatorUnavailableSkippedEvents: {},
     lastGenericBeginAt: 0,
     homeRouteRevision: -1,
   };
@@ -5845,6 +5847,17 @@
       && codexProjectlessMainWindowState.intent === "generic";
   }
 
+  function reportCodexProjectlessGeneratorUnavailable(event, detail) {
+    const revision = codexProjectlessMainWindowState.revision;
+    const skippedEvents = codexProjectlessMainWindowState.generatorUnavailableSkippedEvents || {};
+    if (skippedEvents[event] === revision) return;
+    codexProjectlessMainWindowState.generatorUnavailableSkippedEvents = {
+      ...skippedEvents,
+      [event]: revision,
+    };
+    sendCodexPlusDiagnostic(event, detail);
+  }
+
   function codexProjectlessContextValid(context) {
     return !!context
       && typeof context === "object"
@@ -5878,6 +5891,7 @@
   async function prepareCodexProjectlessDraftContext(prompt = "") {
     if (!codexProjectlessMainWindowShouldEnforce()) return null;
     const revision = codexProjectlessMainWindowState.revision;
+    if (codexProjectlessMainWindowState.generatorUnavailableRevision === revision) return null;
     if (codexProjectlessMainWindowState.contextRevision === revision
         && codexProjectlessContextValid(codexProjectlessMainWindowState.draftContext)) {
       return codexProjectlessMainWindowState.draftContext;
@@ -5887,7 +5901,11 @@
       return await codexProjectlessMainWindowState.contextPromise;
     }
     const contextPromise = Promise.resolve().then(async () => {
-      const module = await loadCodexAppModule("projectless-thread-");
+      const module = await loadOptionalCodexAppModule("projectless-thread-");
+      if (!module) {
+        codexProjectlessMainWindowState.generatorUnavailableRevision = revision;
+        return null;
+      }
       if (typeof module.n !== "function") throw new Error("Codex projectless-thread 生成器不可用");
       const options = String(prompt || "").trim() ? { prompt: String(prompt).trim() } : {};
       const context = await module.n(["~"], options);
@@ -5987,6 +6005,13 @@
     return prepareCodexProjectlessDraftContext(prompt).then((context) => {
       if (revision !== codexProjectlessMainWindowState.revision
           || !codexProjectlessMainWindowShouldEnforce()) {
+        return dispatch(originalMessage);
+      }
+      if (!context) {
+        reportCodexProjectlessGeneratorUnavailable("projectless_thread_start_override_skipped", {
+          type: String(type || ""),
+          reason: "projectless-generator-unavailable",
+        });
         return dispatch(originalMessage);
       }
       const message = applyCodexProjectlessRequestOverride(originalMessage, context);
@@ -6731,12 +6756,19 @@
           const context = await prepareCodexProjectlessDraftContext(codexProjectlessPromptFromValue(params));
           if (revision === codexProjectlessMainWindowState.revision
               && codexProjectlessMainWindowShouldEnforce()) {
-            nextParams = applyCodexProjectlessAppServerRequestOverride(method, params, context);
-            sendCodexPlusDiagnostic("projectless_app_server_start_overridden", {
-              method: String(method || ""),
-              workspaceRootCount: context.workspaceRoots.length,
-              hasOutputDirectory: !!context.projectlessOutputDirectory,
-            });
+            if (!context) {
+              reportCodexProjectlessGeneratorUnavailable("projectless_app_server_start_override_skipped", {
+                method: String(method || ""),
+                reason: "projectless-generator-unavailable",
+              });
+            } else {
+              nextParams = applyCodexProjectlessAppServerRequestOverride(method, params, context);
+              sendCodexPlusDiagnostic("projectless_app_server_start_overridden", {
+                method: String(method || ""),
+                workspaceRootCount: context.workspaceRoots.length,
+                hasOutputDirectory: !!context.projectlessOutputDirectory,
+              });
+            }
           }
         } catch (error) {
           sendCodexPlusDiagnostic("projectless_app_server_start_override_failed", {
