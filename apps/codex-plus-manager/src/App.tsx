@@ -331,6 +331,7 @@ export type RelayProfile = {
   sub2apiEnabled: boolean;
   sub2apiMultiplier: string;
   modelRoutes?: RelayModelRoute[];
+  standardOpenaiProtocol: boolean;
   aggregate?: RelayAggregateConfig | null;
 };
 
@@ -1011,6 +1012,7 @@ const defaultSettings: BackendSettings = {
       userAgent: "",
       sub2apiEnabled: false,
       sub2apiMultiplier: "",
+      standardOpenaiProtocol: false,
     },
   ],
   relayCommonConfigContents: "",
@@ -7527,7 +7529,7 @@ function RelayProfileEditor({
                   Chat Completions
                 </button>
               </div>
-            </Field>
+              </Field>
             <Field className="relay-field-session-provider" label={t("Codex 会话身份")}>
               <AppSelect
                 value={sessionProvider}
@@ -7822,6 +7824,24 @@ function RelayProfileEditor({
               {t("自动压缩留空时沿用 Codex 默认行为；填写百分比后会按该模型的上下文窗口重新计算阈值。")}
             </p>
           </section>
+        ) : null}
+        {showApiFields ? (
+          <label className="switch-row compact relay-switch-row relay-field-standard">
+            <input
+              checked={profile.standardOpenaiProtocol}
+              onChange={(event) =>
+                updateDraft({ standardOpenaiProtocol: event.currentTarget.checked })
+              }
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("纯标准协议")}</strong>
+              <small>
+                {t("强制走标准 OpenAI 协议，不注入厂商私有 reasoning 参数。面向只认标准 OpenAI 字段、拒绝厂商私有参数的第三方网关。")}
+              </small>
+            </span>
+            <ToggleVisual />
+          </label>
         ) : null}
         {showApiFields ? (
           <section className="relay-config-section relay-field-model-routes">
@@ -10132,6 +10152,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             userAgent: "",
             sub2apiEnabled: false,
             sub2apiMultiplier: "",
+            standardOpenaiProtocol: false,
           },
         ];
   const activeRelayId = profiles.some((profile) => profile.id === settings.activeRelayId)
@@ -10231,6 +10252,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         modelRoutes: [],
         sub2apiEnabled: false,
         sub2apiMultiplier: "",
+        standardOpenaiProtocol: false,
       },
       null,
     );
@@ -10264,9 +10286,9 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     modelMetadata: profile.modelMetadata || "",
     modelRoutes: relayMode === "official" && !officialMixApiKey ? [] : normalizeRelayModelRoutes(profile.modelRoutes),
     userAgent: profile.userAgent || "",
-    sub2apiEnabled: profile.sub2apiEnabled === true,
-    sub2apiMultiplier: profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
-    aggregate: null,
+    sub2apiEnabled: noAuth ? false : profile.sub2apiEnabled === true,
+    sub2apiMultiplier: !noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
+    standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
   };
   return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
 }
@@ -11066,6 +11088,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     sub2apiEnabled: false,
     sub2apiMultiplier: "",
     modelRoutes: [],
+    standardOpenaiProtocol: false,
   };
   return withGeneratedRelayFiles(next);
 }
@@ -11107,6 +11130,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       sub2apiEnabled: false,
       sub2apiMultiplier: "",
       modelRoutes: [],
+      standardOpenaiProtocol: false,
       aggregate: {
         strategy: "failover",
         members: candidates.slice(0, 1).map((profile) => ({ profileId: profile.id, weight: 1 })),
@@ -11234,6 +11258,7 @@ function normalizeAggregateRelayProfile(profile: RelayProfile, settings: Backend
     authContents: "",
     sub2apiEnabled: false,
     sub2apiMultiplier: "",
+    standardOpenaiProtocol: false,
     aggregate,
   };
 }

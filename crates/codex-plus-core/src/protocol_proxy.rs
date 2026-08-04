@@ -132,6 +132,13 @@ pub fn local_responses_proxy_base_url(port: u16) -> String {
 }
 
 pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
+    responses_to_chat_completions_with_options(body, false)
+}
+
+pub fn responses_to_chat_completions_with_options(
+    body: Value,
+    standard: bool,
+) -> anyhow::Result<Value> {
     let mut result = json!({});
 
     if let Some(model) = body.get("model") {
@@ -187,7 +194,7 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
         result["stream_options"] = stream_options;
     }
 
-    apply_chat_reasoning_options(&mut result, &body, model);
+    apply_chat_reasoning_options(&mut result, &body, model, standard);
 
     let tool_context = build_codex_tool_context(body.get("tools"));
     let mut has_chat_tools = false;
@@ -919,7 +926,8 @@ async fn upstream_request_parts(
     }
     let mut body = match relay.protocol {
         RelayProtocol::Responses => request_json,
-        RelayProtocol::ChatCompletions => responses_to_chat_completions(request_json)?,
+        RelayProtocol::ChatCompletions =>
+            responses_to_chat_completions_with_options(request_json, relay.standard_openai_protocol)?,
     };
     if relay.protocol == RelayProtocol::Responses {
         normalize_responses_custom_tool_call_ids(&mut body);
@@ -4514,11 +4522,20 @@ fn canonical_json_string(value: &Value) -> String {
     }
 }
 
-fn apply_chat_reasoning_options(result: &mut Value, body: &Value, model: &str) {
+fn apply_chat_reasoning_options(
+    result: &mut Value,
+    body: &Value,
+    model: &str,
+    standard: bool,
+) {
     let Some(reasoning_enabled) = reasoning_requested(body) else {
         return;
     };
-    let style = infer_chat_reasoning_style(model);
+    let style = if standard {
+        ChatReasoningStyle::Default
+    } else {
+        infer_chat_reasoning_style(model)
+    };
 
     match style {
         ChatReasoningStyle::Thinking => {
