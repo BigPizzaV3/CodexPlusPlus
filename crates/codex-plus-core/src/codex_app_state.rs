@@ -166,104 +166,6 @@ pub fn sync_app_state_after_provider_switch_nonfatal(home: &Path, source: &str) 
     }
 }
 
-pub fn prepare_projectless_main_window(home: &Path) -> anyhow::Result<AppStateSyncResult> {
-    if !projectless_startup_requested(home)? {
-        return Ok(AppStateSyncResult {
-            changed: false,
-            changed_keys: Vec::new(),
-            backup_path: None,
-            snapshot_path: None,
-        });
-    }
-    let Some(mut state) = load_global_state(home)? else {
-        return Ok(AppStateSyncResult {
-            changed: false,
-            changed_keys: Vec::new(),
-            backup_path: None,
-            snapshot_path: None,
-        });
-    };
-    let original = Value::Object(state.clone());
-    let mut changed_keys = BTreeSet::new();
-    replace_if_changed(
-        &mut state,
-        ACTIVE_WORKSPACE_ROOTS_KEY,
-        Value::Array(Vec::new()),
-        &mut changed_keys,
-    );
-
-    let mut atom = state
-        .get("electron-persisted-atom-state")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    atom.insert(
-        "electron:onboarding-projectless-completed".to_string(),
-        Value::Bool(true),
-    );
-    atom.insert(
-        "electron:onboarding-workspace-autolaunch-applied".to_string(),
-        Value::Bool(true),
-    );
-    replace_if_changed(
-        &mut state,
-        "electron-persisted-atom-state",
-        Value::Object(atom),
-        &mut changed_keys,
-    );
-
-    let next = Value::Object(state);
-    if next == original {
-        return Ok(AppStateSyncResult {
-            changed: false,
-            changed_keys: Vec::new(),
-            backup_path: None,
-            snapshot_path: None,
-        });
-    }
-
-    let backup_path = create_backup(home, &original)?;
-    let text = serde_json::to_string_pretty(&next)?;
-    let state_path = state_path(home);
-    crate::settings::atomic_write(&state_path, text.as_bytes())?;
-    if let Some(parent) = state_path.parent() {
-        let _ =
-            crate::settings::atomic_write(&parent.join(GLOBAL_STATE_BACKUP_FILE), text.as_bytes());
-    }
-
-    Ok(AppStateSyncResult {
-        changed: true,
-        changed_keys: changed_keys.into_iter().collect(),
-        backup_path: Some(backup_path),
-        snapshot_path: None,
-    })
-}
-
-pub fn prepare_projectless_main_window_nonfatal(home: &Path, source: &str) {
-    match prepare_projectless_main_window(home) {
-        Ok(result) if result.changed => {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "codex_app_state.projectless_main_window_prepared",
-                json!({
-                    "source": source,
-                    "changedKeys": result.changed_keys,
-                    "backupPath": result.backup_path.map(|path| path.to_string_lossy().to_string()),
-                }),
-            );
-        }
-        Ok(_) => {}
-        Err(error) => {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "codex_app_state.projectless_main_window_failed",
-                json!({
-                    "source": source,
-                    "error": error.to_string(),
-                }),
-            );
-        }
-    }
-}
-
 fn load_global_state(home: &Path) -> anyhow::Result<Option<Map<String, Value>>> {
     let path = state_path(home);
     if !path.exists() {
@@ -278,25 +180,6 @@ fn load_global_state(home: &Path) -> anyhow::Result<Option<Map<String, Value>>> 
         .cloned()
         .map(Some)
         .ok_or_else(|| anyhow::anyhow!("{} must be a JSON object", path.display()))
-}
-
-fn projectless_startup_requested(home: &Path) -> anyhow::Result<bool> {
-    let path = home.join("config.toml");
-    if !path.exists() {
-        return Ok(false);
-    }
-    let text =
-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    let config = text
-        .trim_start_matches('\u{feff}')
-        .parse::<toml::Table>()
-        .with_context(|| format!("failed to parse {}", path.display()))?;
-    Ok(config
-        .get("desktop")
-        .and_then(toml::Value::as_table)
-        .and_then(|desktop| desktop.get("hotkey-window-projectless-default-enabled"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(false))
 }
 
 fn load_snapshot(home: &Path) -> anyhow::Result<Option<Map<String, Value>>> {
