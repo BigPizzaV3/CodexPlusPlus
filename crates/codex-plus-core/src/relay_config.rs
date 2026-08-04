@@ -390,7 +390,8 @@ pub fn apply_relay_profile_files_to_home_with_context(
         &profile.auto_compact_limit,
     )?;
     let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
-    apply_relay_files_to_home(home, &config_with_catalog, &profile.auth_contents)
+    let compatible_config = apply_deepseek_responses_compatibility(profile, &config_with_catalog)?;
+    apply_relay_files_to_home(home, &compatible_config, &profile.auth_contents)
 }
 
 pub fn apply_relay_profile_to_home_with_switch_rules(
@@ -427,11 +428,12 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
         &profile.auto_compact_limit,
     )?;
     let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
+    let compatible_config = apply_deepseek_responses_compatibility(profile, &config_with_catalog)?;
 
     if profile.relay_mode == crate::settings::RelayMode::PureApi {
         apply_relay_files_to_home_with_computer_use_guard(
             home,
-            &config_with_catalog,
+            &compatible_config,
             &profile.auth_contents,
             preserve_computer_use_guard,
         )
@@ -439,7 +441,7 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
         let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
         apply_relay_files_to_home_with_computer_use_guard(
             home,
-            &config_with_catalog,
+            &compatible_config,
             &auth_contents,
             preserve_computer_use_guard,
         )
@@ -464,7 +466,8 @@ pub fn apply_relay_profile_config_to_home_with_context(
         &profile.auto_compact_limit,
     )?;
     let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
-    apply_relay_config_file_to_home(home, &config_with_catalog)
+    let compatible_config = apply_deepseek_responses_compatibility(profile, &config_with_catalog)?;
+    apply_relay_config_file_to_home(home, &compatible_config)
 }
 
 pub fn apply_relay_config_file_to_home(
@@ -1557,21 +1560,24 @@ fn apply_model_catalog_to_config(
         sanitize_catalog_filename(&profile.id)
     );
     let custom_responses = custom_responses_provider(config_text);
+    let deepseek_responses = deepseek_responses_profile(profile);
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
     if let Some(existing) = root_key_string(config_text, "model_catalog_json") {
         if existing != catalog_relative {
-            if custom_responses
-                && copy_standard_responses_catalog(home, &existing, &catalog_relative)?
-            {
-                let mut doc = parse_toml_document(config_text)?;
-                doc["model_catalog_json"] = toml_edit::value(catalog_relative);
-                return Ok(normalize_optional_toml(doc));
+            if !deepseek_responses {
+                if custom_responses
+                    && copy_standard_responses_catalog(home, &existing, &catalog_relative)?
+                {
+                    let mut doc = parse_toml_document(config_text)?;
+                    doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+                    return Ok(normalize_optional_toml(doc));
+                }
+                return Ok(config_text.to_string());
             }
-            return Ok(config_text.to_string());
         }
     }
-    if let Some(external_catalog) = live_external_model_catalog(home) {
+    if !deepseek_responses && let Some(external_catalog) = live_external_model_catalog(home) {
         let mut doc = parse_toml_document(config_text)?;
         if custom_responses
             && copy_standard_responses_catalog(home, &external_catalog, &catalog_relative)?
@@ -1597,6 +1603,7 @@ fn apply_model_catalog_to_config(
     if !entries.iter().any(|entry| {
         entry.suffix_window.is_some()
             || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
+            || (deepseek_responses && entry.slug.starts_with("deepseek-v4-"))
     }) {
         return Ok(config_text.to_string());
     }
@@ -1612,10 +1619,65 @@ fn apply_model_catalog_to_config(
         fallback,
         None,
         custom_responses.then_some(false),
+        deepseek_responses,
     );
     std::fs::write(&catalog_path, catalog_json)?;
     let mut doc = parse_toml_document(config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+    Ok(normalize_optional_toml(doc))
+}
+
+fn deepseek_responses_profile(profile: &RelayProfile) -> bool {
+    if profile.protocol != RelayProtocol::Responses {
+        return false;
+    }
+    let resolved_base_url = relay_profile_base_url(profile);
+    [
+        profile.base_url.as_str(),
+        profile.upstream_base_url.as_str(),
+        resolved_base_url.as_str(),
+    ]
+    .iter()
+    .any(|base_url| deepseek_api_base_url(base_url))
+}
+
+fn deepseek_api_base_url(base_url: &str) -> bool {
+    let host = base_url
+        .trim()
+        .split("://")
+        .nth(1)
+        .unwrap_or(base_url)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    host == "deepseek.com" || host.ends_with(".deepseek.com")
+}
+
+fn apply_deepseek_responses_compatibility(
+    profile: &RelayProfile,
+    config_text: &str,
+) -> anyhow::Result<String> {
+    if !deepseek_responses_profile(profile) {
+        return Ok(config_text.to_string());
+    }
+
+    let mut doc = parse_toml_document(config_text)?;
+    doc.as_table_mut()
+        .remove("experimental_use_unified_exec_tool");
+    if !doc["features"].is_table() {
+        doc["features"] = toml_edit::table();
+    }
+    doc["features"]["unified_exec"] = toml_edit::value(false);
+    doc["features"]["code_mode_only"] = toml_edit::value(false);
+    if !doc["features"]["code_mode"].is_table() {
+        doc["features"]["code_mode"] = toml_edit::table();
+    }
+    doc["features"]["code_mode"]["enabled"] = toml_edit::value(false);
     Ok(normalize_optional_toml(doc))
 }
 

@@ -50,10 +50,10 @@ export const PRESETS: ProviderPreset[] = [
     websiteUrl: "https://platform.deepseek.com",
     apiKeyUrl: "https://platform.deepseek.com/api_keys",
     category: "cn_official",
-    baseUrl: "https://api.deepseek.com",
-    protocol: "chatCompletions",
+    baseUrl: "https://api.deepseek.com/",
+    protocol: "responses",
     model: "deepseek-v4-flash",
-    modelList: ["deepseek-v4-flash", "deepseek-v4-pro"],
+    modelList: ["deepseek-v4-flash"],
   },
   {
     id: "zhipu-glm",

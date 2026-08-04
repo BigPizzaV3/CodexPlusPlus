@@ -3381,6 +3381,159 @@ experimental_bearer_token = "sk-new"
 }
 
 #[test]
+fn apply_deepseek_responses_official_mix_writes_official_tool_compatibility() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "deepseek-responses".to_string(),
+        name: "DeepSeek".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        base_url: "https://api.deepseek.com/".to_string(),
+        upstream_base_url: "https://api.deepseek.com/".to_string(),
+        protocol: RelayProtocol::Responses,
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        api_key: "sk-deepseek".to_string(),
+        config_contents: r#"model = "deepseek-v4-flash"
+model_provider = "deepseek"
+experimental_use_unified_exec_tool = true
+
+[features]
+goals = true
+unified_exec = true
+code_mode_only = true
+
+[features.code_mode]
+enabled = true
+direct_only_tool_namespaces = ["mcp__node_repl"]
+
+[model_providers.deepseek]
+name = "deepseek"
+base_url = "https://api.deepseek.com/"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "sk-deepseek"
+"#
+        .to_string(),
+        model_list: "deepseek-v4-flash".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert!(parsed.get("experimental_use_unified_exec_tool").is_none());
+    assert_eq!(parsed["features"]["unified_exec"].as_bool(), Some(false));
+    assert_eq!(parsed["features"]["code_mode_only"].as_bool(), Some(false));
+    assert_eq!(
+        parsed["features"]["code_mode"]["enabled"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        parsed["features"]["code_mode"]["direct_only_tool_namespaces"][0].as_str(),
+        Some("mcp__node_repl")
+    );
+    assert_eq!(parsed["features"]["goals"].as_bool(), Some(true));
+    assert_eq!(
+        parsed["model_catalog_json"].as_str(),
+        Some("model-catalogs/deepseek-responses.json")
+    );
+
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            temp.path()
+                .join("model-catalogs")
+                .join("deepseek-responses.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let model = &catalog["models"][0];
+    assert_eq!(model["slug"], "deepseek-v4-flash");
+    assert_eq!(model["shell_type"], "shell_command");
+    assert_eq!(model["apply_patch_tool_type"], "freeform");
+    assert_eq!(model["use_responses_lite"], false);
+    assert_eq!(model["context_window"], 1_048_576);
+    assert_eq!(model["effective_context_window_percent"], 95);
+    assert_eq!(model["default_reasoning_level"], "high");
+}
+
+#[test]
+fn apply_non_deepseek_responses_profile_preserves_unified_exec() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "agentrouter".to_string(),
+        model: "gpt-5.6-sol".to_string(),
+        base_url: "https://agentrouter.org/v1".to_string(),
+        upstream_base_url: "https://agentrouter.org/v1".to_string(),
+        protocol: RelayProtocol::Responses,
+        config_contents: r#"model = "gpt-5.6-sol"
+model_provider = "agentrouter"
+
+[features]
+unified_exec = true
+code_mode_only = true
+
+[features.code_mode]
+enabled = true
+direct_only_tool_namespaces = ["mcp__node_repl"]
+
+[model_providers.agentrouter]
+name = "agentrouter"
+base_url = "https://agentrouter.org/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#
+        .to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(parsed["features"]["unified_exec"].as_bool(), Some(true));
+    assert_eq!(parsed["features"]["code_mode_only"].as_bool(), Some(true));
+    assert_eq!(
+        parsed["features"]["code_mode"]["enabled"].as_bool(),
+        Some(true)
+    );
+}
+
+#[test]
+fn apply_deepseek_chat_completions_profile_preserves_unified_exec() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "deepseek-chat".to_string(),
+        model: "deepseek-chat".to_string(),
+        base_url: "https://api.deepseek.com/".to_string(),
+        upstream_base_url: "https://api.deepseek.com/".to_string(),
+        protocol: RelayProtocol::ChatCompletions,
+        config_contents: r#"model = "deepseek-chat"
+
+[features]
+unified_exec = true
+code_mode_only = true
+
+[features.code_mode]
+enabled = true
+direct_only_tool_namespaces = ["mcp__node_repl"]
+"#
+        .to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(parsed["features"]["unified_exec"].as_bool(), Some(true));
+    assert_eq!(parsed["features"]["code_mode_only"].as_bool(), Some(true));
+    assert_eq!(
+        parsed["features"]["code_mode"]["enabled"].as_bool(),
+        Some(true)
+    );
+}
+
+#[test]
 fn apply_custom_chat_profile_preserves_generated_catalog_lite_behavior() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {
