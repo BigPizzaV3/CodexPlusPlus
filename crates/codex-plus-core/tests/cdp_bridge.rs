@@ -1811,7 +1811,7 @@ fn injection_script_installs_upstream_branch_dropdown_adapter() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("installUpstreamBranchDropdownAdapter"));
-    assert!(script.contains("installUpstreamPendingWorktreeDispatcherPatch"));
+    assert!(!script.contains("installUpstreamPendingWorktreeDispatcherPatch"));
     assert!(script.contains("data-codex-upstream-branch-option"));
     assert!(script.contains("codexUpstreamBranchSelection"));
     assert!(script.contains("/upstream-worktree/defaults"));
@@ -1825,7 +1825,7 @@ fn injection_script_installs_upstream_branch_dropdown_adapter() {
     assert!(script.contains("readUpstreamBranchSelection"));
     assert!(script.contains("writeUpstreamBranchSelection(null)"));
     assert!(script.contains("currentProjectRepoPathFromSelectedProjectButton"));
-    assert!(script.contains("currentProjectRepoPathFromStartButton"));
+    assert!(script.contains("currentProjectContextFromStartButton"));
     assert!(script.contains("Start new chat in"));
     assert!(script.contains("codexUpstreamProjectContext"));
     assert!(script.contains("rememberStartNewChatProjectContext"));
@@ -1838,11 +1838,11 @@ fn injection_script_installs_upstream_branch_dropdown_adapter() {
     assert!(script.contains("data-codex-upstream-branch-selection-label"));
     assert!(script.contains("syncUpstreamBranchTriggerLabel"));
     assert!(script.contains("syncUpstreamBranchMenuSelection"));
-    assert!(script.contains("applyUpstreamPendingWorktreeOverride"));
-    assert!(script.contains("pending-worktree-create"));
+    assert!(!script.contains("applyUpstreamPendingWorktreeOverride"));
+    assert!(!script.contains("pending-worktree-create"));
     assert!(script.contains("qualifiedSourceRef"));
     assert!(script.contains("refs/remotes/${remote}/${baseBranch}"));
-    assert!(script.contains("startingState: { ...request.startingState, branchName: sourceRef }"));
+    assert!(!script.contains("startingState: { ...request.startingState, branchName: sourceRef }"));
     assert!(script.contains("data-codex-upstream-branch-check"));
     assert!(script.contains("data-codex-upstream-branch-icon"));
     assert!(script.contains("branchIconSvg"));
@@ -1880,8 +1880,8 @@ fn injection_script_prevents_switching_to_branches_used_by_other_worktrees() {
 fn injection_script_rebuilds_upstream_options_for_each_project_branch_menu() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("currentProjectRepoPathForBranchMenu"));
-    assert!(script.contains("repoPathFromProjectLabel"));
+    assert!(!script.contains("currentProjectRepoPathForBranchMenu"));
+    assert!(!script.contains("repoPathFromProjectLabel"));
     assert!(script.contains("projectContextFromProjectLabel"));
     assert!(script.contains("upstreamBranchOptionsMatchRefs"));
     assert!(script.contains("upstreamBranchDefaultsCache = new Map()"));

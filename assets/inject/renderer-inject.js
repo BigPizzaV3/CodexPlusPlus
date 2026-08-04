@@ -393,7 +393,6 @@
   const upstreamBranchOptionAttribute = "data-codex-upstream-branch-option";
   const upstreamBranchSelectionKey = "codexUpstreamBranchSelection";
   const upstreamProjectContextKey = "codexUpstreamProjectContext";
-  const zedRemoteOpenVersion = "1";
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const projectMoveProjectionKey = "codexProjectMoveProjection";
@@ -2575,12 +2574,6 @@
     if (controlMode === "global-standard") return "standard";
     if (controlMode === "inherit") return "inherit";
     return normalizeCodexThreadServiceTierMode(fallback);
-  }
-
-  function codexServiceTierControlModeForDefaultMode(defaultMode) {
-    if (defaultMode === "fast") return "global-fast";
-    if (defaultMode === "standard") return "global-standard";
-    return "inherit";
   }
 
   function codexServiceTierEffectiveThreadMode(threadMode = "inherit", defaultMode = "inherit") {
@@ -4822,20 +4815,6 @@
     return rows;
   }
 
-  function archivedSessionRows() {
-    if (!archivePageHintVisible()) return [];
-    return sessionRows().filter((row) => row.querySelector('button[aria-label="取消归档对话"]') || row.outerHTML.includes("取消归档") || row.outerHTML.includes("unarchive"));
-  }
-
-  function archivedRows() {
-    if (!archivePageHintVisible()) return [];
-    return [...archivedSessionRows(), ...archivedPageRows()];
-  }
-
-  function archivedPageVisible() {
-    return archivePageHintVisible() && archivedRows().length > 0;
-  }
-
   function sessionRefFromRow(row) {
     const href = row.getAttribute("href") || row.querySelector("a")?.getAttribute("href") || "";
     const idMatch = href.match(/(?:session|conversation|thread)[=/:-]([A-Za-z0-9_.-]+)/i) || href.match(/([A-Za-z0-9_-]{8,})$/);
@@ -6377,15 +6356,6 @@
     tick();
   }
 
-  function patchCodexModelWhitelist() {
-    ensureCodexModelWhitelistInstalls();
-    if (!codexPlusModelNames().length) {
-      loadCodexModelCatalog();
-      return;
-    }
-    runCodexModelWhitelistRefreshPass();
-  }
-
   function refreshCodexModelWhitelistFromScan(mutations) {
     ensureCodexModelWhitelistInstalls();
     if (!codexPlusModelNames().length) {
@@ -7354,25 +7324,6 @@
     return sidebarProjectRows().filter((row) => visibleElement(row));
   }
 
-  function currentProjectRepoPathFromStartButton() {
-    const startButtons = [...document.querySelectorAll('button[aria-label^="Start new chat in "]')]
-      .filter((button) => visibleElement(button));
-    const bottomHalf = window.innerHeight * 0.5;
-    startButtons.sort((left, right) => {
-      const leftRect = left.getBoundingClientRect();
-      const rightRect = right.getBoundingClientRect();
-      const leftScore = Math.abs(leftRect.y - bottomHalf) + Math.max(0, bottomHalf - leftRect.y) * 0.5;
-      const rightScore = Math.abs(rightRect.y - bottomHalf) + Math.max(0, bottomHalf - rightRect.y) * 0.5;
-      return leftScore - rightScore;
-    });
-    for (const button of startButtons) {
-      const row = button.closest('[data-app-action-sidebar-project-row][data-app-action-sidebar-project-id]');
-      const path = projectRowPath(row);
-      if (path?.startsWith?.("/")) return path;
-    }
-    return "";
-  }
-
   function currentProjectContextFromStartButton() {
     const startButtons = [...document.querySelectorAll('button[aria-label^="Start new chat in "]')]
       .filter((button) => visibleElement(button));
@@ -7425,10 +7376,6 @@
     return context.projectId ? { ...remoteProjectContextFromGlobalState(context.projectId), label: context.label } : context;
   }
 
-  function repoPathFromProjectLabel(label) {
-    return projectContextFromProjectLabel(label)?.repoPath || "";
-  }
-
   function contextMatchesProjectLabel(context, label) {
     const expected = normalizeProjectLabel(label);
     if (!expected) return true;
@@ -7459,21 +7406,11 @@
       || currentProjectContext();
   }
 
-  function currentProjectRepoPathForBranchMenu(menu, trigger = branchMenuTriggerFromMenu(menu)) {
-    return currentProjectContextForBranchMenu(menu, trigger)?.repoPath || "";
-  }
-
   function currentProjectRepoPathFromExpandedRows() {
     const expandedRows = visibleProjectRows().filter((row) => row.getAttribute("data-app-action-sidebar-project-collapsed") === "false");
     const pathRows = expandedRows.filter((row) => projectRowPath(row).startsWith("/"));
     if (pathRows.length === 1) return projectRowPath(pathRows[0]);
     return "";
-  }
-
-  function currentProjectRepoPath() {
-    return currentProjectRepoPathFromSelectedProjectButton()
-      || currentProjectRepoPathFromStartButton()
-      || currentProjectRepoPathFromExpandedRows();
   }
 
   function currentProjectContext() {
@@ -7960,64 +7897,6 @@
       && (left.baseBranch || "main") === (right.baseBranch || "main");
   }
 
-  function pendingWorktreeRequestMatchesSelection(request, selection) {
-    if (!selection || !request || request.launchMode !== "start-conversation") return false;
-    const sourceRoot = request.sourceWorkspaceRoot || "";
-    if (selection.repoPath && sourceRoot) return sameWorkspacePath(sourceRoot, selection.repoPath);
-    if (selection.projectId) return true;
-    return !selection.repoPath || sameWorkspacePath(sourceRoot, selection.repoPath);
-  }
-
-  function applyUpstreamPendingWorktreeOverride(payload) {
-    const selection = readUpstreamBranchSelection();
-    const request = payload?.request;
-    const sourceRef = upstreamQualifiedSourceRef(selection);
-    if (!codexPlusSettings().upstreamWorktreeCreate || !sourceRef) return payload;
-    if (!pendingWorktreeRequestMatchesSelection(request, selection)) return payload;
-    if (request?.startingState?.type !== "branch") return payload;
-    if (request.startingState.branchName === sourceRef) return payload;
-    const nextRequest = {
-      ...request,
-      startingState: { ...request.startingState, branchName: sourceRef },
-    };
-    prepareUpstreamBranchSelection(selection);
-    sendCodexPlusDiagnostic("upstream_pending_worktree_override_applied", {
-      label: selection.label || "",
-      sourceRef,
-      sourceWorkspaceRoot: request.sourceWorkspaceRoot || "",
-    });
-    return { ...(payload || {}), request: nextRequest };
-  }
-
-  function installUpstreamPendingWorktreeDispatcherPatch() {
-    const patchVersion = "1";
-    if (window.__codexUpstreamPendingWorktreeDispatcherPatch === patchVersion) return;
-    const patch = async () => {
-      try {
-        const module = await loadCodexAppModule("setting-storage-");
-        const dispatcherClass = typeof module.v === "function" && String(module.v).includes("dispatchMessage") ? module.v : null;
-        const dispatcher = dispatcherClass?.getInstance?.();
-        if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
-        if (!dispatcher.__codexUpstreamWorktreeOriginalDispatchMessage) {
-          dispatcher.__codexUpstreamWorktreeOriginalDispatchMessage = dispatcher.dispatchMessage.bind(dispatcher);
-          dispatcher.dispatchMessage = (type, payload) => {
-            const nextPayload = type === "pending-worktree-create"
-              ? applyUpstreamPendingWorktreeOverride(payload)
-              : payload;
-            return dispatcher.__codexUpstreamWorktreeOriginalDispatchMessage(type, nextPayload);
-          };
-        }
-        window.__codexUpstreamPendingWorktreeDispatcherPatch = patchVersion;
-      } catch (error) {
-        sendCodexPlusDiagnostic("upstream_pending_worktree_patch_failed", {
-          errorName: error?.name || "",
-          errorMessage: error?.message || String(error),
-        });
-      }
-    };
-    void patch();
-  }
-
   function upstreamWorktreeNativePayloadFromElement(element) {
     const trigger = element?.closest?.("[data-codex-worktree-create], [data-worktree-create]") || element;
     const scopes = [
@@ -8090,7 +7969,6 @@
 
   function installUpstreamWorktreeNativeAdapter() {
     const adapterVersion = "2";
-    installUpstreamPendingWorktreeDispatcherPatch();
     if (window.__codexUpstreamWorktreeNativeAdapterInstalled === adapterVersion) return;
     window.__codexUpstreamWorktreeNativeAdapterInstalled = adapterVersion;
     document.addEventListener("click", (event) => {
@@ -8799,18 +8677,6 @@
     event.stopImmediatePropagation?.();
   }
 
-  function isArchiveTitleText(value) {
-    return value === "已归档对话" || value === "Archived conversations";
-  }
-
-  function archiveTitleContainer() {
-    const heading = Array.from(document.querySelectorAll("h1, h2, h3"))
-      .find((element) => isArchiveTitleText((element.textContent || "").trim()));
-    if (heading) return heading;
-    return Array.from(document.querySelectorAll("h1, h2, h3, div, span"))
-      .find((element) => isArchiveTitleText((element.textContent || "").trim()) && element.getBoundingClientRect().x > 350);
-  }
-
   function attachArchivedPageDeleteButton(row) {
     const settings = codexPlusSettings();
     row.querySelectorAll("[data-codex-archive-row-action]").forEach((button) => button.remove());
@@ -9421,10 +9287,6 @@
     return payload;
   }
 
-  function zedRemoteCurrentThreadId() {
-    return zedRemoteCurrentFallbackPayload().threadId || "";
-  }
-
   async function resolveZedRemoteFallbackRequest() {
     const payload = zedRemoteCurrentFallbackPayload();
     if (!zedRemoteIsRemoteHostId(payload.hostId)) return null;
@@ -9747,31 +9609,6 @@
     } catch (error) {
       showZedRemoteToast(error?.message || "Cannot open this file in Zed Remote");
     }
-  }
-
-  async function openBestZedRemoteTarget() {
-    const request = zedRemoteBestOpenRequest(document) || await resolveZedRemoteFallbackRequest();
-    if (!request) {
-      showZedRemoteToast("Cannot find a remote workspace or file for Zed");
-      return;
-    }
-    openZedRemote(request);
-  }
-
-  function attachZedRemoteButton(candidate) {
-    const anchor = candidate.node;
-    if (anchor.dataset.codexZedRemoteVersion === zedRemoteOpenVersion) return;
-    anchor.dataset.codexZedRemoteVersion = zedRemoteOpenVersion;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = zedRemoteButtonClass;
-    button.textContent = "Open in Zed Remote";
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openZedRemote(candidate.request);
-    }, true);
-    anchor.insertAdjacentElement("afterend", button);
   }
 
   function removeZedRemoteButtons() {
