@@ -1372,7 +1372,12 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("codexServiceTierBadgeWired"));
     assert!(script.contains("setAttribute(\"role\", \"button\")"));
     assert!(script.contains("setAttribute(\"tabindex\", \"0\")"));
+    assert!(script.contains("继承 Codex 默认设置"));
     assert!(script.contains("继承 config.toml"));
+    assert!(script.contains("serviceTierInheritSourceLabel"));
+    assert!(script.contains("resolveInheritedServiceTier"));
+    assert!(script.contains("getConfigTomlServiceTier"));
+    assert!(script.contains("catalog.service_tier"));
     assert!(script.contains("service_tier=\\\"priority\\\""));
     assert!(script.contains("Fast 仅支持"));
     assert!(script.contains("当前 thread"));
@@ -1475,6 +1480,38 @@ fn injection_script_applies_fast_service_tier_contract() {
         serde_json::Value::Null
     );
 
+    assert_eq!(cases["inheritUnsetStatus"], "继承 Codex 默认设置：默认");
+    assert_eq!(cases["inheritFastStatus"], "继承 Codex 默认设置：fast");
+    assert_eq!(
+        cases["inheritStandardStatus"],
+        "继承 Codex 默认设置：standard"
+    );
+    assert_eq!(
+        cases["inheritConfigTomlFastStatus"],
+        "继承 config.toml：fast"
+    );
+    assert_eq!(cases["resolvedConfigTomlTier"]["configServiceTier"], "fast");
+    assert_eq!(
+        cases["resolvedConfigTomlTier"]["serviceTierSource"],
+        "config-toml"
+    );
+    assert_eq!(
+        cases["resolvedUnsetTier"]["configServiceTier"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        cases["resolvedUnsetTier"]["serviceTierSource"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        cases["inheritedConfigFastBlocked"]["serviceTier"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        cases["inheritedConfigFastBlocked"]["service_tier"],
+        serde_json::Value::Null
+    );
+
     assert_eq!(cases["startConversation"]["serviceTier"], "priority");
     assert_eq!(cases["fetchStartConversation"]["serviceTier"], "priority");
     assert_eq!(
@@ -1564,8 +1601,38 @@ globalThis.navigator = {{ userAgent: "node-test" }};
 globalThis.performance = {{ getEntriesByType: () => [] }};
 require(scriptPath);
 const api = window.__codexPlusServiceTierTest;
-api.setServiceTierState({{ serviceTier: "priority", fastTierValue: "priority" }});
+api.setServiceTierState({{ status: "ok", serviceTier: "priority", fastTierValue: "priority" }});
 api.setModelCatalog({{ status: "ok", model: "gpt-5.4", default_model: "gpt-5.4", models: ["gpt-5.4", "gpt-5.5"] }});
+
+const inheritUnsetStatus = api.statusSummary({{
+  controlMode: "inherit",
+  threadMode: "inherit",
+  defaultMode: "inherit",
+  effectiveMode: "standard",
+  effectiveServiceTier: null,
+}});
+const inheritFastStatus = api.statusSummary({{
+  controlMode: "inherit",
+  threadMode: "inherit",
+  defaultMode: "inherit",
+  effectiveMode: "fast",
+  effectiveServiceTier: "priority",
+}});
+const inheritStandardStatus = api.statusSummary({{
+  controlMode: "inherit",
+  threadMode: "inherit",
+  defaultMode: "inherit",
+  effectiveMode: "standard",
+  effectiveServiceTier: "standard",
+}});
+const inheritConfigTomlFastStatus = api.statusSummary({{
+  controlMode: "inherit",
+  threadMode: "inherit",
+  defaultMode: "inherit",
+  effectiveMode: "fast",
+  effectiveServiceTier: "fast",
+  serviceTierSource: "config-toml",
+}});
 
 api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
 const supportedFast = api.applyServiceTierOverride("turn/start", {{
@@ -1730,7 +1797,19 @@ const appServerClient = {{
 }};
 api.patchAppServerClient(appServerClient);
 
-appServerClient.sendRequest("start-conversation", nativeAppServerParams, {{ signal: "native" }}).then(() => {{
+appServerClient.sendRequest("start-conversation", nativeAppServerParams, {{ signal: "native" }}).then(async () => {{
+api.setModelCatalog({{ status: "ok", model: "gpt-5.4", default_model: "gpt-5.4", models: ["gpt-5.4"], service_tier: "fast" }});
+const resolvedConfigTomlTier = await api.resolveInheritedServiceTier();
+api.setModelCatalog({{ status: "ok", model: "gpt-5.4", default_model: "gpt-5.4", models: ["gpt-5.4"] }});
+const resolvedUnsetTier = await api.resolveInheritedServiceTier();
+api.setModelCatalog({{ status: "ok", model: "gpt-4.1", default_model: "gpt-4.1", models: ["gpt-4.1"] }});
+api.setThreadState({{ mode: "inherit", defaultMode: "inherit", entries: {{}} }});
+api.setServiceTierState({{ status: "ok", serviceTier: null, configServiceTier: "fast", serviceTierSource: "config-toml" }});
+const inheritedConfigFastBlocked = api.applyServiceTierOverride("turn/start", {{
+  threadId: "thread-12345678",
+  model: "gpt-4.1",
+  service_tier: null,
+}}, "");
 const appServerParamsUnchanged = appServerCalls[0]?.params === nativeAppServerParams
   && appServerCalls[0]?.params?.workspaceKind === "project"
   && appServerCalls[0]?.params?.cwd === "C:/native/work"
@@ -1741,6 +1820,13 @@ process.stdout.write(JSON.stringify({{
   turnWithoutModel,
   turnWithoutModelDiagnosticModel,
   customInheritUnsupported,
+  inheritUnsetStatus,
+  inheritFastStatus,
+  inheritStandardStatus,
+  inheritConfigTomlFastStatus,
+  resolvedConfigTomlTier,
+  resolvedUnsetTier,
+  inheritedConfigFastBlocked,
   startConversation,
   fetchStartConversation,
   fetchSendCliRequest,
