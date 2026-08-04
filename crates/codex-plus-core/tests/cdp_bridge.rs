@@ -1630,6 +1630,23 @@ fn injection_script_moves_export_and_project_move_into_more_menu() {
 }
 
 #[test]
+fn injection_script_sorts_threads_within_each_sidebar_list() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("const provisionalThreadSortMs = new Map()"));
+    assert!(script.contains("client-new-thread:"));
+    assert!(script.contains("function threadListForRow"));
+    assert!(script.contains("function visibleSidebarRows"));
+    assert!(script.contains("function sidebarRowsByList"));
+    assert!(script.contains("function threadRowsNeedCorrection"));
+    assert!(script.contains("function orderedThreadRows"));
+    assert!(script.contains("function reorderThreadRows"));
+    assert!(script.contains("function sidebarSortSignature"));
+    assert!(script.contains("refs.slice(start, start + 200)"));
+    assert!(script.contains("window.__codexProjectMoveSortSidebar"));
+}
+
+#[test]
 fn injection_script_does_not_add_delete_controls_on_archived_page() {
     let script = assets::injection_script(57321);
 

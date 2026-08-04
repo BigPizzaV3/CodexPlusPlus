@@ -406,6 +406,14 @@
   const upstreamProjectContextKey = "codexUpstreamProjectContext";
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
+  const projectMoveProjectionKey = "codexProjectMoveProjection";
+  const legacyProjectMoveOverridesKey = "codexProjectMoveOverrides";
+  const projectMoveProjectionTtlMs = 24 * 60 * 60 * 1000;
+  const projectMoveProjectionSettleMs = 5 * 60 * 1000;
+  const projectMoveRefreshDelaysMs = [50, 250, 750, 1500];
+  const chatsSortRefreshIntervalMs = 1500;
+  const chatsSortDbRefreshIntervalMs = 5000;
+  const provisionalThreadSortMs = new Map();
   const styleId = "codex-delete-style";
   const codexDeleteStyleVersion = "17";
   const codexPlusMenuId = "codex-plus-menu";
@@ -7053,6 +7061,50 @@
     return Number.isFinite(timestamp) ? timestamp : 0;
   }
 
+  function numericTimestamp(value) {
+    const timestamp = Number(value);
+    return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0;
+  }
+
+  function timestampValueToMs(value) {
+    const timestamp = numericTimestamp(value);
+    if (!timestamp) return 0;
+    return timestamp < 1000000000000 ? timestamp * 1000 : timestamp;
+  }
+
+  function sortMsForSession(sessionId, preferredValue) {
+    const preferredTimestamp = numericTimestamp(preferredValue);
+    if (preferredTimestamp) return preferredTimestamp;
+    const uuidTimestamp = uuidV7TimestampMs(sessionId);
+    if (uuidTimestamp) return uuidTimestamp;
+    const key = projectMoveSessionKey(sessionId);
+    if (!key.startsWith("client-new-thread:")) return 0;
+    if (!provisionalThreadSortMs.has(key)) provisionalThreadSortMs.set(key, Date.now());
+    return provisionalThreadSortMs.get(key) || 0;
+  }
+
+  function timestampMsFromPayload(payload) {
+    return numericTimestamp(payload?.updated_at_ms) || timestampValueToMs(payload?.updated_at) || numericTimestamp(payload?.created_at_ms);
+  }
+
+  function relativeTimeLabel(timestampMs, nowMs = Date.now()) {
+    const timestamp = numericTimestamp(timestampMs);
+    if (!timestamp) return "";
+    const elapsedSeconds = Math.max(0, Math.floor((nowMs - timestamp) / 1000));
+    if (elapsedSeconds < 60) return "刚刚";
+    const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+    if (elapsedMinutes < 60) return `${elapsedMinutes} 分`;
+    const elapsedHours = Math.floor(elapsedMinutes / 60);
+    if (elapsedHours < 24) return `${elapsedHours} 小时`;
+    const elapsedDays = Math.floor(elapsedHours / 24);
+    if (elapsedDays < 7) return `${elapsedDays} 天`;
+    const elapsedWeeks = Math.floor(elapsedDays / 7);
+    if (elapsedWeeks < 5) return `${elapsedWeeks} 周`;
+    const elapsedMonths = Math.floor(elapsedDays / 30);
+    if (elapsedMonths < 12) return `${Math.max(1, elapsedMonths)} 月`;
+    return `${Math.floor(elapsedDays / 365)} 年`;
+  }
+
   function normalizeWorkspacePath(path) {
     const normalized = String(path || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
     return normalized || String(path || "").trim();
@@ -7097,6 +7149,761 @@
       window.__codexRecentConversationRefreshFailures.push(String(error?.stack || error));
       return false;
     }
+  }
+
+  function chatsSection() {
+    return document.querySelector('[data-app-action-sidebar-section-heading="Chats"]');
+  }
+
+  function projectRowListItem(projectRow) {
+    return projectRow.closest?.('[role="listitem"][aria-label]') || projectRow.closest?.('[role="listitem"]') || projectRow;
+  }
+
+  function nativeProjectTargets() {
+    const section = projectsSection();
+    const seen = new Set();
+    const targets = [];
+    Array.from(document.querySelectorAll('[data-app-action-sidebar-project-row]')).forEach((row) => {
+      if (section && !section.contains(row)) return;
+      const path = row.getAttribute("data-app-action-sidebar-project-id") || "";
+      const normalizedPath = normalizeWorkspacePath(path);
+      if (!normalizedPath || seen.has(normalizedPath)) return;
+      const label = row.getAttribute("data-app-action-sidebar-project-label") || row.getAttribute("aria-label") || displayProjectName(path);
+      seen.add(normalizedPath);
+      targets.push({ kind: "project", label: String(label || displayProjectName(path)), description: path, path, normalizedPath, row, listItem: projectRowListItem(row) });
+    });
+    return targets;
+  }
+
+  function serializableProjectTarget(target) {
+    return { kind: target.kind, label: target.label, description: target.description, path: target.path, normalizedPath: target.normalizedPath || normalizeWorkspacePath(target.path) };
+  }
+
+  function projectMoveTargets() {
+    return [
+      { kind: "projectless", label: "普通对话", description: "不属于任何项目", path: "", normalizedPath: "" },
+      ...nativeProjectTargets().map(serializableProjectTarget),
+    ];
+  }
+
+  function readLegacyProjectMoveProjection() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(legacyProjectMoveOverridesKey) || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      const now = Date.now();
+      const next = {};
+      for (const [key, value] of Object.entries(parsed)) {
+        if (!value || typeof value !== "object" || !value.targetCwd) continue;
+        const sessionId = projectMoveSessionKey(value.sessionId || key);
+        if (!sessionId) continue;
+        next[sessionId] = {
+          sessionId,
+          targetKind: "project",
+          targetCwd: String(value.targetCwd),
+          targetLabel: String(value.targetLabel || displayProjectName(value.targetCwd)),
+          title: String(value.title || ""),
+          sortMs: sortMsForSession(sessionId, value.sortMs || value.updatedAtMs || value.updated_at_ms),
+          sortMsTrusted: false,
+          at: typeof value.at === "number" ? value.at : now,
+        };
+      }
+      return next;
+    } catch {
+      return {};
+    }
+  }
+
+  function readProjectMoveProjection() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(projectMoveProjectionKey) || "{}");
+      const raw = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+      const merged = { ...readLegacyProjectMoveProjection(), ...raw };
+      const now = Date.now();
+      const projection = {};
+      for (const [key, value] of Object.entries(merged)) {
+        if (!value || typeof value !== "object") continue;
+        const sessionId = projectMoveSessionKey(value.sessionId || key);
+        if (!sessionId) continue;
+        if (typeof value.at === "number" && now - value.at > projectMoveProjectionTtlMs) continue;
+        const targetKind = value.targetKind === "projectless" ? "projectless" : "project";
+        const targetCwd = String(value.targetCwd || value.path || "");
+        if (targetKind === "project" && !targetCwd) continue;
+        projection[sessionId] = {
+          sessionId,
+          targetKind,
+          targetCwd,
+          targetLabel: String(value.targetLabel || value.label || (targetKind === "projectless" ? "普通对话" : displayProjectName(targetCwd))),
+          title: String(value.title || ""),
+          sortMs: sortMsForSession(sessionId, value.sortMs || value.updatedAtMs || value.updated_at_ms),
+          sortMsTrusted: value.sortMsTrusted === true,
+          at: typeof value.at === "number" ? value.at : now,
+        };
+      }
+      return projection;
+    } catch {
+      return readLegacyProjectMoveProjection();
+    }
+  }
+
+  function writeProjectMoveProjection(projection) {
+    try {
+      localStorage.setItem(projectMoveProjectionKey, JSON.stringify(projection || {}));
+      localStorage.removeItem(legacyProjectMoveOverridesKey);
+    } catch (error) {
+      window.__codexProjectMoveProjectionFailures = window.__codexProjectMoveProjectionFailures || [];
+      window.__codexProjectMoveProjectionFailures.push(String(error?.stack || error));
+    }
+  }
+
+  function saveProjectMoveProjection(ref, target, sortMs) {
+    const id = projectMoveSessionKey(ref.session_id);
+    if (!id || !target) return;
+    const projection = readProjectMoveProjection();
+    projection[id] = {
+      sessionId: id,
+      targetKind: target.kind === "projectless" ? "projectless" : "project",
+      targetCwd: target.path || "",
+      targetLabel: target.label || (target.kind === "projectless" ? "普通对话" : displayProjectName(target.path)),
+      title: ref.title || "",
+      sortMs: sortMsForSession(ref.session_id, sortMs || target.sortMs),
+      sortMsTrusted: target.sortMsTrusted === true,
+      at: Date.now(),
+    };
+    writeProjectMoveProjection(projection);
+  }
+
+  function clearProjectMoveProjection(ref) {
+    const projection = readProjectMoveProjection();
+    const keys = threadIdVariants(ref.session_id).map(projectMoveSessionKey).filter(Boolean);
+    let changed = false;
+    keys.forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(projection, key)) {
+        delete projection[key];
+        changed = true;
+      }
+    });
+    if (changed) writeProjectMoveProjection(projection);
+  }
+
+  function projectionForSessionId(sessionId, projection = readProjectMoveProjection()) {
+    const key = projectMoveSessionKey(sessionId);
+    return key ? projection[key] || null : null;
+  }
+
+  function projectRowFromListItem(projectItem) {
+    if (!projectItem) return null;
+    if (projectItem.matches?.("[data-app-action-sidebar-project-row]")) return projectItem;
+    return projectItem.querySelector?.("[data-app-action-sidebar-project-row]") || null;
+  }
+
+  function targetPath(target) {
+    return target?.path || target?.targetCwd || "";
+  }
+
+  function targetLabel(target) {
+    return target?.label || target?.targetLabel || displayProjectName(targetPath(target));
+  }
+
+  function projectItemMatchesTarget(projectItem, target) {
+    const projectRow = projectRowFromListItem(projectItem);
+    const projectPath = projectRow?.getAttribute?.("data-app-action-sidebar-project-id") || "";
+    if (projectPath && sameWorkspacePath(projectPath, targetPath(target))) return true;
+    const actual = normalizeProjectLabel(projectRow?.getAttribute?.("data-app-action-sidebar-project-label") || projectItem?.getAttribute?.("aria-label"));
+    const labels = uniqueValues([targetLabel(target), displayProjectName(targetPath(target))]).map(normalizeProjectLabel).filter(Boolean);
+    return !!actual && labels.includes(actual);
+  }
+
+  function findProjectListItem(target) {
+    const nativeTarget = nativeProjectTargets().find((project) => sameWorkspacePath(project.path, targetPath(target)));
+    if (nativeTarget?.listItem) return nativeTarget.listItem;
+    const section = projectsSection();
+    if (!section) return null;
+    return Array.from(section.querySelectorAll('[role="listitem"][aria-label]')).find((item) => projectItemMatchesTarget(item, target)) || null;
+  }
+
+  function closestProjectListItem(row) {
+    const item = row.closest?.('[role="listitem"][aria-label]');
+    return item?.closest?.('[data-app-action-sidebar-section-heading="Projects"]') ? item : null;
+  }
+
+  function rowIsInChats(row) {
+    return !!row.closest?.('[data-app-action-sidebar-section-heading="Chats"]');
+  }
+
+  function chatsThreadList() {
+    return chatsSection()?.querySelector?.('[role="list"][aria-label="对话"], [role="list"]') || null;
+  }
+
+  function threadListForRow(row) {
+    return row?.closest?.('[data-app-action-sidebar-project-list-id], [data-codex-project-move-injected-list="true"], [role="list"]') || null;
+  }
+
+  function visibleSidebarRows() {
+    return sessionRows(true).filter((row) => rowIsInChats(row) || !!closestProjectListItem(row));
+  }
+
+  function sidebarRowsByList(rows = visibleSidebarRows()) {
+    const groups = new Map();
+    rows.forEach((row) => {
+      const list = threadListForRow(row);
+      if (!list) return;
+      const item = rowListItem(row);
+      const group = groups.get(list) || [];
+      if (!group.some((entry) => rowListItem(entry) === item)) group.push(row);
+      groups.set(list, group);
+    });
+    return groups;
+  }
+
+  function rowIsUnderTargetProject(row, target) {
+    const item = closestProjectListItem(row);
+    return !!item && projectItemMatchesTarget(item, target);
+  }
+
+  function rowIsUnderTarget(row, target) {
+    return target?.targetKind === "projectless" || target?.kind === "projectless" ? rowIsInChats(row) : rowIsUnderTargetProject(row, target);
+  }
+
+  function rowListItem(row) {
+    return row.closest?.('[role="listitem"]') || row;
+  }
+
+  function rowContentRoot(row) {
+    return Array.from(row?.children || []).find((child) => String(child.className || "").includes("h-full w-full items-center")) || null;
+  }
+
+  function normalizedText(node) {
+    return String(node?.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
+  function classNameText(node) {
+    return String(node?.className || "");
+  }
+
+  function isRelativeTimeText(text) {
+    const value = String(text || "").replace(/\s+/g, " ").trim();
+    return /^(刚刚|just now|\d+\s*(秒|秒钟|分|分钟|小时|天|日|周|星期|个月|月|年|sec|secs|second|seconds|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks|mo|mos|month|months|y|yr|yrs|year|years))$/i.test(value);
+  }
+
+  function nodeIsThreadTitle(row, node) {
+    return Array.from(row?.querySelectorAll?.('[data-thread-title], .truncate.select-none, .truncate.text-base') || [])
+      .some((titleNode) => titleNode === node || titleNode.contains(node));
+  }
+
+  function closestTimeWrapper(row, node) {
+    const root = rowContentRoot(row) || row;
+    let current = node?.parentElement || null;
+    while (current && current !== root && current !== row) {
+      const className = classNameText(current);
+      if (current.dataset?.codexProjectMoveTimeWrapper === "true" || (className.includes("ml-[3px]") && className.includes("min-w-[26px]"))) return current;
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function nodeInsideStatusIcon(row, node) {
+    const stop = closestTimeWrapper(row, node) || rowContentRoot(row) || row;
+    let current = node || null;
+    while (current && current !== stop && current !== row) {
+      const className = classNameText(current);
+      if (className.includes("animate-spin")) return true;
+      if (className.includes("size-5") && className.includes("shrink-0")) return true;
+      if (className.includes("contain-paint") && className.includes("contain-layout")) return true;
+      current = current.parentElement;
+    }
+    return false;
+  }
+
+  function cleanupManagedStatusIconTimeNodes(row) {
+    Array.from(row?.querySelectorAll?.('[data-codex-project-move-time="true"]') || []).forEach((node) => {
+      if (!nodeInsideStatusIcon(row, node)) return;
+      const text = normalizedText(node);
+      delete node.dataset.codexProjectMoveTime;
+      delete node.dataset.codexProjectMoveTimeMs;
+      if (node.children.length === 0 && isRelativeTimeText(text)) node.textContent = "";
+    });
+  }
+
+  function nodeLooksLikeTimeLabel(row, node) {
+    if (nodeInsideStatusIcon(row, node)) return false;
+    if (node?.dataset?.codexProjectMoveTime === "true") return true;
+    if (node.children.length > 0) return false;
+    const text = normalizedText(node);
+    const className = classNameText(node);
+    if ((className.includes("tabular-nums") || className.includes("text-token-description-foreground")) && text.length <= 24) return true;
+    if (!isRelativeTimeText(text)) return false;
+    const rowRect = row?.getBoundingClientRect?.();
+    const nodeRect = node?.getBoundingClientRect?.();
+    if (!rowRect || !nodeRect || rowRect.width <= 0 || nodeRect.width <= 0) return false;
+    return nodeRect.left >= rowRect.left + rowRect.width * 0.45 || nodeRect.right >= rowRect.right - 96;
+  }
+
+  function rowTimeLabelCandidates(row) {
+    cleanupManagedStatusIconTimeNodes(row);
+    const root = rowContentRoot(row) || row;
+    const raw = Array.from(root?.querySelectorAll?.("div, span, time, small") || []).filter((node) => {
+      if (nodeIsThreadTitle(row, node)) return false;
+      return nodeLooksLikeTimeLabel(row, node);
+    });
+    return raw.filter((node) => !raw.some((other) => other !== node && node.contains(other)));
+  }
+
+  function rowTimeLabelNode(row) {
+    const candidates = rowTimeLabelCandidates(row);
+    return candidates.find((node) => node.dataset?.codexProjectMoveTime !== "true" && !node.closest?.('[data-codex-project-move-time-wrapper="true"]')) || candidates[0] || null;
+  }
+
+  function removeTimeLabelNode(row, node) {
+    if (!node || !row?.contains?.(node)) return;
+    const wrapper = node.closest?.('[data-codex-project-move-time-wrapper="true"]') || closestTimeWrapper(row, node);
+    if (wrapper && wrapper !== row && row.contains(wrapper)) {
+      wrapper.remove();
+      return;
+    }
+    node.remove();
+  }
+
+  function cleanupRowTimeLabels(row, keepNode) {
+    if (!keepNode) return;
+    rowTimeLabelCandidates(row).forEach((node) => {
+      if (node === keepNode) return;
+      if (node.dataset?.codexProjectMoveTime === "true" || node.closest?.('[data-codex-project-move-time-wrapper="true"]')) removeTimeLabelNode(row, node);
+    });
+  }
+
+  function ensureRowTimeLabelNode(row) {
+    const existing = rowTimeLabelNode(row);
+    if (existing) {
+      cleanupRowTimeLabels(row, existing);
+      return existing;
+    }
+    const root = rowContentRoot(row);
+    if (!root) return null;
+    const wrapper = document.createElement("div");
+    wrapper.className = "ml-[3px] flex items-center justify-end gap-1 min-w-[26px]";
+    wrapper.dataset.codexProjectMoveTimeWrapper = "true";
+    const inner = document.createElement("div");
+    const label = document.createElement("div");
+    label.className = "text-token-description-foreground text-sm leading-4 empty:hidden tabular-nums overflow-visible truncate text-right group-focus-within:opacity-0 group-hover:opacity-0";
+    label.dataset.codexProjectMoveTime = "true";
+    inner.appendChild(label);
+    wrapper.appendChild(inner);
+    root.appendChild(wrapper);
+    return label;
+  }
+
+  function updateRowTimeLabel(row, sortMs) {
+    const label = ensureRowTimeLabelNode(row);
+    if (!label) return;
+    const timestamp = numericTimestamp(sortMs);
+    const text = relativeTimeLabel(timestamp);
+    label.dataset.codexProjectMoveTime = "true";
+    label.dataset.codexProjectMoveTimeMs = String(timestamp || 0);
+    if (text && label.textContent !== text) label.textContent = text;
+    cleanupRowTimeLabels(row, label);
+  }
+
+  function rowProjectionKind(row) {
+    return row?.dataset?.codexProjectMoveTargetKind || rowListItem(row)?.dataset?.codexProjectMoveTargetKind || "";
+  }
+
+  function rowSortMs(row, ref = sessionRefFromRow(row), target = null) {
+    return sortMsForSession(ref.session_id, target?.sortMs || row?.dataset?.codexProjectMoveSortMs || rowListItem(row)?.dataset?.codexProjectMoveSortMs);
+  }
+
+  function threadRowFromListItem(item) {
+    if (!item) return null;
+    if (item.matches?.("[data-app-action-sidebar-thread-id]")) return item;
+    return item.querySelector?.("[data-app-action-sidebar-thread-id]") || null;
+  }
+
+  function rowPinned(row) {
+    return row?.getAttribute?.("data-app-action-sidebar-thread-pinned") === "true" || rowListItem(row)?.getAttribute?.("data-app-action-sidebar-thread-pinned") === "true";
+  }
+
+  function insertRowItemByTime(list, item, row, target) {
+    const ref = sessionRefFromRow(row);
+    const sortMs = rowSortMs(row, ref, target);
+    item.dataset.codexProjectMoveSortMs = String(sortMs || 0);
+    row.dataset.codexProjectMoveSortMs = String(sortMs || 0);
+    if (target?.sortMsTrusted) updateRowTimeLabel(row, sortMs);
+    const pinned = rowPinned(row);
+    const sessionKey = projectMoveSessionKey(ref.session_id);
+    const existingItems = Array.from(list.children).filter((child) => child !== item);
+    let firstNonThreadItem = null;
+    for (const child of existingItems) {
+      const childRow = threadRowFromListItem(child);
+      if (!childRow) {
+        firstNonThreadItem = firstNonThreadItem || child;
+        continue;
+      }
+      const childPinned = rowPinned(childRow);
+      if (childPinned && !pinned) continue;
+      if (!childPinned && pinned) {
+        list.insertBefore(item, child);
+        return;
+      }
+      const childRef = sessionRefFromRow(childRow);
+      const childSortMs = rowSortMs(childRow, childRef);
+      const childKey = projectMoveSessionKey(childRef.session_id);
+      if (sortMs > childSortMs || (sortMs === childSortMs && sessionKey > childKey)) {
+        list.insertBefore(item, child);
+        return;
+      }
+    }
+    if (firstNonThreadItem) {
+      list.insertBefore(item, firstNonThreadItem);
+      return;
+    }
+    list.appendChild(item);
+  }
+
+  function projectMoveInjectedList(projectItem) {
+    let list = projectItem.querySelector('[data-codex-project-move-injected-list="true"]');
+    if (!list) {
+      const body = Array.from(projectItem.children).find((child) => child.classList?.contains("overflow-hidden")) || projectItem;
+      list = document.createElement("div");
+      list.setAttribute("role", "list");
+      list.setAttribute("data-codex-project-move-injected-list", "true");
+      list.className = "flex flex-col";
+      body.appendChild(list);
+    }
+    return list;
+  }
+
+  function projectThreadList(projectItem, target) {
+    const targetCwd = targetPath(target);
+    const projectLists = Array.from(projectItem.querySelectorAll("[data-app-action-sidebar-project-list-id]"));
+    return projectLists.find((list) => sameWorkspacePath(list.getAttribute("data-app-action-sidebar-project-list-id"), targetCwd))
+      || projectLists[0]
+      || projectMoveInjectedList(projectItem);
+  }
+
+  function projectEmptyStateNodes(projectItem) {
+    const emptyLabels = new Set(["暂无对话", "No conversations"]);
+    return Array.from(projectItem.querySelectorAll("div, span")).filter((node) => {
+      if (node.classList?.contains("overflow-hidden")) return false;
+      if (node.closest('[data-app-action-sidebar-thread-id], [data-codex-project-move-injected-list="true"]')) return false;
+      return emptyLabels.has(normalizeProjectLabel(node.textContent));
+    });
+  }
+
+  function setProjectEmptyStateHidden(projectItem, hidden) {
+    projectEmptyStateNodes(projectItem).forEach((node) => {
+      if (hidden) {
+        node.dataset.codexProjectMoveEmptyHidden = "true";
+        node.classList.add("codex-project-move-hidden");
+      } else if (node.dataset.codexProjectMoveEmptyHidden === "true") {
+        delete node.dataset.codexProjectMoveEmptyHidden;
+        node.classList.remove("codex-project-move-hidden");
+      }
+    });
+  }
+
+  function updateProjectMoveEmptyStates() {
+    document.querySelectorAll('[data-codex-project-move-injected-list="true"]').forEach((list) => {
+      const projectItem = list.closest('[role="listitem"][aria-label]');
+      const hasRows = Array.from(list.children).some((child) => child.querySelector?.("[data-app-action-sidebar-thread-id]") || child.matches?.("[data-app-action-sidebar-thread-id]"));
+      if (!hasRows) list.remove();
+      if (projectItem) setProjectEmptyStateHidden(projectItem, hasRows);
+    });
+    document.querySelectorAll('[data-codex-project-move-empty-hidden="true"]').forEach((node) => {
+      const projectItem = node.closest('[role="listitem"][aria-label]');
+      const list = projectItem?.querySelector?.('[data-codex-project-move-injected-list="true"]');
+      if (!list || list.children.length === 0) {
+        delete node.dataset.codexProjectMoveEmptyHidden;
+        node.classList.remove("codex-project-move-hidden");
+      }
+    });
+  }
+
+  function moveRowToProjectList(row, target) {
+    const projectItem = findProjectListItem(target);
+    if (!projectItem) return false;
+    const list = projectThreadList(projectItem, target);
+    const item = rowListItem(row);
+    if (!list) return false;
+    insertRowItemByTime(list, item, row, target);
+    cachedSessionRowsAt = 0;
+    item.dataset.codexProjectMoveTargetKind = "project";
+    item.dataset.codexProjectMoveTargetCwd = targetPath(target);
+    row.dataset.codexProjectMoveTargetKind = "project";
+    row.dataset.codexProjectMoveTargetCwd = targetPath(target);
+    setProjectEmptyStateHidden(projectItem, true);
+    return true;
+  }
+
+  function moveRowToChats(row, target = null) {
+    const list = chatsThreadList();
+    if (!list) return false;
+    const item = rowListItem(row);
+    insertRowItemByTime(list, item, row, target);
+    cachedSessionRowsAt = 0;
+    item.dataset.codexProjectMoveTargetKind = "projectless";
+    row.dataset.codexProjectMoveTargetKind = "projectless";
+    delete item.dataset.codexProjectMoveTargetCwd;
+    delete row.dataset.codexProjectMoveTargetCwd;
+    updateProjectMoveEmptyStates();
+    return true;
+  }
+
+  function applyProjectMoveProjection() {
+    if (!codexPlusSettings().projectMove) return;
+    const projection = readProjectMoveProjection();
+    const targetRowsById = new Map();
+    const settledRefs = [];
+    const now = Date.now();
+    const rows = sessionRows(true);
+    rows.forEach((row) => {
+      const ref = sessionRefFromRow(row);
+      const target = projectionForSessionId(ref.session_id, projection);
+      if (target && rowIsUnderTarget(row, target)) {
+        const rowId = projectMoveSessionKey(ref.session_id);
+        const hadProjectionKind = !!rowProjectionKind(row);
+        const existingRow = targetRowsById.get(rowId);
+        if (existingRow && existingRow !== row) {
+          const existingIsProjection = !!rowProjectionKind(existingRow);
+          const currentIsProjection = !!rowProjectionKind(row);
+          const rowToRemove = existingIsProjection && !currentIsProjection ? existingRow : row;
+          rowListItem(rowToRemove).remove();
+          if (rowToRemove === existingRow) targetRowsById.set(rowId, row);
+          if (rowToRemove === row) return;
+        } else {
+          targetRowsById.set(rowId, row);
+        }
+        if (!hadProjectionKind && typeof target.at === "number" && now - target.at > projectMoveProjectionSettleMs) settledRefs.push(ref);
+        const moved = target.targetKind === "projectless" ? moveRowToChats(row, target) : moveRowToProjectList(row, target);
+        if (moved) targetRowsById.set(rowId, row);
+        const projectItem = closestProjectListItem(row);
+        if (projectItem) setProjectEmptyStateHidden(projectItem, true);
+      }
+    });
+    rows.forEach((row) => {
+      const ref = sessionRefFromRow(row);
+      const rowId = projectMoveSessionKey(ref.session_id);
+      const target = projectionForSessionId(ref.session_id, projection);
+      if (!target) {
+        const item = rowListItem(row);
+        delete row.dataset.codexProjectMoveTargetKind;
+        delete row.dataset.codexProjectMoveTargetCwd;
+        delete item.dataset.codexProjectMoveTargetKind;
+        delete item.dataset.codexProjectMoveTargetCwd;
+        return;
+      }
+      if (rowIsUnderTarget(row, target)) return;
+      if (targetRowsById.has(rowId)) {
+        rowListItem(row).remove();
+        return;
+      }
+      const moved = target.targetKind === "projectless" ? moveRowToChats(row, target) : moveRowToProjectList(row, target);
+      if (moved) targetRowsById.set(rowId, row);
+    });
+    settledRefs.forEach(clearProjectMoveProjection);
+    updateProjectMoveEmptyStates();
+  }
+
+  function scheduleProjectMoveProjection() {
+    if (!codexPlusSettings().projectMove || window.__codexProjectMoveProjectionTimer) return;
+    window.__codexProjectMoveProjectionTimer = setTimeout(() => {
+      if (window.__codexProjectMoveRuntimeId !== codexProjectMoveRuntimeId) return;
+      window.__codexProjectMoveProjectionTimer = null;
+      applyProjectMoveProjection();
+    }, 80);
+  }
+
+  function refreshAfterProjectMove() {
+    const refreshVisibleSidebar = () => {
+      applyProjectMoveProjection();
+      scheduleChatsSortCorrection(0);
+    };
+    refreshVisibleSidebar();
+    refreshRecentConversationsForHost().finally(() => {
+      projectMoveRefreshDelaysMs.forEach((delay) => setTimeout(refreshVisibleSidebar, delay));
+    });
+  }
+
+  function visibleChatsRows() {
+    const list = chatsThreadList();
+    if (!list) return [];
+    return Array.from(list.children).map(threadRowFromListItem).filter(Boolean).filter((row) => rowIsInChats(row));
+  }
+
+  function threadRowsNeedCorrection(rows) {
+    let previousPinned = true;
+    let previousSortMs = Infinity;
+    let previousKey = "\uffff";
+    for (const row of rows) {
+      const pinned = rowPinned(row);
+      const ref = sessionRefFromRow(row);
+      const sortMs = rowSortMs(row, ref);
+      const key = projectMoveSessionKey(ref.session_id);
+      if (previousPinned && !pinned) {
+        previousPinned = false;
+        previousSortMs = sortMs;
+        previousKey = key;
+        continue;
+      }
+      if (!previousPinned && pinned) return true;
+      if (sortMs > previousSortMs || (sortMs === previousSortMs && key > previousKey)) return true;
+      previousSortMs = sortMs;
+      previousKey = key;
+    }
+    return false;
+  }
+
+  function orderedThreadRows(rows) {
+    return [...rows].sort((left, right) => {
+      const leftPinned = rowPinned(left);
+      const rightPinned = rowPinned(right);
+      if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
+      const leftRef = sessionRefFromRow(left);
+      const rightRef = sessionRefFromRow(right);
+      const leftSortMs = rowSortMs(left, leftRef);
+      const rightSortMs = rowSortMs(right, rightRef);
+      if (leftSortMs !== rightSortMs) return rightSortMs - leftSortMs;
+      return projectMoveSessionKey(rightRef.session_id).localeCompare(projectMoveSessionKey(leftRef.session_id));
+    });
+  }
+
+  function reorderThreadRows(list, rows) {
+    if (!list || rows.length < 2) return;
+    const rowItems = new Set(rows.map(rowListItem));
+    const firstNonThreadItem = Array.from(list.children).find((child) => !rowItems.has(child) && !threadRowFromListItem(child));
+    const orderedRows = orderedThreadRows(rows);
+    orderedRows.forEach((row) => list.insertBefore(rowListItem(row), firstNonThreadItem || null));
+    cachedSessionRowsAt = 0;
+  }
+
+  function sidebarSortSignature(groups = sidebarRowsByList()) {
+    return Array.from(groups.values())
+      .map((rows) => rows.map((row) => projectMoveSessionKey(sessionRefFromRow(row).session_id)).join("|"))
+      .join("||");
+  }
+
+  async function applyChatsSortCorrection() {
+    if (!codexPlusSettings().projectMove || chatsSortInFlight) return;
+    const rows = visibleSidebarRows();
+    if (rows.length < 2) return;
+    const groups = sidebarRowsByList(rows);
+    const refs = rows.map(sessionRefFromRow).filter((ref) => ref.session_id);
+    const signature = sidebarSortSignature(groups);
+    const allRowsHaveSortMs = rows.every((row) => numericTimestamp(row.dataset.codexProjectMoveSortMs || rowListItem(row).dataset.codexProjectMoveSortMs));
+    const needsCorrection = Array.from(groups.values()).some((group) => threadRowsNeedCorrection(group));
+    const shouldRefreshSortKeys = signature !== chatsSortSignature || !allRowsHaveSortMs || Date.now() - chatsSortLastFetchAt > chatsSortDbRefreshIntervalMs;
+    if (!shouldRefreshSortKeys && !needsCorrection) return;
+    chatsSortInFlight = true;
+    try {
+      if (shouldRefreshSortKeys) {
+        const byId = new Map();
+        for (let start = 0; start < refs.length; start += 200) {
+          const result = await postJson("/thread-sort-keys", { sessions: refs.slice(start, start + 200) }).catch(() => ({ status: "failed", sort_keys: [] }));
+          if (result?.status === "ok" && Array.isArray(result?.sort_keys)) {
+            result.sort_keys.forEach((item) => {
+              const key = projectMoveSessionKey(String(item?.session_id || ""));
+              if (key) byId.set(key, item);
+            });
+          }
+        }
+        chatsSortLastFetchAt = Date.now();
+        rows.forEach((row) => {
+          const ref = sessionRefFromRow(row);
+          const payload = byId.get(projectMoveSessionKey(ref.session_id));
+          const trustedSortMs = timestampMsFromPayload(payload);
+          const sortMs = trustedSortMs || sortMsForSession(ref.session_id, row.dataset.codexProjectMoveSortMs || rowListItem(row).dataset.codexProjectMoveSortMs);
+          row.dataset.codexProjectMoveSortMs = String(sortMs || 0);
+          rowListItem(row).dataset.codexProjectMoveSortMs = String(sortMs || 0);
+          if (trustedSortMs) updateRowTimeLabel(row, trustedSortMs);
+        });
+      }
+      sidebarRowsByList(visibleSidebarRows()).forEach((group, list) => {
+        if (threadRowsNeedCorrection(group)) reorderThreadRows(list, group);
+      });
+      chatsSortSignature = sidebarSortSignature();
+    } finally {
+      chatsSortInFlight = false;
+    }
+  }
+
+  function scheduleChatsSortCorrection(delay = chatsSortRefreshIntervalMs) {
+    if (!codexPlusSettings().projectMove || window.__codexProjectMoveChatsSortTimer) return;
+    window.__codexProjectMoveChatsSortTimer = setTimeout(() => {
+      if (window.__codexProjectMoveRuntimeId !== codexProjectMoveRuntimeId) return;
+      window.__codexProjectMoveChatsSortTimer = null;
+      applyChatsSortCorrection().catch((error) => {
+        window.__codexProjectMoveSortFailures = window.__codexProjectMoveSortFailures || [];
+        window.__codexProjectMoveSortFailures.push(String(error?.stack || error));
+      }).finally(() => {
+        if (codexPlusSettings().projectMove) scheduleChatsSortCorrection();
+      });
+    }, delay);
+  }
+
+  async function setProjectlessThreadIds(ref, mode) {
+    const variants = threadIdVariants(ref.session_id);
+    if (variants.length === 0) throw new Error("未找到会话 ID");
+    const existingIds = await getCodexGlobalState("projectless-thread-ids").catch(() => []);
+    const ids = Array.isArray(existingIds) ? existingIds : [];
+    const variantSet = new Set(variants);
+    const nextIds = mode === "add" ? uniqueValues([...ids, ...variants]) : ids.filter((id) => !variantSet.has(id));
+    if (nextIds.length !== ids.length || nextIds.some((id, index) => id !== ids[index])) await setCodexGlobalState("projectless-thread-ids", nextIds);
+  }
+
+  async function clearThreadWorkspaceHints(ref) {
+    const variants = threadIdVariants(ref.session_id);
+    if (variants.length === 0) return;
+    const hints = objectGlobalState(await getCodexGlobalState("thread-workspace-root-hints").catch(() => ({})));
+    const hintKeys = variants.filter((id) => Object.prototype.hasOwnProperty.call(hints, id));
+    if (hintKeys.length > 0) {
+      hintKeys.forEach((id) => delete hints[id]);
+      await setCodexGlobalState("thread-workspace-root-hints", hints);
+    }
+  }
+
+  async function clearThreadWritableRoots(ref) {
+    const variants = threadIdVariants(ref.session_id);
+    if (variants.length === 0) return;
+    const roots = objectGlobalState(await getCodexGlobalState("thread-writable-roots").catch(() => ({})));
+    const rootKeys = variants.filter((id) => Object.prototype.hasOwnProperty.call(roots, id));
+    if (rootKeys.length > 0) {
+      rootKeys.forEach((id) => delete roots[id]);
+      await setCodexGlobalState("thread-writable-roots", roots);
+    }
+  }
+
+  async function clearThreadProjectlessOutputDirectories(ref) {
+    const variants = threadIdVariants(ref.session_id);
+    if (variants.length === 0) return;
+    const dirs = objectGlobalState(await getCodexGlobalState("thread-projectless-output-directories").catch(() => ({})));
+    const dirKeys = variants.filter((id) => Object.prototype.hasOwnProperty.call(dirs, id));
+    if (dirKeys.length > 0) {
+      dirKeys.forEach((id) => delete dirs[id]);
+      await setCodexGlobalState("thread-projectless-output-directories", dirs);
+    }
+  }
+
+  async function moveSessionToProjectless(ref) {
+    if (!ref.session_id) throw new Error("未找到会话 ID");
+    await setProjectlessThreadIds(ref, "add");
+    await clearThreadWorkspaceHints(ref);
+    await clearThreadWritableRoots(ref);
+    await clearThreadProjectlessOutputDirectories(ref);
+    const sortKey = await postJson("/thread-sort-key", ref).catch(() => ({}));
+    return { status: "moved", session_id: ref.session_id, updated_at: sortKey?.updated_at, updated_at_ms: sortKey?.updated_at_ms, created_at_ms: sortKey?.created_at_ms };
+  }
+
+  function isNativeProjectTarget(target) {
+    return target?.kind === "project" && nativeProjectTargets().some((project) => sameWorkspacePath(project.path, target.path));
+  }
+
+  async function moveSessionToProject(ref, target) {
+    if (!ref.session_id) throw new Error("未找到会话 ID");
+    if (!target?.path) throw new Error("目标项目路径为空");
+    if (!isNativeProjectTarget(target)) throw new Error("目标项目不在 Codex 项目列表中");
+    const result = await postJson("/move-thread-workspace", { ...ref, target_cwd: target.path });
+    if (result.status !== "moved") throw new Error(result.message || "移动项目失败");
+    await setProjectlessThreadIds(ref, "remove");
+    await clearThreadWorkspaceHints(ref);
+    return result;
   }
 
   function showToast(message, undoToken) {
@@ -10437,6 +11244,11 @@
   installUpstreamWorktreeNativeAdapter();
   scan();
   scheduleSidebarNavStartupRetry();
+  window.__codexProjectMoveApplyProjection = applyProjectMoveProjection;
+  window.__codexProjectMoveReadProjection = readProjectMoveProjection;
+  window.__codexProjectMoveTargets = projectMoveTargets;
+  window.__codexProjectMoveSortChats = applyChatsSortCorrection;
+  window.__codexProjectMoveSortSidebar = applyChatsSortCorrection;
   window.removeEventListener("resize", window.__codexPlusResizeHandler);
   let codexPlusResizeRafId = 0;
   window.__codexPlusResizeHandler = () => {
