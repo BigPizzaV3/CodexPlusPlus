@@ -460,6 +460,12 @@ pub struct BackendSettings {
     pub codex_app_dream_skin_image_path: String,
     #[serde(rename = "codexGoalsEnabled", default)]
     pub codex_goals_enabled: bool,
+    /// 启用自定义模型目录（#1772）。独立于 Relay Profile 和供应商管理。
+    #[serde(rename = "codexAppUserCatalogEnabled", default)]
+    pub codex_app_user_catalog_enabled: bool,
+    /// 用户自定义模型目录文件路径（#1772）。
+    #[serde(rename = "codexAppUserCatalogPath", default)]
+    pub codex_app_user_catalog_path: String,
     #[serde(rename = "launchMode", default)]
     pub launch_mode: LaunchMode,
     #[serde(rename = "relayBaseUrl", default = "default_relay_base_url")]
@@ -535,6 +541,8 @@ impl Default for BackendSettings {
             codex_app_dream_skin_theme_config: DreamSkinThemeConfig::default(),
             codex_app_dream_skin_image_path: String::new(),
             codex_goals_enabled: false,
+            codex_app_user_catalog_enabled: false,
+            codex_app_user_catalog_path: String::new(),
             launch_mode: LaunchMode::Patch,
             relay_base_url: default_relay_base_url(),
             relay_api_key: String::new(),

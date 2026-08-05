@@ -40,6 +40,7 @@ pub mod stepwise;
 pub mod sub2api;
 pub mod update;
 pub mod upstream_worktree;
+pub mod user_catalog;
 pub mod user_scripts;
 pub mod version;
 pub mod vision;

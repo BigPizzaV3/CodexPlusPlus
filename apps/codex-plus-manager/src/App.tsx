@@ -224,6 +224,8 @@ type BackendSettings = {
   codexAppDreamSkinTheme: string;
   codexAppDreamSkinThemeConfig: DreamSkinThemeConfig;
   codexAppDreamSkinImagePath: string;
+  codexAppUserCatalogEnabled: boolean;
+  codexAppUserCatalogPath: string;
   codexGoalsEnabled: boolean;
   launchMode: LaunchMode;
   relayBaseUrl: string;
@@ -823,6 +825,8 @@ const defaultSettings: BackendSettings = {
   codexAppDreamSkinTheme: "pink",
   codexAppDreamSkinThemeConfig: defaultDreamSkinTheme(),
   codexAppDreamSkinImagePath: "",
+  codexAppUserCatalogEnabled: false,
+  codexAppUserCatalogPath: "",
   codexGoalsEnabled: false,
   launchMode: "patch",
   relayBaseUrl: "",
@@ -2555,6 +2559,28 @@ export function App() {
           }));
         }
       },
+      chooseUserCatalogPath: async () => {
+        let selected: unknown;
+        try {
+          selected = await open({
+            directory: false,
+            multiple: false,
+            title: t("选择 models.json"),
+            filters: [{ name: "JSON", extensions: ["json"] }],
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          showNotice(t("自定义模型目录"), tf("打开选择器失败：{0}", [message]), "failed");
+          return;
+        }
+        if (typeof selected === "string" && selected.trim()) {
+          setSettingsForm((current) => ({
+            ...current,
+            codexAppUserCatalogEnabled: true,
+            codexAppUserCatalogPath: selected.trim(),
+          }));
+        }
+      },
       chooseDreamSkinImagePath: chooseDreamSkinDraftImage,
       resetDreamSkinImage: async () => runAfterDreamSkinDraftGuard(() => {
         setDreamSkinThemeDraft((current) => current ? { ...current, imagePath: "" } : current);
@@ -2942,6 +2968,7 @@ type Actions = {
   chooseCodexAppPath: (mode: "folder" | "file") => Promise<void>;
   clearCodexAppPath: () => Promise<void>;
   chooseImageOverlayPath: () => Promise<void>;
+  chooseUserCatalogPath: () => Promise<void>;
   chooseDreamSkinImagePath: () => Promise<void>;
   resetDreamSkinImage: () => Promise<void>;
   resetDreamSkinTheme: () => Promise<void>;
@@ -3537,6 +3564,23 @@ function EnhanceScreen({
               <FeatureToggle title={t("Zed 项目记录")} detail={t("维护 Codex++ 自己的远程项目最近列表。")} checked={form.zedRemoteProjectRegistryEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteProjectRegistryEnabled", value)} />
               <FeatureToggle title={t("同步 Zed settings")} detail={t("高级选项，默认关闭；当前实现不主动改写 Zed settings。")} checked={form.zedRemoteSyncToZedSettings} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteSyncToZedSettings", value)} />
               <FeatureToggle title="Upstream worktree" detail={t("从最新 upstream 分支创建 Git worktree。")} checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
+            </FeatureGroup>
+            <FeatureGroup title={t("自定义模型目录")} detail={t("启动 Codex 前将本地 models.json 与基础目录合并，覆盖模型元数据。")}>
+              <FeatureToggle title={t("启用自定义模型目录")} detail={t("选择本地 models.json，启动 Codex 前按 slug 合并到有效目录。禁用时恢复原始配置。")} checked={form.codexAppUserCatalogEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUserCatalogEnabled", value)} />
+              <div className="form-row">
+                <Field label={t("模型目录文件")}>
+                  <Input
+                    value={form.codexAppUserCatalogPath}
+                    onChange={(event) => onFormChange({ ...form, codexAppUserCatalogPath: event.currentTarget.value })}
+                    placeholder={t("选择或输入 models.json 路径")}
+                  />
+                </Field>
+                <Toolbar>
+                  <Button variant="secondary" onClick={() => void actions.chooseUserCatalogPath()}>
+                    {t("选择文件")}
+                  </Button>
+                </Toolbar>
+              </div>
             </FeatureGroup>
           </div>
           <div className="hint-line">

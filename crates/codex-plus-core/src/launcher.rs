@@ -332,6 +332,14 @@ where
             helper_started = true;
         }
 
+        // 用户自定义模型目录合并（#1772）：在 Codex 启动前生成有效目录。
+        // 任何错误都应阻止启动，不得静默回退到 GPT 模板。
+        crate::user_catalog::apply_before_launch(
+            &home,
+            settings.codex_app_user_catalog_enabled,
+            &settings.codex_app_user_catalog_path,
+        )?;
+
         let launch = hooks
             .launch_codex(&app_dir, debug_port, &settings, &settings.codex_extra_args)
             .await?;
