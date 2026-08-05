@@ -1593,14 +1593,20 @@ fn apply_model_catalog_to_config(
         };
     let entries =
         crate::model_suffix::collect_catalog_entries(&model_list, &model_windows, &profile.model);
-    // Known bundled metadata entries need a catalog even without a user-supplied window.
-    if !entries.iter().any(|entry| {
-        entry.suffix_window.is_some()
-            || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
-    }) {
+    let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
+    // Generate a catalog whenever there is something to customize: a per-model `[window]`
+    // suffix, bundled metadata, OR a user-configured context window. Without the last case
+    // a suffixless custom model silently drops the Manager's context window, so Codex falls
+    // back to its bundled 272000 default and the CLI shows ~258K instead of the configured
+    // value (#1594).
+    if fallback.is_none()
+        && !entries.iter().any(|entry| {
+            entry.suffix_window.is_some()
+                || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
+        })
+    {
         return Ok(config_text.to_string());
     }
-    let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
     let catalog_path = home.join(&catalog_relative);
     if let Some(parent) = catalog_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -2733,6 +2739,35 @@ mod tests {
             ..RelayProfile::default()
         };
         assert!(relay_profile_model(&empty).trim().is_empty());
+    }
+
+    // #1594: a custom model without a `[window]` suffix and without bundled metadata
+    // must still honor the context window the user configured in the Manager. Otherwise
+    // apply_model_catalog_to_config returns before generating a catalog, Codex falls back
+    // to its bundled 272000 default and the CLI shows ~258K instead of the configured 1M.
+    #[test]
+    fn generates_catalog_with_user_context_window_for_suffixless_custom_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = "model_provider = \"custom\"\nmodel = \"deepseek-v4-flash\"\n\n\
+            [model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\n\
+            base_url = \"http://127.0.0.1:57321/v1\"\n";
+        let profile = RelayProfile {
+            id: "ctxwin".to_string(),
+            model: "deepseek-v4-flash".to_string(),
+            model_list: "deepseek-v4-flash".to_string(), // no [1m] suffix
+            context_window: "1000000".to_string(),       // user configured 1M in the Manager
+            ..RelayProfile::default()
+        };
+
+        let result = apply_model_catalog_to_config(temp.path(), &profile, config).unwrap();
+
+        let catalog_rel = root_key_string(&result, "model_catalog_json")
+            .expect("a catalog should be generated when the user set a context window");
+        let catalog = std::fs::read_to_string(temp.path().join(catalog_rel)).unwrap();
+        assert!(
+            catalog.contains("1000000"),
+            "catalog must carry the configured context window, not codex's default; got: {catalog}"
+        );
     }
 }
 

@@ -1275,17 +1275,14 @@ experimental_bearer_token = "sk-new"
         auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
         model_insert_mode: Default::default(),
         model_list: "deepseek-coder\nqwen3-coder".to_string(),
-        context_window: "200000".to_string(),
-        auto_compact_limit: "160000".to_string(),
         ..RelayProfile::default()
     };
 
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    // No suffix, no bundled metadata, no context window -> no catalog.
     assert!(!config.contains("model_catalog_json"));
-    assert!(config.contains("model_context_window = 200000"));
-    assert!(config.contains("model_auto_compact_token_limit = 160000"));
     assert!(!temp.path().join("model-catalogs").exists());
 }
 
@@ -3322,16 +3319,14 @@ experimental_bearer_token = "sk-new"
         auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
         model_insert_mode: Default::default(),
         model_list: "deepseek-coder\nqwen3-coder".to_string(),
-        context_window: "200000".to_string(),
-        auto_compact_limit: "160000".to_string(),
         ..RelayProfile::default()
     };
 
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    // No suffix, no bundled metadata, no context window -> no catalog.
     assert!(!config.contains("model_catalog_json"));
-    assert!(config.contains("model_context_window = 200000"));
     assert!(!temp.path().join("model-catalogs").exists());
 }
 
