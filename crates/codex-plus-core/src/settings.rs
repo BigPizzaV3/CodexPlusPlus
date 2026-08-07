@@ -77,6 +77,8 @@ pub struct RelayProfile {
     pub context_window: String,
     #[serde(rename = "autoCompactLimit", default)]
     pub auto_compact_limit: String,
+    #[serde(rename = "deepseekOfficialMetadata", default)]
+    pub deepseek_official_metadata: bool,
     #[serde(rename = "modelInsertMode", default)]
     pub model_insert_mode: RelayModelInsertMode,
     #[serde(rename = "modelList", default)]
@@ -165,6 +167,7 @@ impl Default for RelayProfile {
             context_selection_initialized: false,
             context_window: String::new(),
             auto_compact_limit: String::new(),
+            deepseek_official_metadata: false,
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
             model_windows: String::new(),
@@ -582,6 +585,7 @@ impl BackendSettings {
                 context_selection_initialized: false,
                 context_window: String::new(),
                 auto_compact_limit: String::new(),
+                deepseek_official_metadata: false,
                 model_insert_mode: RelayModelInsertMode::Patch,
                 model_list: String::new(),
                 model_windows: String::new(),
@@ -633,6 +637,7 @@ impl BackendSettings {
             context_selection_initialized: false,
             context_window: String::new(),
             auto_compact_limit: String::new(),
+            deepseek_official_metadata: false,
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
             model_windows: String::new(),

@@ -51,9 +51,11 @@ export const PRESETS: ProviderPreset[] = [
     apiKeyUrl: "https://platform.deepseek.com/api_keys",
     category: "cn_official",
     baseUrl: "https://api.deepseek.com",
-    protocol: "chatCompletions",
+    // DeepSeek 官方已原生支持 Responses API（官方 Codex 接入教程），直连无需本地协议代理。
+    protocol: "responses",
     model: "deepseek-v4-flash",
-    modelList: ["deepseek-v4-flash", "deepseek-v4-pro"],
+    // [1M] 后缀让 Codex++ 按官方声明的 1M 上下文窗口生成 catalog。
+    modelList: ["deepseek-v4-flash[1M]", "deepseek-v4-pro[1M]"],
   },
   {
     id: "zhipu-glm",

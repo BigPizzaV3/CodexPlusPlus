@@ -144,8 +144,26 @@ const GPT56_METADATA_JSON: &str = include_str!(concat!(
     "/../../assets/gpt56-model-metadata-compat.json"
 ));
 
+/// DeepSeek 官方 models.json 元数据（来自 DeepSeek Codex 接入教程脚本），
+/// 仅在 profile 显式开启 `deepseekOfficialMetadata` 时用作 catalog 模板。
+const DEEPSEEK_METADATA_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/deepseek-model-metadata.json"
+));
+
 pub fn requires_bundled_metadata_catalog(slug: &str) -> bool {
     gpt56_metadata_entry(slug).is_some()
+}
+
+/// 是否属于 DeepSeek 官方 Codex 接入教程覆盖的模型（flash / pro）。
+pub fn is_deepseek_official_slug(slug: &str) -> bool {
+    deepseek_metadata_entry(slug).is_some()
+}
+
+/// DeepSeek 官方元数据模板：flash 与 pro 除 slug / priority 外字段一致，
+/// 构建时 slug 等字段会被覆盖，因此任选一条作为共享模板即可。
+pub fn deepseek_official_template() -> Option<Value> {
+    deepseek_metadata_entry("deepseek-v4-flash")
 }
 
 pub fn model_ui_metadata(slug: &str) -> Option<Value> {
@@ -305,6 +323,16 @@ fn first_bundled_template_entry() -> Option<Value> {
 
 fn gpt56_metadata_entry(slug: &str) -> Option<Value> {
     let catalog: Value = serde_json::from_str(GPT56_METADATA_JSON).ok()?;
+    catalog
+        .get("models")?
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("slug").and_then(Value::as_str) == Some(slug))
+        .cloned()
+}
+
+fn deepseek_metadata_entry(slug: &str) -> Option<Value> {
+    let catalog: Value = serde_json::from_str(DEEPSEEK_METADATA_JSON).ok()?;
     catalog
         .get("models")?
         .as_array()?

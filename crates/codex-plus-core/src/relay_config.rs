@@ -1613,10 +1613,17 @@ fn apply_model_catalog_to_config(
         };
     let entries =
         crate::model_suffix::collect_catalog_entries(&model_list, &model_windows, &profile.model);
+    // DeepSeek 官方元数据严格 opt-in：仅当 profile 开启 deepseekOfficialMetadata
+    // 且模型列表含官方覆盖的 slug 时，才使用官方模板生成 catalog。
+    let official_deepseek = profile.deepseek_official_metadata
+        && entries
+            .iter()
+            .any(|entry| crate::model_suffix::is_deepseek_official_slug(&entry.slug));
     // Known bundled metadata entries need a catalog even without a user-supplied window.
     if !entries.iter().any(|entry| {
         entry.suffix_window.is_some()
             || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
+            || official_deepseek
     }) {
         return Ok(config_text);
     }
@@ -1627,10 +1634,15 @@ fn apply_model_catalog_to_config(
     }
     // Only custom Responses providers need the standard Responses tool wire format. Official
     // profiles and custom Chat Completions retain the model template's original Lite behavior.
+    let template = if official_deepseek {
+        crate::model_suffix::deepseek_official_template()
+    } else {
+        None
+    };
     let catalog_json = crate::model_suffix::build_model_catalog_json_with_capabilities(
         &entries,
         fallback,
-        None,
+        template.as_ref(),
         custom_responses.then_some(false),
     );
     std::fs::write(&catalog_path, catalog_json)?;

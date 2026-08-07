@@ -1444,6 +1444,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             context_selection_initialized: false,
             context_window: String::new(),
             auto_compact_limit: String::new(),
+            deepseek_official_metadata: false,
             model_insert_mode: codex_plus_core::settings::RelayModelInsertMode::default(),
             model_list: String::new(),
             model_windows: String::new(),

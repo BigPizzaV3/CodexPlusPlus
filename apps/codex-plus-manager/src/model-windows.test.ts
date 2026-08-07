@@ -29,6 +29,7 @@ const _profileTypeCheck: RelayProfile = {
   contextSelectionInitialized: true,
   contextWindow: "",
   autoCompactLimit: "",
+  deepseekOfficialMetadata: false,
   modelList: "",
   modelWindows: "",
   modelVlm: "",

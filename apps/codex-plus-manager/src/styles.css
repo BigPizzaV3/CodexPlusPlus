@@ -5728,3 +5728,51 @@ select {
     justify-self: start;
   }
 }
+
+.deepseek-onboarding {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.deepseek-step {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.deepseek-step-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.deepseek-step .protocol-options {
+  max-width: 480px;
+}
+
+.deepseek-preview {
+  border: 1px solid hsl(var(--border) / 0.86);
+  border-radius: 8px;
+  padding: 12px;
+  background: hsl(var(--surface-sunken));
+}
+
+.deepseek-preview .form-row {
+  margin-bottom: 8px;
+}
+
+.deepseek-preview-value {
+  font-size: 13px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.deepseek-apply-row {
+  margin-top: 10px;
+}
+
+.deepseek-result {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid hsl(var(--border) / 0.5);
+}

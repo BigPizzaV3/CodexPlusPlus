@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use codex_plus_core::model_suffix::{
     build_model_catalog_json, build_model_catalog_json_with_template, collect_catalog_entries,
-    model_ui_metadata, parse_model_suffix,
+    deepseek_official_template, is_deepseek_official_slug, model_ui_metadata, parse_model_suffix,
 };
 
 #[test]
@@ -234,4 +234,51 @@ fn migrate_model_list_with_suffixes_splits_slug_and_window() {
     );
     assert_eq!(windows.get("deepseek-v4-pro"), None);
     assert_eq!(windows.get("nvidia/...:free"), Some(&"200000".to_string()));
+}
+
+#[test]
+fn deepseek_official_template_carries_official_metadata() {
+    let template = deepseek_official_template().expect("deepseek 官方模板应存在");
+    assert_eq!(template["slug"], "deepseek-v4-flash");
+    assert_eq!(template["context_window"], 1_048_576);
+    assert_eq!(template["max_context_window"], 1_048_576);
+    assert_eq!(template["default_reasoning_level"], "high");
+    assert_eq!(template["default_reasoning_summary"], "none");
+    assert_eq!(template["apply_patch_tool_type"], "freeform");
+    assert_eq!(template["web_search_tool_type"], "text");
+    assert_eq!(template["supports_search_tool"], true);
+    assert!(template["supported_reasoning_levels"].is_array());
+    assert!(is_deepseek_official_slug("deepseek-v4-flash"));
+    assert!(is_deepseek_official_slug("deepseek-v4-pro"));
+    assert!(!is_deepseek_official_slug("qwen3-coder"));
+}
+
+#[test]
+fn deepseek_official_template_builds_catalog_with_official_fields() {
+    let (clean_list, windows) = codex_plus_core::model_suffix::migrate_model_list_with_suffixes(
+        "deepseek-v4-flash[1M]\ndeepseek-v4-pro[1M]",
+    );
+    let entries = collect_catalog_entries(&clean_list, &windows, "deepseek-v4-flash");
+    let template = deepseek_official_template().expect("deepseek 官方模板应存在");
+    let catalog = build_model_catalog_json_with_template(&entries, None, Some(&template));
+    assert!(catalog.contains(r#""slug": "deepseek-v4-flash""#));
+    assert!(catalog.contains(r#""slug": "deepseek-v4-pro""#));
+    // [1M] 后缀（1000000）优先于官方元数据声明的 1048576。
+    assert!(catalog.contains(r#""context_window": 1000000"#));
+    assert!(catalog.contains(r#""default_reasoning_level": "high""#));
+    assert!(catalog.contains(r#""default_reasoning_summary": "none""#));
+    assert!(catalog.contains(r#""supports_search_tool": true"#));
+    assert!(!catalog.contains("[1M]"));
+}
+
+#[test]
+fn deepseek_official_template_suffix_window_overrides_metadata() {
+    let (clean_list, windows) =
+        codex_plus_core::model_suffix::migrate_model_list_with_suffixes("deepseek-v4-pro[200K]");
+    let entries = collect_catalog_entries(&clean_list, &windows, "deepseek-v4-pro");
+    let template = deepseek_official_template().expect("deepseek 官方模板应存在");
+    let catalog = build_model_catalog_json_with_template(&entries, None, Some(&template));
+    assert!(catalog.contains(r#""slug": "deepseek-v4-pro""#));
+    assert!(catalog.contains(r#""context_window": 200000"#));
+    assert!(catalog.contains(r#""max_context_window": 200000"#));
 }

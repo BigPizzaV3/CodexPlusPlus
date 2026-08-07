@@ -90,6 +90,15 @@ import {
 import { relayAuthForLiveDraft } from "./relay-live-files";
 import { resolveProviderSyncCompletion } from "./provider-sync-flow";
 import {
+  DEEPSEEK_MODELS,
+  DEEPSEEK_OFFICIAL_BASE_URL,
+  DEEPSEEK_PROFILE_ID,
+  buildDeepSeekProfilePatch,
+  createDeepSeekProfileBase,
+  upsertDeepSeekProfile,
+  type DeepSeekModel,
+} from "./deepseek-onboarding";
+import {
   defaultDreamSkinTheme,
   defaultDreamSkinColors,
   isDreamSkinDraftDirty,
@@ -270,6 +279,7 @@ export type RelayProfile = {
   contextSelectionInitialized: boolean;
   contextWindow: string;
   autoCompactLimit: string;
+  deepseekOfficialMetadata: boolean;
   modelList: string;
   modelWindows: string;
   modelVlm: string;
@@ -765,12 +775,13 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-type Route = "overview" | "relay" | "relayEnvironment" | "sessions" | "context" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "relayEnvironment" | "deepseek" | "sessions" | "context" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
   { id: "overview", label: t("概览"), icon: LayoutDashboard },
   { id: "relay", label: t("供应商配置"), icon: KeyRound },
+  { id: "deepseek", label: t("DeepSeek 接入"), icon: Rocket },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle },
   { id: "context", label: t("工具与插件"), icon: Network },
   { id: "enhance", label: t("Codex增强"), icon: Hammer },
@@ -857,6 +868,7 @@ const defaultSettings: BackendSettings = {
       contextSelectionInitialized: true,
       contextWindow: "",
       autoCompactLimit: "",
+      deepseekOfficialMetadata: false,
       modelList: "",
       modelWindows: "",
       modelVlm: "",
@@ -2883,6 +2895,14 @@ export function App() {
               envConflicts={envConflicts}
               ccsProviders={ccsProviders}
               form={settingsForm}
+              onFormChange={setSettingsForm}
+              actions={actions}
+            />
+          ) : null}
+          {route === "deepseek" ? (
+            <DeepSeekOnboardingScreen
+              form={settingsForm}
+              relay={relay}
               onFormChange={setSettingsForm}
               actions={actions}
             />
@@ -5379,6 +5399,138 @@ function AboutScreen({
   );
 }
 
+function DeepSeekOnboardingScreen({
+  form,
+  relay,
+  onFormChange,
+  actions,
+}: {
+  form: BackendSettings;
+  relay: RelayResult | null;
+  onFormChange: (value: BackendSettings) => void;
+  actions: Actions;
+}) {
+  const existing = form.relayProfiles.find(
+    (profile) => profile.id === DEEPSEEK_PROFILE_ID && !isAggregateRelayProfile(profile),
+  );
+  const [model, setModel] = useState<DeepSeekModel>(() =>
+    existing?.model === "deepseek-v4-pro" ? "deepseek-v4-pro" : "deepseek-v4-flash",
+  );
+  const [apiKey, setApiKey] = useState(existing?.apiKey ?? "");
+  const [busy, setBusy] = useState(false);
+
+  const applyDeepSeek = async () => {
+    if (busy) return;
+    if (!apiKey.trim()) {
+      actions.showMessage(t("DeepSeek 接入"), t("请先填写 API Key。"), "failed");
+      return;
+    }
+    setBusy(true);
+    try {
+      const base = existing ?? createDeepSeekProfileBase();
+      const draft = applyRelayProfilePatchToFiles(
+        base,
+        buildDeepSeekProfilePatch(model, apiKey),
+        { allowGenerateFiles: true },
+      );
+      const previousActiveRelayId = form.activeRelayId;
+      const next = syncLegacyRelayFields(upsertDeepSeekProfile(form, draft));
+      onFormChange(next);
+      await actions.switchRelayProfile(next, previousActiveRelayId);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Panel>
+      <CardHead
+        title={t("DeepSeek 官方接入")}
+        detail={t("按 DeepSeek 官方 Codex 接入教程生成配置：Responses 直连 + 官方模型元数据。")}
+      />
+      <CardContent>
+        <div className="deepseek-onboarding">
+          <section className="deepseek-step">
+            <div className="deepseek-step-title">{t("① 选择模型")}</div>
+            <div className="protocol-options">
+              {DEEPSEEK_MODELS.map((candidate) => (
+                <button
+                  key={candidate}
+                  className={`protocol-option ${model === candidate ? "active" : ""}`}
+                  onClick={() => setModel(candidate)}
+                  type="button"
+                >
+                  {candidate}
+                </button>
+              ))}
+            </div>
+            <div className="hint-line">
+              {t("官方提示：deepseek-v4-flash 已支持接入 Codex，deepseek-v4-pro 预计 2026 年 8 月初支持。")}
+            </div>
+          </section>
+          <section className="deepseek-step">
+            <div className="deepseek-step-title">{t("② 填写 API Key")}</div>
+            <Field label={t("DeepSeek API Key")}>
+              <Input
+                type="password"
+                value={apiKey}
+                onChange={(event) => setApiKey(event.currentTarget.value)}
+                placeholder="sk-..."
+                autoComplete="off"
+              />
+            </Field>
+            <div className="hint-line">
+              {t("API Key 只写入本机 Codex 配置，不会出现在日志中。")}
+            </div>
+          </section>
+          <section className="deepseek-step">
+            <div className="deepseek-step-title">{t("③ 预览与应用")}</div>
+            <div className="deepseek-preview">
+              <div className="form-row">
+                <Field label={t("供应商")}>
+                  <span className="deepseek-preview-value">{t("DeepSeek")}</span>
+                </Field>
+                <Field label={t("默认模型")}>
+                  <span className="deepseek-preview-value">{model}</span>
+                </Field>
+              </div>
+              <div className="form-row">
+                <Field label={t("Base URL")}>
+                  <span className="deepseek-preview-value">{DEEPSEEK_OFFICIAL_BASE_URL}</span>
+                </Field>
+                <Field label={t("协议")}>
+                  <span className="deepseek-preview-value">{t("Responses API（直连）")}</span>
+                </Field>
+              </div>
+              <div className="hint-line">
+                {t("模型列表")}: {DEEPSEEK_MODELS.map((item) => `${item}[1M]`).join("、")} · {t("官方模型元数据已启用")}
+              </div>
+            </div>
+            <div className="deepseek-apply-row">
+              <Button disabled={busy} onClick={() => void applyDeepSeek()}>
+                {t("应用并切换")}
+              </Button>
+            </div>
+          </section>
+        </div>
+        {relay ? (
+          <div className="deepseek-result">
+            <div className="hint-line">
+              {t("配置路径")}: {relay.configPath}
+            </div>
+            {relay.backupPath ? (
+              <div className="hint-line">
+                {t("备份路径")}: {relay.backupPath}
+              </div>
+            ) : null}
+            <div className="hint-line">{t("重启 Codex / Codex++ 后生效。")}</div>
+          </div>
+        ) : null}
+      </CardContent>
+    </Panel>
+  );
+}
+
 function SettingsScreen({
   settings,
   theme,
@@ -7618,6 +7770,7 @@ function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
     overview: t("检查问题、启动与快速修复"),
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
+    deepseek: t("按官方教程一键接入 DeepSeek 模型"),
     relayEnvironment: t("排查可能干扰中转站配置的本机环境"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
     context: t("独立管理 MCP、Skills、Plugins"),
@@ -8317,6 +8470,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             contextSelectionInitialized: true,
             contextWindow: "",
             autoCompactLimit: "",
+            deepseekOfficialMetadata: false,
             modelList: "",
             modelWindows: "",
             modelVlm: "",
@@ -9110,6 +9264,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     contextSelectionInitialized: true,
     contextWindow: "",
     autoCompactLimit: "",
+    deepseekOfficialMetadata: false,
     modelList: "",
     modelWindows: "",
     modelVlm: "",
@@ -9146,6 +9301,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       contextSelectionInitialized: true,
       contextWindow: "",
       autoCompactLimit: "",
+      deepseekOfficialMetadata: false,
       modelList: "",
       modelWindows: "",
       modelVlm: "",

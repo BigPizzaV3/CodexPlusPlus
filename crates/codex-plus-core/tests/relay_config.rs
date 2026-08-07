@@ -3551,6 +3551,150 @@ experimental_bearer_token = "sk-new"
 }
 
 #[test]
+fn apply_relay_profile_official_deepseek_metadata_uses_official_template() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-deepseek".to_string(),
+        name: "DeepSeek".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        relay_mode: RelayMode::PureApi,
+        deepseek_official_metadata: true,
+        config_contents: r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://api.deepseek.com"
+experimental_bearer_token = "sk-deepseek"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-deepseek"}"#.to_string(),
+        model_insert_mode: Default::default(),
+        model_list: "deepseek-v4-flash[1M]\ndeepseek-v4-pro[1M]".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-deepseek.json""#));
+    let catalog = std::fs::read_to_string(
+        temp.path()
+            .join("model-catalogs")
+            .join("relay-deepseek.json"),
+    )
+    .unwrap();
+    assert!(catalog.contains(r#""slug": "deepseek-v4-flash""#));
+    assert!(catalog.contains(r#""slug": "deepseek-v4-pro""#));
+    // [1M] 后缀（1000000）优先于官方元数据声明的 1048576。
+    assert!(catalog.contains(r#""context_window": 1000000"#));
+    // 官方元数据的关键字段应随模板进入 catalog。
+    assert!(catalog.contains(r#""default_reasoning_level": "high""#));
+    assert!(catalog.contains(r#""default_reasoning_summary": "none""#));
+    assert!(catalog.contains(r#""apply_patch_tool_type": "freeform""#));
+    assert!(!catalog.contains("[1M]"));
+}
+
+#[test]
+fn apply_relay_profile_official_deepseek_flag_off_keeps_default_behavior() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-deepseek".to_string(),
+        name: "DeepSeek".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://api.deepseek.com"
+experimental_bearer_token = "sk-deepseek"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-deepseek"}"#.to_string(),
+        model_insert_mode: Default::default(),
+        model_list: "deepseek-v4-flash[1M]\ndeepseek-v4-pro[1M]".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let catalog = std::fs::read_to_string(
+        temp.path()
+            .join("model-catalogs")
+            .join("relay-deepseek.json"),
+    )
+    .unwrap();
+    assert!(catalog.contains(r#""slug": "deepseek-v4-flash""#));
+    assert!(catalog.contains(r#""context_window": 1000000"#));
+    // 未开启官方元数据时沿用内置 GPT 模板（medium / text_and_image），
+    // 不应出现官方 DeepSeek 元数据的标记字段（high / text）。
+    assert!(catalog.contains(r#""default_reasoning_level": "medium""#));
+    assert!(!catalog.contains(r#""default_reasoning_level": "high""#));
+    assert!(!catalog.contains(r#""web_search_tool_type": "text""#));
+}
+
+#[test]
+fn apply_relay_profile_official_deepseek_without_suffix_still_generates_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-deepseek".to_string(),
+        name: "DeepSeek".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        relay_mode: RelayMode::PureApi,
+        deepseek_official_metadata: true,
+        config_contents: r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://api.deepseek.com"
+experimental_bearer_token = "sk-deepseek"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-deepseek"}"#.to_string(),
+        model_insert_mode: Default::default(),
+        model_list: "deepseek-v4-flash\ndeepseek-v4-pro".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-deepseek.json""#));
+    let catalog = std::fs::read_to_string(
+        temp.path()
+            .join("model-catalogs")
+            .join("relay-deepseek.json"),
+    )
+    .unwrap();
+    // 无后缀时窗口回落到官方元数据声明的 1M。
+    assert!(catalog.contains(r#""context_window": 1048576"#));
+    assert!(catalog.contains(r#""default_reasoning_level": "high""#));
+}
+
+#[test]
+fn relay_profile_round_trips_deepseek_official_metadata() {
+    let profile = RelayProfile {
+        id: "deepseek".to_string(),
+        name: "DeepSeek".to_string(),
+        deepseek_official_metadata: true,
+        ..RelayProfile::default()
+    };
+    let json = serde_json::to_string(&profile).unwrap();
+    assert!(json.contains("deepseekOfficialMetadata"));
+    let back: RelayProfile = serde_json::from_str(&json).unwrap();
+    assert!(back.deepseek_official_metadata);
+}
+
+#[test]
 fn apply_relay_profile_generates_compatible_gpt56_catalog_without_suffix() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {

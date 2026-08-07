@@ -96,6 +96,7 @@ pub fn relay_profile_from_ccs(
         context_selection_initialized: false,
         context_window: String::new(),
         auto_compact_limit: String::new(),
+        deepseek_official_metadata: false,
         model_insert_mode: Default::default(),
         model_list: String::new(),
         model_windows: String::new(),
