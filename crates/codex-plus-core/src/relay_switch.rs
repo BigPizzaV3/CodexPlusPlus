@@ -34,6 +34,11 @@ pub fn switch_relay_profile_in_home(
     {
         backfill_profile_before_switch(home, &mut selected_settings, previous_active_relay_id)?;
     }
+    preserve_reapplied_profile_source(
+        &original_settings,
+        &mut selected_settings,
+        previous_active_relay_id,
+    )?;
 
     store
         .save(&selected_settings)
@@ -65,6 +70,42 @@ pub fn switch_relay_profile_in_home(
             Err(error)
         }
     }
+}
+
+fn preserve_reapplied_profile_source(
+    original_settings: &BackendSettings,
+    selected_settings: &mut BackendSettings,
+    previous_active_relay_id: &str,
+) -> anyhow::Result<()> {
+    let active_relay_id = selected_settings.active_relay_id.clone();
+    if previous_active_relay_id.trim().is_empty() || previous_active_relay_id != active_relay_id {
+        return Ok(());
+    }
+    let Some(original_profile) = original_settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == active_relay_id)
+    else {
+        return Ok(());
+    };
+    let Some(selected_profile) = selected_settings
+        .relay_profiles
+        .iter_mut()
+        .find(|profile| profile.id == active_relay_id)
+    else {
+        return Ok(());
+    };
+    if !crate::relay_config::uses_deepseek_responses_compatibility(original_profile)
+        && !crate::relay_config::uses_deepseek_responses_compatibility(selected_profile)
+    {
+        return Ok(());
+    }
+    selected_profile.config_contents =
+        crate::relay_config::restore_deepseek_compatibility_source_config(
+            &original_profile.config_contents,
+            &selected_profile.config_contents,
+        )?;
+    Ok(())
 }
 
 #[derive(Debug, Clone)]

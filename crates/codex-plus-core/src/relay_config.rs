@@ -1561,20 +1561,24 @@ fn apply_model_catalog_to_config(
     );
     let custom_responses = custom_responses_provider(config_text);
     let deepseek_responses = uses_deepseek_responses_compatibility(profile);
+    let official_deepseek_metadata = uses_official_deepseek_responses_metadata(profile);
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
     if let Some(existing) = root_key_string(config_text, "model_catalog_json") {
         if existing != catalog_relative {
-            if !deepseek_responses {
-                if custom_responses
-                    && copy_standard_responses_catalog(home, &existing, &catalog_relative)?
-                {
-                    let mut doc = parse_toml_document(config_text)?;
-                    doc["model_catalog_json"] = toml_edit::value(catalog_relative);
-                    return Ok(normalize_optional_toml(doc));
-                }
-                return Ok(config_text.to_string());
+            let copied = if deepseek_responses {
+                copy_deepseek_responses_catalog(home, &existing, &catalog_relative)?
+            } else if custom_responses {
+                copy_standard_responses_catalog(home, &existing, &catalog_relative)?
+            } else {
+                false
+            };
+            if copied {
+                let mut doc = parse_toml_document(config_text)?;
+                doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+                return Ok(normalize_optional_toml(doc));
             }
+            return Ok(config_text.to_string());
         }
     }
     if !deepseek_responses && let Some(external_catalog) = live_external_model_catalog(home) {
@@ -1603,7 +1607,7 @@ fn apply_model_catalog_to_config(
     if !entries.iter().any(|entry| {
         entry.suffix_window.is_some()
             || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
-            || (deepseek_responses && entry.slug.starts_with("deepseek-v4-"))
+            || (official_deepseek_metadata && entry.slug.starts_with("deepseek-v4-"))
     }) {
         return Ok(config_text.to_string());
     }
@@ -1619,7 +1623,7 @@ fn apply_model_catalog_to_config(
         fallback,
         None,
         custom_responses.then_some(false),
-        deepseek_responses,
+        official_deepseek_metadata,
     );
     std::fs::write(&catalog_path, catalog_json)?;
     let mut doc = parse_toml_document(config_text)?;
@@ -1627,7 +1631,7 @@ fn apply_model_catalog_to_config(
     Ok(normalize_optional_toml(doc))
 }
 
-fn uses_deepseek_responses_compatibility(profile: &RelayProfile) -> bool {
+pub(crate) fn uses_deepseek_responses_compatibility(profile: &RelayProfile) -> bool {
     if profile.protocol != RelayProtocol::Responses {
         return false;
     }
@@ -1635,6 +1639,49 @@ fn uses_deepseek_responses_compatibility(profile: &RelayProfile) -> bool {
         ResponsesCompatibility::Deepseek => return true,
         ResponsesCompatibility::Standard => return false,
         ResponsesCompatibility::Auto => {}
+    }
+    let resolved_base_url = relay_profile_base_url(profile);
+    [
+        profile.base_url.as_str(),
+        profile.upstream_base_url.as_str(),
+        resolved_base_url.as_str(),
+    ]
+    .iter()
+    .any(|base_url| deepseek_api_base_url(base_url))
+}
+
+pub(crate) fn restore_deepseek_compatibility_source_config(
+    source_config: &str,
+    effective_config: &str,
+) -> anyhow::Result<String> {
+    let Ok(source) = parse_toml_document(source_config) else {
+        return Ok(effective_config.to_string());
+    };
+    let mut effective = parse_toml_document(effective_config)?;
+
+    if toml_path_bool(&effective, &["features", "code_mode_only"]) == Some(false) {
+        if let Some(value) = toml_path_bool(&source, &["features", "code_mode_only"]) {
+            effective["features"]["code_mode_only"] = toml_edit::value(value);
+        } else if let Some(features) = effective.get_mut("features").and_then(Item::as_table_mut) {
+            features.remove("code_mode_only");
+        }
+    }
+    if toml_path_bool(&effective, &["features", "code_mode", "enabled"]) == Some(false) {
+        if let Some(value) = toml_path_bool(&source, &["features", "code_mode", "enabled"]) {
+            effective["features"]["code_mode"]["enabled"] = toml_edit::value(value);
+        } else if let Some(features) = effective.get_mut("features").and_then(Item::as_table_mut)
+            && let Some(code_mode) = features.get_mut("code_mode").and_then(Item::as_table_mut)
+        {
+            code_mode.remove("enabled");
+        }
+    }
+
+    Ok(normalize_optional_toml(effective))
+}
+
+fn uses_official_deepseek_responses_metadata(profile: &RelayProfile) -> bool {
+    if !uses_deepseek_responses_compatibility(profile) {
+        return false;
     }
     let resolved_base_url = relay_profile_base_url(profile);
     [
@@ -1672,17 +1719,31 @@ fn apply_deepseek_responses_compatibility(
     }
 
     let mut doc = parse_toml_document(config_text)?;
-    if !doc["features"].is_table() {
+    if !doc.get("features").is_some_and(Item::is_table) {
         doc["features"] = toml_edit::table();
     }
     // DeepSeek Responses rejects Code Mode's custom `exec` tool. Unified Exec uses the
     // supported function tools `exec_command` and `write_stdin`, so preserve that setting.
     doc["features"]["code_mode_only"] = toml_edit::value(false);
-    if !doc["features"]["code_mode"].is_table() {
+    if !doc
+        .get("features")
+        .and_then(Item::as_table)
+        .and_then(|features| features.get("code_mode"))
+        .is_some_and(Item::is_table)
+    {
         doc["features"]["code_mode"] = toml_edit::table();
     }
     doc["features"]["code_mode"]["enabled"] = toml_edit::value(false);
     Ok(normalize_optional_toml(doc))
+}
+
+fn toml_path_bool(doc: &DocumentMut, path: &[&str]) -> Option<bool> {
+    let (first, rest) = path.split_first()?;
+    let mut item = doc.get(first)?;
+    for key in rest {
+        item = item.as_table_like()?.get(key)?;
+    }
+    item.as_bool()
 }
 
 fn custom_responses_provider(config_text: &str) -> bool {
@@ -1709,6 +1770,23 @@ fn copy_standard_responses_catalog(
     source: &str,
     target_relative: &str,
 ) -> anyhow::Result<bool> {
+    copy_responses_catalog_with_compatibility(home, source, target_relative, false)
+}
+
+fn copy_deepseek_responses_catalog(
+    home: &Path,
+    source: &str,
+    target_relative: &str,
+) -> anyhow::Result<bool> {
+    copy_responses_catalog_with_compatibility(home, source, target_relative, true)
+}
+
+fn copy_responses_catalog_with_compatibility(
+    home: &Path,
+    source: &str,
+    target_relative: &str,
+    clear_tool_mode: bool,
+) -> anyhow::Result<bool> {
     let source_path = {
         let path = Path::new(source);
         if path.is_absolute() {
@@ -1730,6 +1808,10 @@ fn copy_standard_responses_catalog(
     for model in models {
         if model.get("use_responses_lite").and_then(Value::as_bool) == Some(true) {
             model["use_responses_lite"] = Value::Bool(false);
+            changed = true;
+        }
+        if clear_tool_mode && model.get("tool_mode").is_some_and(|value| !value.is_null()) {
+            model["tool_mode"] = Value::Null;
             changed = true;
         }
     }
