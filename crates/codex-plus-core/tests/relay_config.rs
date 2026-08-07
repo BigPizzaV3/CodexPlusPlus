@@ -3695,6 +3695,112 @@ fn relay_profile_round_trips_deepseek_official_metadata() {
 }
 
 #[test]
+fn official_deepseek_profile_writes_mirror_provider_for_official_script() {
+    let mut profile = RelayProfile {
+        id: "deepseek".to_string(),
+        name: "DeepSeek".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        base_url: "https://api.deepseek.com".to_string(),
+        upstream_base_url: "https://api.deepseek.com".to_string(),
+        relay_mode: RelayMode::PureApi,
+        deepseek_official_metadata: true,
+        config_contents: r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://api.deepseek.com"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-deepseek"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    // 官方脚本预检要求 config.toml 中存在 [model_providers.deepseek]。
+    assert!(
+        profile
+            .config_contents
+            .contains("[model_providers.deepseek]")
+    );
+    assert!(profile.config_contents.contains(r#"name = "deepseek""#));
+    assert!(
+        profile
+            .config_contents
+            .contains(r#"base_url = "https://api.deepseek.com""#)
+    );
+    // 纯 API 密钥只进 auth.json，镜像段不应携带 bearer token。
+    assert!(
+        !profile
+            .config_contents
+            .contains("experimental_bearer_token")
+    );
+}
+
+#[test]
+fn non_official_deepseek_profile_skips_mirror_provider() {
+    let mut profile = RelayProfile {
+        id: "relay-other".to_string(),
+        name: "Other".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        base_url: "https://api.deepseek.com".to_string(),
+        upstream_base_url: "https://api.deepseek.com".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://api.deepseek.com"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-deepseek"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    assert!(
+        !profile
+            .config_contents
+            .contains("[model_providers.deepseek]")
+    );
+}
+
+#[test]
+fn clear_relay_config_removes_deepseek_mirror_provider() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://api.deepseek.com"
+
+[model_providers.deepseek]
+name = "deepseek"
+wire_api = "responses"
+base_url = "https://api.deepseek.com"
+"#,
+    )
+    .unwrap();
+
+    clear_relay_config_to_home_with_auth(temp.path(), Some("{}")).unwrap();
+
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(!updated.contains("[model_providers.deepseek]"));
+    assert!(!updated.contains("[model_providers.custom]"));
+}
+
+#[test]
 fn apply_relay_profile_generates_compatible_gpt56_catalog_without_suffix() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {

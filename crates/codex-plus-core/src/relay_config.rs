@@ -679,6 +679,7 @@ pub fn clear_relay_config_to_home_with_auth_and_computer_use_guard(
             &format!("model_providers.{legacy_provider}"),
         );
     }
+    without_tables = remove_table(&without_tables, "model_providers.deepseek");
     let mut updated = without_tables;
     for key in [
         "OPENAI_API_KEY",
@@ -2345,6 +2346,35 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     ))
 }
 
+/// 为开启官方元数据的 DeepSeek profile 附一个 `[model_providers.deepseek]`
+/// 镜像段，字段与当前生效的 provider 保持一致，供官方接入脚本的预检识别。
+fn append_deepseek_official_provider_mirror(config_text: &str) -> anyhow::Result<String> {
+    let mut doc = parse_toml_document(config_text)?;
+    let provider_id = active_or_default_provider_id(&doc);
+    let provider = doc
+        .get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get(&provider_id));
+    let base_url = provider
+        .and_then(|provider| provider.get("base_url"))
+        .and_then(Item::as_str)
+        .map(str::to_string)
+        .unwrap_or_default();
+    let wire_api = provider
+        .and_then(|provider| provider.get("wire_api"))
+        .and_then(Item::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| "responses".to_string());
+    let mirror = ensure_provider_table(&mut doc, "deepseek")?;
+    mirror["name"] = toml_edit::value("deepseek");
+    mirror["wire_api"] = toml_edit::value(wire_api);
+    mirror["requires_openai_auth"] = toml_edit::value(true);
+    if !base_url.is_empty() {
+        mirror["base_url"] = toml_edit::value(base_url);
+    }
+    Ok(normalize_optional_toml(doc))
+}
+
 pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow::Result<()> {
     if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
         let (clean_list, windows) =
@@ -2382,6 +2412,13 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
         || profile.official_mix_api_key
     {
         profile.config_contents = complete_relay_profile_config(profile)?;
+    }
+    // DeepSeek 官方接入脚本的预检会查找 [model_providers.deepseek]（以及
+    // ~/.codex/models.json）。开启官方元数据的 profile 附带同字段镜像段，
+    // 让官方脚本能通过预检并走最安全的「仅切换 model」快速路径。
+    if profile.deepseek_official_metadata && !profile.config_contents.trim().is_empty() {
+        profile.config_contents =
+            append_deepseek_official_provider_mirror(&profile.config_contents)?;
     }
     if profile.relay_mode == crate::settings::RelayMode::PureApi
         && profile.auth_contents.trim().is_empty()
