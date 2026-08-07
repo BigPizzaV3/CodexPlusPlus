@@ -1672,12 +1672,11 @@ fn apply_deepseek_responses_compatibility(
     }
 
     let mut doc = parse_toml_document(config_text)?;
-    doc.as_table_mut()
-        .remove("experimental_use_unified_exec_tool");
     if !doc["features"].is_table() {
         doc["features"] = toml_edit::table();
     }
-    doc["features"]["unified_exec"] = toml_edit::value(false);
+    // DeepSeek Responses rejects Code Mode's custom `exec` tool. Unified Exec uses the
+    // supported function tools `exec_command` and `write_stdin`, so preserve that setting.
     doc["features"]["code_mode_only"] = toml_edit::value(false);
     if !doc["features"]["code_mode"].is_table() {
         doc["features"]["code_mode"] = toml_edit::table();

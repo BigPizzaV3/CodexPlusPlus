@@ -223,8 +223,8 @@ export const EN_PLAIN: Record<string, string> = {
   "自动识别": "Auto-detect",
   "标准 Responses": "Standard Responses",
   "DeepSeek 受限模式": "DeepSeek restricted mode",
-  "受限模式会关闭 DeepSeek Responses 不支持的 exec custom tool；第三方中转请按其实际能力选择。":
-    "Restricted mode disables the exec custom tool unsupported by DeepSeek Responses. Choose based on the actual capabilities of third-party relays.",
+  "受限模式会关闭 DeepSeek Responses 不支持的 Code Mode exec custom tool，并保留函数型 Unified Exec；第三方中转请按其实际能力选择。":
+    "Restricted mode disables the Code Mode exec custom tool unsupported by DeepSeek Responses while preserving function-based Unified Exec. Choose based on the actual capabilities of third-party relays.",
   "上一页": "Previous page",
   "下一页": "Next page",
   "下载并运行安装包": "Download and run installer",

@@ -5883,7 +5883,7 @@ function RelayProfileEditor({
                   ]}
                 />
                 <p className="field-hint">
-                  {t("受限模式会关闭 DeepSeek Responses 不支持的 exec custom tool；第三方中转请按其实际能力选择。")}
+                  {t("受限模式会关闭 DeepSeek Responses 不支持的 Code Mode exec custom tool，并保留函数型 Unified Exec；第三方中转请按其实际能力选择。")}
                 </p>
               </Field>
             ) : null}

@@ -3425,8 +3425,11 @@ experimental_bearer_token = "sk-deepseek"
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     let parsed: toml::Value = toml::from_str(&config).unwrap();
-    assert!(parsed.get("experimental_use_unified_exec_tool").is_none());
-    assert_eq!(parsed["features"]["unified_exec"].as_bool(), Some(false));
+    assert_eq!(
+        parsed["experimental_use_unified_exec_tool"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(parsed["features"]["unified_exec"].as_bool(), Some(true));
     assert_eq!(parsed["features"]["code_mode_only"].as_bool(), Some(false));
     assert_eq!(
         parsed["features"]["code_mode"]["enabled"].as_bool(),
@@ -3455,6 +3458,7 @@ experimental_bearer_token = "sk-deepseek"
     assert_eq!(model["slug"], "deepseek-v4-flash");
     assert_eq!(model["shell_type"], "shell_command");
     assert_eq!(model["apply_patch_tool_type"], "freeform");
+    assert!(model["tool_mode"].is_null());
     assert_eq!(model["use_responses_lite"], false);
     assert_eq!(model["context_window"], 1_048_576);
     assert_eq!(model["effective_context_window_percent"], 95);
@@ -3490,7 +3494,7 @@ enabled = true
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     let parsed: toml::Value = toml::from_str(&config).unwrap();
-    assert_eq!(parsed["features"]["unified_exec"].as_bool(), Some(false));
+    assert_eq!(parsed["features"]["unified_exec"].as_bool(), Some(true));
     assert_eq!(parsed["features"]["code_mode_only"].as_bool(), Some(false));
     assert_eq!(
         parsed["features"]["code_mode"]["enabled"].as_bool(),
