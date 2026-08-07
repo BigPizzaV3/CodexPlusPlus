@@ -1435,6 +1435,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             upstream_base_url: "https://chat-only.example.test/v1".to_string(),
             api_key: "sk-test".to_string(),
             protocol: RelayProtocol::ChatCompletions,
+            responses_compatibility: codex_plus_core::settings::ResponsesCompatibility::Auto,
             relay_mode: codex_plus_core::settings::RelayMode::MixedApi,
             official_mix_api_key: false,
             test_model: String::new(),

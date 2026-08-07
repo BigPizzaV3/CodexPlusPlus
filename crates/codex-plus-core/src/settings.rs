@@ -57,6 +57,8 @@ pub struct RelayProfile {
     pub api_key: String,
     #[serde(default)]
     pub protocol: RelayProtocol,
+    #[serde(rename = "responsesCompatibility", default)]
+    pub responses_compatibility: ResponsesCompatibility,
     #[serde(rename = "relayMode", default)]
     pub relay_mode: RelayMode,
     #[serde(rename = "officialMixApiKey", default)]
@@ -155,6 +157,7 @@ impl Default for RelayProfile {
             upstream_base_url: String::new(),
             api_key: String::new(),
             protocol: RelayProtocol::Responses,
+            responses_compatibility: ResponsesCompatibility::Auto,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
             test_model: String::new(),
@@ -193,6 +196,16 @@ pub enum RelayProtocol {
     #[default]
     Responses,
     ChatCompletions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ResponsesCompatibility {
+    Standard,
+    Deepseek,
+    #[default]
+    #[serde(other)]
+    Auto,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -572,6 +585,7 @@ impl BackendSettings {
                 },
                 api_key: self.relay_api_key.clone(),
                 protocol: RelayProtocol::Responses,
+                responses_compatibility: ResponsesCompatibility::Auto,
                 relay_mode: RelayMode::MixedApi,
                 official_mix_api_key: true,
                 test_model: String::new(),
@@ -623,6 +637,7 @@ impl BackendSettings {
             },
             api_key: self.relay_api_key.clone(),
             protocol: RelayProtocol::Responses,
+            responses_compatibility: ResponsesCompatibility::Auto,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
             test_model: String::new(),
@@ -1771,6 +1786,33 @@ mod tests {
         assert!(saved.get("apiKey").is_none());
         assert_eq!(saved["configContents"], "model = \"gpt-5.4\"\n");
         assert_eq!(saved["authContents"], "{\"OPENAI_API_KEY\":\"sk-test\"}");
+    }
+
+    #[test]
+    fn responses_compatibility_defaults_and_tolerates_unknown_values() {
+        let missing: RelayProfile = serde_json::from_str(r#"{"id":"relay-a","name":"A"}"#).unwrap();
+        assert_eq!(
+            missing.responses_compatibility,
+            ResponsesCompatibility::Auto
+        );
+
+        let unknown: RelayProfile = serde_json::from_str(
+            r#"{"id":"relay-b","name":"B","responsesCompatibility":"future-mode"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            unknown.responses_compatibility,
+            ResponsesCompatibility::Auto
+        );
+
+        let explicit: RelayProfile = serde_json::from_str(
+            r#"{"id":"relay-c","name":"C","responsesCompatibility":"deepseek"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            explicit.responses_compatibility,
+            ResponsesCompatibility::Deepseek
+        );
     }
 
     #[test]

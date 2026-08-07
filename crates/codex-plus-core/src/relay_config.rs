@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol};
+use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol, ResponsesCompatibility};
 
 const RELAY_PROVIDER: &str = "custom";
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
@@ -1560,7 +1560,7 @@ fn apply_model_catalog_to_config(
         sanitize_catalog_filename(&profile.id)
     );
     let custom_responses = custom_responses_provider(config_text);
-    let deepseek_responses = deepseek_responses_profile(profile);
+    let deepseek_responses = uses_deepseek_responses_compatibility(profile);
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
     if let Some(existing) = root_key_string(config_text, "model_catalog_json") {
@@ -1627,9 +1627,14 @@ fn apply_model_catalog_to_config(
     Ok(normalize_optional_toml(doc))
 }
 
-fn deepseek_responses_profile(profile: &RelayProfile) -> bool {
+fn uses_deepseek_responses_compatibility(profile: &RelayProfile) -> bool {
     if profile.protocol != RelayProtocol::Responses {
         return false;
+    }
+    match profile.responses_compatibility {
+        ResponsesCompatibility::Deepseek => return true,
+        ResponsesCompatibility::Standard => return false,
+        ResponsesCompatibility::Auto => {}
     }
     let resolved_base_url = relay_profile_base_url(profile);
     [
@@ -1662,7 +1667,7 @@ fn apply_deepseek_responses_compatibility(
     profile: &RelayProfile,
     config_text: &str,
 ) -> anyhow::Result<String> {
-    if !deepseek_responses_profile(profile) {
+    if !uses_deepseek_responses_compatibility(profile) {
         return Ok(config_text.to_string());
     }
 

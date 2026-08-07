@@ -13,7 +13,9 @@ use codex_plus_core::relay_config::{
     set_codex_goals_feature_in_home, strip_common_config_from_config,
     sync_live_config_context_entries, upsert_context_entry_in_common_config,
 };
-use codex_plus_core::settings::{RelayContextSelection, RelayMode, RelayProfile, RelayProtocol};
+use codex_plus_core::settings::{
+    RelayContextSelection, RelayMode, RelayProfile, RelayProtocol, ResponsesCompatibility,
+};
 
 fn write_remote_plugin_marketplace_snapshot(home: &std::path::Path) {
     let root = home.join(".tmp").join("plugins-remote");
@@ -3390,6 +3392,7 @@ fn apply_deepseek_responses_official_mix_writes_official_tool_compatibility() {
         base_url: "https://api.deepseek.com/".to_string(),
         upstream_base_url: "https://api.deepseek.com/".to_string(),
         protocol: RelayProtocol::Responses,
+        responses_compatibility: ResponsesCompatibility::Auto,
         relay_mode: RelayMode::Official,
         official_mix_api_key: true,
         api_key: "sk-deepseek".to_string(),
@@ -3456,6 +3459,77 @@ experimental_bearer_token = "sk-deepseek"
     assert_eq!(model["context_window"], 1_048_576);
     assert_eq!(model["effective_context_window_percent"], 95);
     assert_eq!(model["default_reasoning_level"], "high");
+    assert_eq!(model["additional_speed_tiers"], serde_json::json!([]));
+    assert_eq!(model["service_tiers"], serde_json::json!([]));
+}
+
+#[test]
+fn apply_explicit_deepseek_compatibility_supports_third_party_base_url() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "deepseek-relay".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        base_url: "https://relay.example/v1".to_string(),
+        upstream_base_url: "https://relay.example/v1".to_string(),
+        protocol: RelayProtocol::Responses,
+        responses_compatibility: ResponsesCompatibility::Deepseek,
+        config_contents: r#"model = "deepseek-v4-flash"
+
+[features]
+unified_exec = true
+code_mode_only = true
+
+[features.code_mode]
+enabled = true
+"#
+        .to_string(),
+        model_list: "deepseek-v4-flash".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(parsed["features"]["unified_exec"].as_bool(), Some(false));
+    assert_eq!(parsed["features"]["code_mode_only"].as_bool(), Some(false));
+    assert_eq!(
+        parsed["features"]["code_mode"]["enabled"].as_bool(),
+        Some(false)
+    );
+}
+
+#[test]
+fn apply_standard_responses_compatibility_overrides_deepseek_domain_detection() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "deepseek-standard".to_string(),
+        model: "gateway-model".to_string(),
+        base_url: "https://api.deepseek.com/".to_string(),
+        upstream_base_url: "https://api.deepseek.com/".to_string(),
+        protocol: RelayProtocol::Responses,
+        responses_compatibility: ResponsesCompatibility::Standard,
+        config_contents: r#"model = "gateway-model"
+
+[features]
+unified_exec = true
+code_mode_only = true
+
+[features.code_mode]
+enabled = true
+"#
+        .to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(parsed["features"]["unified_exec"].as_bool(), Some(true));
+    assert_eq!(parsed["features"]["code_mode_only"].as_bool(), Some(true));
+    assert_eq!(
+        parsed["features"]["code_mode"]["enabled"].as_bool(),
+        Some(true)
+    );
 }
 
 #[test]
