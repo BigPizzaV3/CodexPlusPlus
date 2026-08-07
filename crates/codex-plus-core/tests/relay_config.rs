@@ -3569,6 +3569,98 @@ requires_openai_auth = true
 }
 
 #[test]
+fn apply_explicit_deepseek_compatibility_clears_generated_catalog_tool_mode() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "deepseek-generated-catalog".to_string(),
+        model: "gpt-5.6-sol".to_string(),
+        base_url: "https://relay.example/v1".to_string(),
+        upstream_base_url: "https://relay.example/v1".to_string(),
+        protocol: RelayProtocol::Responses,
+        responses_compatibility: ResponsesCompatibility::Deepseek,
+        config_contents: r#"model = "gpt-5.6-sol"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#
+        .to_string(),
+        model_list: "gpt-5.6-sol".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            temp.path()
+                .join("model-catalogs")
+                .join("deepseek-generated-catalog.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(catalog["models"][0]["slug"], "gpt-5.6-sol");
+    assert!(catalog["models"][0]["tool_mode"].is_null());
+    assert_eq!(catalog["models"][0]["use_responses_lite"], false);
+}
+
+#[test]
+fn apply_explicit_deepseek_compatibility_sanitizes_managed_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog_dir = temp.path().join("model-catalogs");
+    std::fs::create_dir_all(&catalog_dir).unwrap();
+    std::fs::write(
+        catalog_dir.join("deepseek-managed-catalog.json"),
+        serde_json::json!({
+            "models": [{
+                "slug": "relay-deepseek",
+                "tool_mode": "code_mode_only",
+                "use_responses_lite": false
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        id: "deepseek-managed-catalog".to_string(),
+        model: "relay-deepseek".to_string(),
+        base_url: "https://relay.example/v1".to_string(),
+        upstream_base_url: "https://relay.example/v1".to_string(),
+        protocol: RelayProtocol::Responses,
+        responses_compatibility: ResponsesCompatibility::Deepseek,
+        config_contents: r#"model = "relay-deepseek"
+model_provider = "custom"
+model_catalog_json = "model-catalogs/deepseek-managed-catalog.json"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#
+        .to_string(),
+        model_list: "relay-deepseek".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(
+        config.contains(r#"model_catalog_json = "model-catalogs/deepseek-managed-catalog.json""#)
+    );
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(catalog_dir.join("deepseek-managed-catalog.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(catalog["models"][0]["tool_mode"].is_null());
+}
+
+#[test]
 fn apply_standard_responses_compatibility_overrides_deepseek_domain_detection() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {

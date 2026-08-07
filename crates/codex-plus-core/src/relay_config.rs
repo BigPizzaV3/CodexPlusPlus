@@ -1565,7 +1565,11 @@ fn apply_model_catalog_to_config(
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
     if let Some(existing) = root_key_string(config_text, "model_catalog_json") {
-        if existing != catalog_relative {
+        if existing == catalog_relative {
+            if deepseek_responses {
+                copy_deepseek_responses_catalog(home, &existing, &catalog_relative)?;
+            }
+        } else {
             let copied = if deepseek_responses {
                 copy_deepseek_responses_catalog(home, &existing, &catalog_relative)?
             } else if custom_responses {
@@ -1624,6 +1628,7 @@ fn apply_model_catalog_to_config(
         None,
         custom_responses.then_some(false),
         official_deepseek_metadata,
+        deepseek_responses,
     );
     std::fs::write(&catalog_path, catalog_json)?;
     let mut doc = parse_toml_document(config_text)?;

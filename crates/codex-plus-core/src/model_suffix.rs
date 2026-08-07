@@ -209,7 +209,7 @@ pub fn build_model_catalog_json(
     entries: &[ModelCatalogEntry],
     fallback_window: Option<u64>,
 ) -> String {
-    build_model_catalog_json_with_capabilities(entries, fallback_window, None, None, false)
+    build_model_catalog_json_with_capabilities(entries, fallback_window, None, None, false, false)
 }
 
 /// 使用指定模板（或内置 bundled 模板）构建 catalog。
@@ -219,7 +219,14 @@ pub fn build_model_catalog_json_with_template(
     fallback_window: Option<u64>,
     template: Option<&Value>,
 ) -> String {
-    build_model_catalog_json_with_capabilities(entries, fallback_window, template, None, false)
+    build_model_catalog_json_with_capabilities(
+        entries,
+        fallback_window,
+        template,
+        None,
+        false,
+        false,
+    )
 }
 
 /// 使用显式 provider capability 构建 catalog。
@@ -230,13 +237,14 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
     fallback_window: Option<u64>,
     template: Option<&Value>,
     use_responses_lite_override: Option<bool>,
-    deepseek_responses: bool,
+    deepseek_metadata: bool,
+    clear_tool_mode: bool,
 ) -> String {
     let models: Vec<Value> = entries
         .iter()
         .enumerate()
         .map(|(index, entry)| {
-            let (mut model, has_model_metadata) = if deepseek_responses {
+            let (mut model, has_model_metadata) = if deepseek_metadata {
                 deepseek_model_template_entry(&entry.slug)
                     .unwrap_or_else(|| model_template_entry(&entry.slug))
             } else {
@@ -259,7 +267,7 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
             model["context_window"] = json!(context_window);
             model["max_context_window"] = json!(context_window);
             // 通用自定义模型显示完整窗口；DeepSeek Responses 保留官方目录的 95%。
-            if !deepseek_responses {
+            if !deepseek_metadata {
                 model["effective_context_window_percent"] = json!(100);
             }
             model["auto_compact_token_limit"] = Value::Null;
@@ -268,6 +276,9 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
             model["supported_in_api"] = json!(true);
             if let Some(use_responses_lite) = use_responses_lite_override {
                 model["use_responses_lite"] = json!(use_responses_lite);
+            }
+            if clear_tool_mode {
+                model["tool_mode"] = Value::Null;
             }
             if !has_model_metadata {
                 model["additional_speed_tiers"] = json!([]);
