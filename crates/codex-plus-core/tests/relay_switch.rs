@@ -1,7 +1,7 @@
 use codex_plus_core::relay_switch::switch_relay_profile_in_home;
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
-    LaunchMode, RelayMode, RelayProfile, RelayProtocol, SettingsStore,
+    LaunchMode, RelayMode, RelayProfile, SettingsStore,
 };
 
 #[test]
@@ -188,98 +188,6 @@ base_url = "https://edited-a.example/v1"
     assert_eq!(previous.auto_compact_limit, "900000");
     assert_eq!(stored.active_relay_id, "b");
     assert_eq!(stored.launch_mode, LaunchMode::Patch);
-}
-
-#[test]
-fn reapplying_active_official_deepseek_profile_preserves_source_code_mode_preferences() {
-    let temp = tempfile::tempdir().unwrap();
-    let home = temp.path().join("codex");
-    std::fs::create_dir(&home).unwrap();
-    let source_config = r#"model = "relay-deepseek"
-model_provider = "custom"
-
-[features]
-code_mode_only = true
-
-[features.code_mode]
-enabled = true
-
-[model_providers.custom]
-name = "custom"
-wire_api = "responses"
-requires_openai_auth = true
-base_url = "https://api.deepseek.com/"
-"#;
-    let effective_config = source_config
-        .replace("code_mode_only = true", "code_mode_only = false")
-        .replace("enabled = true", "enabled = false");
-    std::fs::write(home.join("config.toml"), &effective_config).unwrap();
-    std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"sk-relay"}"#).unwrap();
-
-    let store = SettingsStore::new(temp.path().join("settings.json"));
-    let original_profile = RelayProfile {
-        id: "deepseek".to_string(),
-        name: "DeepSeek".to_string(),
-        base_url: "https://api.deepseek.com/".to_string(),
-        upstream_base_url: "https://api.deepseek.com/".to_string(),
-        protocol: RelayProtocol::Responses,
-        relay_mode: RelayMode::PureApi,
-        config_contents: source_config.to_string(),
-        auth_contents: r#"{"OPENAI_API_KEY":"sk-relay"}"#.to_string(),
-        ..RelayProfile::default()
-    };
-    let original = BackendSettings {
-        active_relay_id: "deepseek".to_string(),
-        relay_profiles: vec![original_profile.clone()],
-        ..BackendSettings::default()
-    };
-    store.save(&original).unwrap();
-
-    let mut reapplied_profile = original_profile;
-    reapplied_profile.config_contents = effective_config.clone();
-    let reapplied = BackendSettings {
-        active_relay_id: "deepseek".to_string(),
-        relay_profiles: vec![reapplied_profile],
-        ..BackendSettings::default()
-    };
-    switch_relay_profile_in_home(&store, &home, reapplied, "deepseek").unwrap();
-
-    let stored = store.load().unwrap();
-    assert!(
-        stored.relay_profiles[0]
-            .config_contents
-            .contains("code_mode_only = true")
-    );
-    assert!(
-        stored.relay_profiles[0]
-            .config_contents
-            .contains("enabled = true")
-    );
-    let live = std::fs::read_to_string(home.join("config.toml")).unwrap();
-    assert!(live.contains("code_mode_only = false"));
-    assert!(live.contains("enabled = false"));
-
-    let mut third_party = stored;
-    third_party.relay_profiles[0].base_url = "https://relay.example/v1".to_string();
-    third_party.relay_profiles[0].upstream_base_url = "https://relay.example/v1".to_string();
-    third_party.relay_profiles[0].config_contents =
-        live.replace("https://api.deepseek.com/", "https://relay.example/v1");
-    switch_relay_profile_in_home(&store, &home, third_party, "deepseek").unwrap();
-
-    let stored = store.load().unwrap();
-    assert!(
-        stored.relay_profiles[0]
-            .config_contents
-            .contains("code_mode_only = true")
-    );
-    assert!(
-        stored.relay_profiles[0]
-            .config_contents
-            .contains("enabled = true")
-    );
-    let live = std::fs::read_to_string(home.join("config.toml")).unwrap();
-    assert!(live.contains("code_mode_only = true"));
-    assert!(live.contains("enabled = true"));
 }
 
 #[test]

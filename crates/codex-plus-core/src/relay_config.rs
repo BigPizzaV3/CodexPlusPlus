@@ -1643,35 +1643,6 @@ pub(crate) fn uses_official_deepseek_responses(profile: &RelayProfile) -> bool {
     .any(|base_url| deepseek_api_base_url(base_url))
 }
 
-pub(crate) fn restore_deepseek_compatibility_source_config(
-    source_config: &str,
-    effective_config: &str,
-) -> anyhow::Result<String> {
-    let Ok(source) = parse_toml_document(source_config) else {
-        return Ok(effective_config.to_string());
-    };
-    let mut effective = parse_toml_document(effective_config)?;
-
-    if toml_path_bool(&effective, &["features", "code_mode_only"]) == Some(false) {
-        if let Some(value) = toml_path_bool(&source, &["features", "code_mode_only"]) {
-            effective["features"]["code_mode_only"] = toml_edit::value(value);
-        } else if let Some(features) = effective.get_mut("features").and_then(Item::as_table_mut) {
-            features.remove("code_mode_only");
-        }
-    }
-    if toml_path_bool(&effective, &["features", "code_mode", "enabled"]) == Some(false) {
-        if let Some(value) = toml_path_bool(&source, &["features", "code_mode", "enabled"]) {
-            effective["features"]["code_mode"]["enabled"] = toml_edit::value(value);
-        } else if let Some(features) = effective.get_mut("features").and_then(Item::as_table_mut)
-            && let Some(code_mode) = features.get_mut("code_mode").and_then(Item::as_table_mut)
-        {
-            code_mode.remove("enabled");
-        }
-    }
-
-    Ok(normalize_optional_toml(effective))
-}
-
 fn deepseek_api_base_url(base_url: &str) -> bool {
     let host = base_url
         .trim()
@@ -1689,7 +1660,7 @@ fn deepseek_api_base_url(base_url: &str) -> bool {
     host == "deepseek.com" || host.ends_with(".deepseek.com")
 }
 
-fn apply_deepseek_responses_compatibility(
+pub fn apply_deepseek_responses_compatibility(
     profile: &RelayProfile,
     config_text: &str,
 ) -> anyhow::Result<String> {
@@ -1714,15 +1685,6 @@ fn apply_deepseek_responses_compatibility(
     }
     doc["features"]["code_mode"]["enabled"] = toml_edit::value(false);
     Ok(normalize_optional_toml(doc))
-}
-
-fn toml_path_bool(doc: &DocumentMut, path: &[&str]) -> Option<bool> {
-    let (first, rest) = path.split_first()?;
-    let mut item = doc.get(first)?;
-    for key in rest {
-        item = item.as_table_like()?.get(key)?;
-    }
-    item.as_bool()
 }
 
 fn custom_responses_provider(config_text: &str) -> bool {

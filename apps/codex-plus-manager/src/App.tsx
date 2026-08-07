@@ -82,7 +82,6 @@ import {
   type ModelWindowRow,
 } from "./model-windows";
 import { resolveProviderSyncCompletion } from "./provider-sync-flow";
-import { persistRelayProfileDraft } from "./relay-profile-save";
 import {
   defaultDreamSkinTheme,
   defaultDreamSkinColors,
@@ -2311,7 +2310,7 @@ export function App() {
     previousActiveRelayId: string,
   ): Promise<BackendSettings> => {
     const profileId = previousActiveRelayId.trim();
-    if (!profileId || profileId === next.activeRelayId) return next;
+    if (!profileId) return next;
     const result = await run(() =>
       call<SettingsBackfillResult>("backfill_relay_profile_from_live", {
         request: { settings: next, profileId },
@@ -5555,12 +5554,15 @@ function RelayProfileDetail({
     const next = isNew
       ? addRelayProfile(form, normalizedDraft)
       : updateRelayProfile(form, profile.id, normalizedDraft);
-    await persistRelayProfileDraft({
-      next,
-      shouldApplyActiveProfile: isActive && relayProfileUsesLiveFiles(normalizedDraft) && form.relayProfilesEnabled,
-      applyActiveProfile: (settings) => actions.switchRelayProfile(settings, profile.id),
-      saveSettings: onFormChange,
-    });
+    await onFormChange(next);
+    if (isActive && relayProfileUsesLiveFiles(normalizedDraft)) {
+      await actions.saveRelayFile(
+        "config",
+        effectiveRelayConfigPreview(normalizedDraft, form, normalizedDraft),
+        true,
+      );
+      await actions.saveRelayFile("auth", normalizedDraft.authContents, true);
+    }
     onSaved?.();
   };
   const switchDraft = () => {
