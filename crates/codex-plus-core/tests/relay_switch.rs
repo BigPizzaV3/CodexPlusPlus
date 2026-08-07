@@ -1,7 +1,7 @@
 use codex_plus_core::relay_switch::switch_relay_profile_in_home;
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
-    LaunchMode, RelayMode, RelayProfile, ResponsesCompatibility, SettingsStore,
+    LaunchMode, RelayMode, RelayProfile, RelayProtocol, SettingsStore,
 };
 
 #[test]
@@ -191,7 +191,7 @@ base_url = "https://edited-a.example/v1"
 }
 
 #[test]
-fn reapplying_active_deepseek_profile_preserves_source_code_mode_preferences() {
+fn reapplying_active_official_deepseek_profile_preserves_source_code_mode_preferences() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("codex");
     std::fs::create_dir(&home).unwrap();
@@ -208,7 +208,7 @@ enabled = true
 name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
-base_url = "https://relay.example/v1"
+base_url = "https://api.deepseek.com/"
 "#;
     let effective_config = source_config
         .replace("code_mode_only = true", "code_mode_only = false")
@@ -219,9 +219,11 @@ base_url = "https://relay.example/v1"
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let original_profile = RelayProfile {
         id: "deepseek".to_string(),
-        name: "DeepSeek relay".to_string(),
+        name: "DeepSeek".to_string(),
+        base_url: "https://api.deepseek.com/".to_string(),
+        upstream_base_url: "https://api.deepseek.com/".to_string(),
+        protocol: RelayProtocol::Responses,
         relay_mode: RelayMode::PureApi,
-        responses_compatibility: ResponsesCompatibility::Deepseek,
         config_contents: source_config.to_string(),
         auth_contents: r#"{"OPENAI_API_KEY":"sk-relay"}"#.to_string(),
         ..RelayProfile::default()
@@ -257,10 +259,12 @@ base_url = "https://relay.example/v1"
     assert!(live.contains("code_mode_only = false"));
     assert!(live.contains("enabled = false"));
 
-    let mut standard = stored;
-    standard.relay_profiles[0].responses_compatibility = ResponsesCompatibility::Standard;
-    standard.relay_profiles[0].config_contents = live;
-    switch_relay_profile_in_home(&store, &home, standard, "deepseek").unwrap();
+    let mut third_party = stored;
+    third_party.relay_profiles[0].base_url = "https://relay.example/v1".to_string();
+    third_party.relay_profiles[0].upstream_base_url = "https://relay.example/v1".to_string();
+    third_party.relay_profiles[0].config_contents =
+        live.replace("https://api.deepseek.com/", "https://relay.example/v1");
+    switch_relay_profile_in_home(&store, &home, third_party, "deepseek").unwrap();
 
     let stored = store.load().unwrap();
     assert!(

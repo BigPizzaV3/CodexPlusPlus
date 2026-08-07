@@ -13,9 +13,7 @@ use codex_plus_core::relay_config::{
     set_codex_goals_feature_in_home, strip_common_config_from_config,
     sync_live_config_context_entries, upsert_context_entry_in_common_config,
 };
-use codex_plus_core::settings::{
-    RelayContextSelection, RelayMode, RelayProfile, RelayProtocol, ResponsesCompatibility,
-};
+use codex_plus_core::settings::{RelayContextSelection, RelayMode, RelayProfile, RelayProtocol};
 
 fn write_remote_plugin_marketplace_snapshot(home: &std::path::Path) {
     let root = home.join(".tmp").join("plugins-remote");
@@ -3392,7 +3390,6 @@ fn apply_deepseek_responses_official_mix_writes_official_tool_compatibility() {
         base_url: "https://api.deepseek.com/".to_string(),
         upstream_base_url: "https://api.deepseek.com/".to_string(),
         protocol: RelayProtocol::Responses,
-        responses_compatibility: ResponsesCompatibility::Auto,
         relay_mode: RelayMode::Official,
         official_mix_api_key: true,
         api_key: "sk-deepseek".to_string(),
@@ -3468,43 +3465,7 @@ experimental_bearer_token = "sk-deepseek"
 }
 
 #[test]
-fn apply_explicit_deepseek_compatibility_supports_third_party_base_url() {
-    let temp = tempfile::tempdir().unwrap();
-    let profile = RelayProfile {
-        id: "deepseek-relay".to_string(),
-        model: "deepseek-v4-flash".to_string(),
-        base_url: "https://relay.example/v1".to_string(),
-        upstream_base_url: "https://relay.example/v1".to_string(),
-        protocol: RelayProtocol::Responses,
-        responses_compatibility: ResponsesCompatibility::Deepseek,
-        config_contents: r#"model = "deepseek-v4-flash"
-
-[features]
-unified_exec = true
-code_mode_only = true
-
-[features.code_mode]
-enabled = true
-"#
-        .to_string(),
-        model_list: "deepseek-v4-flash".to_string(),
-        ..RelayProfile::default()
-    };
-
-    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
-    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    let parsed: toml::Value = toml::from_str(&config).unwrap();
-    assert_eq!(parsed["features"]["unified_exec"].as_bool(), Some(true));
-    assert_eq!(parsed["features"]["code_mode_only"].as_bool(), Some(false));
-    assert_eq!(
-        parsed["features"]["code_mode"]["enabled"].as_bool(),
-        Some(false)
-    );
-    assert!(parsed.get("model_catalog_json").is_none());
-}
-
-#[test]
-fn apply_explicit_deepseek_compatibility_sanitizes_third_party_catalog() {
+fn apply_third_party_deepseek_responses_preserves_code_mode_and_catalog_tool_mode() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
         temp.path().join("relay-catalog.json"),
@@ -3527,10 +3488,16 @@ fn apply_explicit_deepseek_compatibility_sanitizes_third_party_catalog() {
         base_url: "https://relay.example/v1".to_string(),
         upstream_base_url: "https://relay.example/v1".to_string(),
         protocol: RelayProtocol::Responses,
-        responses_compatibility: ResponsesCompatibility::Deepseek,
         config_contents: r#"model = "relay-deepseek"
 model_provider = "custom"
 model_catalog_json = "relay-catalog.json"
+
+[features]
+unified_exec = true
+code_mode_only = true
+
+[features.code_mode]
+enabled = true
 
 [model_providers.custom]
 name = "custom"
@@ -3547,6 +3514,12 @@ requires_openai_auth = true
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(parsed["features"]["unified_exec"].as_bool(), Some(true));
+    assert_eq!(parsed["features"]["code_mode_only"].as_bool(), Some(true));
+    assert_eq!(
+        parsed["features"]["code_mode"]["enabled"].as_bool(),
+        Some(true)
+    );
     assert_eq!(
         parsed["model_catalog_json"].as_str(),
         Some("model-catalogs/deepseek-relay-catalog.json")
@@ -3564,134 +3537,8 @@ requires_openai_auth = true
     assert_eq!(model["display_name"], "Relay DeepSeek");
     assert_eq!(model["context_window"], 262_144);
     assert_eq!(model["service_tiers"][0]["id"], "relay-fast");
-    assert!(model["tool_mode"].is_null());
+    assert_eq!(model["tool_mode"], "code_mode_only");
     assert_eq!(model["use_responses_lite"], false);
-}
-
-#[test]
-fn apply_explicit_deepseek_compatibility_clears_generated_catalog_tool_mode() {
-    let temp = tempfile::tempdir().unwrap();
-    let profile = RelayProfile {
-        id: "deepseek-generated-catalog".to_string(),
-        model: "gpt-5.6-sol".to_string(),
-        base_url: "https://relay.example/v1".to_string(),
-        upstream_base_url: "https://relay.example/v1".to_string(),
-        protocol: RelayProtocol::Responses,
-        responses_compatibility: ResponsesCompatibility::Deepseek,
-        config_contents: r#"model = "gpt-5.6-sol"
-model_provider = "custom"
-
-[model_providers.custom]
-name = "custom"
-base_url = "https://relay.example/v1"
-wire_api = "responses"
-requires_openai_auth = true
-"#
-        .to_string(),
-        model_list: "gpt-5.6-sol".to_string(),
-        ..RelayProfile::default()
-    };
-
-    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
-
-    let catalog: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            temp.path()
-                .join("model-catalogs")
-                .join("deepseek-generated-catalog.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(catalog["models"][0]["slug"], "gpt-5.6-sol");
-    assert!(catalog["models"][0]["tool_mode"].is_null());
-    assert_eq!(catalog["models"][0]["use_responses_lite"], false);
-}
-
-#[test]
-fn apply_explicit_deepseek_compatibility_sanitizes_managed_catalog() {
-    let temp = tempfile::tempdir().unwrap();
-    let catalog_dir = temp.path().join("model-catalogs");
-    std::fs::create_dir_all(&catalog_dir).unwrap();
-    std::fs::write(
-        catalog_dir.join("deepseek-managed-catalog.json"),
-        serde_json::json!({
-            "models": [{
-                "slug": "relay-deepseek",
-                "tool_mode": "code_mode_only",
-                "use_responses_lite": false
-            }]
-        })
-        .to_string(),
-    )
-    .unwrap();
-    let profile = RelayProfile {
-        id: "deepseek-managed-catalog".to_string(),
-        model: "relay-deepseek".to_string(),
-        base_url: "https://relay.example/v1".to_string(),
-        upstream_base_url: "https://relay.example/v1".to_string(),
-        protocol: RelayProtocol::Responses,
-        responses_compatibility: ResponsesCompatibility::Deepseek,
-        config_contents: r#"model = "relay-deepseek"
-model_provider = "custom"
-model_catalog_json = "model-catalogs/deepseek-managed-catalog.json"
-
-[model_providers.custom]
-name = "custom"
-base_url = "https://relay.example/v1"
-wire_api = "responses"
-requires_openai_auth = true
-"#
-        .to_string(),
-        model_list: "relay-deepseek".to_string(),
-        ..RelayProfile::default()
-    };
-
-    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
-
-    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(
-        config.contains(r#"model_catalog_json = "model-catalogs/deepseek-managed-catalog.json""#)
-    );
-    let catalog: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(catalog_dir.join("deepseek-managed-catalog.json")).unwrap(),
-    )
-    .unwrap();
-    assert!(catalog["models"][0]["tool_mode"].is_null());
-}
-
-#[test]
-fn apply_standard_responses_compatibility_overrides_deepseek_domain_detection() {
-    let temp = tempfile::tempdir().unwrap();
-    let profile = RelayProfile {
-        id: "deepseek-standard".to_string(),
-        model: "gateway-model".to_string(),
-        base_url: "https://api.deepseek.com/".to_string(),
-        upstream_base_url: "https://api.deepseek.com/".to_string(),
-        protocol: RelayProtocol::Responses,
-        responses_compatibility: ResponsesCompatibility::Standard,
-        config_contents: r#"model = "gateway-model"
-
-[features]
-unified_exec = true
-code_mode_only = true
-
-[features.code_mode]
-enabled = true
-"#
-        .to_string(),
-        ..RelayProfile::default()
-    };
-
-    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
-    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    let parsed: toml::Value = toml::from_str(&config).unwrap();
-    assert_eq!(parsed["features"]["unified_exec"].as_bool(), Some(true));
-    assert_eq!(parsed["features"]["code_mode_only"].as_bool(), Some(true));
-    assert_eq!(
-        parsed["features"]["code_mode"]["enabled"].as_bool(),
-        Some(true)
-    );
 }
 
 #[test]

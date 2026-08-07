@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol, ResponsesCompatibility};
+use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol};
 
 const RELAY_PROVIDER: &str = "custom";
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
@@ -1560,32 +1560,26 @@ fn apply_model_catalog_to_config(
         sanitize_catalog_filename(&profile.id)
     );
     let custom_responses = custom_responses_provider(config_text);
-    let deepseek_responses = uses_deepseek_responses_compatibility(profile);
-    let official_deepseek_metadata = uses_official_deepseek_responses_metadata(profile);
+    let official_deepseek_responses = uses_official_deepseek_responses(profile);
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
     if let Some(existing) = root_key_string(config_text, "model_catalog_json") {
-        if existing == catalog_relative {
-            if deepseek_responses {
-                copy_deepseek_responses_catalog(home, &existing, &catalog_relative)?;
+        if existing != catalog_relative {
+            if !official_deepseek_responses {
+                if custom_responses
+                    && copy_standard_responses_catalog(home, &existing, &catalog_relative)?
+                {
+                    let mut doc = parse_toml_document(config_text)?;
+                    doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+                    return Ok(normalize_optional_toml(doc));
+                }
+                return Ok(config_text.to_string());
             }
-        } else {
-            let copied = if deepseek_responses {
-                copy_deepseek_responses_catalog(home, &existing, &catalog_relative)?
-            } else if custom_responses {
-                copy_standard_responses_catalog(home, &existing, &catalog_relative)?
-            } else {
-                false
-            };
-            if copied {
-                let mut doc = parse_toml_document(config_text)?;
-                doc["model_catalog_json"] = toml_edit::value(catalog_relative);
-                return Ok(normalize_optional_toml(doc));
-            }
-            return Ok(config_text.to_string());
         }
     }
-    if !deepseek_responses && let Some(external_catalog) = live_external_model_catalog(home) {
+    if !official_deepseek_responses
+        && let Some(external_catalog) = live_external_model_catalog(home)
+    {
         let mut doc = parse_toml_document(config_text)?;
         if custom_responses
             && copy_standard_responses_catalog(home, &external_catalog, &catalog_relative)?
@@ -1611,7 +1605,7 @@ fn apply_model_catalog_to_config(
     if !entries.iter().any(|entry| {
         entry.suffix_window.is_some()
             || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
-            || (official_deepseek_metadata && entry.slug.starts_with("deepseek-v4-"))
+            || (official_deepseek_responses && entry.slug.starts_with("deepseek-v4-"))
     }) {
         return Ok(config_text.to_string());
     }
@@ -1627,8 +1621,7 @@ fn apply_model_catalog_to_config(
         fallback,
         None,
         custom_responses.then_some(false),
-        official_deepseek_metadata,
-        deepseek_responses,
+        official_deepseek_responses,
     );
     std::fs::write(&catalog_path, catalog_json)?;
     let mut doc = parse_toml_document(config_text)?;
@@ -1636,14 +1629,9 @@ fn apply_model_catalog_to_config(
     Ok(normalize_optional_toml(doc))
 }
 
-pub(crate) fn uses_deepseek_responses_compatibility(profile: &RelayProfile) -> bool {
+pub(crate) fn uses_official_deepseek_responses(profile: &RelayProfile) -> bool {
     if profile.protocol != RelayProtocol::Responses {
         return false;
-    }
-    match profile.responses_compatibility {
-        ResponsesCompatibility::Deepseek => return true,
-        ResponsesCompatibility::Standard => return false,
-        ResponsesCompatibility::Auto => {}
     }
     let resolved_base_url = relay_profile_base_url(profile);
     [
@@ -1684,20 +1672,6 @@ pub(crate) fn restore_deepseek_compatibility_source_config(
     Ok(normalize_optional_toml(effective))
 }
 
-fn uses_official_deepseek_responses_metadata(profile: &RelayProfile) -> bool {
-    if !uses_deepseek_responses_compatibility(profile) {
-        return false;
-    }
-    let resolved_base_url = relay_profile_base_url(profile);
-    [
-        profile.base_url.as_str(),
-        profile.upstream_base_url.as_str(),
-        resolved_base_url.as_str(),
-    ]
-    .iter()
-    .any(|base_url| deepseek_api_base_url(base_url))
-}
-
 fn deepseek_api_base_url(base_url: &str) -> bool {
     let host = base_url
         .trim()
@@ -1719,7 +1693,7 @@ fn apply_deepseek_responses_compatibility(
     profile: &RelayProfile,
     config_text: &str,
 ) -> anyhow::Result<String> {
-    if !uses_deepseek_responses_compatibility(profile) {
+    if !uses_official_deepseek_responses(profile) {
         return Ok(config_text.to_string());
     }
 
@@ -1775,23 +1749,6 @@ fn copy_standard_responses_catalog(
     source: &str,
     target_relative: &str,
 ) -> anyhow::Result<bool> {
-    copy_responses_catalog_with_compatibility(home, source, target_relative, false)
-}
-
-fn copy_deepseek_responses_catalog(
-    home: &Path,
-    source: &str,
-    target_relative: &str,
-) -> anyhow::Result<bool> {
-    copy_responses_catalog_with_compatibility(home, source, target_relative, true)
-}
-
-fn copy_responses_catalog_with_compatibility(
-    home: &Path,
-    source: &str,
-    target_relative: &str,
-    clear_tool_mode: bool,
-) -> anyhow::Result<bool> {
     let source_path = {
         let path = Path::new(source);
         if path.is_absolute() {
@@ -1813,10 +1770,6 @@ fn copy_responses_catalog_with_compatibility(
     for model in models {
         if model.get("use_responses_lite").and_then(Value::as_bool) == Some(true) {
             model["use_responses_lite"] = Value::Bool(false);
-            changed = true;
-        }
-        if clear_tool_mode && model.get("tool_mode").is_some_and(|value| !value.is_null()) {
-            model["tool_mode"] = Value::Null;
             changed = true;
         }
     }

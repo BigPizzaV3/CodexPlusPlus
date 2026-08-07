@@ -10,7 +10,6 @@
 export type PresetCategory = "official" | "aggregator" | "third_party" | "cn_official";
 
 export type RelayProtocol = "responses" | "chatCompletions";
-export type ResponsesCompatibility = "auto" | "standard" | "deepseek";
 
 export interface ProviderPreset {
   id: string;
@@ -20,7 +19,6 @@ export interface ProviderPreset {
   category: PresetCategory;
   baseUrl: string;
   protocol: RelayProtocol;
-  responsesCompatibility?: ResponsesCompatibility;
   model: string;
   modelList?: string[];
 }
@@ -54,7 +52,6 @@ export const PRESETS: ProviderPreset[] = [
     category: "cn_official",
     baseUrl: "https://api.deepseek.com/",
     protocol: "responses",
-    responsesCompatibility: "deepseek",
     model: "deepseek-v4-flash",
     modelList: ["deepseek-v4-flash"],
   },

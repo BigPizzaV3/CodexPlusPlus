@@ -19,7 +19,6 @@ const _profileTypeCheck: RelayProfile = {
   upstreamBaseUrl: "",
   apiKey: "",
   protocol: "responses",
-  responsesCompatibility: "auto",
   relayMode: "official",
   officialMixApiKey: false,
   testModel: "",

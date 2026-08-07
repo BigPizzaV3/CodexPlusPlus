@@ -250,7 +250,6 @@ export type RelayProfile = {
   upstreamBaseUrl: string;
   apiKey: string;
   protocol: RelayProtocol;
-  responsesCompatibility: ResponsesCompatibility;
   relayMode: RelayMode;
   officialMixApiKey: boolean;
   testModel: string;
@@ -317,7 +316,6 @@ type CodexContextEntries = {
 };
 
 type RelayProtocol = "responses" | "chatCompletions";
-type ResponsesCompatibility = "auto" | "standard" | "deepseek";
 type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
 const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
@@ -839,7 +837,6 @@ const defaultSettings: BackendSettings = {
       upstreamBaseUrl: "",
       apiKey: "",
       protocol: "responses",
-      responsesCompatibility: "auto",
       relayMode: "official",
       officialMixApiKey: false,
       testModel: "",
@@ -5869,22 +5866,6 @@ function RelayProfileEditor({
                 </button>
               </div>
             </Field>
-            {profile.protocol === "responses" ? (
-              <Field className="relay-field-responses-compatibility" label={t("Responses 兼容模式")}>
-                <AppSelect
-                  value={profile.responsesCompatibility}
-                  onChange={(responsesCompatibility) => updateDraft({ responsesCompatibility })}
-                  options={[
-                    { value: "auto", label: t("自动识别") },
-                    { value: "standard", label: t("标准 Responses") },
-                    { value: "deepseek", label: t("DeepSeek 受限模式") },
-                  ]}
-                />
-                <p className="field-hint">
-                  {t("受限模式会关闭 DeepSeek Responses 不支持的 Code Mode exec custom tool，并保留函数型 Unified Exec；第三方中转请按其实际能力选择。")}
-                </p>
-              </Field>
-            ) : null}
             <Field className="relay-field-sub2api" label="Sub2API">
               <div className="sub2api-field">
                 <label className="inline-check">
@@ -7910,7 +7891,6 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             upstreamBaseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
             apiKey: settings.relayApiKey || "",
             protocol: "responses" as RelayProtocol,
-            responsesCompatibility: "auto" as ResponsesCompatibility,
             relayMode: "official" as RelayMode,
             officialMixApiKey: false,
             testModel: "",
@@ -7991,7 +7971,6 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         upstreamBaseUrl: "",
         apiKey: "",
         protocol: "responses",
-        responsesCompatibility: "auto",
         relayMode: "aggregate",
         officialMixApiKey: false,
         testModel: profile.testModel || "",
@@ -8021,10 +8000,6 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl || "",
     apiKey: profile.apiKey || "",
     protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
-    responsesCompatibility:
-      profile.responsesCompatibility === "deepseek" || profile.responsesCompatibility === "standard"
-        ? profile.responsesCompatibility
-        : "auto",
     relayMode,
     officialMixApiKey,
     testModel: profile.testModel || "",
@@ -8671,7 +8646,6 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     upstreamBaseUrl: defaultSettings.relayBaseUrl,
     apiKey: "",
     protocol: "responses" as RelayProtocol,
-    responsesCompatibility: "auto" as ResponsesCompatibility,
     relayMode: "official" as RelayMode,
     officialMixApiKey: false,
     testModel: "",
@@ -8708,7 +8682,6 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       upstreamBaseUrl: "",
       apiKey: "",
       protocol: "responses",
-      responsesCompatibility: "auto",
       relayMode: "aggregate",
       officialMixApiKey: false,
       testModel: "",

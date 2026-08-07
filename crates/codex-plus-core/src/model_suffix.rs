@@ -209,7 +209,7 @@ pub fn build_model_catalog_json(
     entries: &[ModelCatalogEntry],
     fallback_window: Option<u64>,
 ) -> String {
-    build_model_catalog_json_with_capabilities(entries, fallback_window, None, None, false, false)
+    build_model_catalog_json_with_capabilities(entries, fallback_window, None, None, false)
 }
 
 /// 使用指定模板（或内置 bundled 模板）构建 catalog。
@@ -219,14 +219,7 @@ pub fn build_model_catalog_json_with_template(
     fallback_window: Option<u64>,
     template: Option<&Value>,
 ) -> String {
-    build_model_catalog_json_with_capabilities(
-        entries,
-        fallback_window,
-        template,
-        None,
-        false,
-        false,
-    )
+    build_model_catalog_json_with_capabilities(entries, fallback_window, template, None, false)
 }
 
 /// 使用显式 provider capability 构建 catalog。
@@ -238,7 +231,6 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
     template: Option<&Value>,
     use_responses_lite_override: Option<bool>,
     deepseek_metadata: bool,
-    clear_tool_mode: bool,
 ) -> String {
     let models: Vec<Value> = entries
         .iter()
@@ -276,9 +268,6 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
             model["supported_in_api"] = json!(true);
             if let Some(use_responses_lite) = use_responses_lite_override {
                 model["use_responses_lite"] = json!(use_responses_lite);
-            }
-            if clear_tool_mode {
-                model["tool_mode"] = Value::Null;
             }
             if !has_model_metadata {
                 model["additional_speed_tiers"] = json!([]);

@@ -95,8 +95,8 @@ fn preserve_reapplied_profile_source(
     else {
         return Ok(());
     };
-    if !crate::relay_config::uses_deepseek_responses_compatibility(original_profile)
-        && !crate::relay_config::uses_deepseek_responses_compatibility(selected_profile)
+    if !crate::relay_config::uses_official_deepseek_responses(original_profile)
+        && !crate::relay_config::uses_official_deepseek_responses(selected_profile)
     {
         return Ok(());
     }
