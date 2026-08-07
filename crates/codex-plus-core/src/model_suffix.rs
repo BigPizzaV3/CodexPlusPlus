@@ -265,7 +265,9 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
             model["auto_compact_token_limit"] = Value::Null;
             model["priority"] = json!(1000 + index);
             model["visibility"] = json!("list");
-            model["supported_in_api"] = json!(true);
+            if !deepseek_metadata {
+                model["supported_in_api"] = json!(true);
+            }
             if let Some(use_responses_lite) = use_responses_lite_override {
                 model["use_responses_lite"] = json!(use_responses_lite);
             }

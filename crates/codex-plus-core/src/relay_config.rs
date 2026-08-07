@@ -1669,21 +1669,28 @@ pub fn apply_deepseek_responses_compatibility(
     }
 
     let mut doc = parse_toml_document(config_text)?;
-    if !doc.get("features").is_some_and(Item::is_table) {
+    if doc.get("features").and_then(Item::as_table_like).is_none() {
         doc["features"] = toml_edit::table();
     }
     // DeepSeek Responses rejects Code Mode's custom `exec` tool. Unified Exec uses the
     // supported function tools `exec_command` and `write_stdin`, so preserve that setting.
-    doc["features"]["code_mode_only"] = toml_edit::value(false);
-    if !doc
-        .get("features")
-        .and_then(Item::as_table)
-        .and_then(|features| features.get("code_mode"))
-        .is_some_and(Item::is_table)
+    let features = doc
+        .get_mut("features")
+        .and_then(Item::as_table_like_mut)
+        .expect("features table-like item was created above");
+    features.insert("code_mode_only", toml_edit::value(false));
+    if features
+        .get("code_mode")
+        .and_then(Item::as_table_like)
+        .is_none()
     {
-        doc["features"]["code_mode"] = toml_edit::table();
+        features.insert("code_mode", toml_edit::table());
     }
-    doc["features"]["code_mode"]["enabled"] = toml_edit::value(false);
+    features
+        .get_mut("code_mode")
+        .and_then(Item::as_table_like_mut)
+        .expect("code_mode table-like item was created above")
+        .insert("enabled", toml_edit::value(false));
     Ok(normalize_optional_toml(doc))
 }
 

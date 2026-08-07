@@ -3414,7 +3414,7 @@ requires_openai_auth = true
 experimental_bearer_token = "sk-deepseek"
 "#
         .to_string(),
-        model_list: "deepseek-v4-flash".to_string(),
+        model_list: "deepseek-v4-flash\ndeepseek-v4-pro".to_string(),
         ..RelayProfile::default()
     };
 
@@ -3460,8 +3460,44 @@ experimental_bearer_token = "sk-deepseek"
     assert_eq!(model["context_window"], 1_048_576);
     assert_eq!(model["effective_context_window_percent"], 95);
     assert_eq!(model["default_reasoning_level"], "high");
+    assert_eq!(model["supports_search_tool"], false);
     assert_eq!(model["additional_speed_tiers"], serde_json::json!([]));
     assert_eq!(model["service_tiers"], serde_json::json!([]));
+    let pro = catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["slug"] == "deepseek-v4-pro")
+        .unwrap();
+    assert_eq!(pro["supported_in_api"], false);
+}
+
+#[test]
+fn deepseek_responses_compatibility_preserves_inline_feature_tables() {
+    let profile = RelayProfile {
+        base_url: "https://api.deepseek.com/".to_string(),
+        upstream_base_url: "https://api.deepseek.com/".to_string(),
+        protocol: RelayProtocol::Responses,
+        ..RelayProfile::default()
+    };
+    let config = r#"features = { unified_exec = true, goals = true, code_mode = { enabled = true, direct_only_tool_namespaces = ["mcp__node_repl"] } }
+"#;
+
+    let prepared =
+        codex_plus_core::relay_config::apply_deepseek_responses_compatibility(&profile, config)
+            .unwrap();
+    let parsed: toml::Value = toml::from_str(&prepared).unwrap();
+    assert_eq!(parsed["features"]["unified_exec"].as_bool(), Some(true));
+    assert_eq!(parsed["features"]["goals"].as_bool(), Some(true));
+    assert_eq!(parsed["features"]["code_mode_only"].as_bool(), Some(false));
+    assert_eq!(
+        parsed["features"]["code_mode"]["enabled"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        parsed["features"]["code_mode"]["direct_only_tool_namespaces"][0].as_str(),
+        Some("mcp__node_repl")
+    );
 }
 
 #[test]

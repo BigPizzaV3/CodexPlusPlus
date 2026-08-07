@@ -16,6 +16,7 @@
       "additional_speed_tiers": [],
       "service_tiers": [],
       "tool_mode": null,
+      "supports_search_tool": false,
       "multi_agent_version": "v2",
       "use_responses_lite": false,
       "include_skills_usage_instructions": false,
@@ -54,6 +55,7 @@
       "additional_speed_tiers": [],
       "service_tiers": [],
       "tool_mode": null,
+      "supports_search_tool": false,
       "multi_agent_version": "v2",
       "use_responses_lite": false,
       "include_skills_usage_instructions": false,
@@ -73,7 +75,7 @@
       "shell_type": "shell_command",
       "visibility": "list",
       "minimal_client_version": "0.144.0",
-      "supported_in_api": true,
+      "supported_in_api": false,
       "priority": 2
     }
   ]
