@@ -1696,10 +1696,6 @@ pub fn apply_deepseek_responses_compatibility(
 }
 
 fn uses_official_deepseek_responses_for_config(profile: &RelayProfile, config_text: &str) -> bool {
-    if profile.protocol != RelayProtocol::Responses {
-        return false;
-    }
-
     if let Ok(doc) = parse_toml_document(config_text) {
         if let Some(provider_id) = active_provider_id(&doc) {
             if let Some(provider) = doc
@@ -1708,10 +1704,13 @@ fn uses_official_deepseek_responses_for_config(profile: &RelayProfile, config_te
                 .and_then(|providers| providers.get(&provider_id))
                 .and_then(Item::as_table_like)
             {
-                if let Some(wire_api) = provider.get("wire_api").and_then(Item::as_str) {
-                    if !wire_api.trim().eq_ignore_ascii_case("responses") {
-                        return false;
-                    }
+                let uses_responses = provider
+                    .get("wire_api")
+                    .and_then(Item::as_str)
+                    .map(|wire_api| wire_api.trim().eq_ignore_ascii_case("responses"))
+                    .unwrap_or(profile.protocol == RelayProtocol::Responses);
+                if !uses_responses {
+                    return false;
                 }
                 if let Some(base_url) = provider.get("base_url").and_then(Item::as_str) {
                     return deepseek_api_base_url(base_url);
@@ -1719,7 +1718,9 @@ fn uses_official_deepseek_responses_for_config(profile: &RelayProfile, config_te
             }
         }
 
-        if let Some(base_url) = root_key_string(config_text, "base_url") {
+        if profile.protocol == RelayProtocol::Responses
+            && let Some(base_url) = root_key_string(config_text, "base_url")
+        {
             return deepseek_api_base_url(&base_url);
         }
     }

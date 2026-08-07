@@ -3524,7 +3524,7 @@ base_url = "https://relay.example/v1"
     let third_party_profile = RelayProfile {
         base_url: "https://relay.example/v1".to_string(),
         upstream_base_url: "https://relay.example/v1".to_string(),
-        protocol: RelayProtocol::Responses,
+        protocol: RelayProtocol::ChatCompletions,
         ..RelayProfile::default()
     };
     let official_config = r#"model_provider = "deepseek"
