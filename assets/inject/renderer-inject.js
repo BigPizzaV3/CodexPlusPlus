@@ -1089,7 +1089,6 @@
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
-      .codex-plus-modal-content[data-codex-plus-active-tab="support"] { width: min(820px, calc(100vw - 48px)); }
       .codex-plus-modal-header {
         display: flex;
         align-items: center;
@@ -1280,16 +1279,12 @@
       .codex-plus-ad-card { border: 1px solid rgba(96,165,250,.26); border-radius: 16px; background: linear-gradient(135deg, rgba(37,99,235,.18), rgba(255,255,255,.05)); box-shadow: 0 14px 36px rgba(0,0,0,.22); }
       .codex-plus-ad-image { display: block; width: calc(100% - 28px); aspect-ratio: 16 / 5; margin: 14px 14px 0; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; background: #080808; object-fit: cover; }
       .codex-plus-ad-content { padding: 14px; }
-      .codex-plus-ad-title { margin: 0; color: #f8fafc; font-size: 17px; line-height: 1.35; }
-      .codex-plus-ad-description { margin: 6px 0 10px; color: #dbeafe; font-size: 13px; line-height: 1.55; }
-      .codex-plus-ad-highlights { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+      .codex-plus-ad-title { margin: 0; overflow: hidden; color: #f8fafc; font-size: 17px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-ad-description { display: -webkit-box; margin: 6px 0 10px; overflow: hidden; color: #dbeafe; font-size: 13px; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-height: 1.55; }
+      .codex-plus-ad-highlights { display: flex; flex-wrap: wrap; gap: 6px; max-height: 56px; margin-bottom: 12px; overflow: hidden; }
       .codex-plus-ad-highlights span { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(255,255,255,.08); color: #f3f4f6; font-size: 12px; padding: 4px 8px; }
       .codex-plus-ad-link { display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; background: #2563eb; color: #ffffff; font-size: 13px; font-weight: 650; text-decoration: none; padding: 8px 12px; }
       .codex-plus-ad-empty { border: 1px dashed rgba(255,255,255,.16); border-radius: 12px; color: #9ca3af; font-size: 13px; padding: 12px; text-align: center; }
-      .codex-plus-sponsor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-      .codex-plus-sponsor-card { border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 10px; background: rgba(255,255,255,.04); text-align: center; }
-      .codex-plus-sponsor-card-title { color: #f3f4f6; font-size: 13px; margin-bottom: 8px; }
-      .codex-plus-sponsor-qr { display: block; width: 100%; max-width: 340px; border-radius: 8px; margin: 0 auto; background: white; }
     `;
     document.documentElement.appendChild(style);
   }
@@ -3392,6 +3387,11 @@
     }));
   }
 
+  function formatCodexPlusAdTitle(title) {
+    const value = String(title || "");
+    return value.split(/[｜|]/, 1)[0].trim() || value;
+  }
+
   function renderCodexPlusAdGroup(type, emptyText) {
     const ads = codexPlusAds.filter((ad) => ad.type === type);
     if (!ads.length) return `<div class="codex-plus-ad-empty">${escapeHtml(emptyText)}</div>`;
@@ -3399,7 +3399,7 @@
       <article class="codex-plus-ad-card">
         ${ad.image ? `<img class="codex-plus-ad-image" src="${escapeHtml(ad.image)}" alt="">` : ""}
         <div class="codex-plus-ad-content">
-          <h3 class="codex-plus-ad-title">${escapeHtml(ad.title)}</h3>
+          <h3 class="codex-plus-ad-title">${escapeHtml(formatCodexPlusAdTitle(ad.title))}</h3>
           <p class="codex-plus-ad-description">${escapeHtml(ad.description)}</p>
           <div class="codex-plus-ad-highlights">
             ${ad.highlights.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
@@ -3497,7 +3497,6 @@
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">主页</button>
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="false">用户脚本</button>
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="sponsor" data-active="false">推荐内容</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="support" data-active="false">请作者喝咖啡</button>
         </div>
         <div class="codex-plus-modal-body">
           <div class="codex-plus-panel" data-codex-plus-panel="home">
@@ -3642,19 +3641,6 @@
             <div class="codex-plus-sponsor-text">推荐内容分为赞助商推荐和普通推荐。赞助商推荐来自支持 Codex++ 继续维护的合作方；普通推荐用于展示适合 Codex 用户的服务与信息。</div>
             <div class="codex-plus-ad-remote">
               ${renderCodexPlusAds()}
-            </div>
-          </div>
-          <div class="codex-plus-panel" data-codex-plus-panel="support" hidden>
-            <div class="codex-plus-sponsor-text">如果 Codex++ 帮到了你，可以请我喝杯咖啡，或者随手赞赏支持一下继续维护。</div>
-            <div class="codex-plus-sponsor-grid">
-              <div class="codex-plus-sponsor-card">
-                <div class="codex-plus-sponsor-card-title">支付宝</div>
-                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.alipay || `${helperBase}/assets/sponsor-alipay.jpg`}" alt="支付宝赞赏码">
-              </div>
-              <div class="codex-plus-sponsor-card">
-                <div class="codex-plus-sponsor-card-title">微信</div>
-                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.wechat || `${helperBase}/assets/sponsor-wechat.jpg`}" alt="微信赞赏码">
-              </div>
             </div>
           </div>
         </div>

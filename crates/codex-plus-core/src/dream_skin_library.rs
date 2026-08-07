@@ -188,6 +188,27 @@ fn supported_image_extension(path: &Path) -> bool {
         })
 }
 
+fn stored_theme_image_extension(state_dir: &Path, source: &Path) -> Option<String> {
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .filter(|extension| {
+            matches!(
+                extension.as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
+            )
+        })?;
+    let source = std::fs::canonicalize(source).ok()?;
+    let themes_dir = std::fs::canonicalize(state_dir.join(THEMES_DIR)).ok()?;
+    let theme_dir = source.parent()?;
+    if theme_dir.parent()? != themes_dir {
+        return None;
+    }
+    let theme_id = theme_dir.file_name()?.to_str()?;
+    valid_theme_id(theme_id).then_some(extension)
+}
+
 fn valid_theme_id(value: &str) -> bool {
     let bytes = value.as_bytes();
     (1..=64).contains(&bytes.len())
@@ -338,11 +359,20 @@ pub fn prepare_dream_skin_activation(
     }
     validate_theme_draft(draft)?;
     let managed_dir = state_dir.join("dream-skin/theme");
-    let active_image = crate::dream_skin::prepare_dream_skin_image_for_directory(
-        Path::new(draft.image_path.trim()),
-        &managed_dir,
-        "current",
-    )?;
+    let source = Path::new(draft.image_path.trim());
+    let active_image = if let Some(extension) = stored_theme_image_extension(state_dir, source) {
+        std::fs::create_dir_all(&managed_dir)
+            .with_context(|| format!("failed to create {}", managed_dir.display()))?;
+        let destination = managed_dir.join(format!("current.{extension}"));
+        let bytes = std::fs::read(source)
+            .with_context(|| format!("failed to read Dream Skin image {}", source.display()))?;
+        crate::settings::atomic_write(&destination, &bytes).with_context(|| {
+            format!("failed to store Dream Skin image {}", destination.display())
+        })?;
+        destination
+    } else {
+        crate::dream_skin::prepare_dream_skin_image_for_directory(source, &managed_dir, "current")?
+    };
     for entry in std::fs::read_dir(&managed_dir)? {
         let path = entry?.path();
         let is_other_current = path != active_image

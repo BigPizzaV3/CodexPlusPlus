@@ -41,8 +41,8 @@ For first-time setup, open the manager, verify the detected app path, configure 
   </a>
 </p>
 <p align="center">
-  <a href="https://jojocode.com/"><strong>JOJO Code | Official Codex++ Relay</strong></a><br>
-  The official Codex++ relay service, focused on stable access and cost-effective pricing. JOJO Code supports the full GPT-5.6 family, Fable 5, Sonnet 5, GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2, and more for daily development, team collaboration, and long-running project workflows.
+  <a href="https://jojocode.com/"><strong>JOJO Code</strong></a><br>
+  JOJO Code provides stable access and cost-effective pricing. It supports the full GPT-5.6 family, Fable 5, Sonnet 5, GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2, and more for daily development, team collaboration, and long-running project workflows.
 </p>
 
 <p align="center">
@@ -59,7 +59,7 @@ For first-time setup, open the manager, verify the detected app path, configure 
         <img src="docs/images/sponsor-jojocode.png" alt="JOJO Code" width="150">
       </a>
     </td>
-    <td><a href="https://jojocode.com/"><strong>JOJO Code | Official Codex++ Relay</strong></a><br>Thanks to JOJO Code for sponsoring this project. JOJO Code is the official Codex++ relay service with cost-effective pricing and stable, easy-to-configure Codex API access. It supports the full GPT-5.6 family, Fable 5, Sonnet 5, GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2, and more for daily development, quick setup, team collaboration, and continuous use.</td>
+    <td><a href="https://jojocode.com/"><strong>JOJO Code</strong></a><br>Thanks to JOJO Code for sponsoring this project. JOJO Code provides cost-effective pricing and stable, easy-to-configure Codex API access. It supports the full GPT-5.6 family, Fable 5, Sonnet 5, GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2, and more for daily development, quick setup, team collaboration, and continuous use.</td>
   </tr>
   <tr>
     <td align="center">
@@ -154,13 +154,6 @@ WeChat: <a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">get the latest grou
 Telegram: <https://t.me/CodexPlusPlus>
 
 Friendly link: <a href="https://linux.do">LINUX DO</a>
-
-If Codex++ helps you, you can support its continued maintenance.
-
-<p align="center">
-  <img src="docs/images/sponsor-alipay.jpg" alt="Alipay sponsor QR code" width="220">
-  <img src="docs/images/sponsor-wechat.jpg" alt="WeChat sponsor QR code" width="220">
-</p>
 
 ## Current Features
 

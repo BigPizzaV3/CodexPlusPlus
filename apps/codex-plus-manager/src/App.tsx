@@ -36,7 +36,9 @@ import {
   Hammer,
   KeyRound,
   Languages,
+  LayoutGrid,
   LayoutDashboard,
+  List,
   Palette,
   Play,
   MessageCircle,
@@ -51,6 +53,7 @@ import {
   RotateCcw,
   Rocket,
   Save,
+  Search,
   Settings,
   ShieldCheck,
   ShieldAlert,
@@ -4490,6 +4493,26 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
   const inventory = settings?.user_scripts;
   const scripts = inventory?.scripts ?? [];
   const marketScripts = market?.market.scripts ?? [];
+  const [marketSearch, setMarketSearch] = useState("");
+  const [marketView, setMarketView] = useState<"grid" | "list">("grid");
+  const filteredMarketScripts = useMemo(() => {
+    const query = marketSearch.trim().toLocaleLowerCase();
+    if (!query) return marketScripts;
+    return marketScripts.filter((script) => {
+      const haystack = [
+        script.name,
+        script.author,
+        script.description,
+        script.version,
+        script.homepage,
+        ...script.tags,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLocaleLowerCase();
+      return haystack.includes(query);
+    });
+  }, [marketSearch, marketScripts]);
   const installedCount = marketScripts.filter((script) => script.installed).length;
   return (
     <>
@@ -4519,14 +4542,56 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("市场脚本")} detail={market?.market.updatedAt ? tf("清单更新时间：{0}", [market.market.updatedAt]) : t("从 GitHub 静态清单加载")} />
+        <CardHead
+          title={t("市场脚本")}
+          detail={
+            market?.market.updatedAt
+              ? tf("清单更新时间：{0}，当前显示 {1} / {2}", [market.market.updatedAt, filteredMarketScripts.length, marketScripts.length])
+              : t("从 GitHub 静态清单加载")
+          }
+        />
         <CardContent>
-          {marketScripts.length ? (
-            <div className="script-market-grid">
-              {marketScripts.map((script) => (
-                <MarketScriptCard key={script.id} script={script} actions={actions} />
-              ))}
+          <div className="script-market-toolbar">
+            <div className="script-market-search">
+              <Search className="h-4 w-4" />
+              <Input
+                aria-label={t("搜索市场脚本")}
+                onChange={(event) => setMarketSearch(event.currentTarget.value)}
+                placeholder={t("搜索名称、作者、描述或标签")}
+                value={marketSearch}
+              />
             </div>
+            <div className="script-market-view-toggle" role="group" aria-label={t("脚本市场排版")}>
+              <Button
+                aria-pressed={marketView === "grid"}
+                onClick={() => setMarketView("grid")}
+                size="sm"
+                variant={marketView === "grid" ? "secondary" : "ghost"}
+              >
+                <LayoutGrid className="h-4 w-4" />
+                {t("板块")}
+              </Button>
+              <Button
+                aria-pressed={marketView === "list"}
+                onClick={() => setMarketView("list")}
+                size="sm"
+                variant={marketView === "list" ? "secondary" : "ghost"}
+              >
+                <List className="h-4 w-4" />
+                {t("列表")}
+              </Button>
+            </div>
+          </div>
+          {marketScripts.length ? (
+            filteredMarketScripts.length ? (
+              <div className={marketView === "list" ? "script-market-list" : "script-market-grid"}>
+                {filteredMarketScripts.map((script) => (
+                  <MarketScriptCard key={script.id} script={script} actions={actions} view={marketView} />
+                ))}
+              </div>
+            ) : (
+              <div className="empty">{t("没有匹配的市场脚本。")}</div>
+            )
           ) : (
             <div className="empty">{market?.status === "failed" ? market.message : t("点击刷新市场加载远程脚本。")}</div>
           )}
@@ -5450,12 +5515,12 @@ function SortableRelayProfileCard({
   );
 }
 
-function MarketScriptCard({ script, actions }: { script: ScriptMarketItem; actions: Actions }) {
+function MarketScriptCard({ script, actions, view = "grid" }: { script: ScriptMarketItem; actions: Actions; view?: "grid" | "list" }) {
   const status = script.updateAvailable ? t("可更新") : script.installed ? tf("已安装 {0}", [script.installedVersion]) : t("未安装");
   const isGitHubHomepage = script.homepage ? isGitHubRepositoryHomepage(script.homepage) : false;
   const githubSupportLabel = isGitHubHomepage ? tf("在 GitHub 上支持作者：{0}", [script.name]) : undefined;
   return (
-    <div className="script-market-card">
+    <div className="script-market-card" data-view={view}>
       <div className="script-market-title">
         <div>
           <strong>{script.name}</strong>
@@ -7153,8 +7218,8 @@ function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions
       {ads.map((ad) => (
         <button className="ad-card" key={ad.id || `${ad.type}-${ad.title}`} onClick={() => void actions.openExternalUrl(ad.url)} type="button">
           {ad.image ? <img alt="" className="ad-image" src={ad.image} /> : null}
-          <div>
-            <strong>{ad.title}</strong>
+          <div className="ad-content">
+            <strong>{formatAdTitle(ad.title)}</strong>
             <p>{ad.description}</p>
           </div>
           {ad.highlights?.length ? (
@@ -7172,6 +7237,10 @@ function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions
       ))}
     </div>
   );
+}
+
+function formatAdTitle(title: string) {
+  return title.split(/[｜|]/, 1)[0].trim() || title;
 }
 
 function isExpiredAd(ad: AdItem) {
@@ -8187,20 +8256,22 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
   if (profile.relayMode === "official") {
     return {
       ...profile,
-      configContents: profile.officialMixApiKey ? buildRelayConfigToml(profile, { includeBearerToken: true }) : "",
+      configContents: profile.officialMixApiKey
+        ? buildRelayConfigToml(profile, { includeBearerToken: true, requiresOpenAiAuth: true })
+        : "",
       authContents: profile.authContents || "",
     };
   }
   return {
     ...profile,
-    configContents: buildRelayConfigToml(profile, { includeBearerToken: false }),
+    configContents: buildRelayConfigToml(profile, { includeBearerToken: false, requiresOpenAiAuth: false }),
     authContents: buildRelayAuthJson(profile),
   };
 }
 
 function buildRelayConfigToml(
   profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">,
-  options: { includeBearerToken: boolean },
+  options: { includeBearerToken: boolean; requiresOpenAiAuth?: boolean },
 ): string {
   const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
@@ -8214,7 +8285,7 @@ function buildRelayConfigToml(
     "[model_providers.custom]",
     'name = "custom"',
     'wire_api = "responses"',
-    "requires_openai_auth = true",
+    options.requiresOpenAiAuth ? "requires_openai_auth = true" : null,
     `base_url = "${tomlString(baseUrl)}"`,
     options.includeBearerToken && apiKey ? `experimental_bearer_token = "${tomlString(apiKey)}"` : null,
     "",
@@ -8306,7 +8377,9 @@ function applyRelayProfilePatchToFiles(
   }
   if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch) {
     const baseUrlForConfig = next.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : next.upstreamBaseUrl || next.baseUrl;
-    next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig);
+    next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
+      requiresOpenAiAuth: next.relayMode !== "pureApi",
+    });
     next.configContents = removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
   }
   if ("contextWindow" in patch) {
@@ -8327,7 +8400,6 @@ function applyRelayProfilePatchToFiles(
       next = withGeneratedRelayFiles(next);
     }
   }
-
   return deriveRelayProfileFromFiles(next);
 }
 
@@ -8466,13 +8538,44 @@ function setRootTomlLine(contents: string, key: string, lineText: string): strin
   return ensureTrailingNewline(lines.join("\n").trimEnd());
 }
 
-function setCodexProviderStringKey(contents: string, key: string, value: string): string {
+function codexRequiresOpenAiAuthFromConfig(contents: string): boolean {
+  const provider = rootTomlStringValue(contents, "model_provider");
+  const targetSection = provider ? `model_providers.${provider}` : "";
+  const lines = contents.split(/\r?\n/);
+  let currentSection = "";
+  let sawProviderSection = false;
+
+  for (const line of lines) {
+    const section = tomlSectionName(line);
+    if (section !== null) {
+      currentSection = section;
+      if (section.startsWith("model_providers.")) sawProviderSection = true;
+      continue;
+    }
+    const match = /^\s*requires_openai_auth\s*=\s*(true|false)\s*(?:#.*)?$/i.exec(line);
+    if (!match || !currentSection.startsWith("model_providers.")) continue;
+    if (targetSection) {
+      if (currentSection === targetSection) return match[1].toLowerCase() === "true";
+      continue;
+    }
+    if (match[1].toLowerCase() === "true") return true;
+  }
+
+  return !sawProviderSection && /^\s*requires_openai_auth\s*=\s*true\s*(?:#.*)?$/im.test(contents);
+}
+
+function setCodexProviderStringKey(
+  contents: string,
+  key: string,
+  value: string,
+  options: { requiresOpenAiAuth?: boolean } = {},
+): string {
   const provider = rootTomlStringValue(contents, "model_provider") || "custom";
   let next = contents;
   if (!rootTomlStringValue(next, "model_provider")) {
     next = setRootTomlStringKey(next, "model_provider", provider);
   }
-  next = ensureCodexProviderDefaults(next, provider);
+  next = ensureCodexProviderDefaults(next, provider, { requiresOpenAiAuth: options.requiresOpenAiAuth !== false });
   return setTomlSectionStringKey(next, `model_providers.${provider}`, key, value);
 }
 
@@ -8488,12 +8591,16 @@ function removeCodexExperimentalBearerToken(contents: string): string {
   return removeTomlSectionKey(contents, `model_providers.${provider}`, "experimental_bearer_token");
 }
 
-function ensureCodexProviderDefaults(contents: string, provider: string): string {
+function ensureCodexProviderDefaults(
+  contents: string,
+  provider: string,
+  options: { requiresOpenAiAuth?: boolean } = {},
+): string {
   let next = contents;
   const section = `model_providers.${provider}`;
   next = setTomlSectionStringKey(next, section, "name", provider);
   next = setTomlSectionStringKey(next, section, "wire_api", "responses");
-  return setTomlSectionBoolKey(next, section, "requires_openai_auth", true);
+  return options.requiresOpenAiAuth === false ? next : setTomlSectionBoolKey(next, section, "requires_openai_auth", true);
 }
 
 function setTomlSectionBoolKey(contents: string, sectionName: string, key: string, value: boolean): string {

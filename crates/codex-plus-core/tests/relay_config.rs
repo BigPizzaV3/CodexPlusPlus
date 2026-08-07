@@ -264,7 +264,6 @@ model_provider = "custom"
 [model_providers.custom]
 name = "custom"
 wire_api = "responses"
-requires_openai_auth = true
 base_url = "http://127.0.0.1:57321/v1"
 "#,
     )
@@ -278,7 +277,7 @@ base_url = "http://127.0.0.1:57321/v1"
     let status = relay_config_status_from_home(temp.path());
 
     assert!(status.configured);
-    assert!(status.requires_openai_auth);
+    assert!(!status.requires_openai_auth);
     assert!(!status.has_bearer_token);
 }
 
@@ -611,7 +610,7 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
     assert!(config.contains("[model_providers.custom]"));
     assert!(config.contains(r#"name = "custom""#));
     assert!(config.contains(r#"wire_api = "responses""#));
-    assert!(config.contains("requires_openai_auth = true"));
+    assert!(!config.contains("requires_openai_auth"));
     assert!(config.contains(r#"base_url = "http://relay-legacy.example.test/v1""#));
     assert!(config.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
 }
@@ -2597,6 +2596,7 @@ base_url = "https://relay.example/v1"
     assert!(auth.get("tokens").is_none());
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(!config.contains("experimental_bearer_token"));
+    assert!(config.contains("requires_openai_auth = true"));
     assert!(config.contains(r#"model_provider = "custom""#));
     assert!(config.contains("[model_providers.custom]"));
 }
@@ -2637,7 +2637,7 @@ experimental_bearer_token = "sk-new"
     assert!(config.contains("[model_providers.custom]"));
     assert!(config.contains(r#"name = "custom""#));
     assert!(config.contains(r#"wire_api = "responses""#));
-    assert!(config.contains("requires_openai_auth = true"));
+    assert!(!config.contains("requires_openai_auth"));
     assert!(config.contains(r#"base_url = "https://relay.example/v1""#));
     assert!(!config.contains("experimental_bearer_token"));
     assert!(!config.contains("live_provider"));
@@ -2674,6 +2674,7 @@ requires_openai_auth = true
     assert!(config.contains("[model_providers.max_ai]"));
     assert!(config.contains(r#"name = "max_ai""#));
     assert!(config.contains(r#"base_url = "https://max2.jojocode.com/v1""#));
+    assert!(config.contains("requires_openai_auth = true"));
     assert!(!config.contains("experimental_bearer_token"));
     assert!(!config.contains("[model_providers.custom]"));
 }
@@ -2991,6 +2992,7 @@ base_url = "http://relay-legacy.example.test/v1"
     assert!(config.contains(r#"model_provider = "custom""#));
     assert!(config.contains("[model_providers.custom]"));
     assert!(config.contains(r#"base_url = "http://relay-legacy.example.test/v1""#));
+    assert!(config.contains("requires_openai_auth = true"));
 }
 
 #[test]
@@ -3027,6 +3029,7 @@ experimental_bearer_token = "sk-provider-token"
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(!config.contains("experimental_bearer_token"));
+    assert!(config.contains("requires_openai_auth = true"));
 }
 
 #[test]
@@ -3222,7 +3225,7 @@ experimental_bearer_token = "sk-new"
     assert!(config.contains(r#"name = "custom""#));
     assert!(config.contains(r#"base_url = "https://max2.jojocode.com/v1""#));
     assert!(config.contains(r#"wire_api = "responses""#));
-    assert!(config.contains("requires_openai_auth = true"));
+    assert!(!config.contains("requires_openai_auth"));
     assert!(!config.contains("experimental_bearer_token"));
 }
 

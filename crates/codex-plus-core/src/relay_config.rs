@@ -227,7 +227,6 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
         .unwrap_or(false);
     RelayConfigStatus {
         configured: root_provider.is_some()
-            && requires_openai_auth
             && (has_bearer_token || codex_auth_api_key(&auth_contents).is_some())
             && has_base_url,
         requires_openai_auth,
@@ -280,7 +279,7 @@ pub fn apply_relay_config_to_home_with_protocol(
         anyhow::bail!("中转 Key 不能为空");
     }
     let codex_base_url = codex_base_url_for_protocol(base_url, protocol, proxy_port);
-    let updated = upsert_model_provider_config("", &codex_base_url, bearer_token)?;
+    let updated = upsert_model_provider_config("", &codex_base_url, bearer_token, true)?;
     let auth_contents = serde_json::to_string_pretty(&json!({
         "OPENAI_API_KEY": bearer_token
     }))?;
@@ -505,7 +504,7 @@ pub fn apply_pure_api_config_to_home_with_protocol(
         anyhow::bail!("中转 Key 不能为空");
     }
     let codex_base_url = codex_base_url_for_protocol(base_url, protocol, proxy_port);
-    let updated = upsert_model_provider_config("", &codex_base_url, bearer_token)?;
+    let updated = upsert_model_provider_config("", &codex_base_url, bearer_token, false)?;
     let auth_contents = serde_json::to_string_pretty(&json!({
         "OPENAI_API_KEY": bearer_token
     }))?;
@@ -2230,7 +2229,8 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     {
         provider["wire_api"] = toml_edit::value("responses");
     }
-    if provider
+    if profile.relay_mode != crate::settings::RelayMode::PureApi
+        && provider
         .get("requires_openai_auth")
         .and_then(Item::as_bool)
         .is_none()
@@ -2763,6 +2763,7 @@ fn upsert_model_provider_config(
     contents: &str,
     base_url: &str,
     bearer_token: &str,
+    requires_openai_auth: bool,
 ) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(contents)?;
     let provider_id = active_or_default_provider_id(&doc);
@@ -2777,7 +2778,9 @@ fn upsert_model_provider_config(
     let provider = ensure_provider_table(&mut doc, &provider_id)?;
     provider["name"] = toml_edit::value(provider_id.as_str());
     provider["wire_api"] = toml_edit::value("responses");
-    provider["requires_openai_auth"] = toml_edit::value(true);
+    if requires_openai_auth {
+        provider["requires_openai_auth"] = toml_edit::value(true);
+    }
     provider["base_url"] = toml_edit::value(base_url);
     provider["experimental_bearer_token"] = toml_edit::value(bearer_token);
 
