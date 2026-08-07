@@ -3501,6 +3501,89 @@ fn deepseek_responses_compatibility_preserves_inline_feature_tables() {
 }
 
 #[test]
+fn deepseek_responses_save_uses_configured_endpoint_over_profile_url() {
+    let official_profile = RelayProfile {
+        base_url: "https://api.deepseek.com/".to_string(),
+        upstream_base_url: "https://api.deepseek.com/".to_string(),
+        protocol: RelayProtocol::Responses,
+        ..RelayProfile::default()
+    };
+    let third_party_config = r#"model_provider = "custom"
+
+[model_providers.custom]
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#;
+    let unchanged = codex_plus_core::relay_config::apply_deepseek_responses_compatibility(
+        &official_profile,
+        third_party_config,
+    )
+    .unwrap();
+    assert_eq!(unchanged, third_party_config);
+
+    let third_party_profile = RelayProfile {
+        base_url: "https://relay.example/v1".to_string(),
+        upstream_base_url: "https://relay.example/v1".to_string(),
+        protocol: RelayProtocol::Responses,
+        ..RelayProfile::default()
+    };
+    let official_config = r#"model_provider = "deepseek"
+
+[model_providers.deepseek]
+wire_api = "responses"
+base_url = "https://api.deepseek.com/v1"
+"#;
+    let prepared = codex_plus_core::relay_config::apply_deepseek_responses_compatibility(
+        &third_party_profile,
+        official_config,
+    )
+    .unwrap();
+    let parsed: toml::Value = toml::from_str(&prepared).unwrap();
+    assert_eq!(parsed["features"]["code_mode_only"].as_bool(), Some(false));
+    assert_eq!(
+        parsed["features"]["code_mode"]["enabled"].as_bool(),
+        Some(false)
+    );
+}
+
+#[test]
+fn official_deepseek_responses_preserves_explicit_model_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let custom_catalog = temp.path().join("custom-catalog.json");
+    std::fs::write(
+        &custom_catalog,
+        serde_json::json!({"models": [{"slug": "custom-model"}]}).to_string(),
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        id: "deepseek-explicit-catalog".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        base_url: "https://api.deepseek.com/".to_string(),
+        upstream_base_url: "https://api.deepseek.com/".to_string(),
+        protocol: RelayProtocol::Responses,
+        relay_mode: RelayMode::Official,
+        config_contents: format!(
+            "model = \"deepseek-v4-flash\"\nmodel_catalog_json = \"{}\"\n",
+            custom_catalog.to_string_lossy().replace('\\', "/")
+        ),
+        model_list: "deepseek-v4-flash".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains("model_catalog_json"));
+    assert!(config.contains("custom-catalog.json"));
+    assert!(
+        !temp
+            .path()
+            .join("model-catalogs")
+            .join("deepseek-explicit-catalog.json")
+            .exists()
+    );
+}
+
+#[test]
 fn apply_third_party_deepseek_responses_preserves_code_mode_and_catalog_tool_mode() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(

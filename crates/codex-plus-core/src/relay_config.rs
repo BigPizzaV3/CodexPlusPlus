@@ -1565,16 +1565,17 @@ fn apply_model_catalog_to_config(
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
     if let Some(existing) = root_key_string(config_text, "model_catalog_json") {
         if existing != catalog_relative {
-            if !official_deepseek_responses {
-                if custom_responses
-                    && copy_standard_responses_catalog(home, &existing, &catalog_relative)?
-                {
-                    let mut doc = parse_toml_document(config_text)?;
-                    doc["model_catalog_json"] = toml_edit::value(catalog_relative);
-                    return Ok(normalize_optional_toml(doc));
-                }
+            if official_deepseek_responses {
                 return Ok(config_text.to_string());
             }
+            if custom_responses
+                && copy_standard_responses_catalog(home, &existing, &catalog_relative)?
+            {
+                let mut doc = parse_toml_document(config_text)?;
+                doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+                return Ok(normalize_optional_toml(doc));
+            }
+            return Ok(config_text.to_string());
         }
     }
     if !official_deepseek_responses
@@ -1664,7 +1665,7 @@ pub fn apply_deepseek_responses_compatibility(
     profile: &RelayProfile,
     config_text: &str,
 ) -> anyhow::Result<String> {
-    if !uses_official_deepseek_responses(profile) {
+    if !uses_official_deepseek_responses_for_config(profile, config_text) {
         return Ok(config_text.to_string());
     }
 
@@ -1692,6 +1693,38 @@ pub fn apply_deepseek_responses_compatibility(
         .expect("code_mode table-like item was created above")
         .insert("enabled", toml_edit::value(false));
     Ok(normalize_optional_toml(doc))
+}
+
+fn uses_official_deepseek_responses_for_config(profile: &RelayProfile, config_text: &str) -> bool {
+    if profile.protocol != RelayProtocol::Responses {
+        return false;
+    }
+
+    if let Ok(doc) = parse_toml_document(config_text) {
+        if let Some(provider_id) = active_provider_id(&doc) {
+            if let Some(provider) = doc
+                .get("model_providers")
+                .and_then(Item::as_table)
+                .and_then(|providers| providers.get(&provider_id))
+                .and_then(Item::as_table_like)
+            {
+                if let Some(wire_api) = provider.get("wire_api").and_then(Item::as_str) {
+                    if !wire_api.trim().eq_ignore_ascii_case("responses") {
+                        return false;
+                    }
+                }
+                if let Some(base_url) = provider.get("base_url").and_then(Item::as_str) {
+                    return deepseek_api_base_url(base_url);
+                }
+            }
+        }
+
+        if let Some(base_url) = root_key_string(config_text, "base_url") {
+            return deepseek_api_base_url(&base_url);
+        }
+    }
+
+    uses_official_deepseek_responses(profile)
 }
 
 fn custom_responses_provider(config_text: &str) -> bool {
