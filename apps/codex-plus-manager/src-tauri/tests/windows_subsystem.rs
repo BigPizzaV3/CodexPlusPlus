@@ -70,6 +70,14 @@ fn manager_close_minimizes_to_tray_without_confirmation() {
 }
 
 #[test]
+fn manager_centers_window_on_startup() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+
+    assert!(lib_rs.contains(".center()"));
+}
+
+#[test]
 fn manager_queues_codexplusplus_provider_urls_for_confirmation_on_startup() {
     let main_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
         .expect("read manager main.rs");
