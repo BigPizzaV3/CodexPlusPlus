@@ -8,6 +8,7 @@ import {
   modelWindowsTextToMap,
   serializeModelWindowRows,
   mergeModelWindowRows,
+  shouldShowModelImageHandling,
 } from "./model-windows.ts";
 
 // 类型检查：确保 RelayProfile 包含 modelWindows 和 modelVlm 字段
@@ -44,6 +45,12 @@ const _profileTypeCheck: RelayProfile = {
 void _profileTypeCheck;
 
 describe("model-windows helpers", () => {
+  it("纯 Responses 直连隐藏图片处理选项", () => {
+    assert.strictEqual(shouldShowModelImageHandling("responses", false), false);
+    assert.strictEqual(shouldShowModelImageHandling("responses", true), true);
+    assert.strictEqual(shouldShowModelImageHandling("chat_completions", false), true);
+  });
+
   it("modelWindowsMapToText 按 modelList 行顺序输出窗口文本", () => {
     assert.strictEqual(
       modelWindowsMapToText("a\nb\nc", '{"a":"1M","c":"200K"}'),

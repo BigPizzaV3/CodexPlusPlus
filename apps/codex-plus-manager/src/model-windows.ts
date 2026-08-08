@@ -27,6 +27,10 @@ export function modelWindowsTextToMap(modelList: string, modelWindowsText: strin
 /// 图片处理模式。
 export type ImageHandling = "" | "send-as-is" | "strip" | "vlm";
 
+export function shouldShowModelImageHandling(protocol: string, isAggregate: boolean): boolean {
+  return protocol !== "responses" || isAggregate;
+}
+
 export type ModelWindowRow = {
   model: string;
   window: string;

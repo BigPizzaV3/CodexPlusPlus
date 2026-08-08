@@ -3923,6 +3923,10 @@ body {
   min-height: var(--relay-control-height);
 }
 
+.relay-model-row--without-image-handling {
+  grid-template-columns: minmax(220px, 1.6fr) minmax(130px, 0.7fr) 40px;
+}
+
 .relay-model-row-head {
   min-height: 24px;
   padding-inline: 2px;

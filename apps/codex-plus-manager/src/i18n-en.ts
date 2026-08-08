@@ -37,7 +37,6 @@ export const EN_PLAIN: Record<string, string> = {
   "VLM API Key": "VLM API Key",
   "VLM Base URL": "VLM Base URL",
   "VLM Model": "VLM Model",
-  "VLM 仅支持 Chat Completions 协议和聚合模式": "VLM only supports Chat Completions protocol and aggregate mode",
   "Vision Analysis Provider": "Vision Analysis Provider",
   "插件与模型": "Plugins and models",
   "管理插件市场、模型列表和服务档位相关增强。": "Manage enhancements for the plugin marketplace, model list and service tier.",

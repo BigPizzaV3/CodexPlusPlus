@@ -91,6 +91,7 @@ import {
   mergeModelWindowRows,
   modelWindowRowsFromProfile,
   serializeModelWindowRows,
+  shouldShowModelImageHandling,
   type ImageHandling,
   type ModelWindowRow,
 } from "./model-windows";
@@ -6123,8 +6124,10 @@ function RelayProfileEditor({
   setModelWindowRows: (value: ModelWindowRow[]) => void;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
-  // 纯 Responses 模式（非聚合）下 VLM/Strip 不生效，禁用下拉
-  const vlmUnsupportedProtocol = profile.protocol === "responses" && !isAggregateRelayProfile(profile);
+  const showModelImageHandling = shouldShowModelImageHandling(
+    profile.protocol,
+    isAggregateRelayProfile(profile),
+  );
   if (isAggregateRelayProfile(profile)) {
     return (
       <AggregateRelayProfileEditor
@@ -6412,13 +6415,18 @@ function RelayProfileEditor({
               </div>
             </div>
             <div className="relay-model-row-editor">
-              <div className="relay-model-row relay-model-row-head">
+              <div
+                className={`relay-model-row relay-model-row-head${showModelImageHandling ? "" : " relay-model-row--without-image-handling"}`}
+              >
                 <span>{t("模型名称")}</span>
                 <span>{t("上下文窗口")}</span>
-                <span>{t("图片处理方式")}</span>
+                {showModelImageHandling ? <span>{t("图片处理方式")}</span> : null}
               </div>
               {modelWindowRows.map((row, index) => (
-                <div className="relay-model-row" key={index}>
+                <div
+                  className={`relay-model-row${showModelImageHandling ? "" : " relay-model-row--without-image-handling"}`}
+                  key={index}
+                >
                   <Input
                     value={row.model}
                     onChange={(event) => updateModelWindowRow(index, { model: event.currentTarget.value })}
@@ -6429,19 +6437,20 @@ function RelayProfileEditor({
                     onChange={(event) => updateModelWindowRow(index, { window: event.currentTarget.value })}
                     placeholder="1M"
                   />
-                  <AppSelect
-                    className="text-xs"
-                    value={row.imageHandling}
-                    disabled={vlmUnsupportedProtocol}
-                    onChange={(value) => updateModelWindowRow(index, { imageHandling: value })}
-                    options={[
-                      { value: "", label: t("纯文本模型请配置此项"), disabled: true },
-                      { value: "send-as-is", label: "send-as-is", title: t("原样发送图片") },
-                      { value: "strip", label: "strip images", title: t("为纯文本模型移除消息中的图片") },
-                      { value: "vlm", label: "VLM analysis", title: t("为纯文本模型配置图片分析路由") },
-                    ]}
-                    title={vlmUnsupportedProtocol ? t("VLM 仅支持 Chat Completions 协议和聚合模式") : t("多模态模型（支持图片输入的模型）请保持 send-as-is。")}
-                  />
+                  {showModelImageHandling ? (
+                    <AppSelect
+                      className="text-xs"
+                      value={row.imageHandling}
+                      onChange={(value) => updateModelWindowRow(index, { imageHandling: value })}
+                      options={[
+                        { value: "", label: t("纯文本模型请配置此项"), disabled: true },
+                        { value: "send-as-is", label: "send-as-is", title: t("原样发送图片") },
+                        { value: "strip", label: "strip images", title: t("为纯文本模型移除消息中的图片") },
+                        { value: "vlm", label: "VLM analysis", title: t("为纯文本模型配置图片分析路由") },
+                      ]}
+                      title={t("多模态模型（支持图片输入的模型）请保持 send-as-is。")}
+                    />
+                  ) : null}
                   <Button
                     aria-label={t("删除模型")}
                     onClick={() => removeModelWindowRow(index)}
