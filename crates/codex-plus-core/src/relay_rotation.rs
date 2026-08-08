@@ -310,7 +310,13 @@ fn validate_aggregate_members(
                 relay_id: member.relay_id.clone(),
             });
         };
-        if relay.base_url.trim().is_empty() || relay.api_key.trim().is_empty() {
+        if crate::relay_config::relay_profile_base_url(relay)
+            .trim()
+            .is_empty()
+            || crate::relay_config::relay_profile_api_key(relay)
+                .trim()
+                .is_empty()
+        {
             return Err(SelectionError::InvalidMemberRelay {
                 aggregate_id: aggregate.id.clone(),
                 relay_id: member.relay_id.clone(),

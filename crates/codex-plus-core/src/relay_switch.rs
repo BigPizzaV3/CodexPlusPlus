@@ -6,7 +6,7 @@ use anyhow::Context;
 use crate::relay_config::{
     backfill_relay_profile_from_home_with_common, relay_config_status_from_home,
 };
-use crate::settings::{BackendSettings, RelayMode, SettingsStore};
+use crate::settings::{BackendSettings, LaunchMode, RelayMode, SettingsStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelaySwitchResult {
@@ -34,6 +34,8 @@ pub fn switch_relay_profile_in_home(
     {
         backfill_profile_before_switch(home, &mut selected_settings, previous_active_relay_id)?;
     }
+    sync_active_aggregate_profile_models(&mut selected_settings);
+    selected_settings.launch_mode = LaunchMode::Patch;
 
     store
         .save(&selected_settings)
@@ -132,7 +134,11 @@ fn apply_selected_relay_profile(
     home: &Path,
     settings: &BackendSettings,
 ) -> anyhow::Result<RelaySwitchResult> {
-    let relay = settings.active_relay_profile();
+    let relay = settings.active_relay_profile_with_aggregate_models();
+    if relay.relay_mode == RelayMode::Aggregate {
+        crate::relay_rotation::RelayRotationSelector::from_settings(settings)
+            .context("聚合供应商配置无效")?;
+    }
     let common_config = relay_combined_common_config(settings);
     let result = if relay.relay_mode == RelayMode::Official && !relay.official_mix_api_key {
         let auth_contents =
@@ -162,6 +168,19 @@ fn apply_selected_relay_profile(
         configured: status.configured,
         backup_path: result.backup_path,
     })
+}
+
+fn sync_active_aggregate_profile_models(settings: &mut BackendSettings) {
+    let active_id = settings.active_relay_id.clone();
+    let Some(index) = settings
+        .relay_profiles
+        .iter()
+        .position(|profile| profile.id == active_id && profile.relay_mode == RelayMode::Aggregate)
+    else {
+        return;
+    };
+    let profile = settings.relay_profiles[index].clone();
+    settings.relay_profiles[index] = settings.apply_aggregate_model_intersection(profile);
 }
 
 fn validate_switch_profile_files(profile: &crate::settings::RelayProfile) -> anyhow::Result<()> {

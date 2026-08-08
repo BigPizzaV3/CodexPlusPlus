@@ -1464,6 +1464,62 @@ body {
   justify-self: start;
 }
 
+.relay-model-test-results {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.relay-model-test-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--background));
+  padding: 7px 9px;
+}
+
+.relay-model-test-result code {
+  min-width: 0;
+  overflow: hidden;
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-model-test-result span {
+  flex: 0 0 auto;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.relay-model-test-result.running {
+  border-color: hsl(var(--primary) / 0.55);
+}
+
+.relay-model-test-result.ok {
+  border-color: hsl(156 64% 42% / 0.45);
+}
+
+.relay-model-test-result.ok span {
+  color: hsl(156 64% 42%);
+}
+
+.relay-model-test-result.failed {
+  border-color: hsl(0 72% 55% / 0.45);
+}
+
+.relay-model-test-result.failed span {
+  color: hsl(0 72% 55%);
+}
+
 .relay-field-official-key {
   grid-column: 1;
 }
@@ -3471,6 +3527,10 @@ body {
 @media (max-width: 860px) {
   body {
     min-width: 0;
+  }
+
+  .relay-model-test-results {
+    grid-template-columns: 1fr;
   }
 
   .shell {

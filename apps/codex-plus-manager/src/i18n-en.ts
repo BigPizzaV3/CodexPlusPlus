@@ -5,6 +5,11 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "批量 hi 测试": "Batch hi test",
+  "批量模型测试": "Batch model test",
+  "等待测试": "Waiting",
+  "测试中…": "Testing…",
+  "测试请求失败。": "Test request failed.",
   "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。":
     "Expands plugin marketplace requests in API Key mode to show the full plugin list. Usually unnecessary in official/mixed mode.",
   "API Key 环境变量": "API Key environment variable",
@@ -827,6 +832,11 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "HTTP {0} · {1} ms": "HTTP {0} · {1} ms",
+  "HTTP {0} · 失败 · {1} ms": "HTTP {0} · failed · {1} ms",
+  "模型测试完成：成功 {0} 个，失败 {1} 个。": "Model tests completed: {0} succeeded, {1} failed.",
+  "正在测试 {0}/{1}": "Testing {0}/{1}",
+  "请求失败 · {0} ms": "Request failed · {0} ms",
   "作者：{0} · {1}": "Author: {0} · {1}",
   "清单更新于 {0}，安装后会保存到“我的主题”。": "Manifest updated {0}. Installed themes are saved under My themes.",
   "，清理 {0} 条失效任务索引": ", pruned {0} stale task index entry/entries",

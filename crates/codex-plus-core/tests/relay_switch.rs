@@ -197,6 +197,8 @@ fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
     std::fs::create_dir(&home).unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let api = pure_profile("api", "https://api.example/v1", "sk-api");
+    std::fs::write(home.join("config.toml"), &api.config_contents).unwrap();
+    std::fs::write(home.join("auth.json"), &api.auth_contents).unwrap();
     let aggregate = RelayProfile {
         id: "agg".to_string(),
         name: "聚合供应商 1".to_string(),
@@ -229,10 +231,254 @@ fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
 
     let result = switch_relay_profile_in_home(&store, &home, next, "api").unwrap();
     let live = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
 
     assert!(result.configured);
     assert_eq!(store.load().unwrap().active_relay_id, "agg");
+    assert_eq!(store.load().unwrap().launch_mode, LaunchMode::Patch);
     assert!(live.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    assert_eq!(auth["OPENAI_API_KEY"], "codex-plus-aggregate");
+}
+
+#[test]
+fn switch_away_from_aggregate_preserves_profile_and_can_switch_back() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "http://127.0.0.1:57321/v1"
+experimental_bearer_token = "codex-plus-aggregate"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        home.join("auth.json"),
+        r#"{"OPENAI_API_KEY":"codex-plus-aggregate"}"#,
+    )
+    .unwrap();
+
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let api = pure_profile("api", "https://api.example/v1", "sk-api");
+    let aggregate = RelayProfile {
+        id: "agg".to_string(),
+        name: "Aggregate".to_string(),
+        relay_mode: RelayMode::Aggregate,
+        ..RelayProfile::default()
+    };
+    let aggregate_config = AggregateRelayProfile {
+        id: "agg".to_string(),
+        name: "Aggregate".to_string(),
+        strategy: AggregateRelayStrategy::Failover,
+        members: vec![AggregateRelayMember {
+            relay_id: "api".to_string(),
+            weight: 1,
+        }],
+    };
+    store
+        .save(&BackendSettings {
+            active_relay_id: "agg".to_string(),
+            relay_profiles: vec![api.clone(), aggregate.clone()],
+            aggregate_relay_profiles: vec![aggregate_config.clone()],
+            active_aggregate_relay_id: "agg".to_string(),
+            ..BackendSettings::default()
+        })
+        .unwrap();
+
+    switch_relay_profile_in_home(
+        &store,
+        &home,
+        BackendSettings {
+            active_relay_id: "api".to_string(),
+            relay_profiles: vec![api, aggregate],
+            aggregate_relay_profiles: vec![aggregate_config],
+            active_aggregate_relay_id: "agg".to_string(),
+            ..BackendSettings::default()
+        },
+        "agg",
+    )
+    .unwrap();
+
+    let stored = store.load().unwrap();
+    let stored_aggregate = stored
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "agg")
+        .unwrap();
+    assert_eq!(stored_aggregate.relay_mode, RelayMode::Aggregate);
+    assert!(stored_aggregate.config_contents.is_empty());
+    assert!(stored_aggregate.auth_contents.is_empty());
+    assert!(stored.active_aggregate_relay_id.is_empty());
+
+    let mut back = stored;
+    back.active_relay_id = "agg".to_string();
+    switch_relay_profile_in_home(&store, &home, back, "api").unwrap();
+
+    let stored = store.load().unwrap();
+    assert_eq!(stored.active_relay_id, "agg");
+    assert_eq!(stored.active_aggregate_relay_id, "agg");
+    assert!(stored.active_relay_uses_protocol_proxy());
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(auth["OPENAI_API_KEY"], "codex-plus-aggregate");
+}
+
+#[test]
+fn switch_to_aggregate_relay_rejects_stale_only_member() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let api = pure_profile("api", "https://api.example/v1", "sk-api");
+    store
+        .save(&BackendSettings {
+            active_relay_id: "api".to_string(),
+            relay_profiles: vec![api.clone()],
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let next = BackendSettings {
+        active_relay_id: "agg".to_string(),
+        relay_profiles: vec![
+            api,
+            RelayProfile {
+                id: "agg".to_string(),
+                name: "Aggregate".to_string(),
+                relay_mode: RelayMode::Aggregate,
+                ..RelayProfile::default()
+            },
+        ],
+        aggregate_relay_profiles: vec![AggregateRelayProfile {
+            id: "agg".to_string(),
+            name: "Aggregate".to_string(),
+            strategy: AggregateRelayStrategy::Failover,
+            members: vec![AggregateRelayMember {
+                relay_id: "removed-member".to_string(),
+                weight: 1,
+            }],
+        }],
+        active_aggregate_relay_id: "stale-id".to_string(),
+        ..BackendSettings::default()
+    };
+
+    let error = switch_relay_profile_in_home(&store, &home, next, "")
+        .expect_err("an aggregate with no valid members must not be applied");
+
+    assert!(error.to_string().contains("聚合供应商"));
+    assert_eq!(store.load().unwrap().active_relay_id, "api");
+    assert!(!home.join("config.toml").exists());
+    assert!(!home.join("auth.json").exists());
+}
+
+#[test]
+fn switch_relay_profile_forces_full_enhancement_mode() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let relay_a = pure_profile("relay-a", "https://a.example/v1", "sk-a");
+    let relay_b = pure_profile("relay-b", "https://b.example/v1", "sk-b");
+    store
+        .save(&BackendSettings {
+            active_relay_id: "relay-a".to_string(),
+            launch_mode: LaunchMode::Relay,
+            relay_profiles: vec![relay_a.clone(), relay_b.clone()],
+            ..BackendSettings::default()
+        })
+        .unwrap();
+
+    let result = switch_relay_profile_in_home(
+        &store,
+        &home,
+        BackendSettings {
+            active_relay_id: "relay-b".to_string(),
+            launch_mode: LaunchMode::Relay,
+            relay_profiles: vec![relay_a, relay_b],
+            ..BackendSettings::default()
+        },
+        "",
+    )
+    .unwrap();
+
+    assert_eq!(result.settings.launch_mode, LaunchMode::Patch);
+    assert_eq!(store.load().unwrap().launch_mode, LaunchMode::Patch);
+}
+
+#[test]
+fn switch_to_aggregate_relay_uses_member_model_intersection_for_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let relay_a = RelayProfile {
+        model: "shared-model".to_string(),
+        model_list: "shared-model\nonly-a".to_string(),
+        model_windows: r#"{"shared-model":"1M","only-a":"1M"}"#.to_string(),
+        ..pure_profile("relay-a", "https://a.example/v1", "sk-a")
+    };
+    let relay_b = RelayProfile {
+        model: "shared-model".to_string(),
+        model_list: "shared-model\nonly-b".to_string(),
+        model_windows: r#"{"shared-model":"200K","only-b":"200K"}"#.to_string(),
+        ..pure_profile("relay-b", "https://b.example/v1", "sk-b")
+    };
+    let aggregate = RelayProfile {
+        id: "agg".to_string(),
+        name: "Aggregate".to_string(),
+        relay_mode: RelayMode::Aggregate,
+        ..RelayProfile::default()
+    };
+    store
+        .save(&BackendSettings {
+            active_relay_id: "relay-a".to_string(),
+            relay_profiles: vec![relay_a.clone(), relay_b.clone()],
+            ..BackendSettings::default()
+        })
+        .unwrap();
+
+    switch_relay_profile_in_home(
+        &store,
+        &home,
+        BackendSettings {
+            active_relay_id: "agg".to_string(),
+            relay_profiles: vec![relay_a, relay_b, aggregate],
+            aggregate_relay_profiles: vec![AggregateRelayProfile {
+                id: "agg".to_string(),
+                name: "Aggregate".to_string(),
+                strategy: AggregateRelayStrategy::Failover,
+                members: vec![
+                    AggregateRelayMember {
+                        relay_id: "relay-a".to_string(),
+                        weight: 1,
+                    },
+                    AggregateRelayMember {
+                        relay_id: "relay-b".to_string(),
+                        weight: 1,
+                    },
+                ],
+            }],
+            active_aggregate_relay_id: "agg".to_string(),
+            ..BackendSettings::default()
+        },
+        "",
+    )
+    .unwrap();
+
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(config.contains(r#"model = "shared-model""#));
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/agg.json""#));
+    let catalog = std::fs::read_to_string(home.join("model-catalogs").join("agg.json")).unwrap();
+    assert!(catalog.contains(r#""slug": "shared-model""#));
+    assert!(catalog.contains(r#""context_window": 200000"#));
+    assert!(!catalog.contains("only-a"));
+    assert!(!catalog.contains("only-b"));
 }
 
 #[test]

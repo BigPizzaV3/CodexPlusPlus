@@ -416,6 +416,67 @@ fn apply_aggregate_relay_points_codex_to_local_responses_proxy_without_snapshot(
 }
 
 #[test]
+fn apply_aggregate_relay_preserves_existing_auth_fields_and_sets_aggregate_key() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"preserve-me"}}"#,
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        id: "agg".to_string(),
+        name: "Aggregate".to_string(),
+        relay_mode: RelayMode::Aggregate,
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
+            .unwrap();
+    assert_eq!(auth["OPENAI_API_KEY"], "codex-plus-aggregate");
+    assert_eq!(auth["auth_mode"], "chatgpt");
+    assert_eq!(auth["tokens"]["access_token"], "preserve-me");
+}
+
+#[test]
+fn backfill_aggregate_profile_ignores_local_proxy_live_files() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+base_url = "http://127.0.0.1:57321/v1"
+experimental_bearer_token = "codex-plus-aggregate"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"codex-plus-aggregate"}"#,
+    )
+    .unwrap();
+    let mut profile = RelayProfile {
+        id: "agg".to_string(),
+        name: "Aggregate".to_string(),
+        relay_mode: RelayMode::Aggregate,
+        model: "shared-model".to_string(),
+        model_list: "shared-model".to_string(),
+        ..RelayProfile::default()
+    };
+    let expected = profile.clone();
+    let mut common = "model_reasoning_effort = \"high\"\n".to_string();
+    let expected_common = common.clone();
+
+    backfill_relay_profile_from_home_with_common(temp.path(), &mut profile, &mut common).unwrap();
+
+    assert_eq!(profile, expected);
+    assert_eq!(common, expected_common);
+}
+
+#[test]
 fn chat_protocol_profile_keeps_upstream_base_url_separate_from_codex_proxy() {
     let temp = tempfile::tempdir().unwrap();
     let mut profile = RelayProfile {
