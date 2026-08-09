@@ -302,7 +302,9 @@ where
         if settings.computer_use_guard_enabled {
             hooks.ensure_computer_use_config(&settings).await?;
         }
-        hooks.apply_active_relay_profile(&settings).await?;
+        if settings.has_active_relay_profile() {
+            hooks.apply_active_relay_profile(&settings).await?;
+        }
         match crate::codex_sqlite::sanitize_historical_model_suffixes(&home) {
             Ok(result) if result.updated > 0 => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -419,6 +421,9 @@ fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
 }
 
 fn remote_control_provider_proxy_enabled(settings: &BackendSettings) -> bool {
+    if !settings.has_active_relay_profile() {
+        return false;
+    }
     let profile = settings.active_relay_profile();
     profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key
 }
@@ -550,7 +555,7 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn apply_active_relay_profile(&self, settings: &BackendSettings) -> anyhow::Result<()> {
-        if !settings.relay_profiles_enabled {
+        if !settings.relay_profiles_enabled || !settings.has_active_relay_profile() {
             return Ok(());
         }
         let profile = settings.active_relay_profile_with_aggregate_models();

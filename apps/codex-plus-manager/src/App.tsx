@@ -2240,31 +2240,34 @@ export function App() {
       showNotice(t("供应商配置已关闭"), t("当前不会写入 Codex config.toml / auth.json。打开供应商配置总开关后再切换。"), "failed");
       return;
     }
-    const targetBeforeSnapshot = activeRelayProfile(switchSettings);
+    const cancelling = !switchSettings.activeRelayId.trim();
+    const targetBeforeSnapshot = cancelling ? null : activeRelayProfile(switchSettings);
     logDiagnostic("switchRelayProfile.start", {
       currentRelayId: settingsForm.activeRelayId,
       targetRelayId: switchSettings.activeRelayId,
-      targetRelayName: targetBeforeSnapshot.name,
-      targetRelayMode: targetBeforeSnapshot.relayMode,
+      targetRelayName: targetBeforeSnapshot?.name || "",
+      targetRelayMode: targetBeforeSnapshot?.relayMode || "none",
     });
-    const selectedBeforeSave = activeRelayProfile(switchSettings);
-    const validationError = relayProfileSwitchValidation(selectedBeforeSave);
-    if (validationError) {
-      logDiagnostic("switchRelayProfile.validation_failed", {
-        targetRelayId: selectedBeforeSave.id,
-        targetRelayName: selectedBeforeSave.name,
-        error: validationError,
-      });
-      showNotice(t("供应商配置可能不正确"), validationError, "failed");
-      return;
+    if (!cancelling) {
+      const selectedBeforeSave = activeRelayProfile(switchSettings);
+      const validationError = relayProfileSwitchValidation(selectedBeforeSave);
+      if (validationError) {
+        logDiagnostic("switchRelayProfile.validation_failed", {
+          targetRelayId: selectedBeforeSave.id,
+          targetRelayName: selectedBeforeSave.name,
+          error: validationError,
+        });
+        showNotice(t("供应商配置可能不正确"), validationError, "failed");
+        return;
+      }
     }
     switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
-    const selectedAfterSave = activeRelayProfile(switchSettings);
-    const command = relayProfileSwitchCommand(selectedAfterSave);
+    const selectedAfterSave = cancelling ? null : activeRelayProfile(switchSettings);
+    const command = selectedAfterSave ? relayProfileSwitchCommand(selectedAfterSave) : "clear_relay_injection";
 
     logDiagnostic("switchRelayProfile.apply_start", {
-      targetRelayId: selectedAfterSave.id,
-      targetRelayName: selectedAfterSave.name,
+      targetRelayId: selectedAfterSave?.id || "",
+      targetRelayName: selectedAfterSave?.name || "",
       previousActiveRelayId,
       command,
     });
@@ -2277,7 +2280,7 @@ export function App() {
       );
       if (!result) {
         logDiagnostic("switchRelayProfile.apply_no_result", {
-          targetRelayId: selectedAfterSave.id,
+          targetRelayId: selectedAfterSave?.id || "",
         });
         return;
       }
@@ -2298,12 +2301,20 @@ export function App() {
       await refreshRelayFiles(true);
       if (!isSuccessStatus(result.status)) {
         logDiagnostic("switchRelayProfile.apply_failed", {
-          targetRelayId: selectedAfterSave.id,
+          targetRelayId: selectedAfterSave?.id || "",
           status: result.status,
           message: result.message,
           activeRelayId: selectedSettings.activeRelayId,
         });
         showNotice(t("供应商切换"), result.message, result.status);
+        return;
+      }
+      if (cancelling) {
+        logDiagnostic("switchRelayProfile.cancelled", {
+          previousActiveRelayId,
+          status: result.status,
+        });
+        showNotice(t("取消使用供应商"), result.message, result.status);
         return;
       }
       const currentSelected = activeRelayProfile(selectedSettings);
@@ -5460,15 +5471,15 @@ function SortableRelayProfileCard({
             event.stopPropagation();
             if (disabled) return;
             const previousActiveRelayId = form.activeRelayId;
-            const next = syncLegacyRelayFields({ ...form, activeRelayId: profile.id });
+            const next = syncLegacyRelayFields({ ...form, activeRelayId: active ? "" : profile.id });
             void actions.switchRelayProfile(next, previousActiveRelayId);
           }}
           size="sm"
-          title={disabled ? t("供应商切换不可用") : active ? t("当前正在使用") : t("设为当前")}
+          title={disabled ? t("供应商切换不可用") : active ? t("取消使用并清理 Codex 写入信息") : t("设为当前")}
           variant={active ? "secondary" : "outline"}
         >
-          <CheckCircle2 className="h-4 w-4" />
-          {active ? t("使用中") : t("使用")}
+          {active ? <PowerOff className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+          {active ? t("取消使用") : t("使用")}
         </Button>
         <span className="relay-card-extra">
           <Button
@@ -5641,6 +5652,12 @@ function RelayProfileDetail({
   };
   const switchDraft = () => {
     if (isNew || !form.relayProfilesEnabled) return;
+    const isActive = profile.id === form.activeRelayId;
+    if (isActive) {
+      const next = syncLegacyRelayFields({ ...form, activeRelayId: "" });
+      void actions.switchRelayProfile(next, form.activeRelayId);
+      return;
+    }
     const draftWithWindows = draftWithModelRows();
     const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const previousActiveRelayId = form.activeRelayId;
@@ -5872,10 +5889,10 @@ function RelayProfileEditor({
           <Button
             disabled={!form.relayProfilesEnabled || actions.relaySwitching}
             onClick={onSwitch}
-            title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : undefined}
+            title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : profile.id === form.activeRelayId ? t("取消使用并清理 Codex 写入信息") : undefined}
             variant={profile.id === form.activeRelayId ? "secondary" : "default"}
           >
-            {actions.relaySwitching ? t("切换中") : profile.id === form.activeRelayId ? t("使用中") : t("设为当前")}
+            {actions.relaySwitching ? t("切换中") : profile.id === form.activeRelayId ? t("取消使用") : t("设为当前")}
           </Button>
         )}
       </div>
@@ -8100,9 +8117,11 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             sub2apiMultiplier: "",
           },
         ];
-  const activeRelayId = profiles.some((profile) => profile.id === settings.activeRelayId)
-    ? settings.activeRelayId
-    : profiles[0]?.id || "default";
+  const activeRelayId = settings.activeRelayId === ""
+    ? ""
+    : profiles.some((profile) => profile.id === settings.activeRelayId)
+      ? settings.activeRelayId
+      : profiles[0]?.id || "default";
   return syncLegacyRelayFields({
     ...defaultSettings,
     ...settings,
@@ -8814,15 +8833,15 @@ function syncLegacyRelayFields(settings: BackendSettings): BackendSettings {
   const relayProfiles = settings.relayProfiles.map((profile) =>
     isAggregateRelayProfile(profile) ? normalizeAggregateRelayProfile(profile, { ...settings, relayProfiles: settings.relayProfiles }) : deriveRelayProfileFromFiles(profile),
   );
-  const active = activeRelayProfile({ ...settings, relayProfiles });
+  const active = settings.activeRelayId.trim() ? activeRelayProfile({ ...settings, relayProfiles }) : null;
   const aggregateRelayProfiles = normalizeAggregateProfilesFromRelayProfiles(relayProfiles);
-  const activeAggregateRelayId = isAggregateRelayProfile(active) ? active.id : "";
+  const activeAggregateRelayId = active && isAggregateRelayProfile(active) ? active.id : "";
   return {
     ...settings,
     relayProfiles,
-    activeRelayId: active.id,
-    relayBaseUrl: isAggregateRelayProfile(active) ? PROTOCOL_PROXY_BASE_URL : active.baseUrl,
-    relayApiKey: active.apiKey,
+    activeRelayId: active?.id || "",
+    relayBaseUrl: active ? (isAggregateRelayProfile(active) ? PROTOCOL_PROXY_BASE_URL : active.baseUrl) : defaultSettings.relayBaseUrl,
+    relayApiKey: active?.apiKey || "",
     aggregateRelayProfiles,
     activeAggregateRelayId,
   };
@@ -8942,9 +8961,11 @@ function addRelayProfile(settings: BackendSettings, profile: RelayProfile): Back
     : deriveRelayProfileFromFiles(
         profile.configContents.trim() || profile.authContents.trim() ? profile : withGeneratedRelayFiles(profile),
       );
-  const activeId = settings.relayProfiles.some((item) => item.id === settings.activeRelayId)
-    ? settings.activeRelayId
-    : activeRelayProfile(settings).id;
+  const activeId = settings.activeRelayId === ""
+    ? ""
+    : settings.relayProfiles.some((item) => item.id === settings.activeRelayId)
+      ? settings.activeRelayId
+      : activeRelayProfile(settings).id;
   return syncLegacyRelayFields({
     ...settings,
     relayProfiles: [...settings.relayProfiles, nextWithFiles],

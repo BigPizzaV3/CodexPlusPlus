@@ -134,6 +134,21 @@ fn apply_selected_relay_profile(
     home: &Path,
     settings: &BackendSettings,
 ) -> anyhow::Result<RelaySwitchResult> {
+    if !settings.has_active_relay_profile() {
+        let result =
+            crate::relay_config::clear_relay_config_to_home_with_auth_and_computer_use_guard(
+                home,
+                None,
+                settings.computer_use_guard_enabled,
+            )?;
+        let status = relay_config_status_from_home(home);
+        return Ok(RelaySwitchResult {
+            settings: settings.clone(),
+            configured: status.configured,
+            backup_path: result.backup_path,
+        });
+    }
+
     let relay = settings.active_relay_profile_with_aggregate_models();
     if relay.relay_mode == RelayMode::Aggregate {
         crate::relay_rotation::RelayRotationSelector::from_settings(settings)

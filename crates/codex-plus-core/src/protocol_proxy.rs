@@ -786,6 +786,9 @@ pub async fn open_chat_completions_proxy_request(
     original_user_agent: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
+    if !settings.has_active_relay_profile() {
+        anyhow::bail!("当前没有使用中的供应商");
+    }
     let relay = settings.active_relay_profile();
     if relay.protocol != RelayProtocol::ChatCompletions {
         anyhow::bail!("当前中转未启用 Chat Completions 协议代理");

@@ -242,6 +242,78 @@ fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
 }
 
 #[test]
+fn cancelling_active_relay_clears_managed_live_fields_and_preserves_other_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model = "gpt-5.5"
+model_provider = "custom"
+model_catalog_json = "model-catalogs/relay-a.json"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+
+[features]
+goals = true
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        home.join("auth.json"),
+        r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":"sk-relay","tokens":{"access_token":"official"}}"#,
+    )
+    .unwrap();
+
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let profile = pure_profile("relay-a", "https://relay.example/v1", "sk-relay");
+    let original = BackendSettings {
+        active_relay_id: "relay-a".to_string(),
+        relay_profiles: vec![profile.clone()],
+        ..BackendSettings::default()
+    };
+    store.save(&original).unwrap();
+
+    let result = switch_relay_profile_in_home(
+        &store,
+        &home,
+        BackendSettings {
+            active_relay_id: String::new(),
+            relay_profiles: vec![profile],
+            ..BackendSettings::default()
+        },
+        "relay-a",
+    )
+    .unwrap();
+
+    assert!(result.settings.active_relay_id.is_empty());
+    assert!(!result.configured);
+    let stored = store.load().unwrap();
+    assert!(stored.active_relay_id.is_empty());
+    assert!(stored.active_aggregate_relay_id.is_empty());
+    assert!(!stored.has_active_relay_profile());
+
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(config.contains(r#"model = "gpt-5.5""#));
+    assert!(config.contains("[features]"));
+    assert!(config.contains("goals = true"));
+    assert!(!config.contains("model_provider"));
+    assert!(!config.contains("model_catalog_json"));
+    assert!(!config.contains("model_providers.custom"));
+    assert!(!config.contains("relay.example"));
+
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(auth["auth_mode"], "chatgpt");
+    assert_eq!(auth["tokens"]["access_token"], "official");
+    assert!(auth.get("OPENAI_API_KEY").is_none());
+}
+
+#[test]
 fn switch_away_from_aggregate_preserves_profile_and_can_switch_back() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("codex");

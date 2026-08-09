@@ -550,6 +550,15 @@ impl Default for BackendSettings {
 }
 
 impl BackendSettings {
+    pub fn has_active_relay_profile(&self) -> bool {
+        let active_id = self.active_relay_id.trim();
+        !active_id.is_empty()
+            && self
+                .relay_profiles
+                .iter()
+                .any(|profile| profile.id == active_id)
+    }
+
     pub fn active_relay_profile(&self) -> RelayProfile {
         if self.active_relay_id == default_active_relay_id()
             && self.relay_profiles.len() == 1
@@ -706,8 +715,9 @@ impl BackendSettings {
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
-        self.active_aggregate_relay_profile().is_some()
-            || self.active_relay_profile().protocol == RelayProtocol::ChatCompletions
+        self.has_active_relay_profile()
+            && (self.active_aggregate_relay_profile().is_some()
+                || self.active_relay_profile().protocol == RelayProtocol::ChatCompletions)
     }
 }
 

@@ -2722,6 +2722,7 @@ pub fn switch_relay_profile(
     let store = SettingsStore::default();
     let previous_active_relay_id = request.previous_active_relay_id;
     let settings = normalize_settings_before_save(request.settings);
+    let cancelling = settings.active_relay_id.trim().is_empty();
     log_manager_event(
         "manager.switch_relay_profile.start",
         json!({
@@ -2746,7 +2747,11 @@ pub fn switch_relay_profile(
                 }),
             );
             ok(
-                "供应商已切换。",
+                if cancelling {
+                    "已取消当前供应商，并清理 Codex config.toml / auth.json 中的供应商写入信息。"
+                } else {
+                    "供应商已切换。"
+                },
                 relay_switch_payload(result.settings, status, result.backup_path),
             )
         }
@@ -3420,6 +3425,10 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
             relay_payload(status, None),
         );
     }
+    if !settings.has_active_relay_profile() {
+        let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+        return failed("当前没有使用中的供应商。", relay_payload(status, None));
+    }
     prepare_codex_app_state_before_provider_switch(&home, "manager.apply_relay_injection.before");
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
@@ -3570,6 +3579,10 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
             "供应商配置总开关已关闭，未写入 config.toml / auth.json。",
             relay_payload(status, None),
         );
+    }
+    if !settings.has_active_relay_profile() {
+        let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+        return failed("当前没有使用中的供应商。", relay_payload(status, None));
     }
     prepare_codex_app_state_before_provider_switch(
         &home,
