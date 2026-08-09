@@ -435,7 +435,8 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
             preserve_computer_use_guard,
         )
     } else {
-        let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
+        let auth_contents =
+            official_profile_auth_for_switch(home, &profile.auth_contents, profile.relay_mode)?;
         apply_relay_files_to_home_with_computer_use_guard(
             home,
             &config_with_catalog,
@@ -2091,13 +2092,62 @@ fn sync_profile_mode_from_backfilled_live(profile: &mut RelayProfile) {
     }
 }
 
-fn official_profile_auth_for_switch(home: &Path, auth_contents: &str) -> anyhow::Result<String> {
+/// 聚合模式写入 auth.json 的占位 Key。
+///
+/// 仅用于满足 Codex 桌面版的登录检查（auth.json 中存在 OPENAI_API_KEY 即视为
+/// 已认证）；实际请求认证由本地协议代理（127.0.0.1:57321）的内部 token
+/// "codex-plus-aggregate" 完成，与 auth.json 内容无关。
+const AGGREGATE_AUTH_PLACEHOLDER_KEY: &str = "sk-codex-plus-aggregate-placeholder";
+
+/// 非 PureApi 模式切换时写入 auth.json 的认证内容。
+///
+/// - Official：Codex 桌面版依赖已登录的 ChatGPT 账号（MSIX 账户体系），
+///   auth.json 中不保留 OPENAI_API_KEY。
+/// - Aggregate：聚合模式的请求认证由本地协议代理完成，真实上游 Key 只保存在
+///   Codex++ 的 settings.json 中。但 Codex 桌面版以 auth.json 的 OPENAI_API_KEY
+///   作为“已登录”判据，删除会导致纯 API Key 用户在切换聚合模式后弹出登录界面。
+///   因此聚合模式保留已有 Key，缺失时写入占位 Key。
+fn official_profile_auth_for_switch(
+    home: &Path,
+    auth_contents: &str,
+    relay_mode: crate::settings::RelayMode,
+) -> anyhow::Result<String> {
     let source = if auth_contents.trim().is_empty() {
         read_optional_text(&home.join("auth.json"))?
     } else {
         auth_contents.to_string()
     };
+    if relay_mode == crate::settings::RelayMode::Aggregate {
+        return ensure_openai_api_key_in_auth_contents(&source);
+    }
     remove_openai_api_key_from_auth_contents(&source)
+}
+
+/// 聚合模式专用：确保 auth.json 包含 OPENAI_API_KEY。
+/// 已有则原样保留；缺失或内容非法时写入占位 Key。
+fn ensure_openai_api_key_in_auth_contents(auth_contents: &str) -> anyhow::Result<String> {
+    if !auth_contents.trim().is_empty() {
+        if let Ok(mut value) = serde_json::from_str::<Value>(auth_contents) {
+            if let Some(object) = value.as_object_mut() {
+                if object
+                    .get("OPENAI_API_KEY")
+                    .and_then(Value::as_str)
+                    .is_some_and(|key| !key.trim().is_empty())
+                {
+                    return Ok(format!("{}\n", serde_json::to_string_pretty(&value)?));
+                }
+                object.insert(
+                    "OPENAI_API_KEY".to_string(),
+                    Value::String(AGGREGATE_AUTH_PLACEHOLDER_KEY.to_string()),
+                );
+                return Ok(format!("{}\n", serde_json::to_string_pretty(&value)?));
+            }
+        }
+    }
+    Ok(format!(
+        "{}\n",
+        serde_json::to_string_pretty(&json!({ "OPENAI_API_KEY": AGGREGATE_AUTH_PLACEHOLDER_KEY }))?
+    ))
 }
 
 fn codex_auth_api_key(auth_contents: &str) -> Option<String> {
@@ -2733,6 +2783,61 @@ mod tests {
             ..RelayProfile::default()
         };
         assert!(relay_profile_model(&empty).trim().is_empty());
+    }
+
+    #[test]
+    fn aggregate_switch_keeps_existing_openai_api_key() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("auth.json"),
+            "{\n  \"OPENAI_API_KEY\": \"sk-existing-key\"\n}\n",
+        )
+        .unwrap();
+
+        let result = official_profile_auth_for_switch(
+            temp.path(),
+            "",
+            crate::settings::RelayMode::Aggregate,
+        )
+        .unwrap();
+
+        assert!(result.contains("sk-existing-key"));
+        assert!(!result.trim().is_empty());
+    }
+
+    #[test]
+    fn aggregate_switch_writes_placeholder_when_auth_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "").unwrap();
+
+        let result = official_profile_auth_for_switch(
+            temp.path(),
+            "",
+            crate::settings::RelayMode::Aggregate,
+        )
+        .unwrap();
+
+        assert!(result.contains("OPENAI_API_KEY"));
+        assert!(result.contains(AGGREGATE_AUTH_PLACEHOLDER_KEY));
+    }
+
+    #[test]
+    fn official_switch_still_removes_openai_api_key() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("auth.json"),
+            "{\n  \"OPENAI_API_KEY\": \"sk-should-be-removed\"\n}\n",
+        )
+        .unwrap();
+
+        let result = official_profile_auth_for_switch(
+            temp.path(),
+            "",
+            crate::settings::RelayMode::Official,
+        )
+        .unwrap();
+
+        assert!(!result.contains("OPENAI_API_KEY"));
     }
 }
 
