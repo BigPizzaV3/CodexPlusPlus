@@ -367,9 +367,24 @@ fn app_paths_normalizes_chatgpt_desktop_executable_and_builds_it() {
         Some(app.as_path())
     );
     assert_eq!(build_codex_executable(&app), app.join("ChatGPT.exe"));
+    assert_eq!(packaged_app_user_model_id(&app), None);
+}
+
+#[test]
+fn unpacked_package_named_directory_launches_chatgpt_executable_directly() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp
+        .path()
+        .join("OpenAI.Codex_1.2026.133.0_x64__abc")
+        .join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("ChatGPT.exe"), "").unwrap();
+
+    assert_eq!(packaged_app_user_model_id(&app), None);
+    assert_eq!(build_packaged_activation(&app, 9229, &[]), None);
     assert_eq!(
-        packaged_app_user_model_id(&app).as_deref(),
-        Some("OpenAI.Codex_abc!App")
+        build_codex_command(&app, 9229, &[])[0],
+        app.join("ChatGPT.exe").to_string_lossy()
     );
 }
 
