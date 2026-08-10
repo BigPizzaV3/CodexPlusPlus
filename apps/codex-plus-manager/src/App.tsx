@@ -80,6 +80,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { codexGoalsFeatureState, setCodexGoalsFeatureInConfig } from "./goals-config";
 import { isGitHubRepositoryHomepage } from "./github-repository";
+import { normalizeAutoCompactPercent } from "./auto-compact";
 import {
   findRelayModelRouteIssue,
   modelRouteSaveRequiresRestart,
@@ -90,11 +91,24 @@ import {
 import {
   mergeModelWindowRows,
   modelWindowRowsFromProfile,
+  modelWindowRowsValidationError,
   serializeModelWindowRows,
   type ImageHandling,
+  type ModelWindowRowsValidationIssue,
   type ModelWindowRow,
 } from "./model-windows";
 import { relayAuthForLiveDraft } from "./relay-live-files";
+import {
+  clearModelMetadataForSlug,
+  parseModelMetadataDocument,
+  parseModelMetadataMap,
+  remapModelMetadataSlugs,
+  replaceModelMetadataForSlug,
+  retainModelMetadataForSlugs,
+  serializeModelMetadataDocument,
+  synchronizeModelMetadataDocumentLimits,
+  type ImportedModelMetadata,
+} from "./model-metadata";
 import { resolveProviderSyncCompletion } from "./provider-sync-flow";
 import {
   defaultDreamSkinTheme,
@@ -125,6 +139,15 @@ const dreamSkinWindowsPreviewUrl = new URL("../../../assets/inject/upstream/drea
 const dreamSkinMacPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/macos/portal-hero.png", import.meta.url).href;
 const dreamSkinCompanionDataUrlLimit = 240_000;
 const dreamSkinCompanionMimeTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+
+function modelWindowRowsValidationMessage(issue: ModelWindowRowsValidationIssue | null): string | null {
+  if (!issue) return null;
+  if (issue.code === "duplicateModel") return tf("模型名称重复：{0}", [issue.model]);
+  if (issue.code === "invalidWindow") {
+    return tf("模型 {0} 的上下文窗口无效；请输入正整数，或使用 K/M 整数后缀。", [issue.model]);
+  }
+  return tf("模型 {0} 的自动压缩百分比无效；请输入 0 到 100 之间、最多 6 位小数的十进制数。", [issue.model]);
+}
 
 type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
 
@@ -279,6 +302,8 @@ export type RelayProfile = {
   autoCompactLimit: string;
   modelList: string;
   modelWindows: string;
+  modelAutoCompact: string;
+  modelMetadata: string;
   modelVlm: string;
   vlmApiKey: string;
   vlmModel: string;
@@ -866,6 +891,8 @@ const defaultSettings: BackendSettings = {
       autoCompactLimit: "",
       modelList: "",
       modelWindows: "",
+       modelAutoCompact: "",
+      modelMetadata: "",
       modelVlm: "",
       vlmApiKey: "",
       vlmModel: "",
@@ -2011,13 +2038,16 @@ export function App() {
     const next = normalizeSettings(settingsForm);
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
     if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
+      if (isSuccessStatus(result.status)) {
+        setSettings(result);
+        setSettingsForm(normalizeSettings(result.settings));
+      }
       showNotice(t("设置保存"), result.message, result.status);
     }
   };
 
   const saveSettingsValue = async (next: BackendSettings, silent = true) => {
+    const previous = settingsForm;
     const normalized = normalizeSettings(next);
     const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
     if (result && isSuccessStatus(result.status)) {
@@ -2250,6 +2280,7 @@ export function App() {
       }
       await refreshRelay(true);
     }
+    return !!result && isSuccessStatus(result.status);
   };
 
   const upsertContextEntry = async (next: BackendSettings, kind: ContextKind, id: string, tomlBody: string) => {
@@ -2392,14 +2423,6 @@ export function App() {
         return;
       }
       const selectedSettings = normalizeSettings(result.settings);
-      setSettings({
-        status: result.status,
-        message: result.message,
-        settings: selectedSettings,
-        settings_path: result.settingsPath,
-        user_scripts: result.user_scripts as UserScriptInventory,
-      });
-      setSettingsForm(selectedSettings);
       setRelay({
         status: result.status,
         message: result.message,
@@ -2416,6 +2439,14 @@ export function App() {
         showNotice(t("供应商切换"), result.message, result.status);
         return;
       }
+      setSettings({
+        status: result.status,
+        message: result.message,
+        settings: selectedSettings,
+        settings_path: result.settingsPath,
+        user_scripts: result.user_scripts as UserScriptInventory,
+      });
+      setSettingsForm(selectedSettings);
       const currentSelected = activeRelayProfile(selectedSettings);
       logDiagnostic("switchRelayProfile.ok", {
         targetRelayId: currentSelected.id,
@@ -3124,7 +3155,7 @@ type Actions = {
   applyRelayInjection: () => Promise<boolean>;
   applyPureApiInjection: () => Promise<boolean>;
   clearRelayInjection: () => Promise<boolean>;
-  saveRelayFile: (kind: "config" | "auth", contents: string, silent?: boolean) => Promise<void>;
+  saveRelayFile: (kind: "config" | "auth", contents: string, silent?: boolean) => Promise<boolean>;
   upsertContextEntry: (
     settings: BackendSettings,
     kind: ContextKind,
@@ -5902,7 +5933,7 @@ function RelayProfileDetail({
 }) {
   const [draft, setDraft] = useState<RelayProfile>(profile);
   const [modelWindowRows, setModelWindowRows] = useState<ModelWindowRow[]>(
-    modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || "", profile.modelVlm),
+    modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || "", profile.modelVlm, profile.modelAutoCompact),
   );
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
@@ -5927,15 +5958,24 @@ function RelayProfileDetail({
       ? applyRelayProfilePatchToFiles(liveDraft, { apiKey: storedApiKey })
       : liveDraft;
     setDraft(nextDraft);
-    setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm));
-  }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
+    setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm, nextDraft.modelAutoCompact));
+  }, [profile.id, profile.modelList, profile.modelWindows, profile.modelAutoCompact, profile.modelMetadata, profile.modelVlm, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
   const validationSettings = relaySettingsWithDraft(form, profile.id, draft, isNew);
   const validationError = isAggregateRelayProfile(draft)
     ? aggregateRelayProfileValidation(draft)
-    : relayModelRoutesSettingsValidation(validationSettings);
+    : modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows))
+      ?? relayModelRoutesSettingsValidation(validationSettings);
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
-    return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows, modelVlm: serializedRows.modelVlm };
+    const validSlugs = serializedRows.modelList.split("\n").filter(Boolean);
+    return {
+      ...draft,
+      modelList: serializedRows.modelList,
+      modelWindows: serializedRows.modelWindows,
+      modelAutoCompact: serializedRows.modelAutoCompact,
+      modelMetadata: retainModelMetadataForSlugs(draft.modelMetadata, validSlugs),
+      modelVlm: serializedRows.modelVlm,
+    };
   };
   const saveDraft = async () => {
     if (validationError) return;
@@ -5968,12 +6008,14 @@ function RelayProfileDetail({
     const savedProfile = savedSettings.relayProfiles.find((candidate) => candidate.id === normalizedDraft.id)
       ?? normalizedDraft;
     if (isActive && savedSettings.relayProfilesEnabled && relayProfileUsesLiveFiles(savedProfile)) {
-      await actions.saveRelayFile(
+      const configSaved = await actions.saveRelayFile(
         "config",
         effectiveRelayConfigPreview(savedProfile, savedSettings, savedProfile),
         true,
       );
-      await actions.saveRelayFile("auth", savedProfile.authContents, true);
+      if (!configSaved) return;
+      const authSaved = await actions.saveRelayFile("auth", savedProfile.authContents, true);
+      if (!authSaved) return;
     }
     onSaved?.();
   };
@@ -6123,6 +6165,23 @@ function RelayProfileEditor({
   setModelWindowRows: (value: ModelWindowRow[]) => void;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [metadataImportTarget, setMetadataImportTarget] = useState<{
+    index: number;
+    slug: string;
+    originalWindow: string;
+    originalAutoCompact: string;
+  } | null>(null);
+  const [metadataImportDocument, setMetadataImportDocument] = useState("");
+  const [metadataImportError, setMetadataImportError] = useState("");
+  const [metadataImportPreview, setMetadataImportPreview] = useState<ImportedModelMetadata | null>(null);
+  const modelSlugOriginsRef = useRef(modelWindowRows.map((row) => row.model.trim()));
+  useEffect(() => {
+    modelSlugOriginsRef.current = modelWindowRows.map((row) => row.model.trim());
+  }, [profile.id, profile.modelList]);
+  const importedModelMetadata = useMemo(
+    () => parseModelMetadataMap(profile.modelMetadata),
+    [profile.modelMetadata],
+  );
   // 纯 Responses 模式（非聚合）下 VLM/Strip 不生效，禁用下拉
   const vlmUnsupportedProtocol = profile.protocol === "responses" && !isAggregateRelayProfile(profile);
   if (isAggregateRelayProfile(profile)) {
@@ -6135,6 +6194,7 @@ function RelayProfileEditor({
     );
   }
 
+  const modelRowsError = modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows));
   const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
   const goalsFeatureState = codexGoalsFeatureState(
     profile.configContents,
@@ -6155,17 +6215,140 @@ function RelayProfileEditor({
       modelRoutes: modelRoutes.map((route, routeIndex) => (routeIndex === index ? { ...route, ...patch } : route)),
     });
   };
+  const commitModelMetadata = (modelMetadata: string) => {
+    updateDraft({ modelMetadata });
+  };
   const updateModelWindowRow = (index: number, patch: Partial<ModelWindowRow>) => {
     setModelWindowRows(
       modelWindowRows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)),
     );
   };
+  const updateModelSlug = (index: number, model: string) => {
+    updateModelWindowRow(index, { model });
+  };
+  const resolvePendingModelSlugRenames = (
+    rows: ModelWindowRow[],
+    origins: string[],
+    modelMetadata: string,
+  ) => {
+    const slugs = rows.map((row) => row.model.trim()).filter(Boolean);
+    if (new Set(slugs).size !== slugs.length) return { modelMetadata, origins };
+    const nextOrigins = rows.map((row, index) => row.model.trim() || origins[index] || "");
+    return {
+      modelMetadata: remapModelMetadataSlugs(
+        modelMetadata,
+        rows.map((row, index) => ({
+          previousSlug: origins[index] || "",
+          nextSlug: row.model,
+        })),
+      ),
+      origins: nextOrigins,
+    };
+  };
+  const commitModelSlug = (index: number) => {
+    const nextSlug = modelWindowRows[index]?.model.trim() ?? "";
+    if (!nextSlug) return;
+    const resolved = resolvePendingModelSlugRenames(
+      modelWindowRows,
+      modelSlugOriginsRef.current,
+      profile.modelMetadata,
+    );
+    if (resolved.modelMetadata !== profile.modelMetadata) commitModelMetadata(resolved.modelMetadata);
+    modelSlugOriginsRef.current = resolved.origins;
+  };
   const removeModelWindowRow = (index: number) => {
+    const removedSlug = modelWindowRows[index]?.model.trim()
+      || modelSlugOriginsRef.current[index]
+      || "";
     const nextRows = modelWindowRows.filter((_, rowIndex) => rowIndex !== index);
-    setModelWindowRows(nextRows.length ? nextRows : [{ model: "", window: "", imageHandling: "" }]);
+    const nextOrigins = modelSlugOriginsRef.current.filter((_, rowIndex) => rowIndex !== index);
+    const resolved = resolvePendingModelSlugRenames(nextRows, nextOrigins, profile.modelMetadata);
+    modelSlugOriginsRef.current = resolved.origins;
+    setModelWindowRows(nextRows.length ? nextRows : [{ model: "", window: "", autoCompact: "", imageHandling: "" }]);
+    const slugStillPresent = nextRows.some((row) => row.model.trim() === removedSlug)
+      || resolved.origins.includes(removedSlug);
+    const nextMetadata = removedSlug && !slugStillPresent
+      ? clearModelMetadataForSlug(resolved.modelMetadata, removedSlug)
+      : resolved.modelMetadata;
+    if (nextMetadata !== profile.modelMetadata) commitModelMetadata(nextMetadata);
+    if (metadataImportTarget?.index === index) {
+      closeModelMetadataImport();
+    } else if (metadataImportTarget && metadataImportTarget.index > index) {
+      setMetadataImportTarget({ ...metadataImportTarget, index: metadataImportTarget.index - 1 });
+    }
   };
   const addModelWindowRows = (rows: ModelWindowRow[]) => {
-    setModelWindowRows(mergeModelWindowRows(modelWindowRows, rows));
+    const merged = mergeModelWindowRows(modelWindowRows, rows);
+    modelSlugOriginsRef.current = merged.map((row) => {
+      const currentIndex = modelWindowRows.findIndex((current) => current.model.trim() === row.model.trim());
+      return currentIndex >= 0
+        ? modelSlugOriginsRef.current[currentIndex] ?? row.model.trim()
+        : row.model.trim();
+    });
+    setModelWindowRows(merged);
+  };
+  const appendEmptyModelRow = () => {
+    modelSlugOriginsRef.current = [...modelSlugOriginsRef.current, ""];
+    setModelWindowRows([...modelWindowRows, { model: "", window: "", autoCompact: "", imageHandling: "" }]);
+  };
+  const beginModelMetadataImport = (index: number, slug: string) => {
+    const existingMetadata = importedModelMetadata[slug];
+    const existingDocument = existingMetadata
+      ? serializeModelMetadataDocument(
+          slug,
+          existingMetadata,
+          modelWindowRows[index]?.window ?? "",
+          modelWindowRows[index]?.autoCompact ?? "",
+        )
+      : "";
+    const existingPreview = existingDocument
+      ? parseModelMetadataDocument(existingDocument, slug)
+      : null;
+    setMetadataImportTarget({
+      index,
+      slug,
+      originalWindow: modelWindowRows[index]?.window ?? "",
+      originalAutoCompact: modelWindowRows[index]?.autoCompact ?? "",
+    });
+    setMetadataImportDocument(existingDocument);
+    setMetadataImportError("");
+    setMetadataImportPreview(existingPreview?.ok ? existingPreview.value : null);
+  };
+  const closeModelMetadataImport = () => {
+    setMetadataImportTarget(null);
+    setMetadataImportDocument("");
+    setMetadataImportError("");
+    setMetadataImportPreview(null);
+  };
+  const cancelModelMetadataImport = () => {
+    if (metadataImportTarget) {
+      updateModelWindowRow(metadataImportTarget.index, {
+        window: metadataImportTarget.originalWindow,
+        autoCompact: metadataImportTarget.originalAutoCompact,
+      });
+    }
+    closeModelMetadataImport();
+  };
+  const applyModelMetadataImport = () => {
+    if (!metadataImportTarget || !metadataImportPreview) return;
+    commitModelMetadata(replaceModelMetadataForSlug(
+      profile.modelMetadata,
+      metadataImportPreview.slug,
+      metadataImportPreview.metadata,
+    ));
+    updateModelWindowRow(metadataImportTarget.index, {
+      window: metadataImportPreview.contextWindow ?? "",
+      autoCompact: metadataImportPreview.autoCompactPercent,
+    });
+    closeModelMetadataImport();
+  };
+  const clearImportedModelMetadata = () => {
+    if (!metadataImportTarget) return;
+    commitModelMetadata(clearModelMetadataForSlug(
+      profile.modelMetadata,
+      metadataImportTarget.slug,
+    ));
+    closeModelMetadataImport();
   };
   const fetchSub2ApiRate = async () => {
     const result = await actions.fetchSub2ApiBilling(deriveRelayProfileFromFiles(profile));
@@ -6264,22 +6447,6 @@ function RelayProfileEditor({
                 value={profile.testModel}
                 onChange={(event) => updateDraft({ testModel: event.currentTarget.value })}
                 placeholder={tf("留空使用默认：{0}", [form.relayTestModel || defaultSettings.relayTestModel])}
-              />
-            </Field>
-            <Field className="relay-field-context-window" label={t("上下文大小")}>
-              <Input
-                inputMode="numeric"
-                value={profile.contextWindow}
-                onChange={(event) => updateDraft({ contextWindow: event.currentTarget.value.replace(/[^\d]/g, "") })}
-                placeholder={t("留空不改写，例如 200000")}
-              />
-            </Field>
-            <Field className="relay-field-auto-compact" label={t("压缩上下文大小")}>
-              <Input
-                inputMode="numeric"
-                value={profile.autoCompactLimit}
-                onChange={(event) => updateDraft({ autoCompactLimit: event.currentTarget.value.replace(/[^\d]/g, "") })}
-                placeholder={t("留空不改写，例如 160000")}
               />
             </Field>
           </div>
@@ -6382,7 +6549,7 @@ function RelayProfileEditor({
               </div>
               <div className="relay-model-list-tools">
                 <Button
-                  onClick={() => setModelWindowRows([...modelWindowRows, { model: "", window: "", imageHandling: "" }])}
+                  onClick={appendEmptyModelRow}
                   size="sm"
                   type="button"
                   variant="secondary"
@@ -6397,9 +6564,10 @@ function RelayProfileEditor({
                       ...profile,
                       modelList: serializedRows.modelList,
                       modelWindows: serializedRows.modelWindows,
+                      modelAutoCompact: serializedRows.modelAutoCompact,
                     });
                     if (models?.length) {
-                      addModelWindowRows(models.map((model) => ({ model, window: "", imageHandling: "" })));
+                      addModelWindowRows(models.map((model) => ({ model, window: "", autoCompact: "", imageHandling: "" })));
                     }
                   }}
                   size="sm"
@@ -6413,48 +6581,186 @@ function RelayProfileEditor({
             </div>
             <div className="relay-model-row-editor">
               <div className="relay-model-row relay-model-row-head">
-                <span>{t("模型名称")}</span>
-                <span>{t("上下文窗口")}</span>
-                <span>{t("图片处理方式")}</span>
+                <span className="relay-model-name-heading">{t("模型名称")}</span>
+                <span className="relay-model-window-heading">{t("上下文窗口")}</span>
+                <span className="relay-model-compact-heading">{t("自动压缩")}</span>
+                <span className="relay-model-config-heading">{t("模型配置")}</span>
               </div>
-              {modelWindowRows.map((row, index) => (
-                <div className="relay-model-row" key={index}>
-                  <Input
-                    value={row.model}
-                    onChange={(event) => updateModelWindowRow(index, { model: event.currentTarget.value })}
-                    placeholder="deepseek/deepseek-v4-flash"
-                  />
-                  <Input
-                    value={row.window}
-                    onChange={(event) => updateModelWindowRow(index, { window: event.currentTarget.value })}
-                    placeholder="1M"
-                  />
-                  <AppSelect
-                    className="text-xs"
-                    value={row.imageHandling}
-                    disabled={vlmUnsupportedProtocol}
-                    onChange={(value) => updateModelWindowRow(index, { imageHandling: value })}
-                    options={[
-                      { value: "", label: t("纯文本模型请配置此项"), disabled: true },
-                      { value: "send-as-is", label: "send-as-is", title: t("原样发送图片") },
-                      { value: "strip", label: "strip images", title: t("为纯文本模型移除消息中的图片") },
-                      { value: "vlm", label: "VLM analysis", title: t("为纯文本模型配置图片分析路由") },
-                    ]}
-                    title={vlmUnsupportedProtocol ? t("VLM 仅支持 Chat Completions 协议和聚合模式") : t("多模态模型（支持图片输入的模型）请保持 send-as-is。")}
-                  />
-                  <Button
-                    aria-label={t("删除模型")}
-                    onClick={() => removeModelWindowRow(index)}
-                    size="icon"
-                    title={t("删除模型")}
-                    type="button"
-                    variant="ghost"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
+              {modelWindowRows.map((row, index) => {
+                const slug = row.model.trim();
+                const importing = metadataImportTarget?.index === index && metadataImportTarget.slug === slug;
+                const imported = Boolean(importedModelMetadata[slug]);
+                return (
+                <div key={index} className="relay-model-entry">
+                  <div className="relay-model-row">
+                    <Input
+                      value={row.model}
+                      onChange={(event) => updateModelSlug(index, event.currentTarget.value)}
+                      onBlur={() => commitModelSlug(index)}
+                      placeholder="deepseek/deepseek-v4-flash"
+                    />
+                    <Input
+                      value={row.window}
+                      onChange={(event) => {
+                        const window = event.currentTarget.value;
+                        updateModelWindowRow(index, { window });
+                        if (!importing) return;
+                        const synchronizedDocument = synchronizeModelMetadataDocumentLimits(
+                          metadataImportDocument,
+                          slug,
+                          window,
+                          row.autoCompact,
+                        );
+                        if (synchronizedDocument === null) {
+                          setMetadataImportPreview(null);
+                          setMetadataImportError(t("上下文窗口与自动压缩值无效，无法同步模型配置。"));
+                          return;
+                        }
+                        setMetadataImportDocument(synchronizedDocument);
+                        const synchronizedPreview = parseModelMetadataDocument(synchronizedDocument, slug);
+                        setMetadataImportPreview(synchronizedPreview.ok ? synchronizedPreview.value : null);
+                        setMetadataImportError("");
+                      }}
+                      placeholder="1M"
+                    />
+                    <Input
+                      value={row.autoCompact}
+                      onChange={(event) => {
+                        const autoCompact = event.currentTarget.value;
+                        updateModelWindowRow(index, { autoCompact });
+                        if (!importing) return;
+                        const synchronizedDocument = synchronizeModelMetadataDocumentLimits(
+                          metadataImportDocument,
+                          slug,
+                          row.window,
+                          autoCompact,
+                        );
+                        if (synchronizedDocument === null) {
+                          setMetadataImportPreview(null);
+                          setMetadataImportError(t("上下文窗口与自动压缩值无效，无法同步模型配置。"));
+                          return;
+                        }
+                        setMetadataImportDocument(synchronizedDocument);
+                        const synchronizedPreview = parseModelMetadataDocument(synchronizedDocument, slug);
+                        setMetadataImportPreview(synchronizedPreview.ok ? synchronizedPreview.value : null);
+                        setMetadataImportError("");
+                      }}
+                      onBlur={(event) => {
+                        const normalized = normalizeAutoCompactPercent(event.currentTarget.value);
+                        if (normalized !== row.autoCompact) {
+                          updateModelWindowRow(index, { autoCompact: normalized });
+                        }
+                      }}
+                      placeholder="90%"
+                    />
+                    <Button
+                      className="relay-model-import-button"
+                      aria-expanded={importing}
+                      onClick={() => {
+                        if (importing) cancelModelMetadataImport();
+                        else beginModelMetadataImport(index, slug);
+                      }}
+                      size="icon"
+                      type="button"
+                      title={imported ? t("查看或重新导入 models.json") : t("导入 models.json")}
+                      variant={importing || imported ? "secondary" : "ghost"}
+                      disabled={!slug}
+                    >
+                      <FileCode2 className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      aria-label={t("删除模型")}
+                      onClick={() => removeModelWindowRow(index)}
+                      size="icon"
+                      title={t("删除模型")}
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="relay-model-row-actions">
+                    <AppSelect
+                      className="text-xs"
+                      value={row.imageHandling}
+                      disabled={vlmUnsupportedProtocol}
+                      onChange={(value) => updateModelWindowRow(index, { imageHandling: value })}
+                      options={[
+                        { value: "", label: t("纯文本模型请配置此项"), disabled: true },
+                        { value: "send-as-is", label: "send-as-is", title: t("原样发送图片") },
+                        { value: "strip", label: "strip images", title: t("为纯文本模型移除消息中的图片") },
+                        { value: "vlm", label: "VLM analysis", title: t("为纯文本模型配置图片分析路由") },
+                      ]}
+                      title={vlmUnsupportedProtocol ? t("VLM 仅支持 Chat Completions 协议和聚合模式") : ""}
+                    />
+                    <span className="relay-model-row-hint">{t("多模态模型（支持图片输入的模型）请保持 send-as-is。")}</span>
+                  </div>
+                  {importing ? (
+                    <section className="relay-model-import-workbench">
+                      <Textarea
+                        autoFocus
+                        value={metadataImportDocument}
+                        onChange={(event) => {
+                          const document = event.currentTarget.value;
+                          setMetadataImportDocument(document);
+                          setMetadataImportError("");
+                          const parsed = parseModelMetadataDocument(document, slug);
+                          if (!parsed.ok) {
+                            setMetadataImportPreview(null);
+                            setMetadataImportError(t(parsed.error));
+                            return;
+                          }
+                          setMetadataImportError("");
+                          setMetadataImportPreview(parsed.value);
+                          updateModelWindowRow(index, {
+                            window: parsed.value.contextWindow ?? "",
+                            autoCompact: parsed.value.autoCompactPercent,
+                          });
+                        }}
+                        placeholder={t("粘贴 models.json 内容")}
+                        rows={7}
+                      />
+                      {metadataImportError ? <div className="relay-model-metadata-import-error" role="alert">{metadataImportError}</div> : null}
+                      <div className="relay-model-metadata-import-actions">
+                        <div className="relay-model-import-copy">
+                          <strong>{slug}</strong>
+                          <span>{t("导入对应模型的 model.json 字段。支持多模型文件，自动匹配同名模型。")}</span>
+                        </div>
+                        <div className="relay-model-metadata-import-flow">
+                          <Button onClick={cancelModelMetadataImport} size="sm" type="button" variant="ghost">{t("取消")}</Button>
+                          {imported ? (
+                            <Button
+                              className="relay-model-metadata-reset"
+                              onClick={clearImportedModelMetadata}
+                              size="sm"
+                              title={t("清除已导入的模型字段，保留上下文窗口")}
+                              type="button"
+                              variant="ghost"
+                            >
+                              <RotateCcw className="h-4 w-4" />
+                              {t("清除导入配置")}
+                            </Button>
+                          ) : null}
+                          <Button
+                            disabled={!metadataImportPreview}
+                            onClick={applyModelMetadataImport}
+                            size="sm"
+                            type="button"
+                          >
+                            {t("替换此模型配置")}
+                          </Button>
+                        </div>
+                      </div>
+                    </section>
+                  ) : null}
                 </div>
-              ))}
+                );
+              })}
             </div>
+            {modelRowsError ? <div className="relay-model-metadata-import-error" role="alert">{modelRowsError}</div> : null}
+            <p className="field-hint">
+              {t("上下文窗口与自动压缩会和当前模型的 context_window、auto_compact_token_limit 保持同步。")}
+            </p>
           </section>
         ) : null}
         {showApiFields ? (
@@ -7578,6 +7884,8 @@ function AppSelect<T extends string>({
   title?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [placement, setPlacement] = useState<"bottom" | "top">("bottom");
+  const rootRef = useRef<HTMLDivElement>(null);
   const selected = options.find((option) => option.value === value) || options[0];
   const selectOption = (option: AppSelectOption<T>) => {
     if (option.disabled) return;
@@ -7586,16 +7894,30 @@ function AppSelect<T extends string>({
   };
   return (
     <div
-      className={`app-select ${open ? "open" : ""} ${disabled ? "disabled" : ""} ${className}`.trim()}
+      className={`app-select ${open ? "open" : ""} ${placement === "top" ? "open-top" : ""} ${disabled ? "disabled" : ""} ${className}`.trim()}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
       }}
+      ref={rootRef}
     >
       <button
         aria-expanded={open}
         className="app-select-trigger"
         disabled={disabled}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          if (open) {
+            setOpen(false);
+            return;
+          }
+          const rect = rootRef.current?.getBoundingClientRect();
+          if (rect) {
+            const estimatedMenuHeight = Math.min(options.length * 34 + 12, 260);
+            const spaceBelow = window.innerHeight - rect.bottom;
+            const spaceAbove = rect.top;
+            setPlacement(spaceBelow < estimatedMenuHeight && spaceAbove > spaceBelow ? "top" : "bottom");
+          }
+          setOpen(true);
+        }}
         title={title}
         type="button"
       >
@@ -8437,6 +8759,8 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             autoCompactLimit: "",
             modelList: "",
             modelWindows: "",
+             modelAutoCompact: "",
+            modelMetadata: "",
             modelVlm: "",
             vlmApiKey: "",
             vlmModel: "",
@@ -8521,6 +8845,8 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         modelList: "",
         modelWindows: "",
         modelRoutes: [],
+        modelAutoCompact: "",
+        modelMetadata: "",
         sub2apiEnabled: false,
         sub2apiMultiplier: "",
       },
@@ -8552,6 +8878,8 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     modelList: profile.modelList || "",
     modelWindows: profile.modelWindows || "",
     modelRoutes: relayMode === "official" && !officialMixApiKey ? [] : normalizeRelayModelRoutes(profile.modelRoutes),
+    modelAutoCompact: profile.modelAutoCompact || "",
+    modelMetadata: profile.modelMetadata || "",
     userAgent: profile.userAgent || "",
     sub2apiEnabled: profile.sub2apiEnabled === true,
     sub2apiMultiplier: profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
@@ -9284,6 +9612,8 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     autoCompactLimit: "",
     modelList: "",
     modelWindows: "",
+     modelAutoCompact: "",
+    modelMetadata: "",
     modelVlm: "",
     vlmApiKey: "",
     vlmModel: "",
@@ -9322,6 +9652,8 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       autoCompactLimit: "",
       modelList: "",
       modelWindows: "",
+       modelAutoCompact: "",
+      modelMetadata: "",
       modelVlm: "",
       vlmApiKey: "",
       vlmModel: "",

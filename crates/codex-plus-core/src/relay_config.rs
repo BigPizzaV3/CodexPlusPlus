@@ -1,7 +1,7 @@
 use anyhow::Context;
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
@@ -389,8 +389,11 @@ pub fn apply_relay_profile_files_to_home_with_context(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
-    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
-    apply_relay_files_to_home(home, &config_with_catalog, &profile.auth_contents)
+    with_model_catalog_rollback(home, profile, || {
+        let config_with_catalog =
+            apply_model_catalog_to_config(home, profile, &config_with_limits)?;
+        apply_relay_files_to_home(home, &config_with_catalog, &profile.auth_contents)
+    })
 }
 
 pub fn apply_relay_profile_to_home_with_switch_rules(
@@ -426,24 +429,27 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
-    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
+    with_model_catalog_rollback(home, profile, || {
+        let config_with_catalog =
+            apply_model_catalog_to_config(home, profile, &config_with_limits)?;
 
-    if profile.relay_mode == crate::settings::RelayMode::PureApi {
-        apply_relay_files_to_home_with_computer_use_guard(
-            home,
-            &config_with_catalog,
-            &profile.auth_contents,
-            preserve_computer_use_guard,
-        )
-    } else {
-        let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
-        apply_relay_files_to_home_with_computer_use_guard(
-            home,
-            &config_with_catalog,
-            &auth_contents,
-            preserve_computer_use_guard,
-        )
-    }
+        if profile.relay_mode == crate::settings::RelayMode::PureApi {
+            apply_relay_files_to_home_with_computer_use_guard(
+                home,
+                &config_with_catalog,
+                &profile.auth_contents,
+                preserve_computer_use_guard,
+            )
+        } else {
+            let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
+            apply_relay_files_to_home_with_computer_use_guard(
+                home,
+                &config_with_catalog,
+                &auth_contents,
+                preserve_computer_use_guard,
+            )
+        }
+    })
 }
 
 pub fn apply_relay_profile_config_to_home_with_context(
@@ -463,8 +469,35 @@ pub fn apply_relay_profile_config_to_home_with_context(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
-    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
-    apply_relay_config_file_to_home(home, &config_with_catalog)
+    with_model_catalog_rollback(home, profile, || {
+        let config_with_catalog =
+            apply_model_catalog_to_config(home, profile, &config_with_limits)?;
+        apply_relay_config_file_to_home(home, &config_with_catalog)
+    })
+}
+
+fn with_model_catalog_rollback<T>(
+    home: &Path,
+    profile: &RelayProfile,
+    operation: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let catalog_path = home
+        .join("model-catalogs")
+        .join(format!("{}.json", sanitize_catalog_filename(&profile.id)));
+    let previous_catalog = read_optional_bytes(&catalog_path)?;
+    match operation() {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            if let Err(restore_error) =
+                restore_optional_file(&catalog_path, previous_catalog.as_deref())
+            {
+                return Err(
+                    error.context(format!("应用失败后恢复模型 catalog 失败：{restore_error}"))
+                );
+            }
+            Err(error)
+        }
+    }
 }
 
 pub fn apply_relay_config_file_to_home(
@@ -680,13 +713,13 @@ pub fn clear_relay_config_to_home_with_auth_and_computer_use_guard(
         );
     }
     let mut updated = without_tables;
-    for key in [
-        "OPENAI_API_KEY",
-        "model_provider",
-        "model_catalog_json",
-        "base_url",
-    ] {
+    for key in ["OPENAI_API_KEY", "model_provider", "base_url"] {
         updated = remove_root_key(&updated, key);
+    }
+    let managed_catalog = root_key_string(&existing, "model_catalog_json")
+        .is_some_and(|path| is_codex_plus_managed_model_catalog(home, &path));
+    if managed_catalog {
+        updated = remove_root_key(&updated, "model_catalog_json");
     }
     updated = remove_managed_remote_control_openai_base_url(&updated)?;
     let backup_path = write_codex_live_atomic(
@@ -1183,6 +1216,15 @@ fn write_codex_live_atomic(
 
     let old_config = read_optional_bytes(&config_path)?;
     let old_auth = read_optional_bytes(&auth_path)?;
+    let config_unchanged = config_text
+        .map(|contents| old_config.as_deref() == Some(contents.as_bytes()))
+        .unwrap_or(true);
+    let auth_unchanged = auth_bytes
+        .map(|contents| old_auth.as_deref() == Some(contents))
+        .unwrap_or(true);
+    if config_unchanged && auth_unchanged {
+        return Ok(None);
+    }
     let backup_path = create_live_backup(home, old_config.as_deref(), old_auth.as_deref())?;
     let mut auth_written = false;
 
@@ -1553,10 +1595,12 @@ fn apply_context_limits_to_config(
 ) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(config_text)?;
     if let Some(value) = parse_optional_positive_u64(context_window, "上下文大小")? {
-        doc["model_context_window"] = toml_edit::value(value as i64);
+        let value = i64::try_from(value).context("上下文大小超出 TOML 整数范围")?;
+        doc["model_context_window"] = toml_edit::value(value);
     }
     if let Some(value) = parse_optional_positive_u64(auto_compact_limit, "压缩上下文大小")? {
-        doc["model_auto_compact_token_limit"] = toml_edit::value(value as i64);
+        let value = i64::try_from(value).context("压缩上下文大小超出 TOML 整数范围")?;
+        doc["model_auto_compact_token_limit"] = toml_edit::value(value);
     }
     Ok(normalize_optional_toml(doc))
 }
@@ -1572,6 +1616,34 @@ fn apply_model_catalog_to_config(
     );
     let custom_responses = custom_responses_provider(config_text);
     let mut config_text = config_text.to_string();
+    let mut model_windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
+    validate_model_windows(&model_windows)?;
+    let model_list = if profile.model_list.contains('[') {
+        let (clean_list, migrated_windows) =
+            crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);
+        for (slug, window) in migrated_windows {
+            model_windows.entry(slug).or_insert(window);
+        }
+        clean_list
+    } else {
+        profile.model_list.clone()
+    };
+    let model_auto_compact =
+        parse_model_string_map(&profile.model_auto_compact, "model_auto_compact")?;
+    validate_model_auto_compact(&model_auto_compact)?;
+    let model_metadata = parse_model_metadata_map(&profile.model_metadata)?;
+    let entries = crate::model_suffix::collect_catalog_entries(
+        &model_list,
+        &model_windows,
+        &model_auto_compact,
+        &profile.model,
+    );
+    let entry_slugs: HashSet<String> = entries.iter().map(|entry| entry.slug.clone()).collect();
+    let has_metadata_overrides = model_metadata_has_entries(&model_metadata, &entry_slugs);
+    let has_per_model_overrides = has_metadata_overrides
+        || entries
+            .iter()
+            .any(|entry| entry.suffix_window.is_some() || entry.auto_compact_percent.is_some());
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
     // cc-switch 的固定文件名属于已知的其他管理器投影，不视为用户手写 catalog；
@@ -1580,18 +1652,29 @@ fn apply_model_catalog_to_config(
         if existing != catalog_relative {
             if is_cc_switch_model_catalog(&existing) {
                 config_text = remove_root_key(&config_text, "model_catalog_json");
-            } else if custom_responses
-                && copy_standard_responses_catalog(home, &existing, &catalog_relative)?
-            {
-                let mut doc = parse_toml_document(&config_text)?;
-                doc["model_catalog_json"] = toml_edit::value(catalog_relative);
-                return Ok(normalize_optional_toml(doc));
             } else {
+                if has_per_model_overrides {
+                    anyhow::bail!(
+                        "当前配置使用外部 model_catalog_json，无法同时应用每模型窗口、自动压缩或元数据"
+                    );
+                }
+                if custom_responses
+                    && copy_standard_responses_catalog(home, &existing, &catalog_relative)?
+                {
+                    let mut doc = parse_toml_document(&config_text)?;
+                    doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+                    return Ok(normalize_optional_toml(doc));
+                }
                 return Ok(config_text);
             }
         }
     }
     if let Some(external_catalog) = live_external_model_catalog(home) {
+        if has_per_model_overrides {
+            anyhow::bail!(
+                "当前 Codex 配置使用外部 model_catalog_json，无法同时应用每模型窗口、自动压缩或元数据"
+            );
+        }
         let mut doc = parse_toml_document(&config_text)?;
         if custom_responses
             && copy_standard_responses_catalog(home, &external_catalog, &catalog_relative)?
@@ -1602,23 +1685,23 @@ fn apply_model_catalog_to_config(
         }
         return Ok(normalize_optional_toml(doc));
     }
-    let (model_list, model_windows): (String, std::collections::HashMap<String, String>) =
-        if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
-            crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list)
-        } else {
-            (
-                profile.model_list.clone(),
-                serde_json::from_str(&profile.model_windows).unwrap_or_default(),
-            )
-        };
-    let entries =
-        crate::model_suffix::collect_catalog_entries(&model_list, &model_windows, &profile.model);
     // Known bundled metadata entries need a catalog even without a user-supplied window.
-    if !entries.iter().any(|entry| {
-        entry.suffix_window.is_some()
-            || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
-    }) {
-        return Ok(config_text);
+    // Per-model metadata overrides also require a catalog to write into, otherwise the
+    // user's field overrides would be silently dropped.
+    if !has_metadata_overrides
+        && !entries.iter().any(|entry| {
+            entry.suffix_window.is_some()
+                || entry.auto_compact_percent.is_some()
+                || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
+        })
+    {
+        let mut doc = parse_toml_document(&config_text)?;
+        if root_key_string(&config_text, "model_catalog_json").as_deref()
+            == Some(catalog_relative.as_str())
+        {
+            doc.remove("model_catalog_json");
+        }
+        return Ok(normalize_optional_toml(doc));
     }
     let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
     let catalog_path = home.join(&catalog_relative);
@@ -1633,10 +1716,139 @@ fn apply_model_catalog_to_config(
         None,
         custom_responses.then_some(false),
     );
-    std::fs::write(&catalog_path, catalog_json)?;
+    let catalog_json =
+        apply_model_metadata_overrides(&catalog_json, &model_metadata, custom_responses)?;
+    crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
     let mut doc = parse_toml_document(&config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
     Ok(normalize_optional_toml(doc))
+}
+
+/// 判断 `model_metadata` 是否含有效覆盖条目（值为对象的 slug）。
+///
+/// JSON 无法解析时返回错误，而不是静默当作"无覆盖"：否则同一段坏 JSON 会因为模型是否带
+/// `[window]` 后缀而表现不同——有后缀时在写 catalog 时报错，无后缀时被悄悄忽略。
+fn parse_model_string_map(
+    value: &str,
+    field_name: &str,
+) -> anyhow::Result<HashMap<String, String>> {
+    if value.trim().is_empty() {
+        return Ok(HashMap::new());
+    }
+    let parsed: serde_json::Value = serde_json::from_str(value)
+        .map_err(|error| anyhow::anyhow!("{field_name} JSON 解析失败：{error}"))?;
+    let object = parsed
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("{field_name} 必须是 JSON 对象"))?;
+    object
+        .iter()
+        .map(|(key, value)| {
+            let value = value
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("{field_name} 的模型 {key} 值必须是字符串"))?;
+            Ok((key.clone(), value.to_string()))
+        })
+        .collect()
+}
+
+fn validate_model_windows(model_windows: &HashMap<String, String>) -> anyhow::Result<()> {
+    for (slug, value) in model_windows {
+        if crate::model_suffix::parse_window_token(value).is_none() {
+            anyhow::bail!("model_windows 的模型 {slug} 窗口值无效：{value}");
+        }
+    }
+    Ok(())
+}
+
+fn validate_model_auto_compact(model_auto_compact: &HashMap<String, String>) -> anyhow::Result<()> {
+    for (slug, value) in model_auto_compact {
+        if crate::model_suffix::parse_compact_percent(value).is_none() {
+            anyhow::bail!("model_auto_compact 的模型 {slug} 百分比无效：{value}");
+        }
+    }
+    Ok(())
+}
+
+fn parse_model_metadata_map(metadata_json: &str) -> anyhow::Result<serde_json::Map<String, Value>> {
+    if metadata_json.trim().is_empty() {
+        return Ok(serde_json::Map::new());
+    }
+    let value: Value = serde_json::from_str(metadata_json)
+        .map_err(|error| anyhow::anyhow!("model_metadata JSON 解析失败：{error}"))?;
+    let map = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("model_metadata 必须是 JSON 对象"))?;
+    for (slug, metadata) in map {
+        if !metadata.is_object() {
+            anyhow::bail!("model_metadata 的模型 {slug} 值必须是对象");
+        }
+    }
+    Ok(map.clone())
+}
+
+fn model_metadata_has_entries(
+    metadata: &serde_json::Map<String, Value>,
+    entry_slugs: &HashSet<String>,
+) -> bool {
+    metadata.keys().any(|slug| entry_slugs.contains(slug))
+}
+
+/// 将 `model_metadata` 中的用户覆盖应用到生成的 catalog JSON。
+///
+/// `metadata_json` 是 JSON map: `{ "slug": { "field": value, ... } }`。
+/// 对每个匹配 slug 的模型条目，用户指定的字段覆盖模板值（字段级合并，非整体替换）。
+/// 未匹配的 slug 忽略。空字符串直接返回原 catalog。
+fn apply_model_metadata_overrides(
+    catalog_json: &str,
+    override_map: &serde_json::Map<String, Value>,
+    protect_responses_lite: bool,
+) -> anyhow::Result<String> {
+    if override_map.is_empty() {
+        return Ok(catalog_json.to_string());
+    }
+
+    let mut catalog: serde_json::Value = serde_json::from_str(catalog_json)
+        .map_err(|e| anyhow::anyhow!("catalog JSON 解析失败：{e}"))?;
+    let Some(models) = catalog
+        .get_mut("models")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Ok(catalog_json.to_string());
+    };
+
+    for model in models.iter_mut() {
+        let Some(slug) = model.get("slug").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(user_override) = override_map.get(slug) else {
+            continue;
+        };
+        if let (Some(model_obj), Some(user_obj)) =
+            (model.as_object_mut(), user_override.as_object())
+        {
+            for (key, value) in user_obj {
+                // 每模型窗口是 context_window 的唯一真值；兼容旧版设置中残留的同名覆盖，
+                // 避免它在最后合并时反向覆盖 model_windows 生成的实际窗口。
+                if matches!(
+                    key.as_str(),
+                    "slug"
+                        | "context_window"
+                        | "max_context_window"
+                        | "auto_compact_token_limit"
+                        | "effective_context_window_percent"
+                        | "priority"
+                        | "visibility"
+                        | "supported_in_api"
+                ) || protect_responses_lite && key == "use_responses_lite"
+                {
+                    continue;
+                }
+                model_obj.insert(key.clone(), value.clone());
+            }
+        }
+    }
+
+    Ok(serde_json::to_string_pretty(&catalog)?)
 }
 
 fn custom_responses_provider(config_text: &str) -> bool {
@@ -1721,12 +1933,6 @@ fn is_codex_plus_managed_model_catalog(home: &Path, path: &str) -> bool {
     let normalized = path.trim().replace('\\', "/");
     let relative = normalized.trim_start_matches("./");
     if relative.to_ascii_lowercase().starts_with("model-catalogs/") {
-        return true;
-    }
-    let normalized_lower = normalized.to_ascii_lowercase();
-    if normalized_lower.contains("/model-catalogs/")
-        || normalized_lower.ends_with("/model-catalogs")
-    {
         return true;
     }
     let managed_root = home
@@ -2371,12 +2577,22 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
             }
         })
         .collect();
-    if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
-        let (clean_list, windows) =
+    if profile.model_list.contains('[') {
+        let (clean_list, migrated_windows) =
             crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);
+        let mut windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
+        for (slug, window) in migrated_windows {
+            windows.entry(slug).or_insert(window);
+        }
         profile.model_list = clean_list;
-        profile.model_windows = serde_json::to_string(&windows).unwrap_or_default();
+        profile.model_windows = serde_json::to_string(&windows)?;
     }
+    let model_windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
+    validate_model_windows(&model_windows)?;
+    let model_auto_compact =
+        parse_model_string_map(&profile.model_auto_compact, "model_auto_compact")?;
+    validate_model_auto_compact(&model_auto_compact)?;
+    parse_model_metadata_map(&profile.model_metadata)?;
     if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
         let has_api_config = !profile.base_url.trim().is_empty()
             || !profile.api_key.trim().is_empty()
@@ -2822,6 +3038,93 @@ mod tests {
                 .unwrap();
         let doc = merged.parse::<DocumentMut>().unwrap();
         assert_eq!(doc["features"]["goals"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn model_metadata_has_entries_rejects_empty_and_non_object_values() {
+        let slugs = HashSet::from(["a".to_string()]);
+        assert!(!model_metadata_has_entries(
+            &parse_model_metadata_map("").unwrap(),
+            &slugs
+        ));
+        assert!(!model_metadata_has_entries(
+            &parse_model_metadata_map("{}").unwrap(),
+            &slugs
+        ));
+        assert!(parse_model_metadata_map("{\"a\":1}").is_err());
+        assert!(model_metadata_has_entries(
+            &parse_model_metadata_map("{\"a\":{\"context_window\":1}}").unwrap(),
+            &slugs
+        ));
+        assert!(!model_metadata_has_entries(
+            &parse_model_metadata_map("{\"stale\":{\"context_window\":1}}").unwrap(),
+            &slugs
+        ));
+    }
+
+    #[test]
+    fn model_metadata_has_entries_reports_invalid_json() {
+        let err = parse_model_metadata_map("{not json")
+            .expect_err("坏 JSON 应当报错，而不是按模型是否带后缀表现不一致");
+        assert!(err.to_string().contains("model_metadata"));
+    }
+
+    #[test]
+    fn apply_model_metadata_overrides_merges_fields_by_slug() {
+        let catalog = r#"{"models":[
+            {"slug":"deepseek-v4","context_window":272000,"use_responses_lite":true},
+            {"slug":"other","context_window":272000}
+        ]}"#;
+        let overrides =
+            r#"{"deepseek-v4":{"use_responses_lite":false,"default_reasoning_level":"high"}}"#;
+
+        let overrides = parse_model_metadata_map(overrides).unwrap();
+        let merged = apply_model_metadata_overrides(catalog, &overrides, false).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        let models = value["models"].as_array().unwrap();
+
+        // 用户字段覆盖模板值，未指定的字段保留。
+        assert_eq!(models[0]["use_responses_lite"], serde_json::json!(false));
+        assert_eq!(
+            models[0]["default_reasoning_level"],
+            serde_json::json!("high")
+        );
+        assert_eq!(models[0]["context_window"], serde_json::json!(272_000));
+        // 未匹配的 slug 不受影响。
+        assert_eq!(models[1]["use_responses_lite"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn apply_model_metadata_overrides_keeps_catalog_context_window_authoritative() {
+        let catalog = r#"{"models":[{"slug":"deepseek-v4","context_window":1000000}]}"#;
+        let overrides = r#"{"deepseek-v4":{"context_window":272000,"max_context_window":1048576}}"#;
+
+        let overrides = parse_model_metadata_map(overrides).unwrap();
+        let merged = apply_model_metadata_overrides(catalog, &overrides, false).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        let model = &value["models"][0];
+        assert_eq!(model["context_window"], serde_json::json!(1_000_000));
+        assert_eq!(model["max_context_window"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn apply_model_metadata_overrides_passes_through_when_empty() {
+        let catalog = r#"{"models":[{"slug":"a"}]}"#;
+        assert_eq!(
+            apply_model_metadata_overrides(catalog, &serde_json::Map::new(), false).unwrap(),
+            catalog
+        );
+        assert_eq!(
+            apply_model_metadata_overrides(catalog, &serde_json::Map::new(), false).unwrap(),
+            catalog
+        );
+    }
+
+    #[test]
+    fn apply_model_metadata_overrides_reports_invalid_json() {
+        let err =
+            parse_model_metadata_map("{not json").expect_err("坏 JSON 应当报错而不是静默忽略");
+        assert!(err.to_string().contains("model_metadata"));
     }
 
     #[test]

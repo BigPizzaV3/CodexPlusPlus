@@ -12,6 +12,9 @@ pub struct ModelCatalogEntry {
     pub display_name: String,
     /// 来自后缀的窗口值；None 表示该条目无后缀（回落顶层默认）。
     pub suffix_window: Option<u64>,
+    /// 自动压缩百分比（context_window 的百分比）；None 时按 Codex 默认 90% 兜底。
+    /// 以百万分之一百分比表示，例如 90% = 90_000_000。
+    pub auto_compact_percent: Option<u32>,
 }
 
 /// 解析单个模型条目的后缀，返回 (slug, 可选窗口)。
@@ -53,6 +56,33 @@ pub fn migrate_model_list_with_suffixes(model_list: &str) -> (String, HashMap<St
     (clean_lines.join("\n"), windows)
 }
 
+/// 解析自动压缩百分比 token，如 "90" / "84.5%"；非法、0 或超出 100 返回 None。
+pub(crate) fn parse_compact_percent(token: &str) -> Option<u32> {
+    let token = token.trim();
+    let token = token.strip_suffix('%').unwrap_or(token).trim();
+    if token.ends_with('%') {
+        return None;
+    }
+    let (whole, fraction) = token.split_once('.').unwrap_or((token, ""));
+    if fraction.len() > 6 || whole.is_empty() || !whole.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let whole = whole.parse::<u32>().ok()?;
+    let fraction = if fraction.is_empty() {
+        0
+    } else if fraction.chars().all(|c| c.is_ascii_digit()) {
+        let mut value = fraction.parse::<u32>().ok()?;
+        for _ in fraction.len()..6 {
+            value *= 10;
+        }
+        value
+    } else {
+        return None;
+    };
+    let scaled = whole.checked_mul(1_000_000)?.checked_add(fraction)?;
+    (scaled > 0 && scaled <= 100_000_000).then_some(scaled)
+}
+
 /// 解析括号内的窗口 token，如 "1M" / "200K" / "1000000"。非法或 0 返回 None。
 pub(crate) fn parse_window_token(token: &str) -> Option<u64> {
     let token = token.trim();
@@ -69,7 +99,7 @@ pub(crate) fn parse_window_token(token: &str) -> Option<u64> {
         .trim()
         .parse::<u64>()
         .ok()
-        .map(|value| value * multiplier)
+        .and_then(|value| value.checked_mul(multiplier))
         .filter(|value| *value > 0)
 }
 
@@ -82,6 +112,7 @@ pub(crate) fn parse_window_token(token: &str) -> Option<u64> {
 pub fn collect_catalog_entries(
     model_list: &str,
     model_windows: &HashMap<String, String>,
+    model_auto_compact: &HashMap<String, String>,
     current_model: &str,
 ) -> Vec<ModelCatalogEntry> {
     // 先解析 model_list，保留顺序并去重；后缀已从 model_list 剥离，窗口来自 model_windows map。
@@ -102,10 +133,14 @@ pub fn collect_catalog_entries(
         let suffix_window = model_windows
             .get(&slug)
             .and_then(|token| parse_window_token(token));
+        let auto_compact_percent = model_auto_compact
+            .get(&slug)
+            .and_then(|token| parse_compact_percent(token));
         list_entries.push(ModelCatalogEntry {
             display_name: slug.clone(),
             slug,
             suffix_window,
+            auto_compact_percent,
         });
     }
 
@@ -118,10 +153,14 @@ pub fn collect_catalog_entries(
             let suffix_window = model_windows
                 .get(&slug)
                 .and_then(|token| parse_window_token(token));
+            let auto_compact_percent = model_auto_compact
+                .get(&slug)
+                .and_then(|token| parse_compact_percent(token));
             entries.push(ModelCatalogEntry {
                 display_name: slug.clone(),
                 slug: slug.clone(),
                 suffix_window,
+                auto_compact_percent,
             });
             // 从 list_entries 中移除同 slug 条目，避免重复。
             list_entries.retain(|entry| entry.slug != slug);
@@ -199,7 +238,7 @@ pub fn model_ui_metadata(slug: &str) -> Option<Value> {
 /// 再覆盖 slug / display_name / description / context_window / max_context_window /
 /// effective_context_window_percent / priority / auto_compact_token_limit 等字段。
 /// 无后缀条目用 fallback_window；fallback 也无时回落 272000（codex 默认）。
-/// auto_compact_token_limit 留 null：codex 内置模型即 null（按比例算，调研第六节）。
+/// auto_compact_token_limit 默认按 Codex 的 90% 比例显式写入。
 pub fn build_model_catalog_json(
     entries: &[ModelCatalogEntry],
     fallback_window: Option<u64>,
@@ -249,7 +288,11 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
             model["max_context_window"] = json!(context_window);
             // 默认 95 会让 1M 显示为 950K，显式写 100 以显示真实窗口。
             model["effective_context_window_percent"] = json!(100);
-            model["auto_compact_token_limit"] = Value::Null;
+            let compact_percent = entry.auto_compact_percent.unwrap_or(90_000_000);
+            let compact_limit = (((context_window as u128 * compact_percent as u128 + 50_000_000)
+                / 100_000_000) as u64)
+                .max(1);
+            model["auto_compact_token_limit"] = json!(compact_limit);
             model["priority"] = json!(1000 + index);
             model["visibility"] = json!("list");
             model["supported_in_api"] = json!(true);
@@ -282,10 +325,39 @@ fn model_template_entry(slug: &str) -> (Value, bool) {
         }
         return (template, true);
     }
-    (
-        first_bundled_template_entry().unwrap_or_else(|| json!({})),
-        false,
-    )
+    let mut fallback = first_bundled_template_entry().unwrap_or_else(|| json!({}));
+    // 未知第三方模型只借用模板的字段结构。能力默认值与 Codex
+    // `model_info_from_slug` 的 fallback 对齐，再由导入的 models.json 显式覆盖。
+    fallback["default_reasoning_level"] = Value::Null;
+    fallback["supported_reasoning_levels"] = json!([]);
+    fallback["shell_type"] = json!("default");
+    fallback["additional_speed_tiers"] = json!([]);
+    fallback["service_tiers"] = json!([]);
+    fallback["default_service_tier"] = Value::Null;
+    fallback["include_skills_usage_instructions"] = json!(false);
+    fallback["include_plugin_usage_instructions"] = json!(false);
+    fallback["include_apps_usage_instructions"] = json!(false);
+    fallback["supports_reasoning_summary_parameter"] = json!(true);
+    // 兼容仍读取旧字段名的 Codex 版本。
+    fallback["supports_reasoning_summaries"] = json!(true);
+    fallback["default_reasoning_summary"] = json!("auto");
+    fallback["support_verbosity"] = json!(false);
+    fallback["default_verbosity"] = Value::Null;
+    fallback["apply_patch_tool_type"] = Value::Null;
+    fallback["web_search_tool_type"] = json!("text");
+    fallback["truncation_policy"] = json!({ "mode": "bytes", "limit": 10_000 });
+    fallback["supports_parallel_tool_calls"] = json!(false);
+    fallback["supports_image_detail_original"] = json!(false);
+    fallback["comp_hash"] = Value::Null;
+    fallback["experimental_supported_tools"] = json!([]);
+    fallback["input_modalities"] = json!(["text", "image"]);
+    fallback["supports_search_tool"] = json!(false);
+    fallback["use_responses_lite"] = json!(false);
+    fallback["auto_review_model_override"] = Value::Null;
+    fallback["model_specialty"] = Value::Null;
+    fallback["tool_mode"] = Value::Null;
+    fallback["multi_agent_version"] = Value::Null;
+    (fallback, false)
 }
 
 fn bundled_template_entry(slug: &str) -> Option<Value> {

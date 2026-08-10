@@ -349,6 +349,9 @@ where
             helper_started = true;
         }
 
+        // 启动前刷新当前 relay 配置（model_catalog_json 等），保证“保存后重启即生效”。
+        // 应用失败时中止启动，避免 Codex 带着旧 catalog 静默运行。
+        hooks.apply_active_relay_profile(&settings).await?;
         let launch = hooks
             .launch_codex(&app_dir, debug_port, &settings, &settings.codex_extra_args)
             .await?;

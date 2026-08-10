@@ -89,6 +89,22 @@ pub struct RelayProfile {
         skip_serializing_if = "String::is_empty"
     )]
     pub model_windows: String,
+    /// 每模型自动压缩百分比（JSON map: slug -> 百分比字符串，如 "90" 表示 context_window 的 90%）。
+    /// 生成 catalog 时写入 auto_compact_token_limit = context_window * percent / 100。
+    #[serde(
+        rename = "modelAutoCompact",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub model_auto_compact: String,
+    /// 每模型元数据覆盖（JSON map: slug -> 字段覆盖）。
+    /// 生成 catalog 时按 slug 合并，用户配置的字段覆盖模板默认值。
+    #[serde(
+        rename = "modelMetadata",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub model_metadata: String,
     #[serde(rename = "modelVlm", default, skip_serializing_if = "String::is_empty")]
     pub model_vlm: String,
     #[serde(
@@ -187,6 +203,8 @@ impl Default for RelayProfile {
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
             model_windows: String::new(),
+            model_auto_compact: String::new(),
+            model_metadata: String::new(),
             model_vlm: String::new(),
             vlm_api_key: String::new(),
             vlm_model: String::new(),
@@ -611,6 +629,8 @@ impl BackendSettings {
                 model_insert_mode: RelayModelInsertMode::Patch,
                 model_list: String::new(),
                 model_windows: String::new(),
+                model_auto_compact: String::new(),
+                model_metadata: String::new(),
                 model_vlm: String::new(),
                 vlm_api_key: String::new(),
                 vlm_model: String::new(),
@@ -664,6 +684,8 @@ impl BackendSettings {
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
             model_windows: String::new(),
+            model_auto_compact: String::new(),
+            model_metadata: String::new(),
             model_vlm: String::new(),
             vlm_api_key: String::new(),
             vlm_model: String::new(),

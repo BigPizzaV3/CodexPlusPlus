@@ -783,6 +783,7 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
 
 #[tauri::command]
 pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
+    let original_settings = settings.clone();
     let settings = normalize_settings_before_save(settings);
     let Ok(_guard) = relay_switch_mutex().lock() else {
         return failed(
@@ -798,6 +799,20 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
     };
     let store = SettingsStore::default();
     let previous = store.load().unwrap_or_default();
+    let mut settings = settings;
+    if let Err(error) = normalize_relay_profiles_strict(&mut settings, &previous, None) {
+        return failed(
+            &format!("每模型配置无效：{error}"),
+            SettingsPayload {
+                settings: original_settings,
+                settings_path: codex_plus_core::paths::default_settings_path()
+                    .to_string_lossy()
+                    .to_string(),
+                user_scripts: user_script_inventory(),
+            },
+        );
+    }
+    let settings = normalize_settings_before_save(settings);
     let dream_skin_enabled = settings.enhancements_enabled && settings.codex_app_dream_skin_enabled;
     if let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
         dream_skin_enabled,
@@ -1991,17 +2006,19 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
             &settings.relay_context_config_contents,
         );
     for profile in &mut settings.relay_profiles {
-        if let Err(error) =
-            codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
-        {
-            log_manager_event(
-                "manager.normalize_relay_profile_for_storage.failed",
-                json!({
-                    "profileId": profile.id,
-                    "profileName": profile.name,
-                    "error": error.to_string()
-                }),
-            );
+        let mut normalized = profile.clone();
+        match codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut normalized) {
+            Ok(()) => *profile = normalized,
+            Err(error) => {
+                log_manager_event(
+                    "manager.normalize_relay_profile_for_storage.failed",
+                    json!({
+                        "profileId": profile.id,
+                        "profileName": profile.name,
+                        "error": error.to_string()
+                    }),
+                );
+            }
         }
     }
     let common_config = relay_combined_common_config(&settings);
@@ -2063,6 +2080,33 @@ fn relay_config_set_goals_override(config: &str, enabled: bool) -> String {
     }
     doc["features"]["goals"] = toml_edit::value(enabled);
     codex_plus_core::relay_config::normalize_config_text(&doc.to_string())
+}
+
+fn normalize_relay_profiles_strict(
+    settings: &mut BackendSettings,
+    previous: &BackendSettings,
+    always_validate_id: Option<&str>,
+) -> anyhow::Result<()> {
+    for profile in &mut settings.relay_profiles {
+        let previous_profile = previous
+            .relay_profiles
+            .iter()
+            .find(|candidate| candidate.id == profile.id);
+        let per_model_changed = previous_profile.is_none_or(|previous_profile| {
+            profile.model_list != previous_profile.model_list
+                || profile.model_windows != previous_profile.model_windows
+                || profile.model_auto_compact != previous_profile.model_auto_compact
+                || profile.model_metadata != previous_profile.model_metadata
+        });
+        if !per_model_changed && always_validate_id != Some(profile.id.as_str()) {
+            continue;
+        }
+        let mut normalized = profile.clone();
+        codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut normalized)
+            .map_err(|error| anyhow::anyhow!("{}：{error}", profile.name))?;
+        *profile = normalized;
+    }
+    Ok(())
 }
 
 fn normalize_provider_sync_provider_list(values: Vec<String>) -> Vec<String> {
@@ -3144,7 +3188,20 @@ pub fn switch_relay_profile(
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let store = SettingsStore::default();
     let previous_active_relay_id = request.previous_active_relay_id;
-    let settings = normalize_settings_before_save(request.settings);
+    let original_settings = request.settings.clone();
+    let previous = store.load().unwrap_or_default();
+    let mut settings = request.settings;
+    let target_relay_id = settings.active_relay_id.clone();
+    if let Err(error) =
+        normalize_relay_profiles_strict(&mut settings, &previous, Some(&target_relay_id))
+    {
+        let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+        return failed(
+            &format!("每模型配置无效：{error}"),
+            relay_switch_payload(original_settings, status, None),
+        );
+    }
+    let settings = normalize_settings_before_save(settings);
     log_manager_event(
         "manager.switch_relay_profile.start",
         json!({
@@ -5664,6 +5721,63 @@ mod tests {
                 .relay_common_config_contents
                 .contains("[mcp_servers")
         );
+    }
+
+    #[test]
+    fn normalize_relay_profiles_strict_rejects_invalid_model_auto_compact() {
+        let mut settings = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                name: "Invalid compact".to_string(),
+                model_auto_compact: r#"{"deepseek-v4-pro":"101%"}"#.to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+        let previous = BackendSettings::default();
+
+        let error = normalize_relay_profiles_strict(&mut settings, &previous, None)
+            .expect_err("保存入口必须拒绝超范围自动压缩百分比");
+        assert!(error.to_string().contains("model_auto_compact"));
+    }
+
+    #[test]
+    fn normalize_relay_profiles_strict_rejects_invalid_model_metadata_transactionally() {
+        let mut settings = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                id: "changed".to_string(),
+                name: "Invalid metadata".to_string(),
+                model_list: "deepseek-v4-pro[1M]".to_string(),
+                model_metadata: "{not json".to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+        let original = settings.relay_profiles[0].clone();
+
+        let error =
+            normalize_relay_profiles_strict(&mut settings, &BackendSettings::default(), None)
+                .expect_err("保存入口必须拒绝非法 model_metadata");
+
+        assert!(error.to_string().contains("model_metadata"));
+        assert_eq!(settings.relay_profiles[0], original);
+    }
+
+    #[test]
+    fn normalize_relay_profiles_strict_skips_unchanged_invalid_profile() {
+        let previous = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                id: "legacy-invalid".to_string(),
+                model_auto_compact: r#"{"old-model":"101%"}"#.to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+        let mut settings = previous.clone();
+        settings.launch_mode = codex_plus_core::settings::LaunchMode::Relay;
+
+        normalize_relay_profiles_strict(&mut settings, &previous, None)
+            .expect("无关设置保存不应被未修改的旧 profile 阻断");
+        assert_eq!(settings.relay_profiles, previous.relay_profiles);
     }
 
     #[test]

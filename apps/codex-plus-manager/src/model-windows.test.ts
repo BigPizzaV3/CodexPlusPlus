@@ -1,16 +1,20 @@
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import type { RelayProfile } from "./App.tsx";
 import {
   buildModelWindows,
+  formatModelWindowLabel,
+  isValidModelWindow,
   modelWindowRowsFromProfile,
+  modelWindowRowsValidationError,
   modelWindowsMapToText,
   modelWindowsTextToMap,
   serializeModelWindowRows,
   mergeModelWindowRows,
 } from "./model-windows.ts";
 
-// 类型检查：确保 RelayProfile 包含 modelWindows 和 modelVlm 字段
+// 类型检查：确保 RelayProfile 包含 modelWindows、modelMetadata 和 modelVlm 字段
 const _profileTypeCheck: RelayProfile = {
   id: "test",
   name: "",
@@ -32,6 +36,8 @@ const _profileTypeCheck: RelayProfile = {
   autoCompactLimit: "",
   modelList: "",
   modelWindows: "",
+  modelAutoCompact: "",
+  modelMetadata: "",
   modelVlm: "",
   vlmApiKey: "",
   vlmModel: "",
@@ -44,6 +50,83 @@ const _profileTypeCheck: RelayProfile = {
 void _profileTypeCheck;
 
 describe("model-windows helpers", () => {
+  it("每个模型只通过 models.json 整体替换自己的配置", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const metadataSource = readFileSync(new URL("./model-metadata.ts", import.meta.url), "utf8");
+    const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    const english = readFileSync(new URL("./i18n-en.ts", import.meta.url), "utf8");
+    assert.match(source, /t\("导入 models\.json"\)/);
+    assert.doesNotMatch(source, /已导入 · 上下文 \{0\}/);
+    assert.doesNotMatch(source, /\{importLabel\}/);
+    assert.match(source, /className="relay-model-config-heading">\{t\("模型配置"\)\}/);
+    assert.match(source, /支持多模型文件，自动匹配同名模型/);
+    assert.match(source, /t\("自动压缩"\)/);
+    assert.match(source, /导入对应模型的 model\.json 字段/);
+    assert.doesNotMatch(source, /按 slug 精确匹配当前模型/);
+    assert.match(source, /context_window、auto_compact_token_limit 保持同步。/);
+    assert.doesNotMatch(source, /可粘贴包含多个模型的 models\.json；系统会/);
+    assert.match(source, /t\("替换此模型配置"\)/);
+    assert.match(english, /"替换此模型配置": "Replace this model configuration"/);
+    assert.match(source, /disabled=\{!metadataImportPreview\}/);
+    assert.match(source, /onBlur=\{\(\) => commitModelSlug\(index\)\}/);
+    assert.match(source, /modelSlugOriginsRef/);
+    assert.match(source, /className="relay-model-metadata-import-flow"/);
+    assert.match(source, /normalizeAutoCompactPercent\(event\.currentTarget\.value\)/);
+    assert.doesNotMatch(source, /t\("解析预览"\)/);
+    assert.doesNotMatch(source, /aria-label=\{t\("取消导入"\)\}/);
+    assert.doesNotMatch(source, /className="relay-model-import-heading"/);
+    assert.doesNotMatch(source, /已匹配 · 上下文/);
+    assert.doesNotMatch(source, /className="relay-model-import-preview"/);
+    assert.match(source, /replaceModelMetadataForSlug\(/);
+    assert.match(source, /clearModelMetadataForSlug\(/);
+    assert.match(source, /t\("清除导入配置"\)/);
+    assert.match(source, /清除已导入的模型字段，保留上下文窗口/);
+    assert.match(source, /metadataImportTarget\.slug/);
+    assert.match(source, /value=\{row\.window\}/);
+    assert.match(source, /window: metadataImportPreview\.contextWindow/);
+    assert.match(source, /className="relay-model-import-workbench"/);
+    assert.match(source, /serializeModelMetadataDocument\(\s*slug,\s*existingMetadata/);
+    assert.match(source, /synchronizeModelMetadataDocumentLimits\(/);
+    assert.match(source, /originalWindow:/);
+    assert.match(source, /originalAutoCompact:/);
+    assert.match(source, /placeholder="90%"/);
+    assert.match(source, /className="relay-model-import-copy"/);
+    assert.doesNotMatch(source, /className="relay-model-drawer"/);
+    assert.doesNotMatch(source, /className="relay-model-capability-summary"/);
+    assert.doesNotMatch(source, /className="relay-model-minimal-grid"/);
+    assert.doesNotMatch(source, /t\("压缩触发 token 数"\)/);
+    assert.doesNotMatch(source, /className="relay-model-raw-details"/);
+    assert.doesNotMatch(source, /className="relay-field-context-window"/);
+    assert.doesNotMatch(source, /className="relay-field-auto-compact"/);
+    assert.doesNotMatch(metadataSource, /RECOGNIZED_MODEL_FIELDS/);
+    assert.doesNotMatch(metadataSource, /compatibilityFields/);
+    assert.doesNotMatch(metadataSource, /delete metadata\.max_context_window/);
+    assert.match(source, /spaceBelow < estimatedMenuHeight/);
+    assert.match(source, /placement === "top" \? "open-top"/);
+    assert.match(styles, /\.app-select\.open-top \.app-select-menu/);
+    assert.match(styles, /\.relay-model-import-workbench/);
+    assert.match(styles, /@media \(max-width: 600px\)/);
+    assert.match(styles, /\.relay-model-row,\s*\.relay-model-row-actions\s*\{[\s\S]*grid-template-columns:/);
+    assert.match(styles, /\.relay-model-window-heading\s*\{\s*grid-column: 2;/);
+    assert.match(styles, /\.relay-model-compact-heading\s*\{\s*grid-column: 3;/);
+    assert.match(styles, /\.relay-model-config-heading\s*\{\s*grid-column: 4 \/ 6;/);
+    assert.match(styles, /\.relay-model-import-button\s*\{[\s\S]*width: 36px;[\s\S]*height: 36px;/);
+    assert.match(styles, /\.relay-model-row-actions \.app-select\s*\{\s*grid-column: 1;/);
+    assert.match(styles, /\.relay-model-row-hint\s*\{\s*grid-column: 2 \/ 6;/);
+    assert.match(styles, /\.relay-model-import-copy\s*\{[\s\S]*display: flex;/);
+    assert.match(styles, /\.relay-model-import-copy span\s*\{[\s\S]*line-height: 1\.45;/);
+    assert.match(styles, /\.relay-model-metadata-import-actions\s*\{[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto;/);
+    assert.match(styles, /\.relay-model-metadata-import-flow\s*\{[\s\S]*justify-content: flex-end;/);
+  });
+
+  it("把导入的 token 数压缩成紧凑窗口标签", () => {
+    assert.strictEqual(formatModelWindowLabel("1048576"), "1048576");
+    assert.strictEqual(formatModelWindowLabel("1000000"), "1M");
+    assert.strictEqual(formatModelWindowLabel("272000"), "272K");
+    assert.strictEqual(formatModelWindowLabel("1m"), "1M");
+    assert.strictEqual(formatModelWindowLabel("custom"), "custom");
+  });
+
   it("modelWindowsMapToText 按 modelList 行顺序输出窗口文本", () => {
     assert.strictEqual(
       modelWindowsMapToText("a\nb\nc", '{"a":"1M","c":"200K"}'),
@@ -90,9 +173,9 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       modelWindowRowsFromProfile("a\nb\nc", '{"a":"1M","c":"200K"}'),
       [
-        { model: "a", window: "1M", imageHandling: "send-as-is" },
-        { model: "b", window: "", imageHandling: "send-as-is" },
-        { model: "c", window: "200K", imageHandling: "send-as-is" },
+        { model: "a", window: "1M", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "b", window: "", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "c", window: "200K", autoCompact: "", imageHandling: "send-as-is" },
       ],
     );
   });
@@ -101,9 +184,19 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       modelWindowRowsFromProfile("a\nb\nc", '{}', '{"a":"vlm","b":"strip"}'),
       [
-        { model: "a", window: "", imageHandling: "vlm" },
-        { model: "b", window: "", imageHandling: "strip" },
-        { model: "c", window: "", imageHandling: "send-as-is" },
+        { model: "a", window: "", autoCompact: "", imageHandling: "vlm" },
+        { model: "b", window: "", autoCompact: "", imageHandling: "strip" },
+        { model: "c", window: "", autoCompact: "", imageHandling: "send-as-is" },
+      ],
+    );
+  });
+
+  it("modelWindowRowsFromProfile 为旧自动压缩值补上百分号", () => {
+    assert.deepStrictEqual(
+      modelWindowRowsFromProfile("a\nb", '{}', '{}', '{"a":"90","b":"84.5%"}'),
+      [
+        { model: "a", window: "", autoCompact: "90%", imageHandling: "send-as-is" },
+        { model: "b", window: "", autoCompact: "84.5%", imageHandling: "send-as-is" },
       ],
     );
   });
@@ -111,14 +204,15 @@ describe("model-windows helpers", () => {
   it("serializeModelWindowRows 从行控件生成 modelList、modelWindows 和 modelVlm", () => {
     assert.deepStrictEqual(
       serializeModelWindowRows([
-        { model: "a", window: "1M", imageHandling: "vlm" },
-        { model: "", window: "400K", imageHandling: "send-as-is" },
-        { model: "b", window: "", imageHandling: "send-as-is" },
+        { model: "a", window: "1M", autoCompact: "", imageHandling: "vlm" },
+        { model: "", window: "400K", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "b", window: "", autoCompact: "", imageHandling: "send-as-is" },
       ]),
       {
         modelList: "a\nb",
         modelWindows: '{"a":"1M"}',
         modelVlm: '{"a":"vlm"}',
+        modelAutoCompact: '{}',
       },
     );
   });
@@ -127,19 +221,44 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       mergeModelWindowRows(
         [
-          { model: "deepseek-v4-flash", window: "1M", imageHandling: "vlm" },
-          { model: "  ", window: "", imageHandling: "send-as-is" },
+          { model: "deepseek-v4-flash", window: "1M", autoCompact: "", imageHandling: "vlm" },
+          { model: "  ", window: "", autoCompact: "", imageHandling: "send-as-is" },
         ],
         [
-          { model: "deepseek-v4-flash", window: "", imageHandling: "send-as-is" },
-          { model: "deepseek-v4-pro", window: "", imageHandling: "vlm" },
-          { model: " deepseek-v4-pro ", window: "200K", imageHandling: "send-as-is" },
+          { model: "deepseek-v4-flash", window: "", autoCompact: "", imageHandling: "send-as-is" },
+          { model: "deepseek-v4-pro", window: "", autoCompact: "", imageHandling: "vlm" },
+          { model: " deepseek-v4-pro ", window: "200K", autoCompact: "", imageHandling: "send-as-is" },
         ],
       ),
       [
-        { model: "deepseek-v4-flash", window: "1M", imageHandling: "vlm" },
-        { model: "deepseek-v4-pro", window: "", imageHandling: "vlm" },
+        { model: "deepseek-v4-flash", window: "1M", autoCompact: "", imageHandling: "vlm" },
+        { model: "deepseek-v4-pro", window: "", autoCompact: "", imageHandling: "vlm" },
       ],
     );
+  });
+
+  it("模型行校验拒绝重复 slug 和后端不接受的百分比格式", () => {
+    assert.deepStrictEqual(modelWindowRowsValidationError([
+      { model: "a", window: "", autoCompact: "90%", imageHandling: "send-as-is" },
+      { model: "a", window: "", autoCompact: "80%", imageHandling: "send-as-is" },
+    ]), { code: "duplicateModel", model: "a" });
+    assert.deepStrictEqual(modelWindowRowsValidationError([
+      { model: "a", window: "", autoCompact: "1e2", imageHandling: "send-as-is" },
+    ]), { code: "invalidAutoCompact", model: "a" });
+    assert.deepStrictEqual(modelWindowRowsValidationError([
+      { model: "a", window: "1.5M", autoCompact: "90%", imageHandling: "send-as-is" },
+    ]), { code: "invalidWindow", model: "a" });
+    assert.strictEqual(modelWindowRowsValidationError([
+      { model: "a", window: "", autoCompact: "84.5%", imageHandling: "send-as-is" },
+    ]), null);
+  });
+
+  it("上下文窗口语法与 Rust u64 解析保持一致", () => {
+    for (const valid of ["", "1", "200K", "1M", "18446744073709551615"]) {
+      assert.strictEqual(isValidModelWindow(valid), true, valid);
+    }
+    for (const invalid of ["0", "1.5M", "abc", "-1", "18446744073709551616"]) {
+      assert.strictEqual(isValidModelWindow(invalid), false, invalid);
+    }
   });
 });
