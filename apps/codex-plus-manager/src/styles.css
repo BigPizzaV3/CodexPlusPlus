@@ -1630,7 +1630,7 @@ body {
   display: grid;
   width: 100%;
   min-width: 180px;
-  max-height: 260px;
+  max-height: 250px;
   overflow: auto;
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
@@ -1638,6 +1638,11 @@ body {
   color: hsl(var(--popover-foreground));
   padding: 5px;
   box-shadow: 0 16px 40px hsl(0 0% 0% / 0.36);
+}
+
+.app-select.open-top .app-select-menu {
+  top: auto;
+  bottom: calc(100% + 6px);
 }
 
 .app-select-option {
@@ -1654,6 +1659,7 @@ body {
   text-align: left;
   font: inherit;
   font-weight: 650;
+  line-height: 1.45;
   cursor: pointer;
 }
 
@@ -3878,24 +3884,163 @@ body {
 
 .relay-model-row-editor {
   display: grid;
-  gap: 8px;
+  gap: 12px;
 }
 
-.relay-model-row {
+.relay-model-row,
+.relay-model-row-actions {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(120px, 180px) 36px;
+  grid-template-columns: minmax(260px, 1fr) minmax(90px, 130px) minmax(90px, 130px) 36px 36px;
   align-items: center;
   gap: 8px;
 }
 
 .relay-model-row-head {
+  padding: 0 1px;
   color: hsl(var(--muted-foreground));
   font-size: 12px;
   font-weight: 600;
 }
 
+.relay-model-name-heading {
+  grid-column: 1;
+}
+
+.relay-model-window-heading {
+  grid-column: 2;
+}
+
+.relay-model-compact-heading {
+  grid-column: 3;
+}
+
+.relay-model-config-heading {
+  grid-column: 4 / 6;
+  text-align: center;
+}
+
+.relay-model-entry {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid hsl(var(--border) / 0.72);
+}
+
+.relay-model-entry:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
 .relay-model-row input {
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.relay-model-import-button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-self: center;
+}
+
+.relay-model-metadata-import-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 16px;
+}
+
+.relay-model-metadata-import-flow {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.relay-model-metadata-import-error {
+  padding: 8px 10px;
+  border: 1px solid hsl(var(--destructive) / 0.28);
+  border-radius: 7px;
+  background: hsl(var(--destructive) / 0.08);
+  color: hsl(var(--destructive));
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.relay-model-import-workbench {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 13px;
+  border: 1px solid hsl(var(--brand-accent) / 0.34);
+  border-radius: 8px;
+  background: hsl(var(--surface-sunken));
+}
+
+.relay-model-import-copy {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.relay-model-import-copy strong {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+
+.relay-model-import-copy span {
+  min-width: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.relay-model-import-workbench textarea {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+@media (max-width: 1080px) {
+  .relay-model-row {
+    grid-template-columns: minmax(220px, 1fr) 90px 90px 36px 36px;
+  }
+
+  .relay-model-row-actions {
+    grid-template-columns: minmax(220px, 1fr) 90px 90px 36px 36px;
+  }
+
+  .relay-model-metadata-import-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .relay-model-metadata-import-flow {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 600px) {
+  .relay-model-row-head {
+    display: none;
+  }
+
+  .relay-model-row {
+    grid-template-columns: minmax(0, 1fr) minmax(90px, 0.45fr) 36px 36px;
+  }
+
+  .relay-model-row > :first-child {
+    grid-column: 1 / -1;
+  }
+
+  .relay-model-row-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .relay-model-row-actions > * {
+    grid-column: 1;
+  }
 }
 
 /* Codex App visual system */
@@ -4615,24 +4760,20 @@ select {
 }
 
 .relay-model-row-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 4px;
+  margin-top: 0;
 }
 
-.relay-model-row-actions .field-select {
-  width: auto;
-  min-width: 150px;
-  min-height: 32px;
-  padding: 0 8px;
-  font-size: 12px;
+.relay-model-row-actions .app-select {
+  grid-column: 1;
+  min-width: 0;
 }
 
 .relay-model-row-hint {
+  grid-column: 2 / 6;
   font-size: 11px;
   color: hsl(var(--muted-foreground));
   align-self: center;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .relay-vlm-section {

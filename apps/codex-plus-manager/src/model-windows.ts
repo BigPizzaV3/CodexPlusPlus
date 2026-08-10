@@ -1,3 +1,5 @@
+import { isValidAutoCompactPercent, normalizeAutoCompactPercent } from "./auto-compact.ts";
+
 /// 把 model_windows JSON map 按 model_list 行顺序转成文本（每行一个窗口，空行表示默认）。
 export function modelWindowsMapToText(modelList: string, modelWindows: string): string {
   try {
@@ -30,8 +32,57 @@ export type ImageHandling = "" | "send-as-is" | "strip" | "vlm";
 export type ModelWindowRow = {
   model: string;
   window: string;
+  /// 自动压缩百分比（如 "90" 表示 context_window 的 90%）；空字符串表示用 Codex 默认 90%。
+  autoCompact: string;
   imageHandling: ImageHandling;
 };
+
+export type ModelWindowRowsValidationIssue = {
+  code: "duplicateModel" | "invalidWindow" | "invalidAutoCompact";
+  model: string;
+};
+
+export function isValidModelWindow(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  const match = trimmed.match(/^(\d+)([KkMm])?$/);
+  if (!match) return false;
+  const multiplier = match[2]?.toLowerCase() === "m"
+    ? 1_000_000n
+    : match[2]
+      ? 1_000n
+      : 1n;
+  const tokens = BigInt(match[1]) * multiplier;
+  return tokens > 0n && tokens <= 18_446_744_073_709_551_615n;
+}
+
+export function modelWindowRowsValidationError(rows: ModelWindowRow[]): ModelWindowRowsValidationIssue | null {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const model = row.model.trim();
+    if (!model) continue;
+    if (seen.has(model)) return { code: "duplicateModel", model };
+    seen.add(model);
+    if (!isValidModelWindow(row.window)) return { code: "invalidWindow", model };
+    if (!isValidAutoCompactPercent(row.autoCompact)) {
+      return { code: "invalidAutoCompact", model };
+    }
+  }
+  return null;
+}
+
+export function formatModelWindowLabel(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/^\d+[KkMm]$/.test(trimmed)) return trimmed.toUpperCase();
+  if (!/^\d+$/.test(trimmed)) return trimmed;
+
+  const tokens = Number(trimmed);
+  if (!Number.isSafeInteger(tokens) || tokens <= 0) return trimmed;
+  if (tokens % 1_000_000 === 0) return `${tokens / 1_000_000}M`;
+  if (tokens % 1_000 === 0) return `${tokens / 1_000}K`;
+  return trimmed;
+}
 
 export function mergeModelWindowRows(
   currentRows: ModelWindowRow[],
@@ -43,19 +94,30 @@ export function mergeModelWindowRows(
     const model = row.model.trim();
     if (!model || seen.has(model)) return;
     seen.add(model);
-    rows.push({ model, window: row.window.trim(), imageHandling: row.imageHandling ?? "send-as-is" });
+    rows.push({
+      model,
+      window: row.window.trim(),
+      autoCompact: normalizeAutoCompactPercent(row.autoCompact ?? ""),
+      imageHandling: row.imageHandling ?? "send-as-is",
+    });
   };
   currentRows.forEach(append);
   incomingRows.forEach(append);
-  return rows.length ? rows : [{ model: "", window: "", imageHandling: "send-as-is" }];
+  return rows.length ? rows : [{ model: "", window: "", autoCompact: "", imageHandling: "send-as-is" }];
 }
 
-export function modelWindowRowsFromProfile(modelList: string, modelWindows: string, modelVlm?: string): ModelWindowRow[] {
+export function modelWindowRowsFromProfile(modelList: string, modelWindows: string, modelVlm?: string, modelAutoCompact?: string): ModelWindowRow[] {
   let map: Record<string, string> = {};
   try {
     map = JSON.parse(modelWindows || "{}") as Record<string, string>;
   } catch {
     map = {};
+  }
+  let autoCompactMap: Record<string, string> = {};
+  try {
+    autoCompactMap = JSON.parse(modelAutoCompact || "{}") as Record<string, string>;
+  } catch {
+    autoCompactMap = {};
   }
   // 解析 modelVlm JSON：`{"model": "vlm"/"strip"}`
   let vlmMap: Record<string, ImageHandling> = {};
@@ -76,14 +138,20 @@ export function modelWindowRowsFromProfile(modelList: string, modelWindows: stri
     .split("\n")
     .map((model) => model.trim())
     .filter(Boolean)
-    .map((model) => ({ model, window: map[model] ?? "", imageHandling: vlmMap[model] ?? "send-as-is" }));
-  return rows.length ? rows : [{ model: "", window: "", imageHandling: "send-as-is" }];
+    .map((model) => ({
+      model,
+      window: map[model] ?? "",
+      autoCompact: normalizeAutoCompactPercent(autoCompactMap[model] ?? ""),
+      imageHandling: vlmMap[model] ?? "send-as-is",
+    }));
+  return rows.length ? rows : [{ model: "", window: "", autoCompact: "", imageHandling: "send-as-is" }];
 }
 
-export function serializeModelWindowRows(rows: ModelWindowRow[]): { modelList: string; modelWindows: string; modelVlm: string } {
+export function serializeModelWindowRows(rows: ModelWindowRow[]): { modelList: string; modelWindows: string; modelVlm: string; modelAutoCompact: string } {
   const modelList: string[] = [];
   const modelWindows: Record<string, string> = {};
   const modelVlm: Record<string, string> = {};
+  const modelAutoCompact: Record<string, string> = {};
   mergeModelWindowRows(rows, []).forEach((row) => {
     const model = row.model.trim();
     if (!model) return;
@@ -96,11 +164,16 @@ export function serializeModelWindowRows(rows: ModelWindowRow[]): { modelList: s
     if (row.imageHandling === "vlm" || row.imageHandling === "strip") {
       modelVlm[model] = row.imageHandling;
     }
+    const autoCompact = row.autoCompact?.trim() ?? "";
+    if (autoCompact) {
+      modelAutoCompact[model] = autoCompact;
+    }
   });
   return {
     modelList: modelList.join("\n"),
     modelWindows: JSON.stringify(modelWindows),
     modelVlm: JSON.stringify(modelVlm),
+    modelAutoCompact: JSON.stringify(modelAutoCompact),
   };
 }
 
