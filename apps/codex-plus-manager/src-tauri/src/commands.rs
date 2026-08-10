@@ -3598,7 +3598,12 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
     if settings.active_aggregate_relay_profile().is_some() {
-        let response = apply_aggregate_relay_injection_to_home(&home);
+        let response = apply_aggregate_relay_injection_to_home(
+            &home,
+            &relay,
+            &relay_combined_common_config(&settings),
+            settings.computer_use_guard_enabled,
+        );
         if response.status == "ok" {
             finish_codex_app_state_after_provider_switch(
                 &home,
@@ -3707,15 +3712,17 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     }
 }
 
-fn apply_aggregate_relay_injection_to_home(home: &Path) -> CommandResult<RelayPayload> {
-    match codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
+fn apply_aggregate_relay_injection_to_home(
+    home: &Path,
+    relay: &RelayProfile,
+    common_config_contents: &str,
+    preserve_computer_use_guard: bool,
+) -> CommandResult<RelayPayload> {
+    match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
         home,
-        &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
-        ),
-        "codex-plus-aggregate",
-        codex_plus_core::settings::RelayProtocol::Responses,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        relay,
+        common_config_contents,
+        preserve_computer_use_guard,
     ) {
         Ok(result) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(home);
@@ -4809,15 +4816,32 @@ mod tests {
     #[test]
     fn aggregate_relay_injection_writes_local_proxy_without_chatgpt_auth() {
         let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("auth.json"),
+            r#"{"tokens":{"access_token":"test-access-token"}}"#,
+        )
+        .unwrap();
+        let profile = RelayProfile {
+            relay_mode: codex_plus_core::settings::RelayMode::Aggregate,
+            ..RelayProfile::default()
+        };
 
-        let result = apply_aggregate_relay_injection_to_home(temp.path());
+        let result = apply_aggregate_relay_injection_to_home(temp.path(), &profile, "", false);
         let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        let auth: Value =
+            serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
+                .unwrap();
 
         assert_eq!(result.status, "ok");
         assert!(result.payload.configured);
         assert!(!result.payload.authenticated);
         assert!(config.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
         assert!(config.contains(r#"experimental_bearer_token = "codex-plus-aggregate""#));
+        assert_eq!(
+            auth["OPENAI_API_KEY"],
+            "sk-codex-plus-aggregate-placeholder"
+        );
+        assert_eq!(auth["tokens"]["access_token"], "test-access-token");
     }
 
     #[test]

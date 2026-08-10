@@ -397,22 +397,39 @@ base_url = "https://responses.example.test/v1"
 #[test]
 fn apply_aggregate_relay_points_codex_to_local_responses_proxy_without_snapshot() {
     let temp = tempfile::tempdir().unwrap();
-    let profile = RelayProfile {
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"tokens":{"access_token":"live-token"}}"#,
+    )
+    .unwrap();
+    let mut profile = RelayProfile {
         id: "agg".to_string(),
         name: "聚合供应商 1".to_string(),
         relay_mode: RelayMode::Aggregate,
         config_contents: String::new(),
-        auth_contents: String::new(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-stale-profile-key"}"#.to_string(),
         ..RelayProfile::default()
     };
 
     let result = apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
     let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
+            .unwrap();
 
     assert!(result.configured);
     assert!(updated.contains(r#"wire_api = "responses""#));
     assert!(updated.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
     assert!(updated.contains(r#"experimental_bearer_token = "codex-plus-aggregate""#));
+    assert_eq!(
+        auth["OPENAI_API_KEY"],
+        "sk-codex-plus-aggregate-placeholder"
+    );
+    assert_eq!(auth["tokens"]["access_token"], "live-token");
+
+    let mut common = String::new();
+    backfill_relay_profile_from_home_with_common(temp.path(), &mut profile, &mut common).unwrap();
+    assert_eq!(profile.relay_mode, RelayMode::Aggregate);
 }
 
 #[test]

@@ -2073,6 +2073,12 @@ fn sync_profile_mode_from_backfilled_live(profile: &mut RelayProfile) {
     if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
         return;
     }
+    // 聚合模式保持聚合模式：auth.json 中的占位 Key 仅为满足 Codex 桌面版
+    // 的登录检查（auth.json 存在 OPENAI_API_KEY 即视为已认证），实际请求认证
+    // 由本地协议代理完成。不能据此回填成 PureApi，否则会丢失聚合轮转语义。
+    if profile.relay_mode == crate::settings::RelayMode::Aggregate {
+        return;
+    }
 
     if codex_auth_api_key(&profile.auth_contents)
         .as_deref()
@@ -2112,7 +2118,11 @@ fn official_profile_auth_for_switch(
     auth_contents: &str,
     relay_mode: crate::settings::RelayMode,
 ) -> anyhow::Result<String> {
-    let source = if auth_contents.trim().is_empty() {
+    let source = if relay_mode == crate::settings::RelayMode::Aggregate {
+        // 聚合配置不拥有认证快照，始终基于实时 auth.json 补齐占位 Key，
+        // 避免旧 profile 覆盖用户刚更新的登录或 API Key 状态。
+        read_optional_text(&home.join("auth.json"))?
+    } else if auth_contents.trim().is_empty() {
         read_optional_text(&home.join("auth.json"))?
     } else {
         auth_contents.to_string()
@@ -2281,9 +2291,9 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     }
     if profile.relay_mode != crate::settings::RelayMode::PureApi
         && provider
-        .get("requires_openai_auth")
-        .and_then(Item::as_bool)
-        .is_none()
+            .get("requires_openai_auth")
+            .and_then(Item::as_bool)
+            .is_none()
     {
         provider["requires_openai_auth"] = toml_edit::value(true);
     }
@@ -2786,23 +2796,25 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_switch_keeps_existing_openai_api_key() {
+    fn aggregate_switch_prefers_live_auth_over_profile_snapshot() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(
             temp.path().join("auth.json"),
-            "{\n  \"OPENAI_API_KEY\": \"sk-existing-key\"\n}\n",
+            "{\n  \"OPENAI_API_KEY\": \"sk-live-key\",\n  \"tokens\": {\"access_token\": \"live-token\"}\n}\n",
         )
         .unwrap();
 
         let result = official_profile_auth_for_switch(
             temp.path(),
-            "",
+            r#"{"OPENAI_API_KEY":"sk-stale-profile-key"}"#,
             crate::settings::RelayMode::Aggregate,
         )
         .unwrap();
+        let auth: Value = serde_json::from_str(&result).unwrap();
 
-        assert!(result.contains("sk-existing-key"));
-        assert!(!result.trim().is_empty());
+        assert_eq!(auth["OPENAI_API_KEY"], "sk-live-key");
+        assert_eq!(auth["tokens"]["access_token"], "live-token");
+        assert!(!result.contains("sk-stale-profile-key"));
     }
 
     #[test]
@@ -2830,14 +2842,24 @@ mod tests {
         )
         .unwrap();
 
-        let result = official_profile_auth_for_switch(
-            temp.path(),
-            "",
-            crate::settings::RelayMode::Official,
-        )
-        .unwrap();
+        let result =
+            official_profile_auth_for_switch(temp.path(), "", crate::settings::RelayMode::Official)
+                .unwrap();
 
         assert!(!result.contains("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn aggregate_backfill_keeps_mode_when_auth_has_placeholder_key() {
+        let mut profile = RelayProfile {
+            relay_mode: crate::settings::RelayMode::Aggregate,
+            auth_contents: format!("{{\"OPENAI_API_KEY\":\"{AGGREGATE_AUTH_PLACEHOLDER_KEY}\"}}"),
+            ..RelayProfile::default()
+        };
+
+        sync_profile_mode_from_backfilled_live(&mut profile);
+
+        assert_eq!(profile.relay_mode, crate::settings::RelayMode::Aggregate);
     }
 }
 
