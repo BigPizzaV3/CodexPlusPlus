@@ -465,17 +465,6 @@ const setupHeroNetwork = () => {
         point.y += point.vy;
         if (point.x < -20 || point.x > width + 20) point.vx *= -1;
         if (point.y < -20 || point.y > height + 20) point.vy *= -1;
-
-        if (pointer.active) {
-          const dx = pointer.x - point.x;
-          const dy = pointer.y - point.y;
-          const distance = Math.hypot(dx, dy);
-          if (distance < 180 && distance > 1) {
-            const pull = (1 - distance / 180) * 0.018;
-            point.x += dx * pull;
-            point.y += dy * pull;
-          }
-        }
       }
     });
 
