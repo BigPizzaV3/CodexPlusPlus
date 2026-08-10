@@ -6419,11 +6419,11 @@ function RelayProfileEditor({
                 <span>{t("目标模型（可选）")}</span>
               </div>
               {modelRoutes.map((route, index) => (
-                <div className="relay-model-route-row" key={`${route.model}-${index}`}>
+                <div className="relay-model-route-row" key={`model-route-${index}`}>
                   <Input
                     value={route.model}
                     onChange={(event) => updateModelRoute(index, { model: event.currentTarget.value })}
-                    placeholder="gpt-5.6-luna"
+                    placeholder={t("例：gpt-5.6-luna")}
                   />
                   <AppSelect
                     value={route.targetRelayId}

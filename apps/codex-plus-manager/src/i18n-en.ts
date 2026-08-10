@@ -829,6 +829,7 @@ export const EN_PLAIN: Record<string, string> = {
   "目标供应商": "Target provider",
   "目标模型（可选）": "Target model (optional)",
   "选择 Responses 供应商": "Select a Responses provider",
+  "例：gpt-5.6-luna": "Example: gpt-5.6-luna",
   "留空保持原模型名": "Leave empty to keep the original model name",
   "删除模型路由": "Delete model route",
   "请先创建一个 Responses API 目标供应商": "Create a Responses API target provider first",
