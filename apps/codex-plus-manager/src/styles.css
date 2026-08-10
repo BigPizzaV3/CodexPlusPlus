@@ -3898,6 +3898,29 @@ body {
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
+.relay-model-route-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.relay-model-route-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) minmax(170px, 1fr) 36px;
+  align-items: center;
+  gap: 8px;
+}
+
+.relay-model-route-head {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.relay-model-route-row input {
+  min-width: 0;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
 /* Codex App visual system */
 ::selection {
   background: hsl(var(--brand-accent) / 0.3);
@@ -4569,6 +4592,14 @@ select {
   .relay-profile-editor,
   .relay-detail-page > .relay-file-grid {
     margin-inline: 16px;
+  }
+
+  .relay-model-route-row {
+    grid-template-columns: 1fr;
+  }
+
+  .relay-model-route-head {
+    display: none;
   }
 
   .jojocode-overview-layout,

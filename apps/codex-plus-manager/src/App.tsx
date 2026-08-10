@@ -279,7 +279,14 @@ export type RelayProfile = {
   userAgent: string;
   sub2apiEnabled: boolean;
   sub2apiMultiplier: string;
+  modelRoutes?: RelayModelRoute[];
   aggregate?: RelayAggregateConfig | null;
+};
+
+type RelayModelRoute = {
+  model: string;
+  targetRelayId: string;
+  targetModel: string;
 };
 
 type RelayAggregateStrategy = "failover" | "conversationRoundRobin" | "requestRoundRobin" | "weightedRoundRobin";
@@ -2345,7 +2352,7 @@ export function App() {
       targetRelayMode: targetBeforeSnapshot.relayMode,
     });
     const selectedBeforeSave = activeRelayProfile(switchSettings);
-    const validationError = relayProfileSwitchValidation(selectedBeforeSave);
+    const validationError = relayProfileSwitchValidation(selectedBeforeSave, switchSettings);
     if (validationError) {
       logDiagnostic("switchRelayProfile.validation_failed", {
         targetRelayId: selectedBeforeSave.id,
@@ -5918,7 +5925,9 @@ function RelayProfileDetail({
     setDraft(nextDraft);
     setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm));
   }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
-  const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
+  const validationError = isAggregateRelayProfile(draft)
+    ? aggregateRelayProfileValidation(draft)
+    : relayModelRoutesValidation(draft, form);
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
     return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows, modelVlm: serializedRows.modelVlm };
@@ -5942,7 +5951,7 @@ function RelayProfileDetail({
     onSaved?.();
   };
   const switchDraft = () => {
-    if (isNew || !form.relayProfilesEnabled) return;
+    if (isNew || !form.relayProfilesEnabled || validationError) return;
     const draftWithWindows = draftWithModelRows();
     const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const previousActiveRelayId = form.activeRelayId;
@@ -6059,6 +6068,15 @@ function RelayProfileEditor({
   const canFetchSub2ApiRate = profile.sub2apiEnabled && Boolean(sub2apiBaseUrl && profile.apiKey.trim());
   const updateDraft = (patch: Partial<RelayProfile>) => {
     onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
+  };
+  const modelRoutes = normalizeRelayModelRoutes(profile.modelRoutes);
+  const modelRouteTargets = form.relayProfiles.filter(
+    (candidate) => candidate.id !== profile.id && !isAggregateRelayProfile(candidate) && candidate.protocol === "responses",
+  );
+  const updateModelRoute = (index: number, patch: Partial<RelayModelRoute>) => {
+    updateDraft({
+      modelRoutes: modelRoutes.map((route, routeIndex) => (routeIndex === index ? { ...route, ...patch } : route)),
+    });
   };
   const updateModelWindowRow = (index: number, patch: Partial<ModelWindowRow>) => {
     setModelWindowRows(
@@ -6389,6 +6407,65 @@ function RelayProfileEditor({
             </div>
             <p className="field-hint">
               {t("每行一个模型；上下文窗口可填")} <code>1M</code>{t("、")}<code>200K</code> {t("或")} <code>1000000</code>{t("，留空表示使用 Codex 默认长度。")}
+            </p>
+          </Field>
+        ) : null}
+        {showApiFields ? (
+          <Field className="relay-field-model-routes" label={t("单模型路由")}>
+            <div className="relay-model-route-editor">
+              <div className="relay-model-route-row relay-model-route-head">
+                <span>{t("匹配模型")}</span>
+                <span>{t("目标供应商")}</span>
+                <span>{t("目标模型（可选）")}</span>
+              </div>
+              {modelRoutes.map((route, index) => (
+                <div className="relay-model-route-row" key={`${route.model}-${index}`}>
+                  <Input
+                    value={route.model}
+                    onChange={(event) => updateModelRoute(index, { model: event.currentTarget.value })}
+                    placeholder="gpt-5.6-luna"
+                  />
+                  <AppSelect
+                    value={route.targetRelayId}
+                    onChange={(targetRelayId) => updateModelRoute(index, { targetRelayId })}
+                    options={[
+                      { value: "", label: t("选择 Responses 供应商"), disabled: true },
+                      ...modelRouteTargets.map((candidate) => ({ value: candidate.id, label: candidate.name || candidate.id })),
+                    ]}
+                  />
+                  <Input
+                    value={route.targetModel}
+                    onChange={(event) => updateModelRoute(index, { targetModel: event.currentTarget.value })}
+                    placeholder={t("留空保持原模型名")}
+                  />
+                  <Button
+                    aria-label={t("删除模型路由")}
+                    onClick={() => updateDraft({ modelRoutes: modelRoutes.filter((_, routeIndex) => routeIndex !== index) })}
+                    size="icon"
+                    title={t("删除模型路由")}
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+            <div className="relay-model-list-tools">
+              <Button
+                disabled={modelRouteTargets.length === 0}
+                onClick={() => updateDraft({ modelRoutes: [...modelRoutes, { model: "", targetRelayId: "", targetModel: "" }] })}
+                size="sm"
+                title={modelRouteTargets.length === 0 ? t("请先创建一个 Responses API 目标供应商") : t("添加模型路由")}
+                type="button"
+                variant="secondary"
+              >
+                <Plus className="h-4 w-4" />
+                {t("添加模型路由")}
+              </Button>
+            </div>
+            <p className="field-hint">
+              {t("仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标必须是 Responses API，且需要从 Codex++ 启动。")}
             </p>
           </Field>
         ) : null}
@@ -8401,6 +8478,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         autoCompactLimit: "",
         modelList: "",
         modelWindows: "",
+        modelRoutes: [],
         sub2apiEnabled: false,
         sub2apiMultiplier: "",
       },
@@ -8430,12 +8508,22 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     autoCompactLimit: profile.autoCompactLimit || "",
     modelList: profile.modelList || "",
     modelWindows: profile.modelWindows || "",
+    modelRoutes: relayMode === "official" && !officialMixApiKey ? [] : normalizeRelayModelRoutes(profile.modelRoutes),
     userAgent: profile.userAgent || "",
     sub2apiEnabled: profile.sub2apiEnabled === true,
     sub2apiMultiplier: profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     aggregate: null,
   };
   return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
+}
+
+function normalizeRelayModelRoutes(routes: RelayModelRoute[] | undefined): RelayModelRoute[] {
+  if (!Array.isArray(routes)) return [];
+  return routes.map((route) => ({
+    model: typeof route?.model === "string" ? route.model : "",
+    targetRelayId: typeof route?.targetRelayId === "string" ? route.targetRelayId : "",
+    targetModel: typeof route?.targetModel === "string" ? route.targetModel : "",
+  }));
 }
 
 function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: AggregateRelayProfile | undefined): RelayProfile {
@@ -8720,8 +8808,10 @@ function applyRelayProfilePatchToFiles(
   if ("upstreamBaseUrl" in patch) {
     next.baseUrl = patch.upstreamBaseUrl || "";
   }
-  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch) {
-    const baseUrlForConfig = next.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : next.upstreamBaseUrl || next.baseUrl;
+  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch) {
+    const baseUrlForConfig = next.protocol === "chatCompletions" || normalizeRelayModelRoutes(next.modelRoutes).length > 0
+      ? PROTOCOL_PROXY_BASE_URL
+      : next.upstreamBaseUrl || next.baseUrl;
     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
       requiresOpenAiAuth: next.relayMode !== "pureApi",
     });
@@ -9007,16 +9097,37 @@ function removeTomlSectionKey(contents: string, sectionName: string, key: string
   return ensureTrailingNewline(next.join("\n").trimEnd());
 }
 
-function relayProfileSwitchValidation(profile: RelayProfile): string | null {
+function relayProfileSwitchValidation(profile: RelayProfile, settings: BackendSettings | null = null): string | null {
   if (isAggregateRelayProfile(profile)) {
     return aggregateRelayProfileValidation(profile);
   }
+  const modelRouteError = relayModelRoutesValidation(profile, settings);
+  if (modelRouteError) return modelRouteError;
   if (profile.relayMode === "official" && !profile.officialMixApiKey) return null;
   if (!profile.configContents.trim()) {
     return tf("供应商「{0}」缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。请先在该供应商详情里保存 config.toml。", [profile.name || profile.id]);
   }
   if (profile.relayMode !== "official" || !authJsonHasOpenAiApiKey(profile.authContents)) return null;
   return t("官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。");
+}
+
+function relayModelRoutesValidation(profile: RelayProfile, settings: BackendSettings | null): string | null {
+  const seenModels = new Set<string>();
+  for (const route of normalizeRelayModelRoutes(profile.modelRoutes)) {
+    const model = route.model.trim();
+    const targetRelayId = route.targetRelayId.trim();
+    if (!model || !targetRelayId) return t("单模型路由需要填写模型名称和目标供应商。");
+    if (seenModels.has(model)) return tf("模型「{0}」存在重复路由。", [model]);
+    seenModels.add(model);
+    if (targetRelayId === profile.id) return tf("模型「{0}」不能路由到当前供应商自身。", [model]);
+    if (!settings) continue;
+    const target = settings.relayProfiles.find((candidate) => candidate.id === targetRelayId);
+    if (!target) return tf("模型「{0}」的目标供应商不存在。", [model]);
+    if (isAggregateRelayProfile(target)) return tf("模型「{0}」不能路由到聚合供应商。", [model]);
+    if (target.protocol !== "responses") return tf("模型「{0}」的目标供应商必须使用 Responses API。", [model]);
+    if (!target.baseUrl.trim() || !target.apiKey.trim()) return tf("模型「{0}」的目标供应商缺少 Base URL 或 Key。", [model]);
+  }
+  return null;
 }
 
 function relayProfileUsesLiveFiles(profile: RelayProfile): boolean {
@@ -9119,6 +9230,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     userAgent: "",
     sub2apiEnabled: false,
     sub2apiMultiplier: "",
+    modelRoutes: [],
   };
   return withGeneratedRelayFiles(next);
 }
@@ -9155,6 +9267,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       userAgent: "",
       sub2apiEnabled: false,
       sub2apiMultiplier: "",
+      modelRoutes: [],
       aggregate: {
         strategy: "failover",
         members: candidates.slice(0, 1).map((profile) => ({ profileId: profile.id, weight: 1 })),
@@ -9226,7 +9339,10 @@ function removeRelayProfile(settings: BackendSettings, id: string): BackendSetti
           },
           { ...settings, relayProfiles: profiles },
         )
-      : profile,
+      : {
+          ...profile,
+          modelRoutes: normalizeRelayModelRoutes(profile.modelRoutes).filter((route) => route.targetRelayId !== id),
+        },
   );
   return syncLegacyRelayFields({
     ...settings,
