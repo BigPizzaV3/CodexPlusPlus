@@ -4736,9 +4736,9 @@ select {
 
 .dream-skin-view-tabs {
   display: inline-grid;
-  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
   gap: 3px;
-  max-width: 420px;
+  max-width: 650px;
   margin-bottom: 16px;
   border: 1px solid hsl(var(--border));
   border-radius: 7px;
@@ -4789,6 +4789,83 @@ select {
   display: grid;
   gap: 14px;
   min-width: 0;
+}
+
+.dream-skin-community {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.dream-skin-community-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 180px;
+  gap: 10px;
+  align-items: center;
+}
+
+.dream-skin-community-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.dream-skin-community-card {
+  display: grid;
+  grid-template-rows: auto minmax(82px, 1fr) auto;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: 7px;
+  background: hsl(var(--surface-raised));
+}
+
+.dream-skin-community-preview {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: hsl(var(--muted));
+}
+
+.dream-skin-community-preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dream-skin-community-preview .badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  max-width: calc(100% - 16px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dream-skin-community-copy {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 11px 12px;
+}
+
+.dream-skin-community-copy small {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dream-skin-community-actions {
+  display: flex;
+  gap: 7px;
+  border-top: 1px solid hsl(var(--border));
+  padding: 9px 12px 11px;
 }
 
 .dream-skin-market-warning {
@@ -5590,6 +5667,7 @@ select {
   }
 
   .dream-skin-market-grid,
+  .dream-skin-community-grid,
   .dream-skin-theme-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -5623,7 +5701,12 @@ select {
   }
 
   .dream-skin-market-grid,
+  .dream-skin-community-grid,
   .dream-skin-theme-list {
+    grid-template-columns: 1fr;
+  }
+
+  .dream-skin-community-controls {
     grid-template-columns: 1fr;
   }
 

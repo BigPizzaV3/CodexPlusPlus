@@ -28,6 +28,7 @@ import {
   Copy,
   Download,
   Edit3,
+  Eye,
   GripVertical,
   Info,
   ImagePlus,
@@ -43,6 +44,7 @@ import {
   Play,
   MessageCircle,
   MoreHorizontal,
+  PackageOpen,
   FileCode2,
   Moon,
   Network,
@@ -92,6 +94,8 @@ import {
   normalizeDreamSkinTheme,
   type DreamSkinCheck,
   type DreamSkinColors,
+  type DreamSkinCommunityResult,
+  type DreamSkinCommunityTheme,
   type DreamSkinImageResult,
   type DreamSkinMarketResult,
   type DreamSkinMarketTheme,
@@ -119,6 +123,8 @@ type CommandResult<T> = T & {
   status: Status;
   message: string;
 };
+
+type PendingDreamSkinCommunityResult = CommandResult<{ versionId: string }>;
 
 type PendingDreamSkinRestart = {
   currentThemeKey: string | null;
@@ -901,6 +907,8 @@ export function App() {
   const [dreamSkinVerification, setDreamSkinVerification] = useState<DreamSkinVerificationResult | null>(null);
   const [dreamSkinLibrary, setDreamSkinLibrary] = useState<DreamSkinThemeLibrary | null>(null);
   const [dreamSkinMarket, setDreamSkinMarket] = useState<DreamSkinMarketResult | null>(null);
+  const [dreamSkinCommunity, setDreamSkinCommunity] = useState<DreamSkinCommunityResult | null>(null);
+  const [pendingDreamSkinCommunity, setPendingDreamSkinCommunity] = useState("");
   const [selectedDreamSkinTheme, setSelectedDreamSkinTheme] = useState("builtin");
   const [savedDreamSkinThemeDraft, setSavedDreamSkinThemeDraft] = useState<DreamSkinThemeDraft | null>(null);
   const [dreamSkinThemeDraft, setDreamSkinThemeDraft] = useState<DreamSkinThemeDraft | null>(null);
@@ -1261,6 +1269,96 @@ export function App() {
     return result;
   };
 
+  const refreshDreamSkinCommunity = async (silent = false) => {
+    const result = await run(() => call<DreamSkinCommunityResult>("refresh_dream_skin_community"));
+    if (result) {
+      setDreamSkinCommunity(result);
+      if (!silent || !isSuccessStatus(result.status)) {
+        showResultNotice(t("DreamSkin 社区"), result, { silentSuccess: true });
+      }
+    }
+    return result;
+  };
+
+  const installDreamSkinCommunityTheme = async (theme: DreamSkinCommunityTheme) => {
+    const result = await run(() => call<DreamSkinCommunityResult>(
+      "install_dream_skin_community_theme",
+      { id: theme.id },
+    ));
+    if (!result) return false;
+    setDreamSkinCommunity(result);
+    showResultNotice(t("DreamSkin 社区"), result);
+    if (!isSuccessStatus(result.status)) return false;
+    await refreshDreamSkinLibrary(true);
+    const draft = await loadDreamSkinThemeDraft(theme.themeId);
+    if (draft) setDreamSkinDraftSelection(`stored:${theme.themeId}`, draft);
+    return true;
+  };
+
+  const refreshPendingDreamSkinCommunity = async () => {
+    const result = await run(() => call<PendingDreamSkinCommunityResult>("load_pending_dream_skin_community"));
+    if (result) setPendingDreamSkinCommunity(result.versionId);
+    return result;
+  };
+
+  const confirmPendingDreamSkinCommunity = async () => {
+    const result = await run(() => call<DreamSkinCommunityResult>("confirm_pending_dream_skin_community"));
+    if (!result) return;
+    setDreamSkinCommunity(result);
+    showResultNotice(t("DreamSkin 社区"), result);
+    if (!isSuccessStatus(result.status)) return;
+    setPendingDreamSkinCommunity("");
+    setRoute("dreamSkin");
+    await refreshDreamSkinLibrary(true);
+    if (result.installedThemeId) {
+      const draft = await loadDreamSkinThemeDraft(result.installedThemeId);
+      if (draft) {
+        setDreamSkinDraftSelection(`stored:${result.installedThemeId}`, draft);
+        await activateDreamSkinDraft(draft);
+      }
+    }
+  };
+
+  const dismissPendingDreamSkinCommunity = async () => {
+    const result = await run(() => call<PendingDreamSkinCommunityResult>("dismiss_pending_dream_skin_community"));
+    if (!result) return;
+    if (isSuccessStatus(result.status)) setPendingDreamSkinCommunity("");
+    else showResultNotice(t("DreamSkin 社区"), result);
+  };
+
+  const importDreamSkinThemePackage = async () => {
+    let selected: string | string[] | null;
+    try {
+      selected = await open({
+        title: t("导入 DreamSkin 主题包"),
+        multiple: false,
+        directory: false,
+        filters: [{ name: "DreamSkin ZIP", extensions: ["zip"] }],
+      });
+    } catch (error) {
+      showNotice(t("主题库"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
+      return;
+    }
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path) return;
+    const previousIds = new Set(dreamSkinLibrary?.themes.map((item) => item.id) ?? []);
+    const result = await run(() => call<DreamSkinThemeLibraryResult>(
+      "import_dream_skin_theme_package",
+      { path },
+    ));
+    if (!result) return;
+    showResultNotice(t("主题库"), result);
+    if (!isSuccessStatus(result.status)) return;
+    const library = { themes: result.themes, activeDraft: result.activeDraft };
+    setDreamSkinLibrary(library);
+    const imported = result.themes.find((item) => item.kind === "stored" && !previousIds.has(item.id));
+    if (imported) {
+      const draft = await loadDreamSkinThemeDraft(imported.id);
+      if (draft) setDreamSkinDraftSelection(imported.key, draft);
+    }
+    await refreshDreamSkinCommunity(true);
+  };
+
   const installDreamSkinMarketTheme = async (theme: DreamSkinMarketTheme) => {
     const result = await run(() => call<DreamSkinMarketResult>("install_dream_skin_market_theme", { id: theme.id }));
     if (!result) return false;
@@ -1404,18 +1502,17 @@ export function App() {
     }
   };
 
-  const activateDreamSkinTheme = async () => {
-    if (!dreamSkinThemeDraft) return;
+  const activateDreamSkinDraft = async (initialDraft: DreamSkinThemeDraft) => {
     const currentTheme = pendingDreamSkinRestart
       ? {
           key: pendingDreamSkinRestart.currentThemeKey,
           name: pendingDreamSkinRestart.currentThemeName,
         }
       : dreamSkinLibrary?.themes.find((item) => item.active) ?? null;
-    let draft = dreamSkinThemeDraft;
+    let draft = initialDraft;
     if (draft.builtin && dreamSkinDraftDirty) {
       const stored = await saveDreamSkinThemeDraft();
-      if (!stored) return;
+      if (!stored) return false;
       draft = stored;
     }
     const saved = await persistDreamSkinSettings({
@@ -1423,7 +1520,7 @@ export function App() {
       codexAppDreamSkinEnabled: true,
       codexAppDreamSkinPaused: false,
     });
-    if (!saved) return;
+    if (!saved) return false;
     const ports = dreamSkinRequest().request;
     const result = await run(() => call<DreamSkinThemeActivationResult>("activate_dream_skin_theme", {
       request: {
@@ -1434,7 +1531,7 @@ export function App() {
     }));
     if (!result || !isSuccessStatus(result.status)) {
       if (result) showResultNotice(t("主题库"), result);
-      return;
+      return false;
     }
     setDreamSkinLibrary(result.library);
     setDreamSkinStatus({ ...result.runtime, status: result.status, message: result.message });
@@ -1452,6 +1549,12 @@ export function App() {
     } else {
       setPendingDreamSkinRestart(null);
     }
+    return true;
+  };
+
+  const activateDreamSkinTheme = async () => {
+    if (!dreamSkinThemeDraft) return;
+    await activateDreamSkinDraft(dreamSkinThemeDraft);
   };
 
   const renameDreamSkinTheme = async (item: DreamSkinThemeSummary) => {
@@ -1638,6 +1741,7 @@ export function App() {
       await refreshDreamSkinStatus(true);
       await refreshDreamSkinLibrary(true);
       await refreshDreamSkinMarket(true);
+      await refreshDreamSkinCommunity(true);
     }
     if (next === "settings") await refreshSettings(true);
     if (next === "userScripts") {
@@ -2379,6 +2483,7 @@ export function App() {
       await refreshEnvConflicts(true);
       await refreshProviderSyncTargets(true);
       await refreshPendingProviderImport(true);
+      await refreshPendingDreamSkinCommunity();
       await refreshRemotePluginMarketplace(true);
     })();
   }, []);
@@ -2397,6 +2502,7 @@ export function App() {
   useEffect(() => {
     const timer = window.setInterval(() => {
       void refreshPendingProviderImport(true);
+      void refreshPendingDreamSkinCommunity();
     }, 1200);
     return () => window.clearInterval(timer);
   }, []);
@@ -2583,7 +2689,10 @@ export function App() {
       }),
       refreshDreamSkinLibrary,
       refreshDreamSkinMarket,
+      refreshDreamSkinCommunity,
       installDreamSkinMarketTheme,
+      installDreamSkinCommunityTheme,
+      importDreamSkinThemePackage,
       createDreamSkinTheme: async () => runAfterDreamSkinDraftGuard(() => void createDreamSkinTheme()),
       saveDreamSkinTheme: saveDreamSkinThemeDraft,
       selectDreamSkinTheme,
@@ -2676,7 +2785,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
+    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
   );
   const hasUpdate = update?.updateAvailable === true;
 
@@ -2815,6 +2924,7 @@ export function App() {
               form={settingsForm}
               library={dreamSkinLibrary}
               market={dreamSkinMarket}
+              community={dreamSkinCommunity}
               draft={dreamSkinThemeDraft}
               dirty={dreamSkinDraftDirty}
               pendingRestart={pendingDreamSkinRestart}
@@ -2921,6 +3031,13 @@ export function App() {
           onDismiss={() => void dismissPendingProviderImport()}
         />
       ) : null}
+      {pendingDreamSkinCommunity ? (
+        <DreamSkinCommunityLinkDialog
+          versionId={pendingDreamSkinCommunity}
+          onConfirm={() => void confirmPendingDreamSkinCommunity()}
+          onDismiss={() => void dismissPendingDreamSkinCommunity()}
+        />
+      ) : null}
     </div>
   );
 }
@@ -2951,6 +3068,9 @@ type Actions = {
   refreshDreamSkinLibrary: (silent?: boolean) => Promise<DreamSkinThemeLibrary | null>;
   refreshDreamSkinMarket: (silent?: boolean) => Promise<DreamSkinMarketResult | null>;
   installDreamSkinMarketTheme: (theme: DreamSkinMarketTheme) => Promise<boolean>;
+  refreshDreamSkinCommunity: (silent?: boolean) => Promise<DreamSkinCommunityResult | null>;
+  installDreamSkinCommunityTheme: (theme: DreamSkinCommunityTheme) => Promise<boolean>;
+  importDreamSkinThemePackage: () => Promise<void>;
   createDreamSkinTheme: () => Promise<void>;
   saveDreamSkinTheme: () => Promise<DreamSkinThemeDraft | null>;
   selectDreamSkinTheme: (item: DreamSkinThemeSummary) => void;
@@ -3583,6 +3703,7 @@ function DreamSkinScreen({
   form,
   library,
   market,
+  community,
   draft,
   dirty,
   pendingRestart,
@@ -3596,6 +3717,7 @@ function DreamSkinScreen({
   form: BackendSettings;
   library: DreamSkinThemeLibrary | null;
   market: DreamSkinMarketResult | null;
+  community: DreamSkinCommunityResult | null;
   draft: DreamSkinThemeDraft | null;
   dirty: boolean;
   pendingRestart: PendingDreamSkinRestart | null;
@@ -3606,7 +3728,7 @@ function DreamSkinScreen({
   onDraftChange: (value: DreamSkinThemeDraft | null) => void;
   actions: Actions;
 }) {
-  const [themeView, setThemeView] = useState<"market" | "local">("market");
+  const [themeView, setThemeView] = useState<"market" | "community" | "local">("community");
   const companionInputRef = useRef<HTMLInputElement>(null);
   const [companionError, setCompanionError] = useState("");
   const masterEnabled = form.enhancementsEnabled;
@@ -3770,6 +3892,17 @@ function DreamSkinScreen({
         <CardContent>
           <div aria-label={t("主题视图")} className="dream-skin-view-tabs" role="tablist">
             <button
+              aria-selected={themeView === "community"}
+              className={themeView === "community" ? "is-active" : ""}
+              onClick={() => setThemeView("community")}
+              role="tab"
+              type="button"
+            >
+              <Github className="h-4 w-4" />
+              {t("DreamSkin 社区")}
+              <span>{community?.items.length ?? 0}</span>
+            </button>
+            <button
               aria-selected={themeView === "market"}
               className={themeView === "market" ? "is-active" : ""}
               onClick={() => setThemeView("market")}
@@ -3793,7 +3926,13 @@ function DreamSkinScreen({
             </button>
           </div>
 
-          {themeView === "market" ? (
+          {themeView === "community" ? (
+            <DreamSkinCommunitySection
+              community={community}
+              actions={actions}
+              onInstalled={() => setThemeView("local")}
+            />
+          ) : themeView === "market" ? (
             <section className="dream-skin-market">
               <div className="dream-skin-library-head">
                 <div>
@@ -3851,6 +3990,10 @@ function DreamSkinScreen({
                 </small>
               </div>
               <Toolbar>
+                <Button variant="outline" onClick={() => void actions.importDreamSkinThemePackage()}>
+                  <PackageOpen className="h-4 w-4" />
+                  {t("导入主题包")}
+                </Button>
                 <Button
                   disabled={!masterEnabled || !draft}
                   onClick={() => void actions.activateDreamSkinTheme()}
@@ -4273,6 +4416,167 @@ function DreamSkinMarketCard({
         <Button onClick={() => void actions.openExternalUrl(theme.sourceUrl)} size="sm" variant="outline">
           <ExternalLink className="h-4 w-4" />
           {t("来源")}
+        </Button>
+      </div>
+    </article>
+  );
+}
+
+function DreamSkinCommunitySection({
+  community,
+  actions,
+  onInstalled,
+}: {
+  community: DreamSkinCommunityResult | null;
+  actions: Actions;
+  onInstalled: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<"latest" | "popular" | "name">("latest");
+  const items = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    const filtered = (community?.items ?? []).filter((item) => {
+      if (!normalized) return true;
+      return [item.name, item.authorDisplayName, item.themeId, item.license]
+        .some((value) => value.toLowerCase().includes(normalized));
+    });
+    return [...filtered].sort((left, right) => {
+      if (sort === "popular") return right.downloadCount - left.downloadCount;
+      if (sort === "name") return left.name.localeCompare(right.name, "zh-CN");
+      return right.reviewedAt.localeCompare(left.reviewedAt);
+    });
+  }, [community?.items, query, sort]);
+
+  return (
+    <section className="dream-skin-community">
+      <div className="dream-skin-library-head">
+        <div>
+          <strong>{t("DreamSkin 社区主题")}</strong>
+          <small>
+            {community?.total
+              ? tf("来自 DreamSkin.cc 的已审核主题，共 {0} 套；安装前仍会在本机再次校验。", [String(community.total)])
+              : t("从 DreamSkin.cc 加载已审核主题包。")}
+          </small>
+        </div>
+        <Toolbar>
+          <Button onClick={() => void actions.refreshDreamSkinCommunity()} variant="secondary">
+            <RefreshCw className="h-4 w-4" />
+            {t("刷新社区")}
+          </Button>
+          <Button onClick={() => void actions.openExternalUrl("https://dreamskin.cc/gallery")} variant="outline">
+            <ExternalLink className="h-4 w-4" />
+            {t("在线主题库")}
+          </Button>
+          <Button onClick={() => void actions.openExternalUrl("https://dreamskin.cc/studio")} variant="outline">
+            <Palette className="h-4 w-4" />
+            {t("在线 Studio")}
+          </Button>
+        </Toolbar>
+      </div>
+      {community?.warning ? (
+        <div className="dream-skin-market-warning">
+          <Info className="h-4 w-4" />
+          <span>{community.warning}</span>
+        </div>
+      ) : null}
+      <div className="dream-skin-community-controls">
+        <Input
+          aria-label={t("搜索社区主题")}
+          onChange={(event) => setQuery(event.currentTarget.value)}
+          placeholder={t("搜索主题名称、作者或许可证")}
+          value={query}
+        />
+        <AppSelect
+          onChange={(value) => setSort(value as typeof sort)}
+          options={[
+            { value: "latest", label: t("最新审核") },
+            { value: "popular", label: t("下载最多") },
+            { value: "name", label: t("名称排序") },
+          ]}
+          title={t("社区主题排序")}
+          value={sort}
+        />
+      </div>
+      {items.length ? (
+        <div className="dream-skin-community-grid">
+          {items.map((item) => (
+            <DreamSkinCommunityCard
+              actions={actions}
+              key={item.id}
+              onInstalled={onInstalled}
+              theme={item}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="empty">
+          {!community
+            ? t("正在加载 DreamSkin 社区…")
+            : community.status === "failed"
+              ? community.message
+              : query.trim()
+                ? t("没有匹配的社区主题。")
+                : t("DreamSkin 社区暂时没有可用主题。")}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DreamSkinCommunityCard({
+  theme,
+  actions,
+  onInstalled,
+}: {
+  theme: DreamSkinCommunityTheme;
+  actions: Actions;
+  onInstalled: () => void;
+}) {
+  const status = theme.updateAvailable
+    ? t("可更新")
+    : theme.installed
+      ? tf("已安装 {0}", [theme.installedVersion])
+      : t("未安装");
+  const packageSize = theme.packageBytes >= 1024 * 1024
+    ? `${(theme.packageBytes / 1024 / 1024).toFixed(1)} MiB`
+    : `${Math.ceil(theme.packageBytes / 1024)} KiB`;
+  return (
+    <article className="dream-skin-community-card">
+      <div className="dream-skin-community-preview">
+        <img
+          alt={theme.name}
+          loading="lazy"
+          onError={(event) => {
+            event.currentTarget.onerror = null;
+            event.currentTarget.src = isWindowsPlatform ? dreamSkinWindowsPreviewUrl : dreamSkinMacPreviewUrl;
+          }}
+          src={theme.previewUrl}
+        />
+        <UiBadge variant={theme.updateAvailable ? "default" : theme.installed ? "secondary" : "outline"}>{status}</UiBadge>
+      </div>
+      <div className="dream-skin-community-copy">
+        <div className="dream-skin-market-title">
+          <strong title={theme.name}>{theme.name}</strong>
+          <span>v{theme.version}</span>
+        </div>
+        <small>{tf("作者：{0} · {1} · {2} 次下载", [theme.authorDisplayName, theme.license, String(theme.downloadCount)])}</small>
+        <small>{tf("主题包：{0}", [packageSize])}</small>
+      </div>
+      <div className="dream-skin-community-actions">
+        <Button
+          disabled={!theme.applyCompatible}
+          onClick={async () => {
+            if (await actions.installDreamSkinCommunityTheme(theme)) onInstalled();
+          }}
+          size="sm"
+          title={theme.applyCompatible ? t("下载、校验并安装主题包") : t("此主题仅支持在线预览或下载")}
+        >
+          <Download className="h-4 w-4" />
+          {theme.updateAvailable ? t("更新") : theme.installed ? t("重新安装") : t("安装")}
+        </Button>
+        <Button onClick={() => void actions.openExternalUrl(`https://dreamskin.cc/preview?themeVersion=${encodeURIComponent(theme.id)}`)} size="sm" variant="outline">
+          <Eye className="h-4 w-4" />
+          {t("预览")}
         </Button>
       </div>
     </article>
@@ -7017,6 +7321,44 @@ function PendingProviderImportDialog({
           <Button onClick={onConfirm}>
             <Download className="h-4 w-4" />
             {t("确认导入")}
+          </Button>
+          <Button onClick={onDismiss} variant="secondary">{t("取消")}</Button>
+        </Toolbar>
+      </div>
+    </div>
+  );
+}
+
+function DreamSkinCommunityLinkDialog({
+  versionId,
+  onConfirm,
+  onDismiss,
+}: {
+  versionId: string;
+  onConfirm: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card provider-import-modal">
+        <div className="modal-head">
+          <div>
+            <h2>{t("从 DreamSkin.cc 安装主题")}</h2>
+            <p>{t("检测到网页一键换肤请求。确认后会从固定社区 API 下载，并在本机重新校验大小、SHA-256、ZIP 清单与 Safe CSS。")}</p>
+          </div>
+          <button className="toast-close" onClick={onDismiss} type="button">×</button>
+        </div>
+        <div className="metric-list">
+          <Metric label={t("主题版本 ID")} value={versionId} />
+          <Metric label={t("来源")} value="api.dreamskin.cc" />
+        </div>
+        <div className="hint-line" role="note">
+          {t("链接不能携带任意下载地址、文件路径或命令；安装后主题会进入“我的主题”，不会自动重启 Codex。")}
+        </div>
+        <Toolbar>
+          <Button onClick={onConfirm}>
+            <Download className="h-4 w-4" />
+            {t("下载并安装")}
           </Button>
           <Button onClick={onDismiss} variant="secondary">{t("取消")}</Button>
         </Toolbar>

@@ -41,6 +41,7 @@ create_app() {
   local bundle_id="$4"
   local lsui_element="${5:-false}"
   local app_dir="$STAGE/$app_name.app"
+  local url_types=""
 
   if [ ! -x "$binary_path" ]; then
     echo "error: binary not found or not executable: $binary_path" >&2
@@ -53,6 +54,20 @@ create_app() {
   cp "$ICON_ICNS" "$app_dir/Contents/Resources/$ICON_NAME"
   chmod +x "$app_dir/Contents/MacOS/$executable_name"
   printf 'APPL????' > "$app_dir/Contents/PkgInfo"
+  if [ "$executable_name" = "CodexPlusPlusManager" ]; then
+    url_types='  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>Codex++ Links</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>codexplusplus</string>
+        <string>dreamskin</string>
+      </array>
+    </dict>
+  </array>'
+  fi
   cat > "$app_dir/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -78,6 +93,7 @@ create_app() {
   <string>$executable_name</string>
   <key>CFBundleIconFile</key>
   <string>$ICON_NAME</string>
+$url_types
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
   <key>NSHighResolutionCapable</key>

@@ -106,6 +106,15 @@ pub struct DreamSkinMarketPayload {
     pub themes: Vec<codex_plus_core::dream_skin_market::DreamSkinMarketTheme>,
 }
 
+pub type DreamSkinCommunityPayload =
+    codex_plus_core::dream_skin_community::DreamSkinCommunityCatalog;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingDreamSkinCommunityPayload {
+    pub version_id: String,
+}
+
 struct ManagedDreamSkinImageBackup {
     path: PathBuf,
     bytes: Vec<u8>,
@@ -717,6 +726,160 @@ pub async fn refresh_dream_skin_market() -> CommandResult<DreamSkinMarketPayload
 }
 
 #[tauri::command]
+pub async fn refresh_dream_skin_community() -> CommandResult<DreamSkinCommunityPayload> {
+    let state_dir = codex_plus_core::paths::default_app_state_dir();
+    match codex_plus_core::dream_skin_community::load_community_catalog(&state_dir).await {
+        Ok(catalog) => ok("DreamSkin 社区已刷新。", catalog),
+        Err(error) => failed(
+            &format!("DreamSkin 社区加载失败：{error}"),
+            empty_dream_skin_community_payload(),
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn install_dream_skin_community_theme(
+    id: String,
+) -> CommandResult<DreamSkinCommunityPayload> {
+    let state_dir = codex_plus_core::paths::default_app_state_dir();
+    let installed =
+        match codex_plus_core::dream_skin_community::install_community_theme(&state_dir, id.trim())
+            .await
+        {
+            Ok(installed) => installed,
+            Err(error) => {
+                return failed(
+                    &format!("安装 DreamSkin 社区主题失败：{error}"),
+                    codex_plus_core::dream_skin_community::load_community_catalog(&state_dir)
+                        .await
+                        .unwrap_or_else(|_| empty_dream_skin_community_payload()),
+                );
+            }
+        };
+    match codex_plus_core::dream_skin_community::load_community_catalog(&state_dir).await {
+        Ok(mut catalog) => {
+            catalog.installed_theme_id = installed.id;
+            ok("主题已安装到“我的主题”。", catalog)
+        }
+        Err(_) => {
+            let mut catalog = empty_dream_skin_community_payload();
+            catalog.installed_theme_id = installed.id;
+            ok("主题已安装到“我的主题”。", catalog)
+        }
+    }
+}
+
+#[tauri::command]
+pub fn load_pending_dream_skin_community() -> CommandResult<PendingDreamSkinCommunityPayload> {
+    match codex_plus_core::dream_skin_community::load_pending_community_link() {
+        Ok(version_id) => ok(
+            "待处理的一键换肤链接已读取。",
+            PendingDreamSkinCommunityPayload {
+                version_id: version_id.unwrap_or_default(),
+            },
+        ),
+        Err(error) => failed(
+            &format!("读取一键换肤链接失败：{error}"),
+            PendingDreamSkinCommunityPayload {
+                version_id: String::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn confirm_pending_dream_skin_community() -> CommandResult<DreamSkinCommunityPayload> {
+    let version_id = match codex_plus_core::dream_skin_community::load_pending_community_link() {
+        Ok(Some(version_id)) => version_id,
+        Ok(None) => {
+            return failed(
+                "没有待处理的一键换肤链接。",
+                empty_dream_skin_community_payload(),
+            );
+        }
+        Err(error) => {
+            return failed(
+                &format!("读取一键换肤链接失败：{error}"),
+                empty_dream_skin_community_payload(),
+            );
+        }
+    };
+    let state_dir = codex_plus_core::paths::default_app_state_dir();
+    let installed = match codex_plus_core::dream_skin_community::install_community_theme(
+        &state_dir,
+        &version_id,
+    )
+    .await
+    {
+        Ok(installed) => installed,
+        Err(error) => {
+            return failed(
+                &format!("安装 DreamSkin 社区主题失败：{error}"),
+                codex_plus_core::dream_skin_community::load_community_catalog(&state_dir)
+                    .await
+                    .unwrap_or_else(|_| empty_dream_skin_community_payload()),
+            );
+        }
+    };
+    if let Err(error) = codex_plus_core::dream_skin_community::clear_pending_community_link() {
+        return failed(
+            &format!("主题已安装，但清理一键换肤记录失败：{error}"),
+            codex_plus_core::dream_skin_community::load_community_catalog(&state_dir)
+                .await
+                .unwrap_or_else(|_| empty_dream_skin_community_payload()),
+        );
+    }
+    let mut catalog = codex_plus_core::dream_skin_community::load_community_catalog(&state_dir)
+        .await
+        .unwrap_or_else(|_| empty_dream_skin_community_payload());
+    catalog.installed_theme_id = installed.id;
+    ok("主题已安装，正在应用。", catalog)
+}
+
+#[tauri::command]
+pub fn dismiss_pending_dream_skin_community() -> CommandResult<PendingDreamSkinCommunityPayload> {
+    match codex_plus_core::dream_skin_community::clear_pending_community_link() {
+        Ok(()) => ok(
+            "已取消一键换肤。",
+            PendingDreamSkinCommunityPayload {
+                version_id: String::new(),
+            },
+        ),
+        Err(error) => failed(
+            &format!("取消一键换肤失败：{error}"),
+            PendingDreamSkinCommunityPayload {
+                version_id: String::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn import_dream_skin_theme_package(
+    path: String,
+) -> CommandResult<codex_plus_core::dream_skin_library::DreamSkinThemeLibrary> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let state_dir = codex_plus_core::paths::default_app_state_dir();
+    match codex_plus_core::dream_skin_community::import_theme_package(
+        &state_dir,
+        Path::new(path.trim()),
+    ) {
+        Ok(_) => match current_dream_skin_library(&settings) {
+            Ok(library) => ok("DreamSkin 主题包已导入。", library),
+            Err(error) => failed(
+                &format!("主题包已导入，但刷新主题库失败：{error}"),
+                empty_dream_skin_library(&settings),
+            ),
+        },
+        Err(error) => failed(
+            &format!("导入 DreamSkin 主题包失败：{error}"),
+            current_dream_skin_library(&settings)
+                .unwrap_or_else(|_| empty_dream_skin_library(&settings)),
+        ),
+    }
+}
+
+#[tauri::command]
 pub async fn install_dream_skin_market_theme(id: String) -> CommandResult<DreamSkinMarketPayload> {
     let id = id.trim();
     if id.is_empty() {
@@ -1145,6 +1308,17 @@ fn empty_dream_skin_market_payload() -> DreamSkinMarketPayload {
         cached: false,
         warning: String::new(),
         themes: Vec::new(),
+    }
+}
+
+fn empty_dream_skin_community_payload() -> DreamSkinCommunityPayload {
+    DreamSkinCommunityPayload {
+        items: Vec::new(),
+        total: 0,
+        fetched_at: String::new(),
+        cached: false,
+        warning: String::new(),
+        installed_theme_id: String::new(),
     }
 }
 
