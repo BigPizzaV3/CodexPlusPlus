@@ -150,7 +150,7 @@ fn find_codex_processes_finds_local_install_with_capitial_c() {
         parent_process_id: 0,
         exe_file: "Codex.exe".to_string(),
         executable_path: Some(std::path::PathBuf::from(
-            r"D:\360Downloads\codexapp\app\Codex.exe",
+            r"D:\Portable\Codex\app\Codex.exe",
         )),
     }];
 
@@ -165,7 +165,7 @@ fn find_codex_processes_ignores_lowercase_local_cli_binary() {
         parent_process_id: 0,
         exe_file: "codex.exe".to_string(),
         executable_path: Some(std::path::PathBuf::from(
-            r"D:\360Downloads\codexapp\app\codex.exe",
+            r"D:\Portable\Codex\app\codex.exe",
         )),
     }];
 
@@ -219,7 +219,7 @@ fn find_codex_processes_combines_store_and_local_installs() {
             parent_process_id: 0,
             exe_file: "Codex.exe".to_string(),
             executable_path: Some(std::path::PathBuf::from(
-                r"D:\360Downloads\codexapp\app\Codex.exe",
+                r"D:\Portable\Codex\app\Codex.exe",
             )),
         },
     ];
@@ -260,7 +260,7 @@ fn find_codex_processes_ignores_chromium_child_processes() {
             parent_process_id: 0,
             exe_file: "Codex.exe".to_string(),
             executable_path: Some(std::path::PathBuf::from(
-                r"D:\360Downloads\codexapp\app\Codex.exe",
+                r"D:\Portable\Codex\app\Codex.exe",
             )),
         },
         WindowsProcessInfo {
@@ -268,7 +268,7 @@ fn find_codex_processes_ignores_chromium_child_processes() {
             parent_process_id: 42,
             exe_file: "Codex.exe".to_string(),
             executable_path: Some(std::path::PathBuf::from(
-                r"D:\360Downloads\codexapp\app\Codex.exe",
+                r"D:\Portable\Codex\app\Codex.exe",
             )),
         },
     ];

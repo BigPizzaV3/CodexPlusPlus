@@ -11,8 +11,8 @@ A local-first issue board that runs in a browser and can be embedded in Codex th
 Download the repository ZIP from GitHub, or clone it with Git:
 
 ```bash
-git clone https://github.com/acc-c/codex-taskboard.git
-cd codex-taskboard
+git clone https://github.com/BigPizzaV3/CodexPlusPlus.git
+cd CodexPlusPlus/apps/codex-taskboard
 ```
 
 ## Run locally
