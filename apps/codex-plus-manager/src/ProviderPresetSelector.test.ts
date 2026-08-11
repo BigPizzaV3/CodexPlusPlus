@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { shouldRenderBedrockPresetButton } from "../bedrock-config.ts";
+import { shouldRenderBedrockPresetButton } from "./bedrock-config.ts";
 
 // 示例单元测试：验证 `ProviderPresetSelector` 中 Bedrock 入口按钮的渲染判定。
 //

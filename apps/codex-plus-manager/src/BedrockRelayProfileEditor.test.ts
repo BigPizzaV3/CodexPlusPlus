@@ -8,7 +8,7 @@ import {
   bedrockAwsProfileCommandBlock,
   bedrockValidationError,
   type BedrockConfig,
-} from "../bedrock-config.ts";
+} from "./bedrock-config.ts";
 
 // 示例单元测试：验证 `BedrockRelayProfileEditor` 的渲染分支与提示逻辑。
 //

@@ -9,7 +9,6 @@ target/
 node_modules/
 apps/codex-plus-manager/src-tauri/gen/
 
-.kiro
 .codex_asar_extract/
 .codex_asar_extract_latest/
 .superpowers/

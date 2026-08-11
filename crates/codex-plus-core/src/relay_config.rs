@@ -3233,9 +3233,7 @@ pub fn validate_custom_provider_id(provider_id: &str) -> Result<String, String> 
         return Err("provider 标识符不能为空".to_string());
     }
     if RESERVED_MODEL_PROVIDER_IDS.contains(&trimmed) {
-        return Err(format!(
-            "「{trimmed}」与保留供应商标识符冲突，请换一个名称"
-        ));
+        return Err(format!("「{trimmed}」与保留供应商标识符冲突，请换一个名称"));
     }
     Ok(trimmed.to_string())
 }
@@ -3320,8 +3318,8 @@ pub(crate) fn complete_bedrock_bearer_token_config(
     profile: &RelayProfile,
     bedrock: &BedrockConfig,
 ) -> anyhow::Result<String> {
-    let provider_id = validate_custom_provider_id(&bedrock.provider_id)
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let provider_id =
+        validate_custom_provider_id(&bedrock.provider_id).map_err(|e| anyhow::anyhow!(e))?;
     let region = require_non_empty(&bedrock.region, "AWS 区域")?;
     let api_key = require_non_empty(&relay_profile_api_key(profile), "Bedrock API Key")?;
 
@@ -3572,7 +3570,7 @@ http_headers = { Authorization = \"Bearer stale\" }
 [model_providers.other-leftover]
 name = \"should-be-cleared\"
 "
-                .to_string(),
+            .to_string(),
             api_key: "brk-test-key".to_string(),
             bedrock: Some(BedrockConfig {
                 auth_mode: BedrockAuthMode::BearerToken,
@@ -3589,9 +3587,18 @@ name = \"should-be-cleared\"
             .expect("bearer token config should succeed");
 
         // 5 个 Bedrock 必需字段
-        assert!(output.contains("name = \"my-bedrock\""), "expected fresh name, got:\n{output}");
-        assert!(output.contains("wire_api = \"responses\""), "expected wire_api, got:\n{output}");
-        assert!(output.contains("requires_openai_auth = true"), "expected requires_openai_auth, got:\n{output}");
+        assert!(
+            output.contains("name = \"my-bedrock\""),
+            "expected fresh name, got:\n{output}"
+        );
+        assert!(
+            output.contains("wire_api = \"responses\""),
+            "expected wire_api, got:\n{output}"
+        );
+        assert!(
+            output.contains("requires_openai_auth = true"),
+            "expected requires_openai_auth, got:\n{output}"
+        );
         assert!(
             output.contains("base_url = \"https://bedrock-mantle.us-east-2.api.aws/openai/v1\""),
             "expected bedrock-mantle base_url, got:\n{output}"
@@ -3602,14 +3609,38 @@ name = \"should-be-cleared\"
         );
 
         // 旧脏字段不应残留
-        assert!(!output.contains("leftover-name"), "stale name should be dropped, got:\n{output}");
-        assert!(!output.contains("OLD_KEY"), "stale env_key value should be dropped, got:\n{output}");
-        assert!(!output.contains("env_key"), "stale env_key field should be dropped, got:\n{output}");
-        assert!(!output.contains("env_http_headers"), "stale env_http_headers should be dropped, got:\n{output}");
-        assert!(!output.contains("http_headers"), "stale http_headers should be dropped, got:\n{output}");
-        assert!(!output.contains("leftover"), "stale header values should be dropped, got:\n{output}");
-        assert!(!output.contains("should-be-cleared"), "sibling provider should be cleared, got:\n{output}");
-        assert!(!output.contains("[model_providers.other-leftover]"), "sibling provider table should be dropped, got:\n{output}");
+        assert!(
+            !output.contains("leftover-name"),
+            "stale name should be dropped, got:\n{output}"
+        );
+        assert!(
+            !output.contains("OLD_KEY"),
+            "stale env_key value should be dropped, got:\n{output}"
+        );
+        assert!(
+            !output.contains("env_key"),
+            "stale env_key field should be dropped, got:\n{output}"
+        );
+        assert!(
+            !output.contains("env_http_headers"),
+            "stale env_http_headers should be dropped, got:\n{output}"
+        );
+        assert!(
+            !output.contains("http_headers"),
+            "stale http_headers should be dropped, got:\n{output}"
+        );
+        assert!(
+            !output.contains("leftover"),
+            "stale header values should be dropped, got:\n{output}"
+        );
+        assert!(
+            !output.contains("should-be-cleared"),
+            "sibling provider should be cleared, got:\n{output}"
+        );
+        assert!(
+            !output.contains("[model_providers.other-leftover]"),
+            "sibling provider table should be dropped, got:\n{output}"
+        );
     }
 
     #[test]
@@ -3760,20 +3791,17 @@ name = \"should-be-cleared\"
                 "model_catalog_json",
             ];
 
-            let scalar_line = prop::sample::select(SCALAR_KEYS)
-                .prop_flat_map(|key| {
-                    "[a-zA-Z0-9_\\-]{1,20}".prop_map(move |val| {
-                        format!("{} = \"{}\"", key, val)
-                    })
-                });
+            let scalar_line = prop::sample::select(SCALAR_KEYS).prop_flat_map(|key| {
+                "[a-zA-Z0-9_\\-]{1,20}".prop_map(move |val| format!("{} = \"{}\"", key, val))
+            });
 
             let table_header = "[a-zA-Z_][a-zA-Z0-9_]{0,10}(\\.[a-zA-Z_][a-zA-Z0-9_]{0,10}){0,2}"
                 .prop_map(|name| format!("[{}]", name));
 
             let non_root_scalar_line = prop_oneof![
-                Just(String::new()),                         // 空行
-                Just("# comment line".to_string()),          // 注释
-                "[a-z_]{1,10} = \"[a-z]{1,10}\""             // 非根级 key 的赋值行
+                Just(String::new()),                // 空行
+                Just("# comment line".to_string()), // 注释
+                "[a-z_]{1,10} = \"[a-z]{1,10}\"" // 非根级 key 的赋值行
                     .prop_filter("must not be a root scalar key", |line| {
                         if let Some((key, _)) = line.split_once('=') {
                             let key = key.trim();

@@ -3100,8 +3100,7 @@ experimental_bearer_token = "sk-existing""#
         };
 
         let serialized_bearer = serde_json::to_string(&profile_bearer).unwrap();
-        let deserialized_bearer: RelayProfile =
-            serde_json::from_str(&serialized_bearer).unwrap();
+        let deserialized_bearer: RelayProfile = serde_json::from_str(&serialized_bearer).unwrap();
         assert_eq!(deserialized_bearer.bedrock, Some(config_bearer));
     }
 }
