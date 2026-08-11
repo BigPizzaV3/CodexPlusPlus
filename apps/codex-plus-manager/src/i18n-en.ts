@@ -511,7 +511,6 @@ export const EN_PLAIN: Record<string, string> = {
   "推荐内容": "Recommendations",
   "提取当前供应商配置": "Extract current provider config",
   "插件": "Plugins",
-  "插件列表全量展示": "Show full plugin list",
   "插件市场修复": "Plugin marketplace repair",
   "插件市场修复失败，请查看错误提示后重试。": "Plugin marketplace repair failed. Check the error message and retry.",
   "插件市场修复进度": "Plugin marketplace repair progress",
@@ -602,6 +601,7 @@ export const EN_PLAIN: Record<string, string> = {
   "概览已检查": "Overview checked",
   "模型列表": "Model list",
   "模型名称": "Model name",
+  "图片处理方式": "Image handling",
   "模型白名单解锁": "Model whitelist unlock",
   "模式": "Mode",
   "模式。": " mode.",
@@ -762,8 +762,6 @@ export const EN_PLAIN: Record<string, string> = {
   "返回列表": "Back to list",
   "这些变量可能覆盖当前供应商写入的 config.toml / auth.json；CODEX_HOME 不会被清理。":
     "These variables may override the config.toml / auth.json written by the current provider; CODEX_HOME won't be cleaned up.",
-  "进入插件页后自动连续展开“更多”，尽量一次显示完整插件列表。":
-    "Automatically keep expanding 'More' on the plugins page to show the full plugin list at once.",
   "进度": "Progress",
   "远程 SSH 文件引用可直接用 Zed Remote Development 打开。": "Remote SSH file references can be opened directly with Zed Remote Development.",
   "选择全部候选记录": "Select all candidate records",

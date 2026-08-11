@@ -263,6 +263,9 @@ fn relay_context_management_is_global_not_supplier_scoped() {
     assert!(app_tsx.contains("sync_live_context_entries"));
     assert!(app_tsx.contains("refreshLiveContextEntries"));
     assert!(app_tsx.contains("syncLiveContextEntries(next, true)"));
+    assert!(app_tsx.contains("const syncContextEntries = async (next: BackendSettings) =>"));
+    assert_eq!(app_tsx.matches("await syncContextEntries(next)").count(), 3);
+    assert!(app_tsx.contains("if (!(await syncContextEntries(next))) return;"));
     assert!(app_tsx.contains("function contextEntriesWithLiveEntries"));
     assert!(app_tsx.contains("liveByKind"));
     assert!(app_tsx.contains("mergeLiveContextEntries"));

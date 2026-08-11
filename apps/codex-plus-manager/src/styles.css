@@ -1010,16 +1010,14 @@ body {
   position: sticky;
   top: 0;
   z-index: 20;
-  margin: -16px -20px 0;
-  padding: 10px 20px;
-  background: hsl(var(--shell-bg));
-  border-bottom: 1px solid hsl(var(--border));
-  animation: relay-detail-toolbar-enter 220ms var(--motion-ease) both;
-}
-
-.relay-detail-sticky .toolbar {
-  margin-top: 0;
-  padding-top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 24px;
+  border-bottom: 1px solid hsl(var(--border) / 0.72);
+  background: hsl(var(--shell-bg) / 0.98);
+  backdrop-filter: blur(12px);
 }
 
 .relay-profile-editor {
@@ -1049,7 +1047,6 @@ body {
   gap: 12px;
 }
 
-.relay-editor-head,
 .relay-file-head {
   display: flex;
   gap: 12px;
@@ -1057,19 +1054,34 @@ body {
   justify-content: space-between;
 }
 
-.relay-editor-head {
-  padding-bottom: 12px;
-  border-bottom: 1px solid hsl(var(--border) / 0.72);
-}
-
-.relay-editor-head div,
 .relay-file-head div {
   display: grid;
   gap: 3px;
   min-width: 0;
 }
 
-.relay-editor-head span,
+.relay-editor-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.relay-editor-heading-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.relay-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.relay-editor-heading-copy span,
 .relay-file-head span {
   overflow-wrap: anywhere;
   color: hsl(var(--muted-foreground));
@@ -1078,8 +1090,10 @@ body {
 
 .relay-fields {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 16px;
+  row-gap: 14px;
+  align-items: start;
   margin-top: 12px;
 }
 
@@ -1133,10 +1147,15 @@ body {
 .relay-advanced-fields,
 .relay-api-fields {
   display: grid;
-  grid-column: 1;
-  gap: 12px;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 16px;
   animation: relay-section-enter 240ms var(--motion-ease) both;
   overflow: hidden;
+}
+
+.relay-advanced-fields {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .relay-advanced-fields > .field,
@@ -1176,11 +1195,29 @@ body {
 
 .provider-doctor {
   display: grid;
-  gap: 12px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 8px;
-  background: hsl(var(--muted) / 0.34);
-  padding: 12px;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  border-block: 1px solid hsl(var(--border) / 0.78);
+  padding: 12px 0;
+}
+
+.provider-doctor-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.provider-doctor-copy strong {
+  font-size: 14px;
+}
+
+.provider-doctor-copy span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .provider-doctor-head {
@@ -1410,74 +1447,71 @@ body {
   margin-top: 0;
 }
 
-.relay-field-name {
-  grid-column: 1;
-}
-
-.relay-field-mode {
-  grid-column: 1;
-}
-
-.relay-field-test-model {
-  grid-column: 1;
-}
-
-.relay-field-config-model {
-  grid-column: 1;
-}
-
-.relay-field-context-window {
-  grid-column: 1;
-}
-
-.relay-field-auto-compact {
-  grid-column: 1;
-}
-
-.relay-field-goals {
-  grid-column: 1;
+.relay-field-name,
+.relay-field-mode,
+.relay-field-test-model,
+.relay-field-config-model,
+.relay-field-context-window,
+.relay-field-auto-compact,
+.relay-field-goals,
+.relay-field-model-mode,
+.relay-field-official-key,
+.relay-field-base-url,
+.relay-field-key,
+.relay-field-protocol {
+  grid-column: auto;
 }
 
 .relay-advanced-toggle {
-  grid-column: 1;
+  grid-column: 1 / -1;
 }
 
 .relay-advanced-toggle .btn {
   width: fit-content;
 }
 
-.relay-field-model-mode {
-  grid-column: 1;
+.relay-config-section {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid hsl(var(--border) / 0.78);
+  padding-top: 16px;
 }
 
-.relay-field-model-list {
-  grid-column: 1;
+.relay-config-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.relay-config-section-head > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.relay-config-section-head strong {
+  font-size: 15px;
+}
+
+.relay-config-section-head span {
+  max-width: 80ch;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .relay-model-list-tools {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
 
 .relay-model-list-tools button {
   justify-self: start;
-}
-
-.relay-field-official-key {
-  grid-column: 1;
-}
-
-.relay-field-base-url {
-  grid-column: 1;
-}
-
-.relay-field-key {
-  grid-column: 1;
-}
-
-.relay-field-protocol {
-  grid-column: 1;
 }
 
 .protocol-options {
@@ -3883,18 +3917,22 @@ body {
 
 .relay-model-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(120px, 180px) 36px;
+  grid-template-columns: minmax(220px, 1.6fr) minmax(130px, 0.7fr) minmax(180px, 1fr) 40px;
   align-items: center;
   gap: 8px;
+  min-height: var(--relay-control-height);
 }
 
 .relay-model-row-head {
+  min-height: 24px;
+  padding-inline: 2px;
   color: hsl(var(--muted-foreground));
   font-size: 12px;
   font-weight: 600;
 }
 
 .relay-model-row input {
+  min-width: 0;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
@@ -4296,7 +4334,6 @@ select {
 
 .relay-profile-editor,
 .relay-context-panel,
-.provider-doctor,
 .feature-group,
 .aggregate-editor,
 .relay-file-panel {
@@ -4322,13 +4359,6 @@ select {
 .relay-api-fields,
 .relay-file-panel {
   animation: none;
-}
-
-.relay-detail-sticky {
-  margin: -18px -24px 0;
-  padding: 10px 24px;
-  border-bottom-color: hsl(var(--border) / 0.72);
-  background: hsl(var(--shell-bg) / 0.97);
 }
 
 .relay-profile-editor {
@@ -4584,20 +4614,36 @@ select {
     padding: 14px 16px 22px;
   }
 
-  .relay-detail-sticky {
-    margin: -14px -16px 0;
-    padding-inline: 16px;
-  }
-
   .relay-profile-editor,
   .relay-detail-page > .relay-file-grid {
     margin-inline: 16px;
   }
 
+  .relay-detail-sticky {
+    align-items: flex-start;
+    padding-inline: 16px;
+  }
+
+  .relay-config-section-head,
+  .provider-doctor {
+    grid-template-columns: 1fr;
+  }
+
+  .relay-config-section-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .relay-model-list-tools {
+    justify-content: flex-start;
+  }
+
+  .relay-model-row,
   .relay-model-route-row {
     grid-template-columns: 1fr;
   }
 
+  .relay-model-row-head,
   .relay-model-route-head {
     display: none;
   }
@@ -4668,18 +4714,42 @@ select {
 
 .relay-vlm-section {
   display: grid;
-  gap: 10px;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 16px;
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
   background: hsl(var(--surface-sunken));
   padding: 14px;
-  margin-top: 8px;
 }
 
 .relay-vlm-section-header {
+  grid-column: 1 / -1;
   font-size: 13px;
   font-weight: 600;
   color: hsl(var(--foreground));
+}
+
+.relay-vlm-section > .field-hint,
+.relay-field-user-agent {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 860px) {
+  .relay-advanced-fields,
+  .relay-api-fields,
+  .relay-vlm-section {
+    grid-template-columns: 1fr;
+  }
+
+  .relay-config-section-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .relay-model-list-tools {
+    justify-content: flex-start;
+  }
 }
 
 .dream-skin-panel .toolbar {

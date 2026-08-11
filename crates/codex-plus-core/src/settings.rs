@@ -373,8 +373,6 @@ pub struct BackendSettings {
     pub computer_use_guard_enabled: bool,
     #[serde(rename = "codexAppPluginMarketplaceUnlock", default = "default_true")]
     pub codex_app_plugin_marketplace_unlock: bool,
-    #[serde(rename = "codexAppPluginAutoExpand", default = "default_true")]
-    pub codex_app_plugin_auto_expand: bool,
     #[serde(rename = "codexAppModelWhitelistUnlock", default = "default_true")]
     pub codex_app_model_whitelist_unlock: bool,
     #[serde(rename = "codexAppSessionDelete", default = "default_true")]
@@ -520,7 +518,6 @@ impl Default for BackendSettings {
             enhancements_enabled: true,
             computer_use_guard_enabled: false,
             codex_app_plugin_marketplace_unlock: true,
-            codex_app_plugin_auto_expand: true,
             codex_app_model_whitelist_unlock: true,
             codex_app_session_delete: true,
             codex_app_markdown_export: true,
@@ -1058,6 +1055,7 @@ impl SettingsStore {
 }
 
 fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<String, Value>) {
+    target.remove("codexAppPluginAutoExpand");
     if let Some(value) = source.get("codexAppPath").and_then(Value::as_str) {
         target.insert("codexAppPath".to_string(), Value::String(value.to_string()));
     }
@@ -1093,7 +1091,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         target.insert("computerUseGuardEnabled".to_string(), Value::Bool(value));
     }
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
-    merge_bool_setting(target, source, "codexAppPluginAutoExpand");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
     merge_bool_setting(target, source, "codexAppSessionDelete");
     merge_bool_setting(target, source, "codexAppMarkdownExport");
@@ -1624,7 +1621,6 @@ mod tests {
         assert!(settings.enhancements_enabled);
         assert!(!settings.computer_use_guard_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
-        assert!(settings.codex_app_plugin_auto_expand);
         assert!(!settings.codex_app_thread_id_badge);
         assert!(settings.codex_app_force_chinese_locale);
         assert!(!settings.codex_goals_enabled);
@@ -1687,7 +1683,8 @@ mod tests {
         .unwrap();
 
         assert!(settings.codex_app_plugin_marketplace_unlock);
-        assert!(!settings.codex_app_plugin_auto_expand);
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert!(saved.get("codexAppPluginAutoExpand").is_none());
 
         let legacy_settings: BackendSettings = serde_json::from_str(
             r#"{
@@ -1697,7 +1694,6 @@ mod tests {
         .unwrap();
 
         assert!(legacy_settings.codex_app_plugin_marketplace_unlock);
-        assert!(legacy_settings.codex_app_plugin_auto_expand);
     }
 
     #[test]
@@ -2633,6 +2629,28 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(saved["providerSyncEnabled"], json!(true));
         assert_eq!(saved["codexExtraArgs"], Value::Null);
         assert_eq!(saved["customField"], json!({"nested": true}));
+    }
+
+    #[test]
+    fn settings_store_update_removes_obsolete_plugin_auto_expand_field() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        std::fs::write(
+            &path,
+            r#"{"providerSyncEnabled":false,"codexAppPluginAutoExpand":true,"customField":1}"#,
+        )
+        .unwrap();
+
+        store
+            .update(json!({
+                "providerSyncEnabled": true
+            }))
+            .unwrap();
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert!(saved.get("codexAppPluginAutoExpand").is_none());
+        assert_eq!(saved["customField"], json!(1));
     }
 
     #[test]

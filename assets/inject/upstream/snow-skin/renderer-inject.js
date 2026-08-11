@@ -41,14 +41,40 @@
     }
 
     const shellMain = document.querySelector("main.main-surface") || document.querySelector("main");
-    const home = document.querySelector('[role="main"]:has([data-testid="home-icon"])');
-    for (const candidate of document.querySelectorAll('[role="main"].dream-home')) {
-      if (candidate !== home) candidate.classList.remove("dream-home");
+    const homeCandidate = document.querySelector('[role="main"]:has([data-testid="home-icon"])');
+    const homeHasClassicChrome = !!(
+      homeCandidate
+      && homeCandidate.querySelector('[data-feature="game-source"]')
+      && (
+        homeCandidate.querySelector('.group\\/home-suggestions')
+        || homeCandidate.querySelector('[class*="home-suggestions"]')
+        || homeCandidate.querySelector('[class*="_homeUtilityBar_"]')
+      )
+    );
+    const home = homeHasClassicChrome ? homeCandidate : null;
+    for (const candidate of document.querySelectorAll('[role="main"]')) {
+      const isStructuredHome = candidate === home;
+      const isSoftHome = candidate === homeCandidate && !home;
+      candidate.classList.toggle("dream-home", isStructuredHome || isSoftHome);
+      candidate.classList.toggle("dream-task", !(isStructuredHome || isSoftHome));
+      if (isStructuredHome) {
+        const hero = candidate.querySelector(":scope > div > div > div");
+        const structured = !!(
+          hero
+          && candidate.querySelector('[data-feature="game-source"]')
+          && hero.querySelector('[data-feature="game-source"], [data-testid="home-icon"]')
+        );
+        candidate.setAttribute("data-dream-home-layout", structured ? "structured" : "soft");
+      } else {
+        candidate.setAttribute("data-dream-home-layout", "soft");
+      }
     }
-    if (home) home.classList.add("dream-home");
-
-    if (!shellMain || !document.body) return;
-    shellMain.classList.toggle("dream-home-shell", Boolean(home));
+    const utilityBars = new Set(home ? home.querySelectorAll('[class*="_homeUtilityBar_"]') : []);
+    for (const candidate of document.querySelectorAll(`.${HOME_UTILITY_CLASS}`)) {
+      if (!utilityBars.has(candidate)) candidate.classList.remove(HOME_UTILITY_CLASS);
+    }
+    for (const candidate of utilityBars) candidate.classList.add(HOME_UTILITY_CLASS);
+    shellMain.classList.toggle("dream-home-shell", Boolean(homeCandidate));
     let chrome = document.getElementById(CHROME_ID);
     if (!chrome || chrome.parentElement !== document.body) {
       chrome?.remove();
@@ -75,7 +101,7 @@
     window.__CODEX_DREAM_SKIN_DISABLED__ = true;
     document.documentElement?.classList.remove("codex-dream-skin");
     document.documentElement?.style.removeProperty("--dream-art");
-    document.querySelectorAll(".dream-home").forEach((node) => node.classList.remove("dream-home"));
+    document.querySelectorAll(".dream-home").forEach((node) => { node.classList.remove("dream-home"); node.removeAttribute("data-dream-home-layout"); });
     document.querySelectorAll(".dream-home-shell").forEach((node) => node.classList.remove("dream-home-shell"));
     document.getElementById(STYLE_ID)?.remove();
     document.getElementById(CHROME_ID)?.remove();

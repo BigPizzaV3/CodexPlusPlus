@@ -477,6 +477,14 @@ fn launcher_does_not_override_codex_app_environment() {
 }
 
 #[test]
+fn launcher_uses_all_com_server_contexts_for_packaged_app_activation() {
+    let source = include_str!("../src/launcher.rs");
+
+    assert!(source.contains("CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_ALL)?"));
+    assert!(!source.contains("CLSCTX_LOCAL_SERVER"));
+}
+
+#[test]
 fn launcher_does_not_prepare_projectless_main_window() {
     let source = include_str!("../src/launcher.rs");
 

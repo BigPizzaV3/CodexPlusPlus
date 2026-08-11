@@ -563,14 +563,30 @@
     shell ||= root.getAttribute(SHELL_ATTR) || resolvedShell();
     const shellMain = document.querySelector("main.main-surface") || document.querySelector("main");
     const homeIndicator = document.querySelector('[data-testid="home-icon"]');
-    const home = homeIndicator?.closest('[role="main"]') ||
+    const homeCandidate = homeIndicator?.closest('[role="main"]') ||
       [...document.querySelectorAll('[role="main"]')].find((candidate) =>
         candidate.querySelector('[data-feature="game-source"]') &&
         candidate.querySelector('.group\\\\/home-suggestions')) || null;
+    const homeHasClassicChrome = !!(
+      homeCandidate
+      && homeCandidate.querySelector('[data-feature="game-source"]')
+      && (
+        homeCandidate.querySelector('.group\\\\/home-suggestions')
+        || homeCandidate.querySelector('[class*="home-suggestions"]')
+        || homeCandidate.querySelector('[class*="_homeUtilityBar_"]')
+      )
+    );
+    const home = homeHasClassicChrome ? homeCandidate : null;
     for (const candidate of document.querySelectorAll('[role="main"].dream-skin-home')) {
-      if (candidate !== home) candidate.classList.remove("dream-skin-home");
+      if (candidate !== home && candidate !== homeCandidate) candidate.classList.remove("dream-skin-home");
     }
     if (home) home.classList.add("dream-skin-home");
+    else if (homeCandidate) homeCandidate.classList.add("dream-skin-home");
+    for (const candidate of document.querySelectorAll('[role="main"]')) {
+      if (candidate === home) candidate.setAttribute("data-dream-home-layout", "structured");
+      else if (candidate === homeCandidate) candidate.setAttribute("data-dream-home-layout", "soft");
+      else candidate.removeAttribute("data-dream-home-layout");
+    }
     const homeUtilityBars = new Set(home
       ? home.querySelectorAll('[class*="_homeUtilityBar_"]')
       : []);
@@ -586,7 +602,7 @@
       observedShellMain = shellMain;
       layout = true;
     }
-    shellMain.classList.toggle("dream-skin-home-shell", Boolean(home));
+    shellMain.classList.toggle("dream-skin-home-shell", Boolean(homeCandidate));
     let chrome = document.getElementById(CHROME_ID);
     let created = false;
     if (!chrome || chrome.parentElement !== document.body) {
@@ -653,7 +669,10 @@
     for (const name of ART_ATTRS) document.documentElement?.removeAttribute(name);
     document.documentElement?.style.removeProperty("--dream-skin-art");
     for (const name of THEME_VARIABLES) document.documentElement?.style.removeProperty(name);
-    document.querySelectorAll(".dream-skin-home").forEach((node) => node.classList.remove("dream-skin-home"));
+    document.querySelectorAll(".dream-skin-home").forEach((node) => {
+      node.classList.remove("dream-skin-home");
+      node.removeAttribute("data-dream-home-layout");
+    });
     document.querySelectorAll(".dream-skin-home-shell").forEach((node) => node.classList.remove("dream-skin-home-shell"));
     document.querySelectorAll(".dream-skin-home-utility").forEach((node) => node.classList.remove("dream-skin-home-utility"));
     document.getElementById(STYLE_ID)?.remove();

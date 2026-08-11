@@ -472,10 +472,7 @@
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "5";
   const codexAppServerModelRequestPatchVersion = "4";
-  const codexPluginMarketplaceUnlockVersion = "14";
-  const codexPluginAutoExpandVersion = "1";
-  const codexPluginAutoExpandMaxClicks = 80;
-  const codexPluginAutoExpandClickDelayMs = 90;
+  const codexPluginMarketplaceUnlockVersion = "15";
   const codexThreadScrollMaxEntries = 120;
   const codexThreadScrollSaveThrottleMs = 120;
   const codexThreadScrollRestoreWindowMs = 3200;
@@ -1294,12 +1291,11 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
     pluginMarketplaceUnlock: "codexAppPluginMarketplaceUnlock",
-    pluginAutoExpand: "codexAppPluginAutoExpand",
     modelWhitelistUnlock: "codexAppModelWhitelistUnlock",
     sessionDelete: "codexAppSessionDelete",
     markdownExport: "codexAppMarkdownExport",
@@ -1337,7 +1333,6 @@
     if (codexPlusBackendSettings.enhancementsEnabled === false) {
       return {
         pluginMarketplaceUnlock: false,
-        pluginAutoExpand: false,
         modelWhitelistUnlock: false,
         sessionDelete: false,
         markdownExport: false,
@@ -1363,14 +1358,12 @@
       const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
         settings.pluginMarketplaceUnlock = false;
-        settings.pluginAutoExpand = false;
       }
       return settings;
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
         settings.pluginMarketplaceUnlock = false;
-        settings.pluginAutoExpand = false;
       }
       return settings;
     }
@@ -1785,6 +1778,9 @@
       "--dream-skin-project-label",
     ].forEach((name) => root?.style.removeProperty(name));
     document.querySelectorAll(".dream-home").forEach((node) => node.classList.remove("dream-home"));
+    document.querySelectorAll('[role="main"][data-dream-home-layout]').forEach((node) => {
+      node.removeAttribute("data-dream-home-layout");
+    });
     document.querySelectorAll(".dream-home-shell").forEach((node) => node.classList.remove("dream-home-shell"));
     document.querySelectorAll(".dream-skin-home").forEach((node) => node.classList.remove("dream-skin-home"));
     document.querySelectorAll(".dream-skin-home-shell").forEach((node) => node.classList.remove("dream-skin-home-shell"));
@@ -1962,21 +1958,41 @@
       ensureDreamSkinCompanion(theme);
 
       const homeIndicator = document.querySelector('[data-testid="home-icon"]');
-      const home = homeIndicator?.closest('[role="main"]')
+      const homeCandidate = homeIndicator?.closest('[role="main"]')
         || [...document.querySelectorAll('[role="main"]')].find((candidate) =>
           candidate.querySelector('[data-feature="game-source"]')
           && candidate.querySelector('.group\\/home-suggestions'))
         || null;
+      const homeHasClassicChrome = !!(
+        homeCandidate
+        && homeCandidate.querySelector('[data-feature="game-source"]')
+        && (
+          homeCandidate.querySelector('.group\\/home-suggestions')
+          || homeCandidate.querySelector('[class*="home-suggestions"]')
+          || homeCandidate.querySelector('[class*="_homeUtilityBar_"]')
+        )
+      );
+      const home = homeHasClassicChrome ? homeCandidate : null;
       for (const candidate of document.querySelectorAll(`[role="main"].${descriptor.homeClass}`)) {
-        if (candidate !== home) candidate.classList.remove(descriptor.homeClass);
+        if (candidate !== home && candidate !== homeCandidate) candidate.classList.remove(descriptor.homeClass);
       }
       if (home) home.classList.add(descriptor.homeClass);
+      else if (homeCandidate && descriptor.homeClass) homeCandidate.classList.add(descriptor.homeClass);
       if (descriptor.taskClass) {
         for (const candidate of document.querySelectorAll('[role="main"]')) {
-          candidate.classList.toggle(descriptor.taskClass, candidate !== home);
+          candidate.classList.toggle(descriptor.taskClass, candidate !== home && candidate !== homeCandidate);
         }
       }
-      shellMain.classList.toggle(descriptor.shellClass, Boolean(home));
+      for (const candidate of document.querySelectorAll('[role="main"]')) {
+        if (candidate === home) {
+          const hero = candidate.querySelector(':scope > div > div > div');
+          const structured = !!(hero && hero.querySelector('[data-feature="game-source"], [data-testid="home-icon"]'));
+          candidate.setAttribute('data-dream-home-layout', structured ? 'structured' : 'soft');
+        } else {
+          candidate.setAttribute('data-dream-home-layout', 'soft');
+        }
+      }
+      shellMain.classList.toggle(descriptor.shellClass, Boolean(homeCandidate));
       if (descriptor.taskShellClass) shellMain.classList.toggle(descriptor.taskShellClass, !home);
 
       let chrome = document.getElementById(descriptor.chromeId);
@@ -2134,12 +2150,6 @@
         refreshCodexServiceTierControls();
       }
     }
-    if (key === "pluginAutoExpand" && !value) {
-      clearTimeout(window.__codexPluginAutoExpandTimer);
-      window.__codexPluginAutoExpandTimer = null;
-      window.__codexPluginAutoExpandRunning = false;
-      window.__codexPluginAutoExpandLastSignature = "";
-    }
     if (key === "stepwise") syncStepwisePanel(value);
     renderCodexPlusMenu();
     scan();
@@ -2202,6 +2212,7 @@
   let codexPlusBackendSettingsSeq = 0;
   const codexPluginLegacyEntryUnlockBeforeVersion = "26.601.2237";
   const codexPluginBridgeRequestUnlockFromVersion = "26.616.0";
+  const codexPluginBroadCatalogKindsFromVersion = "26.803.0";
 
   function parseCodexVersionParts(version) {
     const raw = String(version || "").trim();
@@ -2252,6 +2263,12 @@
     const comparison = compareCodexVersions(version, codexPluginBridgeRequestUnlockFromVersion);
     if (comparison == null) return "unknown";
     return comparison >= 0 ? "bridge" : "client";
+  }
+
+  function codexPluginUsesBroadCatalogKinds() {
+    const version = String(codexPlusBackendSettings.codexAppVersion || "").trim();
+    const comparison = compareCodexVersions(version, codexPluginBroadCatalogKindsFromVersion);
+    return comparison != null && comparison >= 0;
   }
 
   let codexPlusBackendSettingsLoaded = false;
@@ -4052,10 +4069,24 @@
       next.cwds = [...window.__codexPluginMarketplaceLastCwds];
     }
     const hadMarketplaceKinds = Object.prototype.hasOwnProperty.call(next, "marketplaceKinds");
+    const broadCatalogRequest = codexPluginUsesBroadCatalogKinds()
+      && (!hadMarketplaceKinds || next.marketplaceKinds == null);
+    const remoteCatalogUnavailable = window.__codexPluginMarketplaceRemoteCatalogUnavailable === true;
+    if (broadCatalogRequest && !remoteCatalogUnavailable) {
+      sendCodexPlusDiagnostic("plugin_marketplace_request_expanded", {
+        hadMarketplaceKinds,
+        marketplaceKinds: hadMarketplaceKinds ? next.marketplaceKinds : null,
+        broadCatalogPreserved: true,
+        cwdCount: Array.isArray(next.cwds) ? next.cwds.length : 0,
+        cwdRestored: requestCwds.length === 0 && Array.isArray(next.cwds) && next.cwds.length > 0,
+        remoteCatalogUnavailable,
+        remoteOnly: requestProfile.remoteOnly,
+      });
+      return next;
+    }
     let nextKinds = Array.isArray(next.marketplaceKinds)
       ? next.marketplaceKinds.map((kind) => restorePluginMarketplaceName(kind))
       : ["local"];
-    const remoteCatalogUnavailable = window.__codexPluginMarketplaceRemoteCatalogUnavailable === true;
     if (!requestProfile.remoteOnly && remoteCatalogUnavailable) {
       nextKinds = nextKinds.filter((kind) => kind !== "created-by-me-remote" && kind !== "shared-with-me");
     }
@@ -4067,6 +4098,7 @@
     sendCodexPlusDiagnostic("plugin_marketplace_request_expanded", {
       hadMarketplaceKinds,
       marketplaceKinds: next.marketplaceKinds,
+      broadCatalogPreserved: false,
       cwdCount: Array.isArray(next.cwds) ? next.cwds.length : 0,
       cwdRestored: requestCwds.length === 0 && Array.isArray(next.cwds) && next.cwds.length > 0,
       remoteCatalogUnavailable,
@@ -4215,7 +4247,8 @@
       return false;
     }
     const isKnownFilterSource = source.includes("!u(e.marketplaceName)||e.marketplaceName===r")
-      || source.includes("!ne(e.marketplaceName)||e.marketplaceName===n");
+      || source.includes("!ne(e.marketplaceName)||e.marketplaceName===n")
+      || source.includes("!Eu(e.marketplaceName)||e.marketplaceName===n");
     if (!isKnownFilterSource) return false;
     if (!sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName))) return false;
     return sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName) && !callback(plugin));
@@ -4371,101 +4404,6 @@
 
   function remoteOnlyPluginMarketplaceFallbackResult() {
     return pluginMarketplaceFallbackResult(false);
-  }
-
-  function pluginAutoExpandVisibleElement(el) {
-    if (!(el instanceof HTMLElement) || !el.isConnected) return false;
-    const style = getComputedStyle(el);
-    if (style.display === "none" || style.visibility === "hidden" || style.pointerEvents === "none") return false;
-    const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  }
-
-  function pluginAutoExpandPageLooksRelevant() {
-    const text = String(document.body?.innerText || "");
-    return /插件|Plugins?|Marketplace|市场/i.test(text) && !!document.querySelector('button, [role="button"]');
-  }
-
-  function pluginAutoExpandButtonLooksScoped(button) {
-    let node = button;
-    for (let depth = 0; node instanceof HTMLElement && node !== document.body && depth < 8; depth += 1, node = node.parentElement) {
-      const text = String(node.innerText || "");
-      if (text.length > 16000) continue;
-      if (/插件|Plugins?|Marketplace|市场/i.test(text)) return true;
-    }
-    return false;
-  }
-
-  function pluginAutoExpandButtonText(button) {
-    return String(button?.textContent || button?.getAttribute?.("aria-label") || button?.getAttribute?.("title") || "")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  function pluginAutoExpandButtonLooksLikeMore(button) {
-    const text = pluginAutoExpandButtonText(button);
-    if (!text || text.length > 120) return false;
-    if (/^(更多|显示更多|查看更多|加载更多|Show more|Load more|More)$/i.test(text)) return true;
-    if (/^查看\s+.+以及另外\s*\d+\s*个$/i.test(text)) return true;
-    if (/^View\s+.+\s+and\s+\d+\s+more$/i.test(text)) return true;
-    if (/^Show\s+.+\s+and\s+\d+\s+more$/i.test(text)) return true;
-    return false;
-  }
-
-  function pluginAutoExpandButtonCandidates() {
-    if (!codexPlusSettings().pluginAutoExpand || !pluginAutoExpandPageLooksRelevant()) return [];
-    return Array.from(document.querySelectorAll('button, [role="button"]'))
-      .filter(pluginAutoExpandVisibleElement)
-      .filter((button) => !button.disabled && button.getAttribute("aria-disabled") !== "true")
-      .filter(pluginAutoExpandButtonLooksLikeMore)
-      .filter(pluginAutoExpandButtonLooksScoped)
-      .filter((button) => !button.closest?.(`.${moreMenuClass}, #${codexPlusMenuId}, .codex-plus-modal-overlay`));
-  }
-
-  function pluginAutoExpandSignature() {
-    return pluginAutoExpandButtonCandidates()
-      .map((button) => {
-        const rect = button.getBoundingClientRect();
-        return `${pluginAutoExpandButtonText(button)}:${Math.round(rect.top)}:${Math.round(rect.left)}`;
-      })
-      .join("|");
-  }
-
-  function schedulePluginAutoExpand(force = false) {
-    if (!codexPlusSettings().pluginAutoExpand) return;
-    if (window.__codexPluginAutoExpandRunning && !force) return;
-    clearTimeout(window.__codexPluginAutoExpandTimer);
-    window.__codexPluginAutoExpandTimer = setTimeout(() => runPluginAutoExpand(force), force ? 30 : 180);
-  }
-
-  function runPluginAutoExpand(force = false) {
-    if (!codexPlusSettings().pluginAutoExpand) return;
-    const currentSignature = pluginAutoExpandSignature();
-    if (!force && currentSignature && currentSignature === window.__codexPluginAutoExpandLastSignature) return;
-    window.__codexPluginAutoExpandLastSignature = currentSignature;
-    window.__codexPluginAutoExpandRunning = true;
-    window.__codexPluginAutoExpandClicks = 0;
-    const clickNext = () => {
-      if (!codexPlusSettings().pluginAutoExpand) {
-        window.__codexPluginAutoExpandRunning = false;
-        return;
-      }
-      const button = pluginAutoExpandButtonCandidates()[0];
-      if (!button || window.__codexPluginAutoExpandClicks >= codexPluginAutoExpandMaxClicks) {
-        window.__codexPluginAutoExpandRunning = false;
-        sendCodexPlusDiagnostic("plugin_auto_expand_finished", {
-          version: codexPluginAutoExpandVersion,
-          clicks: window.__codexPluginAutoExpandClicks || 0,
-          exhausted: !!button,
-        });
-        return;
-      }
-      window.__codexPluginAutoExpandClicks = (window.__codexPluginAutoExpandClicks || 0) + 1;
-      button.dataset.codexPluginAutoExpandClicked = String(Date.now());
-      button.click();
-      setTimeout(clickNext, codexPluginAutoExpandClickDelayMs);
-    };
-    clickNext();
   }
 
   function patchPluginMarketplaceRequestClient(client) {
@@ -4673,6 +4611,9 @@
       localFallback: localPluginMarketplaceFallbackResult,
       remoteOnlyFallback: remoteOnlyPluginMarketplaceFallbackResult,
       requestProfile: pluginMarketplaceRequestProfile,
+      setCodexAppVersion: (version) => {
+        codexPlusBackendSettings.codexAppVersion = String(version || "");
+      },
       remoteCatalogUnavailable: () => window.__codexPluginMarketplaceRemoteCatalogUnavailable === true,
       reset: () => {
         delete window.__codexPluginMarketplaceLastCwds;
@@ -9866,7 +9807,6 @@
     installCodexServiceTierBadge();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
-    schedulePluginAutoExpand();
   }
 
   function runScanStep(step) {

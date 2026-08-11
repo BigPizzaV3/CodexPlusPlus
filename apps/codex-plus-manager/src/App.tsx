@@ -203,7 +203,6 @@ type BackendSettings = {
   enhancementsEnabled: boolean;
   computerUseGuardEnabled: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
-  codexAppPluginAutoExpand: boolean;
   codexAppModelWhitelistUnlock: boolean;
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
@@ -802,7 +801,6 @@ const defaultSettings: BackendSettings = {
   enhancementsEnabled: true,
   computerUseGuardEnabled: false,
   codexAppPluginMarketplaceUnlock: true,
-  codexAppPluginAutoExpand: true,
   codexAppModelWhitelistUnlock: true,
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
@@ -3619,7 +3617,6 @@ function EnhanceScreen({
           <div className="enhance-feature-groups">
             <FeatureGroup title={t("插件与模型")} detail={t("管理插件市场、模型列表和服务档位相关增强。")}>
               <FeatureToggle title={t("插件市场解锁")} detail={t("API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。")} checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
-              <FeatureToggle title={t("插件列表全量展示")} detail={t("进入插件页后自动连续展开“更多”，尽量一次显示完整插件列表。")} checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginAutoExpand", value)} />
               <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
               <FeatureToggle title={t("Fast 按钮")} detail={t("显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。")} checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
               <div className="feature-action-row">
@@ -5905,6 +5902,9 @@ function RelayProfileDetail({
   const [modelWindowRows, setModelWindowRows] = useState<ModelWindowRow[]>(
     modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || "", profile.modelVlm),
   );
+  const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
+  const [doctorOpen, setDoctorOpen] = useState(false);
+  const [doctorRunning, setDoctorRunning] = useState(false);
   const isActive = !isNew && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
   useEffect(() => {
@@ -5987,21 +5987,68 @@ function RelayProfileDetail({
     });
     void actions.switchRelayProfile(next, previousActiveRelayId);
   };
+  const runProviderDoctor = async () => {
+    setDoctorOpen(true);
+    setDoctorRunning(true);
+    setDoctorResult(null);
+    const draftWithWindows = draftWithModelRows();
+    const result = await actions.diagnoseRelayProfile(deriveRelayProfileFromFiles(draftWithWindows));
+    setDoctorResult(result);
+    setDoctorRunning(false);
+  };
+  const aggregateProfile = isAggregateRelayProfile(draft);
+  const showDoctor = !aggregateProfile && (draft.relayMode !== "official" || draft.officialMixApiKey);
+  const detailStatus = aggregateProfile
+    ? isNew
+      ? t("选择已有供应商作为成员，保存后写入 settings payload")
+      : t("聚合配置只引用已有供应商，不复制 Key 和配置文件")
+    : relayProfileEditorStatus(draft, form, isNew);
   return (
     <div className="relay-detail-page" key={profile.id}>
       <div className="relay-detail-sticky">
-        <Toolbar>
-          <Button onClick={onBack} variant="secondary">
+        <div className="relay-editor-heading">
+          <Button aria-label={t("返回列表")} onClick={onBack} size="icon" title={t("返回列表")} type="button" variant="ghost">
             <ArrowLeft className="h-4 w-4" />
-            {t("返回列表")}
           </Button>
-          <Button disabled={!!validationError} onClick={() => void saveDraft()} title={validationError || t("保存")}>
+          <div className="relay-editor-heading-copy">
+            <strong>{draft.name || (aggregateProfile ? t("未命名聚合供应商") : t("未命名供应商"))}</strong>
+            <span>{detailStatus}</span>
+          </div>
+        </div>
+        <div className="relay-editor-actions">
+          {showDoctor ? (
+            <Button disabled={doctorRunning} onClick={() => void runProviderDoctor()} type="button" variant="secondary">
+              <Stethoscope className="h-4 w-4" />
+              {doctorRunning ? t("诊断中") : t("诊断供应商")}
+            </Button>
+          ) : null}
+          {aggregateProfile ? (
+            <UiBadge variant="secondary">{t("聚合")}</UiBadge>
+          ) : isNew ? null : (
+            <Button
+              disabled={!form.relayProfilesEnabled || actions.relaySwitching}
+              onClick={switchDraft}
+              title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : undefined}
+              variant={draft.id === form.activeRelayId ? "secondary" : "default"}
+            >
+              {actions.relaySwitching ? t("切换中") : draft.id === form.activeRelayId ? t("使用中") : t("设为当前")}
+            </Button>
+          )}
+          <Button disabled={!!validationError} onClick={() => void saveDraft()} title={validationError || t("保存")} type="button">
             <Save className="h-4 w-4" />
             {t("保存")}
           </Button>
-        </Toolbar>
+        </div>
       </div>
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} />
+      <RelayProfileEditor
+        profile={draft}
+        form={form}
+        isNew={isNew}
+        onProfileChange={setDraft}
+        actions={actions}
+        modelWindowRows={modelWindowRows}
+        setModelWindowRows={setModelWindowRows}
+      />
       {isAggregateRelayProfile(draft) ? null : (
       <RelayFileEditors
         contextProfile={profile}
@@ -6014,6 +6061,15 @@ function RelayProfileDetail({
         actions={actions}
       />
       )}
+      {doctorOpen ? (
+        <ProviderDoctorModal
+          result={doctorResult}
+          running={doctorRunning}
+          onClose={() => {
+            if (!doctorRunning) setDoctorOpen(false);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -6052,7 +6108,6 @@ function RelayProfileEditor({
   form,
   isNew = false,
   onProfileChange,
-  onSwitch,
   actions,
   modelWindowRows,
   setModelWindowRows,
@@ -6061,15 +6116,11 @@ function RelayProfileEditor({
   form: BackendSettings;
   isNew?: boolean;
   onProfileChange: (value: RelayProfile) => void;
-  onSwitch: () => void;
   actions: Actions;
   modelWindowRows: ModelWindowRow[];
   setModelWindowRows: (value: ModelWindowRow[]) => void;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
-  const [doctorOpen, setDoctorOpen] = useState(false);
-  const [doctorRunning, setDoctorRunning] = useState(false);
   // 纯 Responses 模式（非聚合）下 VLM/Strip 不生效，禁用下拉
   const vlmUnsupportedProtocol = profile.protocol === "responses" && !isAggregateRelayProfile(profile);
   if (isAggregateRelayProfile(profile)) {
@@ -6077,7 +6128,6 @@ function RelayProfileEditor({
       <AggregateRelayProfileEditor
         profile={profile}
         form={form}
-        isNew={isNew}
         onProfileChange={onProfileChange}
       />
     );
@@ -6115,21 +6165,6 @@ function RelayProfileEditor({
   const addModelWindowRows = (rows: ModelWindowRow[]) => {
     setModelWindowRows(mergeModelWindowRows(modelWindowRows, rows));
   };
-  const runProviderDoctor = async () => {
-    setDoctorOpen(true);
-    setDoctorRunning(true);
-    setDoctorResult(null);
-    const serializedRows = serializeModelWindowRows(modelWindowRows);
-    const result = await actions.diagnoseRelayProfile(
-      deriveRelayProfileFromFiles({
-        ...profile,
-        modelList: serializedRows.modelList,
-        modelWindows: serializedRows.modelWindows,
-      }),
-    );
-    setDoctorResult(result);
-    setDoctorRunning(false);
-  };
   const fetchSub2ApiRate = async () => {
     const result = await actions.fetchSub2ApiBilling(deriveRelayProfileFromFiles(profile));
     if (!result) return;
@@ -6140,22 +6175,6 @@ function RelayProfileEditor({
   };
   return (
     <div className="relay-profile-editor">
-      <div className="relay-editor-head">
-        <div>
-          <strong>{profile.name || t("未命名供应商")}</strong>
-          <span>{relayProfileEditorStatus(profile, form, isNew)}</span>
-        </div>
-        {isNew ? null : (
-          <Button
-            disabled={!form.relayProfilesEnabled || actions.relaySwitching}
-            onClick={onSwitch}
-            title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : undefined}
-            variant={profile.id === form.activeRelayId ? "secondary" : "default"}
-          >
-            {actions.relaySwitching ? t("切换中") : profile.id === form.activeRelayId ? t("使用中") : t("设为当前")}
-          </Button>
-        )}
-      </div>
       {isNew ? (
         <ProviderPresetSelector
           onSelect={(patch: PresetPatch) => {
@@ -6336,113 +6355,120 @@ function RelayProfileEditor({
           </div>
         ) : null}
         {showApiFields ? (
-          <div className="provider-doctor">
-            <div className="provider-doctor-head">
+          <section className="relay-config-section relay-field-model-list">
+            <div className="relay-config-section-head">
               <div>
-                <strong>Provider Doctor</strong>
-                <span>{t("检查配置、模型列表和一次真实请求，定位供应商不可用原因。")}</span>
+                <strong>{t("模型列表")}</strong>
+                <span>
+                  {t("每行一个模型；上下文窗口可填")} <code>1M</code>{t("、")}<code>200K</code> {t("或")} <code>1000000</code>{t("，留空表示使用 Codex 默认长度。")}
+                </span>
               </div>
-              <Button onClick={() => void runProviderDoctor()} size="sm" type="button" variant="secondary">
-                <Stethoscope className="h-4 w-4" />
-                {t("诊断供应商")}
-              </Button>
+              <div className="relay-model-list-tools">
+                <Button
+                  onClick={() => setModelWindowRows([...modelWindowRows, { model: "", window: "", imageHandling: "" }])}
+                  size="sm"
+                  type="button"
+                  variant="secondary"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t("添加模型")}
+                </Button>
+                <Button
+                  onClick={async () => {
+                    const serializedRows = serializeModelWindowRows(modelWindowRows);
+                    const models = await actions.fetchRelayProfileModels({
+                      ...profile,
+                      modelList: serializedRows.modelList,
+                      modelWindows: serializedRows.modelWindows,
+                    });
+                    if (models?.length) {
+                      addModelWindowRows(models.map((model) => ({ model, window: "", imageHandling: "" })));
+                    }
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="secondary"
+                >
+                  <Download className="h-4 w-4" />
+                  {t("从上游获取")}
+                </Button>
+              </div>
             </div>
-            <span>{doctorResult?.summary ?? t("点击后会打开诊断弹框，按步骤检查供应商。")}</span>
-          </div>
-        ) : null}
-        {showApiFields ? (
-          <Field className="relay-field-model-list" label={t("模型列表")}>
             <div className="relay-model-row-editor">
               <div className="relay-model-row relay-model-row-head">
                 <span>{t("模型名称")}</span>
                 <span>{t("上下文窗口")}</span>
+                <span>{t("图片处理方式")}</span>
               </div>
               {modelWindowRows.map((row, index) => (
-                <div key={index}>
-                  <div className="relay-model-row">
-                    <Input
-                      value={row.model}
-                      onChange={(event) => updateModelWindowRow(index, { model: event.currentTarget.value })}
-                      placeholder="deepseek/deepseek-v4-flash"
-                    />
-                    <Input
-                      value={row.window}
-                      onChange={(event) => updateModelWindowRow(index, { window: event.currentTarget.value })}
-                      placeholder="1M"
-                    />
-                    <Button
-                      aria-label={t("删除模型")}
-                      onClick={() => removeModelWindowRow(index)}
-                      size="icon"
-                      title={t("删除模型")}
-                      type="button"
-                      variant="ghost"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <div className="relay-model-row-actions">
-                    <AppSelect
-                      className="text-xs"
-                      value={row.imageHandling}
-                      disabled={vlmUnsupportedProtocol}
-                      onChange={(value) => updateModelWindowRow(index, { imageHandling: value })}
-                      options={[
-                        { value: "", label: t("纯文本模型请配置此项"), disabled: true },
-                        { value: "send-as-is", label: "send-as-is", title: t("原样发送图片") },
-                        { value: "strip", label: "strip images", title: t("为纯文本模型移除消息中的图片") },
-                        { value: "vlm", label: "VLM analysis", title: t("为纯文本模型配置图片分析路由") },
-                      ]}
-                      title={vlmUnsupportedProtocol ? t("VLM 仅支持 Chat Completions 协议和聚合模式") : ""}
-                    />
-                    <span className="relay-model-row-hint">{t("多模态模型（支持图片输入的模型）请保持 send-as-is。")}</span>
-                  </div>
+                <div className="relay-model-row" key={index}>
+                  <Input
+                    value={row.model}
+                    onChange={(event) => updateModelWindowRow(index, { model: event.currentTarget.value })}
+                    placeholder="deepseek/deepseek-v4-flash"
+                  />
+                  <Input
+                    value={row.window}
+                    onChange={(event) => updateModelWindowRow(index, { window: event.currentTarget.value })}
+                    placeholder="1M"
+                  />
+                  <AppSelect
+                    className="text-xs"
+                    value={row.imageHandling}
+                    disabled={vlmUnsupportedProtocol}
+                    onChange={(value) => updateModelWindowRow(index, { imageHandling: value })}
+                    options={[
+                      { value: "", label: t("纯文本模型请配置此项"), disabled: true },
+                      { value: "send-as-is", label: "send-as-is", title: t("原样发送图片") },
+                      { value: "strip", label: "strip images", title: t("为纯文本模型移除消息中的图片") },
+                      { value: "vlm", label: "VLM analysis", title: t("为纯文本模型配置图片分析路由") },
+                    ]}
+                    title={vlmUnsupportedProtocol ? t("VLM 仅支持 Chat Completions 协议和聚合模式") : t("多模态模型（支持图片输入的模型）请保持 send-as-is。")}
+                  />
+                  <Button
+                    aria-label={t("删除模型")}
+                    onClick={() => removeModelWindowRow(index)}
+                    size="icon"
+                    title={t("删除模型")}
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
                 </div>
               ))}
             </div>
-            <div className="relay-model-list-tools">
-              <Button
-                onClick={() => setModelWindowRows([...modelWindowRows, { model: "", window: "", imageHandling: "" }])}
-                size="sm"
-                type="button"
-                variant="secondary"
-              >
-                <Plus className="h-4 w-4" />
-                {t("添加模型")}
-              </Button>
-              <Button
-                onClick={async () => {
-                  const serializedRows = serializeModelWindowRows(modelWindowRows);
-                  const models = await actions.fetchRelayProfileModels({
-                    ...profile,
-                    modelList: serializedRows.modelList,
-                    modelWindows: serializedRows.modelWindows,
-                  });
-                  if (models?.length) {
-                    addModelWindowRows(models.map((model) => ({ model, window: "", imageHandling: "" })));
-                  }
-                }}
-                size="sm"
-                type="button"
-                variant="secondary"
-              >
-                <Download className="h-4 w-4" />
-                {t("从上游获取")}
-              </Button>
-            </div>
-            <p className="field-hint">
-              {t("每行一个模型；上下文窗口可填")} <code>1M</code>{t("、")}<code>200K</code> {t("或")} <code>1000000</code>{t("，留空表示使用 Codex 默认长度。")}
-            </p>
-          </Field>
+          </section>
         ) : null}
         {showApiFields ? (
-          <Field className="relay-field-model-routes" label={t("单模型路由")}>
-            <div className="relay-model-route-editor">
-              <div className="relay-model-route-row relay-model-route-head">
-                <span>{t("匹配模型")}</span>
-                <span>{t("目标供应商")}</span>
-                <span>{t("目标模型（可选）")}</span>
+          <section className="relay-config-section relay-field-model-routes">
+            <div className="relay-config-section-head">
+              <div>
+                <strong>{t("单模型路由")}</strong>
+                <span>{t("仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标必须是 Responses API，且需要从 Codex++ 启动。")}</span>
               </div>
+              <div className="relay-model-list-tools">
+                <Button
+                  disabled={modelRouteTargets.length === 0}
+                  onClick={() => updateDraft({ modelRoutes: [...modelRoutes, { model: "", targetRelayId: "", targetModel: "" }] })}
+                  size="sm"
+                  title={modelRouteTargets.length === 0 ? t("请先创建一个 Responses API 目标供应商") : t("添加模型路由")}
+                  type="button"
+                  variant="secondary"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t("添加模型路由")}
+                </Button>
+              </div>
+            </div>
+            <div className="relay-model-route-editor">
+              {modelRoutes.length ? (
+                <div className="relay-model-route-row relay-model-route-head">
+                  <span>{t("匹配模型")}</span>
+                  <span>{t("目标供应商")}</span>
+                  <span>{t("目标模型（可选）")}</span>
+                </div>
+              ) : null}
               {modelRoutes.map((route, index) => (
                 <div className="relay-model-route-row" key={`model-route-${index}`}>
                   <Input
@@ -6476,23 +6502,7 @@ function RelayProfileEditor({
                 </div>
               ))}
             </div>
-            <div className="relay-model-list-tools">
-              <Button
-                disabled={modelRouteTargets.length === 0}
-                onClick={() => updateDraft({ modelRoutes: [...modelRoutes, { model: "", targetRelayId: "", targetModel: "" }] })}
-                size="sm"
-                title={modelRouteTargets.length === 0 ? t("请先创建一个 Responses API 目标供应商") : t("添加模型路由")}
-                type="button"
-                variant="secondary"
-              >
-                <Plus className="h-4 w-4" />
-                {t("添加模型路由")}
-              </Button>
-            </div>
-            <p className="field-hint">
-              {t("仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标必须是 Responses API，且需要从 Codex++ 启动。")}
-            </p>
-          </Field>
+          </section>
         ) : null}
         {showApiFields && modelWindowRows.some((row) => row.imageHandling === "vlm") ? (
           <div className="relay-vlm-section">
@@ -6549,15 +6559,6 @@ function RelayProfileEditor({
         <ShieldCheck className="h-4 w-4" />
         <span>{relayProfileModeHelp(profile)}</span>
       </div>
-      {doctorOpen ? (
-        <ProviderDoctorModal
-          result={doctorResult}
-          running={doctorRunning}
-          onClose={() => {
-            if (!doctorRunning) setDoctorOpen(false);
-          }}
-        />
-      ) : null}
     </div>
   );
 }
@@ -6565,12 +6566,10 @@ function RelayProfileEditor({
 function AggregateRelayProfileEditor({
   profile,
   form,
-  isNew = false,
   onProfileChange,
 }: {
   profile: RelayProfile;
   form: BackendSettings;
-  isNew?: boolean;
   onProfileChange: (value: RelayProfile) => void;
 }) {
   const candidates = aggregateMemberCandidates(form, profile.id);
@@ -6597,13 +6596,6 @@ function AggregateRelayProfileEditor({
 
   return (
     <div className="relay-profile-editor aggregate-editor">
-      <div className="relay-editor-head">
-        <div>
-          <strong>{profile.name || t("未命名聚合供应商")}</strong>
-          <span>{isNew ? t("选择已有供应商作为成员，保存后写入 settings payload") : t("聚合配置只引用已有供应商，不复制 Key 和配置文件")}</span>
-        </div>
-        <UiBadge variant="secondary">{t("聚合")}</UiBadge>
-      </div>
       <div className="relay-fields aggregate-fields">
         <Field className="relay-field-name" label={t("名称")}>
           <Input
@@ -6715,10 +6707,18 @@ function RelayContextManager({
   const visibleEntries = contextEntriesByKind(entries, activeKind);
   const label = contextKindLabel(activeKind);
 
+  const syncContextEntries = async (next: BackendSettings) => {
+    const syncResult = await actions.syncLiveContextEntries(next, true);
+    if (!syncResult || !isSuccessStatus(syncResult.status)) return false;
+    await actions.refreshRelayFiles();
+    return true;
+  };
+
   const saveEntry = async (kind: ContextKind, id: string, tomlBody: string) => {
     const next = await actions.upsertContextEntry(form, kind, id, tomlBody);
     if (!next) return;
     onFormChange(next);
+    if (!(await syncContextEntries(next))) return;
     setEditor(null);
   };
 
@@ -6727,16 +6727,14 @@ function RelayContextManager({
     const next = await actions.upsertContextEntry(form, entry.kind, entry.id, nextBody);
     if (!next) return;
     onFormChange(next);
-    const syncResult = await actions.syncLiveContextEntries(next, true);
-    if (syncResult && isSuccessStatus(syncResult.status)) {
-      void actions.refreshRelayFiles();
-    }
+    await syncContextEntries(next);
   };
 
   const deleteEntry = async (entry: CodexContextEntry) => {
     const next = await actions.deleteContextEntry(form, entry.kind, entry.id);
     if (!next) return;
     onFormChange(next);
+    await syncContextEntries(next);
   };
 
   return (

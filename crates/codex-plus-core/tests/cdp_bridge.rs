@@ -819,12 +819,12 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
 }
 
 #[test]
-fn injection_script_disables_plugin_auto_expand_in_relay_mode() {
+fn injection_script_omits_plugin_auto_expand() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("settings.pluginAutoExpand = false"));
-    assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
-    assert!(script.contains("if (!codexPlusSettings().pluginAutoExpand) return"));
+    assert!(!script.contains("pluginAutoExpand"));
+    assert!(!script.contains("codexPluginAutoExpand"));
+    assert!(!script.contains("plugin_auto_expand"));
 }
 
 #[test]
@@ -909,7 +909,7 @@ fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
 fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"14\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"15\""));
     assert!(!script.contains("function pluginMarketplaceAliasForName"));
     assert!(
         !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
@@ -921,9 +921,10 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
 fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"14\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"15\""));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
     assert!(script.contains("source.includes(\"!u(e.marketplaceName)||e.marketplaceName===r\")"));
+    assert!(script.contains("source.includes(\"!Eu(e.marketplaceName)||e.marketplaceName===n\")"));
     assert!(script.contains("source.includes(\"!t.includes(e.name)\")"));
     assert!(!script.contains("if (!source.includes(\"marketplaceName\")) return false"));
     assert!(!script.contains("if (!source.includes(\"name\")) return false"));
@@ -933,7 +934,7 @@ fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
 fn injection_script_expands_api_key_plugin_marketplace_requests() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"14\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"15\""));
     assert!(script.contains("installPluginMarketplaceRequestPatch"));
     assert!(script.contains("installPluginMarketplaceBridgePatch"));
     assert!(script.contains("installPluginBuildFlavorFilterPatch"));
@@ -961,6 +962,8 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("if (!nextKinds.includes(\"local\")) nextKinds.push(\"local\")"));
     assert!(script.contains("if (!nextKinds.includes(\"vertical\")) nextKinds.push(\"vertical\")"));
     assert!(script.contains("next.marketplaceKinds = Array.from(new Set(nextKinds))"));
+    assert!(script.contains("codexPluginBroadCatalogKindsFromVersion = \"26.803.0\""));
+    assert!(script.contains("broadCatalogPreserved: true"));
     assert!(script.contains("patchPluginMarketplaceResult"));
     assert!(script.contains("__CODEX_PLUS_PLUGIN_MARKETPLACES__"));
     assert!(script.contains("mergeLocalPluginMarketplaces(result)"));
@@ -1024,6 +1027,11 @@ fn injection_script_recovers_plugin_search_from_remote_auth_errors() {
     let cases = run_plugin_marketplace_search_contract_harness();
 
     assert_eq!(cases["initialKinds"], json!(["local", "vertical"]));
+    assert_eq!(cases["latestBroadOmittedHasKinds"], false);
+    assert_eq!(cases["latestBroadOmittedKinds"], serde_json::Value::Null);
+    assert_eq!(cases["latestBroadNullHasKinds"], true);
+    assert_eq!(cases["latestBroadNullKinds"], serde_json::Value::Null);
+    assert_eq!(cases["latestExplicitKinds"], json!(["local", "vertical"]));
     assert_eq!(cases["searchKinds"], json!(["created-by-me-remote"]));
     assert_eq!(cases["searchCwds"], serde_json::Value::Null);
     assert_eq!(cases["searchRemoteOnly"], true);
@@ -1038,6 +1046,10 @@ fn injection_script_recovers_plugin_search_from_remote_auth_errors() {
     assert_eq!(cases["subsequentCwds"], serde_json::Value::Null);
     assert_eq!(
         cases["generalAfterFallbackKinds"],
+        json!(["local", "vertical"])
+    );
+    assert_eq!(
+        cases["latestBroadAfterFallbackKinds"],
         json!(["local", "vertical"])
     );
     assert_eq!(cases["generalAfterFallbackCwds"], json!(["C:/workspace"]));
@@ -1101,6 +1113,11 @@ window.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = [{{
 const api = window.__codexPlusPluginMarketplaceTest;
 api.reset();
 const initial = api.patchRequestParams("list-plugins", {{ cwds: ["C:/workspace"] }});
+api.setCodexAppVersion("26.803.41515");
+const latestBroadOmitted = api.patchRequestParams("list-plugins", {{ cwds: ["C:/workspace"] }});
+const latestBroadNull = api.patchRequestParams("list-plugins", {{ cwds: ["C:/workspace"], marketplaceKinds: null }});
+const latestExplicit = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["local"] }});
+api.setCodexAppVersion("");
 const searchMessage = api.patchRequestMessage({{
   type: "mcp-request",
   request: {{
@@ -1117,6 +1134,8 @@ const response = {{
 const responsePatched = api.patchResponseData(response);
 const subsequent = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote"] }});
 const generalAfterFallback = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote", "local", "vertical"] }});
+api.setCodexAppVersion("26.803.41515");
+const latestBroadAfterFallback = api.patchRequestParams("list-plugins", {{ cwds: ["C:/workspace"] }});
 const fallbackMarketplaces = response.message.result?.marketplaces || [];
 const localFallbackMarketplaces = api.localFallback().marketplaces || [];
 const remoteUnavailable = api.remoteCatalogUnavailable();
@@ -1124,6 +1143,11 @@ api.reset();
 const chatGpt = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote"] }});
 const cases = {{
   initialKinds: initial.marketplaceKinds,
+  latestBroadOmittedHasKinds: Object.prototype.hasOwnProperty.call(latestBroadOmitted, "marketplaceKinds"),
+  latestBroadOmittedKinds: latestBroadOmitted.marketplaceKinds ?? null,
+  latestBroadNullHasKinds: Object.prototype.hasOwnProperty.call(latestBroadNull, "marketplaceKinds"),
+  latestBroadNullKinds: latestBroadNull.marketplaceKinds,
+  latestExplicitKinds: latestExplicit.marketplaceKinds,
   searchKinds: searchMessage.request.params.marketplaceKinds,
   searchCwds: searchMessage.request.params.cwds ?? null,
   searchRemoteOnly: api.requestProfile({{ marketplaceKinds: ["created-by-me-remote"] }}).remoteOnly,
@@ -1138,6 +1162,7 @@ const cases = {{
   subsequentCwds: subsequent.cwds ?? null,
   generalAfterFallbackKinds: generalAfterFallback.marketplaceKinds,
   generalAfterFallbackCwds: generalAfterFallback.cwds,
+  latestBroadAfterFallbackKinds: latestBroadAfterFallback.marketplaceKinds,
   localFallbackMarketplaceNames: localFallbackMarketplaces.map((marketplace) => marketplace.name),
   localFallbackPluginNames: localFallbackMarketplaces.flatMap((marketplace) => marketplace.plugins || []).map((plugin) => plugin.name),
   chatGptKinds: chatGpt.marketplaceKinds,
@@ -2062,16 +2087,15 @@ fn manager_ui_exposes_pure_api_relay_mode_button() {
 }
 
 #[test]
-fn manager_ui_disables_plugin_auto_expand_in_compatible_mode() {
+fn manager_ui_omits_plugin_auto_expand() {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(std::path::Path::parent)
         .expect("core crate should live under crates/codex-plus-core");
     let source = std::fs::read_to_string(repo.join("apps/codex-plus-manager/src/App.tsx")).unwrap();
 
-    assert!(source.contains(
-        "checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled || !patchMode}"
-    ));
+    assert!(!source.contains("codexAppPluginAutoExpand"));
+    assert!(!source.contains("插件列表全量展示"));
 }
 
 #[test]

@@ -205,23 +205,24 @@ html.codex-dream-skin .dream-home {
   padding-top: 24px !important;
 }
 
-.dream-home > div:first-child > div:first-child {
+.dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"]) {
   flex: 0 0 clamp(390px, 42cqw, 510px) !important;
   min-height: 390px !important;
   align-items: flex-start !important;
   padding-bottom: 0 !important;
 }
 
-.dream-home > div:first-child > div:first-child > div:first-child {
+.dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"]) {
   position: relative !important;
   isolation: isolate;
   width: calc(100% - 56px) !important;
   max-width: 1180px !important;
-  height: clamp(230px, 27cqw, 326px) !important;
-  min-height: 230px !important;
+  height: auto !important;
+  min-height: clamp(180px, 22cqw, 280px) !important;
+  max-height: none !important;
   flex: 0 1 auto !important;
   padding: 0 !important;
-  overflow: hidden !important;
+  overflow: visible !important;
   border: 1px solid var(--dream-line) !important;
   border-radius: 20px !important;
   background-image: var(--dream-art) !important;
@@ -231,11 +232,11 @@ html.codex-dream-skin .dream-home {
   box-shadow: var(--dream-shadow) !important;
 }
 
-html.codex-dream-skin.dream-art-wide .dream-home > div:first-child > div:first-child > div:first-child {
+html.codex-dream-skin.dream-art-wide .dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"]) {
   background-size: cover !important;
 }
 
-.dream-home > div:first-child > div:first-child > div:first-child::before {
+.dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"])::before {
   content: "";
   position: absolute;
   z-index: 0;
@@ -244,15 +245,15 @@ html.codex-dream-skin.dream-art-wide .dream-home > div:first-child > div:first-c
   background: linear-gradient(90deg, var(--dream-hero-shade) 0 32%, transparent 70%);
 }
 
-html.codex-dream-skin.dream-safe-right .dream-home > div:first-child > div:first-child > div:first-child::before {
+html.codex-dream-skin.dream-safe-right .dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"])::before {
   background: linear-gradient(270deg, var(--dream-hero-shade) 0 32%, transparent 70%);
 }
 
-html.codex-dream-skin.dream-safe-center .dream-home > div:first-child > div:first-child > div:first-child::before {
+html.codex-dream-skin.dream-safe-center .dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"])::before {
   background: radial-gradient(ellipse at center, var(--dream-hero-shade) 0 23%, transparent 72%);
 }
 
-html.codex-dream-skin.dream-safe-none .dream-home > div:first-child > div:first-child > div:first-child::before {
+html.codex-dream-skin.dream-safe-none .dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"])::before {
   background: transparent;
 }
 
@@ -474,7 +475,7 @@ html.codex-dream-skin.dream-art-wide main.main-surface [role="main"] {
 }
 
 html.codex-dream-skin.dream-art-wide main.main-surface.dream-home-shell
-  .dream-home > div:first-child > div:first-child > div:first-child {
+  .dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"]) {
   border: 0 !important;
   border-radius: 0 !important;
   background: transparent !important;
@@ -482,7 +483,7 @@ html.codex-dream-skin.dream-art-wide main.main-surface.dream-home-shell
 }
 
 html.codex-dream-skin.dream-art-wide main.main-surface.dream-home-shell
-  .dream-home > div:first-child > div:first-child > div:first-child::before {
+  .dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"])::before {
   content: none !important;
 }
 
@@ -590,7 +591,7 @@ html.codex-dream-skin.dream-art-wide main.main-surface
     --thread-content-max-width: min(940px, calc(100cqw - 36px)) !important;
   }
 
-  .dream-home > div:first-child > div:first-child > div:first-child {
+  .dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"]) {
     width: calc(100% - 36px) !important;
   }
 }
@@ -600,12 +601,12 @@ html.codex-dream-skin.dream-art-wide main.main-surface
     padding-top: 16px !important;
   }
 
-  .dream-home > div:first-child > div:first-child {
+  .dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"]) {
     flex-basis: 370px !important;
     min-height: 370px !important;
   }
 
-  .dream-home > div:first-child > div:first-child > div:first-child {
+  .dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"]) {
     height: 220px !important;
     min-height: 220px !important;
     border-radius: 16px !important;
@@ -633,7 +634,7 @@ html.codex-dream-skin.dream-art-wide main.main-surface
 @media (max-width: 680px) {
   .dream-home > div:first-child > div:first-child > div:first-child::before,
   html.codex-dream-skin.dream-safe-right .dream-home > div:first-child > div:first-child > div:first-child::before,
-  html.codex-dream-skin.dream-safe-center .dream-home > div:first-child > div:first-child > div:first-child::before {
+  html.codex-dream-skin.dream-safe-center .dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"])::before {
     background: color-mix(in oklab, var(--dream-surface) 78%, transparent);
   }
 
@@ -659,4 +660,54 @@ html.codex-dream-skin.dream-art-wide main.main-surface
     scroll-behavior: auto !important;
     transition-duration: .01ms !important;
   }
+}
+
+/* codex-plus new-chat interaction safeguards */
+html.codex-dream-skin aside.app-shell-left-panel,
+html.codex-dream-skin aside.app-shell-left-panel button,
+html.codex-dream-skin aside.app-shell-left-panel a,
+html.codex-dream-skin button[aria-label^="Start new chat in "],
+html.codex-dream-skin [data-app-action-sidebar-project-row],
+html.codex-dream-skin .composer-surface-chrome,
+html.codex-dream-skin .composer-footer,
+html.codex-dream-skin .ProseMirror,
+html.codex-dream-skin [role="main"] {
+  pointer-events: auto !important;
+}
+
+html.codex-dream-skin button[aria-label^="Start new chat in "],
+html.codex-dream-skin [data-app-action-sidebar-project-row] button {
+  position: relative !important;
+  z-index: 6 !important;
+}
+
+html.codex-dream-skin .composer-surface-chrome,
+html.codex-dream-skin .composer-footer {
+  position: relative !important;
+  z-index: 4 !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+/* Unstructured home/new-chat draft: keep native geometry, only tint surfaces. */
+html.codex-dream-skin .dream-home:not([data-dream-home-layout="structured"]) {
+  background: transparent !important;
+}
+html.codex-dream-skin .dream-home:not([data-dream-home-layout="structured"]) {
+  min-height: 0 !important;
+  overflow-y: auto !important;
+}
+html.codex-dream-skin .dream-home:not([data-dream-home-layout="structured"]) > div:first-child,
+html.codex-dream-skin .dream-home:not([data-dream-home-layout="structured"]) > div:first-child > div:first-child,
+html.codex-dream-skin .dream-home:not([data-dream-home-layout="structured"]) > div:first-child > div:first-child > div:first-child,
+html.codex-dream-skin .dream-home:not([data-dream-home-layout="structured"]) > div:first-child > div:first-child > div:first-child > div:first-child,
+html.codex-dream-skin .dream-home:not([data-dream-home-layout="structured"]) > div:first-child > div:first-child > div:first-child > div:first-child > div:first-child {
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  flex: 0 1 auto !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
 }
