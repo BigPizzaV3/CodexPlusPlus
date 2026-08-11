@@ -81,6 +81,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { codexGoalsFeatureState, setCodexGoalsFeatureInConfig } from "./goals-config";
 import { isGitHubRepositoryHomepage } from "./github-repository";
 import {
+  findRelayModelRouteIssue,
+  modelRouteSaveRequiresRestart,
+  normalizeRelayModelRoutes,
+  PROTOCOL_PROXY_BASE_URL,
+  type RelayModelRoute,
+} from "./model-routes";
+import {
   mergeModelWindowRows,
   modelWindowRowsFromProfile,
   serializeModelWindowRows,
@@ -283,12 +290,6 @@ export type RelayProfile = {
   aggregate?: RelayAggregateConfig | null;
 };
 
-type RelayModelRoute = {
-  model: string;
-  targetRelayId: string;
-  targetModel: string;
-};
-
 type RelayAggregateStrategy = "failover" | "conversationRoundRobin" | "requestRoundRobin" | "weightedRoundRobin";
 type RelayAggregateMember = {
   profileId: string;
@@ -334,7 +335,6 @@ type CodexContextEntries = {
 
 type RelayProtocol = "responses" | "chatCompletions";
 type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
-const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
 const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
 
@@ -1777,22 +1777,24 @@ export function App() {
     }
   };
 
-  const restart = async () => {
-    const result = await launchCommand("restart_codex_plus");
+  const restart = async (syncActiveRelay = false) => {
+    const result = await launchCommand("restart_codex_plus", syncActiveRelay);
     if (result) {
       showNotice(t("重启 Codex++"), result.message, result.status);
       if (isSuccessStatus(result.status)) setPendingDreamSkinRestart(null);
       await refreshOverview(true);
     }
+    return !!result && isSuccessStatus(result.status);
   };
 
-  const launchCommand = async (command: "launch_codex_plus" | "restart_codex_plus") => {
+  const launchCommand = async (command: "launch_codex_plus" | "restart_codex_plus", syncActiveRelay = false) => {
     const result = await run(() =>
       call<CommandResult<Record<string, unknown>>>(command, {
         request: {
           appPath: launchForm.appPath,
           debugPort: numberOrDefault(launchForm.debugPort, 9229),
           helperPort: numberOrDefault(launchForm.helperPort, 57321),
+          syncActiveRelay,
         },
       }),
     );
@@ -2017,13 +2019,17 @@ export function App() {
 
   const saveSettingsValue = async (next: BackendSettings, silent = true) => {
     const normalized = normalizeSettings(next);
-    setSettingsForm(normalized);
     const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
-    if (result) {
+    if (result && isSuccessStatus(result.status)) {
+      const saved = normalizeSettings(result.settings);
       setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
-      if (!silent || !isSuccessStatus(result.status)) showNotice(t("设置保存"), result.message, result.status);
+      setSettingsForm(saved);
+      if (!silent) showNotice(t("设置保存"), result.message, result.status);
+      return saved;
     }
+    if (result) showNotice(t("设置保存"), result.message, result.status);
+    await refreshSettings(true);
+    return null;
   };
 
   const resetSettings = async () => {
@@ -2890,7 +2896,6 @@ export function App() {
               envConflicts={envConflicts}
               ccsProviders={ccsProviders}
               form={settingsForm}
-              onFormChange={setSettingsForm}
               actions={actions}
             />
           ) : null}
@@ -3054,7 +3059,7 @@ export function App() {
 type Actions = {
   refreshCurrent: () => Promise<void>;
   launch: () => Promise<void>;
-  restart: () => Promise<void>;
+  restart: (syncActiveRelay?: boolean) => Promise<boolean>;
   repairPluginMarketplace: () => Promise<void>;
   refreshRemotePluginMarketplace: (silent?: boolean) => Promise<RemotePluginMarketplaceResult | null>;
   repairRemotePluginMarketplace: () => Promise<void>;
@@ -3064,7 +3069,7 @@ type Actions = {
   checkUpdate: () => Promise<void>;
   performUpdate: () => Promise<void>;
   saveSettings: () => Promise<void>;
-  saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<void>;
+  saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<BackendSettings | null>;
   refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
   resetSettings: () => Promise<void>;
   resetImageOverlaySettings: () => Promise<void>;
@@ -3336,7 +3341,6 @@ function RelayScreen({
   envConflicts,
   ccsProviders,
   form,
-  onFormChange,
   actions,
 }: {
   settings: SettingsResult | null;
@@ -3344,7 +3348,6 @@ function RelayScreen({
   envConflicts: EnvConflictsResult | null;
   ccsProviders: CcsProvidersResult | null;
   form: BackendSettings;
-  onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
   const normalized = normalizeSettings(form);
@@ -3356,8 +3359,7 @@ function RelayScreen({
     : null);
   const isNewProfile = !!newProfileDraft;
   const saveRelaySettings = async (next: BackendSettings) => {
-    onFormChange(next);
-    await actions.saveSettingsValue(next, true);
+    return actions.saveSettingsValue(next, true);
   };
   const createNewAggregateProfile = () => {
     const draft = createAggregateRelayProfile(normalized);
@@ -5895,7 +5897,7 @@ function RelayProfileDetail({
   form: BackendSettings;
   isNew?: boolean;
   onBack: () => void;
-  onFormChange: (value: BackendSettings) => void | Promise<void>;
+  onFormChange: (value: BackendSettings) => Promise<BackendSettings | null>;
   onSaved?: () => void;
   actions: Actions;
 }) {
@@ -5925,9 +5927,10 @@ function RelayProfileDetail({
     setDraft(nextDraft);
     setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm));
   }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
+  const validationSettings = relaySettingsWithDraft(form, profile.id, draft, isNew);
   const validationError = isAggregateRelayProfile(draft)
     ? aggregateRelayProfileValidation(draft)
-    : relayModelRoutesValidation(draft, form);
+    : relayModelRoutesSettingsValidation(validationSettings);
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
     return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows, modelVlm: serializedRows.modelVlm };
@@ -5936,17 +5939,39 @@ function RelayProfileDetail({
     if (validationError) return;
     const draftWithWindows = draftWithModelRows();
     const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
-    const next = isNew
+    const next = normalizeSettings(isNew
       ? addRelayProfile(form, normalizedDraft)
-      : updateRelayProfile(form, profile.id, normalizedDraft);
-    await onFormChange(next);
-    if (isActive && relayProfileUsesLiveFiles(normalizedDraft)) {
+      : updateRelayProfile(form, profile.id, normalizedDraft));
+    const settingsValidationError = relayModelRoutesSettingsValidation(next);
+    if (settingsValidationError) return;
+    const activeLiveBaseUrl = codexBaseUrlFromConfig(
+      relayFiles?.configContents ?? profile.configContents,
+    );
+    const requiresRestart = isActive && modelRouteSaveRequiresRestart(
+      normalizeSettings(form),
+      next,
+      activeLiveBaseUrl,
+    );
+    if (requiresRestart && !window.confirm(t("首次启用单模型路由需要启动本地协议代理。保存后将立即重启 Codex，使路由安全生效。是否继续？"))) {
+      return;
+    }
+    const savedSettings = await onFormChange(next);
+    if (!savedSettings) return;
+    if (requiresRestart) {
+      const restarted = await actions.restart(true);
+      if (!restarted) return;
+      onSaved?.();
+      return;
+    }
+    const savedProfile = savedSettings.relayProfiles.find((candidate) => candidate.id === normalizedDraft.id)
+      ?? normalizedDraft;
+    if (isActive && savedSettings.relayProfilesEnabled && relayProfileUsesLiveFiles(savedProfile)) {
       await actions.saveRelayFile(
         "config",
-        effectiveRelayConfigPreview(normalizedDraft, form, normalizedDraft),
+        effectiveRelayConfigPreview(savedProfile, savedSettings, savedProfile),
         true,
       );
-      await actions.saveRelayFile("auth", normalizedDraft.authContents, true);
+      await actions.saveRelayFile("auth", savedProfile.authContents, true);
     }
     onSaved?.();
   };
@@ -8517,15 +8542,6 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
   return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
 }
 
-function normalizeRelayModelRoutes(routes: RelayModelRoute[] | undefined): RelayModelRoute[] {
-  if (!Array.isArray(routes)) return [];
-  return routes.map((route) => ({
-    model: typeof route?.model === "string" ? route.model : "",
-    targetRelayId: typeof route?.targetRelayId === "string" ? route.targetRelayId : "",
-    targetModel: typeof route?.targetModel === "string" ? route.targetModel : "",
-  }));
-}
-
 function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: AggregateRelayProfile | undefined): RelayProfile {
   if (!aggregate) return profile;
   return {
@@ -9112,22 +9128,48 @@ function relayProfileSwitchValidation(profile: RelayProfile, settings: BackendSe
 }
 
 function relayModelRoutesValidation(profile: RelayProfile, settings: BackendSettings | null): string | null {
-  const seenModels = new Set<string>();
-  for (const route of normalizeRelayModelRoutes(profile.modelRoutes)) {
-    const model = route.model.trim();
-    const targetRelayId = route.targetRelayId.trim();
-    if (!model || !targetRelayId) return t("单模型路由需要填写模型名称和目标供应商。");
-    if (seenModels.has(model)) return tf("模型「{0}」存在重复路由。", [model]);
-    seenModels.add(model);
-    if (targetRelayId === profile.id) return tf("模型「{0}」不能路由到当前供应商自身。", [model]);
-    if (!settings) continue;
-    const target = settings.relayProfiles.find((candidate) => candidate.id === targetRelayId);
-    if (!target) return tf("模型「{0}」的目标供应商不存在。", [model]);
-    if (isAggregateRelayProfile(target)) return tf("模型「{0}」不能路由到聚合供应商。", [model]);
-    if (target.protocol !== "responses") return tf("模型「{0}」的目标供应商必须使用 Responses API。", [model]);
-    if (!target.baseUrl.trim() || !target.apiKey.trim()) return tf("模型「{0}」的目标供应商缺少 Base URL 或 Key。", [model]);
+  const issue = findRelayModelRouteIssue([profile], settings?.relayProfiles ?? [profile]);
+  return relayModelRouteIssueMessage(issue);
+}
+
+function relayModelRoutesSettingsValidation(settings: BackendSettings): string | null {
+  return relayModelRouteIssueMessage(
+    findRelayModelRouteIssue(settings.relayProfiles, settings.relayProfiles),
+  );
+}
+
+function relayModelRouteIssueMessage(issue: ReturnType<typeof findRelayModelRouteIssue>): string | null {
+  if (!issue) return null;
+  switch (issue.kind) {
+    case "incomplete":
+      return t("单模型路由需要填写模型名称和目标供应商。");
+    case "duplicate":
+      return tf("模型「{0}」存在重复路由。", [issue.model]);
+    case "self":
+      return tf("模型「{0}」不能路由到当前供应商自身。", [issue.model]);
+    case "missingTarget":
+      return tf("模型「{0}」的目标供应商不存在。", [issue.model]);
+    case "aggregateTarget":
+      return tf("模型「{0}」不能路由到聚合供应商。", [issue.model]);
+    case "targetProtocol":
+      return tf("模型「{0}」的目标供应商必须使用 Responses API。", [issue.model]);
+    case "targetCredentials":
+      return tf("模型「{0}」的目标供应商缺少 Base URL 或 Key。", [issue.model]);
   }
-  return null;
+}
+
+function relaySettingsWithDraft(
+  settings: BackendSettings,
+  profileId: string,
+  draft: RelayProfile,
+  isNew: boolean,
+): BackendSettings {
+  const normalizedDraft = isAggregateRelayProfile(draft)
+    ? normalizeAggregateRelayProfile(draft, settings)
+    : deriveRelayProfileFromFiles(draft);
+  return isNew
+    ? addRelayProfile(settings, normalizedDraft)
+    : updateRelayProfile(settings, profileId, normalizedDraft);
 }
 
 function relayProfileUsesLiveFiles(profile: RelayProfile): boolean {

@@ -397,6 +397,8 @@ pub struct LaunchRequest {
     pub debug_port: u16,
     #[serde(default = "default_helper_port")]
     pub helper_port: u16,
+    #[serde(default)]
+    pub sync_active_relay: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -531,9 +533,204 @@ pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 
 #[tauri::command]
 pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
+    let Ok(_guard) = relay_switch_mutex().lock() else {
+        return failed("供应商切换锁已损坏，请重启管理器后再试。", json!({}));
+    };
+    let settings = if request.sync_active_relay {
+        match SettingsStore::default().load() {
+            Ok(settings) => Some(settings),
+            Err(error) => {
+                return failed(
+                    &format!("读取已保存供应商设置失败，未执行重启：{error}"),
+                    json!({
+                        "debugPort": request.debug_port,
+                        "helperPort": request.helper_port
+                    }),
+                );
+            }
+        }
+    } else {
+        None
+    };
     codex_plus_core::watcher::stop_launcher_processes_and_wait();
     codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
-    spawn_codex_plus_launch(request, "Codex 已请求重启，启动任务正在后台运行。")
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.restart_requested",
+        json!({
+            "debug_port": request.debug_port,
+            "helper_port": request.helper_port,
+            "app_path": request.app_path.trim(),
+            "sync_active_relay": request.sync_active_relay
+        }),
+    );
+    match restart_codex_plus_after_stop(&request, &home, settings.as_ref(), spawn_silent_launcher) {
+        Ok(()) => CommandResult {
+            status: "accepted".to_string(),
+            message: "Codex 已请求重启，启动任务正在后台运行。".to_string(),
+            payload: json!({
+                "debugPort": request.debug_port,
+                "helperPort": request.helper_port,
+                "syncActiveRelay": request.sync_active_relay
+            }),
+        },
+        Err(error) => failed(
+            &format!("重启 Codex++ 失败：{error}"),
+            json!({
+                "debugPort": request.debug_port,
+                "helperPort": request.helper_port,
+                "syncActiveRelay": request.sync_active_relay
+            }),
+        ),
+    }
+}
+
+fn restart_codex_plus_after_stop<F>(
+    request: &LaunchRequest,
+    home: &Path,
+    settings: Option<&BackendSettings>,
+    spawn: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce(&LaunchRequest) -> anyhow::Result<()>,
+{
+    let snapshot = if let Some(settings) = settings {
+        let snapshot = RelayLiveSnapshot::capture(home)?;
+        if let Err(error) = sync_active_relay_to_home(settings, home) {
+            if let Err(restore_error) = snapshot.restore(home) {
+                anyhow::bail!("同步当前供应商失败：{error}；回滚 live 配置也失败：{restore_error}");
+            }
+            return Err(error);
+        }
+        Some(snapshot)
+    } else {
+        None
+    };
+
+    if let Err(error) = spawn(request) {
+        if let Some(snapshot) = snapshot {
+            if let Err(restore_error) = snapshot.restore(home) {
+                anyhow::bail!("启动静默入口失败：{error}；回滚 live 配置也失败：{restore_error}");
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct RelayLiveSnapshot {
+    config: Option<Vec<u8>>,
+    auth: Option<Vec<u8>>,
+}
+
+impl RelayLiveSnapshot {
+    fn capture(home: &Path) -> anyhow::Result<Self> {
+        Ok(Self {
+            config: read_optional_file_bytes(&home.join("config.toml"))?,
+            auth: read_optional_file_bytes(&home.join("auth.json"))?,
+        })
+    }
+
+    fn restore(&self, home: &Path) -> anyhow::Result<()> {
+        std::fs::create_dir_all(home)?;
+        restore_optional_file_bytes(&home.join("config.toml"), self.config.as_deref())?;
+        restore_optional_file_bytes(&home.join("auth.json"), self.auth.as_deref())?;
+        Ok(())
+    }
+}
+
+fn read_optional_file_bytes(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn restore_optional_file_bytes(path: &Path, contents: Option<&[u8]>) -> anyhow::Result<()> {
+    match contents {
+        Some(contents) => codex_plus_core::settings::atomic_write(path, contents)?,
+        None => match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        },
+    }
+    Ok(())
+}
+
+fn sync_active_relay_to_home(
+    settings: &BackendSettings,
+    home: &Path,
+) -> anyhow::Result<codex_plus_core::relay_config::RelayApplyResult> {
+    if !settings.relay_profiles_enabled {
+        anyhow::bail!("供应商配置总开关已关闭，未同步 live 配置");
+    }
+    let relay = settings.active_relay_profile();
+    if relay.relay_mode == codex_plus_core::settings::RelayMode::Aggregate {
+        if settings.active_aggregate_relay_profile().is_none() {
+            anyhow::bail!("当前聚合供应商配置不完整");
+        }
+        return codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
+            home,
+            &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
+                codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            ),
+            "codex-plus-aggregate",
+            codex_plus_core::settings::RelayProtocol::Responses,
+            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        );
+    }
+    if relay.relay_mode == codex_plus_core::settings::RelayMode::Official
+        && !relay.official_mix_api_key
+    {
+        let auth_contents =
+            (!relay.auth_contents.trim().is_empty()).then_some(relay.auth_contents.as_str());
+        return codex_plus_core::relay_config::clear_relay_config_to_home_with_auth_and_computer_use_guard(
+            home,
+            auth_contents,
+            settings.computer_use_guard_enabled,
+        );
+    }
+    if relay_has_complete_files(&relay) {
+        return codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+            home,
+            &relay,
+            &relay_combined_common_config(settings),
+            settings.computer_use_guard_enabled,
+        );
+    }
+
+    let mut base_url = relay.base_url.trim().to_string();
+    let mut protocol = relay.protocol;
+    if relay.has_model_routes() {
+        base_url = codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
+            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        );
+        protocol = codex_plus_core::settings::RelayProtocol::Responses;
+    }
+    if relay.relay_mode == codex_plus_core::settings::RelayMode::PureApi {
+        return codex_plus_core::relay_config::apply_pure_api_config_to_home_with_protocol(
+            home,
+            &base_url,
+            &relay.api_key,
+            protocol,
+            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        );
+    }
+
+    let auth = codex_plus_core::relay_config::chatgpt_auth_status_from_home(home);
+    if !auth.authenticated {
+        anyhow::bail!("未检测到 ChatGPT 登录状态，已停止同步 live 配置");
+    }
+    codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
+        home,
+        &base_url,
+        &relay.api_key,
+        protocol,
+        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+    )
 }
 
 fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> CommandResult<Value> {
@@ -587,6 +784,18 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
 #[tauri::command]
 pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
     let settings = normalize_settings_before_save(settings);
+    let Ok(_guard) = relay_switch_mutex().lock() else {
+        return failed(
+            "供应商切换锁已损坏，请重启管理器后再试。",
+            SettingsPayload {
+                settings,
+                settings_path: codex_plus_core::paths::default_settings_path()
+                    .to_string_lossy()
+                    .to_string(),
+                user_scripts: user_script_inventory(),
+            },
+        );
+    };
     let store = SettingsStore::default();
     let previous = store.load().unwrap_or_default();
     let dream_skin_enabled = settings.enhancements_enabled && settings.codex_app_dream_skin_enabled;
@@ -2882,6 +3091,17 @@ pub fn remove_env_conflicts(
 #[tauri::command]
 pub fn save_relay_file(request: SaveRelayFileRequest) -> CommandResult<RelayFilesPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let Ok(_guard) = relay_switch_mutex().lock() else {
+        return failed(
+            "供应商切换锁已损坏，请重启管理器后再试。",
+            relay_files_payload_from_home(&home).unwrap_or_else(|_| RelayFilesPayload {
+                config_path: home.join("config.toml").to_string_lossy().to_string(),
+                auth_path: home.join("auth.json").to_string_lossy().to_string(),
+                config_contents: String::new(),
+                auth_contents: String::new(),
+            }),
+        );
+    };
     match save_relay_file_in_home(&home, &request.kind, &request.contents)
         .and_then(|_| relay_files_payload_from_home(&home))
     {
@@ -3615,6 +3835,13 @@ fn provider_doctor_recommendation(checks: &[ProviderDoctorCheck]) -> String {
 #[tauri::command]
 pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let Ok(_guard) = relay_switch_mutex().lock() else {
+        let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+        return failed(
+            "供应商切换锁已损坏，请重启管理器后再试。",
+            relay_payload(status, None),
+        );
+    };
     let settings = SettingsStore::default().load().unwrap_or_default();
     if !settings.relay_profiles_enabled {
         let status = codex_plus_core::relay_config::relay_status_from_home(&home);
@@ -3766,6 +3993,13 @@ fn apply_aggregate_relay_injection_to_home(home: &Path) -> CommandResult<RelayPa
 #[tauri::command]
 pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let Ok(_guard) = relay_switch_mutex().lock() else {
+        let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+        return failed(
+            "供应商切换锁已损坏，请重启管理器后再试。",
+            relay_payload(status, None),
+        );
+    };
     let settings = SettingsStore::default().load().unwrap_or_default();
     if !settings.relay_profiles_enabled {
         let status = codex_plus_core::relay_config::relay_status_from_home(&home);
@@ -3879,6 +4113,13 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
 #[tauri::command]
 pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let Ok(_guard) = relay_switch_mutex().lock() else {
+        let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+        return failed(
+            "供应商切换锁已损坏，请重启管理器后再试。",
+            relay_payload(status, None),
+        );
+    };
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
     log_manager_event("manager.clear_relay_injection.start", json!({}));
@@ -4847,6 +5088,210 @@ mod tests {
         assert!(!result.payload.authenticated);
         assert!(config.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
         assert!(config.contains(r#"experimental_bearer_token = "codex-plus-aggregate""#));
+    }
+
+    fn launch_request(sync_active_relay: bool) -> LaunchRequest {
+        LaunchRequest {
+            app_path: String::new(),
+            debug_port: 9229,
+            helper_port: 57321,
+            sync_active_relay,
+        }
+    }
+
+    fn routed_pure_api_settings() -> BackendSettings {
+        BackendSettings {
+            active_relay_id: "source".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "source".to_string(),
+                name: "Source".to_string(),
+                base_url: "https://source.example/v1".to_string(),
+                upstream_base_url: "https://source.example/v1".to_string(),
+                api_key: "sk-source".to_string(),
+                protocol: codex_plus_core::settings::RelayProtocol::Responses,
+                relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+                config_contents: "model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nbase_url = \"https://source.example/v1\"\n"
+                    .to_string(),
+                auth_contents: "{\"OPENAI_API_KEY\":\"sk-source\"}\n".to_string(),
+                model_routes: vec![codex_plus_core::settings::RelayModelRoute {
+                    model: "gpt-5.6-luna".to_string(),
+                    target_relay_id: "target".to_string(),
+                    target_model: String::new(),
+                }],
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        }
+    }
+
+    #[test]
+    fn launch_request_defaults_active_relay_sync_to_false() {
+        let request: LaunchRequest = serde_json::from_value(json!({})).unwrap();
+        let requested: LaunchRequest =
+            serde_json::from_value(json!({ "syncActiveRelay": true })).unwrap();
+
+        assert!(!request.sync_active_relay);
+        assert!(requested.sync_active_relay);
+    }
+
+    #[test]
+    fn active_routed_pure_api_sync_writes_local_proxy() {
+        let temp = tempfile::tempdir().unwrap();
+
+        sync_active_relay_to_home(&routed_pure_api_settings(), temp.path()).unwrap();
+
+        let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        assert!(config.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+        assert!(!config.contains(r#"base_url = "https://source.example/v1""#));
+    }
+
+    #[test]
+    fn active_official_sync_clears_custom_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "model_provider = \"custom\"\n\n[model_providers.custom]\nbase_url = \"https://old.example/v1\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path().join("auth.json"),
+            "{\"OPENAI_API_KEY\":\"sk-old\",\"auth_mode\":\"chatgpt\"}\n",
+        )
+        .unwrap();
+        let settings = BackendSettings {
+            active_relay_id: "official".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "official".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::Official,
+                official_mix_api_key: false,
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        sync_active_relay_to_home(&settings, temp.path()).unwrap();
+
+        let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        let auth = std::fs::read_to_string(temp.path().join("auth.json")).unwrap();
+        assert!(!config.contains("model_provider"));
+        assert!(!config.contains("model_providers.custom"));
+        assert!(!auth.contains("OPENAI_API_KEY"));
+        assert!(auth.contains("auth_mode"));
+    }
+
+    #[test]
+    fn active_aggregate_sync_writes_local_proxy() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = BackendSettings {
+            active_relay_id: "aggregate".to_string(),
+            active_aggregate_relay_id: "aggregate".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "aggregate".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::Aggregate,
+                ..RelayProfile::default()
+            }],
+            aggregate_relay_profiles: vec![codex_plus_core::settings::AggregateRelayProfile {
+                id: "aggregate".to_string(),
+                name: "Aggregate".to_string(),
+                strategy: codex_plus_core::settings::AggregateRelayStrategy::Failover,
+                members: Vec::new(),
+            }],
+            ..BackendSettings::default()
+        };
+
+        sync_active_relay_to_home(&settings, temp.path()).unwrap();
+
+        let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        assert!(config.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+        assert!(config.contains(r#"experimental_bearer_token = "codex-plus-aggregate""#));
+    }
+
+    #[test]
+    fn failed_active_relay_sync_does_not_spawn_or_change_live_files() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("config.toml"), "model = \"old\"\n").unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{\"old\":true}\n").unwrap();
+        let settings = BackendSettings {
+            active_relay_id: "broken".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "broken".to_string(),
+                base_url: String::new(),
+                api_key: String::new(),
+                relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+        let spawned = std::cell::Cell::new(false);
+
+        let result = restart_codex_plus_after_stop(
+            &launch_request(true),
+            temp.path(),
+            Some(&settings),
+            |_| {
+                spawned.set(true);
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(!spawned.get());
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
+            "model = \"old\"\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
+            "{\"old\":true}\n"
+        );
+    }
+
+    #[test]
+    fn failed_spawn_rolls_back_synced_live_files_for_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("config.toml"), "model = \"old\"\n").unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{\"old\":true}\n").unwrap();
+
+        let result = restart_codex_plus_after_stop(
+            &launch_request(true),
+            temp.path(),
+            Some(&routed_pure_api_settings()),
+            |_| anyhow::bail!("synthetic spawn failure"),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
+            "model = \"old\"\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
+            "{\"old\":true}\n"
+        );
+    }
+
+    #[test]
+    fn ordinary_restart_does_not_read_or_change_live_relay_files() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("config.toml"), "model = \"old\"\n").unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{\"old\":true}\n").unwrap();
+        let spawned = std::cell::Cell::new(false);
+
+        restart_codex_plus_after_stop(&launch_request(false), temp.path(), None, |_| {
+            spawned.set(true);
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(spawned.get());
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
+            "model = \"old\"\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
+            "{\"old\":true}\n"
+        );
     }
 
     #[test]
