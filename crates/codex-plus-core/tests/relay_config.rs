@@ -9,7 +9,7 @@ use codex_plus_core::relay_config::{
     clear_relay_config_to_home_with_auth, delete_context_entry_from_common_config,
     extract_common_config_from_config, filter_common_config_for_selection,
     list_context_entries_from_common_config, normalize_relay_profile_for_storage,
-    relay_config_status_from_home, sanitize_common_config_contents,
+    relay_config_status_from_home, relay_profile_api_key, sanitize_common_config_contents,
     set_codex_goals_feature_in_home, strip_common_config_from_config,
     sync_live_config_context_entries, upsert_context_entry_in_common_config,
 };
@@ -1567,6 +1567,7 @@ model_provider = "custom"
     )
     .unwrap();
     let mut profile = RelayProfile {
+        relay_mode: RelayMode::PureApi,
         config_contents: r#"model_provider = "vendor_alpha"
 
 [model_providers.vendor_alpha]
@@ -1603,7 +1604,7 @@ model_provider = "vendor_alpha"
             .contains(r#"model_provider = "vendor_alpha""#)
     );
     let auth: serde_json::Value = serde_json::from_str(&profile.auth_contents).unwrap();
-    assert_eq!(auth["OPENAI_API_KEY"], "sk-new");
+    assert_eq!(auth["OPENAI_API_KEY"], "old");
 }
 
 #[test]
@@ -1993,6 +1994,110 @@ command = "npx"
 }
 
 #[test]
+fn backfill_pure_api_profile_preserves_archived_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-live"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-login","tokens":{"access_token":"live"}}"#,
+    )
+    .unwrap();
+    let mut profile = RelayProfile {
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-provider","vendor":"stored"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+    let mut common = String::new();
+
+    backfill_relay_profile_from_home_with_common(temp.path(), &mut profile, &mut common).unwrap();
+
+    let auth: serde_json::Value = serde_json::from_str(&profile.auth_contents).unwrap();
+    assert_eq!(auth["OPENAI_API_KEY"], "sk-provider");
+    assert_eq!(auth["vendor"], "stored");
+    assert!(auth.get("tokens").is_none());
+    assert_eq!(relay_profile_api_key(&profile), "sk-provider");
+}
+
+#[test]
+fn backfill_official_mix_profile_preserves_provider_key_and_live_login() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-live"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-login"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-login","tokens":{"access_token":"live"}}"#,
+    )
+    .unwrap();
+    let mut profile = RelayProfile {
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        config_contents: r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-provider"
+"#
+        .to_string(),
+        auth_contents: r#"{"tokens":{"access_token":"stored"}}"#.to_string(),
+        ..RelayProfile::default()
+    };
+    let mut common = String::new();
+
+    backfill_relay_profile_from_home_with_common(temp.path(), &mut profile, &mut common).unwrap();
+
+    let auth: serde_json::Value = serde_json::from_str(&profile.auth_contents).unwrap();
+    assert_eq!(auth["tokens"]["access_token"], "live");
+    assert!(auth.get("OPENAI_API_KEY").is_none());
+    assert_eq!(relay_profile_api_key(&profile), "sk-provider");
+    assert!(
+        profile
+            .config_contents
+            .contains("experimental_bearer_token = \"sk-provider\"")
+    );
+    assert!(
+        !profile
+            .config_contents
+            .contains("experimental_bearer_token = \"sk-login\"")
+    );
+}
+
+#[test]
 fn backfill_relay_profile_with_common_reads_live_context_limits() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -2116,7 +2221,7 @@ experimental_bearer_token = "sk-live-token"
 }
 
 #[test]
-fn backfill_relay_profile_prefers_live_auth_over_provider_token() {
+fn backfill_relay_profile_preserves_provider_auth_over_live_login_key() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
         temp.path().join("config.toml"),
@@ -2146,7 +2251,7 @@ experimental_bearer_token = "sk-old"
     backfill_relay_profile_from_home_with_common(temp.path(), &mut profile, &mut common).unwrap();
 
     let auth: serde_json::Value = serde_json::from_str(&profile.auth_contents).unwrap();
-    assert_eq!(auth["OPENAI_API_KEY"], "sk-edited");
+    assert_eq!(auth["OPENAI_API_KEY"], "sk-old");
     assert!(
         !profile
             .config_contents
@@ -2275,7 +2380,7 @@ requires_openai_auth = true
     assert!(current.config_contents.contains(r#"name = "Manual Edit""#));
     assert!(!current.config_contents.contains("old_snapshot"));
     let auth: serde_json::Value = serde_json::from_str(&current.auth_contents).unwrap();
-    assert_eq!(auth["OPENAI_API_KEY"], "sk-live");
+    assert_eq!(auth["OPENAI_API_KEY"], "sk-old");
 }
 
 #[test]
@@ -2553,11 +2658,11 @@ experimental_bearer_token = "22222222222222222222222222222222222"
 
     assert_eq!(profile.relay_mode, RelayMode::Official);
     assert!(profile.official_mix_api_key);
-    assert_eq!(profile.api_key, "333333333333333333333");
+    assert_eq!(profile.api_key, "22222222222222222222222222222222222");
     assert!(
         profile
             .config_contents
-            .contains(r#"experimental_bearer_token = "333333333333333333333""#)
+            .contains(r#"experimental_bearer_token = "22222222222222222222222222222222222""#)
     );
     assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
 }
