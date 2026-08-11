@@ -367,10 +367,39 @@ if [ -r "$pid_file" ]; then
     *[!0-9]*|'') ;;
     *)
       if kill -0 "$pid" 2>/dev/null; then
-        kill "$pid"
+        descendant_pids=$(ps -eo pid=,ppid= | awk -v root="$pid" '
+          {{ parent[$1] = $2 }}
+          END {{
+            for (candidate in parent) {{
+              current = candidate
+              depth = 0
+              while ((current in parent) && parent[current] != root && parent[current] != current && depth < 1024) {{
+                current = parent[current]
+                depth++
+              }}
+              if ((current in parent) && parent[current] == root) print candidate
+            }}
+          }}
+        ')
+        managed_pids="$descendant_pids $pid"
+        for managed_pid in $managed_pids; do
+          kill "$managed_pid" 2>/dev/null || true
+        done
         i=0
-        while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
-        if kill -0 "$pid" 2>/dev/null; then echo "旧 app-server 未能正常退出" >&2; exit 1; fi
+        while [ "$i" -lt 100 ]; do
+          alive=0
+          for managed_pid in $managed_pids; do
+            if kill -0 "$managed_pid" 2>/dev/null; then alive=1; break; fi
+          done
+          if [ "$alive" -eq 0 ]; then break; fi
+          sleep 0.1
+          i=$((i + 1))
+        done
+        remaining=""
+        for managed_pid in $managed_pids; do
+          if kill -0 "$managed_pid" 2>/dev/null; then remaining="$remaining $managed_pid"; fi
+        done
+        if [ -n "$remaining" ]; then echo "旧 app-server 进程树未能正常退出:$remaining" >&2; exit 1; fi
         restarted=1
       fi
       ;;
