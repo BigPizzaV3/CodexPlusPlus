@@ -492,6 +492,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tempfile",
+ "toml_edit 0.22.27",
 ]
 
 [[package]]

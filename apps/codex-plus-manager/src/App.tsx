@@ -78,6 +78,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { codexGoalsFeatureState, setCodexGoalsFeatureInConfig } from "./goals-config";
 import { isGitHubRepositoryHomepage } from "./github-repository";
 import {
   mergeModelWindowRows,
@@ -6049,6 +6050,11 @@ function RelayProfileEditor({
   }
 
   const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
+  const goalsFeatureState = codexGoalsFeatureState(
+    profile.configContents,
+    form.relayCommonConfigContents,
+    profile.useCommonConfig,
+  );
   const sub2apiBaseUrl = profile.upstreamBaseUrl.trim() || profile.baseUrl.trim();
   const canFetchSub2ApiRate = profile.sub2apiEnabled && Boolean(sub2apiBaseUrl && profile.apiKey.trim());
   const updateDraft = (patch: Partial<RelayProfile>) => {
@@ -6146,7 +6152,7 @@ function RelayProfileEditor({
         <Field className="relay-field-goals" label={t("Codex 目标")}>
           <label className="inline-check">
             <input
-              checked={configHasCodexGoalsFeature(profile.configContents)}
+              checked={goalsFeatureState.enabled}
               onChange={(event) =>
                 updateDraft({
                   configContents: setCodexGoalsFeatureInConfig(profile.configContents, event.currentTarget.checked),
@@ -6156,6 +6162,9 @@ function RelayProfileEditor({
             />
             <span>{t("启用目标功能")}</span>
           </label>
+          {goalsFeatureState.inherited ? (
+            <p className="field-hint">{t("当前继承公共配置；修改后将为该供应商保存独立设置。")}</p>
+          ) : null}
         </Field>
         <div className="relay-advanced-toggle">
           <Button
@@ -7854,76 +7863,60 @@ function filterContextEntriesBySelection(entries: CodexContextEntries, selection
   };
 }
 
-function configHasCodexGoalsFeature(configContents: string): boolean {
-  let inFeatures = false;
-  for (const line of configContents.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (/^\[features\]$/.test(trimmed)) {
-      inFeatures = true;
-      continue;
-    }
-    if (inFeatures && /^\[[^\]]+\]$/.test(trimmed)) {
-      inFeatures = false;
-    }
-    if (inFeatures && /^goals\s*=\s*true\b/.test(trimmed)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function setCodexGoalsFeatureInConfig(configContents: string, enabled: boolean): string {
-  const lines = configContents.split(/\r?\n/);
-  const next: string[] = [];
-  let inFeatures = false;
-  let sawFeatures = false;
-  let featuresHasGoals = false;
-
-  const maybeInsertGoals = () => {
-    if (enabled && sawFeatures && !featuresHasGoals) {
-      next.push("goals = true");
-      featuresHasGoals = true;
-    }
-  };
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (/^\[features\]$/.test(trimmed)) {
-      if (inFeatures) maybeInsertGoals();
-      inFeatures = true;
-      sawFeatures = true;
-      featuresHasGoals = false;
-      next.push(line);
-      continue;
-    }
-    if (inFeatures && /^\[[^\]]+\]$/.test(trimmed)) {
-      maybeInsertGoals();
-      inFeatures = false;
-    }
-    if (inFeatures && /^goals\s*=/.test(trimmed)) {
-      if (enabled && !featuresHasGoals) {
-        next.push("goals = true");
-        featuresHasGoals = true;
-      }
-      continue;
-    }
-    next.push(line);
-  }
-
-  if (inFeatures) maybeInsertGoals();
-  if (enabled && !sawFeatures) {
-    const trimmed = ensureTrailingNewline(next.join("\n").trimEnd());
-    return joinTomlSections([trimmed, "[features]\ngoals = true"]);
-  }
-
-  return ensureTrailingNewline(next.join("\n").trimEnd());
-}
-
 function effectiveRelayConfigPreview(profile: RelayProfile, settings: BackendSettings, contextProfile = profile): string {
   const entries = contextEntriesForProfile(settings, contextProfile);
   const isolatedConfig = stripContextEntriesFromConfig(profile.configContents, entries);
   const configWithLimits = applyContextLimitPreview(isolatedConfig, profile);
-  return joinTomlSectionsRootFirst([configWithLimits, settings.relayCommonConfigContents || "", selectedContextConfigToml(entries)]);
+  const profileAndCommon = mergeFeaturesTableForPreview(configWithLimits, settings.relayCommonConfigContents || "");
+  return joinTomlSectionsRootFirst([profileAndCommon, selectedContextConfigToml(entries)]);
+}
+
+function mergeFeaturesTableForPreview(profileConfig: string, commonConfig: string): string {
+  const profile = splitFeaturesTable(profileConfig);
+  const common = splitFeaturesTable(commonConfig);
+  if (!profile.body && !common.body) return joinTomlSectionsRootFirst([profileConfig, commonConfig]);
+
+  const profileKeys = new Set(tomlAssignmentKeys(profile.body));
+  const commonBody = common.body
+    .split(/\r?\n/)
+    .filter((line) => {
+      const key = tomlAssignmentKey(line);
+      return !key || !profileKeys.has(key);
+    })
+    .join("\n");
+  const mergedFeatures = ["[features]", commonBody, profile.body]
+    .filter((part) => part.trim())
+    .join("\n");
+  return joinTomlSectionsRootFirst([
+    profile.without,
+    common.without,
+    mergedFeatures,
+  ]);
+}
+
+function splitFeaturesTable(contents: string): { without: string; body: string } {
+  const lines = contents.trim().split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === "[features]");
+  if (start < 0) return { without: contents, body: "" };
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^\s*\[[^\]]+\]\s*$/.test(lines[index])) {
+      end = index;
+      break;
+    }
+  }
+  return {
+    without: [...lines.slice(0, start), ...lines.slice(end)].join("\n"),
+    body: lines.slice(start + 1, end).join("\n"),
+  };
+}
+
+function tomlAssignmentKey(line: string): string | undefined {
+  return /^\s*([A-Za-z0-9_-]+)\s*=/.exec(line)?.[1];
+}
+
+function tomlAssignmentKeys(contents: string): string[] {
+  return contents.split(/\r?\n/).map(tomlAssignmentKey).filter((key): key is string => Boolean(key));
 }
 
 function selectedContextConfigToml(entries: CodexContextEntries): string {

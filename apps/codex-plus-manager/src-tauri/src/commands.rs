@@ -1801,6 +1801,7 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
             if !profile.use_common_config || profile.config_contents.trim().is_empty() {
                 continue;
             }
+            let goals_override = relay_config_goals_value(&profile.config_contents);
             match codex_plus_core::relay_config::strip_common_config_from_config(
                 &profile.config_contents,
                 &common_config,
@@ -1814,6 +1815,10 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
                         strip_common_config_text_fallback(&profile.config_contents, &common_config);
                 }
             }
+            if let Some(enabled) = goals_override {
+                profile.config_contents =
+                    relay_config_set_goals_override(&profile.config_contents, enabled);
+            }
         }
     }
     settings.provider_sync_saved_providers =
@@ -1825,6 +1830,30 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
         .trim()
         .to_string();
     settings
+}
+
+fn relay_config_goals_value(config: &str) -> Option<bool> {
+    let doc = config.parse::<toml_edit::DocumentMut>().ok()?;
+    doc.get("features")?
+        .as_table_like()?
+        .get("goals")?
+        .as_bool()
+}
+
+fn relay_config_set_goals_override(config: &str, enabled: bool) -> String {
+    let Ok(mut doc) = config.parse::<toml_edit::DocumentMut>() else {
+        return config.to_string();
+    };
+    if !doc.as_table().contains_key("features")
+        || doc
+            .get("features")
+            .and_then(toml_edit::Item::as_table_like)
+            .is_none()
+    {
+        doc["features"] = toml_edit::table();
+    }
+    doc["features"]["goals"] = toml_edit::value(enabled);
+    codex_plus_core::relay_config::normalize_config_text(&doc.to_string())
 }
 
 fn normalize_provider_sync_provider_list(values: Vec<String>) -> Vec<String> {
@@ -5318,8 +5347,30 @@ enabled = true
 
         assert!(config.contains("model = \"gpt-5\""));
         assert!(!config.contains("model_reasoning_effort"));
-        assert!(!config.contains("[features]"));
+        // `goals` is an explicit per-profile override and must survive
+        // normalization even when it matches the common configuration.
+        assert!(config.contains("[features]"));
+        assert!(config.contains("goals = true"));
         assert!(!config.contains("[plugins.\"superpowers@openai-curated\"]"));
+    }
+
+    #[test]
+    fn normalize_settings_before_save_preserves_explicit_false_goals_override() {
+        let settings = BackendSettings {
+            relay_common_config_contents: "[features]\ngoals = true\nfast_mode = true\n"
+                .to_string(),
+            relay_profiles: vec![RelayProfile {
+                use_common_config: true,
+                config_contents: "model = \"gpt-5\"\n[features]\ngoals = false\n".to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        let normalized = normalize_settings_before_save(settings);
+        let config = &normalized.relay_profiles[0].config_contents;
+        assert!(config.contains("goals = false"));
+        assert!(!config.contains("fast_mode = true"));
     }
 
     #[test]

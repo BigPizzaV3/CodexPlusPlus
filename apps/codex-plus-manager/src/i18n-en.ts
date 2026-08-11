@@ -370,6 +370,7 @@ export const EN_PLAIN: Record<string, string> = {
   "启用供应商配置切换": "Enable provider configuration switching",
   "启用此扩展项": "Enable this entry",
   "启用目标功能": "Enable goals feature",
+  "当前继承公共配置；修改后将为该供应商保存独立设置。": "Currently inherited from the common configuration; changing it saves a provider-specific override.",
   "图片": "Image",
   "图片覆盖层": "Image overlay",
   "在会话列表悬停显示删除按钮，并支持撤销。": "Show a delete button on hover in the session list, with undo support.",
