@@ -88,7 +88,6 @@ describe("model-windows helpers", () => {
     assert.doesNotMatch(source, /setMetadataImportPreview\(parsed\.value\);\s*updateModelWindowRow\(index/);
     assert.match(source, /const modelRowsError = showApiFields\s*\?/);
     assert.match(source, /relayProfileUsesLiveFiles\(draft\)\s*\?/);
-    assert.doesNotMatch(source, /snapshotActiveRelayFilesBeforeSwitch/);
     assert.match(source, /const saved = await onFormChange\(next\)/);
     assert.match(source, /const applied = await actions\.reapplyActiveRelayProfile\(true\)/);
     assert.doesNotMatch(source, /const applied = await actions\.switchRelayProfile\(next, profile\.id\)/);

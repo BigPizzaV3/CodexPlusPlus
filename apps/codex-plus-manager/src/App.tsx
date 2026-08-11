@@ -486,6 +486,10 @@ type RelaySwitchResult = CommandResult<{
   relay: RelayPayload;
 }>;
 
+type SettingsBackfillResult = CommandResult<{
+  settings: BackendSettings;
+}>;
+
 type RelayProfileTestResult = CommandResult<{
   httpStatus: number;
   endpoint: string;
@@ -2407,6 +2411,7 @@ export function App() {
       showNotice(t("供应商配置可能不正确"), validationError, "failed");
       return;
     }
+    switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
     const selectedAfterSave = activeRelayProfile(switchSettings);
     const command = relayProfileSwitchCommand(selectedAfterSave);
 
@@ -2463,6 +2468,26 @@ export function App() {
     } finally {
       setRelaySwitching(false);
     }
+  };
+
+  const snapshotActiveRelayFilesBeforeSwitch = async (
+    next: BackendSettings,
+    previousActiveRelayId: string,
+  ): Promise<BackendSettings> => {
+    const profileId = previousActiveRelayId.trim();
+    if (!profileId) return next;
+    const result = await run(() =>
+      call<SettingsBackfillResult>("backfill_relay_profile_from_live", {
+        request: { settings: next, profileId },
+      }),
+    );
+    if (!result) return next;
+    const normalized = normalizeSettings(result.settings);
+    if (!isSuccessStatus(result.status)) {
+      showNotice(t("供应商切换"), result.message, result.status);
+      return next;
+    }
+    return normalized;
   };
 
   const copyText = async (text: string, message: string) => {
