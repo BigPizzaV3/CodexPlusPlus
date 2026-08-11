@@ -101,12 +101,6 @@ function tomlStringAssignment(line: string, key: string): string | null {
   return match ? match[2].replace(/\\(["'\\])/g, "$1") : null;
 }
 
-/** 从一行中提取 `key = true` 或 `key = false` 的布尔赋值，找不到返回 null */
-function tomlBoolAssignment(line: string, key: string): boolean | null {
-  const match = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*(true|false)\\s*(?:#.*)?$`).exec(line.trim());
-  return match ? match[1] === "true" : null;
-}
-
 /** 读取根级（第一个 `[...]` 表头之前）的字符串赋值 */
 function rootTomlStringValue(contents: string, key: string): string {
   const lines = contents.split(/\r?\n/);
@@ -117,34 +111,6 @@ function rootTomlStringValue(contents: string, key: string): string {
     if (value !== null) return value;
   }
   return "";
-}
-
-/**
- * 读取当前活跃 provider 表下的布尔字段值。
- *
- * 逻辑：先从根级获取 `model_provider` 的值，然后在
- * `[model_providers.<provider>]` section 中查找 `key = true|false`。
- */
-export function codexProviderBoolFromConfig(contents: string, key: string): boolean {
-  const provider = rootTomlStringValue(contents, "model_provider");
-  if (!provider) return false;
-  const targetSection = `model_providers.${provider}`;
-  const lines = contents.split(/\r?\n/);
-  let currentSection = "";
-
-  for (const line of lines) {
-    const section = tomlSectionNameFromLine(line);
-    if (section !== null) {
-      currentSection = section;
-      continue;
-    }
-    if (currentSection === targetSection) {
-      const value = tomlBoolAssignment(line, key);
-      if (value !== null) return value;
-    }
-  }
-
-  return false;
 }
 
 /**
@@ -199,8 +165,8 @@ function codexProviderStringFromConfig(contents: string, key: string): string {
  * 逻辑（镜像 Rust 端 `bedrock_config_from_config_text`）：
  * 1. 读取根级 `model_provider`
  * 2. 若为 `"amazon-bedrock"` → AWS Profile 路径
- * 3. 否则检查活跃 provider 的 `requires_openai_auth = true` 且
- *    `base_url` 匹配 bedrock-mantle 正则 → Bearer Token 路径
+ * 3. 否则检查活跃 provider 的 `base_url` 是否匹配 bedrock-mantle 正则
+ *    → Bearer Token 路径
  * 4. 否则返回 null
  */
 export function deriveBedrockConfigFromConfigText(configContents: string): BedrockConfig | null {
@@ -221,24 +187,26 @@ export function deriveBedrockConfigFromConfigText(configContents: string): Bedro
   }
 
   // Bearer Token 路径：匹配 `<PREFIX><region><SUFFIX>`，其中 region 不含 `.` 或 `/`。
+  //
+  // 仅以 base_url 为判据（与 Rust 端一致）。`bedrock-mantle.<region>.api.aws` 是
+  // AWS 独占域名，本身已足够唯一；不再叠加 `requires_openai_auth`——该字段表示
+  // "走 OpenAI 鉴权语义（ChatGPT 登录态）"，纯 API 模式下不会写入，而 Bedrock
+  // Bearer Token 自带 Bedrock API Key，正属于纯 API 形态。
   if (modelProvider) {
-    const requiresOpenaiAuth = codexProviderBoolFromConfig(configContents, "requires_openai_auth");
-    if (requiresOpenaiAuth) {
-      const baseUrl = codexProviderStringFromConfig(configContents, "base_url");
-      const pattern = new RegExp(
-        `^${escapeRegExp(BEDROCK_MANTLE_URL_PREFIX)}([^./]+)${escapeRegExp(BEDROCK_MANTLE_URL_SUFFIX)}$`,
-      );
-      const match = pattern.exec(baseUrl);
-      if (match) {
-        return {
-          authMode: "bearerToken",
-          providerId: modelProvider,
-          region: match[1],
-          awsProfile: "",
-          iamUserName: "",
-          iamKeyValidityDays: "90",
-        };
-      }
+    const baseUrl = codexProviderStringFromConfig(configContents, "base_url");
+    const pattern = new RegExp(
+      `^${escapeRegExp(BEDROCK_MANTLE_URL_PREFIX)}([^./]+)${escapeRegExp(BEDROCK_MANTLE_URL_SUFFIX)}$`,
+    );
+    const match = pattern.exec(baseUrl);
+    if (match) {
+      return {
+        authMode: "bearerToken",
+        providerId: modelProvider,
+        region: match[1],
+        awsProfile: "",
+        iamUserName: "",
+        iamKeyValidityDays: "90",
+      };
     }
   }
 

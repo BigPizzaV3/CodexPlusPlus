@@ -419,12 +419,16 @@ fn switch_to_bedrock_bearer_token_writes_expected_config() {
         "expected bedrock-mantle base_url, got:\n{live}"
     );
     assert!(
-        live.contains("requires_openai_auth = true"),
-        "expected requires_openai_auth = true, got:\n{live}"
-    );
-    assert!(
         live.contains("experimental_bearer_token = \"brk-test-key-12345\""),
         "expected experimental_bearer_token, got:\n{live}"
+    );
+    // `requires_openai_auth` 表示"走 OpenAI 鉴权语义（ChatGPT 登录态）"，
+    // 上游仅在混合 / 官方模式下写入。Bedrock Bearer Token 自带 Bedrock API Key，
+    // 属纯 API 形态，因此切换后的 live config 不应含该字段——种子 config 里
+    // 那份 `requires_openai_auth = true` 也必须被整表替换清掉。
+    assert!(
+        !live.contains("requires_openai_auth"),
+        "requires_openai_auth should not be written for Bedrock, got:\n{live}"
     );
     assert!(
         live.contains("web_search = \"disabled\""),

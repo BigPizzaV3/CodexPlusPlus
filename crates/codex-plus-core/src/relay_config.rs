@@ -3156,7 +3156,7 @@ pub(crate) const BEDROCK_MANTLE_URL_SUFFIX: &str = ".api.aws/openai/v1";
 ///
 /// 逻辑：
 /// 1. `model_provider == "amazon-bedrock"` → AWS Profile 路径，回填 region / aws_profile
-/// 2. `requires_openai_auth == true` 且 `base_url` 匹配 bedrock-mantle 正则 → Bearer Token 路径
+/// 2. `base_url` 匹配 bedrock-mantle 模板 → Bearer Token 路径
 /// 3. 其余 → None
 pub(crate) fn bedrock_config_from_config_text(config_text: &str) -> Option<BedrockConfig> {
     use crate::settings::default_bedrock_iam_key_validity_days;
@@ -3185,17 +3185,14 @@ pub(crate) fn bedrock_config_from_config_text(config_text: &str) -> Option<Bedro
     }
 
     // 路径 2：Bearer Token 路径识别
-    // 需要当前活跃 provider 的 requires_openai_auth == true 且 base_url 匹配 bedrock-mantle 模式
+    //
+    // 仅以 `base_url` 是否匹配 bedrock-mantle 模板为判据。`bedrock-mantle.<region>.api.aws`
+    // 是 AWS 独占域名，本身已足够唯一，无需再叠加 `requires_openai_auth` 作为前置门：
+    // 后者的语义是"走 OpenAI 鉴权语义（ChatGPT 登录态）"，上游在纯 API 模式下不写该
+    // 字段，而 Bedrock Bearer Token 正属于纯 API 形态（自带 Bedrock API Key），
+    // 因此把它当作识别条件会漏掉生成端产出的配置。
     let active_provider = root_provider.as_deref()?;
     let provider_values = table_values(config_text, &format!("model_providers.{active_provider}"))?;
-
-    let requires_auth = provider_values
-        .get("requires_openai_auth")
-        .map(|v| v.trim() == "true")
-        .unwrap_or(false);
-    if !requires_auth {
-        return None;
-    }
 
     let base_url = provider_values
         .get("base_url")
@@ -3338,11 +3335,17 @@ pub(crate) fn complete_bedrock_bearer_token_config(
 
     // 构建全新的 provider 表——不复用 `retain_only_provider_table` + 字段覆盖的写法，
     // 因为那样会保留同名旧表下的杂字段（P2 卫生问题）。
+    // 不写 `requires_openai_auth`：该字段的语义是"此 provider 走 OpenAI 鉴权语义
+    // （ChatGPT 登录态）"，因此上游只在混合 / 官方模式下写入，纯 API 模式一律不写
+    //（见 `complete_relay_profile_config` 里对 `RelayMode::PureApi` 的排除，以及
+    // `upsert_model_provider_config` 的 `requires_openai_auth` 入参在两条 apply
+    // 路径上分别取 true / false）。Bedrock Bearer Token 用的是自带的 Bedrock API Key
+    // （直接写进下面的 `experimental_bearer_token`），不依赖 OpenAI 登录态，属于
+    // 纯 API 形态，所以这里同样不写。
     let base_url = format!("{BEDROCK_MANTLE_URL_PREFIX}{region}{BEDROCK_MANTLE_URL_SUFFIX}");
     let mut provider_table = toml_edit::Table::new();
     provider_table.insert("name", toml_edit::value(provider_id.as_str()));
     provider_table.insert("wire_api", toml_edit::value("responses"));
-    provider_table.insert("requires_openai_auth", toml_edit::value(true));
     provider_table.insert("base_url", toml_edit::value(base_url.as_str()));
     provider_table.insert(
         "experimental_bearer_token",
@@ -3586,7 +3589,7 @@ name = \"should-be-cleared\"
         let output = complete_bedrock_bearer_token_config(&profile, bedrock)
             .expect("bearer token config should succeed");
 
-        // 5 个 Bedrock 必需字段
+        // 4 个 Bedrock 必需字段
         assert!(
             output.contains("name = \"my-bedrock\""),
             "expected fresh name, got:\n{output}"
@@ -3596,16 +3599,18 @@ name = \"should-be-cleared\"
             "expected wire_api, got:\n{output}"
         );
         assert!(
-            output.contains("requires_openai_auth = true"),
-            "expected requires_openai_auth, got:\n{output}"
-        );
-        assert!(
             output.contains("base_url = \"https://bedrock-mantle.us-east-2.api.aws/openai/v1\""),
             "expected bedrock-mantle base_url, got:\n{output}"
         );
         assert!(
             output.contains("experimental_bearer_token = \"brk-test-key\""),
             "expected experimental_bearer_token, got:\n{output}"
+        );
+        // `requires_openai_auth` 表示"走 OpenAI 鉴权语义（ChatGPT 登录态）"，
+        // Bedrock Bearer Token 自带 Bedrock API Key，属于纯 API 形态，不写该字段。
+        assert!(
+            !output.contains("requires_openai_auth"),
+            "requires_openai_auth should not be written for Bedrock, got:\n{output}"
         );
 
         // 旧脏字段不应残留
@@ -3669,7 +3674,7 @@ name = \"should-be-cleared\"
             "Config without model_provider should return None"
         );
 
-        // 4. requires_openai_auth = true 但 base_url 不匹配 bedrock-mantle 模式
+        // 4. base_url 不匹配 bedrock-mantle 模式（即便带 requires_openai_auth）
         let non_bedrock_url_config = "model_provider = \"myapi\"\nmodel = \"deepseek-v4\"\n\n[model_providers.myapi]\nname = \"myapi\"\nbase_url = \"https://api.myservice.com/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n";
         assert_eq!(
             bedrock_config_from_config_text(non_bedrock_url_config),
@@ -3683,6 +3688,19 @@ name = \"should-be-cleared\"
             None,
             "Empty config should return None"
         );
+    }
+
+    /// 升级路径兼容：识别端改为只看 `base_url` 之后，旧版本写出的
+    /// Bedrock config（带 `requires_openai_auth = true`）必须依然能被识别，
+    /// 否则老用户升级后已保存的 Bedrock profile 会认不出来、退化成普通中转。
+    #[test]
+    fn bedrock_config_from_config_text_still_recognizes_legacy_requires_openai_auth() {
+        let legacy_config = "model_provider = \"my-bedrock\"\nweb_search = \"disabled\"\n\n[model_providers.my-bedrock]\nname = \"my-bedrock\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"https://bedrock-mantle.us-east-2.api.aws/openai/v1\"\nexperimental_bearer_token = \"brk-legacy\"\n";
+        let parsed = bedrock_config_from_config_text(legacy_config)
+            .expect("legacy Bedrock config should still be recognized");
+        assert_eq!(parsed.auth_mode, BedrockAuthMode::BearerToken);
+        assert_eq!(parsed.provider_id, "my-bedrock");
+        assert_eq!(parsed.region, "us-east-2");
     }
 
     #[test]
@@ -3886,9 +3904,9 @@ name = \"should-be-cleared\"
         //
         // *For any* 非保留的 provider 标识符字符串、任意非空 region 字符串、任意非空
         // API Key 字符串，生成结果中顶层 `model_provider` 等于该标识符；`base_url` 等于
-        // `https://bedrock-mantle.<region>.api.aws/openai/v1`；`requires_openai_auth`
-        // 为 `true`；`experimental_bearer_token` 等于该 API Key；顶层 `web_search`
-        // 等于 `"disabled"`。
+        // `https://bedrock-mantle.<region>.api.aws/openai/v1`；`experimental_bearer_token`
+        // 等于该 API Key；顶层 `web_search` 等于 `"disabled"`；且**不含**
+        // `requires_openai_auth`（Bedrock 自带 API Key，属纯 API 形态）。
         //
         // **Validates: Requirements 2.1, 2.3, 3.1, 3.3**
         proptest! {
@@ -3938,10 +3956,10 @@ name = \"should-be-cleared\"
                     expected_base_url, output
                 );
 
-                // 验证 requires_openai_auth = true
+                // 验证不含 requires_openai_auth（纯 API 形态不写该字段）
                 prop_assert!(
-                    output.contains("requires_openai_auth = true"),
-                    "Output should contain 'requires_openai_auth = true', but got:\n{}",
+                    !output.contains("requires_openai_auth"),
+                    "Output should NOT contain 'requires_openai_auth', but got:\n{}",
                     output
                 );
 

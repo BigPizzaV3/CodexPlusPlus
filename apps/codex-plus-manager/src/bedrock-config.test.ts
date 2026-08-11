@@ -70,7 +70,8 @@ describe("Property 8: Bearer Token generation and recognition roundtrip (TS)", (
           `[model_providers.${providerId}]`,
           `name = "${providerId}"`,
           `wire_api = "responses"`,
-          `requires_openai_auth = true`,
+          // 刻意不含 `requires_openai_auth`：Bedrock Bearer Token 自带 API Key，
+          // 属纯 API 形态，生成端不写该字段（与 Rust 端 fixture 保持一致）。
           `base_url = "https://bedrock-mantle.${region}.api.aws/openai/v1"`,
           `experimental_bearer_token = "some-test-key"`,
           "",
@@ -141,13 +142,36 @@ describe("deriveBedrockConfigFromConfigText - non-Bedrock configs", () => {
     assert.strictEqual(deriveBedrockConfigFromConfigText(config), null);
   });
 
-  it("returns null for requires_openai_auth but non-bedrock base_url", () => {
+  it("returns null for non-bedrock base_url even with requires_openai_auth", () => {
     const config = `model_provider = "myapi"\n\n[model_providers.myapi]\nname = "myapi"\nbase_url = "https://api.myservice.com/v1"\nrequires_openai_auth = true\n`;
     assert.strictEqual(deriveBedrockConfigFromConfigText(config), null);
   });
 
   it("returns null for empty config", () => {
     assert.strictEqual(deriveBedrockConfigFromConfigText(""), null);
+  });
+
+  // 升级路径兼容：识别端改为只看 base_url 之后，旧版本写出的 Bedrock config
+  // （带 requires_openai_auth = true）必须依然能被识别，否则老用户升级后
+  // 已保存的 Bedrock profile 会认不出来、退化成普通中转。
+  it("still recognizes legacy configs that carry requires_openai_auth", () => {
+    const legacyConfig = [
+      `model_provider = "my-bedrock"`,
+      `web_search = "disabled"`,
+      "",
+      `[model_providers.my-bedrock]`,
+      `name = "my-bedrock"`,
+      `wire_api = "responses"`,
+      `requires_openai_auth = true`,
+      `base_url = "https://bedrock-mantle.us-east-2.api.aws/openai/v1"`,
+      `experimental_bearer_token = "brk-legacy"`,
+      "",
+    ].join("\n");
+    const result = deriveBedrockConfigFromConfigText(legacyConfig);
+    assert.notStrictEqual(result, null, "legacy Bedrock config should still be recognized");
+    assert.strictEqual(result!.authMode, "bearerToken");
+    assert.strictEqual(result!.providerId, "my-bedrock");
+    assert.strictEqual(result!.region, "us-east-2");
   });
 });
 
@@ -534,7 +558,7 @@ describe("resolveBedrockAfterDerive - preserve UI-set bedrock across derive", ()
     `[model_providers.mantle]`,
     `name = "mantle"`,
     `wire_api = "responses"`,
-    `requires_openai_auth = true`,
+    // 与生成端一致：不含 `requires_openai_auth`（纯 API 形态）。
     `base_url = "https://bedrock-mantle.us-east-2.api.aws/openai/v1"`,
     `experimental_bearer_token = "some-key"`,
     "",
