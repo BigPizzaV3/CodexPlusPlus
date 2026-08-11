@@ -1151,7 +1151,7 @@ body {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px 16px;
   animation: relay-section-enter 240ms var(--motion-ease) both;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .relay-advanced-fields {
@@ -4023,6 +4023,16 @@ body {
   border-radius: 7px;
   background: hsl(var(--destructive) / 0.08);
   color: hsl(var(--destructive));
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.relay-model-metadata-import-warning {
+  padding: 8px 10px;
+  border: 1px solid hsl(var(--status-warning) / 0.3);
+  border-radius: 7px;
+  background: hsl(var(--status-warning) / 0.08);
+  color: hsl(var(--text));
   font-size: 11px;
   line-height: 1.45;
 }

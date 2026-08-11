@@ -149,6 +149,16 @@ pub struct RelayModelRoute {
     pub target_model: String,
 }
 
+impl RelayProfile {
+    pub fn uses_api_mode(&self) -> bool {
+        self.relay_mode != RelayMode::Official || self.official_mix_api_key
+    }
+
+    pub fn is_pure_official(&self) -> bool {
+        !self.uses_api_mode()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum AggregateRelayStrategy {
@@ -1749,6 +1759,27 @@ mod tests {
         assert!(!profile.official_mix_api_key);
         assert!(!profile.hide_official_usage_alert);
         assert!(profile.test_model.is_empty());
+    }
+
+    #[test]
+    fn relay_profile_api_mode_predicates_distinguish_official_mix_and_pure_api() {
+        let pure_official = RelayProfile::default();
+        assert!(pure_official.is_pure_official());
+        assert!(!pure_official.uses_api_mode());
+
+        let official_mix = RelayProfile {
+            official_mix_api_key: true,
+            ..RelayProfile::default()
+        };
+        assert!(!official_mix.is_pure_official());
+        assert!(official_mix.uses_api_mode());
+
+        let pure_api = RelayProfile {
+            relay_mode: RelayMode::PureApi,
+            ..RelayProfile::default()
+        };
+        assert!(!pure_api.is_pure_official());
+        assert!(pure_api.uses_api_mode());
     }
 
     #[test]

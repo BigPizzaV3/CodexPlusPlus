@@ -4,7 +4,6 @@ import { describe, it } from "node:test";
 import type { RelayProfile } from "./App.tsx";
 import {
   buildModelWindows,
-  formatModelWindowLabel,
   isValidModelWindow,
   modelWindowRowsFromProfile,
   modelWindowRowsValidationError,
@@ -62,6 +61,7 @@ describe("model-windows helpers", () => {
     assert.match(source, /支持多模型文件，自动匹配同名模型/);
     assert.match(source, /t\("自动压缩"\)/);
     assert.match(source, /导入对应模型的 model\.json 字段/);
+    assert.match(source, /以下字段由 Codex\+\+ 管理，未导入：\{0\}/);
     assert.doesNotMatch(source, /按 slug 精确匹配当前模型/);
     assert.match(source, /context_window、auto_compact_token_limit 保持同步。/);
     assert.doesNotMatch(source, /可粘贴包含多个模型的 models\.json；系统会/);
@@ -83,7 +83,16 @@ describe("model-windows helpers", () => {
     assert.match(source, /清除已导入的模型字段，保留上下文窗口/);
     assert.match(source, /metadataImportTarget\.slug/);
     assert.match(source, /value=\{row\.window\}/);
-    assert.match(source, /window: metadataImportPreview\.contextWindow/);
+    assert.doesNotMatch(source, /window: metadataImportPreview\.contextWindow \?\? ""/);
+    assert.doesNotMatch(source, /autoCompact: metadataImportPreview\.autoCompactPercent \?\? ""/);
+    assert.doesNotMatch(source, /setMetadataImportPreview\(parsed\.value\);\s*updateModelWindowRow\(index/);
+    assert.match(source, /const modelRowsError = showApiFields\s*\?/);
+    assert.match(source, /relayProfileUsesLiveFiles\(draft\)\s*\?/);
+    assert.doesNotMatch(source, /snapshotActiveRelayFilesBeforeSwitch/);
+    assert.match(source, /const saved = await onFormChange\(next\)/);
+    assert.match(source, /const applied = await actions\.reapplyActiveRelayProfile\(true\)/);
+    assert.doesNotMatch(source, /const applied = await actions\.switchRelayProfile\(next, profile\.id\)/);
+    assert.doesNotMatch(source, /effectiveRelayConfigPreview\(normalizedDraft, form, normalizedDraft\)/);
     assert.match(source, /className="relay-model-import-workbench"/);
     assert.match(source, /serializeModelMetadataDocument\(\s*slug,\s*existingMetadata/);
     assert.match(source, /synchronizeModelMetadataDocumentLimits\(/);
@@ -96,15 +105,21 @@ describe("model-windows helpers", () => {
     assert.doesNotMatch(source, /className="relay-model-minimal-grid"/);
     assert.doesNotMatch(source, /t\("压缩触发 token 数"\)/);
     assert.doesNotMatch(source, /className="relay-model-raw-details"/);
-    assert.doesNotMatch(source, /className="relay-field-context-window"/);
-    assert.doesNotMatch(source, /className="relay-field-auto-compact"/);
+    assert.match(source, /className="relay-field-context-window"/);
+    assert.match(source, /className="relay-field-auto-compact"/);
+    assert.match(source, /作为该供应商下所有模型的全局上下文上限，并受 catalog 中 max_context_window 约束/);
+    assert.match(source, /填写后覆盖该供应商下所有模型的压缩触发 token 数/);
     assert.doesNotMatch(metadataSource, /RECOGNIZED_MODEL_FIELDS/);
     assert.doesNotMatch(metadataSource, /compatibilityFields/);
-    assert.doesNotMatch(metadataSource, /delete metadata\.max_context_window/);
+    assert.match(metadataSource, /MANAGED_MODEL_METADATA_FIELDS/);
+    assert.match(metadataSource, /"max_context_window"/);
     assert.match(source, /spaceBelow < estimatedMenuHeight/);
     assert.match(source, /placement === "top" \? "open-top"/);
     assert.match(styles, /\.app-select\.open-top \.app-select-menu/);
     assert.match(styles, /\.relay-model-import-workbench/);
+    assert.doesNotMatch(styles, /\.relay-advanced-fields,\s*\.relay-api-fields\s*\{[^}]*overflow: hidden;/);
+    assert.match(styles, /\.relay-detail-sticky\s*\{[^}]*margin: 0;/);
+    assert.doesNotMatch(styles, /\.relay-detail-sticky\s*\{[^}]*margin: -/);
     assert.match(styles, /@media \(max-width: 600px\)/);
     assert.match(styles, /\.relay-model-row,\s*\.relay-model-row-actions\s*\{[\s\S]*grid-template-columns:/);
     assert.match(styles, /\.relay-model-window-heading\s*\{\s*grid-column: 2;/);
@@ -117,14 +132,6 @@ describe("model-windows helpers", () => {
     assert.match(styles, /\.relay-model-import-copy span\s*\{[\s\S]*line-height: 1\.45;/);
     assert.match(styles, /\.relay-model-metadata-import-actions\s*\{[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto;/);
     assert.match(styles, /\.relay-model-metadata-import-flow\s*\{[\s\S]*justify-content: flex-end;/);
-  });
-
-  it("把导入的 token 数压缩成紧凑窗口标签", () => {
-    assert.strictEqual(formatModelWindowLabel("1048576"), "1048576");
-    assert.strictEqual(formatModelWindowLabel("1000000"), "1M");
-    assert.strictEqual(formatModelWindowLabel("272000"), "272K");
-    assert.strictEqual(formatModelWindowLabel("1m"), "1M");
-    assert.strictEqual(formatModelWindowLabel("custom"), "custom");
   });
 
   it("modelWindowsMapToText 按 modelList 行顺序输出窗口文本", () => {

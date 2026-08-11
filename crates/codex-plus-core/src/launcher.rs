@@ -281,6 +281,7 @@ where
     let mut helper_started = false;
     let mut launched = None;
     let mut keep_launched_on_error = false;
+    let mut relay_apply_warning = None;
 
     let result: anyhow::Result<LaunchHandle> = async {
         let home = crate::relay_config::default_codex_home_dir();
@@ -349,9 +350,21 @@ where
             helper_started = true;
         }
 
-        // 启动前刷新当前 relay 配置（model_catalog_json 等），保证“保存后重启即生效”。
-        // 应用失败时中止启动，避免 Codex 带着旧 catalog 静默运行。
-        hooks.apply_active_relay_profile(&settings).await?;
+        // 仅为明确使用 API 中转的 profile 刷新 catalog 等托管配置。
+        // 官方 profile 不应在普通启动时清理用户手写的 config.toml/auth.json；
+        // 刷新失败也不应阻止 Codex 本体启动，显式切换入口仍会返回可见错误。
+        if should_apply_active_relay_profile_on_launch(&settings) {
+            if let Err(error) = hooks.apply_active_relay_profile(&settings).await {
+                relay_apply_warning = Some(error.to_string());
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.apply_active_relay_profile_failed_nonfatal",
+                    serde_json::json!({
+                        "profile_id": settings.active_relay_id,
+                        "message": error.to_string()
+                    }),
+                );
+            }
+        }
         let launch = hooks
             .launch_codex(&app_dir, debug_port, &settings, &settings.codex_extra_args)
             .await?;
@@ -376,20 +389,34 @@ where
                 .await;
                 hooks.start_bridge_watchdog(debug_port, helper_port).await?;
             } else {
-                let degraded = launch_status(
-                    "running_degraded",
-                    "Codex launched; Codex++ enhancements are still waiting for the page bridge.",
-                    debug_port,
-                    helper_port,
-                    &app_dir,
-                );
-                options.status_store.save_latest(&degraded)?;
-                hooks.write_status("running_degraded").await;
                 injection_degraded = true;
             }
         }
 
-        if !settings.enhancements_enabled || !injection_degraded {
+        let degraded_message = match (relay_apply_warning.as_deref(), injection_degraded) {
+            (Some(error), true) => Some(format!(
+                "Codex launched, but the active supplier configuration could not be refreshed: {error}. Codex++ enhancements are still waiting for the page bridge."
+            )),
+            (Some(error), false) => Some(format!(
+                "Codex launched, but the active supplier configuration could not be refreshed: {error}"
+            )),
+            (None, true) => Some(
+                "Codex launched; Codex++ enhancements are still waiting for the page bridge."
+                    .to_string(),
+            ),
+            (None, false) => None,
+        };
+        if let Some(message) = degraded_message {
+            let degraded = launch_status(
+                "running_degraded",
+                &message,
+                debug_port,
+                helper_port,
+                &app_dir,
+            );
+            options.status_store.save_latest(&degraded)?;
+            hooks.write_status("running_degraded").await;
+        } else {
             let status = launch_status(
                 "running",
                 "Codex++ launcher ready",
@@ -440,6 +467,14 @@ fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
 fn remote_control_provider_proxy_enabled(settings: &BackendSettings) -> bool {
     let profile = settings.active_relay_profile();
     profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key
+}
+
+fn should_apply_active_relay_profile_on_launch(settings: &BackendSettings) -> bool {
+    if !settings.relay_profiles_enabled {
+        return false;
+    }
+    let profile = settings.active_relay_profile();
+    profile.uses_api_mode()
 }
 
 fn select_native_menu_inspector_port(debug_port: u16) -> u16 {
@@ -583,6 +618,9 @@ impl LaunchHooks for DefaultLaunchHooks {
             return Ok(());
         }
         let profile = settings.active_relay_profile();
+        if profile.is_pure_official() {
+            return Ok(());
+        }
         let home = crate::relay_config::default_codex_home_dir();
         let common_config = crate::relay_config::normalize_config_text(
             &[
@@ -595,18 +633,6 @@ impl LaunchHooks for DefaultLaunchHooks {
             .collect::<Vec<_>>()
             .join("\n\n"),
         );
-        if profile.relay_mode == crate::settings::RelayMode::Official
-            && !profile.official_mix_api_key
-        {
-            let auth_contents = (!profile.auth_contents.trim().is_empty())
-                .then_some(profile.auth_contents.as_str());
-            crate::relay_config::clear_relay_config_to_home_with_auth_and_computer_use_guard(
-                &home,
-                auth_contents,
-                settings.computer_use_guard_enabled,
-            )?;
-            return Ok(());
-        }
         crate::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
             &home,
             &profile,

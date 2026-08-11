@@ -236,6 +236,45 @@ fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
 }
 
 #[test]
+fn reapply_active_profile_generates_catalog_from_model_windows_without_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let original = BackendSettings {
+        active_relay_id: "api".to_string(),
+        relay_profiles: vec![pure_profile("api", "https://api.example/v1", "sk-api")],
+        ..BackendSettings::default()
+    };
+    store.save(&original).unwrap();
+
+    let mut edited = pure_profile("api", "https://api.example/v1", "sk-api");
+    edited.model_list = "example-model".to_string();
+    edited.model_windows = r#"{"example-model":"1M"}"#.to_string();
+    assert!(edited.model_metadata.is_empty());
+    let next = BackendSettings {
+        active_relay_id: "api".to_string(),
+        relay_profiles: vec![edited],
+        ..BackendSettings::default()
+    };
+
+    switch_relay_profile_in_home(&store, &home, next, "api").unwrap();
+
+    let live_config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(live_config.contains(r#"model_catalog_json = "model-catalogs/api.json""#));
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.join("model-catalogs").join("api.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(catalog["models"][0]["slug"], "example-model");
+    assert_eq!(catalog["models"][0]["context_window"], 1_000_000);
+    assert_eq!(
+        store.load().unwrap().relay_profiles[0].model_windows,
+        r#"{"example-model":"1M"}"#
+    );
+}
+
+#[test]
 fn switch_returns_normalized_previous_official_profile_after_backfill() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("codex");

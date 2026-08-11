@@ -71,19 +71,6 @@ export function modelWindowRowsValidationError(rows: ModelWindowRow[]): ModelWin
   return null;
 }
 
-export function formatModelWindowLabel(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  if (/^\d+[KkMm]$/.test(trimmed)) return trimmed.toUpperCase();
-  if (!/^\d+$/.test(trimmed)) return trimmed;
-
-  const tokens = Number(trimmed);
-  if (!Number.isSafeInteger(tokens) || tokens <= 0) return trimmed;
-  if (tokens % 1_000_000 === 0) return `${tokens / 1_000_000}M`;
-  if (tokens % 1_000 === 0) return `${tokens / 1_000}K`;
-  return trimmed;
-}
-
 export function mergeModelWindowRows(
   currentRows: ModelWindowRow[],
   incomingRows: ModelWindowRow[],

@@ -486,10 +486,6 @@ type RelaySwitchResult = CommandResult<{
   relay: RelayPayload;
 }>;
 
-type SettingsBackfillResult = CommandResult<{
-  settings: BackendSettings;
-}>;
-
 type RelayProfileTestResult = CommandResult<{
   httpStatus: number;
   endpoint: string;
@@ -2271,6 +2267,18 @@ export function App() {
     return !!result && isSuccessStatus(result.status) && !result.configured;
   };
 
+  const reapplyActiveRelayProfile = async (silent = false) => {
+    const result = await run(() => call<RelayResult>("reapply_active_relay_profile"));
+    if (result) {
+      setRelay(result);
+      await refreshRelayFiles(true);
+      if (!silent || !isSuccessStatus(result.status)) {
+        showNotice(t("保存供应商"), result.message, result.status);
+      }
+    }
+    return !!result && isSuccessStatus(result.status);
+  };
+
   const saveRelayFile = async (kind: "config" | "auth", contents: string, silent = false) => {
     const result = await run(() => call<RelayFilesResult>("save_relay_file", { request: { kind, contents } }));
     if (result) {
@@ -2399,7 +2407,6 @@ export function App() {
       showNotice(t("供应商配置可能不正确"), validationError, "failed");
       return;
     }
-    switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
     const selectedAfterSave = activeRelayProfile(switchSettings);
     const command = relayProfileSwitchCommand(selectedAfterSave);
 
@@ -2456,26 +2463,6 @@ export function App() {
     } finally {
       setRelaySwitching(false);
     }
-  };
-
-  const snapshotActiveRelayFilesBeforeSwitch = async (
-    next: BackendSettings,
-    previousActiveRelayId: string,
-  ): Promise<BackendSettings> => {
-    const profileId = previousActiveRelayId.trim();
-    if (!profileId) return next;
-    const result = await run(() =>
-      call<SettingsBackfillResult>("backfill_relay_profile_from_live", {
-        request: { settings: next, profileId },
-      }),
-    );
-    if (!result) return next;
-    const normalized = normalizeSettings(result.settings);
-    if (!isSuccessStatus(result.status)) {
-      showNotice(t("供应商切换"), result.message, result.status);
-      return next;
-    }
-    return normalized;
   };
 
   const copyText = async (text: string, message: string) => {
@@ -2799,6 +2786,7 @@ export function App() {
       applyRelayInjection,
       applyPureApiInjection,
       clearRelayInjection,
+      reapplyActiveRelayProfile,
       saveRelayFile,
       upsertContextEntry,
       deleteContextEntry,
@@ -3155,6 +3143,7 @@ type Actions = {
   applyRelayInjection: () => Promise<boolean>;
   applyPureApiInjection: () => Promise<boolean>;
   clearRelayInjection: () => Promise<boolean>;
+  reapplyActiveRelayProfile: (silent?: boolean) => Promise<boolean>;
   saveRelayFile: (kind: "config" | "auth", contents: string, silent?: boolean) => Promise<boolean>;
   upsertContextEntry: (
     settings: BackendSettings,
@@ -6194,13 +6183,15 @@ function RelayProfileEditor({
     );
   }
 
-  const modelRowsError = modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows));
   const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
   const goalsFeatureState = codexGoalsFeatureState(
     profile.configContents,
     form.relayCommonConfigContents,
     profile.useCommonConfig,
   );
+  const modelRowsError = showApiFields
+    ? modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows))
+    : null;
   const sub2apiBaseUrl = profile.upstreamBaseUrl.trim() || profile.baseUrl.trim();
   const canFetchSub2ApiRate = profile.sub2apiEnabled && Boolean(sub2apiBaseUrl && profile.apiKey.trim());
   const updateDraft = (patch: Partial<RelayProfile>) => {
@@ -6337,8 +6328,8 @@ function RelayProfileEditor({
       metadataImportPreview.metadata,
     ));
     updateModelWindowRow(metadataImportTarget.index, {
-      window: metadataImportPreview.contextWindow ?? "",
-      autoCompact: metadataImportPreview.autoCompactPercent,
+      window: metadataImportPreview.contextWindow ?? metadataImportTarget.originalWindow,
+      autoCompact: metadataImportPreview.autoCompactPercent ?? metadataImportTarget.originalAutoCompact,
     });
     closeModelMetadataImport();
   };
@@ -6448,6 +6439,26 @@ function RelayProfileEditor({
                 onChange={(event) => updateDraft({ testModel: event.currentTarget.value })}
                 placeholder={tf("留空使用默认：{0}", [form.relayTestModel || defaultSettings.relayTestModel])}
               />
+            </Field>
+            <Field className="relay-field-context-window" label={t("上下文大小")}>
+              <Input
+                value={profile.contextWindow}
+                onChange={(event) => updateDraft({ contextWindow: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                placeholder={t("留空不改写，例如 200000")}
+              />
+              <p className="field-hint">
+                {t("留空不写入全局值；填写后作为该供应商下所有模型的全局上下文上限，并受 catalog 中 max_context_window 约束。使用逐模型窗口时建议留空。")}
+              </p>
+            </Field>
+            <Field className="relay-field-auto-compact" label={t("压缩上下文大小")}>
+              <Input
+                value={profile.autoCompactLimit}
+                onChange={(event) => updateDraft({ autoCompactLimit: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                placeholder={t("留空不改写，例如 160000")}
+              />
+              <p className="field-hint">
+                {t("留空不写入全局值；填写后覆盖该供应商下所有模型的压缩触发 token 数。使用逐模型自动压缩时建议留空。")}
+              </p>
             </Field>
           </div>
         ) : null}
@@ -6712,15 +6723,16 @@ function RelayProfileEditor({
                           }
                           setMetadataImportError("");
                           setMetadataImportPreview(parsed.value);
-                          updateModelWindowRow(index, {
-                            window: parsed.value.contextWindow ?? "",
-                            autoCompact: parsed.value.autoCompactPercent,
-                          });
                         }}
                         placeholder={t("粘贴 models.json 内容")}
                         rows={7}
                       />
                       {metadataImportError ? <div className="relay-model-metadata-import-error" role="alert">{metadataImportError}</div> : null}
+                      {metadataImportPreview?.ignoredFields.length ? (
+                        <div className="relay-model-metadata-import-warning" role="status">
+                          {tf("以下字段由 Codex++ 管理，未导入：{0}", [metadataImportPreview.ignoredFields.join(", ")])}
+                        </div>
+                      ) : null}
                       <div className="relay-model-metadata-import-actions">
                         <div className="relay-model-import-copy">
                           <strong>{slug}</strong>

@@ -6,31 +6,16 @@ import {
   parseModelMetadataDocument,
   remapModelMetadataSlugs,
   parseModelMetadataMap,
-  renameModelMetadataSlug,
   replaceModelMetadataForSlug,
   retainModelMetadataForSlugs,
   serializeModelMetadataDocument,
   synchronizeModelMetadataDocumentLimits,
   synchronizeModelMetadataDocumentContextWindow,
-  updateModelMetadataField,
 } from "./model-metadata.ts";
 
 describe("model metadata helpers", () => {
   it("空配置保持为没有高级覆盖", () => {
     assert.deepStrictEqual(parseModelMetadataMap(""), {});
-    assert.strictEqual(updateModelMetadataField("", "gpt-5.5", "tool_mode", null), "");
-  });
-
-  it("按字段增量更新并在最后一个字段清除后恢复默认", () => {
-    const initial = '{"deepseek-v4-pro":{"supports_search_tool":true,"priority":2}}';
-    const updated = updateModelMetadataField(initial, "deepseek-v4-pro", "priority", 3);
-    assert.deepStrictEqual(JSON.parse(updated), {
-      "deepseek-v4-pro": { supports_search_tool: true, priority: 3 },
-    });
-    assert.strictEqual(
-      updateModelMetadataField('{"deepseek-v4-pro":{"priority":2}}', "deepseek-v4-pro", "priority", null),
-      "",
-    );
   });
 
   it("解析 models 文档，提取窗口并保留嵌套和未知字段", () => {
@@ -51,14 +36,28 @@ describe("model metadata helpers", () => {
     assert.strictEqual(result.ok, true);
     if (!result.ok) return;
     assert.strictEqual(result.value.contextWindow, "1048576");
-    assert.strictEqual(result.value.autoCompactPercent, "90%");
+    assert.strictEqual(result.value.autoCompactPercent, null);
     assert.deepStrictEqual(result.value.metadata, {
-      max_context_window: 1048576,
       use_responses_lite: false,
       truncation_policy: { mode: "tokens", limit: 10000 },
       model_messages: { instructions_template: "hello" },
       vendor_extension: ["kept"],
     });
+    assert.deepStrictEqual(result.value.ignoredFields, ["max_context_window"]);
+  });
+
+  it("models 文档省略窗口和压缩阈值时不生成覆盖值", () => {
+    const result = parseModelMetadataDocument(JSON.stringify({
+      slug: "deepseek-v4-pro",
+      priority: 2,
+    }), "deepseek-v4-pro");
+
+    assert.strictEqual(result.ok, true);
+    if (!result.ok) return;
+    assert.strictEqual(result.value.contextWindow, null);
+    assert.strictEqual(result.value.autoCompactPercent, null);
+    assert.deepStrictEqual(result.value.metadata, {});
+    assert.deepStrictEqual(result.value.ignoredFields, ["priority"]);
   });
 
   it("支持常见 model.js JSON 包装但不执行 JavaScript", () => {
@@ -93,10 +92,8 @@ describe("model metadata helpers", () => {
     );
     assert.strictEqual(matched.ok, true);
     if (!matched.ok) return;
-    assert.deepStrictEqual(matched.value.metadata, {
-      priority: 1,
-      provider_marker: "flash",
-    });
+    assert.deepStrictEqual(matched.value.metadata, { provider_marker: "flash" });
+    assert.deepStrictEqual(matched.value.ignoredFields, ["priority"]);
   });
 
   it("当前 slug 不在多模型文档中时报告可用 slug", () => {
@@ -157,13 +154,13 @@ describe("model metadata helpers", () => {
 
   it("导入内容整体替换当前模型配置，同时保留其他模型", () => {
     const replaced = replaceModelMetadataForSlug(
-      '{"deepseek-v4-pro":{"priority":1,"custom":"remove"},"other":{"priority":9}}',
+      '{"deepseek-v4-pro":{"custom":"remove"},"other":{"tool_mode":"keep"}}',
       "deepseek-v4-pro",
       { priority: 2, supports_search_tool: true },
     );
     assert.deepStrictEqual(JSON.parse(replaced), {
-      other: { priority: 9 },
-      "deepseek-v4-pro": { priority: 2, supports_search_tool: true },
+      other: { tool_mode: "keep" },
+      "deepseek-v4-pro": { supports_search_tool: true },
     });
   });
 
@@ -179,7 +176,6 @@ describe("model metadata helpers", () => {
         slug: "deepseek-v4-flash",
         context_window: 1_000_000,
         auto_compact_token_limit: 800_000,
-        priority: 1,
         truncation_policy: { mode: "tokens", limit: 10000 },
       }],
     });
@@ -195,7 +191,8 @@ describe("model metadata helpers", () => {
     assert.strictEqual(result.ok, true);
     if (!result.ok) return;
     assert.strictEqual(result.value.autoCompactPercent, "84.329412%");
-    assert.deepStrictEqual(result.value.metadata, { priority: 1 });
+    assert.deepStrictEqual(result.value.metadata, {});
+    assert.deepStrictEqual(result.value.ignoredFields, ["priority"]);
   });
 
   it("自动压缩百分比显示值会补上百分号", () => {
@@ -278,52 +275,41 @@ describe("model metadata helpers", () => {
 
   it("清除时只移除当前模型的高级覆盖", () => {
     assert.strictEqual(
-      clearModelMetadataForSlug('{"a":{"priority":1},"b":{"priority":2}}', "a"),
-      '{"b":{"priority":2}}',
-    );
-  });
-
-  it("模型改名时迁移元数据并以当前模型配置替换旧目标", () => {
-    assert.strictEqual(
-      renameModelMetadataSlug('{"a":{"priority":1},"b":{"priority":2}}', "a", "c"),
-      '{"b":{"priority":2},"c":{"priority":1}}',
-    );
-    assert.strictEqual(
-      renameModelMetadataSlug('{"a":{"priority":1},"b":{"priority":2}}', "a", "b"),
-      '{"b":{"priority":1}}',
+      clearModelMetadataForSlug('{"a":{"tool_mode":"a"},"b":{"tool_mode":"b"}}', "a"),
+      '{"b":{"tool_mode":"b"}}',
     );
   });
 
   it("冲突解除后按原始快照批量迁移链式改名", () => {
     assert.strictEqual(
       remapModelMetadataSlugs(
-        '{"a":{"priority":1},"b":{"priority":2}}',
+        '{"a":{"tool_mode":"a"},"b":{"tool_mode":"b"}}',
         [
           { previousSlug: "a", nextSlug: "b" },
           { previousSlug: "b", nextSlug: "c" },
         ],
       ),
-      '{"b":{"priority":1},"c":{"priority":2}}',
+      '{"b":{"tool_mode":"a"},"c":{"tool_mode":"b"}}',
     );
   });
 
   it("拆分历史重复 slug 时为新名称复制并保留共享元数据", () => {
     assert.strictEqual(
       remapModelMetadataSlugs(
-        '{"a":{"priority":1}}',
+        '{"a":{"tool_mode":"a"}}',
         [
           { previousSlug: "a", nextSlug: "b" },
           { previousSlug: "a", nextSlug: "a" },
         ],
       ),
-      '{"a":{"priority":1},"b":{"priority":1}}',
+      '{"a":{"tool_mode":"a"},"b":{"tool_mode":"a"}}',
     );
   });
 
   it("保存前只保留仍在模型列表中的元数据", () => {
     assert.strictEqual(
-      retainModelMetadataForSlugs('{"a":{"priority":1},"deleted":{"priority":2}}', ["a"]),
-      '{"a":{"priority":1}}',
+      retainModelMetadataForSlugs('{"a":{"tool_mode":"a"},"deleted":{"tool_mode":"b"}}', ["a"]),
+      '{"a":{"tool_mode":"a"}}',
     );
   });
 });

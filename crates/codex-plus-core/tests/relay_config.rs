@@ -4535,8 +4535,46 @@ experimental_bearer_token = "sk-new"
 }
 
 #[test]
+fn normalize_official_profile_preserves_legacy_invalid_model_windows() {
+    let mut profile = RelayProfile {
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: false,
+        model_list: "legacy-model".to_string(),
+        model_windows: r#"{"legacy-model":"1.5M"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    assert_eq!(profile.model_list, "legacy-model");
+    assert_eq!(profile.model_windows, r#"{"legacy-model":"1.5M"}"#);
+}
+
+#[test]
+fn normalize_official_profile_still_validates_global_context_limits() {
+    let mut zero = RelayProfile {
+        relay_mode: RelayMode::Official,
+        context_window: "0".to_string(),
+        ..RelayProfile::default()
+    };
+    let error = normalize_relay_profile_for_storage(&mut zero)
+        .expect_err("纯官方 profile 的全局上下文仍必须是正整数");
+    assert!(error.to_string().contains("必须大于 0"));
+
+    let mut overflow = RelayProfile {
+        relay_mode: RelayMode::Official,
+        auto_compact_limit: u64::MAX.to_string(),
+        ..RelayProfile::default()
+    };
+    let error = normalize_relay_profile_for_storage(&mut overflow)
+        .expect_err("纯官方 profile 的全局上下文仍必须符合 TOML 整数范围");
+    assert!(error.to_string().contains("超出 TOML 整数范围"));
+}
+
+#[test]
 fn normalize_merges_suffix_windows_with_existing_model_windows() {
     let mut profile = RelayProfile {
+        relay_mode: RelayMode::PureApi,
         model_list: "deepseek-v4-flash[1M]\ndeepseek-v4-pro[300K]".to_string(),
         model_windows: r#"{"deepseek-v4-pro":"200K"}"#.to_string(),
         ..RelayProfile::default()

@@ -2098,7 +2098,15 @@ fn normalize_relay_profiles_strict(
                 || profile.model_auto_compact != previous_profile.model_auto_compact
                 || profile.model_metadata != previous_profile.model_metadata
         });
-        if !per_model_changed && always_validate_id != Some(profile.id.as_str()) {
+        let per_model_config_activated = previous_profile.is_some_and(|previous_profile| {
+            let previously_active = previous_profile.uses_api_mode();
+            let now_active = profile.uses_api_mode();
+            !previously_active && now_active
+        });
+        if !per_model_changed
+            && !per_model_config_activated
+            && always_validate_id != Some(profile.id.as_str())
+        {
             continue;
         }
         let mut normalized = profile.clone();
@@ -3171,7 +3179,26 @@ pub struct RelayProfileSwitchRequest {
 }
 
 #[tauri::command]
-pub fn switch_relay_profile(
+pub async fn switch_relay_profile(
+    request: RelayProfileSwitchRequest,
+) -> CommandResult<RelaySwitchPayload> {
+    let fallback_settings = request.settings.clone();
+    tauri::async_runtime::spawn_blocking(move || switch_relay_profile_blocking(request))
+        .await
+        .unwrap_or_else(|error| {
+            let home = codex_plus_core::relay_config::default_codex_home_dir();
+            failed(
+                &format!("后台切换供应商失败：{error}"),
+                relay_switch_payload(
+                    fallback_settings,
+                    codex_plus_core::relay_config::relay_status_from_home(&home),
+                    None,
+                ),
+            )
+        })
+}
+
+fn switch_relay_profile_blocking(
     request: RelayProfileSwitchRequest,
 ) -> CommandResult<RelaySwitchPayload> {
     let Ok(_guard) = relay_switch_mutex().lock() else {
@@ -3244,6 +3271,107 @@ pub fn switch_relay_profile(
             failed(
                 &format!("供应商切换失败：{error}"),
                 relay_switch_payload(settings, status, None),
+            )
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn reapply_active_relay_profile() -> CommandResult<RelayPayload> {
+    tauri::async_runtime::spawn_blocking(reapply_active_relay_profile_blocking)
+        .await
+        .unwrap_or_else(|error| {
+            let home = codex_plus_core::relay_config::default_codex_home_dir();
+            failed(
+                &format!("后台重新应用供应商配置失败：{error}"),
+                relay_payload(
+                    codex_plus_core::relay_config::relay_status_from_home(&home),
+                    None,
+                ),
+            )
+        })
+}
+
+fn reapply_active_relay_profile_blocking() -> CommandResult<RelayPayload> {
+    // 保存当前 profile 的轻量入口：持切换锁避免与真实切换竞争，但不触发
+    // App State 钩子，也不走 apply_relay_injection 的 ChatGPT 回落分支。
+    let Ok(_guard) = relay_switch_mutex().lock() else {
+        return failed(
+            "供应商配置锁已损坏，请重启管理器后再试。",
+            relay_payload(codex_plus_core::relay_config::default_relay_status(), None),
+        );
+    };
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    if !settings.relay_profiles_enabled {
+        return failed(
+            "供应商配置总开关已关闭，未写入 config.toml / auth.json。",
+            relay_payload(
+                codex_plus_core::relay_config::relay_status_from_home(&home),
+                None,
+            ),
+        );
+    }
+    if settings.active_aggregate_relay_profile().is_some() {
+        return apply_aggregate_relay_injection_to_home(&home);
+    }
+    let relay = settings.active_relay_profile();
+    log_relay_apply_request("manager.reapply_active_relay_profile", &settings, &relay);
+    apply_saved_relay_profile_to_home(
+        &home,
+        &settings,
+        &relay,
+        "manager.reapply_active_relay_profile",
+        "当前供应商配置已重新应用。",
+        "重新应用当前供应商配置失败",
+        None,
+    )
+}
+
+fn apply_saved_relay_profile_to_home(
+    home: &Path,
+    settings: &BackendSettings,
+    relay: &codex_plus_core::settings::RelayProfile,
+    event_prefix: &str,
+    success_message: &str,
+    failure_message: &str,
+    finish_app_state_source: Option<&str>,
+) -> CommandResult<RelayPayload> {
+    match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+        home,
+        relay,
+        &relay_combined_common_config(settings),
+        settings.computer_use_guard_enabled,
+    ) {
+        Ok(result) => {
+            if let Some(source) = finish_app_state_source {
+                finish_codex_app_state_after_provider_switch(home, source);
+            }
+            let status = codex_plus_core::relay_config::relay_status_from_home(home);
+            log_relay_apply_result(
+                &format!("{event_prefix}.ok"),
+                relay,
+                &status,
+                result.backup_path.as_ref(),
+                None,
+            );
+            ok(
+                success_message,
+                relay_payload(status, result.backup_path),
+            )
+        }
+        Err(error) => {
+            let status = codex_plus_core::relay_config::relay_status_from_home(home);
+            log_relay_apply_result(
+                &format!("{event_prefix}.failed"),
+                relay,
+                &status,
+                None,
+                Some(error.to_string()),
+            );
+            failed(
+                &format!("{failure_message}：{error}"),
+                relay_payload(status, None),
             )
         }
     }
@@ -3921,45 +4049,15 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         return response;
     }
     if relay_has_complete_files(&relay) {
-        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+        return apply_saved_relay_profile_to_home(
             &home,
+            &settings,
             &relay,
-            &relay_combined_common_config(&settings),
-            settings.computer_use_guard_enabled,
-        ) {
-            Ok(result) => {
-                finish_codex_app_state_after_provider_switch(
-                    &home,
-                    "manager.apply_relay_injection.profile",
-                );
-                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-                log_relay_apply_result(
-                    "manager.apply_relay_injection.ok",
-                    &relay,
-                    &status,
-                    result.backup_path.as_ref(),
-                    None,
-                );
-                ok(
-                    "已按兼容切换规则切换供应商。",
-                    relay_payload(status, result.backup_path),
-                )
-            }
-            Err(error) => {
-                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-                log_relay_apply_result(
-                    "manager.apply_relay_injection.failed",
-                    &relay,
-                    &status,
-                    None,
-                    Some(error.to_string()),
-                );
-                failed(
-                    &format!("切换完整中转配置失败：{error}"),
-                    relay_payload(status, None),
-                )
-            }
-        };
+            "manager.apply_relay_injection",
+            "已按兼容切换规则切换供应商。",
+            "切换完整中转配置失败",
+            Some("manager.apply_relay_injection.profile"),
+        );
     }
 
     let auth = codex_plus_core::relay_config::chatgpt_auth_status_from_home(&home);
@@ -5728,6 +5826,7 @@ mod tests {
         let mut settings = BackendSettings {
             relay_profiles: vec![RelayProfile {
                 name: "Invalid compact".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::PureApi,
                 model_auto_compact: r#"{"deepseek-v4-pro":"101%"}"#.to_string(),
                 ..RelayProfile::default()
             }],
@@ -5746,6 +5845,7 @@ mod tests {
             relay_profiles: vec![RelayProfile {
                 id: "changed".to_string(),
                 name: "Invalid metadata".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::PureApi,
                 model_list: "deepseek-v4-pro[1M]".to_string(),
                 model_metadata: "{not json".to_string(),
                 ..RelayProfile::default()
@@ -5778,6 +5878,34 @@ mod tests {
         normalize_relay_profiles_strict(&mut settings, &previous, None)
             .expect("无关设置保存不应被未修改的旧 profile 阻断");
         assert_eq!(settings.relay_profiles, previous.relay_profiles);
+    }
+
+    #[test]
+    fn normalize_relay_profiles_strict_revalidates_when_official_profile_enables_api_mode() {
+        let previous = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                id: "legacy-invalid".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::Official,
+                official_mix_api_key: false,
+                model_windows: r#"{"old-model":"1.5M"}"#.to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        for (relay_mode, official_mix_api_key) in [
+            (codex_plus_core::settings::RelayMode::PureApi, false),
+            (codex_plus_core::settings::RelayMode::MixedApi, false),
+            (codex_plus_core::settings::RelayMode::Official, true),
+        ] {
+            let mut settings = previous.clone();
+            settings.relay_profiles[0].relay_mode = relay_mode;
+            settings.relay_profiles[0].official_mix_api_key = official_mix_api_key;
+
+            let error = normalize_relay_profiles_strict(&mut settings, &previous, None)
+                .expect_err("纯 Official 启用 API 模式时必须重新校验历史 per-model 数据");
+            assert!(error.to_string().contains("model_windows"));
+        }
     }
 
     #[test]

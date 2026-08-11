@@ -7,7 +7,8 @@ export type ImportedModelMetadata = {
   slug: string;
   metadata: ModelMetadata;
   contextWindow: string | null;
-  autoCompactPercent: string;
+  autoCompactPercent: string | null;
+  ignoredFields: string[];
 };
 
 export type ModelMetadataImportResult =
@@ -16,6 +17,21 @@ export type ModelMetadataImportResult =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const MANAGED_MODEL_METADATA_FIELDS = new Set([
+  "max_context_window",
+  "effective_context_window_percent",
+  "priority",
+  "visibility",
+  "supported_in_api",
+]);
+
+function isImportedMetadataField(key: string): boolean {
+  return key !== "slug"
+    && key !== "context_window"
+    && key !== "auto_compact_token_limit"
+    && !MANAGED_MODEL_METADATA_FIELDS.has(key);
 }
 
 function entriesToMap(entries: Array<[string, ModelMetadata]>): ModelMetadataMap {
@@ -28,7 +44,13 @@ export function parseModelMetadataMap(value: string): ModelMetadataMap {
     const parsed: unknown = JSON.parse(value);
     if (!isRecord(parsed)) return {};
     return entriesToMap(
-      Object.entries(parsed).filter((entry): entry is [string, ModelMetadata] => isRecord(entry[1])),
+      Object.entries(parsed)
+        .filter((entry): entry is [string, ModelMetadata] => isRecord(entry[1]))
+        .map(([slug, metadata]) => [
+          slug,
+          Object.fromEntries(Object.entries(metadata).filter(([key]) => isImportedMetadataField(key))),
+        ] as [string, ModelMetadata])
+        .filter(([, metadata]) => Object.keys(metadata).length > 0),
     );
   } catch {
     return {};
@@ -79,9 +101,7 @@ export function serializeModelMetadataDocument(
   autoCompactPercent = DEFAULT_AUTO_COMPACT_PERCENT,
 ): string {
   const model = Object.fromEntries(
-    Object.entries(metadata).filter(
-      ([key]) => key !== "slug" && key !== "context_window" && key !== "auto_compact_token_limit",
-    ),
+    Object.entries(metadata).filter(([key]) => isImportedMetadataField(key)),
   );
   const contextWindowTokens = contextWindowToTokens(contextWindow);
   const autoCompactTokenLimit = autoCompactPercentToTokenLimit(contextWindow, autoCompactPercent);
@@ -95,69 +115,21 @@ export function serializeModelMetadataDocument(
   }, null, 2);
 }
 
-export function updateModelMetadataField(
-  value: string,
-  slug: string,
-  field: string,
-  nextValue: unknown,
-): string {
-  const map = parseModelMetadataMap(value);
-  const current = map[slug] ?? {};
-  const next = Object.fromEntries(Object.entries(current).filter(([key]) => key !== field));
-  if (nextValue !== null && nextValue !== undefined && nextValue !== "") {
-    Object.defineProperty(next, field, {
-      configurable: true,
-      enumerable: true,
-      value: nextValue,
-      writable: true,
-    });
-  }
-
-  const entries = Object.entries(map).filter(([key]) => key !== slug);
-  if (Object.keys(next).length > 0) entries.push([slug, next]);
-  return serializeModelMetadataMap(entriesToMap(entries));
-}
-
-export function setModelMetadataField(
-  value: string,
-  slug: string,
-  field: string,
-  nextValue: unknown,
-): string {
-  const map = parseModelMetadataMap(value);
-  const next = { ...(map[slug] ?? {}) };
-  Object.defineProperty(next, field, {
-    configurable: true,
-    enumerable: true,
-    value: nextValue,
-    writable: true,
-  });
-  const entries = Object.entries(map).filter(([key]) => key !== slug);
-  entries.push([slug, next]);
-  return serializeModelMetadataMap(entriesToMap(entries));
-}
-
 export function replaceModelMetadataForSlug(
   value: string,
   slug: string,
   metadata: ModelMetadata,
 ): string {
   const entries = Object.entries(parseModelMetadataMap(value)).filter(([key]) => key !== slug);
-  if (Object.keys(metadata).length > 0) entries.push([slug, metadata]);
+  const importedMetadata = Object.fromEntries(
+    Object.entries(metadata).filter(([key]) => isImportedMetadataField(key)),
+  );
+  if (Object.keys(importedMetadata).length > 0) entries.push([slug, importedMetadata]);
   return serializeModelMetadataMap(entriesToMap(entries));
 }
 
 export function clearModelMetadataForSlug(value: string, slug: string): string {
   const entries = Object.entries(parseModelMetadataMap(value)).filter(([key]) => key !== slug);
-  return serializeModelMetadataMap(entriesToMap(entries));
-}
-
-export function renameModelMetadataSlug(value: string, previousSlug: string, nextSlug: string): string {
-  const map = parseModelMetadataMap(value);
-  const metadata = map[previousSlug];
-  if (!metadata || previousSlug === nextSlug || !nextSlug) return value;
-  const entries = Object.entries(map).filter(([key]) => key !== previousSlug && key !== nextSlug);
-  entries.push([nextSlug, metadata]);
   return serializeModelMetadataMap(entriesToMap(entries));
 }
 
@@ -376,7 +348,7 @@ export function parseModelMetadataDocument(source: string, targetSlug: string): 
     }
   }
 
-  let autoCompactPercent = DEFAULT_AUTO_COMPACT_PERCENT;
+  let autoCompactPercent: string | null = null;
   if (Object.hasOwn(model, "auto_compact_token_limit") && model.auto_compact_token_limit !== null) {
     const autoCompactTokenLimit = positiveIntegerString(model.auto_compact_token_limit);
     if (!autoCompactTokenLimit) {
@@ -392,11 +364,8 @@ export function parseModelMetadataDocument(source: string, targetSlug: string): 
     autoCompactPercent = derivedPercent;
   }
 
-  const metadata = Object.fromEntries(
-    Object.entries(model).filter(
-      ([key]) => key !== "slug" && key !== "context_window" && key !== "auto_compact_token_limit",
-    ),
-  );
+  const metadata = Object.fromEntries(Object.entries(model).filter(([key]) => isImportedMetadataField(key)));
+  const ignoredFields = Object.keys(model).filter((key) => MANAGED_MODEL_METADATA_FIELDS.has(key));
 
   if (
     typeof metadata.supports_reasoning_summaries === "boolean"
@@ -415,6 +384,7 @@ export function parseModelMetadataDocument(source: string, targetSlug: string): 
       metadata,
       contextWindow,
       autoCompactPercent,
+      ignoredFields,
     },
   };
 }

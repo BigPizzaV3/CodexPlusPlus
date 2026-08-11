@@ -870,7 +870,7 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
 }
 
 #[tokio::test]
-async fn launch_lifecycle_runs_enabled_maintenance_and_applies_relay_profile() {
+async fn launch_lifecycle_runs_enabled_maintenance_and_skips_default_official_profile() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -912,7 +912,6 @@ async fn launch_lifecycle_runs_enabled_maintenance_and_applies_relay_profile() {
             "provider-sync",
             "computer-use-guard",
             "start-helper:57321",
-            "apply-relay",
             "launch:9229",
             "computer-use-guard-watchdog",
             "inject:9229:57321",
@@ -922,7 +921,7 @@ async fn launch_lifecycle_runs_enabled_maintenance_and_applies_relay_profile() {
         ]
     );
     let events = events.lock().unwrap().clone();
-    assert!(events.contains(&"apply-relay".to_string()));
+    assert!(!events.contains(&"apply-relay".to_string()));
     assert!(events.contains(&"provider-sync".to_string()));
     assert!(events.contains(&"computer-use-guard".to_string()));
     assert!(events.contains(&"computer-use-guard-watchdog".to_string()));
@@ -1036,7 +1035,6 @@ async fn launch_lifecycle_keeps_js_injection_in_relay_mode() {
             "select-helper:57321",
             "load-settings",
             "start-helper:57321",
-            "apply-relay",
             "launch:9229",
             "inject:9229:57321",
             "status:running",
@@ -1077,7 +1075,6 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "apply-relay",
             "launch:9229",
             "status:running",
             "wait-codex",
@@ -1118,7 +1115,6 @@ async fn launch_lifecycle_runs_computer_use_guard_when_enabled() {
             "load-settings",
             "computer-use-guard",
             "start-helper:57321",
-            "apply-relay",
             "launch:9229",
             "computer-use-guard-watchdog",
             "inject:9229:57321",
@@ -1282,6 +1278,12 @@ async fn launch_lifecycle_applies_relay_profile_before_launching_codex() {
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
     let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
         relay_profiles_enabled: true,
+        relay_profiles: vec![RelayProfile {
+            id: "relay-api".to_string(),
+            relay_mode: RelayMode::PureApi,
+            ..RelayProfile::default()
+        }],
+        active_relay_id: "relay-api".to_string(),
         ..BackendSettings::default()
     });
 
@@ -1300,6 +1302,36 @@ async fn launch_lifecycle_applies_relay_profile_before_launching_codex() {
 
     let events = events.lock().unwrap().clone();
     assert!(events.contains(&"apply-relay".to_string()));
+    assert!(events.contains(&"launch:9229".to_string()));
+}
+
+#[tokio::test]
+async fn launch_lifecycle_skips_default_official_profile_before_launching_codex() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
+        relay_profiles_enabled: true,
+        ..BackendSettings::default()
+    });
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store: status_store.clone(),
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    let events = events.lock().unwrap().clone();
+    assert!(!events.contains(&"apply-relay".to_string()));
     assert!(events.contains(&"launch:9229".to_string()));
 }
 
@@ -1414,7 +1446,6 @@ async fn launch_lifecycle_enters_degraded_mode_and_retries_when_injection_fails(
             "select-helper:57321",
             "load-settings",
             "start-helper:57321",
-            "apply-relay",
             "launch:9229",
             "inject:9229:57321",
             "status:running_degraded",
@@ -1460,7 +1491,6 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
             "select-helper:57321",
             "load-settings",
             "start-helper:57321",
-            "apply-relay",
             "launch:9229",
             "shutdown-helper:57321",
             "status:failed",
@@ -1469,7 +1499,7 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
 }
 
 #[tokio::test]
-async fn launch_lifecycle_stops_before_launch_when_relay_apply_fails() {
+async fn launch_lifecycle_continues_when_relay_apply_fails() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1479,27 +1509,38 @@ async fn launch_lifecycle_stops_before_launch_when_relay_apply_fails() {
         .with_settings(BackendSettings {
             enhancements_enabled: true,
             relay_profiles_enabled: true,
+            relay_profiles: vec![RelayProfile {
+                id: "relay-api".to_string(),
+                relay_mode: RelayMode::PureApi,
+                ..RelayProfile::default()
+            }],
+            active_relay_id: "relay-api".to_string(),
             ..BackendSettings::default()
         })
         .with_apply_relay_error("relay apply failed");
 
-    let error = launch_and_inject_with_hooks(
+    let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
             debug_port: 9229,
             helper_port: 57321,
-            status_store,
+            status_store: status_store.clone(),
         },
         &hooks,
     )
     .await
-    .unwrap_err();
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
 
-    assert!(error.to_string().contains("relay apply failed"));
     let events = events.lock().unwrap().clone();
     assert!(events.contains(&"apply-relay".to_string()));
-    assert!(!events.iter().any(|event| event.starts_with("launch:")));
+    assert!(events.contains(&"launch:9229".to_string()));
     assert!(events.contains(&"shutdown-helper:57321".to_string()));
+    assert!(events.contains(&"status:running_degraded".to_string()));
+    assert!(!events.contains(&"status:failed".to_string()));
+    let status = status_store.load_latest().unwrap().unwrap();
+    assert_eq!(status.status, "running_degraded");
+    assert!(status.message.contains("relay apply failed"));
 }
 
 #[tokio::test]
@@ -1669,7 +1710,6 @@ async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
             "select-helper:57321",
             "load-settings",
             "start-helper:57321",
-            "apply-relay",
             "launch:9229",
             "inject:9229:57321",
             "shutdown-helper:57321",
@@ -1758,7 +1798,6 @@ async fn launch_continues_when_plugin_marketplace_config_fails() {
             "load-settings",
             "plugin-marketplace",
             "start-helper:57321",
-            "apply-relay",
             "launch:9229",
             "inject:9229:57321",
             "status:running"

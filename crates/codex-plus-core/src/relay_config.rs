@@ -1588,18 +1588,40 @@ fn parse_optional_positive_u64(value: &str, label: &str) -> anyhow::Result<Optio
     Ok(Some(parsed))
 }
 
+fn parse_context_limits_for_toml(
+    context_window: &str,
+    auto_compact_limit: &str,
+) -> anyhow::Result<(Option<i64>, Option<i64>)> {
+    let parse = |value: &str, label: &str| -> anyhow::Result<Option<i64>> {
+        parse_optional_positive_u64(value, label)?
+            .map(|value| i64::try_from(value).with_context(|| format!("{label}超出 TOML 整数范围")))
+            .transpose()
+    };
+    Ok((
+        parse(context_window, "上下文大小")?,
+        parse(auto_compact_limit, "压缩上下文大小")?,
+    ))
+}
+
+fn validate_context_limits_for_toml(
+    context_window: &str,
+    auto_compact_limit: &str,
+) -> anyhow::Result<()> {
+    parse_context_limits_for_toml(context_window, auto_compact_limit).map(|_| ())
+}
+
 fn apply_context_limits_to_config(
     config_text: &str,
     context_window: &str,
     auto_compact_limit: &str,
 ) -> anyhow::Result<String> {
+    let (context_window, auto_compact_limit) =
+        parse_context_limits_for_toml(context_window, auto_compact_limit)?;
     let mut doc = parse_toml_document(config_text)?;
-    if let Some(value) = parse_optional_positive_u64(context_window, "上下文大小")? {
-        let value = i64::try_from(value).context("上下文大小超出 TOML 整数范围")?;
+    if let Some(value) = context_window {
         doc["model_context_window"] = toml_edit::value(value);
     }
-    if let Some(value) = parse_optional_positive_u64(auto_compact_limit, "压缩上下文大小")? {
-        let value = i64::try_from(value).context("压缩上下文大小超出 TOML 整数范围")?;
+    if let Some(value) = auto_compact_limit {
         doc["model_auto_compact_token_limit"] = toml_edit::value(value);
     }
     Ok(normalize_optional_toml(doc))
@@ -2577,23 +2599,10 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
             }
         })
         .collect();
-    if profile.model_list.contains('[') {
-        let (clean_list, migrated_windows) =
-            crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);
-        let mut windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
-        for (slug, window) in migrated_windows {
-            windows.entry(slug).or_insert(window);
-        }
-        profile.model_list = clean_list;
-        profile.model_windows = serde_json::to_string(&windows)?;
-    }
-    let model_windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
-    validate_model_windows(&model_windows)?;
-    let model_auto_compact =
-        parse_model_string_map(&profile.model_auto_compact, "model_auto_compact")?;
-    validate_model_auto_compact(&model_auto_compact)?;
-    parse_model_metadata_map(&profile.model_metadata)?;
+    // 纯官方登录不会应用 per-model catalog。历史版本可能留下当前语法不接受的
+    // model_windows；在用户重新启用 API 混合前保留数据，但不要因此锁死保存/切换。
     if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
+        validate_context_limits_for_toml(&profile.context_window, &profile.auto_compact_limit)?;
         let has_api_config = !profile.base_url.trim().is_empty()
             || !profile.api_key.trim().is_empty()
             || codex_auth_api_key(&profile.auth_contents).is_some()
@@ -2617,6 +2626,38 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
         }
         return Ok(());
     }
+    if profile.model_list.contains('[') {
+        let (clean_list, migrated_windows) =
+            crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);
+        let mut windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
+        for (slug, window) in migrated_windows {
+            windows.entry(slug).or_insert(window);
+        }
+        profile.model_list = clean_list;
+        profile.model_windows = serde_json::to_string(&windows)?;
+    }
+    let model_windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
+    validate_model_windows(&model_windows)?;
+    let model_auto_compact =
+        parse_model_string_map(&profile.model_auto_compact, "model_auto_compact")?;
+    validate_model_auto_compact(&model_auto_compact)?;
+    parse_model_metadata_map(&profile.model_metadata)?;
+    if profile.model_list.contains('[') {
+        let (clean_list, migrated_windows) =
+            crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);
+        let mut windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
+        for (slug, window) in migrated_windows {
+            windows.entry(slug).or_insert(window);
+        }
+        profile.model_list = clean_list;
+        profile.model_windows = serde_json::to_string(&windows)?;
+    }
+    let model_windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
+    validate_model_windows(&model_windows)?;
+    let model_auto_compact =
+        parse_model_string_map(&profile.model_auto_compact, "model_auto_compact")?;
+    validate_model_auto_compact(&model_auto_compact)?;
+    parse_model_metadata_map(&profile.model_metadata)?;
     let source_base_url = relay_profile_base_url(profile);
     let source_api_key = relay_profile_api_key(profile);
     if !profile.config_contents.trim().is_empty()
