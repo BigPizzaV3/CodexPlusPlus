@@ -1230,6 +1230,56 @@ fn injection_script_keeps_session_action_buttons_in_pr_style() {
 }
 
 #[test]
+fn injection_script_activates_session_delete_once_per_click() {
+    let script = assets::injection_script(57321);
+    let delegated_delete = script
+        .split_once("function installDeleteButtonEventDelegation()")
+        .expect("delete event delegation should exist")
+        .1
+        .split_once("function actionGroupFromRow")
+        .expect("delete event delegation should end before action group helpers")
+        .0;
+    let action_button_events = script
+        .split_once("function installActionButtonEvents")
+        .expect("action button event setup should exist")
+        .1
+        .split_once("function installMoreButtonEvents")
+        .expect("action button setup should end before more button setup")
+        .0;
+
+    assert!(delegated_delete.contains("document.addEventListener(\"click\", handler, true);"));
+    assert!(!delegated_delete.contains("document.addEventListener(\"pointerup\", handler, true);"));
+    assert!(
+        !action_button_events.contains("button.addEventListener(\"pointerup\", onActivate, true);")
+    );
+    assert!(action_button_events.contains("button.addEventListener(\"click\", (event) => {"));
+}
+
+#[test]
+fn injection_script_refreshes_sidebar_after_session_undo() {
+    let script = assets::injection_script(57321);
+    let refresh = script
+        .split_once("async function refreshRecentConversationsForHost()")
+        .expect("recent conversation refresh helper should exist")
+        .1
+        .split_once("function refreshAfterProjectMove")
+        .expect("refresh helper should end before project move refresh")
+        .0;
+    let toast = script
+        .split_once("function showToast(message, undoToken)")
+        .expect("undo toast should exist")
+        .1
+        .split_once("function upstreamWorktreeField")
+        .expect("undo toast should end before worktree helpers")
+        .0;
+
+    assert!(refresh.contains("loadOptionalCodexAppModule(\"app-server-manager-signals-\")"));
+    assert!(!refresh.contains("app-server-manager-signals-C1h8B-R-.js"));
+    assert!(toast.contains("const refreshed = await refreshRecentConversationsForHost();"));
+    assert!(toast.contains("if (!refreshed) window.location.reload();"));
+}
+
+#[test]
 fn injection_script_moves_export_and_project_move_into_more_menu() {
     let script = assets::injection_script(57321).replace("\r\n", "\n");
 
@@ -1430,6 +1480,19 @@ fn injection_script_discovers_app_server_request_clients_without_hardcoded_hash(
         !script.contains("app-server-manager-signals-C1h8B-R-.js")
             || script.contains("refreshRecentConversationsForHost")
     );
+}
+
+#[test]
+fn injection_script_refreshes_sidebar_after_undo_without_stale_asset_exports() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("loadOptionalCodexAppModule(\"app-server-manager-signals-\")"));
+    assert!(script.contains("Object.values(signals || {}).find"));
+    assert!(script.contains("refresh-recent-conversations-for-host"));
+    assert!(script.contains("const refreshed = await refreshRecentConversationsForHost()"));
+    assert!(script.contains("if (!refreshed) window.location.reload()"));
+    assert!(!script.contains("app-server-manager-signals-C1h8B-R-.js"));
+    assert!(!script.contains("typeof signals.rn"));
 }
 
 #[test]
