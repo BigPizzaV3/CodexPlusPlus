@@ -824,6 +824,21 @@ export const EN_PLAIN: Record<string, string> = {
   "正在读取本机环境": "Reading the local environment",
   "重新检测": "Check again",
   "排查可能干扰中转站配置的本机环境": "Find local environment settings that may interfere with relay configuration",
+  "单模型路由": "Per-model routing",
+  "首次启用单模型路由需要启动本地协议代理。保存后将立即重启 Codex，使路由安全生效。是否继续？":
+    "Enabling per-model routing for the first time requires the local protocol proxy. Codex will restart immediately after saving so routing can take effect safely. Continue?",
+  "匹配模型": "Match model",
+  "目标供应商": "Target provider",
+  "目标模型（可选）": "Target model (optional)",
+  "选择 Responses 供应商": "Select a Responses provider",
+  "例：gpt-5.6-luna": "Example: gpt-5.6-luna",
+  "留空保持原模型名": "Leave empty to keep the original model name",
+  "删除模型路由": "Delete model route",
+  "请先创建一个 Responses API 目标供应商": "Create a Responses API target provider first",
+  "添加模型路由": "Add model route",
+  "单模型路由需要填写模型名称和目标供应商。": "Each model route requires a model name and target provider.",
+  "仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标必须是 Responses API，且需要从 Codex++ 启动。":
+    "Applies only while this provider is active. It exactly matches the model name and uses the target provider's URL and key. The target must use the Responses API, and Codex must be launched through Codex++.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -845,6 +860,12 @@ export const EN_TEMPLATE: Record<string, string> = {
   "供应商 {0}": "Provider {0}",
   "供应商「{0}」缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。请先在该供应商详情里保存 config.toml。":
     "Provider “{0}” is missing its own config.toml, so the switch was stopped to avoid showing the previous config files. Save config.toml in this provider's details first.",
+  "模型「{0}」存在重复路由。": "Model “{0}” has duplicate routes.",
+  "模型「{0}」不能路由到当前供应商自身。": "Model “{0}” cannot route to the current provider itself.",
+  "模型「{0}」的目标供应商不存在。": "The target provider for model “{0}” does not exist.",
+  "模型「{0}」不能路由到聚合供应商。": "Model “{0}” cannot route to an aggregate provider.",
+  "模型「{0}」的目标供应商必须使用 Responses API。": "The target provider for model “{0}” must use the Responses API.",
+  "模型「{0}」的目标供应商缺少 Base URL 或 Key。": "The target provider for model “{0}” is missing a Base URL or key.",
   "删除会话“{0}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。":
     "Delete session “{0}”? This deletes the local database record and rollout file, and creates a backup.",
   "删除主题“{0}”？此操作无法撤销。": "Delete theme “{0}”? This action cannot be undone.",

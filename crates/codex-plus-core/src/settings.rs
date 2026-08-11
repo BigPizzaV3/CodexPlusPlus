@@ -113,6 +113,22 @@ pub struct RelayProfile {
         skip_serializing_if = "String::is_empty"
     )]
     pub sub2api_multiplier: String,
+    #[serde(rename = "modelRoutes", default, skip_serializing_if = "Vec::is_empty")]
+    pub model_routes: Vec<RelayModelRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayModelRoute {
+    pub model: String,
+    #[serde(rename = "targetRelayId")]
+    pub target_relay_id: String,
+    #[serde(
+        rename = "targetModel",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub target_model: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -175,7 +191,16 @@ impl Default for RelayProfile {
             user_agent: String::new(),
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
+            model_routes: Vec::new(),
         }
+    }
+}
+
+impl RelayProfile {
+    pub fn has_model_routes(&self) -> bool {
+        self.model_routes
+            .iter()
+            .any(|route| !route.model.trim().is_empty() && !route.target_relay_id.trim().is_empty())
     }
 }
 
@@ -592,6 +617,7 @@ impl BackendSettings {
                 user_agent: String::new(),
                 sub2api_enabled: false,
                 sub2api_multiplier: String::new(),
+                model_routes: Vec::new(),
             };
         }
 
@@ -643,6 +669,7 @@ impl BackendSettings {
             user_agent: String::new(),
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
+            model_routes: Vec::new(),
         }
     }
 
@@ -674,6 +701,7 @@ impl BackendSettings {
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
         self.active_aggregate_relay_profile().is_some()
             || self.active_relay_profile().protocol == RelayProtocol::ChatCompletions
+            || self.active_relay_profile().has_model_routes()
     }
 }
 
@@ -1712,6 +1740,33 @@ mod tests {
         assert!(profile.auto_compact_limit.is_empty());
         assert_eq!(profile.model_insert_mode, RelayModelInsertMode::Patch);
         assert!(profile.model_list.is_empty());
+        assert!(profile.model_routes.is_empty());
+        assert!(!profile.has_model_routes());
+    }
+
+    #[test]
+    fn relay_profile_model_routes_roundtrip_in_camel_case() {
+        let profile: RelayProfile = serde_json::from_str(
+            r#"{
+                "id":"relay-a",
+                "name":"供应商 A",
+                "modelRoutes":[{
+                    "model":"gpt-5.6-luna",
+                    "targetRelayId":"relay-b",
+                    "targetModel":"provider-luna"
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        assert!(profile.has_model_routes());
+        assert_eq!(profile.model_routes[0].model, "gpt-5.6-luna");
+        assert_eq!(profile.model_routes[0].target_relay_id, "relay-b");
+        assert_eq!(profile.model_routes[0].target_model, "provider-luna");
+
+        let saved = serde_json::to_value(profile).unwrap();
+        assert_eq!(saved["modelRoutes"][0]["targetRelayId"], "relay-b");
+        assert_eq!(saved["modelRoutes"][0]["targetModel"], "provider-luna");
     }
 
     #[test]
@@ -2069,6 +2124,55 @@ experimental_bearer_token = "sk-existing""#
         store.save(&settings).unwrap();
 
         assert_eq!(store.load().unwrap(), settings);
+    }
+
+    #[test]
+    fn settings_store_model_routes_restore_target_credentials() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+        let profile = |id: &str, base_url: &str, api_key: &str| RelayProfile {
+            id: id.to_string(),
+            name: id.to_string(),
+            relay_mode: RelayMode::PureApi,
+            upstream_base_url: base_url.to_string(),
+            config_contents: format!(
+                "model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nbase_url = \"{base_url}\"\n"
+            ),
+            auth_contents: format!(r#"{{"OPENAI_API_KEY":"{api_key}"}}"#),
+            ..RelayProfile::default()
+        };
+        let mut source = profile("source", "https://source.example/v1", "sk-source");
+        source.model_routes = vec![RelayModelRoute {
+            model: "gpt-5.6-luna".to_string(),
+            target_relay_id: "target".to_string(),
+            target_model: String::new(),
+        }];
+        let settings = BackendSettings {
+            active_relay_id: "source".to_string(),
+            relay_profiles: vec![
+                source,
+                profile("target", "https://target.example/v1", "sk-target"),
+            ],
+            ..BackendSettings::default()
+        };
+
+        store.save(&settings).unwrap();
+        let loaded = store.load().unwrap();
+
+        assert!(loaded.active_relay_uses_protocol_proxy());
+        assert_eq!(
+            loaded.relay_profiles[0].base_url,
+            "https://source.example/v1"
+        );
+        assert_eq!(
+            loaded.relay_profiles[1].base_url,
+            "https://target.example/v1"
+        );
+        assert_eq!(loaded.relay_profiles[1].api_key, "sk-target");
+        assert_eq!(
+            loaded.relay_profiles[0].model_routes[0].target_relay_id,
+            "target"
+        );
     }
 
     #[test]

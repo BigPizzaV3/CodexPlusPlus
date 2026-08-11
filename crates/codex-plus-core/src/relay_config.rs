@@ -2200,6 +2200,19 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
             crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
         );
     }
+    if profile.has_model_routes() {
+        if !profile.upstream_base_url.trim().is_empty() {
+            return profile.upstream_base_url.trim().to_string();
+        }
+        if !profile.base_url.trim().is_empty()
+            && profile.base_url.trim()
+                != crate::protocol_proxy::local_responses_proxy_base_url(
+                    crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+                )
+        {
+            return profile.base_url.trim().to_string();
+        }
+    }
     if profile.protocol == RelayProtocol::ChatCompletions {
         if !profile.upstream_base_url.trim().is_empty() {
             return profile.upstream_base_url.trim().to_string();
@@ -2308,17 +2321,23 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     }
     if profile.relay_mode != crate::settings::RelayMode::PureApi
         && provider
-        .get("requires_openai_auth")
-        .and_then(Item::as_bool)
-        .is_none()
+            .get("requires_openai_auth")
+            .and_then(Item::as_bool)
+            .is_none()
     {
         provider["requires_openai_auth"] = toml_edit::value(true);
     }
-    let provider_base_url = codex_base_url_for_protocol(
-        base_url.trim(),
-        profile.protocol,
-        crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
-    );
+    let provider_base_url = if profile.has_model_routes() {
+        crate::protocol_proxy::local_responses_proxy_base_url(
+            crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        )
+    } else {
+        codex_base_url_for_protocol(
+            base_url.trim(),
+            profile.protocol,
+            crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        )
+    };
     if !provider_base_url.trim().is_empty() {
         provider["base_url"] = toml_edit::value(provider_base_url.trim());
     }
@@ -2334,6 +2353,24 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
 }
 
 pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    let mut seen_models = HashSet::new();
+    profile.model_routes = profile
+        .model_routes
+        .drain(..)
+        .filter_map(|mut route| {
+            route.model = route.model.trim().to_string();
+            route.target_relay_id = route.target_relay_id.trim().to_string();
+            route.target_model = route.target_model.trim().to_string();
+            if route.model.is_empty()
+                || route.target_relay_id.is_empty()
+                || !seen_models.insert(route.model.clone())
+            {
+                None
+            } else {
+                Some(route)
+            }
+        })
+        .collect();
     if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
         let (clean_list, windows) =
             crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);
@@ -2355,6 +2392,7 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
         profile.base_url.clear();
         profile.upstream_base_url.clear();
         profile.api_key.clear();
+        profile.model_routes.clear();
         if auth_contents_looks_like_chatgpt_auth(&profile.auth_contents) {
             profile.auth_contents =
                 remove_openai_api_key_from_auth_contents(&profile.auth_contents)?;
