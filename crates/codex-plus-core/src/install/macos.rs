@@ -158,6 +158,23 @@ fn executable_name_from_plist(plist: &str) -> String {
 
 fn info_plist(display_name: &str, executable_name: &str, identifier_suffix: &str) -> String {
     let version = crate::version::VERSION;
+    let url_types = if identifier_suffix == ".manager" {
+        r#"  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>Codex++ Links</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>codexplusplus</string>
+        <string>dreamskin</string>
+      </array>
+    </dict>
+  </array>
+"#
+    } else {
+        ""
+    };
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -179,7 +196,7 @@ fn info_plist(display_name: &str, executable_name: &str, identifier_suffix: &str
   <string>{executable_name}</string>
   <key>CFBundleIconFile</key>
   <string>codex-plus-plus.png</string>
-  <key>LSUIElement</key>
+{url_types}  <key>LSUIElement</key>
   <true/>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>

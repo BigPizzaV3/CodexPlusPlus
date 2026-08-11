@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#15171c">
+    <meta
+      name="description"
+      content="Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的开源启动器与管理工具，提供供应商切换、会话管理、插件与脚本市场、界面增强等能力。"
+    >
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="Codex++ - 让 Codex 按你的方式工作">
+    <meta
+      property="og:description"
+      content="管理供应商、模型、会话、插件、脚本和界面增强。适用于 Windows 与 macOS。"
+    >
+    <meta
+      property="og:image"
+      content="https://codexpp.cc/images/codex-plus-plus.png"
+    >
+    <meta property="og:url" content="https://codexpp.cc/">
+    <title>Codex++ - Codex 桌面增强与管理工具</title>
+    <link rel="icon" type="image/png" href="images/codex-plus-plus.png">
+    <script>
+      document.documentElement.classList.add("js");
+      try {
+        const savedLanguage = localStorage.getItem("codex-plus-language");
+        const initialLanguage = savedLanguage || (navigator.language.startsWith("zh") ? "zh" : "en");
+        document.documentElement.lang = initialLanguage === "zh" ? "zh-CN" : "en";
+        document.documentElement.dataset.language = initialLanguage;
+      } catch {
+        document.documentElement.dataset.language = "zh";
+      }
+    </script>
+    <link rel="stylesheet" href="site.css">
+    <script src="site.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+
+    <header class="site-header" data-header>
+      <div class="nav-shell">
+        <a class="brand" href="#top" aria-label="Codex++ 首页">
+          <img src="images/codex-plus-plus.png" alt="" width="34" height="34">
+          <span>Codex++</span>
+        </a>
+
+        <button
+          class="menu-button"
+          type="button"
+          aria-label="打开导航"
+          aria-expanded="false"
+          aria-controls="site-nav"
+          data-menu-button
+        >
+          <span></span>
+          <span></span>
+          <span></span>
+        </button>
+
+        <nav class="site-nav" id="site-nav" aria-label="主导航" data-nav>
+          <a href="#capabilities">能力</a>
+          <a href="#showcase">界面</a>
+          <a href="#downloads">下载</a>
+          <a href="#faq">常见问题</a>
+          <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">
+            GitHub <span aria-hidden="true">↗</span>
+          </a>
+          <div class="language-switch" role="group" aria-label="语言选择">
+            <button type="button" data-language="zh" aria-pressed="true">中</button>
+            <button type="button" data-language="en" aria-pressed="false">EN</button>
+          </div>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <canvas class="hero-network" data-hero-network aria-hidden="true"></canvas>
+        <div class="hero-scrim" aria-hidden="true"></div>
+        <div class="hero-inner">
+          <div class="hero-copy" data-reveal>
+            <div class="hero-product">
+              <img src="images/codex-plus-plus.png" alt="Codex++ 图标" width="72" height="72">
+              <span>开源 · Windows / macOS</span>
+            </div>
+            <h1 id="hero-title">Codex++</h1>
+            <p class="hero-lead">让 Codex 按你的方式工作。</p>
+            <p class="hero-summary">
+              一处管理供应商、模型、会话、插件、脚本和界面增强。保留 Codex 原始安装，随时开关，随时恢复。
+            </p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="#downloads" data-hero-download>
+                <span data-hero-download-label>下载最新版</span>
+                <span aria-hidden="true">↓</span>
+              </a>
+              <a
+                class="button button-ghost"
+                href="https://github.com/BigPizzaV3/CodexPlusPlus"
+                target="_blank"
+                rel="noreferrer"
+              >
+                查看源码 <span aria-hidden="true">↗</span>
+              </a>
+            </div>
+            <div class="hero-meta" aria-label="项目状态">
+              <span>最新版 <strong data-version>v1.2.46</strong></span>
+              <span><strong data-stars>2.8k+</strong> GitHub Stars</span>
+              <span>AGPL-3.0</span>
+            </div>
+          </div>
+        </div>
+        <a class="hero-scroll" href="#overview" aria-label="继续查看">
+          <span>继续了解</span>
+          <span aria-hidden="true">↓</span>
+        </a>
+      </section>
+
+      <section class="overview-strip" id="overview" aria-label="产品概览">
+        <div class="overview-grid">
+          <div data-reveal>
+            <strong>4 种</strong>
+            <span>供应商模式</span>
+          </div>
+          <div data-reveal>
+            <strong>按模型</strong>
+            <span>上下文与压缩阈值</span>
+          </div>
+          <div data-reveal>
+            <strong>可插拔</strong>
+            <span>插件、脚本与皮肤</span>
+          </div>
+          <div data-reveal>
+            <strong>零补丁</strong>
+            <span>不修改 app.asar</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section capabilities" id="capabilities" aria-labelledby="capabilities-title">
+        <div class="section-shell">
+          <div class="section-heading" data-reveal>
+            <p class="eyebrow">一个管理工具，覆盖完整工作流</p>
+            <h2 id="capabilities-title">不只是换个 API 地址</h2>
+            <p>
+              Codex++ 把分散在配置文件、数据库和启动参数里的操作收拢成可视化流程，同时保留每项增强的独立开关。
+            </p>
+          </div>
+
+          <div class="feature-grid">
+            <article class="feature-card feature-blue" data-reveal>
+              <span class="feature-index">01</span>
+              <h3>供应商与模型</h3>
+              <p>在官方登录、混入 API、纯 API 与聚合路由之间切换，配置协议、模型、上下文窗口和自动压缩阈值。</p>
+              <ul>
+                <li>Responses / Chat Completions</li>
+                <li>模型测试与 Provider Doctor</li>
+              </ul>
+            </article>
+
+            <article class="feature-card feature-coral" data-reveal>
+              <span class="feature-index">02</span>
+              <h3>会话管理</h3>
+              <p>扫描本地会话，查看 Token 历史，批量整理、导出或迁移项目，不再手动翻找 SQLite 和会话目录。</p>
+              <ul>
+                <li>Markdown 导出与批量操作</li>
+                <li>滚动位置与线程信息恢复</li>
+              </ul>
+            </article>
+
+            <article class="feature-card feature-green" data-reveal>
+              <span class="feature-index">03</span>
+              <h3>插件与脚本</h3>
+              <p>管理 Codex 插件、Skill、MCP Server 和用户脚本，并按供应商保存不同的工具组合。</p>
+              <ul>
+                <li>脚本市场与启停管理</li>
+                <li>插件入口与模型兼容处理</li>
+              </ul>
+            </article>
+
+            <article class="feature-card feature-amber" data-reveal>
+              <span class="feature-index">04</span>
+              <h3>DreamSkin 主题</h3>
+              <p>浏览社区主题，在线预览、安装和更新，也可以导入本地 ZIP 包或通过链接一键换肤。</p>
+              <ul>
+                <li>社区主题市场</li>
+                <li>包校验与 Safe CSS</li>
+              </ul>
+            </article>
+
+            <article class="feature-card feature-violet" data-reveal>
+              <span class="feature-index">05</span>
+              <h3>界面增强</h3>
+              <p>中文界面、会话宽度、服务层级、Goals、粘贴修复等增强按需开启，不想用的功能可以完全关闭。</p>
+              <ul>
+                <li>单项开关与总开关</li>
+                <li>随启动器加载，无安装目录补丁</li>
+              </ul>
+            </article>
+
+            <article class="feature-card feature-ink" data-reveal>
+              <span class="feature-index">06</span>
+              <h3>开发与诊断</h3>
+              <p>处理 Upstream worktree、Zed Remote、应用检测、环境冲突、Watcher、更新与诊断日志。</p>
+              <ul>
+                <li>Windows / macOS 原生安装包</li>
+                <li>健康检查与 Release 更新</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="showcase" id="showcase" aria-labelledby="showcase-title">
+        <div class="section-shell">
+          <div class="section-heading section-heading-light" data-reveal>
+            <p class="eyebrow">Codex++ 管理工具真实界面</p>
+            <h2 id="showcase-title">控制中心，才是 Codex++ 的主场</h2>
+            <p>供应商、增强开关、脚本和主题都在独立管理工具中完成，日常使用不用再手工修改配置文件。</p>
+          </div>
+
+          <figure class="showcase-main" data-reveal>
+            <img
+              src="images/manager-skin-market.png"
+              alt="Codex++ 管理工具中的 DreamSkin 社区主题市场"
+              width="2496"
+              height="1776"
+              loading="lazy"
+            >
+            <figcaption>
+              <strong>DreamSkin 社区主题市场</strong>
+              <span>搜索、预览、安装和管理社区主题</span>
+            </figcaption>
+          </figure>
+
+          <div class="showcase-grid">
+            <figure data-reveal>
+              <img
+                src="images/manager-providers.jpg"
+                alt="Codex++ 管理工具中的供应商配置页面"
+                width="1440"
+                height="688"
+                loading="lazy"
+              >
+              <figcaption>
+                <strong>供应商配置</strong>
+                <span>模式、协议与切换状态集中管理</span>
+              </figcaption>
+            </figure>
+            <figure data-reveal>
+              <img
+                src="images/manager-enhancements.jpg"
+                alt="Codex++ 管理工具中的增强设置页面"
+                width="1440"
+                height="688"
+                loading="lazy"
+              >
+              <figcaption>
+                <strong>Codex 增强</strong>
+                <span>按模式选择，并精确控制每项能力</span>
+              </figcaption>
+            </figure>
+            <figure data-reveal>
+              <img
+                src="images/manager-script-market.jpg"
+                alt="Codex++ 管理工具中的脚本市场页面"
+                width="1440"
+                height="688"
+                loading="lazy"
+              >
+              <figcaption>
+                <strong>脚本市场</strong>
+                <span>搜索、排版和本地脚本统一管理</span>
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <section class="section workflow" aria-labelledby="workflow-title">
+        <div class="section-shell">
+          <div class="section-heading" data-reveal>
+            <p class="eyebrow">第一次使用</p>
+            <h2 id="workflow-title">三步进入你的 Codex</h2>
+          </div>
+
+          <ol class="workflow-list">
+            <li data-reveal>
+              <span class="step-number">1</span>
+              <div>
+                <h3>安装</h3>
+                <p>选择 Windows 安装程序或对应芯片的 macOS DMG。</p>
+              </div>
+            </li>
+            <li data-reveal>
+              <span class="step-number">2</span>
+              <div>
+                <h3>配置</h3>
+                <p>打开管理工具，确认 Codex 路径，再设置供应商和需要的增强。</p>
+              </div>
+            </li>
+            <li data-reveal>
+              <span class="step-number">3</span>
+              <div>
+                <h3>启动</h3>
+                <p>以后从 Codex++ 入口启动，已保存的配置会自动加载。</p>
+              </div>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="downloads" id="downloads" aria-labelledby="downloads-title">
+        <div class="section-shell downloads-shell">
+          <div class="section-heading" data-reveal>
+            <p class="eyebrow">下载 Codex++</p>
+            <h2 id="downloads-title">选择你的平台</h2>
+            <p>
+              当前稳定版 <strong data-version>v1.2.46</strong>。安装包由 GitHub Actions 从公开源码自动构建。
+            </p>
+          </div>
+
+          <div class="platform-picker" data-download-picker data-reveal>
+            <div class="platform-tabs" role="tablist" aria-label="选择操作系统">
+              <button
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="download-windows"
+                id="tab-windows"
+                data-platform="windows"
+              >
+                Windows
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="download-mac-arm"
+                id="tab-mac-arm"
+                data-platform="mac-arm"
+                tabindex="-1"
+              >
+                Mac Apple 芯片
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="download-mac-intel"
+                id="tab-mac-intel"
+                data-platform="mac-intel"
+                tabindex="-1"
+              >
+                Mac Intel
+              </button>
+            </div>
+
+            <div
+              class="download-panel"
+              id="download-windows"
+              role="tabpanel"
+              aria-labelledby="tab-windows"
+              data-platform-panel="windows"
+            >
+              <div class="platform-mark" aria-hidden="true">Win</div>
+              <div class="download-copy">
+                <p class="download-kicker">Windows 10 / 11 · x64</p>
+                <h3>Windows 安装程序</h3>
+                <p>包含 Codex++ 启动器和管理工具，并创建桌面与开始菜单入口。</p>
+                <span class="asset-meta" data-asset-meta="windows">EXE · 正在读取文件信息</span>
+              </div>
+              <a
+                class="button button-dark download-button"
+                href="https://github.com/BigPizzaV3/CodexPlusPlus/releases/download/v1.2.46/CodexPlusPlus-1.2.46-windows-x64-setup.exe"
+                data-download="windows"
+              >
+                下载安装程序 <span aria-hidden="true">↓</span>
+              </a>
+            </div>
+
+            <div
+              class="download-panel"
+              id="download-mac-arm"
+              role="tabpanel"
+              aria-labelledby="tab-mac-arm"
+              data-platform-panel="mac-arm"
+              hidden
+            >
+              <div class="platform-mark" aria-hidden="true">M</div>
+              <div class="download-copy">
+                <p class="download-kicker">macOS · Apple Silicon</p>
+                <h3>Mac Apple 芯片版</h3>
+                <p>适用于 M1、M2、M3、M4 及后续 Apple 芯片 Mac，安装到 Applications 即可。</p>
+                <span class="asset-meta" data-asset-meta="mac-arm">DMG · 正在读取文件信息</span>
+              </div>
+              <a
+                class="button button-dark download-button"
+                href="https://github.com/BigPizzaV3/CodexPlusPlus/releases/download/v1.2.46/CodexPlusPlus-1.2.46-macos-arm64.dmg"
+                data-download="mac-arm"
+              >
+                下载 Apple 芯片版 <span aria-hidden="true">↓</span>
+              </a>
+            </div>
+
+            <div
+              class="download-panel"
+              id="download-mac-intel"
+              role="tabpanel"
+              aria-labelledby="tab-mac-intel"
+              data-platform-panel="mac-intel"
+              hidden
+            >
+              <div class="platform-mark" aria-hidden="true">Intel</div>
+              <div class="download-copy">
+                <p class="download-kicker">macOS · Intel x64</p>
+                <h3>Mac Intel 版</h3>
+                <p>适用于 Intel 处理器 Mac。若“关于本机”显示 Apple 芯片，请选择上一个版本。</p>
+                <span class="asset-meta" data-asset-meta="mac-intel">DMG · 正在读取文件信息</span>
+              </div>
+              <a
+                class="button button-dark download-button"
+                href="https://github.com/BigPizzaV3/CodexPlusPlus/releases/download/v1.2.46/CodexPlusPlus-1.2.46-macos-x64.dmg"
+                data-download="mac-intel"
+              >
+                下载 Intel 版 <span aria-hidden="true">↓</span>
+              </a>
+            </div>
+          </div>
+
+          <div class="download-links" data-reveal>
+            <a href="https://github.com/BigPizzaV3/CodexPlusPlus/releases/latest" target="_blank" rel="noreferrer">
+              查看 Release Notes <span aria-hidden="true">↗</span>
+            </a>
+            <a href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noreferrer">
+              历史版本 <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section class="trust" aria-labelledby="trust-title">
+        <div class="section-shell trust-layout">
+          <div class="trust-title" data-reveal>
+            <p class="eyebrow">透明边界</p>
+            <h2 id="trust-title">增强，但不接管</h2>
+          </div>
+          <div class="trust-points">
+            <article data-reveal>
+              <h3>不修改原始安装</h3>
+              <p>不修改 Codex 的 <code>app.asar</code>，不向官方应用安装目录写入补丁文件。</p>
+            </article>
+            <article data-reveal>
+              <h3>密钥留在本机</h3>
+              <p>供应商密钥保存在本地配置边界中，不上传到 Codex++ 项目或广告服务。</p>
+            </article>
+            <article data-reveal>
+              <h3>功能可以关闭</h3>
+              <p>界面增强既有单项开关，也有总开关；关闭后仍可只使用供应商与启动管理。</p>
+            </article>
+            <article data-reveal>
+              <h3>公开构建过程</h3>
+              <p>源码、Issue、发布记录和安装包构建工作流都可以在 GitHub 查阅。</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section faq" id="faq" aria-labelledby="faq-title">
+        <div class="section-shell faq-layout">
+          <div class="section-heading" data-reveal>
+            <p class="eyebrow">常见问题</p>
+            <h2 id="faq-title">安装前可能想知道</h2>
+          </div>
+          <div class="faq-list" data-reveal>
+            <details>
+              <summary>Codex++ 是 OpenAI 官方产品吗？</summary>
+              <p>不是。Codex++ 是社区维护的开源外部启动器与管理工具，面向 OpenAI Codex / ChatGPT 桌面应用使用。</p>
+            </details>
+            <details>
+              <summary>安装后为什么有两个入口？</summary>
+              <p>“Codex++”用于日常静默启动并加载配置；“Codex++ 管理工具”用于管理供应商、增强、脚本、更新和诊断。</p>
+            </details>
+            <details>
+              <summary>不使用第三方 API 可以吗？</summary>
+              <p>可以。选择官方登录模式即可只使用 ChatGPT / Codex 官方账号，Codex++ 也能仅作为启动和增强管理工具。</p>
+            </details>
+            <details>
+              <summary>macOS 提示应用已损坏怎么办？</summary>
+              <p>当前社区构建使用 ad-hoc 签名。请按项目 README 中的 macOS 安装说明处理 Gatekeeper 提示，并只从本项目 Release 下载。</p>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <section class="closing" aria-labelledby="closing-title">
+        <div class="closing-inner" data-reveal>
+          <img src="images/codex-plus-plus.png" alt="" width="68" height="68">
+          <h2 id="closing-title">把 Codex 调整成适合你的工具</h2>
+          <p>开源、可配置、可退出。先从管理工具开始。</p>
+          <div class="closing-actions">
+            <a class="button button-primary" href="#downloads">下载 Codex++</a>
+            <a
+              class="button button-light"
+              href="https://github.com/BigPizzaV3/CodexPlusPlus/issues"
+              target="_blank"
+              rel="noreferrer"
+            >
+              反馈问题 <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-shell">
+        <div>
+          <a class="brand footer-brand" href="#top">
+            <img src="images/codex-plus-plus.png" alt="" width="30" height="30">
+            <span>Codex++</span>
+          </a>
+          <p>社区维护的 Codex 桌面增强与管理工具。</p>
+        </div>
+        <div class="footer-links">
+          <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">GitHub</a>
+          <a href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noreferrer">Releases</a>
+          <a href="https://github.com/BigPizzaV3/CodexPlusPlus/issues" target="_blank" rel="noreferrer">Issues</a>
+          <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noreferrer">Telegram</a>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>© <span data-year>2026</span> Codex++ Contributors</span>
+        <span>AGPL-3.0-only</span>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -9,5 +9,4 @@
   <circle cx="58" cy="64" r="30" fill="#22c55e"/>
   <path d="M45 64l10 10 22-26" fill="none" stroke="#f8fafc" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
   <text x="104" y="58" fill="#f8fafc" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="700">JOJO Code</text>
-  <text x="105" y="88" fill="#bbf7d0" font-family="Segoe UI, Arial, sans-serif" font-size="15">Official Codex++ Relay</text>
 </svg>

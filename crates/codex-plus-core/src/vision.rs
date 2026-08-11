@@ -303,8 +303,13 @@ pub fn inject_cannot_see_note_slice(arr: &mut Vec<Value>, n: usize, reason: &str
     }
 }
 
-/// 注入"看不到图片"提示到 messages 的最后一条 user 消息中。
-fn inject_cannot_see_note(messages: &mut [Value], n: usize, reason: &str) {
+/// 注入"看不到图片"提示到 messages 的指定 user/tool 消息中。
+fn inject_cannot_see_note_into(
+    messages: &mut [Value],
+    index: usize,
+    n: usize,
+    reason: &str,
+) {
     if n == 0 {
         return;
     }
@@ -314,14 +319,30 @@ fn inject_cannot_see_note(messages: &mut [Value], n: usize, reason: &str) {
          并建议：① 换用支持多模态的模型；或 ② 在 Codex++ 中为该纯文本模型配置视觉模型路由。\
          不要猜测或编造图片内容。]"
     );
-    if let Some(msg) = messages
-        .iter_mut()
-        .rev()
-        .find(|m| m.get("role").and_then(Value::as_str) == Some("user"))
-    {
-        if let Some(parts) = msg.get_mut("content").and_then(Value::as_array_mut) {
+    if let Some(msg) = messages.get_mut(index) {
+        if matches!(msg.get("content"), Some(Value::String(_))) {
+            let old_text = msg
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            *msg.get_mut("content").unwrap() = serde_json::json!([
+                {"type": "text", "text": note},
+                {"type": "text", "text": old_text},
+            ]);
+        } else if let Some(parts) = msg.get_mut("content").and_then(Value::as_array_mut) {
             parts.insert(0, serde_json::json!({"type": "text", "text": note}));
         }
+    }
+}
+
+/// 注入"看不到图片"提示到 messages 的最后一条 user 消息中。
+fn inject_cannot_see_note(messages: &mut [Value], n: usize, reason: &str) {
+    if let Some(index) = messages
+        .iter()
+        .rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+    {
+        inject_cannot_see_note_into(messages, index, n, reason);
     }
 }
 
@@ -407,7 +428,23 @@ fn collect_urls(msg: &Value) -> Vec<String> {
     urls
 }
 
-/// 收集最近 `depth_limit` 轮对话（所有 user 消息，无论是否带图）中的带图消息（最新优先），
+fn is_vlm_message_role(msg: &Value) -> bool {
+    matches!(
+        msg.get("role").and_then(Value::as_str),
+        Some("user") | Some("tool")
+    )
+}
+
+fn latest_image_message_index(messages: &[Value]) -> Option<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, message)| is_vlm_message_role(message) && !collect_urls(message).is_empty())
+        .map(|(index, _)| index)
+}
+
+/// 收集最近 `depth_limit` 轮对话（user/tool 消息，无论是否带图）中的带图消息（最新优先），
 /// 返回 `(message_index, Vec<url>)`。
 // ── Data URL extraction (for tool output images) ─────────────────────
 
@@ -518,17 +555,17 @@ fn collect_recent_image_messages(
     messages: &[Value],
     depth_limit: usize,
 ) -> Vec<(usize, Vec<String>)> {
-    // 1. 取最近 depth_limit 条 user 消息（全部，不限是否带图）
-    let user_indices: Vec<usize> = messages
+    // 1. 取最近 depth_limit 条 user/tool 消息（全部，不限是否带图）
+    let message_indices: Vec<usize> = messages
         .iter()
         .enumerate()
-        .filter(|(_, m)| m.get("role").and_then(Value::as_str) == Some("user"))
+        .filter(|(_, message)| is_vlm_message_role(message))
         .map(|(i, _)| i)
         .rev()
         .take(depth_limit)
         .collect();
     // 2. 在其中找出带图消息（已按最新优先排序）
-    user_indices
+    message_indices
         .into_iter()
         .map(|i| (i, collect_urls(&messages[i])))
         .filter(|(_, urls)| !urls.is_empty())
@@ -1020,8 +1057,8 @@ async fn background_analyze_and_cache(
 
 // ── Description injection ─────────────────────────────────────────────
 
-/// 向指定 user 消息末尾注入分析文本。
-fn inject_text_into_user_message(msg: &mut Value, text: &str) {
+/// 向指定 user/tool 消息末尾注入分析文本。
+fn inject_text_into_message(msg: &mut Value, text: &str) {
     match msg.get_mut("content") {
         Some(Value::Array(parts)) => {
             parts.push(serde_json::json!({"type": "text", "text": text}));
@@ -1046,7 +1083,7 @@ pub fn inject_analysis(messages: &mut [Value], result: &Result<String, String>) 
     };
     for msg in messages.iter_mut().rev() {
         if msg.get("role").and_then(Value::as_str) == Some("user") {
-            inject_text_into_user_message(msg, &text);
+            inject_text_into_message(msg, &text);
             break;
         }
     }
@@ -1084,14 +1121,20 @@ pub async fn strip_image_blocks(
     let available = effective_window.saturating_sub(current_tokens as u64);
     // 1 token 安全余量，防止零宽窗口。
     if available <= 1 {
-        // 上下文已满：剥离图片释放空间，注入"看不到图"提示，记录 vl_strip 事件。
+        // 上下文已满：先定位最近带图的 user/tool 消息，再剥离全部图片。
+        let target = latest_image_message_index(messages);
         let n = strip_all_images_counted(messages);
         if n > 0 {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "protocol_proxy.vl_strip",
                 json!({"reason": "overflow", "n": n}),
             );
-            inject_cannot_see_note(messages, n, "上下文已满，图片未处理");
+            match target {
+                Some(index) => {
+                    inject_cannot_see_note_into(messages, index, n, "上下文已满，图片未处理");
+                }
+                None => inject_cannot_see_note(messages, n, "上下文已满，图片未处理"),
+            }
         }
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "vlm_context_overflow",
@@ -1114,17 +1157,17 @@ pub async fn strip_image_blocks(
         return;
     }
 
-    // 3. 确定黄金窗口边界（最近 GOLDEN_WINDOW_DEPTH 轮 user 消息中最早一条的 index）。
+    // 3. 确定黄金窗口边界（最近 GOLDEN_WINDOW_DEPTH 条 user/tool 消息中最早一条的 index）。
     let golden_user_cutoff = {
-        let user_indices: Vec<usize> = messages
+        let message_indices: Vec<usize> = messages
             .iter()
             .enumerate()
-            .filter(|(_, m)| m.get("role").and_then(Value::as_str) == Some("user"))
+            .filter(|(_, message)| is_vlm_message_role(message))
             .map(|(i, _)| i)
             .rev()
             .take(GOLDEN_WINDOW_DEPTH)
             .collect();
-        user_indices.last().copied().unwrap_or(0)
+        message_indices.last().copied().unwrap_or(0)
     };
     let golden_total: usize = all_image_msgs
         .iter()
@@ -1137,12 +1180,12 @@ pub async fn strip_image_blocks(
         .map(|(_, urls)| urls.len())
         .sum(); // M
 
-    // 4. 分离当前轮（最后一条 user 消息）。
-    let current_round_msg_idx: Option<usize> = messages
+    // 4. 分离当前轮（最后一条带图的 user/tool 消息）。
+    let current_round_msg_idx = latest_image_message_index(messages);
+    // PR 追问检测需要“最后一条 user 消息”（即使纯文本）作为当前轮，不能复用带图消息定位。
+    let last_user_msg_idx = messages
         .iter()
-        .rev()
-        .position(|m| m.get("role").and_then(Value::as_str) == Some("user"))
-        .map(|pos| messages.len() - 1 - pos);
+        .rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"));
 
     let user_text = collect_input_text(messages);
 
@@ -1154,7 +1197,7 @@ pub async fn strip_image_blocks(
     let mut total_stripped_this_request: usize = 0;
     let is_followup = !user_text.is_empty()
         && !latest_user_message_has_image(messages)
-        && window_has_history_image(messages, current_round_msg_idx);
+        && window_has_history_image(messages, last_user_msg_idx);
     let history_image_count: usize = if is_followup {
         count_images(messages)
     } else {
@@ -1402,7 +1445,7 @@ pub async fn strip_image_blocks(
     // 9. 注入描述文本。
     for (msg_idx, desc) in &descriptions {
         if *msg_idx < messages.len() {
-            inject_text_into_user_message(&mut messages[*msg_idx], desc);
+            inject_text_into_message(&mut messages[*msg_idx], desc);
         }
     }
 
@@ -1453,6 +1496,8 @@ pub async fn strip_image_blocks_for_tests(
 
 #[cfg(test)]
 mod tests {
+    // 共享全局 VLM_CACHE 的测试串行执行，避免并行 clear 互相干扰。
+    static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
     use super::*;
 
     #[test]
@@ -1828,6 +1873,29 @@ mod tests {
     }
 
     #[test]
+    fn collect_recent_image_messages_includes_tool_messages() {
+        let msgs: Vec<Value> = vec![
+            serde_json::json!({
+                "role": "user",
+                "content": [{"type": "text", "text": "open the page"}]
+            }),
+            serde_json::json!({
+                "role": "tool",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": {"url": "https://tool.example.com/screenshot.png"}
+                }]
+            }),
+        ];
+
+        let result = collect_recent_image_messages(&msgs, 10);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, 1);
+        assert_eq!(result[0].1, vec!["https://tool.example.com/screenshot.png"]);
+    }
+
+    #[test]
     fn collect_recent_image_messages_skips_messages_without_images() {
         let msgs: Vec<Value> = vec![
             serde_json::json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}),
@@ -1842,6 +1910,7 @@ mod tests {
 
     #[test]
     fn cache_put_and_get_roundtrip() {
+        let _cache_guard = CACHE_TEST_LOCK.lock().unwrap();
         cache_clear_for_tests();
         let key = url_hash("https://example.com/cache-test.png");
         cache_put(key.clone(), "cached description".to_string());
@@ -1851,6 +1920,7 @@ mod tests {
 
     #[test]
     fn cache_contains_returns_false_for_missing_key() {
+        let _cache_guard = CACHE_TEST_LOCK.lock().unwrap();
         cache_clear_for_tests();
         let key = url_hash("https://example.com/missing.png");
         assert!(!cache_contains(&key));
@@ -1858,6 +1928,7 @@ mod tests {
 
     #[test]
     fn cache_put_evicts_oldest_when_full() {
+        let _cache_guard = CACHE_TEST_LOCK.lock().unwrap();
         // 填满缓存（500 条）后继续插入会触发驱逐。
         // NOTE：此测试依赖全局 VLM_CACHE，与其他并行测试共享状态。
         // 通过独立 key 前缀避免冲突，启动时清空缓存避免交叉干扰。
@@ -1883,6 +1954,7 @@ mod tests {
 
     #[test]
     fn cachekey_url_and_url_question_do_not_collide() {
+        let _cache_guard = CACHE_TEST_LOCK.lock().unwrap();
         cache_clear_for_tests();
         // 同 URL，Tier1 key vs Tier2 key 应互不命中
         let tier1 = url_hash("https://example.com/img.png");
@@ -1895,6 +1967,7 @@ mod tests {
 
     #[test]
     fn cachekey_different_questions_do_not_collide() {
+        let _cache_guard = CACHE_TEST_LOCK.lock().unwrap();
         cache_clear_for_tests();
         let k1 = url_question_hash("https://example.com/img.png", "问题A");
         let k2 = url_question_hash("https://example.com/img.png", "问题B");
@@ -1904,6 +1977,7 @@ mod tests {
 
     #[test]
     fn cachekey_empty_question_uses_tier1() {
+        let _cache_guard = CACHE_TEST_LOCK.lock().unwrap();
         cache_clear_for_tests();
         // user_text 为空时 use_tier2=false，走 url_hash (Tier1)
         let key = url_hash("https://example.com/solo.png");
@@ -2519,6 +2593,7 @@ mod tests {
     /// background_analyze_and_cache 直接调用：VLM 分析 → 写入缓存。
     #[tokio::test]
     async fn phase2_background_analyze_and_cache_writes_to_cache() {
+        let _cache_guard = CACHE_TEST_LOCK.lock().unwrap();
         cache_clear_for_tests();
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -2550,6 +2625,7 @@ mod tests {
     /// collect_phase2_urls：收集黄金窗口外、未缓存的深层 URL。
     #[test]
     fn collect_phase2_urls_collects_deep_uncached_urls() {
+        let _cache_guard = CACHE_TEST_LOCK.lock().unwrap();
         cache_clear_for_tests();
         let all_image_msgs = vec![
             (0, vec!["https://p2.example.com/deep.png".to_string()]),  // 深层（msg_idx < golden_user_cutoff=2）
@@ -2566,6 +2642,7 @@ mod tests {
     /// collect_phase2_urls：跳过已缓存的 URL。
     #[test]
     fn collect_phase2_urls_skips_cached_urls() {
+        let _cache_guard = CACHE_TEST_LOCK.lock().unwrap();
         cache_clear_for_tests();
         cache_put(
             url_hash("https://p2.example.com/cached.png"),
@@ -2585,6 +2662,7 @@ mod tests {
     /// collect_phase2_urls：受 x_budget 上限约束。
     #[test]
     fn collect_phase2_urls_respects_x_budget_cap() {
+        let _cache_guard = CACHE_TEST_LOCK.lock().unwrap();
         cache_clear_for_tests();
         let all_image_msgs = vec![
             (0, (0..10).map(|i| format!("https://p2.example.com/{i}.png")).collect()),
@@ -2868,6 +2946,7 @@ mod tests {
     /// Vlm 模式：tool 消息含 data URL -> VLM 分析 + 描述替换 + base64 删除。
     #[tokio::test]
     async fn analyze_data_urls_replaces_with_vlm_description() {
+        let _cache_guard = CACHE_TEST_LOCK.lock().unwrap();
         cache_clear_for_tests();
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -2900,6 +2979,7 @@ mod tests {
     /// VLM 失败 -> fail-open 替换为失败提示（不保留 base64）。
     #[tokio::test]
     async fn analyze_data_urls_failopen_on_vlm_error() {
+        let _cache_guard = CACHE_TEST_LOCK.lock().unwrap();
         cache_clear_for_tests();
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -2929,6 +3009,7 @@ mod tests {
     /// 无 data URL 时不影响原文本。
     #[tokio::test]
     async fn analyze_data_urls_noop_for_plain_text() {
+        let _cache_guard = CACHE_TEST_LOCK.lock().unwrap();
         cache_clear_for_tests();
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -3114,6 +3195,118 @@ mod tests {
         assert!(
             last_text.contains("mock: E2E network call"),
             "VLM result not injected: {last_text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn strip_image_blocks_with_mock_vlm_processes_tool_images() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "mock: tool screenshot"}}]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let config = VlmConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: mock_server.uri(),
+            ..Default::default()
+        };
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let mut messages = vec![
+            serde_json::json!({
+                "role": "user",
+                "content": "inspect the browser result"
+            }),
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": "call_browser",
+                "content": [
+                    {"type": "text", "text": "Browser screenshot:"},
+                    {"type": "image_url", "image_url": {"url": "https://tool-e2e.example.com/screenshot.png"}}
+                ]
+            }),
+        ];
+
+        strip_image_blocks(&mut messages, &config, "{}", "272000", "gpt-4", &client).await;
+
+        let parts = messages[1]["content"].as_array().unwrap();
+        assert!(
+            parts.iter().all(|part| {
+                !matches!(
+                    part.get("type").and_then(Value::as_str),
+                    Some("image_url") | Some("input_image")
+                )
+            }),
+            "tool image should be stripped"
+        );
+        let tool_text = parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            tool_text.contains("mock: tool screenshot"),
+            "VLM result should be injected into the tool message: {tool_text}"
+        );
+        assert_eq!(messages[0]["content"], "inspect the browser result");
+    }
+
+    #[tokio::test]
+    async fn strip_image_blocks_overflow_injects_into_tool_message() {
+        let vlm_config = VlmConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: "https://vlm.invalid".into(),
+            ..Default::default()
+        };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let mut messages = vec![
+            serde_json::json!({
+                "role": "user",
+                "content": "inspect the browser result"
+            }),
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": "call_browser",
+                "content": [
+                    {"type": "text", "text": "Browser screenshot:"},
+                    {"type": "image_url", "image_url": {"url": "https://tool-e2e.example.com/screenshot.png"}}
+                ]
+            }),
+        ];
+
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "1", "gpt-4", &client).await;
+
+        let tool_parts = messages[1]["content"].as_array().unwrap();
+        assert!(
+            tool_parts.iter().all(|p| {
+                !matches!(
+                    p.get("type").and_then(Value::as_str),
+                    Some("image_url") | Some("input_image")
+                )
+            }),
+            "tool image should be stripped on overflow"
+        );
+        let tool_texts: Vec<&str> = tool_parts
+            .iter()
+            .filter_map(|p| p["text"].as_str())
+            .collect();
+        let joined = tool_texts.join(" ");
+        assert!(
+            joined.contains("上下文已满"),
+            "overflow note should be injected into tool message: {joined}"
+        );
+        let user_content = messages[0]["content"].as_str().unwrap_or_default();
+        assert!(
+            !user_content.contains("上下文已满"),
+            "overflow note should not be injected into user message"
         );
     }
 

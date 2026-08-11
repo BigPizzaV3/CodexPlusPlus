@@ -121,9 +121,22 @@ describe("dream skin theme helpers", () => {
       new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url),
       "utf8",
     );
+    const compatibility = await readFile(
+      new URL("../../../assets/inject/renderer-inject.js", import.meta.url),
+      "utf8",
+    );
+    const assets = await readFile(
+      new URL("../../../crates/codex-plus-core/src/assets.rs", import.meta.url),
+      "utf8",
+    );
 
     assert.match(renderer, /const shellMain = document\.querySelector\("main\.main-surface"\)/);
     assert.doesNotMatch(renderer, /!shellMain\s*\|\|\s*!shellSidebar/);
+    assert.match(compatibility, /main\[class\*="_MainContentSurface_"\]/);
+    assert.match(compatibility, /shellMain\.classList\.add\("main-surface"\)/);
+    assert.match(compatibility, /data-codex-plus-dream-skin-main-surface/);
+    assert.match(compatibility, /clearDreamSkinMainSurfaceCompatibility\(\)/);
+    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "18"/);
   });
 
   it("extends the Windows wallpaper treatment to right and bottom dock panels", async () => {

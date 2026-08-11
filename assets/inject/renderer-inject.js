@@ -1,4 +1,8 @@
 (() => {
+  // The launcher targets the Codex app page, but keep a renderer-side guard
+  // so this bundle cannot create UI in embedded browser documents.
+  const codexPlusIsNodeTestHarness = typeof process === "object" && !!process.versions?.node;
+  if (!codexPlusIsNodeTestHarness && (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(window.location.href))) return;
   const codexPlusIsWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent || "");
 
   function installCodexPlusFastStartup() {
@@ -393,7 +397,6 @@
   const upstreamBranchOptionAttribute = "data-codex-upstream-branch-option";
   const upstreamBranchSelectionKey = "codexUpstreamBranchSelection";
   const upstreamProjectContextKey = "codexUpstreamProjectContext";
-  const zedRemoteOpenVersion = "1";
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const projectMoveProjectionKey = "codexProjectMoveProjection";
@@ -467,8 +470,8 @@
   const codexThreadServiceTierKey = "codexThreadServiceTierOverrides";
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
-  const codexServiceTierRequestOverrideVersion = "4";
-  const codexAppServerModelRequestPatchVersion = "3";
+  const codexServiceTierRequestOverrideVersion = "5";
+  const codexAppServerModelRequestPatchVersion = "4";
   const codexPluginMarketplaceUnlockVersion = "14";
   const codexPluginAutoExpandVersion = "1";
   const codexPluginAutoExpandMaxClicks = 80;
@@ -482,9 +485,6 @@
   const codexThreadScrollRouteHooksVersion = "dispatcher:2";
   const codexThreadScrollListenerVersion = "4";
   const codexThreadScrollUserIntentVersion = "dispatcher:2";
-  const codexProjectlessMainWindowVersion = "5";
-  const codexProjectlessMainWindowSetting = { key: "hotkey-window-projectless-default-enabled", default: false };
-  const codexProjectlessMainWindowRetryDelaysMs = [0, 250, 750, 1500, 3000];
   const codexPlusImageOverlayId = "codex-plus-image-overlay";
   const codexPlusDreamSkinStyleId = "codex-dream-skin-style";
   const codexPlusDreamSkinPlatform = String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || "macos");
@@ -586,7 +586,7 @@
   const selectors = {
     sidebarThread: "[data-app-action-sidebar-thread-id]",
     threadTitle: "[data-thread-title]",
-    appHeader: ".app-header-tint",
+    appHeader: '[class*="ApplicationMenuTopBar"], .app-header-tint',
     nativeMenuBar: "[class*=\"ms-auto\"][class*=\"flex\"][class*=\"items-center\"]",
     headerContextMenuSurface: '[data-testid="app-shell-header-context-menu-surface"]',
     archiveNav: 'button[aria-label="已归档对话"], button[aria-label="Archived conversations"]',
@@ -1093,7 +1093,6 @@
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
-      .codex-plus-modal-content[data-codex-plus-active-tab="support"] { width: min(820px, calc(100vw - 48px)); }
       .codex-plus-modal-header {
         display: flex;
         align-items: center;
@@ -1284,16 +1283,12 @@
       .codex-plus-ad-card { border: 1px solid rgba(96,165,250,.26); border-radius: 16px; background: linear-gradient(135deg, rgba(37,99,235,.18), rgba(255,255,255,.05)); box-shadow: 0 14px 36px rgba(0,0,0,.22); }
       .codex-plus-ad-image { display: block; width: calc(100% - 28px); aspect-ratio: 16 / 5; margin: 14px 14px 0; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; background: #080808; object-fit: cover; }
       .codex-plus-ad-content { padding: 14px; }
-      .codex-plus-ad-title { margin: 0; color: #f8fafc; font-size: 17px; line-height: 1.35; }
-      .codex-plus-ad-description { margin: 6px 0 10px; color: #dbeafe; font-size: 13px; line-height: 1.55; }
-      .codex-plus-ad-highlights { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+      .codex-plus-ad-title { margin: 0; overflow: hidden; color: #f8fafc; font-size: 17px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-ad-description { display: -webkit-box; margin: 6px 0 10px; overflow: hidden; color: #dbeafe; font-size: 13px; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-height: 1.55; }
+      .codex-plus-ad-highlights { display: flex; flex-wrap: wrap; gap: 6px; max-height: 56px; margin-bottom: 12px; overflow: hidden; }
       .codex-plus-ad-highlights span { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(255,255,255,.08); color: #f3f4f6; font-size: 12px; padding: 4px 8px; }
       .codex-plus-ad-link { display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; background: #2563eb; color: #ffffff; font-size: 13px; font-weight: 650; text-decoration: none; padding: 8px 12px; }
       .codex-plus-ad-empty { border: 1px dashed rgba(255,255,255,.16); border-radius: 12px; color: #9ca3af; font-size: 13px; padding: 12px; text-align: center; }
-      .codex-plus-sponsor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-      .codex-plus-sponsor-card { border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 10px; background: rgba(255,255,255,.04); text-align: center; }
-      .codex-plus-sponsor-card-title { color: #f3f4f6; font-size: 13px; margin-bottom: 8px; }
-      .codex-plus-sponsor-qr { display: block; width: 100%; max-width: 340px; border-radius: 8px; margin: 0 auto; background: white; }
     `;
     document.documentElement.appendChild(style);
   }
@@ -1455,6 +1450,29 @@
     return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
   }
 
+  const codexPlusDreamSkinMainSurfaceMarker = "data-codex-plus-dream-skin-main-surface";
+
+  function ensureDreamSkinMainSurface() {
+    const existing = document.querySelector("main.main-surface");
+    if (existing) return existing;
+
+    const modularSurface = document.querySelector('main[class*="_MainContentSurface_"]');
+    const mainCandidates = modularSurface ? [] : [...document.querySelectorAll("main")];
+    const shellMain = modularSurface || (mainCandidates.length === 1 ? mainCandidates[0] : null);
+    if (!shellMain) return null;
+
+    shellMain.classList.add("main-surface");
+    shellMain.setAttribute(codexPlusDreamSkinMainSurfaceMarker, "true");
+    return shellMain;
+  }
+
+  function clearDreamSkinMainSurfaceCompatibility() {
+    document.querySelectorAll(`main[${codexPlusDreamSkinMainSurfaceMarker}="true"]`).forEach((node) => {
+      node.classList.remove("main-surface");
+      node.removeAttribute(codexPlusDreamSkinMainSurfaceMarker);
+    });
+  }
+
   function detectDreamSkinShellMode() {
     const root = document.documentElement;
     const body = document.body;
@@ -1493,7 +1511,7 @@
 
     const samples = [
       body,
-      document.querySelector("main.main-surface"),
+      ensureDreamSkinMainSurface(),
       document.querySelector("aside.app-shell-left-panel"),
     ].filter(Boolean);
     let lightVotes = 0;
@@ -1786,6 +1804,7 @@
     document.getElementById("codex-glass-vision-skin-chrome")?.remove();
     document.getElementById("codex-theme-chrome")?.remove();
     removeDreamSkinCompanion();
+    clearDreamSkinMainSurfaceCompatibility();
     const state = window.__CODEX_DREAM_SKIN_STATE__;
     const descriptor = state?.descriptor;
     if (descriptor) {
@@ -1928,7 +1947,7 @@
       if (window.__CODEX_DREAM_SKIN_DISABLED__) return;
       const root = document.documentElement;
       if (!root || !document.body) return;
-      const shellMain = document.querySelector("main.main-surface") || document.querySelector("main");
+      const shellMain = ensureDreamSkinMainSurface();
       if (!shellMain) {
         clearDreamSkinPresentation();
         return;
@@ -2038,6 +2057,7 @@
 
   function refreshDreamSkin() {
     const settings = codexPlusSettings();
+    if (settings.dreamSkinEnabled && !settings.dreamSkinPaused) ensureDreamSkinMainSurface();
     if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
       if (codexPlusBackendSettingsLoaded && (!settings.dreamSkinEnabled || settings.dreamSkinPaused)) {
         cleanupDreamSkin();
@@ -2238,6 +2258,8 @@
   let codexServiceTierState = {
     status: "loading",
     serviceTier: null,
+    configServiceTier: null,
+    serviceTierSource: null,
     message: "正在读取…",
     fastTierValue: "priority",
     controlMode: "inherit",
@@ -2542,10 +2564,15 @@
     };
   }
 
+  function codexServiceTierInheritedValue() {
+    if (codexServiceTierState.serviceTier != null) return codexServiceTierState.serviceTier;
+    return codexServiceTierState.configServiceTier ?? null;
+  }
+
   function codexServiceTierValueForMode(mode) {
     if (mode === "fast") return codexFastServiceTierValue();
     if (mode === "standard") return null;
-    return codexServiceTierState.serviceTier || null;
+    return codexServiceTierInheritedValue();
   }
 
   function codexServiceTierDefaultModeForControlMode(controlMode, fallback = "inherit") {
@@ -2553,12 +2580,6 @@
     if (controlMode === "global-standard") return "standard";
     if (controlMode === "inherit") return "inherit";
     return normalizeCodexThreadServiceTierMode(fallback);
-  }
-
-  function codexServiceTierControlModeForDefaultMode(defaultMode) {
-    if (defaultMode === "fast") return "global-fast";
-    if (defaultMode === "standard") return "global-standard";
-    return "inherit";
   }
 
   function codexServiceTierEffectiveThreadMode(threadMode = "inherit", defaultMode = "inherit") {
@@ -2571,7 +2592,7 @@
     if (controlMode === "global-fast") return codexFastServiceTierValue();
     if (controlMode === "global-standard") return null;
     if (controlMode === "custom") return codexServiceTierValueForMode(codexServiceTierEffectiveThreadMode(threadMode, defaultMode));
-    return codexServiceTierState.serviceTier || null;
+    return codexServiceTierInheritedValue();
   }
 
   function codexServiceTierEffectiveMode(value) {
@@ -2594,15 +2615,25 @@
     return `当前：${serviceTier}`;
   }
 
+  function serviceTierInheritSourceLabel(serviceTierSource) {
+    if (serviceTierSource === "config-toml") return "继承 config.toml";
+    return "继承 Codex 默认设置";
+  }
+
   function serviceTierStatusMessage(
     controlMode = codexServiceTierState.controlMode || "inherit",
     threadMode = codexServiceTierState.threadMode || "inherit",
     effectiveMode = codexServiceTierState.effectiveMode || "standard",
-    defaultMode = codexServiceTierState.defaultMode || "inherit"
+    defaultMode = codexServiceTierState.defaultMode || "inherit",
+    effectiveServiceTier = codexServiceTierState.effectiveServiceTier,
+    serviceTierSource = codexServiceTierState.serviceTierSource
   ) {
     if (codexServiceTierState.status === "loading") return "正在读取…";
     if (codexServiceTierState.status === "failed") return "读取失败";
-    if (controlMode === "inherit") return `继承 config.toml：${effectiveMode}`;
+    if (controlMode === "inherit") {
+      if (effectiveServiceTier == null) return "继承 Codex 默认设置：默认";
+      return `${serviceTierInheritSourceLabel(serviceTierSource)}：${effectiveMode}`;
+    }
     if (controlMode === "global-standard") return "全局 Standard";
     if (controlMode === "global-fast") return "全局 Fast";
     if (threadMode === "inherit") return `自定义：默认 ${defaultMode}`;
@@ -2750,7 +2781,7 @@
     writeThreadServiceTierState(state);
     refreshCodexServiceTierControls();
     const labels = {
-      inherit: "继承 config.toml",
+      inherit: "继承 Codex 默认设置",
       "global-standard": "全局 Standard",
       "global-fast": "全局 Fast",
       custom: "自定义",
@@ -2782,7 +2813,7 @@
     const fastAvailability = codexServiceTierFastAvailability();
     const message = effectiveMode === "fast" && !fastAvailability.supported
       ? codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)
-      : serviceTierStatusMessage(controlMode, threadMode, effectiveMode, defaultMode);
+      : serviceTierStatusMessage(controlMode, threadMode, effectiveMode, defaultMode, effectiveServiceTier, codexServiceTierState.serviceTierSource);
     codexServiceTierState = {
       ...codexServiceTierState,
       controlMode,
@@ -2804,9 +2835,10 @@
     if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
     const fastAvailability = codexServiceTierFastAvailability();
     const effectiveMode = codexServiceTierState.effectiveMode || "standard";
+    const inheritedDefault = codexServiceTierState.controlMode === "inherit" && codexServiceTierState.effectiveServiceTier == null;
     const scope = codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode !== "inherit"
       ? `当前 thread：${codexServiceTierState.threadMode}`
-      : serviceTierStatusMessage(codexServiceTierState.controlMode, codexServiceTierState.threadMode, effectiveMode, codexServiceTierState.defaultMode);
+      : serviceTierStatusMessage(codexServiceTierState.controlMode, codexServiceTierState.threadMode, effectiveMode, codexServiceTierState.defaultMode, codexServiceTierState.effectiveServiceTier, codexServiceTierState.serviceTierSource);
     const title = [
       `服务模式：${scope}`,
       "Standard：使用标准处理；不在请求上设置 priority。",
@@ -2816,6 +2848,7 @@
       return { tier: "unsupported", label: "不支持", title: `${title}\n${codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)}；当前请求会按 Standard 发送。` };
     }
     if (effectiveMode === "fast") return { tier: "fast", label: "fast", title };
+    if (inheritedDefault) return { tier: "default", label: "默认", title };
     return { tier: "standard", label: "standard", title };
   }
 
@@ -2885,6 +2918,34 @@
     refreshCodexServiceTierBadges();
   }
 
+  async function getConfigTomlServiceTier() {
+    const catalog = await loadCodexModelCatalog();
+    const rawTier = catalog && typeof catalog === "object" ? catalog.service_tier : null;
+    const normalized = String(rawTier || "").trim();
+    return normalized ? normalized : null;
+  }
+
+  async function resolveInheritedServiceTier() {
+    let appSetting = null;
+    let appSettingError = null;
+    try {
+      appSetting = await getCodexServiceTierSetting();
+    } catch (error) {
+      appSettingError = error;
+    }
+    if (appSetting != null && String(appSetting).trim() === "") appSetting = null;
+    let configTier = null;
+    let configError = null;
+    try {
+      configTier = await getConfigTomlServiceTier();
+    } catch (error) {
+      configError = error;
+    }
+    if (appSettingError && configError && appSetting == null && configTier == null) throw appSettingError;
+    const serviceTierSource = appSetting != null ? "codex-app" : (configTier != null ? "config-toml" : null);
+    return { serviceTier: appSetting, configServiceTier: configTier, serviceTierSource };
+  }
+
   async function loadCodexServiceTierState() {
     if (!codexPlusSettings().serviceTierControls) {
       codexServiceTierState = { ...codexServiceTierState, status: "idle", message: "未启用" };
@@ -2894,12 +2955,14 @@
     codexServiceTierState = { ...codexServiceTierState, status: "loading", message: "正在读取…" };
     refreshCodexServiceTierControls();
     try {
-      const serviceTier = await getCodexServiceTierSetting();
+      const { serviceTier, configServiceTier, serviceTierSource } = await resolveInheritedServiceTier();
       codexServiceTierState = {
         ...codexServiceTierState,
         status: "ok",
         serviceTier,
-        message: serviceTierGlobalStatusMessage(serviceTier),
+        configServiceTier,
+        serviceTierSource,
+        message: serviceTierGlobalStatusMessage(serviceTier ?? configServiceTier),
       };
     } catch (error) {
       codexServiceTierState = {
@@ -2991,7 +3054,7 @@
     const controlMode = normalizeCodexServiceTierControlMode(state.mode);
     const defaultMode = normalizeCodexThreadServiceTierMode(state.defaultMode);
     if (controlMode === "inherit") {
-      const inheritedServiceTier = params.serviceTier ?? params.service_tier ?? codexServiceTierState.serviceTier;
+      const inheritedServiceTier = params.serviceTier ?? params.service_tier ?? codexServiceTierInheritedValue();
       const override = codexServiceTierOverrideResult(method, params, threadIdHint, "inherit", inheritedServiceTier);
       return override.fastBlocked ? override : null;
     }
@@ -3008,7 +3071,7 @@
     const override = threadId ? codexThreadServiceTierOverride(threadId) : codexThreadServiceTierDraft();
     const mode = codexServiceTierEffectiveThreadMode(override?.mode, defaultMode);
     if (mode === "inherit") {
-      const inheritedServiceTier = params.serviceTier ?? params.service_tier ?? codexServiceTierState.serviceTier;
+      const inheritedServiceTier = params.serviceTier ?? params.service_tier ?? codexServiceTierInheritedValue();
       const inheritedOverride = codexServiceTierOverrideResult(method, params, threadIdHint, "inherit", inheritedServiceTier);
       return inheritedOverride.fastBlocked ? { ...inheritedOverride, threadId, mode } : null;
     }
@@ -3153,11 +3216,9 @@
     const patch = async () => {
       try {
         const { dispatcher, assetPrefix } = await loadDispatcher();
-        if (dispatcher.__codexServiceTierOriginalDispatchMessage) {
-          window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
-          return;
+        if (!dispatcher.__codexServiceTierOriginalDispatchMessage) {
+          dispatcher.__codexServiceTierOriginalDispatchMessage = dispatcher.dispatchMessage.bind(dispatcher);
         }
-        dispatcher.__codexServiceTierOriginalDispatchMessage = dispatcher.dispatchMessage.bind(dispatcher);
         dispatcher.dispatchMessage = (type, payload) => {
           return dispatchCodexPlusMessage(dispatcher, type, payload);
         };
@@ -3379,6 +3440,11 @@
     }));
   }
 
+  function formatCodexPlusAdTitle(title) {
+    const value = String(title || "");
+    return value.split(/[｜|]/, 1)[0].trim() || value;
+  }
+
   function renderCodexPlusAdGroup(type, emptyText) {
     const ads = codexPlusAds.filter((ad) => ad.type === type);
     if (!ads.length) return `<div class="codex-plus-ad-empty">${escapeHtml(emptyText)}</div>`;
@@ -3386,7 +3452,7 @@
       <article class="codex-plus-ad-card">
         ${ad.image ? `<img class="codex-plus-ad-image" src="${escapeHtml(ad.image)}" alt="">` : ""}
         <div class="codex-plus-ad-content">
-          <h3 class="codex-plus-ad-title">${escapeHtml(ad.title)}</h3>
+          <h3 class="codex-plus-ad-title">${escapeHtml(formatCodexPlusAdTitle(ad.title))}</h3>
           <p class="codex-plus-ad-description">${escapeHtml(ad.description)}</p>
           <div class="codex-plus-ad-highlights">
             ${ad.highlights.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
@@ -3484,7 +3550,6 @@
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">主页</button>
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="false">用户脚本</button>
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="sponsor" data-active="false">推荐内容</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="support" data-active="false">请作者喝咖啡</button>
         </div>
         <div class="codex-plus-modal-body">
           <div class="codex-plus-panel" data-codex-plus-panel="home">
@@ -3519,7 +3584,7 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="stepwise"><span></span></button>
             </div>
             <div class="codex-plus-row" data-codex-service-tier-controls="true">
-              <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承使用 config.toml 的 service tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
+              <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承优先读取 Codex 应用内设置，其次读取 config.toml 的 service_tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
               <div class="codex-plus-service-tier-control">
                 <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">正在读取…</div>
                 <div class="codex-plus-service-tier-actions">
@@ -3530,7 +3595,7 @@
                 </div>
                 <div class="codex-plus-service-tier-actions codex-plus-service-tier-thread-actions">
                   <span class="codex-plus-service-tier-thread-label">当前 thread 覆盖</span>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="当前 thread 不单独覆盖，继承 config.toml">继承</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="当前 thread 不单独覆盖，继承 Codex 默认设置">继承</button>
                   <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="仅当前 thread 使用 Standard，并切到自定义模式">Standard</button>
                   <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="仅当前 thread 使用 Fast，并切到自定义模式">Fast</button>
                 </div>
@@ -3629,19 +3694,6 @@
             <div class="codex-plus-sponsor-text">推荐内容分为赞助商推荐和普通推荐。赞助商推荐来自支持 Codex++ 继续维护的合作方；普通推荐用于展示适合 Codex 用户的服务与信息。</div>
             <div class="codex-plus-ad-remote">
               ${renderCodexPlusAds()}
-            </div>
-          </div>
-          <div class="codex-plus-panel" data-codex-plus-panel="support" hidden>
-            <div class="codex-plus-sponsor-text">如果 Codex++ 帮到了你，可以请我喝杯咖啡，或者随手赞赏支持一下继续维护。</div>
-            <div class="codex-plus-sponsor-grid">
-              <div class="codex-plus-sponsor-card">
-                <div class="codex-plus-sponsor-card-title">支付宝</div>
-                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.alipay || `${helperBase}/assets/sponsor-alipay.jpg`}" alt="支付宝赞赏码">
-              </div>
-              <div class="codex-plus-sponsor-card">
-                <div class="codex-plus-sponsor-card-title">微信</div>
-                <img class="codex-plus-sponsor-qr" src="${window.__CODEX_PLUS_SPONSOR_IMAGES__?.wechat || `${helperBase}/assets/sponsor-wechat.jpg`}" alt="微信赞赏码">
-              </div>
             </div>
           </div>
         </div>
@@ -3888,7 +3940,7 @@
 
   function updateFloatingCodexPlusMenuPosition(menu) {
     if (!menu?.classList?.contains(codexPlusMenuFloatingClass)) return;
-    const header = document.querySelector(selectors.appHeader) || document.querySelector("header");
+    const header = document.querySelector(selectors.appHeader);
     if (!header) return;
     const toolbarButtons = Array.from(header.querySelectorAll("button"))
       .map((button) => ({ button, rect: button.getBoundingClientRect() }))
@@ -3907,8 +3959,9 @@
 
     const headerRect = header.getBoundingClientRect();
     if (headerRect.height) {
-      setCssPropIfChanged(menu, "--codex-plus-menu-top", `${headerRect.top}px`);
-      setCssPropIfChanged(menu, "--codex-plus-menu-height", `${headerRect.height}px`);
+      const isApplicationMenuTopBar = header.matches?.('[class*="ApplicationMenuTopBar"]');
+      setCssPropIfChanged(menu, "--codex-plus-menu-top", `${isApplicationMenuTopBar ? Math.max(4, headerRect.top) : headerRect.top}px`);
+      setCssPropIfChanged(menu, "--codex-plus-menu-height", `${isApplicationMenuTopBar ? 28 : headerRect.height}px`);
     }
     menu.style.removeProperty("--codex-plus-menu-right");
   }
@@ -4800,20 +4853,6 @@
       row.setAttribute("data-codex-archive-page-row", "true");
     });
     return rows;
-  }
-
-  function archivedSessionRows() {
-    if (!archivePageHintVisible()) return [];
-    return sessionRows().filter((row) => row.querySelector('button[aria-label="取消归档对话"]') || row.outerHTML.includes("取消归档") || row.outerHTML.includes("unarchive"));
-  }
-
-  function archivedRows() {
-    if (!archivePageHintVisible()) return [];
-    return [...archivedSessionRows(), ...archivedPageRows()];
-  }
-
-  function archivedPageVisible() {
-    return archivePageHintVisible() && archivedRows().length > 0;
   }
 
   function sessionRefFromRow(row) {
@@ -5770,424 +5809,11 @@
     return await codexStateCall("set-global-state", { params: { key, value } });
   }
 
-  const codexProjectlessMainWindowStateDefaults = {
-    loaded: false,
-    enabled: false,
-    intent: "",
-    source: "",
-    revision: 0,
-    contextRevision: 0,
-    draftContext: null,
-    contextPromise: null,
-    lastGenericBeginAt: 0,
-    homeRouteRevision: -1,
-  };
-  const codexProjectlessMainWindowState = window.__codexProjectlessMainWindowState
-    && typeof window.__codexProjectlessMainWindowState === "object"
-    ? window.__codexProjectlessMainWindowState
-    : {};
-  Object.entries(codexProjectlessMainWindowStateDefaults).forEach(([key, value]) => {
-    if (!Object.prototype.hasOwnProperty.call(codexProjectlessMainWindowState, key)) {
-      codexProjectlessMainWindowState[key] = value;
-    }
-  });
-  window.__codexProjectlessMainWindowState = codexProjectlessMainWindowState;
-
-  function codexProjectlessMainWindowEnabled() {
-    return codexProjectlessMainWindowState.loaded
-      && codexProjectlessMainWindowState.enabled
-      && codexPlusBackendSettings.enhancementsEnabled !== false;
-  }
-
-  function clearCodexProjectlessMainWindowTimers() {
-    (window.__codexProjectlessMainWindowTimers || []).forEach((timer) => clearTimeout(timer));
-    window.__codexProjectlessMainWindowTimers = [];
-  }
-
-  function setCodexProjectlessMainWindowIntent(intent, source) {
-    const normalizedIntent = intent === "generic" || intent === "project" ? intent : "";
-    codexProjectlessMainWindowState.intent = normalizedIntent;
-    codexProjectlessMainWindowState.source = String(source || "");
-    codexProjectlessMainWindowState.revision += 1;
-    codexProjectlessMainWindowState.contextRevision = codexProjectlessMainWindowState.revision;
-    codexProjectlessMainWindowState.draftContext = null;
-    codexProjectlessMainWindowState.contextPromise = null;
-    if (normalizedIntent !== "generic") clearCodexProjectlessMainWindowTimers();
-  }
-
-  function codexProjectlessMainWindowShouldEnforce() {
-    return codexProjectlessMainWindowEnabled()
-      && codexProjectlessMainWindowState.intent === "generic";
-  }
-
-  function codexProjectlessContextValid(context) {
-    return !!context
-      && typeof context === "object"
-      && typeof context.cwd === "string"
-      && context.cwd.trim().length > 0
-      && typeof context.projectlessOutputDirectory === "string"
-      && context.projectlessOutputDirectory.trim().length > 0
-      && Array.isArray(context.workspaceRoots)
-      && context.workspaceRoots.length > 0;
-  }
-
-  function codexProjectlessPromptFromValue(value, visited = new WeakSet(), depth = 0) {
-    if (typeof value === "string") return depth > 0 ? value.trim() : "";
-    if (!value || typeof value !== "object" || depth > 5 || visited.has(value)) return "";
-    visited.add(value);
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        if (item?.type === "text" && typeof item.text === "string" && item.text.trim()) return item.text.trim();
-        const prompt = codexProjectlessPromptFromValue(item, visited, depth + 1);
-        if (prompt) return prompt;
-      }
-      return "";
-    }
-    for (const key of ["input", "prompt", "message", "params", "request", "payload"]) {
-      const prompt = codexProjectlessPromptFromValue(value[key], visited, depth + 1);
-      if (prompt) return prompt;
-    }
-    return "";
-  }
-
-  async function prepareCodexProjectlessDraftContext(prompt = "") {
-    if (!codexProjectlessMainWindowShouldEnforce()) return null;
-    const revision = codexProjectlessMainWindowState.revision;
-    if (codexProjectlessMainWindowState.contextRevision === revision
-        && codexProjectlessContextValid(codexProjectlessMainWindowState.draftContext)) {
-      return codexProjectlessMainWindowState.draftContext;
-    }
-    if (codexProjectlessMainWindowState.contextRevision === revision
-        && codexProjectlessMainWindowState.contextPromise) {
-      return await codexProjectlessMainWindowState.contextPromise;
-    }
-    const contextPromise = Promise.resolve().then(async () => {
-      const module = await loadCodexAppModule("projectless-thread-");
-      if (typeof module.n !== "function") throw new Error("Codex projectless-thread 生成器不可用");
-      const options = String(prompt || "").trim() ? { prompt: String(prompt).trim() } : {};
-      const context = await module.n(["~"], options);
-      if (!codexProjectlessContextValid(context)) throw new Error("Codex projectless-thread 返回了无效目录");
-      return {
-        cwd: context.cwd,
-        projectlessOutputDirectory: context.projectlessOutputDirectory,
-        workspaceRoots: [...context.workspaceRoots],
-      };
-    });
-    codexProjectlessMainWindowState.contextRevision = revision;
-    codexProjectlessMainWindowState.contextPromise = contextPromise;
-    try {
-      const context = await contextPromise;
-      if (revision === codexProjectlessMainWindowState.revision
-          && codexProjectlessMainWindowShouldEnforce()) {
-        codexProjectlessMainWindowState.draftContext = context;
-      }
-      return context;
-    } finally {
-      if (codexProjectlessMainWindowState.contextPromise === contextPromise) {
-        codexProjectlessMainWindowState.contextPromise = null;
-      }
-    }
-  }
-
-  function codexProjectlessStartParams(message) {
-    if (!message || typeof message !== "object") return null;
-    if (message.type === "send-cli-request-for-host" && message.method === "thread/start") return message.params;
-    if ((message.type === "mcp-request" || message.type === "worker-request")
-        && message.request?.method === "thread/start") return message.request.params;
-    if (message.type === "thread-prewarm-start" && message.request?.params) return message.request.params;
-    if (message.type === "prewarm-thread-start-for-host" && message.params) return message.params;
-    if (message.type === "start-conversation" || message.type === "start-thread-for-host") return message;
-    return null;
-  }
-
-  function patchCodexProjectlessStartParams(params, context) {
-    if (!params || typeof params !== "object" || !codexProjectlessContextValid(context)) return params;
-    const next = {
-      ...params,
-      cwd: context.cwd,
-      workspaceRoots: [...context.workspaceRoots],
-      workspaceKind: "projectless",
-      projectlessOutputDirectory: context.projectlessOutputDirectory,
-    };
-    delete next.projectAssignment;
-    if (next.permissions && typeof next.permissions === "object") {
-      const permissions = { ...next.permissions, runtimeWorkspaceRoots: [...context.workspaceRoots] };
-      if (permissions.sandboxPolicy?.type === "workspaceWrite") {
-        permissions.sandboxPolicy = {
-          ...permissions.sandboxPolicy,
-          writableRoots: [...context.workspaceRoots],
-        };
-      }
-      next.permissions = permissions;
-    }
-    return next;
-  }
-
-  function applyCodexProjectlessRequestOverride(message, context) {
-    const params = codexProjectlessStartParams(message);
-    if (!params) return message;
-    const nextParams = patchCodexProjectlessStartParams(params, context);
-    if (nextParams === params) return message;
-    if (message.type === "send-cli-request-for-host") return { ...message, params: nextParams };
-    if (message.type === "mcp-request" || message.type === "worker-request") {
-      return { ...message, request: { ...message.request, params: nextParams } };
-    }
-    if (message.type === "thread-prewarm-start") {
-      return { ...message, request: { ...message.request, params: nextParams } };
-    }
-    if (message.type === "prewarm-thread-start-for-host") return { ...message, params: nextParams };
-    return nextParams;
-  }
-
-  function codexProjectlessRequestNeedsOverride(message) {
-    if (!codexProjectlessMainWindowShouldEnforce()) return false;
-    const params = codexProjectlessStartParams(message);
-    if (!params) return false;
-    return params.workspaceKind !== "projectless"
-      || typeof params.projectlessOutputDirectory !== "string"
-      || !params.projectlessOutputDirectory.trim();
-  }
-
   function dispatchCodexPlusMessage(dispatcher, type, payload) {
-    const originalMessage = { ...(payload || {}), type };
-    const dispatch = (message) => {
-      const serviceTierMessage = codexServiceTierRequestOverride(message);
-      const nextType = serviceTierMessage?.type || type;
-      const { type: _type, ...nextPayload } = serviceTierMessage || {};
-      return dispatcher.__codexServiceTierOriginalDispatchMessage(nextType, nextPayload);
-    };
-    if (!codexProjectlessRequestNeedsOverride(originalMessage)) return dispatch(originalMessage);
-    const revision = codexProjectlessMainWindowState.revision;
-    const prompt = codexProjectlessPromptFromValue(originalMessage);
-    return prepareCodexProjectlessDraftContext(prompt).then((context) => {
-      if (revision !== codexProjectlessMainWindowState.revision
-          || !codexProjectlessMainWindowShouldEnforce()) {
-        return dispatch(originalMessage);
-      }
-      const message = applyCodexProjectlessRequestOverride(originalMessage, context);
-      sendCodexPlusDiagnostic("projectless_thread_start_overridden", {
-        type: String(type || ""),
-        workspaceRootCount: context.workspaceRoots.length,
-        hasOutputDirectory: !!context.projectlessOutputDirectory,
-      });
-      return dispatch(message);
-    }).catch((error) => {
-      sendCodexPlusDiagnostic("projectless_thread_start_override_failed", {
-        type: String(type || ""),
-        errorName: error?.name || "",
-        errorMessage: error?.message || String(error),
-      });
-      showToast("无项目会话准备失败，请重试", null);
-      throw error;
-    });
-  }
-
-  function codexProjectlessMainWindowLooksLikeHome() {
-    return Array.from(document.querySelectorAll("button, [role='button']")).some((element) => {
-      const label = String(
-        element.getAttribute?.("aria-label")
-        || element.getAttribute?.("title")
-        || element.innerText
-        || element.textContent
-        || ""
-      ).replace(/\s+/g, " ").trim();
-      return /^(select|choose) project$/i.test(label) || /^(选择|选取)项目$/.test(label);
-    });
-  }
-
-  async function navigateCodexProjectlessMainWindowHome(source, revision) {
-    if (!codexProjectlessMainWindowShouldEnforce()
-        || revision !== codexProjectlessMainWindowState.revision
-        || codexProjectlessMainWindowState.homeRouteRevision === revision
-        || !codexProjectlessMainWindowLooksLikeHome()) {
-      return false;
-    }
-    const module = await loadCodexAppModule("vscode-api-");
-    const dispatcher = module?.g;
-    if (!dispatcher || typeof dispatcher.dispatchHostMessage !== "function") {
-      throw new Error("Codex 内部导航接口不可用");
-    }
-    dispatcher.dispatchHostMessage({
-      type: "navigate-to-route",
-      path: "/",
-      state: { focusComposerNonce: Date.now() },
-    });
-    codexProjectlessMainWindowState.homeRouteRevision = revision;
-    sendCodexPlusDiagnostic("projectless_main_window_home_route_cleared", {
-      source: String(source || "runtime"),
-    });
-    return true;
-  }
-
-  async function enforceCodexProjectlessMainWindow(source, revision) {
-    if (!codexProjectlessMainWindowShouldEnforce()) return false;
-    if (revision != null && revision !== codexProjectlessMainWindowState.revision) return false;
-    let changed = false;
-    try {
-      const activeRoots = await getCodexGlobalState("active-workspace-roots").catch(() => null);
-      if (!codexProjectlessMainWindowShouldEnforce()) return false;
-      if (revision != null && revision !== codexProjectlessMainWindowState.revision) return false;
-      if (!Array.isArray(activeRoots) || activeRoots.length > 0) {
-        await setCodexGlobalState("active-workspace-roots", []);
-        sendCodexPlusDiagnostic("projectless_main_window_runtime_prepared", {
-          source: String(source || "runtime"),
-          previousRootCount: Array.isArray(activeRoots) ? activeRoots.length : activeRoots == null ? 0 : 1,
-        });
-        changed = true;
-      }
-      if (await navigateCodexProjectlessMainWindowHome(
-        source,
-        revision == null ? codexProjectlessMainWindowState.revision : revision
-      )) changed = true;
-    } catch (error) {
-      sendCodexPlusDiagnostic("projectless_main_window_runtime_failed", {
-        source: String(source || "runtime"),
-        errorName: error?.name || "",
-        errorMessage: error?.message || String(error),
-      });
-    }
-    return changed;
-  }
-
-  function scheduleCodexProjectlessMainWindowEnforcement(source) {
-    clearCodexProjectlessMainWindowTimers();
-    if (!codexProjectlessMainWindowShouldEnforce()) return;
-    const revision = codexProjectlessMainWindowState.revision;
-    window.__codexProjectlessMainWindowTimers = codexProjectlessMainWindowRetryDelaysMs.map((delay) => setTimeout(() => {
-      void enforceCodexProjectlessMainWindow(source, revision);
-    }, delay));
-  }
-
-  function codexProjectlessMainWindowTriggerKind(target) {
-    if (!target?.closest) return "";
-    const explicitProject = target.closest(
-      'button[aria-label^="Start new chat in "], [data-app-action-sidebar-project-row][data-app-action-sidebar-project-id], [role="menuitem"][data-project-id], [role="menuitem"][data-workspace-root]'
-    );
-    if (explicitProject) return "project";
-    const trigger = target.closest('button, a, [role="button"], [role="menuitem"]');
-    if (!trigger) return "";
-    const labels = [
-      trigger.getAttribute?.("aria-label"),
-      trigger.getAttribute?.("title"),
-      trigger.innerText || trigger.textContent,
-    ].map((value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase()).filter(Boolean);
-    return labels.some((label) => /^(new (task|chat)|quick chat|新建(任务|对话)|快速对话)(?:\s|ctrl\+|cmd\+|⌘|$)/i.test(label))
-      ? "generic"
-      : "";
-  }
-
-  function beginCodexProjectlessGenericNewTask(source) {
-    const now = Date.now();
-    if (codexProjectlessMainWindowState.intent !== "generic"
-        || now - codexProjectlessMainWindowState.lastGenericBeginAt > 400) {
-      setCodexProjectlessMainWindowIntent("generic", source);
-    } else {
-      codexProjectlessMainWindowState.source = String(source || "");
-    }
-    codexProjectlessMainWindowState.lastGenericBeginAt = now;
-    try {
-      sessionStorage.removeItem(upstreamProjectContextKey);
-    } catch {
-    }
-    scheduleCodexProjectlessMainWindowEnforcement(source);
-  }
-
-  function installCodexProjectlessNewTaskButtons() {
-    if (!codexProjectlessMainWindowEnabled()) return;
-    Array.from(document.querySelectorAll("button, a, [role='button'], [role='menuitem']")).forEach((trigger) => {
-      if (trigger.closest?.('[data-app-action-sidebar-project-row][data-app-action-sidebar-project-id]')) return;
-      if (codexProjectlessMainWindowTriggerKind(trigger) !== "generic") return;
-      if (trigger.dataset?.codexProjectlessMainWindow === codexProjectlessMainWindowVersion) return;
-      if (trigger.dataset) trigger.dataset.codexProjectlessMainWindow = codexProjectlessMainWindowVersion;
-      trigger.addEventListener("click", () => beginCodexProjectlessGenericNewTask("generic-new-task-button"), true);
-    });
-  }
-
-  function handleCodexProjectlessMainWindowNavigation(event) {
-    const target = event?.target?.closest ? event.target : event?.target?.parentElement;
-    const kind = codexProjectlessMainWindowTriggerKind(target);
-    if (kind === "project") {
-      setCodexProjectlessMainWindowIntent("project", "explicit-project");
-      return;
-    }
-    if (kind !== "generic") return;
-    beginCodexProjectlessGenericNewTask("generic-new-task");
-  }
-
-  function installCodexProjectlessMainWindowProtection() {
-    if (window.__codexProjectlessMainWindowProtectionVersion === codexProjectlessMainWindowVersion) return;
-    document.removeEventListener("pointerdown", window.__codexProjectlessMainWindowNavigationHandler, true);
-    document.removeEventListener("click", window.__codexProjectlessMainWindowNavigationHandler, true);
-    window.__codexProjectlessMainWindowNavigationHandler = handleCodexProjectlessMainWindowNavigation;
-    document.addEventListener("pointerdown", window.__codexProjectlessMainWindowNavigationHandler, true);
-    document.addEventListener("click", window.__codexProjectlessMainWindowNavigationHandler, true);
-    window.__codexProjectlessMainWindowProtectionVersion = codexProjectlessMainWindowVersion;
-  }
-
-  async function getCodexProjectlessMainWindowSetting() {
-    try {
-      const settingStorage = await codexSettingStorageModule();
-      return await settingStorage.n(codexProjectlessMainWindowSetting);
-    } catch (error) {
-      if (typeof codexStateCall === "function") {
-        const result = await codexStateCall("get-setting", { params: { key: codexProjectlessMainWindowSetting.key } });
-        return result && Object.prototype.hasOwnProperty.call(result, "value")
-          ? result.value
-          : codexProjectlessMainWindowSetting.default;
-      }
-      throw error;
-    }
-  }
-
-  async function loadCodexProjectlessMainWindowSetting(attempt = 0) {
-    try {
-      codexProjectlessMainWindowState.enabled = (await getCodexProjectlessMainWindowSetting()) === true;
-      codexProjectlessMainWindowState.loaded = true;
-      if (!codexProjectlessMainWindowState.enabled) {
-        setCodexProjectlessMainWindowIntent("", "setting-disabled");
-        return;
-      }
-      if (!codexProjectlessMainWindowState.intent) {
-        setCodexProjectlessMainWindowIntent("generic", "startup");
-      }
-      installAppServerModelRequestPatch();
-      scheduleCodexProjectlessMainWindowEnforcement("startup");
-      installCodexProjectlessNewTaskButtons();
-    } catch (error) {
-      if (attempt < 60) {
-        setTimeout(() => void loadCodexProjectlessMainWindowSetting(attempt + 1), 250);
-        return;
-      }
-      sendCodexPlusDiagnostic("projectless_main_window_setting_failed", {
-        errorName: error?.name || "",
-        errorMessage: error?.message || String(error),
-      });
-    }
-  }
-
-  if (window.__CODEX_PLUS_TEST_PROJECTLESS__) {
-    window.__codexPlusProjectlessTest = {
-      triggerKind: codexProjectlessMainWindowTriggerKind,
-      setEnabled: (enabled) => {
-        codexProjectlessMainWindowState.loaded = true;
-        codexProjectlessMainWindowState.enabled = enabled === true;
-      },
-      setIntent: setCodexProjectlessMainWindowIntent,
-      shouldEnforce: codexProjectlessMainWindowShouldEnforce,
-      requestNeedsOverride: codexProjectlessRequestNeedsOverride,
-      applyRequestOverride: applyCodexProjectlessRequestOverride,
-      appServerRequestNeedsOverride: codexProjectlessAppServerRequestNeedsOverride,
-      applyAppServerRequestOverride: applyCodexProjectlessAppServerRequestOverride,
-      patchAppServerClient: patchAppServerModelRequestClient,
-      contextValid: codexProjectlessContextValid,
-      setDraftContext: (context) => {
-        codexProjectlessMainWindowState.contextRevision = codexProjectlessMainWindowState.revision;
-        codexProjectlessMainWindowState.draftContext = context;
-        codexProjectlessMainWindowState.contextPromise = null;
-      },
-      dispatchMessage: dispatchCodexPlusMessage,
-      state: () => ({ ...codexProjectlessMainWindowState }),
-    };
+    const message = codexServiceTierRequestOverride({ ...(payload || {}), type });
+    const nextType = message?.type || type;
+    const { type: _type, ...nextPayload } = message || {};
+    return dispatcher.__codexServiceTierOriginalDispatchMessage(nextType, nextPayload);
   }
 
   function objectGlobalState(value) {
@@ -6210,6 +5836,18 @@
       applyServiceTierOverride: (method, params, threadIdHint = "") => applyCodexServiceTierRequestOverride(method, params, threadIdHint),
       requestOverride: (message) => codexServiceTierRequestOverride(message),
       diagnostics: () => [...(window.__codexPlusServiceTierTestDiagnostics || [])],
+      statusSummary: (state = {}) => {
+        const summaryState = { ...codexServiceTierState, ...state };
+        return serviceTierStatusMessage(
+          summaryState.controlMode,
+          summaryState.threadMode,
+          summaryState.effectiveMode,
+          summaryState.defaultMode,
+          summaryState.effectiveServiceTier,
+          summaryState.serviceTierSource
+        );
+      },
+      resolveInheritedServiceTier: () => resolveInheritedServiceTier(),
       currentModelName: () => codexServiceTierCurrentModelName(),
       fastAvailability: (modelName = codexServiceTierCurrentModelName()) => codexServiceTierFastAvailability(modelName),
       modelDescriptor: (modelName) => codexPlusModelDescriptor(modelName),
@@ -6243,6 +5881,7 @@
       settingStorageFromModule: codexSettingStorageFromModule,
       stateApiFromModule: codexStateApiFromModule,
       dispatcherFromModule: codexServiceTierDispatcherFromModule,
+      patchAppServerClient: patchAppServerModelRequestClient,
     };
     return;
   }
@@ -6648,85 +6287,16 @@
     return result;
   }
 
-  function codexProjectlessAppServerStartRequest(method, params) {
-    const requestMethod = String(method || "");
-    if (requestMethod === "send-cli-request-for-host"
-        && params?.method === "thread/start"
-        && params.params
-        && typeof params.params === "object") {
-      return {
-        params: params.params,
-        apply: (nextParams) => ({ ...params, params: nextParams }),
-      };
-    }
-    if (requestMethod === "prewarm-thread-start-for-host"
-        && params?.params
-        && typeof params.params === "object") {
-      return {
-        params: params.params,
-        apply: (nextParams) => ({ ...params, params: nextParams }),
-      };
-    }
-    if (requestMethod === "start-conversation"
-        || requestMethod === "start-thread-for-host"
-        || requestMethod === "prewarm-thread-start-for-host"
-        || requestMethod === "thread/start") {
-      return params && typeof params === "object"
-        ? { params, apply: (nextParams) => nextParams }
-        : null;
-    }
-    return null;
-  }
-
-  function codexProjectlessAppServerRequestNeedsOverride(method, params) {
-    if (!codexProjectlessMainWindowShouldEnforce()) return false;
-    const request = codexProjectlessAppServerStartRequest(method, params);
-    if (!request) return false;
-    return request.params.workspaceKind !== "projectless"
-      || typeof request.params.projectlessOutputDirectory !== "string"
-      || !request.params.projectlessOutputDirectory.trim();
-  }
-
-  function applyCodexProjectlessAppServerRequestOverride(method, params, context) {
-    const request = codexProjectlessAppServerStartRequest(method, params);
-    if (!request) return params;
-    return request.apply(patchCodexProjectlessStartParams(request.params, context));
-  }
-
   function patchAppServerModelRequestClient(client) {
     if (!client || typeof client.sendRequest !== "function") return false;
     if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) return true;
     const originalSendRequest = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
     client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
-      let nextParams = params;
-      if (codexProjectlessAppServerRequestNeedsOverride(method, params)) {
-        const revision = codexProjectlessMainWindowState.revision;
-        try {
-          const context = await prepareCodexProjectlessDraftContext(codexProjectlessPromptFromValue(params));
-          if (revision === codexProjectlessMainWindowState.revision
-              && codexProjectlessMainWindowShouldEnforce()) {
-            nextParams = applyCodexProjectlessAppServerRequestOverride(method, params, context);
-            sendCodexPlusDiagnostic("projectless_app_server_start_overridden", {
-              method: String(method || ""),
-              workspaceRootCount: context.workspaceRoots.length,
-              hasOutputDirectory: !!context.projectlessOutputDirectory,
-            });
-          }
-        } catch (error) {
-          sendCodexPlusDiagnostic("projectless_app_server_start_override_failed", {
-            method: String(method || ""),
-            errorName: error?.name || "",
-            errorMessage: error?.message || String(error),
-          });
-          showToast("无项目会话准备失败，请重试", null);
-          throw error;
-        }
-      }
-      const result = await originalSendRequest(method, nextParams, options);
+      const result = await originalSendRequest(method, params, options);
       if (!codexPlusModelUnlockEnabled()) return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-      return patchAppServerModelResult(appServerModelRequestMethod(String(method || ""), nextParams), result);
+      return patchAppServerModelResult(appServerModelRequestMethod(String(method || ""), params), result);
     };
     client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
     return true;
@@ -6836,15 +6406,6 @@
       }
     };
     tick();
-  }
-
-  function patchCodexModelWhitelist() {
-    ensureCodexModelWhitelistInstalls();
-    if (!codexPlusModelNames().length) {
-      loadCodexModelCatalog();
-      return;
-    }
-    runCodexModelWhitelistRefreshPass();
   }
 
   function refreshCodexModelWhitelistFromScan(mutations) {
@@ -7478,11 +7039,23 @@
 
   async function refreshRecentConversationsForHost() {
     try {
-      const signals = await import("./assets/app-server-manager-signals-C1h8B-R-.js");
-      if (typeof signals.rn === "function") await signals.rn("refresh-recent-conversations-for-host", { hostId: "local", sortKey: "updated_at" });
+      const signals = await loadOptionalCodexAppModule("app-server-manager-signals-");
+      const sendRequest = Object.values(signals || {}).find((candidate) => {
+        if (typeof candidate !== "function") return false;
+        try {
+          const source = Function.prototype.toString.call(candidate).replace(/\s+/g, "");
+          return /^function[$\w]+\(e,t\)\{return[$\w]+\.sendRequest\(e,t\)\}$/.test(source);
+        } catch {
+          return false;
+        }
+      });
+      if (typeof sendRequest !== "function") return false;
+      await sendRequest("refresh-recent-conversations-for-host", { hostId: "local", sortKey: "updated_at" });
+      return true;
     } catch (error) {
       window.__codexProjectMoveRefreshFailures = window.__codexProjectMoveRefreshFailures || [];
       window.__codexProjectMoveRefreshFailures.push(String(error?.stack || error));
+      return false;
     }
   }
 
@@ -7677,7 +7250,10 @@
       undo.addEventListener("click", async () => {
         const result = await postJson("/undo", { undo_token: undoToken });
         toast.textContent = result.message || "撤销完成";
-        if (result.status === "undone") window.location.reload();
+        if (result.status === "undone") {
+          const refreshed = await refreshRecentConversationsForHost();
+          if (!refreshed) window.location.reload();
+        }
         setTimeout(() => toast.remove(), 5000);
       });
       toast.appendChild(undo);
@@ -7815,25 +7391,6 @@
     return sidebarProjectRows().filter((row) => visibleElement(row));
   }
 
-  function currentProjectRepoPathFromStartButton() {
-    const startButtons = [...document.querySelectorAll('button[aria-label^="Start new chat in "]')]
-      .filter((button) => visibleElement(button));
-    const bottomHalf = window.innerHeight * 0.5;
-    startButtons.sort((left, right) => {
-      const leftRect = left.getBoundingClientRect();
-      const rightRect = right.getBoundingClientRect();
-      const leftScore = Math.abs(leftRect.y - bottomHalf) + Math.max(0, bottomHalf - leftRect.y) * 0.5;
-      const rightScore = Math.abs(rightRect.y - bottomHalf) + Math.max(0, bottomHalf - rightRect.y) * 0.5;
-      return leftScore - rightScore;
-    });
-    for (const button of startButtons) {
-      const row = button.closest('[data-app-action-sidebar-project-row][data-app-action-sidebar-project-id]');
-      const path = projectRowPath(row);
-      if (path?.startsWith?.("/")) return path;
-    }
-    return "";
-  }
-
   function currentProjectContextFromStartButton() {
     const startButtons = [...document.querySelectorAll('button[aria-label^="Start new chat in "]')]
       .filter((button) => visibleElement(button));
@@ -7886,10 +7443,6 @@
     return context.projectId ? { ...remoteProjectContextFromGlobalState(context.projectId), label: context.label } : context;
   }
 
-  function repoPathFromProjectLabel(label) {
-    return projectContextFromProjectLabel(label)?.repoPath || "";
-  }
-
   function contextMatchesProjectLabel(context, label) {
     const expected = normalizeProjectLabel(label);
     if (!expected) return true;
@@ -7920,21 +7473,11 @@
       || currentProjectContext();
   }
 
-  function currentProjectRepoPathForBranchMenu(menu, trigger = branchMenuTriggerFromMenu(menu)) {
-    return currentProjectContextForBranchMenu(menu, trigger)?.repoPath || "";
-  }
-
   function currentProjectRepoPathFromExpandedRows() {
     const expandedRows = visibleProjectRows().filter((row) => row.getAttribute("data-app-action-sidebar-project-collapsed") === "false");
     const pathRows = expandedRows.filter((row) => projectRowPath(row).startsWith("/"));
     if (pathRows.length === 1) return projectRowPath(pathRows[0]);
     return "";
-  }
-
-  function currentProjectRepoPath() {
-    return currentProjectRepoPathFromSelectedProjectButton()
-      || currentProjectRepoPathFromStartButton()
-      || currentProjectRepoPathFromExpandedRows();
   }
 
   function currentProjectContext() {
@@ -8421,64 +7964,6 @@
       && (left.baseBranch || "main") === (right.baseBranch || "main");
   }
 
-  function pendingWorktreeRequestMatchesSelection(request, selection) {
-    if (!selection || !request || request.launchMode !== "start-conversation") return false;
-    const sourceRoot = request.sourceWorkspaceRoot || "";
-    if (selection.repoPath && sourceRoot) return sameWorkspacePath(sourceRoot, selection.repoPath);
-    if (selection.projectId) return true;
-    return !selection.repoPath || sameWorkspacePath(sourceRoot, selection.repoPath);
-  }
-
-  function applyUpstreamPendingWorktreeOverride(payload) {
-    const selection = readUpstreamBranchSelection();
-    const request = payload?.request;
-    const sourceRef = upstreamQualifiedSourceRef(selection);
-    if (!codexPlusSettings().upstreamWorktreeCreate || !sourceRef) return payload;
-    if (!pendingWorktreeRequestMatchesSelection(request, selection)) return payload;
-    if (request?.startingState?.type !== "branch") return payload;
-    if (request.startingState.branchName === sourceRef) return payload;
-    const nextRequest = {
-      ...request,
-      startingState: { ...request.startingState, branchName: sourceRef },
-    };
-    prepareUpstreamBranchSelection(selection);
-    sendCodexPlusDiagnostic("upstream_pending_worktree_override_applied", {
-      label: selection.label || "",
-      sourceRef,
-      sourceWorkspaceRoot: request.sourceWorkspaceRoot || "",
-    });
-    return { ...(payload || {}), request: nextRequest };
-  }
-
-  function installUpstreamPendingWorktreeDispatcherPatch() {
-    const patchVersion = "1";
-    if (window.__codexUpstreamPendingWorktreeDispatcherPatch === patchVersion) return;
-    const patch = async () => {
-      try {
-        const module = await loadCodexAppModule("setting-storage-");
-        const dispatcherClass = typeof module.v === "function" && String(module.v).includes("dispatchMessage") ? module.v : null;
-        const dispatcher = dispatcherClass?.getInstance?.();
-        if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
-        if (!dispatcher.__codexUpstreamWorktreeOriginalDispatchMessage) {
-          dispatcher.__codexUpstreamWorktreeOriginalDispatchMessage = dispatcher.dispatchMessage.bind(dispatcher);
-          dispatcher.dispatchMessage = (type, payload) => {
-            const nextPayload = type === "pending-worktree-create"
-              ? applyUpstreamPendingWorktreeOverride(payload)
-              : payload;
-            return dispatcher.__codexUpstreamWorktreeOriginalDispatchMessage(type, nextPayload);
-          };
-        }
-        window.__codexUpstreamPendingWorktreeDispatcherPatch = patchVersion;
-      } catch (error) {
-        sendCodexPlusDiagnostic("upstream_pending_worktree_patch_failed", {
-          errorName: error?.name || "",
-          errorMessage: error?.message || String(error),
-        });
-      }
-    };
-    void patch();
-  }
-
   function upstreamWorktreeNativePayloadFromElement(element) {
     const trigger = element?.closest?.("[data-codex-worktree-create], [data-worktree-create]") || element;
     const scopes = [
@@ -8551,7 +8036,6 @@
 
   function installUpstreamWorktreeNativeAdapter() {
     const adapterVersion = "2";
-    installUpstreamPendingWorktreeDispatcherPatch();
     if (window.__codexUpstreamWorktreeNativeAdapterInstalled === adapterVersion) return;
     window.__codexUpstreamWorktreeNativeAdapterInstalled = adapterVersion;
     document.addEventListener("click", (event) => {
@@ -8874,7 +8358,6 @@
   }
 
   function installDeleteButtonEventDelegation() {
-    document.removeEventListener("pointerup", window.__codexSessionDeleteDocumentDeleteHandler, true);
     document.removeEventListener("click", window.__codexSessionDeleteDocumentDeleteHandler, true);
     const handler = (event) => {
       const button = event.target?.closest?.(`.${buttonClass}`);
@@ -8885,7 +8368,6 @@
       openDeleteConfirmForRow(row, button, ref, event);
     };
     window.__codexSessionDeleteDocumentDeleteHandler = handler;
-    document.addEventListener("pointerup", handler, true);
     document.addEventListener("click", handler, true);
   }
 
@@ -8965,7 +8447,6 @@
     button.addEventListener("pointerleave", hideActionButtonTooltip);
     button.addEventListener("focus", () => showActionButtonTooltip(button));
     button.addEventListener("blur", hideActionButtonTooltip);
-    button.addEventListener("pointerup", onActivate, true);
     button.addEventListener("click", (event) => {
       hideActionButtonTooltip();
       onActivate(event);
@@ -9258,18 +8739,6 @@
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation?.();
-  }
-
-  function isArchiveTitleText(value) {
-    return value === "已归档对话" || value === "Archived conversations";
-  }
-
-  function archiveTitleContainer() {
-    const heading = Array.from(document.querySelectorAll("h1, h2, h3"))
-      .find((element) => isArchiveTitleText((element.textContent || "").trim()));
-    if (heading) return heading;
-    return Array.from(document.querySelectorAll("h1, h2, h3, div, span"))
-      .find((element) => isArchiveTitleText((element.textContent || "").trim()) && element.getBoundingClientRect().x > 350);
   }
 
   function attachArchivedPageDeleteButton(row) {
@@ -9781,7 +9250,6 @@
   function scanLightweight() {
     installStyle();
     installCodexServiceTierDispatcherPatch();
-    installCodexProjectlessNewTaskButtons();
     installCodexPlusMenu();
     localizeCodexMenus();
     scheduleBackendHeartbeat();
@@ -9881,10 +9349,6 @@
     if (remoteWorkspaceRoot) payload.remoteWorkspaceRoot = remoteWorkspaceRoot;
     if (remoteProjectId) payload.remoteProjectId = remoteProjectId;
     return payload;
-  }
-
-  function zedRemoteCurrentThreadId() {
-    return zedRemoteCurrentFallbackPayload().threadId || "";
   }
 
   async function resolveZedRemoteFallbackRequest() {
@@ -10211,31 +9675,6 @@
     }
   }
 
-  async function openBestZedRemoteTarget() {
-    const request = zedRemoteBestOpenRequest(document) || await resolveZedRemoteFallbackRequest();
-    if (!request) {
-      showZedRemoteToast("Cannot find a remote workspace or file for Zed");
-      return;
-    }
-    openZedRemote(request);
-  }
-
-  function attachZedRemoteButton(candidate) {
-    const anchor = candidate.node;
-    if (anchor.dataset.codexZedRemoteVersion === zedRemoteOpenVersion) return;
-    anchor.dataset.codexZedRemoteVersion = zedRemoteOpenVersion;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = zedRemoteButtonClass;
-    button.textContent = "Open in Zed Remote";
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openZedRemote(candidate.request);
-    }, true);
-    anchor.insertAdjacentElement("afterend", button);
-  }
-
   function removeZedRemoteButtons() {
     document.querySelectorAll(`[data-codex-zed-remote-version]`).forEach((node) => {
       delete node.dataset.codexZedRemoteVersion;
@@ -10508,8 +9947,6 @@
   }
 
   void loadBackendSettingsForStartup();
-  installCodexProjectlessMainWindowProtection();
-  if (!window.__CODEX_PLUS_TEST_PROJECTLESS__) void loadCodexProjectlessMainWindowSetting();
   installUpstreamBranchDropdownAdapter();
   installUpstreamWorktreeNativeAdapter();
   scan();
