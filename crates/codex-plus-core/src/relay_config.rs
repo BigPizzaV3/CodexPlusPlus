@@ -2251,7 +2251,7 @@ pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
         .unwrap_or_else(|| profile.api_key.trim().to_string())
 }
 
-fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
+pub(crate) fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(&profile.config_contents)?;
     update_remote_control_openai_base_url(
         &mut doc,
@@ -2308,9 +2308,9 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     }
     if profile.relay_mode != crate::settings::RelayMode::PureApi
         && provider
-        .get("requires_openai_auth")
-        .and_then(Item::as_bool)
-        .is_none()
+            .get("requires_openai_auth")
+            .and_then(Item::as_bool)
+            .is_none()
     {
         provider["requires_openai_auth"] = toml_edit::value(true);
     }

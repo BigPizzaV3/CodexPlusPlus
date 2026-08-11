@@ -342,6 +342,12 @@ pub struct BackendSettings {
     pub provider_sync_last_selected_provider: String,
     #[serde(rename = "relayProfilesEnabled", default = "default_true")]
     pub relay_profiles_enabled: bool,
+    #[serde(rename = "relayRemoteSyncEnabled", default)]
+    pub relay_remote_sync_enabled: bool,
+    #[serde(rename = "relayRemoteSshTarget", default)]
+    pub relay_remote_ssh_target: String,
+    #[serde(rename = "relayRemoteCodexHome", default)]
+    pub relay_remote_codex_home: String,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
     pub enhancements_enabled: bool,
     #[serde(rename = "computerUseGuardEnabled", default)]
@@ -492,6 +498,9 @@ impl Default for BackendSettings {
             provider_sync_manual_providers: Vec::new(),
             provider_sync_last_selected_provider: String::new(),
             relay_profiles_enabled: true,
+            relay_remote_sync_enabled: false,
+            relay_remote_ssh_target: String::new(),
+            relay_remote_codex_home: String::new(),
             enhancements_enabled: true,
             computer_use_guard_enabled: false,
             codex_app_plugin_marketplace_unlock: true,
@@ -1055,6 +1064,19 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     if let Some(value) = source.get("relayProfilesEnabled").and_then(Value::as_bool) {
         target.insert("relayProfilesEnabled".to_string(), Value::Bool(value));
     }
+    merge_bool_setting(target, source, "relayRemoteSyncEnabled");
+    if let Some(value) = source.get("relayRemoteSshTarget").and_then(Value::as_str) {
+        target.insert(
+            "relayRemoteSshTarget".to_string(),
+            Value::String(value.trim().to_string()),
+        );
+    }
+    if let Some(value) = source.get("relayRemoteCodexHome").and_then(Value::as_str) {
+        target.insert(
+            "relayRemoteCodexHome".to_string(),
+            Value::String(value.trim().to_string()),
+        );
+    }
     if let Some(value) = source.get("enhancementsEnabled").and_then(Value::as_bool) {
         target.insert("enhancementsEnabled".to_string(), Value::Bool(value));
     }
@@ -1403,6 +1425,8 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     ]);
     settings.relay_common_config_contents = crate::relay_config::normalize_config_text(&common);
     settings.relay_context_config_contents = crate::relay_config::normalize_config_text(&context);
+    settings.relay_remote_ssh_target = settings.relay_remote_ssh_target.trim().to_string();
+    settings.relay_remote_codex_home = settings.relay_remote_codex_home.trim().to_string();
     for profile in &mut settings.relay_profiles {
         let _ = crate::relay_config::normalize_relay_profile_for_storage(profile);
     }
@@ -1586,6 +1610,28 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         assert!(!dir.join("settings.json.tmp").exists());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn remote_relay_sync_settings_round_trip_and_trim() {
+        let dir = temp_dir();
+        let settings_path = dir.join("settings.json");
+        let store = SettingsStore::new(settings_path.clone());
+
+        let saved = store
+            .update(json!({
+                "relayRemoteSyncEnabled": true,
+                "relayRemoteSshTarget": "  build-host  ",
+                "relayRemoteCodexHome": "  /var/tmp/codex-home  "
+            }))
+            .unwrap();
+
+        assert!(saved.relay_remote_sync_enabled);
+        assert_eq!(saved.relay_remote_ssh_target, "build-host");
+        assert_eq!(saved.relay_remote_codex_home, "/var/tmp/codex-home");
+        assert_eq!(store.load().unwrap(), saved);
+        std::fs::remove_file(settings_path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 
     #[test]

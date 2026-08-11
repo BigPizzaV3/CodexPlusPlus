@@ -830,6 +830,32 @@ body {
   margin-bottom: 10px;
 }
 
+.relay-remote-switch {
+  margin-bottom: 10px;
+}
+
+.relay-remote-fields {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(240px, 1.2fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.relay-remote-fields .field {
+  margin: 0;
+}
+
+.relay-remote-sync-button {
+  min-width: 112px;
+}
+
+.relay-remote-hint {
+  grid-column: 1 / -1;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
 .relay-profile-card {
   display: grid;
   grid-template-columns: 32px 32px minmax(0, 1fr) auto;
@@ -1404,6 +1430,10 @@ body {
   to {
     transform: rotate(360deg);
   }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
 }
 
 .aggregate-fields {
@@ -3498,6 +3528,7 @@ body {
   .feature-switch-grid,
   .dream-skin-image-row,
   .relay-fields,
+  .relay-remote-fields,
   .segmented,
   .relay-context-row,
   .context-editor-fields,

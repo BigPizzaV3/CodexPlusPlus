@@ -159,7 +159,7 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 
 | Area | Capabilities |
 | --- | --- |
-| Provider configuration | Official login, official login plus API, pure API, and aggregate providers; Responses / Chat Completions; model tests, model discovery, Provider Doctor, cc-switch and deep-link imports |
+| Provider configuration | Official login, official login plus API, pure API, and aggregate providers; Responses / Chat Completions; SSH remote sync, model tests, model discovery, Provider Doctor, cc-switch and deep-link imports |
 | Models and context | Per-model context windows, auto-compact limits, `model_catalog_json`, shared config, and per-provider MCP, Skill, and Plugin selection |
 | Session management | Local session scanning, bulk deletion, Markdown export, token usage history, Provider metadata sync, and backups |
 | Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, Chinese locale, fast startup, conversation width and scroll restore, service-tier controls, Goals, Stepwise, and image overlay |
@@ -184,6 +184,12 @@ Each provider can configure Responses or Chat Completions, model lists, a test m
 Per-model windows accept values such as `1M`, `200K`, or plain integers. Codex++ generates a dedicated `model_catalog_json` for Codex.
 
 Provider switching saves the current profile before applying the target profile. Real API keys remain local and should never be posted in logs, screenshots, or issues.
+
+### SSH Remote Sync
+
+The provider list can optionally synchronize the active provider to an SSH host. The local machine must provide `ssh` with non-interactive key authentication; the remote host needs a POSIX shell and `base64`.
+
+Synchronization updates only the active provider routing fields and `auth.json`, preserving remote project, plugin, and feature configuration. Before replacement, Codex++ creates a backup under `~/.codex/backups/remote-provider-switch-*`; files are atomically replaced with `600` permissions. A managed app-server is stopped so the client can reconnect with the new provider. Credentials travel only through SSH standard input and never appear in command-line arguments. Only synchronize to hosts you trust.
 
 ## Codex Enhancements
 

@@ -173,7 +173,7 @@ Telegram 频道：<https://t.me/CodexPlusPlus>
 
 | 模块 | 功能 |
 | --- | --- |
-| 供应商配置 | 官方登录、官方登录混入 API、纯 API、聚合供应商；Responses / Chat Completions；模型测试、模型列表、Provider Doctor、cc-switch 与链接导入 |
+| 供应商配置 | 官方登录、官方登录混入 API、纯 API、聚合供应商；Responses / Chat Completions；SSH 远端同步、模型测试、模型列表、Provider Doctor、cc-switch 与链接导入 |
 | 模型与上下文 | 每模型上下文窗口、自动压缩阈值、`model_catalog_json`、通用配置，以及按供应商选择 MCP、Skill 和 Plugin |
 | 会话管理 | 扫描本地会话、批量删除、Markdown 导出、Token 用量历史、Provider metadata 同步与备份 |
 | Codex 增强 | 插件市场与模型白名单、会话操作、粘贴修复、中文界面、快速启动、会话宽度与滚动恢复、服务层级控制、Goals、Stepwise、图片覆盖层 |
@@ -198,6 +198,12 @@ Codex++ 将官方登录、混入 API 和纯 API 分开保存和切换：
 每模型窗口支持 `1M`、`200K` 或纯数字。Codex++ 会生成独立 `model_catalog_json`，让 Codex 按当前模型使用对应窗口。
 
 切换供应商时会先保存当前配置，再写入目标配置。真实 API Key 只保存在本机，请勿放入日志、截图或 issue。
+
+### SSH 远端同步
+
+供应商列表可选择将当前供应商同步到 SSH 主机。该功能要求本机 `ssh` 可用，并已配置无需交互输入密码的密钥认证；远端需要 POSIX shell 和 `base64` 命令。
+
+同步只更新当前供应商的路由字段和 `auth.json`，保留远端的项目、插件与功能配置。写入前会备份到远端 `~/.codex/backups/remote-provider-switch-*`，文件以 `600` 权限原子替换；若受管的 app-server 正在运行，会停止旧进程并等待客户端自动重连。认证内容仅通过 SSH 标准输入传输，不会写入命令行参数。请只同步到你信任的主机。
 
 ## Codex 界面增强
 

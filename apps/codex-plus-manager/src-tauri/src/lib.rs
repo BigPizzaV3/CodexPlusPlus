@@ -150,6 +150,7 @@ pub fn run() {
             commands::fetch_relay_profile_models,
             commands::fetch_sub2api_billing,
             commands::switch_relay_profile,
+            commands::sync_relay_profile_remote,
             commands::apply_relay_injection,
             commands::apply_pure_api_injection,
             commands::clear_relay_injection,

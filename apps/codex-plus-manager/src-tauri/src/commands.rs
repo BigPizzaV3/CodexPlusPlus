@@ -2906,6 +2906,12 @@ pub struct RelayProfileSwitchRequest {
     pub previous_active_relay_id: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteRelaySyncPayload {
+    pub result: Option<codex_plus_core::remote_relay_sync::RemoteRelaySyncResult>,
+}
+
 #[tauri::command]
 pub fn switch_relay_profile(
     request: RelayProfileSwitchRequest,
@@ -2967,6 +2973,88 @@ pub fn switch_relay_profile(
             failed(
                 &format!("供应商切换失败：{error}"),
                 relay_switch_payload(settings, status, None),
+            )
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn sync_relay_profile_remote(
+    settings: BackendSettings,
+) -> CommandResult<RemoteRelaySyncPayload> {
+    let settings = normalize_settings_before_save(settings);
+    if !settings.relay_remote_sync_enabled {
+        return failed(
+            "SSH 远端同步未启用。",
+            RemoteRelaySyncPayload { result: None },
+        );
+    }
+    let target = settings.relay_remote_ssh_target.clone();
+    let codex_home = settings.relay_remote_codex_home.clone();
+    let profile = settings.active_relay_profile();
+    let profile_id = profile.id.clone();
+    log_manager_event(
+        "manager.sync_relay_profile_remote.start",
+        json!({
+            "targetRelayId": profile.id,
+            "sshTarget": target,
+            "remoteCodexHome": codex_home
+        }),
+    );
+    let sync_target = target.clone();
+    let sync_codex_home = codex_home.clone();
+    let sync_result = tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::remote_relay_sync::sync_relay_profile_to_ssh(
+            &sync_target,
+            &sync_codex_home,
+            &profile,
+        )
+    })
+    .await;
+    match sync_result {
+        Ok(Ok(result)) => {
+            log_manager_event(
+                "manager.sync_relay_profile_remote.ok",
+                json!({
+                    "targetRelayId": profile_id,
+                    "sshTarget": target,
+                    "backupPath": result.backup_path,
+                    "appServerRestarted": result.app_server_restarted
+                }),
+            );
+            ok(
+                "远端供应商已同步，旧 app-server 已停止并等待 Codex 自动重连。",
+                RemoteRelaySyncPayload {
+                    result: Some(result),
+                },
+            )
+        }
+        Ok(Err(error)) => {
+            log_manager_event(
+                "manager.sync_relay_profile_remote.failed",
+                json!({
+                    "targetRelayId": profile_id,
+                    "sshTarget": target,
+                    "error": error.to_string()
+                }),
+            );
+            failed(
+                &format!("远端供应商同步失败：{error}"),
+                RemoteRelaySyncPayload { result: None },
+            )
+        }
+        Err(error) => {
+            log_manager_event(
+                "manager.sync_relay_profile_remote.join_failed",
+                json!({
+                    "targetRelayId": profile_id,
+                    "sshTarget": target,
+                    "error": error.to_string()
+                }),
+            );
+            failed(
+                &format!("远端供应商同步任务异常：{error}"),
+                RemoteRelaySyncPayload { result: None },
             )
         }
     }

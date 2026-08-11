@@ -193,6 +193,9 @@ type BackendSettings = {
   providerSyncManualProviders: string[];
   providerSyncLastSelectedProvider: string;
   relayProfilesEnabled: boolean;
+  relayRemoteSyncEnabled: boolean;
+  relayRemoteSshTarget: string;
+  relayRemoteCodexHome: string;
   enhancementsEnabled: boolean;
   computerUseGuardEnabled: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
@@ -452,6 +455,16 @@ type RelaySwitchResult = CommandResult<{
   settingsPath: string;
   user_scripts: unknown;
   relay: RelayPayload;
+}>;
+
+type RemoteRelaySyncResult = CommandResult<{
+  result: {
+    sshTarget: string;
+    codexHome: string;
+    backupPath: string;
+    modelProvider: string;
+    appServerRestarted: boolean;
+  } | null;
 }>;
 
 type SettingsBackfillResult = CommandResult<{
@@ -792,6 +805,9 @@ const defaultSettings: BackendSettings = {
   providerSyncManualProviders: [],
   providerSyncLastSelectedProvider: "",
   relayProfilesEnabled: true,
+  relayRemoteSyncEnabled: false,
+  relayRemoteSshTarget: "",
+  relayRemoteCodexHome: "",
   enhancementsEnabled: true,
   computerUseGuardEnabled: false,
   codexAppPluginMarketplaceUnlock: true,
@@ -2337,6 +2353,10 @@ export function App() {
       showNotice(t("供应商配置已关闭"), t("当前不会写入 Codex config.toml / auth.json。打开供应商配置总开关后再切换。"), "failed");
       return;
     }
+    if (switchSettings.relayRemoteSyncEnabled && !switchSettings.relayRemoteSshTarget.trim()) {
+      showNotice(t("远端同步配置不完整"), t("请先填写 SSH 主机别名。"), "failed");
+      return;
+    }
     const targetBeforeSnapshot = activeRelayProfile(switchSettings);
     logDiagnostic("switchRelayProfile.start", {
       currentRelayId: settingsForm.activeRelayId,
@@ -2409,6 +2429,86 @@ export function App() {
         launchMode: selectedSettings.launchMode,
         status: result.status,
       });
+      if (selectedSettings.relayRemoteSyncEnabled) {
+        const remoteResult = await run(() =>
+          call<RemoteRelaySyncResult>("sync_relay_profile_remote", {
+            settings: selectedSettings,
+          }),
+        );
+        if (!remoteResult || !isSuccessStatus(remoteResult.status)) {
+          const message = remoteResult?.message || t("本地已切换，但远端同步没有返回结果。");
+          showNotice(t("供应商切换"), tf("本地已切换；{0}", [message]), "failed");
+          return;
+        }
+        showNotice(
+          t("供应商切换"),
+          tf("本地与 {0} 已切换到 {1}。", [selectedSettings.relayRemoteSshTarget, currentSelected.name]),
+          "ok",
+        );
+      } else {
+        showNotice(t("供应商切换"), tf("本地已切换到 {0}。", [currentSelected.name]), "ok");
+      }
+    } finally {
+      setRelaySwitching(false);
+    }
+  };
+
+  const syncCurrentRelayProfileRemote = async (next: BackendSettings) => {
+    if (relaySwitching) {
+      showNotice(t("SSH 远端同步"), t("供应商操作还没有完成，请稍后再试。"), "failed");
+      return;
+    }
+    let syncSettings = normalizeSettings(next);
+    if (!syncSettings.relayRemoteSyncEnabled) {
+      showNotice(t("SSH 远端同步"), t("请先启用 SSH 远端同步。"), "failed");
+      return;
+    }
+    if (!syncSettings.relayRemoteSshTarget.trim()) {
+      showNotice(t("SSH 远端同步"), t("请先填写 SSH 主机别名。"), "failed");
+      return;
+    }
+    const selected = activeRelayProfile(syncSettings);
+    const validationError = relayProfileSwitchValidation(selected);
+    if (validationError) {
+      showNotice(t("供应商配置可能不正确"), validationError, "failed");
+      return;
+    }
+
+    setRelaySwitching(true);
+    try {
+      syncSettings = await snapshotActiveRelayFilesBeforeSwitch(syncSettings, selected.id);
+      const saveResult = await run(() => call<SettingsResult>("save_settings", { settings: syncSettings }));
+      if (!saveResult || !isSuccessStatus(saveResult.status)) {
+        showNotice(
+          t("SSH 远端同步"),
+          saveResult?.message || t("保存当前供应商快照失败，已停止远端同步。"),
+          "failed",
+        );
+        return;
+      }
+      syncSettings = normalizeSettings(saveResult.settings);
+      setSettings(saveResult);
+      setSettingsForm(syncSettings);
+
+      const remoteResult = await run(() =>
+        call<RemoteRelaySyncResult>("sync_relay_profile_remote", {
+          settings: syncSettings,
+        }),
+      );
+      if (!remoteResult || !isSuccessStatus(remoteResult.status)) {
+        showNotice(
+          t("SSH 远端同步"),
+          remoteResult?.message || t("远端同步没有返回结果。"),
+          "failed",
+        );
+        return;
+      }
+      const current = activeRelayProfile(syncSettings);
+      showNotice(
+        t("SSH 远端同步"),
+        tf("已将 {0} 同步到 {1}。", [current.name, syncSettings.relayRemoteSshTarget]),
+        "ok",
+      );
     } finally {
       setRelaySwitching(false);
     }
@@ -2765,6 +2865,7 @@ export function App() {
       fetchRelayProfileModels,
       fetchSub2ApiBilling,
       switchRelayProfile,
+      syncCurrentRelayProfileRemote,
       relaySwitching,
       switchOfficialMode,
       switchPureApiMode,
@@ -3127,6 +3228,7 @@ type Actions = {
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
   fetchSub2ApiBilling: (profile: RelayProfile) => Promise<Sub2ApiBillingResult | null>;
   switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
+  syncCurrentRelayProfileRemote: (settings: BackendSettings) => Promise<void>;
   relaySwitching: boolean;
   switchOfficialMode: () => Promise<void>;
   switchPureApiMode: () => Promise<void>;
@@ -3427,6 +3529,62 @@ function RelayScreen({
             </span>
             <ToggleVisual />
           </label>
+          <label className="switch-row relay-remote-switch">
+            <input
+              checked={normalized.relayRemoteSyncEnabled}
+              onChange={(event) => {
+                const next = { ...normalized, relayRemoteSyncEnabled: event.currentTarget.checked };
+                void saveRelaySettings(next);
+              }}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("同步到 SSH 远端")}</strong>
+              <small>{t("切换供应商时同步路由与认证；远端会先备份，并保留项目、插件和功能配置。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
+          {normalized.relayRemoteSyncEnabled ? (
+            <div className="relay-remote-fields">
+              <Field label={t("SSH 主机别名")}>
+                <Input
+                  value={normalized.relayRemoteSshTarget}
+                  onChange={(event) => {
+                    void saveRelaySettings({
+                      ...normalized,
+                      relayRemoteSshTarget: event.currentTarget.value,
+                    });
+                  }}
+                  placeholder={t("例如 build-host 或 user@example.com")}
+                />
+              </Field>
+              <Field label={t("远端 CODEX_HOME")}>
+                <Input
+                  value={normalized.relayRemoteCodexHome}
+                  onChange={(event) => {
+                    void saveRelaySettings({
+                      ...normalized,
+                      relayRemoteCodexHome: event.currentTarget.value,
+                    });
+                  }}
+                  placeholder={t("留空使用 ~/.codex")}
+                />
+              </Field>
+              <Button
+                className="relay-remote-sync-button"
+                disabled={!normalized.relayRemoteSshTarget.trim() || actions.relaySwitching}
+                onClick={() => void actions.syncCurrentRelayProfileRemote(normalized)}
+                title={t("把当前供应商的路由与认证立即同步到 SSH 远端")}
+                variant="outline"
+              >
+                <RefreshCw className={`h-4 w-4 ${actions.relaySwitching ? "spin" : ""}`} />
+                {actions.relaySwitching ? t("同步中") : t("立即同步")}
+              </Button>
+              <small className="relay-remote-hint">
+                {t("需要本机 OpenSSH 和无交互密钥认证；仅同步到你信任的主机。")}
+              </small>
+            </div>
+          ) : null}
           <div className="relay-add-row">
             <Button
               variant="secondary"
