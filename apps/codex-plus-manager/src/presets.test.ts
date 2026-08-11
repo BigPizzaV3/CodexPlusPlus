@@ -22,5 +22,5 @@ test("DeepSeek preset prefills official 1M windows", () => {
 
 test("DeepSeek preset keeps flash as default model with official base URL", () => {
   assert.equal(deepseekPreset().model, "deepseek-v4-flash");
-  assert.equal(deepseekPreset().baseUrl, "https://api.deepseek.com");
+  assert.equal(deepseekPreset().baseUrl, "https://api.deepseek.com/");
 });

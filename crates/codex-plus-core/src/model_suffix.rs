@@ -144,8 +144,7 @@ const GPT56_METADATA_JSON: &str = include_str!(concat!(
     "/../../assets/gpt56-model-metadata-compat.json"
 ));
 
-/// DeepSeek 官方 models.json 元数据（来自 DeepSeek Codex 接入教程脚本），
-/// 仅在 profile 显式开启 `deepseekOfficialMetadata` 时用作 catalog 模板。
+/// DeepSeek Responses 兼容元数据（官方模型能力 overlay，与上游 #1769 一致）。
 const DEEPSEEK_METADATA_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/deepseek-model-metadata.json"
@@ -153,17 +152,6 @@ const DEEPSEEK_METADATA_JSON: &str = include_str!(concat!(
 
 pub fn requires_bundled_metadata_catalog(slug: &str) -> bool {
     gpt56_metadata_entry(slug).is_some()
-}
-
-/// 是否属于 DeepSeek 官方 Codex 接入教程覆盖的模型（flash / pro）。
-pub fn is_deepseek_official_slug(slug: &str) -> bool {
-    deepseek_metadata_entry(slug).is_some()
-}
-
-/// DeepSeek 官方元数据模板：flash 与 pro 除 slug / priority 外字段一致，
-/// 构建时 slug 等字段会被覆盖，因此任选一条作为共享模板即可。
-pub fn deepseek_official_template() -> Option<Value> {
-    deepseek_metadata_entry("deepseek-v4-flash")
 }
 
 pub fn model_ui_metadata(slug: &str) -> Option<Value> {
@@ -222,7 +210,7 @@ pub fn build_model_catalog_json(
     entries: &[ModelCatalogEntry],
     fallback_window: Option<u64>,
 ) -> String {
-    build_model_catalog_json_with_capabilities(entries, fallback_window, None, None)
+    build_model_catalog_json_with_capabilities(entries, fallback_window, None, None, false)
 }
 
 /// 使用指定模板（或内置 bundled 模板）构建 catalog。
@@ -232,7 +220,7 @@ pub fn build_model_catalog_json_with_template(
     fallback_window: Option<u64>,
     template: Option<&Value>,
 ) -> String {
-    build_model_catalog_json_with_capabilities(entries, fallback_window, template, None)
+    build_model_catalog_json_with_capabilities(entries, fallback_window, template, None, false)
 }
 
 /// 使用显式 provider capability 构建 catalog。
@@ -243,15 +231,21 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
     fallback_window: Option<u64>,
     template: Option<&Value>,
     use_responses_lite_override: Option<bool>,
+    deepseek_metadata: bool,
 ) -> String {
     let models: Vec<Value> = entries
         .iter()
         .enumerate()
         .map(|(index, entry)| {
-            let (mut model, has_model_metadata) = template
-                .cloned()
-                .map(|template| (template, false))
-                .unwrap_or_else(|| model_template_entry(&entry.slug));
+            let (mut model, has_model_metadata) = if deepseek_metadata {
+                deepseek_model_template_entry(&entry.slug)
+                    .unwrap_or_else(|| model_template_entry(&entry.slug))
+            } else {
+                template
+                    .cloned()
+                    .map(|template| (template, false))
+                    .unwrap_or_else(|| model_template_entry(&entry.slug))
+            };
             let metadata_window = model.get("context_window").and_then(Value::as_u64);
             let context_window = entry
                 .suffix_window
@@ -265,12 +259,16 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
             }
             model["context_window"] = json!(context_window);
             model["max_context_window"] = json!(context_window);
-            // 默认 95 会让 1M 显示为 950K，显式写 100 以显示真实窗口。
-            model["effective_context_window_percent"] = json!(100);
+            // 通用自定义模型显示完整窗口；DeepSeek Responses 保留官方目录的 95%。
+            if !deepseek_metadata {
+                model["effective_context_window_percent"] = json!(100);
+            }
             model["auto_compact_token_limit"] = Value::Null;
             model["priority"] = json!(1000 + index);
             model["visibility"] = json!("list");
-            model["supported_in_api"] = json!(true);
+            if !deepseek_metadata {
+                model["supported_in_api"] = json!(true);
+            }
             if let Some(use_responses_lite) = use_responses_lite_override {
                 model["use_responses_lite"] = json!(use_responses_lite);
             }
@@ -284,6 +282,17 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
         })
         .collect();
     serde_json::to_string_pretty(&json!({ "models": models })).unwrap_or_default()
+}
+
+fn deepseek_model_template_entry(slug: &str) -> Option<(Value, bool)> {
+    let compatibility = catalog_metadata_entry(DEEPSEEK_METADATA_JSON, slug)?;
+    let mut template = first_bundled_template_entry().unwrap_or_else(|| json!({}));
+    if let (Some(target), Some(source)) = (template.as_object_mut(), compatibility.as_object()) {
+        for (key, value) in source {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+    Some((template, true))
 }
 
 fn model_template_entry(slug: &str) -> (Value, bool) {
@@ -322,17 +331,11 @@ fn first_bundled_template_entry() -> Option<Value> {
 }
 
 fn gpt56_metadata_entry(slug: &str) -> Option<Value> {
-    let catalog: Value = serde_json::from_str(GPT56_METADATA_JSON).ok()?;
-    catalog
-        .get("models")?
-        .as_array()?
-        .iter()
-        .find(|entry| entry.get("slug").and_then(Value::as_str) == Some(slug))
-        .cloned()
+    catalog_metadata_entry(GPT56_METADATA_JSON, slug)
 }
 
-fn deepseek_metadata_entry(slug: &str) -> Option<Value> {
-    let catalog: Value = serde_json::from_str(DEEPSEEK_METADATA_JSON).ok()?;
+fn catalog_metadata_entry(catalog_json: &str, slug: &str) -> Option<Value> {
+    let catalog: Value = serde_json::from_str(catalog_json).ok()?;
     catalog
         .get("models")?
         .as_array()?

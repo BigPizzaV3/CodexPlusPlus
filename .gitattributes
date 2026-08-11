@@ -7,7 +7,15 @@
 *.sh text eol=lf
 .github/workflows/*.yml text eol=lf
 
+<<<<<<< HEAD
 # Keep every byte-exact upstream theme asset stable on all checkout platforms.
 assets/inject/upstream/**/*.js text eol=lf
 assets/inject/upstream/**/*.css text eol=lf
+=======
+# Keep byte-exact upstream theme assets identical on every checkout platform.
+assets/inject/upstream/**/*.js text eol=lf
+assets/inject/upstream/**/*.css text eol=lf
+assets/inject/upstream/**/*.json text eol=lf
+# Keep the skin-pack manifest covered explicitly for the upstream asset hash check.
+>>>>>>> upstream/pr-1769
 assets/inject/upstream/skin-packs/packs/*/theme.json text eol=lf

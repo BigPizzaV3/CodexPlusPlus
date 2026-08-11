@@ -50,7 +50,7 @@ export const PRESETS: ProviderPreset[] = [
     websiteUrl: "https://platform.deepseek.com",
     apiKeyUrl: "https://platform.deepseek.com/api_keys",
     category: "cn_official",
-    baseUrl: "https://api.deepseek.com",
+    baseUrl: "https://api.deepseek.com/",
     // DeepSeek 官方已原生支持 Responses API（官方 Codex 接入教程），直连无需本地协议代理。
     protocol: "responses",
     model: "deepseek-v4-flash",
