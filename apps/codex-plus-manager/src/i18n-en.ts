@@ -30,8 +30,8 @@ export const EN_PLAIN: Record<string, string> = {
   "Amazon Bedrock 配置": "Amazon Bedrock configuration",
   "Bedrock API Key": "Bedrock API Key",
   "Bedrock API Key (Bearer Token)": "Bedrock API Key (Bearer Token)",
-  "Bedrock Mantle 的 /v1/responses 端点仅暴露 OpenAI 系模型：openai.gpt-5.6-sol（1M 上下文）、openai.gpt-5.6-terra、openai.gpt-5.6-luna。GPT-OSS 等 Bedrock native 模型 ID 走 Mantle 会返回 404，需要通过 LiteLLM 中转。":
-    "Bedrock Mantle's /v1/responses endpoint only exposes OpenAI-family models: openai.gpt-5.6-sol (1M context), openai.gpt-5.6-terra, and openai.gpt-5.6-luna. Bedrock native model IDs such as GPT-OSS return 404 through Mantle and need a LiteLLM relay.",
+  "Bedrock Mantle 仅暴露 OpenAI 系模型。GPT-5.6 三款均为 1M 上下文：openai.gpt-5.6-sol（us-east-1 / us-east-2）、openai.gpt-5.6-terra、openai.gpt-5.6-luna（两者另支持 us-west-2）。GPT-OSS 等 Bedrock native 模型 ID 走 Mantle 会返回 404，需要通过 LiteLLM 中转。":
+    "Bedrock Mantle only exposes OpenAI-family models. All three GPT-5.6 models have a 1M context window: openai.gpt-5.6-sol (us-east-1 / us-east-2), openai.gpt-5.6-terra, and openai.gpt-5.6-luna (the latter two also support us-west-2). Bedrock native model IDs such as GPT-OSS return 404 through Mantle and need a LiteLLM relay.",
   "Bedrock via OpenAI-兼容 endpoint 通常需要 openai.* 前缀的模型 ID；已按当前值保存":
     "Bedrock via an OpenAI-compatible endpoint usually needs a model ID prefixed with openai.*; saved as entered",
   "Chat Completions 转 Responses": "Chat Completions to Responses",

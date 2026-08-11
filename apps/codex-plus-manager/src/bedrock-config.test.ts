@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fc from "fast-check";
-import { bedrockAllowsProviderTesting, bedrockAwsProfileConfigureCommand, bedrockAwsProfileLoginCommand, bedrockLongTermApiKeyCommand, bedrockShortTermApiKeyGuidanceText, bedrockValidationError, bedrockValidationErrorForBottom, deriveBedrockConfigFromConfigText, isBedrockRelayProfile, resolveBedrockAfterDerive, RESERVED_MODEL_PROVIDER_IDS_MIRROR, BEDROCK_DEFAULT_MODEL, BEDROCK_DEFAULT_MODEL_LIST, type BedrockConfig } from "./bedrock-config.ts";
+import { bedrockAllowsProviderTesting, bedrockAwsProfileConfigureCommand, bedrockAwsProfileLoginCommand, bedrockLongTermApiKeyCommand, bedrockShortTermApiKeyGuidanceText, bedrockValidationError, bedrockValidationErrorForBottom, deriveBedrockConfigFromConfigText, isBedrockRelayProfile, resolveBedrockAfterDerive, RESERVED_MODEL_PROVIDER_IDS_MIRROR, BEDROCK_DEFAULT_MODEL, BEDROCK_DEFAULT_MODEL_LIST, BEDROCK_DEFAULT_REGION, type BedrockConfig } from "./bedrock-config.ts";
 
 // Feature: amazon-bedrock-provider, Property 12: 测试/诊断按钮可见性判定
 // **Validates: Requirements 9.1, 9.2**
@@ -625,19 +625,33 @@ describe("resolveBedrockAfterDerive - preserve UI-set bedrock across derive", ()
   });
 });
 
-// Bedrock 预设的模型清单：`onSelectBedrock` 直接引用这两个常量，
-// 这里锁住它们的内容，避免模型 ID 或窗口后缀被无意改动。
+// Bedrock 预设的模型清单：`onSelectBedrock` 直接引用这几个常量，
+// 这里锁住它们的内容，避免模型 ID、窗口后缀或 region 被无意改动。
+//
+// 依据：官方 model card（2026-07-13 GA）
+// https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html
 describe("Bedrock preset model defaults", () => {
-  it("default model is the 1M-context GPT-5.6 variant", () => {
+  it("default model is GPT-5.6 Sol", () => {
     assert.strictEqual(BEDROCK_DEFAULT_MODEL, "openai.gpt-5.6-sol");
   });
 
-  it("model list carries all three GPT-5.6 variants, 1M suffix only on the default", () => {
+  it("all three GPT-5.6 variants carry the [1M] suffix", () => {
+    // 官方 model card 三款都标注 Context window: 1M tokens，而 codex 内置元数据
+    // 都按 272k 记录，因此三条都必须带后缀——漏掉任何一条都会让该模型沿用 272k。
     assert.deepStrictEqual(BEDROCK_DEFAULT_MODEL_LIST.split("\n"), [
       "openai.gpt-5.6-sol[1M]",
-      "openai.gpt-5.6-terra",
-      "openai.gpt-5.6-luna",
+      "openai.gpt-5.6-terra[1M]",
+      "openai.gpt-5.6-luna[1M]",
     ]);
+  });
+
+  it("default region is available for all three variants", () => {
+    // Sol 只在 us-east-1 / us-east-2；Terra 与 Luna 另支持 us-west-2。
+    // 预设 region 必须落在三款的公共交集里，否则默认模型 Sol 直接不可用。
+    assert.ok(
+      ["us-east-1", "us-east-2"].includes(BEDROCK_DEFAULT_REGION),
+      `region must be available for Sol too: ${BEDROCK_DEFAULT_REGION}`,
+    );
   });
 
   it("every entry keeps the openai. prefix Mantle requires", () => {
@@ -646,5 +660,12 @@ describe("Bedrock preset model defaults", () => {
     for (const entry of BEDROCK_DEFAULT_MODEL_LIST.split("\n")) {
       assert.ok(entry.startsWith("openai."), `entry should keep the openai. prefix: ${entry}`);
     }
+  });
+
+  it("default model appears in the model list", () => {
+    assert.ok(
+      BEDROCK_DEFAULT_MODEL_LIST.split("\n").some((entry) => entry.startsWith(BEDROCK_DEFAULT_MODEL)),
+      "the default model must be one of the listed models",
+    );
   });
 });

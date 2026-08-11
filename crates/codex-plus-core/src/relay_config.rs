@@ -3331,6 +3331,12 @@ pub(crate) fn complete_bedrock_bearer_token_config(
     }
 
     // Requirement 3.3：无条件写入 web_search = "disabled"
+    //
+    // Bedrock 侧的 Web Search 已于 2026-08 对 GPT-5.4/5.5/5.6 GA，但它要求显式传
+    // `tools=[{"type": "web_search", "external_web_access": false}]`——GA 阶段强制
+    // cache-only 模式。codex 自带的 web_search 开关不会带上 `external_web_access`
+    // 参数，形状与 Mantle 的要求不一致，因此这里保持关闭，避免请求被拒。
+    // 若将来要支持，应作为独立特性走 tools 注入，而不是打开这个开关。
     doc["web_search"] = toml_edit::value("disabled");
 
     // 构建全新的 provider 表——不复用 `retain_only_provider_table` + 字段覆盖的写法，

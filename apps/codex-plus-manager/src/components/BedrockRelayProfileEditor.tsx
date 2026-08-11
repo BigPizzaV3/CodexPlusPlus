@@ -202,7 +202,7 @@ export function BedrockRelayProfileEditor({ profile, onChange }: BedrockRelayPro
           spellCheck={false}
         />
         <p className="field-hint">
-          {t("Bedrock Mantle 的 /v1/responses 端点仅暴露 OpenAI 系模型：openai.gpt-5.6-sol（1M 上下文）、openai.gpt-5.6-terra、openai.gpt-5.6-luna。GPT-OSS 等 Bedrock native 模型 ID 走 Mantle 会返回 404，需要通过 LiteLLM 中转。")}
+          {t("Bedrock Mantle 仅暴露 OpenAI 系模型。GPT-5.6 三款均为 1M 上下文：openai.gpt-5.6-sol（us-east-1 / us-east-2）、openai.gpt-5.6-terra、openai.gpt-5.6-luna（两者另支持 us-west-2）。GPT-OSS 等 Bedrock native 模型 ID 走 Mantle 会返回 404，需要通过 LiteLLM 中转。")}
         </p>
         {isNonOpenAiModel && (
           <p className="bedrock-warning">

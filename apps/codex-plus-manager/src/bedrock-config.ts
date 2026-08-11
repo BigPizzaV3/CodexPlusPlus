@@ -41,24 +41,39 @@ export const BEDROCK_MANTLE_URL_SUFFIX = ".api.aws/openai/v1";
 // ---------------------------------------------------------------------------
 // Bedrock 预设的默认模型
 //
-// Bedrock Mantle 的 `/v1/responses` 端点只暴露 OpenAI 系模型，模型 ID 带
-// `openai.` 前缀。GPT-OSS 等 Bedrock native 模型 ID 走 Mantle 会 404。
+// Bedrock Mantle 只暴露 OpenAI 系模型，模型 ID 带 `openai.` 前缀。
+// GPT-OSS 等 Bedrock native 模型 ID 走 Mantle 会 404。
+//
+// GPT-5.6 三款（Sol / Terra / Luna，2026-07-13 GA）的官方 model card：
+//   https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html
+// 三款**均为 1M 上下文**，而 codex 内置元数据
+// （assets/gpt56-model-metadata-compat.json）都按 272k 记录，因此三条都要带
+// `[1M]` 后缀，由本工具生成 per-model catalog 覆盖内置值。
+//
+// 区域可用性（官方 model card）：
+//   Sol   — us-east-1、us-east-2
+//   Terra — us-east-1、us-east-2、us-west-2
+//   Luna  — us-east-1、us-east-2、us-west-2
+// 三款的公共交集是 us-east-1 / us-east-2，因此预设 region 用 us-east-1。
 // ---------------------------------------------------------------------------
 
 /** 预设的默认模型（写入 config.toml 的 `model`）。 */
 export const BEDROCK_DEFAULT_MODEL = "openai.gpt-5.6-sol";
 
+/** 预设的默认 region：GPT-5.6 三款都可用的区域之一（另一个是 us-east-2）。 */
+export const BEDROCK_DEFAULT_REGION = "us-east-1";
+
 /**
  * 预设的 `modelList` 内容。
  *
- * `[1M]` 是 CodexPlusPlus 的窗口后缀语法：sol 支持 1M 上下文，而 codex 内置
- * 元数据仍按 272k 记录，因此显式声明后缀，由本工具生成 per-model catalog
- * 覆盖内置值。terra / luna 不带后缀，沿用内置窗口。
+ * `[1M]` 是 CodexPlusPlus 的窗口后缀语法。三款 GPT-5.6 官方标注都是 1M 上下文，
+ * 所以三条都带后缀——只给 sol 加后缀会让 terra / luna 沿用内置的 272k，
+ * 与官方规格不符。
  */
 export const BEDROCK_DEFAULT_MODEL_LIST = [
   `${BEDROCK_DEFAULT_MODEL}[1M]`,
-  "openai.gpt-5.6-terra",
-  "openai.gpt-5.6-luna",
+  "openai.gpt-5.6-terra[1M]",
+  "openai.gpt-5.6-luna[1M]",
 ].join("\n");
 
 /**
