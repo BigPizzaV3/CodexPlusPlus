@@ -38,6 +38,29 @@ export function isReservedProviderId(id: string): boolean {
 export const BEDROCK_MANTLE_URL_PREFIX = "https://bedrock-mantle.";
 export const BEDROCK_MANTLE_URL_SUFFIX = ".api.aws/openai/v1";
 
+// ---------------------------------------------------------------------------
+// Bedrock 预设的默认模型
+//
+// Bedrock Mantle 的 `/v1/responses` 端点只暴露 OpenAI 系模型，模型 ID 带
+// `openai.` 前缀。GPT-OSS 等 Bedrock native 模型 ID 走 Mantle 会 404。
+// ---------------------------------------------------------------------------
+
+/** 预设的默认模型（写入 config.toml 的 `model`）。 */
+export const BEDROCK_DEFAULT_MODEL = "openai.gpt-5.6-sol";
+
+/**
+ * 预设的 `modelList` 内容。
+ *
+ * `[1M]` 是 CodexPlusPlus 的窗口后缀语法：sol 支持 1M 上下文，而 codex 内置
+ * 元数据仍按 272k 记录，因此显式声明后缀，由本工具生成 per-model catalog
+ * 覆盖内置值。terra / luna 不带后缀，沿用内置窗口。
+ */
+export const BEDROCK_DEFAULT_MODEL_LIST = [
+  `${BEDROCK_DEFAULT_MODEL}[1M]`,
+  "openai.gpt-5.6-terra",
+  "openai.gpt-5.6-luna",
+].join("\n");
+
 /**
  * 校验 Bedrock 配置的必填字段，返回第一个错误信息或 null（全部通过）。
  *

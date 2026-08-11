@@ -129,7 +129,7 @@ import {
   type DreamSkinVerificationResult,
 } from "./dream-skin";
 import type { BedrockConfig } from "./bedrock-config";
-import { isBedrockRelayProfile, bedrockAllowsProviderTesting, resolveBedrockAfterDerive, bedrockValidationError } from "./bedrock-config";
+import { isBedrockRelayProfile, bedrockAllowsProviderTesting, resolveBedrockAfterDerive, bedrockValidationError, BEDROCK_DEFAULT_MODEL, BEDROCK_DEFAULT_MODEL_LIST } from "./bedrock-config";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
@@ -8317,13 +8317,14 @@ function RelayProfileEditor({
           onSelectBedrock={() => {
             // 「直连 AWS Bedrock」的最常见路径是 AWS Profile (SSO)，因此默认预填
             // authMode=awsProfile + awsProfile=default。region 默认 us-east-2 是
-            // 因为 Bedrock Mantle 的 GPT-5.5 目前仅在 us-east-2 独家开放（见文档 §A）。
-            // 模型默认 openai.gpt-5.5——Bedrock Mantle 的 /v1/responses endpoint
-            // 只暴露 GPT-5.x 系列（openai.gpt-5.5 / openai.gpt-5.4）；gpt-oss 等
-            // Bedrock native 模型 ID 走 Mantle 会 404（模型不存在），需要走 LiteLLM 中转。
+            // 因为 Bedrock Mantle 的 GPT-5.x 独家能力优先在 us-east-2 开放（见文档 §A）。
+            //
+            // 模型默认 openai.gpt-5.6-sol，并把 GPT-5.6 三款都列入 model_list
+            // （清单与窗口后缀定义在 bedrock-config.ts，见 BEDROCK_DEFAULT_MODEL_LIST）。
             updateDraft({
               relayMode: "pureApi",
-              model: "openai.gpt-5.5",
+              model: BEDROCK_DEFAULT_MODEL,
+              modelList: BEDROCK_DEFAULT_MODEL_LIST,
               bedrock: {
                 authMode: "awsProfile",
                 providerId: "",

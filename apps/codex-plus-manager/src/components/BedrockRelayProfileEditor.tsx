@@ -9,6 +9,7 @@ import {
   bedrockShouldRenderPathFields,
   bedrockModelNeedsWarning,
   isReservedProviderId,
+  BEDROCK_DEFAULT_MODEL,
 } from "../bedrock-config.ts";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -186,7 +187,7 @@ export function BedrockRelayProfileEditor({ profile, onChange }: BedrockRelayPro
         </BedrockField>
       )}
 
-      {/* 模型字段（Bedrock Mantle 的 /v1/responses endpoint 只暴露 GPT-5.x 系列）。
+      {/* 模型字段（Bedrock Mantle 的 /v1/responses endpoint 只暴露 OpenAI 系模型）。
        * `model` 会写入 config.toml，属于影响实际配置的字段，因此放在配置字段区、
        * CLI 示例分隔线的上方，不与"命令行生成示例"混在一起。 */}
       <BedrockField label={t("模型")}>
@@ -194,14 +195,14 @@ export function BedrockRelayProfileEditor({ profile, onChange }: BedrockRelayPro
           type="text"
           value={profile.model}
           onChange={(e) => onChange({ model: e.target.value })}
-          placeholder="openai.gpt-5.5"
+          placeholder={BEDROCK_DEFAULT_MODEL}
           autoCapitalize="off"
           autoCorrect="off"
           autoComplete="off"
           spellCheck={false}
         />
         <p className="field-hint">
-          {t("Bedrock Mantle 的 /v1/responses 端点仅暴露 GPT-5.x：openai.gpt-5.5（仅 us-east-2）、openai.gpt-5.4。GPT-OSS 等 Bedrock native 模型 ID 走 Mantle 会返回 404，需要通过 LiteLLM 中转。")}
+          {t("Bedrock Mantle 的 /v1/responses 端点仅暴露 OpenAI 系模型：openai.gpt-5.6-sol（1M 上下文）、openai.gpt-5.6-terra、openai.gpt-5.6-luna。GPT-OSS 等 Bedrock native 模型 ID 走 Mantle 会返回 404，需要通过 LiteLLM 中转。")}
         </p>
         {isNonOpenAiModel && (
           <p className="bedrock-warning">

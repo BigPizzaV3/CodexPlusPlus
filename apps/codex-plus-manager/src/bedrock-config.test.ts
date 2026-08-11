@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fc from "fast-check";
-import { bedrockAllowsProviderTesting, bedrockAwsProfileConfigureCommand, bedrockAwsProfileLoginCommand, bedrockLongTermApiKeyCommand, bedrockShortTermApiKeyGuidanceText, bedrockValidationError, bedrockValidationErrorForBottom, deriveBedrockConfigFromConfigText, isBedrockRelayProfile, resolveBedrockAfterDerive, RESERVED_MODEL_PROVIDER_IDS_MIRROR, type BedrockConfig } from "./bedrock-config.ts";
+import { bedrockAllowsProviderTesting, bedrockAwsProfileConfigureCommand, bedrockAwsProfileLoginCommand, bedrockLongTermApiKeyCommand, bedrockShortTermApiKeyGuidanceText, bedrockValidationError, bedrockValidationErrorForBottom, deriveBedrockConfigFromConfigText, isBedrockRelayProfile, resolveBedrockAfterDerive, RESERVED_MODEL_PROVIDER_IDS_MIRROR, BEDROCK_DEFAULT_MODEL, BEDROCK_DEFAULT_MODEL_LIST, type BedrockConfig } from "./bedrock-config.ts";
 
 // Feature: amazon-bedrock-provider, Property 12: 测试/诊断按钮可见性判定
 // **Validates: Requirements 9.1, 9.2**
@@ -622,5 +622,29 @@ describe("resolveBedrockAfterDerive - preserve UI-set bedrock across derive", ()
     assert.strictEqual(resolveBedrockAfterDerive(null, genericCustomConfig), null);
     assert.strictEqual(resolveBedrockAfterDerive(undefined, genericCustomConfig), null);
     assert.strictEqual(resolveBedrockAfterDerive(null, ""), null);
+  });
+});
+
+// Bedrock 预设的模型清单：`onSelectBedrock` 直接引用这两个常量，
+// 这里锁住它们的内容，避免模型 ID 或窗口后缀被无意改动。
+describe("Bedrock preset model defaults", () => {
+  it("default model is the 1M-context GPT-5.6 variant", () => {
+    assert.strictEqual(BEDROCK_DEFAULT_MODEL, "openai.gpt-5.6-sol");
+  });
+
+  it("model list carries all three GPT-5.6 variants, 1M suffix only on the default", () => {
+    assert.deepStrictEqual(BEDROCK_DEFAULT_MODEL_LIST.split("\n"), [
+      "openai.gpt-5.6-sol[1M]",
+      "openai.gpt-5.6-terra",
+      "openai.gpt-5.6-luna",
+    ]);
+  });
+
+  it("every entry keeps the openai. prefix Mantle requires", () => {
+    // 不带 `openai.` 前缀的 Bedrock native 模型 ID 走 Mantle 会 404，
+    // 因此预设里的每一条都必须带前缀（bedrockModelNeedsWarning 的同一判据）。
+    for (const entry of BEDROCK_DEFAULT_MODEL_LIST.split("\n")) {
+      assert.ok(entry.startsWith("openai."), `entry should keep the openai. prefix: ${entry}`);
+    }
   });
 });
