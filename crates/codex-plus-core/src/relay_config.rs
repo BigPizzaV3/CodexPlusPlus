@@ -10,6 +10,7 @@ use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol};
 
 const RELAY_PROVIDER: &str = "custom";
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
+const CC_SWITCH_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalog.json";
 const CHAT_UPSTREAM_BASE_URL_KEY: &str = "codex_plus_chat_base_url";
 const PROVIDER_SPECIFIC_COMMON_ROOT_KEYS: &[&str] = &[
     "model",
@@ -1562,22 +1563,28 @@ fn apply_model_catalog_to_config(
         sanitize_catalog_filename(&profile.id)
     );
     let custom_responses = custom_responses_provider(config_text);
+    let mut config_text = config_text.to_string();
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
-    if let Some(existing) = root_key_string(config_text, "model_catalog_json") {
+    // cc-switch 的固定文件名属于已知的其他管理器投影，不视为用户手写 catalog；
+    // 切换到 Codex++ profile 时应接管，否则旧 catalog 会继续覆盖本 profile 的模型元数据。
+    if let Some(existing) = root_key_string(&config_text, "model_catalog_json") {
         if existing != catalog_relative {
-            if custom_responses
+            if is_cc_switch_model_catalog(&existing) {
+                config_text = remove_root_key(&config_text, "model_catalog_json");
+            } else if custom_responses
                 && copy_standard_responses_catalog(home, &existing, &catalog_relative)?
             {
-                let mut doc = parse_toml_document(config_text)?;
+                let mut doc = parse_toml_document(&config_text)?;
                 doc["model_catalog_json"] = toml_edit::value(catalog_relative);
                 return Ok(normalize_optional_toml(doc));
+            } else {
+                return Ok(config_text);
             }
-            return Ok(config_text.to_string());
         }
     }
     if let Some(external_catalog) = live_external_model_catalog(home) {
-        let mut doc = parse_toml_document(config_text)?;
+        let mut doc = parse_toml_document(&config_text)?;
         if custom_responses
             && copy_standard_responses_catalog(home, &external_catalog, &catalog_relative)?
         {
@@ -1603,7 +1610,7 @@ fn apply_model_catalog_to_config(
         entry.suffix_window.is_some()
             || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
     }) {
-        return Ok(config_text.to_string());
+        return Ok(config_text);
     }
     let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
     let catalog_path = home.join(&catalog_relative);
@@ -1619,7 +1626,7 @@ fn apply_model_catalog_to_config(
         custom_responses.then_some(false),
     );
     std::fs::write(&catalog_path, catalog_json)?;
-    let mut doc = parse_toml_document(config_text)?;
+    let mut doc = parse_toml_document(&config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
     Ok(normalize_optional_toml(doc))
 }
@@ -1688,7 +1695,18 @@ fn live_external_model_catalog(home: &Path) -> Option<String> {
     let live_text = read_optional_text(&home.join("config.toml")).ok()?;
     let live = parse_toml_document(&live_text).ok()?;
     let path = live.get("model_catalog_json")?.as_str()?.trim();
-    (!path.is_empty() && !is_codex_plus_managed_model_catalog(home, path)).then(|| path.to_string())
+    (!path.is_empty()
+        && !is_codex_plus_managed_model_catalog(home, path)
+        && !is_cc_switch_model_catalog(path))
+    .then(|| path.to_string())
+}
+
+fn is_cc_switch_model_catalog(path: &str) -> bool {
+    path.trim()
+        .replace('\\', "/")
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case(CC_SWITCH_MODEL_CATALOG_FILENAME))
 }
 
 fn is_codex_plus_managed_model_catalog(home: &Path, path: &str) -> bool {
