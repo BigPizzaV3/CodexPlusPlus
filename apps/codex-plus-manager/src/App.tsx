@@ -32,6 +32,7 @@ import {
   GripVertical,
   Info,
   ImagePlus,
+  Kanban,
   Github,
   ExternalLink,
   Hammer,
@@ -192,6 +193,7 @@ type BackendSettings = {
   providerSyncLastSelectedProvider: string;
   relayProfilesEnabled: boolean;
   enhancementsEnabled: boolean;
+  codexTaskboardEnabled: boolean;
   computerUseGuardEnabled: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppPluginAutoExpand: boolean;
@@ -328,6 +330,7 @@ type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
 const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
 const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
+const TASKBOARD_PANEL_URL = "http://127.0.0.1:47823/?host=codex";
 
 const emptyContextSelection = (): RelayContextSelection => ({
   mcpServers: [],
@@ -763,7 +766,13 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-type Route = "overview" | "relay" | "relayEnvironment" | "sessions" | "context" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
+type TaskboardServiceResult = CommandResult<{
+  url: string;
+  alreadyRunning: boolean;
+  launched: boolean;
+}>;
+
+type Route = "overview" | "relay" | "relayEnvironment" | "sessions" | "context" | "enhance" | "dreamSkin" | "taskboard" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
@@ -773,6 +782,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "context", label: t("工具与插件"), icon: Network },
   { id: "enhance", label: t("Codex增强"), icon: Hammer },
   { id: "dreamSkin", label: t("皮肤管理"), icon: Palette },
+  { id: "taskboard", label: "Taskboard", icon: Kanban },
   { id: "zedRemote", label: t("Zed 远程项目"), icon: ExternalLink },
   { id: "userScripts", label: t("脚本市场"), icon: FileCode2 },
   { id: "recommendations", label: t("推荐内容"), icon: ExternalLink },
@@ -791,6 +801,7 @@ const defaultSettings: BackendSettings = {
   providerSyncLastSelectedProvider: "",
   relayProfilesEnabled: true,
   enhancementsEnabled: true,
+  codexTaskboardEnabled: false,
   computerUseGuardEnabled: false,
   codexAppPluginMarketplaceUnlock: true,
   codexAppPluginAutoExpand: true,
@@ -877,6 +888,7 @@ const defaultSettings: BackendSettings = {
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
+  const [taskboardFrameVersion, setTaskboardFrameVersion] = useState(0);
   const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     title: string;
@@ -2588,7 +2600,13 @@ export function App() {
 
   const actions = useMemo(
     () => ({
-      refreshCurrent: () => navigate(route),
+      refreshCurrent: async () => {
+        if (route === "taskboard") {
+          setTaskboardFrameVersion((version) => version + 1);
+          return;
+        }
+        await navigate(route);
+      },
       launch,
       restart,
       repairPluginMarketplace,
@@ -2788,6 +2806,7 @@ export function App() {
     [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
   );
   const hasUpdate = update?.updateAvailable === true;
+  const taskboardEnabled = settingsForm.enhancementsEnabled && settingsForm.codexTaskboardEnabled;
 
   return (
     <div className={`shell ${theme}`}>
@@ -2814,7 +2833,7 @@ export function App() {
           </div>
         </div>
         <nav className="nav">
-          {routes.map((item) => {
+          {routes.filter((item) => item.id !== "taskboard" || taskboardEnabled).map((item) => {
             const Icon = item.icon;
             return (
             <button
@@ -2933,6 +2952,12 @@ export function App() {
               verification={dreamSkinVerification}
               onFormChange={setSettingsForm}
               onDraftChange={setDreamSkinThemeDraft}
+              actions={actions}
+            />
+          ) : null}
+          {route === "taskboard" && taskboardEnabled ? (
+            <TaskboardScreen
+              frameVersion={taskboardFrameVersion}
               actions={actions}
             />
           ) : null}
@@ -3142,6 +3167,63 @@ type Actions = {
   toggleTheme: () => void;
   checkHealth: () => Promise<void>;
 };
+
+function TaskboardScreen({ frameVersion, actions }: { frameVersion: number; actions: Pick<Actions, "refreshCurrent" | "openExternalUrl"> }) {
+  const [serviceStatus, setServiceStatus] = useState<Status>("not_checked");
+  const [serviceMessage, setServiceMessage] = useState("Starting Taskboard...");
+  const [serviceStarting, setServiceStarting] = useState(false);
+  const serviceTone = serviceStatus === "ok" ? "good" : serviceStatus === "failed" ? "bad" : "pending";
+
+  const startTaskboard = async () => {
+    setServiceStarting(true);
+    setServiceStatus("not_checked");
+    setServiceMessage("Starting Taskboard...");
+    try {
+      const result = await invoke<TaskboardServiceResult>("ensure_taskboard_service");
+      setServiceStatus(result.status);
+      setServiceMessage(result.message);
+      if (isSuccessStatus(result.status)) {
+        await actions.refreshCurrent();
+      }
+    } catch (error) {
+      setServiceStatus("failed");
+      setServiceMessage(stringifyError(error));
+    } finally {
+      setServiceStarting(false);
+    }
+  };
+
+  useEffect(() => {
+    void startTaskboard();
+  }, []);
+
+  return (
+    <div className="taskboard-embed">
+      <div className="taskboard-embed-toolbar">
+        <div className="taskboard-embed-meta">
+          <span className="taskboard-embed-origin">127.0.0.1:47823</span>
+          <span className={`taskboard-embed-status taskboard-embed-status-${serviceTone}`}>
+            {serviceStarting ? "Starting Taskboard..." : serviceMessage}
+          </span>
+        </div>
+        <div className="taskboard-embed-actions">
+          <Button disabled={serviceStarting} onClick={() => void startTaskboard()} size="icon" title="Start or refresh Taskboard" variant="outline">
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+          <Button onClick={() => void actions.openExternalUrl(TASKBOARD_PANEL_URL)} size="icon" title="Open Taskboard in browser" variant="outline">
+            <ExternalLink className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+      <iframe
+        className="taskboard-embed-frame"
+        key={frameVersion}
+        src={TASKBOARD_PANEL_URL}
+        title="Taskboard"
+      />
+    </div>
+  );
+}
 
 function OverviewScreen({
   overview,
@@ -3606,6 +3688,15 @@ function EnhanceScreen({
             </div>
           ) : null}
           <div className="enhance-feature-groups">
+            <FeatureGroup title={t("任务与协作")} detail={t("管理 Codex++ 本地任务面板。")}>
+              <FeatureToggle
+                title={t("任务面板")}
+                detail={t("手动开启后才显示任务面板，并在打开页面时启动本地任务服务。")}
+                checked={form.codexTaskboardEnabled}
+                disabled={!masterEnabled}
+                onChange={(value) => setPersistedEnhanceFlag("codexTaskboardEnabled", value)}
+              />
+            </FeatureGroup>
             <FeatureGroup title={t("插件与模型")} detail={t("管理插件市场、模型列表和服务档位相关增强。")}>
               <FeatureToggle title={t("插件市场解锁")} detail={t("API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。")} checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
               <FeatureToggle title={t("插件列表全量展示")} detail={t("进入插件页后自动连续展开“更多”，尽量一次显示完整插件列表。")} checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginAutoExpand", value)} />
@@ -7604,6 +7695,7 @@ function routeSubtitle(route: Route) {
     context: t("独立管理 MCP、Skills、Plugins"),
     enhance: t("会话删除、导出、项目移动和脚本能力"),
     dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
+    taskboard: "Local issue board and Codex task tracking",
     zedRemote: t("管理 Codex SSH 项目并加入 Zed workspace"),
     userScripts: t("内置和用户自定义脚本清单"),
     recommendations: t("赞助商推荐与普通推荐"),
@@ -8332,6 +8424,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ...defaultSettings,
     ...settings,
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
+    codexTaskboardEnabled: settings.codexTaskboardEnabled === true,
     computerUseGuardEnabled: settings.computerUseGuardEnabled === true,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),

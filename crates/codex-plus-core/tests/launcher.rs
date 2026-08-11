@@ -178,7 +178,13 @@ fn app_paths_resolves_portable_current_link_to_directory_version() {
     std::fs::create_dir_all(&target).unwrap();
     std::fs::write(target.join("Codex.exe"), "").unwrap();
     std::fs::write(target.join("version"), "42.1.0\n").unwrap();
-    std::os::windows::fs::symlink_dir(&target, &current).unwrap();
+    if let Err(error) = std::os::windows::fs::symlink_dir(&target, &current) {
+        if error.raw_os_error() == Some(1314) {
+            eprintln!("skipping symlink test: Windows symlink privilege is unavailable");
+            return;
+        }
+        panic!("failed to create Windows directory symlink: {error}");
+    }
 
     assert_eq!(
         codex_app_version(&current).as_deref(),
@@ -657,7 +663,10 @@ fn launcher_applies_codexplusplus_window_icon_after_packaged_activation() {
     let source = include_str!("../src/launcher.rs");
 
     assert!(source.contains("apply_codexplusplus_window_icon_after_launch(process_id);"));
+    assert!(source.contains("activate_codex_window_after_launch(Some(process_id));"));
+    assert!(source.contains("crate::watcher::find_codex_processes()"));
     assert!(source.contains("windows_apply_codexplusplus_icon_to_process_window"));
+    assert!(source.contains("windows_activate_process_window"));
 }
 
 #[test]

@@ -390,6 +390,81 @@ body {
   will-change: opacity, transform;
 }
 
+.taskboard-embed {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 128px);
+  min-height: 560px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-sunken));
+}
+
+.taskboard-embed-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+}
+
+.taskboard-embed-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.taskboard-embed-origin {
+  min-width: 0;
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskboard-embed-status {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskboard-embed-status-good {
+  color: hsl(var(--status-success));
+}
+
+.taskboard-embed-status-bad {
+  color: hsl(var(--destructive));
+}
+
+.taskboard-embed-status-pending {
+  color: hsl(var(--muted-foreground));
+}
+
+.taskboard-embed-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.taskboard-embed-frame {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: hsl(var(--surface-sunken));
+}
+
 .grid {
   display: grid;
   gap: 12px;

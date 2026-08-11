@@ -67,6 +67,7 @@ pub fn run() {
             commands::load_overview,
             commands::launch_codex_plus,
             commands::restart_codex_plus,
+            commands::ensure_taskboard_service,
             commands::load_settings,
             commands::save_settings,
             commands::dream_skin_status,

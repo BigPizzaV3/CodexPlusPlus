@@ -287,9 +287,15 @@ where
         use std::os::windows::process::CommandExt;
         command.creation_flags(crate::windows_create_no_window());
     }
-    command
+    let child = command
         .spawn()
         .map_err(|error| anyhow::anyhow!("无法启动 {}：{error}", path.to_string_lossy()))?;
+    #[cfg(windows)]
+    {
+        let _ = crate::windows_allow_set_foreground_window(child.id());
+    }
+    #[cfg(not(windows))]
+    let _ = child;
     Ok(path.to_string_lossy().to_string())
 }
 

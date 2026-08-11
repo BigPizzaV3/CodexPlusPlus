@@ -1,9 +1,12 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use codex_plus_core::install::SILENT_BINARY;
 use codex_plus_core::models::{DeleteResult, SessionRef};
@@ -51,6 +54,14 @@ pub struct OverviewPayload {
     pub update_status: String,
     pub settings_path: String,
     pub logs_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskboardPayload {
+    pub url: String,
+    pub already_running: bool,
+    pub launched: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -532,6 +543,7 @@ pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 #[tauri::command]
 pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     codex_plus_core::watcher::stop_launcher_processes_and_wait();
+    #[cfg(target_os = "macos")]
     codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
     spawn_codex_plus_launch(request, "Codex 已请求重启，启动任务正在后台运行。")
 }
@@ -577,6 +589,100 @@ fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
     args.push("--helper-port".to_string());
     args.push(request.helper_port.to_string());
     codex_plus_core::install::spawn_companion(SILENT_BINARY, &args).map(|_| ())
+}
+
+const TASKBOARD_PORT: u16 = 47823;
+const TASKBOARD_URL: &str = "http://127.0.0.1:47823/?host=codex";
+
+#[tauri::command]
+pub fn ensure_taskboard_service() -> CommandResult<TaskboardPayload> {
+    if taskboard_health_ok() {
+        return ok(
+            "Taskboard is already running.",
+            taskboard_payload(true, false),
+        );
+    }
+
+    if let Err(error) = spawn_taskboard_service() {
+        return failed(
+            &format!("Failed to start Taskboard with codex-taskboard: {error}"),
+            taskboard_payload(false, false),
+        );
+    }
+
+    if wait_for_taskboard_health(Duration::from_secs(8)) {
+        ok("Taskboard started.", taskboard_payload(false, true))
+    } else {
+        failed(
+            "Started codex-taskboard, but http://127.0.0.1:47823/health is still unavailable.",
+            taskboard_payload(false, true),
+        )
+    }
+}
+
+fn taskboard_payload(already_running: bool, launched: bool) -> TaskboardPayload {
+    TaskboardPayload {
+        url: TASKBOARD_URL.to_string(),
+        already_running,
+        launched,
+    }
+}
+
+fn wait_for_taskboard_health(timeout: Duration) -> bool {
+    let started_at = Instant::now();
+    while started_at.elapsed() < timeout {
+        if taskboard_health_ok() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    false
+}
+
+fn taskboard_health_ok() -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], TASKBOARD_PORT));
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(750)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(750)));
+    if stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1:47823\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut response = String::new();
+    stream.read_to_string(&mut response).is_ok()
+        && response.contains(" 200 ")
+        && response.contains("\"status\":\"ok\"")
+}
+
+fn spawn_taskboard_service() -> anyhow::Result<()> {
+    let mut command = taskboard_start_command();
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command.spawn()?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn taskboard_start_command() -> Command {
+    let mut command = Command::new("cmd");
+    command.args(["/C", "codex-taskboard"]);
+    command
+}
+
+#[cfg(not(target_os = "windows"))]
+fn taskboard_start_command() -> Command {
+    Command::new("codex-taskboard")
 }
 
 #[tauri::command]

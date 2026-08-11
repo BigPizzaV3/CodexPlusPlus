@@ -1,0 +1,32 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "codex-taskboard",
+  "main": "cloud/src/index.mjs",
+  "compatibility_date": "2026-07-24",
+  "routes": [
+    {
+      "pattern": "taskboard.dsxzai.com",
+      "custom_domain": true
+    }
+  ],
+  "assets": {
+    "directory": "./dist/web",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "codex-taskboard-db",
+      "database_id": "6b90b71b-81e0-473a-a70c-470b388b7e99",
+      "migrations_dir": "cloud/migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ATTACHMENTS",
+      "bucket_name": "codex-taskboard-attachments"
+    }
+  ]
+}

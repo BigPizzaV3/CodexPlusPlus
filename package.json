@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "scripts": {
+    "stop:codexplusplus": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('codex-plus-plus.exe','codex-plus-plus-manager.exe') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }\"",
+    "rebuild:debug": "npm run stop:codexplusplus && npm --prefix apps/codex-plus-manager run vite:build && npm --prefix apps/codex-taskboard run build:web && cargo build -p codex-plus-launcher -p codex-plus-manager"
+  }
+}

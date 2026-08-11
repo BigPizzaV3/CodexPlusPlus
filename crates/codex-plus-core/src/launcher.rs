@@ -474,6 +474,39 @@ fn apply_codexplusplus_window_icon_after_launch(process_id: u32) {
 #[cfg(not(windows))]
 fn apply_codexplusplus_window_icon_after_launch(_process_id: u32) {}
 
+#[cfg(windows)]
+pub fn activate_codex_window_after_launch(process_id: Option<u32>) {
+    tokio::spawn(async move {
+        for attempt in 1..=30 {
+            let mut process_ids = Vec::new();
+            if let Some(process_id) = process_id {
+                process_ids.push(process_id);
+            }
+            process_ids.extend(crate::watcher::find_codex_processes());
+            process_ids.sort_unstable();
+            process_ids.dedup();
+            if process_ids
+                .into_iter()
+                .any(crate::windows_activate_process_window)
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if attempt == 30 {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.window_activation.failed",
+                    serde_json::json!({
+                        "process_id": process_id
+                    }),
+                );
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+pub fn activate_codex_window_after_launch(_process_id: Option<u32>) {}
+
 pub trait IntoLaunchHooks {
     fn into_launch_hooks(self) -> Arc<dyn LaunchHooks>;
 }
@@ -720,6 +753,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                 };
                 let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
                 apply_codexplusplus_window_icon_after_launch(process_id);
+                activate_codex_window_after_launch(Some(process_id));
                 if let Some(inspector_port) = native_menu_inspector_port {
                     start_native_menu_localizer(inspector_port);
                 }
@@ -1166,6 +1200,25 @@ async fn handle_helper_connection(
             }))?,
             "application/json; charset=utf-8".to_string(),
             "helper.backend_status_ok",
+        )
+    } else if path == "/taskboard/open" && matches!(method, "GET" | "POST" | "OPTIONS") {
+        let result =
+            crate::routes::open_taskboard_from_default_settings().unwrap_or_else(|error| {
+                serde_json::json!({
+                    "status": "failed",
+                    "message": error.to_string()
+                })
+            });
+        let log_event = if result["status"] == "ok" {
+            "helper.taskboard_open_ok"
+        } else {
+            "helper.taskboard_open_failed"
+        };
+        (
+            "200 OK".to_string(),
+            serde_json::to_vec(&result)?,
+            "application/json; charset=utf-8".to_string(),
+            log_event,
         )
     } else if path == "/diagnostics/log" && matches!(method, "POST" | "OPTIONS") {
         if method == "POST" {
@@ -3404,6 +3457,31 @@ mod tests {
         client.read_to_end(&mut response).await.unwrap();
         helper.await.unwrap();
         response
+    }
+
+    #[tokio::test]
+    async fn helper_routes_taskboard_open_requests() {
+        let _settings_guard = crate::paths::settings_path_test_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let previous_settings_path =
+            crate::paths::set_settings_path_for_tests(Some(settings_path.clone()));
+        std::fs::write(
+            &settings_path,
+            br#"{"enhancementsEnabled":true,"codexTaskboardEnabled":false}"#,
+        )
+        .unwrap();
+
+        let response = send_raw_helper_request(
+            b"GET /taskboard/open HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        let response = String::from_utf8(response).unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains(r#""status":"failed""#));
+        assert!(response.contains("Taskboard is disabled in Codex++ settings."));
+        crate::paths::set_settings_path_for_tests(previous_settings_path);
     }
 
     #[tokio::test]

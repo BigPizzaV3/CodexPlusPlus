@@ -9,6 +9,7 @@ use codex_plus_core::routes::{BridgeContext, BridgeDataService, BridgeRuntimeSer
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -77,6 +78,9 @@ async fn launcher_main() -> Result<()> {
     });
     let hooks = LauncherHooks::default();
     let handle = launch_and_inject_with_hooks(options, &hooks).await?;
+    if let Ok(settings) = hooks.load_settings().await {
+        start_taskboard_sidebar_injector_if_enabled(&settings, handle.debug_port);
+    }
     handle.wait_for_codex_exit().await?;
     Ok(())
 }
@@ -182,6 +186,14 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
                 break;
             }
         }
+        if !activated && launch_result.is_ok() {
+            codex_plus_core::launcher::activate_codex_window_after_launch(
+                launch_result
+                    .as_ref()
+                    .ok()
+                    .and_then(|launch| launch.process_id()),
+            );
+        }
     }
     let injection_ready = if settings.enhancements_enabled {
         hooks
@@ -191,6 +203,7 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
         false
     };
     if injection_ready {
+        start_taskboard_sidebar_injector_if_enabled(&settings, options.debug_port);
         hooks
             .start_bridge_watchdog(options.debug_port, helper_port)
             .await?;
@@ -242,6 +255,125 @@ fn open_manager_with_update_prompt() -> anyhow::Result<()> {
     )
     .map(|_| ())
     .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
+}
+
+fn start_taskboard_sidebar_injector_if_enabled(
+    settings: &codex_plus_core::settings::BackendSettings,
+    debug_port: u16,
+) {
+    if !settings.enhancements_enabled || !settings.codex_taskboard_enabled {
+        return;
+    }
+    match spawn_taskboard_sidebar_injector(debug_port) {
+        Ok(Some(process_id)) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "launcher.taskboard_injector_started",
+                json!({
+                    "debug_port": debug_port,
+                    "process_id": process_id
+                }),
+            );
+        }
+        Ok(None) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "launcher.taskboard_injector_skipped",
+                json!({
+                    "debug_port": debug_port,
+                    "message": "Taskboard injector script was not found"
+                }),
+            );
+        }
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "launcher.taskboard_injector_failed",
+                json!({
+                    "debug_port": debug_port,
+                    "message": error.to_string()
+                }),
+            );
+        }
+    }
+}
+
+fn spawn_taskboard_sidebar_injector(debug_port: u16) -> anyhow::Result<Option<u32>> {
+    let Some(taskboard_root) = taskboard_root_from_current_exe() else {
+        return Ok(None);
+    };
+    let injector = taskboard_root.join("scripts").join("codex-injector.mjs");
+    let mut command = Command::new(taskboard_node_executable());
+    command
+        .current_dir(&taskboard_root)
+        .arg(injector)
+        .arg("--daemon")
+        .arg("--port")
+        .arg(debug_port.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(codex_plus_core::windows_create_no_window());
+    }
+    let child = command.spawn()?;
+    Ok(Some(child.id()))
+}
+
+fn taskboard_root_from_current_exe() -> Option<PathBuf> {
+    taskboard_root_from_env().or_else(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| taskboard_root_for_exe_path(&path))
+    })
+}
+
+fn taskboard_root_from_env() -> Option<PathBuf> {
+    let root = std::env::var_os("CODEX_TASKBOARD_ROOT").map(PathBuf::from)?;
+    taskboard_injector_script_exists(&root).then_some(root)
+}
+
+fn taskboard_root_for_exe_path(exe_path: &Path) -> Option<PathBuf> {
+    let start = if exe_path.is_dir() {
+        exe_path
+    } else {
+        exe_path.parent()?
+    };
+    for directory in start.ancestors() {
+        let root = directory.join("apps").join("codex-taskboard");
+        if taskboard_injector_script_exists(&root) {
+            return Some(root);
+        }
+    }
+    None
+}
+
+fn taskboard_injector_script_exists(root: &Path) -> bool {
+    root.join("scripts").join("codex-injector.mjs").is_file()
+}
+
+fn taskboard_node_executable() -> PathBuf {
+    if let Some(path) = std::env::var_os("CODEX_TASKBOARD_NODE_EXE").map(PathBuf::from) {
+        if path.is_file() {
+            return path;
+        }
+    }
+    if let Some(path) = bundled_codex_node_executable() {
+        return path;
+    }
+    PathBuf::from(if cfg!(windows) { "node.exe" } else { "node" })
+}
+
+fn bundled_codex_node_executable() -> Option<PathBuf> {
+    let home = directories::BaseDirs::new()?.home_dir().to_path_buf();
+    let node = home
+        .join(".cache")
+        .join("codex-runtimes")
+        .join("codex-primary-runtime")
+        .join("dependencies")
+        .join("node")
+        .join("bin")
+        .join(if cfg!(windows) { "node.exe" } else { "node" });
+    node.is_file().then_some(node)
 }
 
 fn parse_launch_options<I, S>(args: I) -> LaunchOptions
@@ -856,12 +988,50 @@ mod tests {
     }
 
     #[test]
+    fn taskboard_root_resolution_finds_dev_tree_from_debug_exe() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "codex-plus-taskboard-root-test-{}",
+            std::process::id()
+        ));
+        let script = test_dir
+            .join("apps")
+            .join("codex-taskboard")
+            .join("scripts")
+            .join("codex-injector.mjs");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "").unwrap();
+        let exe = test_dir
+            .join("target")
+            .join("debug")
+            .join(if cfg!(windows) {
+                "codex-plus-plus.exe"
+            } else {
+                "codex-plus-plus"
+            });
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+
+        assert_eq!(
+            taskboard_root_for_exe_path(&exe),
+            Some(test_dir.join("apps").join("codex-taskboard"))
+        );
+        let _ = std::fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
     fn launcher_uses_single_instance_guard_before_launching() {
         let source = include_str!("main.rs");
 
         assert!(source.contains("acquire_single_instance_guard(options.debug_port)?"));
         assert!(source.contains("launcher_guard_port"));
         assert!(source.contains("launcher.already_running"));
+    }
+
+    #[test]
+    fn launcher_retries_existing_codex_window_activation() {
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("activate_codex_window_after_launch"));
+        assert!(source.contains("if !activated && launch_result.is_ok()"));
     }
 
     #[test]

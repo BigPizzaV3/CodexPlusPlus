@@ -372,18 +372,30 @@ async fn unknown_bridge_path_preserves_empty_session_id_shape() {
 }
 
 #[tokio::test]
+async fn taskboard_open_requires_explicit_setting() {
+    let result = handle_bridge_request(test_context(), "/taskboard/open", json!({})).await;
+
+    assert_eq!(result["status"], json!("failed"));
+    assert_eq!(
+        result["message"],
+        json!("Taskboard is disabled in Codex++ settings.")
+    );
+}
+
+#[tokio::test]
 async fn settings_routes_use_settings_service() {
     let ctx = test_context();
 
     let updated = handle_bridge_request(
         ctx.clone(),
         "/settings/set",
-        json!({"providerSyncEnabled": true, "codexAppSessionDelete": false, "codexAppServiceTierControls": true, "codexAppPetRealMouseLook": true}),
+        json!({"providerSyncEnabled": true, "codexTaskboardEnabled": true, "codexAppSessionDelete": false, "codexAppServiceTierControls": true, "codexAppPetRealMouseLook": true}),
     )
     .await;
     let loaded = handle_bridge_request(ctx, "/settings/get", json!({})).await;
 
     assert_eq!(updated["providerSyncEnabled"], true);
+    assert_eq!(updated["codexTaskboardEnabled"], true);
     assert_eq!(updated["codexAppSessionDelete"], false);
     assert_eq!(updated["codexAppServiceTierControls"], true);
     assert_eq!(updated["codexAppPetRealMouseLook"], true);
@@ -1125,6 +1137,12 @@ impl BridgeSettingsService for FakeSettings {
         }
         if let Some(value) = payload.get("enhancementsEnabled").and_then(Value::as_bool) {
             raw.insert("enhancementsEnabled".to_string(), json!(value));
+        }
+        if let Some(value) = payload
+            .get("codexTaskboardEnabled")
+            .and_then(Value::as_bool)
+        {
+            raw.insert("codexTaskboardEnabled".to_string(), json!(value));
         }
         for key in [
             "codexAppPluginMarketplaceUnlock",

@@ -14,6 +14,10 @@ apps/codex-plus-manager/src-tauri/gen/
 .superpowers/
 .claude/
 docs/superpowers/
+.codex-index/
+.context/
+.data/
+.idea/
 
 *.log
 .DS_Store
@@ -29,4 +33,6 @@ pnpm-workspace.yaml
 .trae/
 plan.md
 plan_v2.md
+apps/codex-taskboard/.codex-legacy-bridge/
+apps/codex-taskboard/*proof*.png
 

@@ -44,9 +44,9 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWMINNOACTIVE;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GWL_EXSTYLE, GetClassNameW, GetWindowLongPtrW, GetWindowTextLengthW,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOW, SetForegroundWindow,
-    ShowWindow, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    AllowSetForegroundWindow, EnumWindows, GWL_EXSTYLE, GetClassNameW, GetWindowLongPtrW,
+    GetWindowTextLengthW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOW,
+    SetForegroundWindow, ShowWindow, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -171,6 +171,11 @@ pub fn open_url(url: &str) -> anyhow::Result<()> {
         anyhow::bail!("ShellExecuteW returned {code}");
     }
     Ok(())
+}
+
+#[cfg(windows)]
+pub fn allow_set_foreground_window(process_id: u32) -> bool {
+    unsafe { AllowSetForegroundWindow(process_id).is_ok() }
 }
 
 #[cfg(windows)]

@@ -95,7 +95,7 @@ fn launcher_binary_embeds_codex_icon_resource() {
 }
 
 #[test]
-fn windows_binaries_request_administrator_privileges() {
+fn windows_binaries_use_standard_user_execution_level() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let manager_build =
         std::fs::read_to_string(manifest_dir.join("build.rs")).expect("read manager build.rs");
@@ -118,7 +118,7 @@ fn windows_binaries_request_administrator_privileges() {
 
     assert!(manager_build.contains("windows-app-manifest.xml"));
     assert!(launcher_build.contains("windows-app-manifest.xml"));
-    assert!(windows_manifest.contains("requireAdministrator"));
+    assert!(windows_manifest.contains("asInvoker"));
     assert!(windows_manifest.contains("Microsoft.Windows.Common-Controls"));
     assert!(windows_installer.contains("RequestExecutionLevel admin"));
 }

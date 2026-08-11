@@ -372,6 +372,7 @@
   installCodexPlusForceChineseLocale();
 
   const helperBase = window.__CODEX_SESSION_DELETE_HELPER__ || "http://127.0.0.1:57321";
+  const taskboardPanelUrl = "http://127.0.0.1:47823/?host=codex";
   const buttonClass = "codex-delete-button";
   const exportButtonClass = "codex-export-button";
   const projectMoveButtonClass = "codex-project-move-button";
@@ -403,13 +404,13 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "14";
+  const codexDeleteStyleVersion = "19";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
-  const codexDeleteVersion = "7";
+  const codexDeleteVersion = "10";
   const codexExportVersion = "1";
   const codexProjectMoveVersion = "1";
-  const codexActionGroupVersion = "5";
+  const codexActionGroupVersion = "10";
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationViewVersion = "1";
@@ -614,6 +615,15 @@
         gap: 6px;
         background: transparent;
       }
+      .${actionGroupClass}[data-codex-action-native-slot="true"] {
+        position: relative;
+        right: auto;
+        top: auto;
+        transform: none;
+        z-index: auto;
+        flex: 0 0 auto;
+        gap: 8px;
+      }
       .${actionButtonClass} {
         width: 26px;
         height: 26px;
@@ -623,7 +633,7 @@
         border: 0;
         border-radius: 6px;
         background: transparent;
-        color: #d1d5db;
+        color: var(--color-token-text-secondary, color-mix(in srgb, CanvasText 58%, transparent));
         font: 14px/1 system-ui, sans-serif;
         padding: 0;
         cursor: default;
@@ -633,12 +643,41 @@
         display: block;
         width: 16px;
         height: 16px;
+        fill: currentColor;
+        stroke: none;
       }
       .${actionButtonClass}:hover,
       .${actionButtonClass}:focus-visible {
-        background: #363839;
-        color: #f4f4f5;
+        background: var(--color-token-list-hover-background, color-mix(in srgb, currentColor 8%, transparent));
+        color: var(--color-token-foreground, CanvasText);
         outline: none;
+      }
+      .${actionGroupClass}[data-codex-action-native-slot="true"] .${actionButtonClass} {
+        width: var(--codex-session-native-action-width, 20px);
+        height: var(--codex-session-native-action-height, 20px);
+        border-radius: var(--codex-session-native-action-radius, 10px);
+        background: transparent;
+        color: var(--codex-session-native-action-color, inherit);
+        font: inherit;
+      }
+      .${actionGroupClass}[data-codex-action-native-slot="true"] .${actionButtonClass} svg {
+        fill: none;
+        stroke: none;
+      }
+      .${actionGroupClass}[data-codex-action-native-slot="true"] .${actionButtonClass}:hover,
+      .${actionGroupClass}[data-codex-action-native-slot="true"] .${actionButtonClass}:focus-visible {
+        background: var(--color-token-list-hover-background, color-mix(in srgb, currentColor 8%, transparent));
+        color: var(--color-token-foreground, CanvasText);
+      }
+      .codex-session-action-row:hover .codex-session-action-rail,
+      .codex-session-action-row:focus-within .codex-session-action-rail {
+        min-width: var(--codex-session-action-rail-width, 48px);
+      }
+      .codex-session-action-row:hover .codex-session-action-native-container,
+      .codex-session-action-row:focus-within .codex-session-action-native-container,
+      .codex-session-action-row.codex-session-more-open .codex-session-action-native-container {
+        width: var(--codex-session-action-container-width, 52px);
+        min-width: var(--codex-session-action-container-width, 52px);
       }
       .${moreMenuClass} {
         position: fixed;
@@ -1290,7 +1329,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, taskboard: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1309,6 +1348,7 @@
     serviceTierControls: "codexAppServiceTierControls",
     petRealMouseLook: "codexAppPetRealMouseLook",
     stepwise: "codexAppStepwiseEnabled",
+    taskboard: "codexTaskboardEnabled",
     pasteFix: "codexAppPasteFix",
     dreamSkinEnabled: "codexAppDreamSkinEnabled",
     dreamSkinPaused: "codexAppDreamSkinPaused",
@@ -1349,6 +1389,7 @@
         serviceTierControls: false,
         petRealMouseLook: false,
         stepwise: false,
+        taskboard: false,
         dreamSkinEnabled: false,
         dreamSkinPaused: false,
         dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {},
@@ -2183,6 +2224,8 @@
 
   function renderCodexPlusMenu() {
     const settings = codexPlusSettings();
+    const taskboardRow = document.querySelector("[data-codex-taskboard-row='true']");
+    if (taskboardRow) taskboardRow.hidden = !settings.taskboard;
     document.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-plus-setting");
       const waitsForBackend = codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded;
@@ -2194,7 +2237,7 @@
     refreshCodexServiceTierControls();
   }
 
-  let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, launchMode: "patch", codexAppVersion: "" };
+  let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, codexTaskboardEnabled: false, launchMode: "patch", codexAppVersion: "" };
   let codexPlusBackendSettingsSeq = 0;
   const codexPluginLegacyEntryUnlockBeforeVersion = "26.601.2237";
   const codexPluginBridgeRequestUnlockFromVersion = "26.616.0";
@@ -3317,6 +3360,26 @@
     }
   }
 
+  async function openTaskboardFromCodex() {
+    const taskboardWindow = window.open("about:blank", "_blank");
+    const result = await postJson("/taskboard/open", {});
+    if (result.status === "ok") {
+      const url = typeof result.url === "string" && result.url ? result.url : taskboardPanelUrl;
+      if (taskboardWindow && !taskboardWindow.closed) {
+        taskboardWindow.location.href = url;
+        taskboardWindow.focus?.();
+      } else {
+        window.open(url, "_blank");
+      }
+      showToast("任务面板已打开", null);
+      return;
+    }
+    if (taskboardWindow && !taskboardWindow.closed) {
+      taskboardWindow.close();
+    }
+    showToast(result.message || "打开任务面板失败", null);
+  }
+
   function scheduleBackendHeartbeat() {
     if (window.__codexPlusBackendHeartbeat) return;
     window.__codexPlusBackendHeartbeat = setInterval(checkBackendStatus, 5000);
@@ -3598,6 +3661,10 @@
               <div><div class="codex-plus-row-title">页面增强模式</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强：保留会话删除、导出、项目移动和用户脚本，仅关闭插件市场相关增强。" : "完整增强：加载插件市场、项目路径移动等全部页面能力。"}</div></div>
               <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
             </div>
+            <div class="codex-plus-row" data-codex-taskboard-row="true">
+              <div><div class="codex-plus-row-title">任务面板</div><div class="codex-plus-row-description">打开本地 Taskboard，查看和管理当前 Codex 任务。</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-open-taskboard="true">打开任务面板</button>
+            </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">原生菜单栏位置</div><div class="codex-plus-row-description">把 Codex++ 菜单插入顶部原生菜单栏；默认关闭以避免页面重渲染冲突。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="nativeMenuPlacement"><span></span></button>
@@ -3683,6 +3750,14 @@
       }
       if (target?.closest("[data-codex-open-manager]")) {
         openManagerFromCodex();
+        return;
+      }
+      if (target?.closest("[data-codex-open-taskboard]")) {
+        if (!codexPlusSettings().taskboard) {
+          showToast("任务面板未启用", null);
+          return;
+        }
+        void openTaskboardFromCodex();
         return;
       }
       if (target?.closest("[data-codex-plus-discord]")) {
@@ -8301,7 +8376,6 @@
       .filter((node) => !node.closest(`.${actionGroupClass}`))
       .filter((node) => {
         const rect = node.getBoundingClientRect();
-        if (rect.width < 12 || rect.height < 12) return false;
         const label = [
           node.getAttribute("aria-label"),
           node.getAttribute("title"),
@@ -8312,13 +8386,76 @@
           .join(" ")
           .toLowerCase();
         if (/(pin|archive|置顶|归档)/i.test(label)) return true;
+        if (rect.width < 12 || rect.height < 12) return false;
         const rowRect = row.getBoundingClientRect();
         return rect.left > rowRect.left + rowRect.width * 0.68;
       });
   }
 
+  function nativeActionContainerFromRow(row) {
+    const buttons = nativeActionButtonsFromRow(row);
+    if (!buttons.length) return null;
+    const needed = Math.min(2, buttons.length);
+    for (const button of buttons) {
+      for (let node = button.parentElement; node && node !== row; node = node.parentElement) {
+        if (node.querySelector?.(`${selectors.threadTitle}, .truncate.select-none, .truncate.text-base`)) continue;
+        if (buttons.filter((candidate) => node.contains(candidate)).length >= needed) return node;
+      }
+    }
+    return null;
+  }
+
+  function nativeActionRailFromRow(row) {
+    const nativeContainer = nativeActionContainerFromRow(row);
+    return [...row.querySelectorAll("div")].find((node) =>
+      node !== nativeContainer &&
+      node.classList.contains("group-hover:min-w-12") &&
+      node.classList.contains("group-has-[:focus-visible]:min-w-12")
+    ) || null;
+  }
+
+  function syncNativeActionGroupStyle(row, group) {
+    group.style.removeProperty("--codex-session-action-mask-background");
+    const nativeButton = nativeActionButtonsFromRow(row)[0];
+    const nativeContainer = nativeActionContainerFromRow(row);
+    if (nativeButton) {
+      const style = getComputedStyle(nativeButton);
+      group.style.setProperty("--codex-session-native-action-width", style.width);
+      group.style.setProperty("--codex-session-native-action-height", style.height);
+      group.style.setProperty("--codex-session-native-action-radius", style.borderRadius);
+      group.style.setProperty("--codex-session-native-action-color", style.color);
+    }
+    const rail = nativeActionRailFromRow(row);
+    if (!nativeContainer || !rail) return;
+    const groupWidth = group.getBoundingClientRect().width || 0;
+    const containerGap = parseFloat(getComputedStyle(nativeContainer).gap) || 8;
+    const nativeButtons = nativeActionButtonsFromRow(row);
+    const nativeButtonsWidth = nativeButtons.reduce(
+      (total, button) => total + button.getBoundingClientRect().width,
+      Math.max(0, nativeButtons.length - 1) * containerGap
+    );
+    const containerWidth = Math.max(52, nativeButtonsWidth);
+    const actionWidth = Math.ceil(Math.max(48, groupWidth + containerWidth + containerGap));
+    row.classList.add("codex-session-action-row");
+    nativeContainer.classList.add("codex-session-action-native-container");
+    nativeContainer.style.setProperty("--codex-session-action-container-width", `${actionWidth}px`);
+    rail.classList.add("codex-session-action-rail");
+    rail.style.setProperty(
+      "--codex-session-action-rail-width",
+      `${actionWidth}px`
+    );
+  }
+
   function syncActionGroupLayout(row, group) {
     if (!row || !group) return;
+    if (group.dataset.codexActionNativeSlot === "true") {
+      syncNativeActionGroupStyle(row, group);
+      group.style.removeProperty("--codex-session-actions-right");
+      row.style.removeProperty("--codex-session-title-mask");
+      row.style.removeProperty("--codex-session-title-max-width");
+      group.dataset.codexActionLayoutStable = "true";
+      return;
+    }
     if (group.dataset.codexActionLayoutStable === "true") return;
     const rowRect = row.getBoundingClientRect();
     const nativeButtons = nativeActionButtonsFromRow(row);
@@ -8351,6 +8488,13 @@
 
   function removeActionGroups(row) {
     row.querySelectorAll(`.${actionGroupClass}`).forEach((group) => group.remove());
+    row.classList.remove("codex-session-action-row");
+    const rail = nativeActionRailFromRow(row);
+    rail?.classList.remove("codex-session-action-rail");
+    rail?.style.removeProperty("--codex-session-action-rail-width");
+    const nativeContainer = nativeActionContainerFromRow(row);
+    nativeContainer?.classList.remove("codex-session-action-native-container");
+    nativeContainer?.style.removeProperty("--codex-session-action-container-width");
   }
 
   function stopActionButtonEvent(row, button, event) {
@@ -8486,21 +8630,18 @@
     return replacement;
   }
 
-  function configureActionButton(button, label, icon) {
-    button.setAttribute("aria-label", label);
-    button.dataset.codexActionLabel = label;
-    button.removeAttribute("title");
-    button.textContent = icon;
+  function moreIconSvg() {
+    return `
+      <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false" fill="none">
+        <path fill="currentColor" d="M5 8.333a1.667 1.667 0 1 0 0 3.334 1.667 1.667 0 0 0 0-3.334Zm5 0a1.667 1.667 0 1 0 0 3.334 1.667 1.667 0 0 0 0-3.334Zm5 0a1.667 1.667 0 1 0 0 3.334 1.667 1.667 0 0 0 0-3.334Z"></path>
+      </svg>
+    `;
   }
 
   function trashIconSvg() {
     return `
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M3 6h18"></path>
-        <path d="M8 6V4h8v2"></path>
-        <path d="M19 6l-1 14H6L5 6"></path>
-        <path d="M10 11v5"></path>
-        <path d="M14 11v5"></path>
+      <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false" fill="none">
+        <path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M12.369 6.5a.5.5 0 0 1 .486.615l-1.492 6.343A2 2 0 0 1 9.416 15H6.584a2 2 0 0 1-1.947-1.542L3.145 7.115A.5.5 0 0 1 3.63 6.5zM8.5 1A2.5 2.5 0 0 1 11 3.5h2a1 1 0 0 1 1 1V5a.5.5 0 0 1-.5.5h-11A.5.5 0 0 1 2 5v-.5a1 1 0 0 1 1-1h2A2.5 2.5 0 0 1 7.5 1zm0 1.5h-1a1 1 0 0 0-1 1h3a1 1 0 0 0-1-1"></path>
       </svg>
     `;
   }
@@ -8525,6 +8666,7 @@
     const existingMoreButton = existingGroup?.querySelector(`.${moreButtonClass}`);
     const existingExportButton = existingGroup?.querySelector(`.${exportButtonClass}`);
     const existingMoveButton = existingGroup?.querySelector(`.${projectMoveButtonClass}`);
+    const nativeContainer = nativeActionContainerFromRow(row);
     const needsMoreMenu = settings.markdownExport || settings.projectMove;
     const hasUnexpectedDelete = !settings.sessionDelete && !!existingDeleteButton;
     const hasUnexpectedMore = !needsMoreMenu && !!existingMoreButton;
@@ -8534,7 +8676,8 @@
     const missingMore = needsMoreMenu && !existingMoreButton;
     const deleteReady = !settings.sessionDelete || existingDeleteButton?.dataset.codexDeleteVersion === codexDeleteVersion;
     const groupReady = existingGroup?.dataset.codexActionGroupVersion === codexActionGroupVersion;
-    if (groupReady && deleteReady && !hasUnexpectedDelete && !hasUnexpectedMore && !hasUnexpectedExport && !hasUnexpectedMove && !missingDelete && !missingMore) {
+    const needsNativeSlotMove = !!nativeContainer && existingGroup?.parentElement !== nativeContainer;
+    if (groupReady && deleteReady && !needsNativeSlotMove && !hasUnexpectedDelete && !hasUnexpectedMore && !hasUnexpectedExport && !hasUnexpectedMove && !missingDelete && !missingMore) {
       return;
     }
     removeActionGroups(row);
@@ -8553,7 +8696,7 @@
       moreButton.className = `${actionButtonClass} ${moreButtonClass}`;
       moreButton.setAttribute("aria-haspopup", "menu");
       moreButton.setAttribute("aria-expanded", "false");
-      configureActionButton(moreButton, "更多操作", "…");
+      configureSvgActionButton(moreButton, "更多操作", moreIconSvg());
       const moreMenu = document.createElement("div");
       moreMenu.className = moreMenuClass;
       moreMenu.setAttribute("role", "menu");
@@ -8599,7 +8742,13 @@
       group.appendChild(deleteButton);
       setTimeout(() => refreshActionButton(deleteButton, row, openDeleteConfirm), 0);
     }
-    row.appendChild(group);
+    if (nativeContainer?.isConnected && row.contains(nativeContainer)) {
+      group.dataset.codexActionNativeSlot = "true";
+      nativeContainer.insertBefore(group, nativeContainer.firstChild);
+    } else {
+      group.dataset.codexActionNativeSlot = "false";
+      row.appendChild(group);
+    }
     syncActionGroupLayout(row, group);
   }
 

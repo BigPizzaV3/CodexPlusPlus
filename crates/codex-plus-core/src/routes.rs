@@ -1,7 +1,11 @@
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -14,6 +18,9 @@ use crate::user_scripts::UserScriptManager;
 
 pub type UserScriptEvaluator = Arc<dyn Fn(&str, &str) -> anyhow::Result<Value> + Send + Sync>;
 pub type DevtoolsOpener = Arc<dyn Fn(&str) -> anyhow::Result<()> + Send + Sync>;
+
+const TASKBOARD_PORT: u16 = 47823;
+const TASKBOARD_URL: &str = "http://127.0.0.1:47823/?host=codex";
 
 #[derive(Clone)]
 pub struct BridgeContext {
@@ -179,6 +186,7 @@ pub async fn handle_bridge_request(
         "/devtools/open" => ctx.runtime.open_devtools().await,
         "/manager/open" => ctx.runtime.open_manager().await,
         "/manager/open-transient" => ctx.runtime.open_transient_manager().await,
+        "/taskboard/open" => taskboard_open_value(ctx.settings.get_settings().await),
         "/backend/status" => ctx.runtime.backend_status().await,
         "/codex-model-catalog" | "/codex-config-model" => ctx.runtime.codex_model_catalog().await,
         "/diagnostics/log" => diagnostic_log_value(payload.clone()),
@@ -305,6 +313,121 @@ impl CoreSettingsService {
             app_dir: Some(app_dir),
         }
     }
+}
+
+fn taskboard_open_value(settings: anyhow::Result<BackendSettings>) -> anyhow::Result<Value> {
+    let settings = settings?;
+    if !settings.enhancements_enabled || !settings.codex_taskboard_enabled {
+        return Ok(taskboard_response(
+            "failed",
+            "Taskboard is disabled in Codex++ settings.",
+            false,
+            false,
+        ));
+    }
+    Ok(open_taskboard_panel())
+}
+
+pub(crate) fn open_taskboard_from_default_settings() -> anyhow::Result<Value> {
+    taskboard_open_value(SettingsStore::default().load())
+}
+
+fn open_taskboard_panel() -> Value {
+    if taskboard_health_ok() {
+        return taskboard_response("ok", "Taskboard is already running.", true, false);
+    }
+
+    if let Err(error) = spawn_taskboard_service() {
+        return taskboard_response(
+            "failed",
+            format!("Failed to start Taskboard with codex-taskboard: {error}"),
+            false,
+            false,
+        );
+    }
+
+    if wait_for_taskboard_health(Duration::from_secs(8)) {
+        taskboard_response("ok", "Taskboard started.", false, true)
+    } else {
+        taskboard_response(
+            "failed",
+            "Started codex-taskboard, but http://127.0.0.1:47823/health is still unavailable.",
+            false,
+            true,
+        )
+    }
+}
+
+fn taskboard_response(
+    status: &str,
+    message: impl Into<String>,
+    already_running: bool,
+    launched: bool,
+) -> Value {
+    json!({
+        "status": status,
+        "message": message.into(),
+        "url": TASKBOARD_URL,
+        "alreadyRunning": already_running,
+        "launched": launched
+    })
+}
+
+fn wait_for_taskboard_health(timeout: Duration) -> bool {
+    let started_at = Instant::now();
+    while started_at.elapsed() < timeout {
+        if taskboard_health_ok() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    false
+}
+
+fn taskboard_health_ok() -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], TASKBOARD_PORT));
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(750)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(750)));
+    if stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1:47823\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut response = String::new();
+    stream.read_to_string(&mut response).is_ok()
+        && response.contains(" 200 ")
+        && response.contains("\"status\":\"ok\"")
+}
+
+fn spawn_taskboard_service() -> anyhow::Result<()> {
+    let mut command = taskboard_start_command();
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::windows_create_no_window());
+    }
+    command.spawn()?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn taskboard_start_command() -> Command {
+    let mut command = Command::new("cmd");
+    command.args(["/C", "codex-taskboard"]);
+    command
+}
+
+#[cfg(not(target_os = "windows"))]
+fn taskboard_start_command() -> Command {
+    Command::new("codex-taskboard")
 }
 
 #[async_trait]
