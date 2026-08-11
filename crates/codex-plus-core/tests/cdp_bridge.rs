@@ -2010,10 +2010,16 @@ fn injection_script_installs_upstream_branch_dropdown_adapter() {
     assert!(script.contains("cleanupInvalidUpstreamBranchOptions"));
     assert!(script.contains("branchMenuInNewWorktreeMode"));
     assert!(script.contains("branchMenuTriggerIsBranchControl"));
-    assert!(script.contains("actual-upstream-refs-v16"));
+    assert!(script.contains("actual-upstream-refs-v17"));
     assert!(script.contains("create and checkout new branch"));
     assert!(script.contains("if (/^start in"));
     assert!(script.contains("if (!branchMenuInNewWorktreeMode(trigger))"));
+    assert!(script.contains("window.__codexUpstreamBranchDropdownObserver?.disconnect?.()"));
+    assert!(script.contains("record.addedNodes"));
+    assert!(script.contains("addedNodeContainsBranchMenu"));
+    assert!(!script.contains("new MutationObserver(schedule).observe"));
+    assert!(script.contains(r#".composer-footer button, .composer-footer [role="button"]"#));
+    assert!(!script.contains("return [...document.querySelectorAll('button')]"));
 }
 
 #[test]
@@ -2036,7 +2042,7 @@ fn injection_script_rebuilds_upstream_options_for_each_project_branch_menu() {
     assert!(script.contains("projectContextFromProjectLabel"));
     assert!(script.contains("upstreamBranchOptionsMatchRefs"));
     assert!(script.contains("upstreamBranchDefaultsCache = new Map()"));
-    assert!(script.contains("actual-upstream-refs-v16"));
+    assert!(script.contains("actual-upstream-refs-v17"));
 }
 
 #[test]
