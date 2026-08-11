@@ -253,16 +253,27 @@ pub fn pick_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
 }
 
 pub fn pick_injectable_codex_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
-    for target in targets
-        .iter()
-        .filter(|target| is_injectable_page_target(target))
-    {
-        if is_primary_codex_page_target(target) {
-            return Ok(target.clone());
-        }
+    // Only inject into Codex's own app:// page (or the supported ChatGPT
+    // desktop page). Embedded browser pages can have titles or URLs containing
+    // "Codex" (for example a GitHub PR), but they must never become the target.
+    if let Some(target) = targets.iter().find(|target| {
+        is_injectable_page_target(target)
+            && is_primary_codex_page_target(target)
+            && (is_codex_app_page_target(target)
+                || is_chatgpt_desktop_page(&target.title, &target.url))
+    }) {
+        return Ok(target.clone());
     }
-
     bail!("No injectable Codex page target found")
+}
+
+fn is_codex_app_page_target(target: &CdpTarget) -> bool {
+    let Ok(url) = reqwest::Url::parse(target.url.trim()) else {
+        return false;
+    };
+    url.scheme().eq_ignore_ascii_case("app")
+        && url.host_str() == Some("-")
+        && url.path().eq_ignore_ascii_case("/index.html")
 }
 
 pub fn is_injectable_page_target(target: &CdpTarget) -> bool {

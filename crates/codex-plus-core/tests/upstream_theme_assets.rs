@@ -10,7 +10,19 @@ fn assert_sha256(relative_path: &str, expected: &str) {
             path.display()
         )
     });
-    let actual = format!("{:X}", Sha256::digest(bytes));
+    // Git may materialize these text assets with CRLF on Windows. Hash the
+    // repository's canonical LF representation so the guard is platform
+    // independent while still detecting substantive asset changes.
+    let mut normalized = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+            index += 1;
+        }
+        normalized.push(bytes[index]);
+        index += 1;
+    }
+    let actual = format!("{:X}", Sha256::digest(normalized));
     assert_eq!(actual, expected, "upstream asset changed: {relative_path}");
 }
 
