@@ -1,9 +1,21 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { runAllFetchedModelHiTests } from "./relay-model-hi.ts";
+import { failedModelIds, runAllFetchedModelHiTests } from "./relay-model-hi.ts";
 
 describe("batch model hi tests", () => {
+  it("collects only failed model ids from completed results", () => {
+    assert.deepEqual(
+      failedModelIds({
+        "model-ok": { status: "ok" },
+        "model-failed": { status: "failed" },
+        "model-running": { status: "running" },
+        "model-error": { status: "failed" },
+      }),
+      ["model-failed", "model-error"],
+    );
+  });
+
   it("tests every unique non-empty model returned by the current fetch", async () => {
     const tested: string[] = [];
 

@@ -77,7 +77,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { isGitHubRepositoryHomepage } from "./github-repository";
-import { normalizeFetchedModelIds, runAllFetchedModelHiTests } from "./relay-model-hi";
+import { failedModelIds, normalizeFetchedModelIds, runAllFetchedModelHiTests } from "./relay-model-hi";
 import {
   mergeModelWindowRows,
   modelWindowRowsFromProfile,
@@ -5785,6 +5785,18 @@ function RelayProfileEditor({
   const addModelWindowRows = (rows: ModelWindowRow[]) => {
     setModelWindowRows(mergeModelWindowRows(modelWindowRows, rows));
   };
+  const failedModels = failedModelIds(modelHiTestResults);
+  const removeFailedModels = () => {
+    if (!failedModels.length) return;
+    if (!window.confirm(tf("删除测试失败的 {0} 个模型？确认后仍需点击保存才会写入配置。", [failedModels.length]))) return;
+
+    const failedModelSet = new Set(failedModels);
+    const nextRows = modelWindowRows.filter((row) => !failedModelSet.has(row.model.trim()));
+    setModelWindowRows(nextRows.length ? nextRows : [{ model: "", window: "", imageHandling: "send-as-is" }]);
+    setModelHiTestResults((current) =>
+      Object.fromEntries(Object.entries(current).filter(([model]) => !failedModelSet.has(model))),
+    );
+  };
   const runAllModelHiTests = async () => {
     if (modelHiTestRunningRef.current) return;
     modelHiTestRunningRef.current = true;
@@ -6180,6 +6192,19 @@ function RelayProfileEditor({
                       Object.keys(modelHiTestResults).length,
                     ])
                   : t("批量 hi 测试")}
+              </Button>
+              <Button
+                disabled={modelHiTestRunning || failedModels.length === 0}
+                onClick={removeFailedModels}
+                size="sm"
+                title={failedModels.length ? tf("删除 {0} 个测试失败的模型", [failedModels.length]) : t("当前没有测试失败的模型")}
+                type="button"
+                variant="secondary"
+              >
+                <Trash2 className="h-4 w-4" />
+                {failedModels.length
+                  ? tf("删除失败模型 ({0})", [failedModels.length])
+                  : t("删除失败模型")}
               </Button>
             </div>
             {Object.keys(modelHiTestResults).length ? (

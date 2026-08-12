@@ -7,6 +7,8 @@
 export const EN_PLAIN: Record<string, string> = {
   "批量 hi 测试": "Batch hi test",
   "批量模型测试": "Batch model test",
+  "删除失败模型": "Delete failed models",
+  "当前没有测试失败的模型": "There are no failed models to delete",
   "等待测试": "Waiting",
   "测试中…": "Testing…",
   "测试请求失败。": "Test request failed.",
@@ -834,6 +836,9 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "删除失败模型 ({0})": "Delete failed models ({0})",
+  "删除 {0} 个测试失败的模型": "Delete {0} failed model(s)",
+  "删除测试失败的 {0} 个模型？确认后仍需点击保存才会写入配置。": "Delete the {0} failed model(s)? You will still need to click Save to write the change to the configuration.",
   "HTTP {0} · {1} ms": "HTTP {0} · {1} ms",
   "HTTP {0} · 失败 · {1} ms": "HTTP {0} · failed · {1} ms",
   "模型测试完成：成功 {0} 个，失败 {1} 个。": "Model tests completed: {0} succeeded, {1} failed.",

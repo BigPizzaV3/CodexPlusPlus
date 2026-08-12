@@ -11,6 +11,14 @@ export function normalizeFetchedModelIds(fetchedModels: readonly string[]): stri
   return Array.from(new Set(fetchedModels.map((model) => model.trim()).filter(Boolean)));
 }
 
+export function failedModelIds(
+  results: Readonly<Record<string, { status: string }>>,
+): string[] {
+  return Object.entries(results)
+    .filter(([, result]) => result.status === "failed")
+    .map(([model]) => model);
+}
+
 export async function runAllFetchedModelHiTests<T>(
   fetchedModels: readonly string[],
   testModel: (model: string) => Promise<T>,
