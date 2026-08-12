@@ -424,6 +424,12 @@ pub struct BackendSettings {
         deserialize_with = "empty_as_default_stepwise_api_key_env"
     )]
     pub codex_app_stepwise_api_key_env: String,
+    #[serde(
+        rename = "codexAppStepwiseProtocol",
+        default = "default_stepwise_protocol",
+        deserialize_with = "deserialize_stepwise_protocol"
+    )]
+    pub codex_app_stepwise_protocol: String,
     #[serde(rename = "codexAppStepwiseModel", default)]
     pub codex_app_stepwise_model: String,
     #[serde(
@@ -565,6 +571,7 @@ impl Default for BackendSettings {
             codex_app_stepwise_base_url: String::new(),
             codex_app_stepwise_api_key: String::new(),
             codex_app_stepwise_api_key_env: default_stepwise_api_key_env(),
+            codex_app_stepwise_protocol: default_stepwise_protocol(),
             codex_app_stepwise_model: String::new(),
             codex_app_stepwise_max_items: default_stepwise_max_items(),
             codex_app_stepwise_max_input_chars: default_stepwise_max_input_chars(),
@@ -739,6 +746,19 @@ impl BackendSettings {
 
 pub fn default_stepwise_api_key_env() -> String {
     "CODEX_STEPWISE_API_KEY".to_string()
+}
+
+pub fn default_stepwise_protocol() -> String {
+    "chat_completions".to_string()
+}
+
+pub fn normalize_stepwise_protocol(value: &str) -> String {
+    match value.trim() {
+        "chat_completions" | "responses" | "anthropic_messages" | "auto" => {
+            value.trim().to_string()
+        }
+        _ => default_stepwise_protocol(),
+    }
 }
 
 pub fn default_stepwise_max_items() -> u8 {
@@ -935,6 +955,15 @@ where
     Ok(value
         .filter(|value| !value.is_empty())
         .unwrap_or_else(default_stepwise_api_key_env))
+}
+
+fn deserialize_stepwise_protocol<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?
+        .map(|value| normalize_stepwise_protocol(&value))
+        .unwrap_or_else(default_stepwise_protocol))
 }
 
 fn deserialize_image_overlay_opacity<'de, D>(deserializer: D) -> Result<u8, D::Error>
@@ -1179,6 +1208,15 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             } else {
                 value.trim().to_string()
             }),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppStepwiseProtocol")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppStepwiseProtocol".to_string(),
+            Value::String(normalize_stepwise_protocol(value)),
         );
     }
     if let Some(value) = source.get("codexAppStepwiseModel").and_then(Value::as_str) {
@@ -1509,6 +1547,8 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         } else {
             settings.codex_app_stepwise_api_key_env.trim().to_string()
         };
+    settings.codex_app_stepwise_protocol =
+        normalize_stepwise_protocol(&settings.codex_app_stepwise_protocol);
     settings.codex_app_stepwise_model = settings.codex_app_stepwise_model.trim().to_string();
     settings.weixin_connect_base_url = settings
         .weixin_connect_base_url
@@ -1720,6 +1760,7 @@ mod tests {
             settings.codex_app_stepwise_api_key_env,
             "CODEX_STEPWISE_API_KEY"
         );
+        assert_eq!(settings.codex_app_stepwise_protocol, "chat_completions");
         assert!(settings.codex_app_stepwise_model.is_empty());
         assert_eq!(settings.codex_app_stepwise_max_items, 6);
         assert_eq!(settings.codex_app_stepwise_max_input_chars, 6000);
@@ -1733,6 +1774,32 @@ mod tests {
         assert!(settings.weixin_connect_token.is_empty());
         assert_eq!(settings.weixin_connect_sandbox, "read-only");
     }
+
+    #[test]
+    fn settings_deserialize_normalizes_stepwise_protocol_and_supports_legacy_missing_field() {
+        let defaults: BackendSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.codex_app_stepwise_protocol, "chat_completions");
+
+        for protocol in [
+            "chat_completions",
+            "responses",
+            "anthropic_messages",
+            "auto",
+        ] {
+            let settings: BackendSettings = serde_json::from_value(json!({
+                "codexAppStepwiseProtocol": format!(" {protocol} ")
+            }))
+            .unwrap();
+            assert_eq!(settings.codex_app_stepwise_protocol, protocol);
+        }
+
+        let invalid: BackendSettings = serde_json::from_value(json!({
+            "codexAppStepwiseProtocol": "unsupported"
+        }))
+        .unwrap();
+        assert_eq!(invalid.codex_app_stepwise_protocol, "chat_completions");
+    }
+
 
     #[test]
     fn settings_deserialize_ignores_removed_cli_wrapper_keys() {
@@ -2254,6 +2321,34 @@ experimental_bearer_token = "sk-existing""#
             "target"
         );
     }
+
+    #[test]
+    fn settings_store_persists_and_normalizes_stepwise_protocol() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "codexAppStepwiseProtocol": "responses"
+            }))
+            .unwrap();
+        assert_eq!(updated.codex_app_stepwise_protocol, "responses");
+        assert_eq!(
+            store.load().unwrap().codex_app_stepwise_protocol,
+            "responses"
+        );
+
+        let invalid = store
+            .update(json!({
+                "codexAppStepwiseProtocol": "not-a-protocol"
+            }))
+            .unwrap();
+        assert_eq!(invalid.codex_app_stepwise_protocol, "chat_completions");
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(store.path).unwrap()).unwrap();
+        assert_eq!(saved["codexAppStepwiseProtocol"], "chat_completions");
+    }
+
 
     #[test]
     fn settings_store_save_load_roundtrip_preserves_aggregate_relay_settings() {

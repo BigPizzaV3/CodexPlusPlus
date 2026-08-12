@@ -327,6 +327,7 @@ async fn stepwise_routes_use_settings_service() {
         json!({
             "status": "ok",
             "disabled": true,
+            "protocol": "chat_completions",
             "items": []
         })
     );
@@ -335,6 +336,7 @@ async fn stepwise_routes_use_settings_service() {
         json!({
             "status": "ok",
             "disabled": true,
+            "protocol": "chat_completions",
             "items": []
         })
     );
