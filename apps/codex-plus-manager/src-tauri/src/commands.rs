@@ -466,6 +466,13 @@ pub fn startup_options() -> CommandResult<StartupPayload> {
     )
 }
 
+#[tauri::command]
+pub fn consume_pending_manager_navigation()
+-> Result<Option<codex_plus_core::manager_navigation::ManagerNavigationIntent>, String> {
+    codex_plus_core::manager_navigation::consume_pending_manager_navigation()
+        .map_err(|error| error.to_string())
+}
+
 pub fn startup_should_show_update() -> bool {
     should_show_update(
         std::env::args(),
