@@ -16,8 +16,8 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex 意外停止": "Codex stopped unexpectedly",
   "Codex 版本": "Codex version",
   "Codex 目标": "Codex goals",
-  "Codex++ 官方中转站，主打稳定接入和划算价格，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。":
-    "The official Codex++ relay, built for stable access and good value, supporting the full GPT-5.6 family, Fable 5, Sonnet 5, GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2 and other models plus image capabilities.",
+  "JOJO Code 提供稳定、价格合理的 API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。":
+    "JOJO Code provides a stable, competitively priced API relay supporting the full GPT-5.6 family, Fable 5, Sonnet 5, GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2 and other models plus image capabilities.",
   "Codex++ 导入": "Codex++ import",
   "Codex++ 版本": "Codex++ version",
   "Codex-Dream-Skin 风格主题和换图": "Codex-Dream-Skin style themes and image replacement",
@@ -370,6 +370,7 @@ export const EN_PLAIN: Record<string, string> = {
   "启用供应商配置切换": "Enable provider configuration switching",
   "启用此扩展项": "Enable this entry",
   "启用目标功能": "Enable goals feature",
+  "当前继承公共配置；修改后将为该供应商保存独立设置。": "Currently inherited from the common configuration; changing it saves a provider-specific override.",
   "图片": "Image",
   "图片覆盖层": "Image overlay",
   "在会话列表悬停显示删除按钮，并支持撤销。": "Show a delete button on hover in the session list, with undo support.",
@@ -399,7 +400,7 @@ export const EN_PLAIN: Record<string, string> = {
   "安装维护": "Install & maintenance",
   "完整增强": "Full enhancement",
   "官方": "Official",
-  "官方中转站": "Official relay",
+  "项目赞助商": "Project sponsor",
   "官方混入 API Key": "Official mixed-in API Key",
   "官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。":
     "Official mixed API should not store OPENAI_API_KEY in auth.json. Clear this provider's auth.json before switching.",
@@ -510,7 +511,6 @@ export const EN_PLAIN: Record<string, string> = {
   "推荐内容": "Recommendations",
   "提取当前供应商配置": "Extract current provider config",
   "插件": "Plugins",
-  "插件列表全量展示": "Show full plugin list",
   "插件市场修复": "Plugin marketplace repair",
   "插件市场修复失败，请查看错误提示后重试。": "Plugin marketplace repair failed. Check the error message and retry.",
   "插件市场修复进度": "Plugin marketplace repair progress",
@@ -601,15 +601,18 @@ export const EN_PLAIN: Record<string, string> = {
   "概览已检查": "Overview checked",
   "模型列表": "Model list",
   "模型名称": "Model name",
+  "图片处理方式": "Image handling",
   "模型白名单解锁": "Model whitelist unlock",
   "模式": "Mode",
   "模式。": " mode.",
   "正在下载安装包…": "Downloading installer…",
+  "正在写入安装包…": "Writing installer…",
   "正在下载插件市场快照…": "Downloading plugin marketplace snapshot…",
   "正在修复…": "Repairing…",
   "正在修复历史会话": "Repairing historical sessions",
   "正在准备安装包下载…": "Preparing installer download…",
   "正在启动安装包…": "Launching installer…",
+  "下载或启动耗时较长，请保持窗口打开；完成或失败后会自动更新状态。": "The download or launch is taking longer than usual. Keep this window open; the status will update when it finishes or fails.",
   "正在写入 Codex 配置…": "Writing Codex config…",
   "正在写入修复与备份…": "Writing repairs and backups…",
   "正在删除…": "Deleting…",
@@ -759,8 +762,6 @@ export const EN_PLAIN: Record<string, string> = {
   "返回列表": "Back to list",
   "这些变量可能覆盖当前供应商写入的 config.toml / auth.json；CODEX_HOME 不会被清理。":
     "These variables may override the config.toml / auth.json written by the current provider; CODEX_HOME won't be cleaned up.",
-  "进入插件页后自动连续展开“更多”，尽量一次显示完整插件列表。":
-    "Automatically keep expanding 'More' on the plugins page to show the full plugin list at once.",
   "进度": "Progress",
   "远程 SSH 文件引用可直接用 Zed Remote Development 打开。": "Remote SSH file references can be opened directly with Zed Remote Development.",
   "选择全部候选记录": "Select all candidate records",
@@ -821,6 +822,21 @@ export const EN_PLAIN: Record<string, string> = {
   "正在读取本机环境": "Reading the local environment",
   "重新检测": "Check again",
   "排查可能干扰中转站配置的本机环境": "Find local environment settings that may interfere with relay configuration",
+  "单模型路由": "Per-model routing",
+  "首次启用单模型路由需要启动本地协议代理。保存后将立即重启 Codex，使路由安全生效。是否继续？":
+    "Enabling per-model routing for the first time requires the local protocol proxy. Codex will restart immediately after saving so routing can take effect safely. Continue?",
+  "匹配模型": "Match model",
+  "目标供应商": "Target provider",
+  "目标模型（可选）": "Target model (optional)",
+  "选择 Responses 供应商": "Select a Responses provider",
+  "例：gpt-5.6-luna": "Example: gpt-5.6-luna",
+  "留空保持原模型名": "Leave empty to keep the original model name",
+  "删除模型路由": "Delete model route",
+  "请先创建一个 Responses API 目标供应商": "Create a Responses API target provider first",
+  "添加模型路由": "Add model route",
+  "单模型路由需要填写模型名称和目标供应商。": "Each model route requires a model name and target provider.",
+  "仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标必须是 Responses API，且需要从 Codex++ 启动。":
+    "Applies only while this provider is active. It exactly matches the model name and uses the target provider's URL and key. The target must use the Responses API, and Codex must be launched through Codex++.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -842,6 +858,12 @@ export const EN_TEMPLATE: Record<string, string> = {
   "供应商 {0}": "Provider {0}",
   "供应商「{0}」缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。请先在该供应商详情里保存 config.toml。":
     "Provider “{0}” is missing its own config.toml, so the switch was stopped to avoid showing the previous config files. Save config.toml in this provider's details first.",
+  "模型「{0}」存在重复路由。": "Model “{0}” has duplicate routes.",
+  "模型「{0}」不能路由到当前供应商自身。": "Model “{0}” cannot route to the current provider itself.",
+  "模型「{0}」的目标供应商不存在。": "The target provider for model “{0}” does not exist.",
+  "模型「{0}」不能路由到聚合供应商。": "Model “{0}” cannot route to an aggregate provider.",
+  "模型「{0}」的目标供应商必须使用 Responses API。": "The target provider for model “{0}” must use the Responses API.",
+  "模型「{0}」的目标供应商缺少 Base URL 或 Key。": "The target provider for model “{0}” is missing a Base URL or key.",
   "删除会话“{0}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。":
     "Delete session “{0}”? This deletes the local database record and rollout file, and creates a backup.",
   "删除主题“{0}”？此操作无法撤销。": "Delete theme “{0}”? This action cannot be undone.",

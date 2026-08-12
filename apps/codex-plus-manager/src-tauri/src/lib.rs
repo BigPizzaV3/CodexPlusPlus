@@ -40,7 +40,7 @@ pub fn run() {
         );
     }
     let show_update = commands::startup_should_show_update();
-    let run_result = tauri::Builder::default()
+    let app_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let url = if show_update {
@@ -78,7 +78,13 @@ pub fn run() {
             commands::verify_dream_skin,
             commands::list_dream_skin_themes,
             commands::refresh_dream_skin_market,
+            commands::refresh_dream_skin_community,
+            commands::load_pending_dream_skin_community,
+            commands::confirm_pending_dream_skin_community,
+            commands::dismiss_pending_dream_skin_community,
             commands::install_dream_skin_market_theme,
+            commands::install_dream_skin_community_theme,
+            commands::import_dream_skin_theme_package,
             commands::load_dream_skin_theme,
             commands::create_dream_skin_theme,
             commands::save_dream_skin_theme,
@@ -151,14 +157,48 @@ pub fn run() {
             manager_hide_to_tray,
             update_tray_labels
         ])
-        .run(tauri::generate_context!());
-    if let Err(error) = run_result {
-        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-            "manager.run_failed",
-            serde_json::json!({
-                "error": error.to_string()
-            }),
-        );
+        .build(tauri::generate_context!());
+    match app_result {
+        Ok(app) => app.run(|app_handle, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = event {
+                for url in urls {
+                    if handle_dream_skin_url(url.as_str()) {
+                        show_main_window(app_handle);
+                    }
+                }
+            }
+        }),
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.run_failed",
+                serde_json::json!({
+                    "error": error.to_string()
+                }),
+            );
+        }
+    }
+}
+
+pub fn handle_dream_skin_url(url: &str) -> bool {
+    if !url.starts_with("dreamskin://") {
+        return false;
+    }
+    match codex_plus_core::dream_skin_community::save_pending_community_link(url) {
+        Ok(version_id) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.dream_skin_link.pending",
+                serde_json::json!({ "versionId": version_id }),
+            );
+            true
+        }
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.dream_skin_link.failed",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+            false
+        }
     }
 }
 

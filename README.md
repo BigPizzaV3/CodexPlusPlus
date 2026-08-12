@@ -41,8 +41,8 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </a>
 </p>
 <p align="center">
-  <a href="https://jojocode.com/"><strong>JOJO Code｜Codex++ 官方中转站</strong></a><br>
-  Codex++ 官方中转站，主打稳定接入和划算价格，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力，适合日常开发、团队协作和长期项目工作流。
+  <a href="https://jojocode.com/"><strong>JOJO Code</strong></a><br>
+  JOJO Code 提供稳定、价格合理的 API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力，适合日常开发、团队协作和长期项目工作流。
 </p>
 
 <a href="mailto:1727532@qq.com">想显示在下方？</a>
@@ -59,7 +59,7 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
         <img src="docs/images/sponsor-jojocode.png" alt="JOJO Code" height="80">
       </a>
     </td>
-    <td><a href="https://jojocode.com/"><strong>JOJO Code｜Codex++ 官方中转站</strong></a><br>感谢 JOJO Code 赞助本项目。JOJO Code 是 Codex++ 官方中转站，提供价格划算、稳定易接入的 Codex API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力，适合日常开发、快速配置、团队协作和长期使用。</td>
+    <td><a href="https://jojocode.com/"><strong>JOJO Code</strong></a><br>JOJO Code 提供稳定、价格合理且易于接入的 API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力，适合日常开发、快速配置、团队协作和长期使用。</td>
   </tr>
   <tr>
     <td align="center">
@@ -168,13 +168,6 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
 Telegram 频道：<https://t.me/CodexPlusPlus>
 
 友情链接：<a href="https://linux.do">LINUX DO</a>
-
-如果 Codex++ 帮到了你，可以请我喝杯咖啡，或者随手赞赏支持一下继续维护。
-
-<p align="center">
-  <img src="docs/images/sponsor-alipay.jpg" alt="支付宝赞赏码" width="220">
-  <img src="docs/images/sponsor-wechat.jpg" alt="微信赞赏码" width="220">
-</p>
 
 ## 当前功能
 

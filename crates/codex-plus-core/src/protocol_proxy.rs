@@ -296,6 +296,14 @@ pub enum UpstreamWireApi {
     AudioTranscriptions,
 }
 
+#[derive(Debug, Clone)]
+struct ModelRouteSelection {
+    relay: crate::settings::RelayProfile,
+    source_relay_id: String,
+    source_model: String,
+    upstream_model: String,
+}
+
 impl UpstreamProxyResponse {
     pub fn status(&self) -> String {
         http_status_line(self.status_code)
@@ -594,18 +602,30 @@ pub async fn open_responses_proxy_request_with_settings_and_client_context(
     request_path: &str,
     incoming_headers: &[(String, String)],
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    let request_json: Value = serde_json::from_str(body)?;
+    let mut request_json: Value = serde_json::from_str(body)?;
     let is_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let source_model = request_json
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    let model_route = if settings.model_routing_enabled {
+        None
+    } else {
+        select_model_route(&settings, &source_model)?
+    };
+    if let Some(route) = &model_route
+        && route.upstream_model != source_model
+    {
+        request_json["model"] = Value::String(route.upstream_model.clone());
+    }
 
     let relays = if settings.model_routing_enabled {
-        let model = request_json
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        match settings.relay_profile_for_model(model) {
+        match settings.relay_profile_for_model(&source_model) {
             Some(relay) => vec![relay],
             None => {
                 return open_official_responses_proxy_request(
@@ -618,6 +638,8 @@ pub async fn open_responses_proxy_request_with_settings_and_client_context(
                 .await;
             }
         }
+    } else if let Some(route) = &model_route {
+        vec![route.relay.clone()]
     } else {
         let context = RotationContext {
             conversation_id: conversation_id_from_responses_request(&request_json),
@@ -629,7 +651,6 @@ pub async fn open_responses_proxy_request_with_settings_and_client_context(
         )?);
         relays
     };
-
     let relay_count = relays.len();
     for (attempt, relay) in relays.into_iter().enumerate() {
         validate_upstream(&relay)?;
@@ -647,7 +668,13 @@ pub async fn open_responses_proxy_request_with_settings_and_client_context(
                 "stream": is_stream,
                 "attempt": attempt + 1,
                 "candidateCount": relay_count,
-                "headerTimeoutSeconds": header_timeout.as_secs()
+                "headerTimeoutSeconds": header_timeout.as_secs(),
+                "modelRoute": model_route.as_ref().map(|route| json!({
+                    "sourceRelayId": route.source_relay_id,
+                    "sourceModel": route.source_model,
+                    "targetRelayId": route.relay.id,
+                    "upstreamModel": route.upstream_model
+                }))
             }),
         );
         let upstream = match send_upstream_request_for_responses(
@@ -903,6 +930,52 @@ fn official_passthrough_header_allowed(name: &str) -> bool {
             | "traceparent"
             | "tracestate"
     )
+}
+
+fn select_model_route(
+    settings: &crate::settings::BackendSettings,
+    model: &str,
+) -> anyhow::Result<Option<ModelRouteSelection>> {
+    if model.is_empty() || settings.active_aggregate_relay_profile().is_some() {
+        return Ok(None);
+    }
+
+    let source = settings.active_relay_profile();
+    let Some(route) = source
+        .model_routes
+        .iter()
+        .find(|route| route.model.trim() == model)
+    else {
+        return Ok(None);
+    };
+    let target_relay_id = route.target_relay_id.trim();
+    if target_relay_id == source.id {
+        anyhow::bail!("模型路由不能指向当前供应商自身：{model}");
+    }
+    let target = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == target_relay_id)
+        .cloned()
+        .with_context(|| format!("模型路由目标供应商不存在：{target_relay_id}"))?;
+    if target.relay_mode == crate::settings::RelayMode::Aggregate {
+        anyhow::bail!("模型路由目标不能是聚合供应商：{}", target.name);
+    }
+    if target.protocol != RelayProtocol::Responses {
+        anyhow::bail!("模型路由目标必须使用 Responses API：{}", target.name);
+    }
+
+    let upstream_model = if route.target_model.trim().is_empty() {
+        model.to_string()
+    } else {
+        route.target_model.trim().to_string()
+    };
+    Ok(Some(ModelRouteSelection {
+        relay: target,
+        source_relay_id: source.id,
+        source_model: model.to_string(),
+        upstream_model,
+    }))
 }
 
 pub async fn open_models_proxy_request(
@@ -2381,14 +2454,14 @@ fn append_responses_item(
         }
         _ => {
             flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
-            if item.get("role").is_some() || item.get("content").is_some() {
+            if let Some(content) = item.get("content") {
                 let role = responses_role_to_chat_role(item.get("role").and_then(Value::as_str));
+                if content.is_null() && role != "assistant" {
+                    return;
+                }
                 let mut message = json!({
                     "role": role,
-                    "content": responses_content_to_chat_content(
-                        role,
-                        item.get("content").unwrap_or(&Value::Null)
-                        )
+                    "content": responses_content_to_chat_content(role, content)
                 });
                 if role == "assistant" {
                     if !pending_reasoning.is_empty() && pending_tool_calls.is_empty() {

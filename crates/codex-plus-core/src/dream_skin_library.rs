@@ -188,12 +188,33 @@ fn supported_image_extension(path: &Path) -> bool {
         })
 }
 
+fn stored_theme_image_extension(state_dir: &Path, source: &Path) -> Option<String> {
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .filter(|extension| {
+            matches!(
+                extension.as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
+            )
+        })?;
+    let source = std::fs::canonicalize(source).ok()?;
+    let themes_dir = std::fs::canonicalize(state_dir.join(THEMES_DIR)).ok()?;
+    let theme_dir = source.parent()?;
+    if theme_dir.parent()? != themes_dir {
+        return None;
+    }
+    let theme_id = theme_dir.file_name()?.to_str()?;
+    valid_theme_id(theme_id).then_some(extension)
+}
+
 fn valid_theme_id(value: &str) -> bool {
     let bytes = value.as_bytes();
     (1..=64).contains(&bytes.len())
         && bytes[0].is_ascii_alphanumeric()
         && bytes.iter().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_' | b'.')
         })
 }
 
@@ -275,6 +296,73 @@ pub fn save_dream_skin_theme(
     Ok(summary_from_draft(&stored, false, false))
 }
 
+pub fn save_validated_dream_skin_package(
+    state_dir: &Path,
+    package: &crate::dream_skin_package::ValidatedDreamSkinPackage,
+) -> anyhow::Result<DreamSkinThemeSummary> {
+    let config: DreamSkinThemeConfig = serde_json::from_value(package.theme.clone())
+        .context("主题包 theme.json 与 Codex++ 主题配置不兼容")?;
+    let draft = DreamSkinThemeDraft {
+        config: config.clone(),
+        image_path: String::new(),
+        builtin: false,
+    };
+    validate_theme_draft(&draft)?;
+
+    let themes_dir = state_dir.join(THEMES_DIR);
+    std::fs::create_dir_all(&themes_dir)
+        .with_context(|| format!("failed to create {}", themes_dir.display()))?;
+    reject_symlink(&themes_dir)?;
+    let target = themes_dir.join(&config.id);
+    if target.exists() {
+        let existing = load_stored_dream_skin_theme(state_dir, &config.id)
+            .context("同 ID 本地主题无法确认身份，已拒绝覆盖")?;
+        if existing.config.id != config.id {
+            bail!("同 ID 本地主题身份不一致，已拒绝覆盖");
+        }
+    }
+    let suffix = unique_suffix();
+    let staging = themes_dir.join(format!(".stage-{}-{suffix}", config.id));
+    std::fs::create_dir(&staging).with_context(|| {
+        format!(
+            "failed to create Dream Skin package staging directory {}",
+            staging.display()
+        )
+    })?;
+    let staged = (|| -> anyhow::Result<()> {
+        let image_extension = match package.image_name.as_str() {
+            "background.webp" => "webp",
+            "background.jpg" => "jpg",
+            "background.png" => "png",
+            other => bail!("unsupported Dream Skin package image: {other}"),
+        };
+        crate::settings::atomic_write(
+            &staging.join(format!("image.{image_extension}")),
+            &package.image_bytes,
+        )?;
+        crate::settings::atomic_write(
+            &staging.join(THEME_CONFIG_FILE),
+            &serde_json::to_vec_pretty(&config)?,
+        )?;
+        crate::settings::atomic_write(&staging.join("theme.css"), package.css.as_bytes())?;
+        crate::settings::atomic_write(&staging.join("manifest.json"), &package.manifest_bytes)?;
+        if let Some(license) = &package.license_bytes {
+            crate::settings::atomic_write(&staging.join("LICENSE.txt"), license)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = staged {
+        let _ = remove_known_theme_directory(&staging);
+        return Err(error);
+    }
+    if let Err(error) = replace_theme_directory(&staging, &target, &suffix) {
+        let _ = remove_known_theme_directory(&staging);
+        return Err(error);
+    }
+    let stored = load_stored_dream_skin_theme(state_dir, &config.id)?;
+    Ok(summary_from_draft(&stored, false, false))
+}
+
 pub fn load_stored_dream_skin_theme(
     state_dir: &Path,
     id: &str,
@@ -338,14 +426,47 @@ pub fn prepare_dream_skin_activation(
     }
     validate_theme_draft(draft)?;
     let managed_dir = state_dir.join("dream-skin/theme");
-    let active_image = crate::dream_skin::prepare_dream_skin_image_for_directory(
-        Path::new(draft.image_path.trim()),
-        &managed_dir,
-        "current",
-    )?;
+    let source = Path::new(draft.image_path.trim());
+    let active_image = if let Some(extension) = stored_theme_image_extension(state_dir, source) {
+        std::fs::create_dir_all(&managed_dir)
+            .with_context(|| format!("failed to create {}", managed_dir.display()))?;
+        let destination = managed_dir.join(format!("current.{extension}"));
+        let bytes = std::fs::read(source)
+            .with_context(|| format!("failed to read Dream Skin image {}", source.display()))?;
+        crate::settings::atomic_write(&destination, &bytes).with_context(|| {
+            format!("failed to store Dream Skin image {}", destination.display())
+        })?;
+        destination
+    } else {
+        crate::dream_skin::prepare_dream_skin_image_for_directory(source, &managed_dir, "current")?
+    };
+    let active_css = managed_dir.join("current.css");
+    let source_css = source.parent().map(|parent| parent.join("theme.css"));
+    if let Some(source_css) = source_css {
+        let metadata = std::fs::symlink_metadata(&source_css).ok();
+        if metadata.is_some_and(|item| {
+            item.file_type().is_file() && !item.file_type().is_symlink() && item.len() <= 262_144
+        }) {
+            let css = std::fs::read(&source_css).with_context(|| {
+                format!(
+                    "failed to read Dream Skin Safe CSS {}",
+                    source_css.display()
+                )
+            })?;
+            crate::dream_skin_package::validate_safe_css(
+                std::str::from_utf8(&css).context("Dream Skin Safe CSS is not valid UTF-8")?,
+            )?;
+            crate::settings::atomic_write(&active_css, &css)?;
+        } else {
+            let _ = std::fs::remove_file(&active_css);
+        }
+    } else {
+        let _ = std::fs::remove_file(&active_css);
+    }
     for entry in std::fs::read_dir(&managed_dir)? {
         let path = entry?.path();
         let is_other_current = path != active_image
+            && path != active_css
             && path.is_file()
             && path
                 .file_name()
@@ -512,7 +633,8 @@ fn ensure_known_theme_directory(directory: &Path) -> anyhow::Result<()> {
             && !metadata.file_type().is_symlink()
             && (name == THEME_CONFIG_FILE
                 || name == ".dream-skin-import.jpg"
-                || (name.starts_with("image.") && supported_image_extension(&path)));
+                || (name.starts_with("image.") && supported_image_extension(&path))
+                || matches!(name, "theme.css" | "manifest.json" | "LICENSE.txt"));
         if !known {
             bail!("Dream Skin theme directory contains unknown entry: {name}");
         }

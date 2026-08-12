@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 use codex_plus_core::protocol_proxy::{
     UpstreamWireApi, open_responses_proxy_request_with_settings_and_client_context,
 };
-use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
+use codex_plus_core::settings::{
+    BackendSettings, RelayMode, RelayModelRoute, RelayProfile, RelayProtocol,
+};
 
 const JSON_RESPONSE: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 35\r\nconnection: close\r\n\r\n{\"id\":\"resp_1\",\"object\":\"response\"}";
 /// Discard port: any request routed here fails fast instead of silently passing.
@@ -328,6 +330,48 @@ async fn routing_disabled_keeps_the_active_profile_for_every_model() {
         upstream.finish().header("authorization"),
         Some("Bearer sk-alpha")
     );
+}
+
+#[tokio::test]
+async fn global_routing_takes_priority_over_active_provider_model_routes() {
+    let _lock = routing_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _settings_path = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let upstream = MockUpstream::start();
+    let mut active = third_party_profile("alpha", UNREACHABLE_BASE_URL, "sk-alpha", "alpha-model");
+    active.model_routes = vec![RelayModelRoute {
+        model: "beta-model".to_string(),
+        target_relay_id: "gamma".to_string(),
+        target_model: "gamma-model".to_string(),
+    }];
+    let settings = BackendSettings {
+        active_relay_id: "alpha".to_string(),
+        ..routing_settings(vec![
+            active,
+            third_party_profile(
+                "beta",
+                &format!("{}/v1", upstream.base_url()),
+                "sk-beta",
+                "beta-model",
+            ),
+            third_party_profile("gamma", UNREACHABLE_BASE_URL, "sk-gamma", "gamma-model"),
+        ])
+    };
+
+    let result = open_responses_proxy_request_with_settings_and_client_context(
+        r#"{"model":"beta-model","input":"hi","stream":false}"#,
+        settings,
+        None,
+        "/v1/responses",
+        &[header("authorization", "Bearer official-token")],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status_code, 200);
+    let request = upstream.finish();
+    assert_eq!(request.header("authorization"), Some("Bearer sk-beta"));
+    assert_eq!(request.json()["model"], "beta-model");
 }
 
 fn routing_settings(relay_profiles: Vec<RelayProfile>) -> BackendSettings {

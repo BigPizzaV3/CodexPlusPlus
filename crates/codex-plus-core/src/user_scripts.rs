@@ -327,6 +327,8 @@ fn wrap_script(script: &UserScriptFile, source: &str) -> String {
     format!(
         r#"
 (() => {{
+  const codexPlusIsNodeTestHarness = typeof process === "object" && !!process.versions?.node;
+  if (!codexPlusIsNodeTestHarness && (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(window.location.href))) return;
   window.__codexPlusUserScripts = window.__codexPlusUserScripts || {{ scripts: {{}} }};
   const key = {key};
   window.__codexPlusUserScripts.scripts[key] = {{ key, name: {name}, source: {source_name}, status: "loading", error: "", loadedAt: new Date().toISOString() }};

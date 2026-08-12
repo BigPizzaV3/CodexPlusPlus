@@ -717,13 +717,6 @@ impl LaunchHooks for DefaultLaunchHooks {
         settings: &BackendSettings,
         extra_args: &[String],
     ) -> anyhow::Result<CodexLaunch> {
-        if settings.enhancements_enabled {
-            let home = crate::relay_config::default_codex_home_dir();
-            crate::codex_app_state::prepare_projectless_main_window_nonfatal(
-                &home,
-                "launcher.prelaunch",
-            );
-        }
         let native_menu_localization_enabled = settings.codex_app_native_menu_localization;
         let native_menu_inspector_port =
             native_menu_localization_enabled.then(|| select_native_menu_inspector_port(debug_port));
@@ -3128,8 +3121,7 @@ pub async fn activate_packaged_app(
 #[cfg(windows)]
 fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> anyhow::Result<u32> {
     use windows::Win32::System::Com::{
-        CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
-        CoUninitialize,
+        CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
     };
     use windows::Win32::UI::Shell::{ApplicationActivationManager, IApplicationActivationManager};
     use windows::core::HSTRING;
@@ -3148,7 +3140,7 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
 
         let result: windows::core::Result<u32> = (|| {
             let manager: IApplicationActivationManager =
-                CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER)?;
+                CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_ALL)?;
             let process_id = manager.ActivateApplication(
                 &HSTRING::from(app_user_model_id),
                 &HSTRING::from(arguments),
