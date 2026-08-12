@@ -145,6 +145,10 @@ pub trait LaunchHooks: Send + Sync {
     fn select_helper_port(&self, requested: u16) -> u16;
     async fn load_settings(&self) -> anyhow::Result<BackendSettings>;
     async fn run_provider_sync(&self) -> anyhow::Result<()>;
+    fn has_pending_remote_control_session_recoveries(&self) -> bool {
+        false
+    }
+    async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()>;
     async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
     }
@@ -284,6 +288,9 @@ where
                 &home,
                 "launcher.after_provider_sync",
             );
+        }
+        if hooks.has_pending_remote_control_session_recoveries() {
+            hooks.run_remote_control_session_recovery().await?;
         }
         crate::dream_skin::sync_default_dream_skin_base_theme(
             settings.enhancements_enabled
@@ -546,6 +553,12 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
         anyhow::bail!("provider sync requires launcher hooks with codex-plus-data integration")
+    }
+
+    async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()> {
+        anyhow::bail!(
+            "Remote Control session recovery requires launcher hooks with codex-plus-data integration"
+        )
     }
 
     async fn apply_active_relay_profile(&self, settings: &BackendSettings) -> anyhow::Result<()> {
