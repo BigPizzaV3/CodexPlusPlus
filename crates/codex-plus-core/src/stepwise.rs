@@ -1,13 +1,47 @@
 use std::time::Duration;
 
 use anyhow::Context;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::StatusCode;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::settings::BackendSettings;
 
-const MAX_PROMPT_LENGTH: usize = 420;
+const MAX_LABEL_LENGTH: usize = 36;
+const MAX_SUMMARY_LENGTH: usize = 72;
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepwiseProtocol {
+    ChatCompletions,
+    Responses,
+    AnthropicMessages,
+}
+
+impl StepwiseProtocol {
+    fn from_setting(value: &str) -> Self {
+        match value {
+            "responses" => Self::Responses,
+            "anthropic_messages" => Self::AnthropicMessages,
+            _ => Self::ChatCompletions,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chat_completions",
+            Self::Responses => "responses",
+            Self::AnthropicMessages => "anthropic_messages",
+        }
+    }
+}
+
+struct StepwiseUpstreamRequest {
+    endpoint: String,
+    headers: HeaderMap,
+    body: Value,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +60,8 @@ pub struct StepwiseRequest {
 pub struct StepwiseItem {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
     pub prompt: String,
 }
 
@@ -33,11 +69,14 @@ pub struct StepwiseItem {
 #[serde(rename_all = "camelCase")]
 pub struct StepwisePublicSettings {
     pub enabled: bool,
+    pub generation_mode: String,
+    pub answer_outline_enabled: bool,
     pub direct_send: bool,
     pub base_url_configured: bool,
     pub api_key_configured: bool,
     pub api_key_env: String,
     pub api_key_env_configured: bool,
+    pub protocol: String,
     pub model: String,
     pub max_items: u8,
     pub max_input_chars: u32,
@@ -48,6 +87,8 @@ pub struct StepwisePublicSettings {
 pub fn public_settings(settings: &BackendSettings) -> StepwisePublicSettings {
     StepwisePublicSettings {
         enabled: settings.codex_app_stepwise_enabled,
+        generation_mode: settings.codex_app_stepwise_generation_mode.clone(),
+        answer_outline_enabled: settings.codex_app_answer_outline_enabled,
         direct_send: settings.codex_app_stepwise_direct_send,
         base_url_configured: !settings.codex_app_stepwise_base_url.trim().is_empty(),
         api_key_configured: !stepwise_api_key(settings).is_empty(),
@@ -55,6 +96,7 @@ pub fn public_settings(settings: &BackendSettings) -> StepwisePublicSettings {
         api_key_env_configured: std::env::var(settings.codex_app_stepwise_api_key_env.trim())
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false),
+        protocol: settings.codex_app_stepwise_protocol.clone(),
         model: settings.codex_app_stepwise_model.clone(),
         max_items: settings.codex_app_stepwise_max_items,
         max_input_chars: settings.codex_app_stepwise_max_input_chars,
@@ -72,6 +114,19 @@ pub fn settings_with_payload(mut settings: BackendSettings, payload: &Value) -> 
         .and_then(Value::as_bool)
     {
         settings.codex_app_stepwise_enabled = value;
+    }
+    if let Some(value) = raw_settings
+        .get("codexAppStepwiseGenerationMode")
+        .and_then(Value::as_str)
+    {
+        settings.codex_app_stepwise_generation_mode =
+            crate::settings::normalize_stepwise_generation_mode(value);
+    }
+    if let Some(value) = raw_settings
+        .get("codexAppAnswerOutlineEnabled")
+        .and_then(Value::as_bool)
+    {
+        settings.codex_app_answer_outline_enabled = value;
     }
     if let Some(value) = raw_settings
         .get("codexAppStepwiseDirectSend")
@@ -100,6 +155,12 @@ pub fn settings_with_payload(mut settings: BackendSettings, payload: &Value) -> 
         } else {
             value.trim().to_string()
         };
+    }
+    if let Some(value) = raw_settings
+        .get("codexAppStepwiseProtocol")
+        .and_then(Value::as_str)
+    {
+        settings.codex_app_stepwise_protocol = crate::settings::normalize_stepwise_protocol(value);
     }
     if let Some(value) = raw_settings
         .get("codexAppStepwiseModel")
@@ -143,8 +204,15 @@ pub async fn generate(
     request: StepwiseRequest,
     settings: &BackendSettings,
 ) -> anyhow::Result<Value> {
+    let configured_protocol =
+        crate::settings::normalize_stepwise_protocol(&settings.codex_app_stepwise_protocol);
     if !settings.codex_app_stepwise_enabled {
-        return Ok(json!({ "status": "ok", "disabled": true, "items": [] }));
+        return Ok(json!({
+            "status": "ok",
+            "disabled": true,
+            "protocol": configured_protocol,
+            "items": []
+        }));
     }
 
     let base_url = settings
@@ -156,64 +224,269 @@ pub async fn generate(
     let max_items = settings.codex_app_stepwise_max_items;
 
     if max_items == 0 {
-        return Ok(json!({ "status": "ok", "items": [] }));
+        return Ok(json!({
+            "status": "ok",
+            "protocol": configured_protocol,
+            "items": []
+        }));
     }
     if base_url.is_empty() || model.is_empty() {
-        return Ok(json!({
-            "status": "failed",
-            "items": [],
-            "error": "Stepwise Base URL or Model is not configured"
-        }));
+        return Ok(failed_result(
+            &configured_protocol,
+            "Stepwise Base URL or Model is not configured",
+        ));
     }
     if api_key.is_empty() {
-        return Ok(json!({
-            "status": "failed",
-            "items": [],
-            "error": "Stepwise API Key is not configured"
-        }));
+        return Ok(failed_result(
+            &configured_protocol,
+            "Stepwise API Key is not configured",
+        ));
     }
 
     let client = crate::http_client::proxied_client("")?;
     let timeout = Duration::from_millis(settings.codex_app_stepwise_timeout_ms);
+    let protocols = stepwise_protocols(&configured_protocol);
+    let auto_protocol = configured_protocol == "auto";
+    let mut protocol_errors = Vec::new();
+
+    for (index, protocol) in protocols.iter().copied().enumerate() {
+        let has_next_protocol = index + 1 < protocols.len();
+        let upstream =
+            match build_upstream_request(protocol, base_url, &api_key, model, &request, settings) {
+                Ok(upstream) => upstream,
+                Err(error) => {
+                    return Ok(failed_result(
+                        protocol.as_str(),
+                        format!(
+                            "failed to build Stepwise {} request: {error}",
+                            protocol.as_str()
+                        ),
+                    ));
+                }
+            };
+        let response = match client
+            .post(&upstream.endpoint)
+            .headers(upstream.headers)
+            .timeout(timeout)
+            .json(&upstream.body)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                return Ok(failed_result(
+                    protocol.as_str(),
+                    format!(
+                        "failed to request Stepwise {} API: {error}",
+                        protocol.as_str()
+                    ),
+                ));
+            }
+        };
+
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if auto_protocol
+            && matches!(
+                status,
+                StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+            )
+        {
+            protocol_errors.push(format!(
+                "{} returned upstream {}",
+                protocol.as_str(),
+                status.as_u16()
+            ));
+            if has_next_protocol {
+                continue;
+            }
+            break;
+        }
+        if !status.is_success() {
+            return Ok(failed_result(
+                protocol.as_str(),
+                format!(
+                    "Stepwise upstream {}: {}",
+                    status.as_u16(),
+                    redact_secret(&text, &api_key)
+                ),
+            ));
+        }
+
+        let data: Value = match serde_json::from_str(&text) {
+            Ok(data) => data,
+            Err(error) => {
+                if auto_protocol {
+                    protocol_errors.push(format!(
+                        "{} returned invalid JSON: {error}",
+                        protocol.as_str()
+                    ));
+                    if has_next_protocol {
+                        continue;
+                    }
+                    break;
+                }
+                return Ok(failed_result(
+                    protocol.as_str(),
+                    format!("failed to parse Stepwise API response: {error}"),
+                ));
+            }
+        };
+        if auto_protocol && !matches_stepwise_protocol_response(protocol, &data) {
+            protocol_errors.push(format!(
+                "{} returned an incompatible response shape",
+                protocol.as_str()
+            ));
+            if has_next_protocol {
+                continue;
+            }
+            break;
+        }
+        return Ok(json!({
+            "status": "ok",
+            "protocol": protocol.as_str(),
+            "items": extract_stepwise_items(&data, max_items)
+        }));
+    }
+
+    let details = if protocol_errors.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", protocol_errors.join("; "))
+    };
+    Ok(failed_result(
+        &configured_protocol,
+        format!("Stepwise could not find a supported upstream protocol{details}"),
+    ))
+}
+
+fn stepwise_protocols(value: &str) -> Vec<StepwiseProtocol> {
+    if value == "auto" {
+        vec![
+            StepwiseProtocol::ChatCompletions,
+            StepwiseProtocol::Responses,
+            StepwiseProtocol::AnthropicMessages,
+        ]
+    } else {
+        vec![StepwiseProtocol::from_setting(value)]
+    }
+}
+
+fn matches_stepwise_protocol_response(protocol: StepwiseProtocol, data: &Value) -> bool {
+    if stepwise_items_value(data).is_some() {
+        return true;
+    }
+    match protocol {
+        StepwiseProtocol::ChatCompletions => data.get("choices").is_some_and(Value::is_array),
+        StepwiseProtocol::Responses => {
+            data.get("output_text").is_some() || data.get("output").is_some_and(Value::is_array)
+        }
+        StepwiseProtocol::AnthropicMessages => data.get("content").is_some_and(Value::is_array),
+    }
+}
+
+fn build_upstream_request(
+    protocol: StepwiseProtocol,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    request: &StepwiseRequest,
+    settings: &BackendSettings,
+) -> anyhow::Result<StepwiseUpstreamRequest> {
+    let messages = build_messages(request, settings);
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+    let (endpoint, body) = match protocol {
+        StepwiseProtocol::ChatCompletions => {
+            insert_bearer_header(&mut headers, api_key)?;
+            (
+                format!("{base_url}/chat/completions"),
+                json!({
+                    "model": model,
+                    "messages": messages,
+                    "temperature": 0.2,
+                    "max_tokens": settings.codex_app_stepwise_max_output_tokens,
+                    "response_format": { "type": "json_object" },
+                }),
+            )
+        }
+        StepwiseProtocol::Responses => {
+            insert_bearer_header(&mut headers, api_key)?;
+            (
+                format!("{base_url}/responses"),
+                json!({
+                    "model": model,
+                    "input": messages,
+                    "max_output_tokens": settings.codex_app_stepwise_max_output_tokens,
+                }),
+            )
+        }
+        StepwiseProtocol::AnthropicMessages => {
+            headers.insert(
+                HeaderName::from_static("x-api-key"),
+                HeaderValue::from_str(api_key)
+                    .context("failed to build Stepwise API key header")?,
+            );
+            headers.insert(
+                HeaderName::from_static("anthropic-version"),
+                HeaderValue::from_static(ANTHROPIC_VERSION),
+            );
+            let system = messages
+                .first()
+                .and_then(|message| message.get("content"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let messages = messages
+                .into_iter()
+                .filter(|message| message.get("role").and_then(Value::as_str) != Some("system"))
+                .collect::<Vec<_>>();
+            (
+                format!("{base_url}/messages"),
+                json!({
+                    "model": model,
+                    "system": system,
+                    "messages": messages,
+                    "max_tokens": settings.codex_app_stepwise_max_output_tokens,
+                }),
+            )
+        }
+    };
+
+    Ok(StepwiseUpstreamRequest {
+        endpoint,
+        headers,
+        body,
+    })
+}
+
+fn insert_bearer_header(headers: &mut HeaderMap, api_key: &str) -> anyhow::Result<()> {
     headers.insert(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {api_key}"))
             .context("failed to build Stepwise authorization header")?,
     );
+    Ok(())
+}
 
-    let response = client
-        .post(format!("{base_url}/chat/completions"))
-        .headers(headers)
-        .timeout(timeout)
-        .json(&json!({
-            "model": model,
-            "messages": build_messages(&request, settings),
-            "temperature": 0.2,
-            "max_tokens": settings.codex_app_stepwise_max_output_tokens,
-            "response_format": { "type": "json_object" },
-        }))
-        .send()
-        .await
-        .context("failed to request Stepwise API")?;
+fn failed_result(protocol: &str, error: impl Into<String>) -> Value {
+    json!({
+        "status": "failed",
+        "protocol": protocol,
+        "items": [],
+        "error": error.into()
+    })
+}
 
-    let status = response.status();
-    let text = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Ok(json!({
-            "status": "failed",
-            "items": [],
-            "error": format!("Stepwise upstream {}: {}", status.as_u16(), text.chars().take(240).collect::<String>())
-        }));
-    }
-
-    let data: Value =
-        serde_json::from_str(&text).context("failed to parse Stepwise API response")?;
-    Ok(json!({
-        "status": "ok",
-        "items": extract_stepwise_items(&data, max_items)
-    }))
+fn redact_secret(value: &str, secret: &str) -> String {
+    let secret = secret.trim();
+    let value = if secret.is_empty() {
+        value.to_string()
+    } else {
+        value.replace(secret, "[redacted]")
+    };
+    value.chars().take(240).collect()
 }
 
 pub async fn test_connection(settings: &BackendSettings) -> anyhow::Result<Value> {
@@ -236,22 +509,22 @@ pub fn build_messages(request: &StepwiseRequest, settings: &BackendSettings) -> 
         &request.last_assistant_message,
         limit.saturating_mul(60) / 100,
     );
-    let language_input = if last_user_message.trim().is_empty() {
-        last_assistant_message.clone()
-    } else {
-        last_user_message.clone()
-    };
     let system_content = [
         "You generate concise Codex Stepwise actions.",
         "Return strict JSON only, no markdown.",
-        "Schema: {\"items\":[{\"prompt\":\"...\",\"label\":\"optional short label\"}]}",
+        "Schema: {\"items\":[{\"label\":\"short action name\",\"summary\":\"one concise preview sentence\",\"prompt\":\"complete user message\"}]}",
         &format!(
             "Generate 1 to {} items when the assistant result is non-empty.",
             settings.codex_app_stepwise_max_items
         ),
         "Every prompt must be directly sendable by the user.",
+        "Keep label compact and summary within 72 characters when natural; prompt may be detailed and must not omit necessary context.",
         "Use the latest user intent and assistant result. Avoid generic filler.",
-        "Language policy: write Stepwise prompts in the dominant natural language of languageInput.",
+        "Order items by expected usefulness.",
+        "The first item must be the single most recommended next step for the user.",
+        "Prioritize unresolved user intent first, useful verification second, and optional improvements or exploration last.",
+        "Each item must represent a meaningfully different direction. Do not return duplicates, paraphrases, or near-duplicates.",
+        "Language policy: infer the dominant natural language from lastUserMessage, falling back to lastAssistantMessage, and write Stepwise prompts in that language.",
         "Ignore technical terms, file names, commands, APIs, and product names when detecting language; keep them in their original language when natural.",
         "Return {\"items\":[]} only when both the user intent and assistant result are empty or unusable.",
     ]
@@ -266,7 +539,6 @@ pub fn build_messages(request: &StepwiseRequest, settings: &BackendSettings) -> 
             "content": json!({
                 "lastUserMessage": last_user_message,
                 "lastAssistantMessage": last_assistant_message,
-                "languageInput": language_input,
                 "threadTitle": short_text(&request.thread_title, 240),
                 "pageUrl": short_text(&request.page_url, 240),
                 "maxItems": settings.codex_app_stepwise_max_items,
@@ -287,17 +559,23 @@ pub fn clamp_items(value: Value, max_items: u8) -> Vec<StepwiseItem> {
         let prompt = first_string_field(raw, &["prompt", "text", "action", "content", "message"])
             .or_else(|| raw.as_str())
             .unwrap_or("");
-        let prompt = normalize_spaces(prompt);
-        if prompt.is_empty() || seen.contains(&prompt) {
+        let prompt = normalize_text(prompt);
+        let dedupe_key = normalize_spaces(&prompt);
+        if prompt.is_empty() || seen.contains(&dedupe_key) {
             continue;
         }
-        seen.insert(prompt.clone());
+        seen.insert(dedupe_key);
         let label = first_string_field(raw, &["label", "title", "name"])
             .map(normalize_spaces)
             .unwrap_or_default();
+        let summary = first_string_field(raw, &["summary", "preview", "description"])
+            .map(normalize_spaces)
+            .filter(|summary| !summary.is_empty())
+            .unwrap_or_else(|| summary_for_prompt(&prompt));
         items.push(StepwiseItem {
-            label: short_text(&label, 36),
-            prompt: short_text(&prompt, MAX_PROMPT_LENGTH),
+            label: leading_text(&label, MAX_LABEL_LENGTH),
+            summary: leading_text(&summary, MAX_SUMMARY_LENGTH),
+            prompt,
         });
         if items.len() >= max_items {
             break;
@@ -330,22 +608,55 @@ fn stepwise_payload_candidates(data: &Value) -> Vec<Value> {
         .and_then(|choice| choice.get("message"))
         .and_then(|message| message.get("content"))
     {
-        candidates.push(content.clone());
-        if let Some(parsed) = parse_json_value(content) {
-            candidates.push(parsed);
+        if let Some(parts) = content.as_array() {
+            for part in parts {
+                if let Some(text) = part.get("text") {
+                    push_payload_candidate(&mut candidates, text);
+                }
+            }
+        } else {
+            push_payload_candidate(&mut candidates, content);
+        }
+    }
+
+    if let Some(output_text) = data.get("output_text") {
+        push_payload_candidate(&mut candidates, output_text);
+    }
+
+    if let Some(output) = data.get("output").and_then(Value::as_array) {
+        for item in output {
+            if let Some(content) = item.get("content").and_then(Value::as_array) {
+                for part in content {
+                    if let Some(text) = part.get("text") {
+                        push_payload_candidate(&mut candidates, text);
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(content) = data.get("content").and_then(Value::as_array) {
+        for part in content {
+            if let Some(text) = part.get("text") {
+                push_payload_candidate(&mut candidates, text);
+            }
         }
     }
 
     for key in ["output", "response", "data", "result"] {
         if let Some(value) = data.get(key) {
-            candidates.push(value.clone());
-            if let Some(parsed) = parse_json_value(value) {
-                candidates.push(parsed);
-            }
+            push_payload_candidate(&mut candidates, value);
         }
     }
 
     candidates
+}
+
+fn push_payload_candidate(candidates: &mut Vec<Value>, value: &Value) {
+    candidates.push(value.clone());
+    if let Some(parsed) = parse_json_value(value) {
+        candidates.push(parsed);
+    }
 }
 
 fn stepwise_items_value(value: &Value) -> Option<Value> {
@@ -427,16 +738,58 @@ fn normalize_spaces(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn leading_text(value: &str, limit: usize) -> String {
+    let text = normalize_text(value);
+    if text.chars().count() <= limit {
+        return text;
+    }
+    let mut result = text
+        .chars()
+        .take(limit.saturating_sub(1))
+        .collect::<String>();
+    result.push('…');
+    result
+}
+
+fn summary_for_prompt(prompt: &str) -> String {
+    leading_text(&normalize_spaces(prompt), MAX_SUMMARY_LENGTH)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const TEST_API_KEY: &str = "sk-stepwise-test";
+
+    fn test_request() -> StepwiseRequest {
+        StepwiseRequest {
+            last_user_message: "请继续检查协议兼容性。".to_string(),
+            last_assistant_message: "已完成基础实现。".to_string(),
+            thread_title: "协议兼容测试".to_string(),
+            page_url: "https://example.test/thread".to_string(),
+        }
+    }
+
+    fn test_settings(base_url: String, protocol: &str) -> BackendSettings {
+        BackendSettings {
+            codex_app_stepwise_enabled: true,
+            codex_app_stepwise_base_url: base_url,
+            codex_app_stepwise_api_key: TEST_API_KEY.to_string(),
+            codex_app_stepwise_protocol: protocol.to_string(),
+            codex_app_stepwise_model: "stepwise-test".to_string(),
+            codex_app_stepwise_timeout_ms: 2000,
+            ..BackendSettings::default()
+        }
+    }
 
     #[test]
     fn clamp_items_dedupes_and_limits() {
         let items = clamp_items(
             json!([
-                {"label": "继续", "prompt": "继续排查"},
-                {"label": "重复", "prompt": "继续排查"},
+                {"label": "继续", "summary": "检查当前失败路径", "prompt": "继续排查\n并保留换行"},
+                {"label": "重复", "prompt": "继续排查 并保留换行"},
                 {"prompt": "补测试"},
                 "更新文档"
             ]),
@@ -445,8 +798,22 @@ mod tests {
 
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].label, "继续");
-        assert_eq!(items[0].prompt, "继续排查");
+        assert_eq!(items[0].summary, "检查当前失败路径");
+        assert_eq!(items[0].prompt, "继续排查\n并保留换行");
+        assert_eq!(items[1].summary, "补测试");
         assert_eq!(items[1].prompt, "补测试");
+    }
+
+    #[test]
+    fn clamp_items_keeps_long_prompt_and_backfills_summary() {
+        let long_prompt = format!("第一段\n\n{}", "完整上下文".repeat(120));
+        let items = clamp_items(json!([{"prompt": long_prompt}]), 6);
+
+        assert_eq!(items.len(), 1);
+        assert!(items[0].prompt.starts_with("第一段\n\n完整上下文"));
+        assert!(items[0].prompt.chars().count() > 420);
+        assert!(!items[0].summary.is_empty());
+        assert!(items[0].summary.chars().count() <= MAX_SUMMARY_LENGTH);
     }
 
     #[test]
@@ -463,12 +830,32 @@ mod tests {
 
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].label, "继续排查");
+        assert_eq!(items[0].summary, "请继续检查 Stepwise 返回内容");
         assert_eq!(items[0].prompt, "请继续检查 Stepwise 返回内容");
         assert_eq!(items[1].prompt, "补一个解析测试");
     }
 
     #[test]
-    fn prompt_contains_language_policy() {
+    fn extracts_items_from_chat_completions_text_blocks() {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": [{
+                        "type": "text",
+                        "text": "{\"items\":[{\"prompt\":\"解析文本块里的建议\"}]}"
+                    }]
+                }
+            }]
+        });
+
+        let items = extract_stepwise_items(&response, 6);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].prompt, "解析文本块里的建议");
+    }
+
+    #[test]
+    fn prompt_infers_language_without_duplicate_input() {
         let settings = BackendSettings {
             codex_app_stepwise_max_items: 4,
             ..BackendSettings::default()
@@ -484,11 +871,23 @@ mod tests {
         );
         let system = messages[0].get("content").and_then(Value::as_str).unwrap();
         let user = messages[1].get("content").and_then(Value::as_str).unwrap();
+        let user_payload: Value = serde_json::from_str(user).unwrap();
 
         assert!(system.contains("dominant natural language"));
+        assert!(system.contains("lastUserMessage"));
+        assert!(system.contains("falling back to lastAssistantMessage"));
         assert!(system.contains("Generate 1 to 4 items when the assistant result is non-empty."));
-        assert!(user.contains("directSend"));
-        assert!(user.contains("languageInput"));
+        assert!(system.contains("summary within 72 characters"));
+        assert!(system.contains("prompt may be detailed"));
+        assert!(system.contains("Order items by expected usefulness."));
+        assert!(system.contains("The first item must be the single most recommended next step"));
+        assert!(system.contains("Do not return duplicates, paraphrases, or near-duplicates."));
+        assert_eq!(
+            user_payload["lastUserMessage"],
+            "请补一个 directSend selftest，覆盖 ProseMirror。"
+        );
+        assert_eq!(user_payload["lastAssistantMessage"], "已完成实现。");
+        assert!(user_payload.get("languageInput").is_none());
     }
 
     #[test]
@@ -498,10 +897,13 @@ mod tests {
             &json!({
                 "settings": {
                     "codexAppStepwiseEnabled": true,
+                    "codexAppStepwiseGenerationMode": "manual",
+                    "codexAppAnswerOutlineEnabled": false,
                     "codexAppStepwiseDirectSend": true,
                     "codexAppStepwiseBaseUrl": "https://api.example.test/v1/",
                     "codexAppStepwiseApiKey": " sk-test ",
                     "codexAppStepwiseApiKeyEnv": "",
+                    "codexAppStepwiseProtocol": "responses",
                     "codexAppStepwiseModel": " stepwise-mini ",
                     "codexAppStepwiseMaxItems": 9,
                     "codexAppStepwiseMaxInputChars": 999999,
@@ -512,6 +914,8 @@ mod tests {
         );
 
         assert!(settings.codex_app_stepwise_enabled);
+        assert_eq!(settings.codex_app_stepwise_generation_mode, "manual");
+        assert!(!settings.codex_app_answer_outline_enabled);
         assert!(settings.codex_app_stepwise_direct_send);
         assert_eq!(
             settings.codex_app_stepwise_base_url,
@@ -522,10 +926,274 @@ mod tests {
             settings.codex_app_stepwise_api_key_env,
             crate::settings::default_stepwise_api_key_env()
         );
+        assert_eq!(settings.codex_app_stepwise_protocol, "responses");
         assert_eq!(settings.codex_app_stepwise_model, "stepwise-mini");
         assert_eq!(settings.codex_app_stepwise_max_items, 6);
         assert_eq!(settings.codex_app_stepwise_max_input_chars, 24000);
         assert_eq!(settings.codex_app_stepwise_max_output_tokens, 100);
         assert_eq!(settings.codex_app_stepwise_timeout_ms, 60000);
+    }
+
+    #[tokio::test]
+    async fn generate_uses_chat_completions_protocol_and_parses_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"items\":[{\"label\":\"继续\",\"prompt\":\"继续检查\"}]}"
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let result = generate(
+            test_request(),
+            &test_settings(server.uri(), "chat_completions"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["protocol"], "chat_completions");
+        assert_eq!(result["items"][0]["label"], "继续");
+        assert_eq!(result["items"][0]["prompt"], "继续检查");
+
+        let requests = server.received_requests().await.unwrap();
+        let request = &requests[0];
+        assert_eq!(
+            request
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer sk-stepwise-test")
+        );
+        let body: Value = request.body_json().unwrap();
+        assert_eq!(body["model"], "stepwise-test");
+        assert_eq!(body["response_format"]["type"], "json_object");
+        assert!(body["messages"].is_array());
+    }
+
+    #[tokio::test]
+    async fn generate_uses_responses_protocol_and_parses_output_text() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "output_text": "{\"items\":[{\"prompt\":\"检查 Responses 接口\"}]}"
+            })))
+            .mount(&server)
+            .await;
+
+        let result = generate(test_request(), &test_settings(server.uri(), "responses"))
+            .await
+            .unwrap();
+
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["protocol"], "responses");
+        assert_eq!(result["items"][0]["prompt"], "检查 Responses 接口");
+
+        let requests = server.received_requests().await.unwrap();
+        let request = &requests[0];
+        assert_eq!(
+            request
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer sk-stepwise-test")
+        );
+        let body: Value = request.body_json().unwrap();
+        assert_eq!(body["model"], "stepwise-test");
+        assert!(body["input"].is_array());
+        assert_eq!(body["max_output_tokens"], 500);
+    }
+
+    #[tokio::test]
+    async fn generate_uses_anthropic_messages_protocol_and_parses_content() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [{
+                    "type": "text",
+                    "text": "{\"items\":[{\"prompt\":\"检查 Anthropic Messages 接口\"}]}"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let result = generate(
+            test_request(),
+            &test_settings(server.uri(), "anthropic_messages"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["protocol"], "anthropic_messages");
+        assert_eq!(result["items"][0]["prompt"], "检查 Anthropic Messages 接口");
+
+        let requests = server.received_requests().await.unwrap();
+        let request = &requests[0];
+        assert_eq!(
+            request
+                .headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok()),
+            Some(TEST_API_KEY)
+        );
+        assert_eq!(
+            request
+                .headers
+                .get("anthropic-version")
+                .and_then(|value| value.to_str().ok()),
+            Some("2023-06-01")
+        );
+        assert!(request.headers.get("authorization").is_none());
+        let body: Value = request.body_json().unwrap();
+        assert_eq!(body["model"], "stepwise-test");
+        assert!(
+            body["system"]
+                .as_str()
+                .is_some_and(|value| value.contains("strict JSON"))
+        );
+        assert!(body["messages"].is_array());
+        assert_eq!(body["max_tokens"], 500);
+    }
+
+    #[tokio::test]
+    async fn auto_protocol_falls_back_on_unsupported_endpoint_statuses() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(405))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [{
+                    "type": "text",
+                    "text": "{\"items\":[{\"prompt\":\"自动兼容成功\"}]}"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let result = generate(test_request(), &test_settings(server.uri(), "auto"))
+            .await
+            .unwrap();
+
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["protocol"], "anthropic_messages");
+        assert_eq!(result["items"][0]["prompt"], "自动兼容成功");
+
+        let requests = server.received_requests().await.unwrap();
+        let paths = requests
+            .iter()
+            .map(|request| request.url.path())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec!["/chat/completions", "/responses", "/messages"]);
+    }
+
+    #[tokio::test]
+    async fn auto_protocol_falls_back_on_success_with_empty_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "output_text": "{\"items\":[{\"prompt\":\"Responses 回退成功\"}]}"
+            })))
+            .mount(&server)
+            .await;
+
+        let result = generate(test_request(), &test_settings(server.uri(), "auto"))
+            .await
+            .unwrap();
+
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["protocol"], "responses");
+        assert_eq!(result["items"][0]["prompt"], "Responses 回退成功");
+
+        let requests = server.received_requests().await.unwrap();
+        let paths = requests
+            .iter()
+            .map(|request| request.url.path())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec!["/chat/completions", "/responses"]);
+    }
+
+    #[tokio::test]
+    async fn auto_protocol_falls_back_on_incompatible_response_shape() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "unexpected": true
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "output_text": "{\"items\":[{\"prompt\":\"协议结构回退成功\"}]}"
+            })))
+            .mount(&server)
+            .await;
+
+        let result = generate(test_request(), &test_settings(server.uri(), "auto"))
+            .await
+            .unwrap();
+
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["protocol"], "responses");
+        assert_eq!(result["items"][0]["prompt"], "协议结构回退成功");
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn auto_protocol_does_not_fallback_on_auth_rate_limit_or_server_errors() {
+        for status in [401, 403, 429, 500] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/chat/completions"))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .set_body_string(format!("upstream rejected {TEST_API_KEY}")),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/responses"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "output_text": "{\"items\":[{\"prompt\":\"不应被调用\"}]}"
+                })))
+                .mount(&server)
+                .await;
+
+            let result = generate(test_request(), &test_settings(server.uri(), "auto"))
+                .await
+                .unwrap();
+
+            assert_eq!(result["status"], "failed");
+            assert_eq!(result["protocol"], "chat_completions");
+            let error = result["error"].as_str().unwrap();
+            assert!(error.contains(&status.to_string()));
+            assert!(!error.contains(TEST_API_KEY));
+            assert!(error.contains("[redacted]"));
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        }
     }
 }

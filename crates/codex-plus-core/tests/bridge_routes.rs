@@ -310,6 +310,7 @@ async fn upstream_worktree_routes_are_dispatched_to_runtime() {
 async fn stepwise_routes_use_settings_service() {
     let settings = BackendSettings {
         codex_app_stepwise_enabled: false,
+        codex_app_stepwise_generation_mode: "manual".to_string(),
         codex_app_stepwise_direct_send: true,
         codex_app_stepwise_model: "settings-service-stepwise".to_string(),
         codex_app_stepwise_max_items: 3,
@@ -323,6 +324,14 @@ async fn stepwise_routes_use_settings_service() {
 
     let public_settings = handle_bridge_request(ctx.clone(), "/stepwise/settings", json!({})).await;
     assert_eq!(public_settings["settings"]["enabled"], json!(false));
+    assert_eq!(
+        public_settings["settings"]["generationMode"],
+        json!("manual")
+    );
+    assert_eq!(
+        public_settings["settings"]["answerOutlineEnabled"],
+        json!(true)
+    );
     assert_eq!(public_settings["settings"]["directSend"], json!(true));
     assert_eq!(
         public_settings["settings"]["model"],
@@ -339,6 +348,7 @@ async fn stepwise_routes_use_settings_service() {
         json!({
             "status": "ok",
             "disabled": true,
+            "protocol": "chat_completions",
             "items": []
         })
     );
@@ -347,6 +357,7 @@ async fn stepwise_routes_use_settings_service() {
         json!({
             "status": "ok",
             "disabled": true,
+            "protocol": "chat_completions",
             "items": []
         })
     );

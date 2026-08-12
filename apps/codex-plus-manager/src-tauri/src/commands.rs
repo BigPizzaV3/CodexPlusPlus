@@ -3505,6 +3505,9 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
 pub async fn test_stepwise_settings(
     settings: BackendSettings,
 ) -> CommandResult<StepwiseTestPayload> {
+    let configured_protocol = codex_plus_core::settings::normalize_stepwise_protocol(
+        &settings.codex_app_stepwise_protocol,
+    );
     match codex_plus_core::stepwise::test_connection(&settings).await {
         Ok(result) => {
             let error = result
@@ -3517,9 +3520,17 @@ pub async fn test_stepwise_settings(
                 .and_then(Value::as_array)
                 .map(Vec::len)
                 .unwrap_or_default();
+            let protocol = result
+                .get("protocol")
+                .and_then(Value::as_str)
+                .unwrap_or(&configured_protocol)
+                .to_string();
             if error.is_empty() {
                 ok(
-                    &format!("Stepwise 连接正常，测试返回 {item_count} 条建议。"),
+                    &format!(
+                        "Stepwise 连接正常（{}），测试返回 {item_count} 条建议。",
+                        stepwise_protocol_label(&protocol)
+                    ),
                     StepwiseTestPayload { item_count, error },
                 )
             } else {
@@ -3536,6 +3547,16 @@ pub async fn test_stepwise_settings(
                 error: error.to_string(),
             },
         ),
+    }
+}
+
+fn stepwise_protocol_label(protocol: &str) -> &str {
+    match protocol {
+        "chat_completions" => "Chat Completions",
+        "responses" => "Responses",
+        "anthropic_messages" => "Anthropic Messages",
+        "auto" => "自动兼容",
+        _ => protocol,
     }
 }
 
