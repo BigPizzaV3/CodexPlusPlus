@@ -1293,7 +1293,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, answerOutline: true, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1311,6 +1311,7 @@
     serviceTierControls: "codexAppServiceTierControls",
     petRealMouseLook: "codexAppPetRealMouseLook",
     stepwise: "codexAppStepwiseEnabled",
+    answerOutline: "codexAppAnswerOutlineEnabled",
     pasteFix: "codexAppPasteFix",
     dreamSkinEnabled: "codexAppDreamSkinEnabled",
     dreamSkinPaused: "codexAppDreamSkinPaused",
@@ -1350,6 +1351,7 @@
         serviceTierControls: false,
         petRealMouseLook: false,
         stepwise: false,
+        answerOutline: false,
         dreamSkinEnabled: false,
         dreamSkinPaused: false,
         dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {},
@@ -2116,9 +2118,10 @@
     const backendKey = codexPlusBackendSettingMap[key];
     if (backendKey) {
       if (key === "stepwise") syncStepwisePanel(value);
+      if (key === "answerOutline") syncStepwisePanel(undefined, value);
       void setBackendSetting(backendKey, value).then(() => {
-        if (key === "stepwise") {
-          Promise.resolve(window.__codexStepwisePanel?.loadSettings?.()).then(() => syncStepwisePanel(value));
+        if (key === "stepwise" || key === "answerOutline") {
+          Promise.resolve(window.__codexStepwisePanel?.loadSettings?.()).then(() => syncStepwisePanel());
         }
       }).catch(() => {
         void loadBackendSettings();
@@ -2157,9 +2160,15 @@
     scan();
   }
 
-  function syncStepwisePanel(enabled = codexPlusSettings().stepwise) {
+  function syncStepwisePanel(
+    enabled = codexPlusSettings().stepwise,
+    answerOutlineEnabled = codexPlusSettings().answerOutline
+  ) {
     try {
-      window.__codexStepwisePanel?.syncSettings?.({ enabled: !!enabled });
+      window.__codexStepwisePanel?.syncSettings?.({
+        enabled: !!enabled,
+        answerOutlineEnabled: !!answerOutlineEnabled,
+      });
     } catch (error) {
       sendCodexPlusDiagnostic("stepwise_sync_failed", {
         errorName: error?.name || "",
@@ -3864,8 +3873,12 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="petRealMouseLook"><span></span></button>
             </div>` : ""}
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Stepwise</div><div class="codex-plus-row-description">在当前 Codex 页面显示可拖动的下一步建议浮层，可在设置页配置模型和直接发送。</div></div>
+              <div><div class="codex-plus-row-title">悬浮球 · Stepwise</div><div class="codex-plus-row-description">生成下一步建议。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="stepwise"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">悬浮球 · 回答大纲</div><div class="codex-plus-row-description">整理回答结构。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="answerOutline"><span></span></button>
             </div>
             <div class="codex-plus-row" data-codex-service-tier-controls="true">
               <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承优先读取 Codex 应用内设置，其次读取 config.toml 的 service_tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
