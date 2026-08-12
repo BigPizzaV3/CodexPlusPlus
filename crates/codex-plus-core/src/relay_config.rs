@@ -844,6 +844,43 @@ pub fn backfill_relay_profile_from_home_with_common(
     Ok(())
 }
 
+/// Syncs the current ChatGPT login into official profiles that share the same account.
+///
+/// Profiles whose auth identifies a different account are preserved so that
+/// manually-bound provider accounts are not overwritten. Unknown identities are
+/// not matched because treating two missing identities as equal could cross accounts.
+pub fn sync_official_auth_from_live(
+    home: &Path,
+    profiles: &mut [RelayProfile],
+) -> anyhow::Result<usize> {
+    let auth = read_optional_text(&home.join("auth.json"))?;
+    if !auth_contents_looks_like_chatgpt_auth(&auth) {
+        return Ok(0);
+    }
+    let auth = remove_openai_api_key_from_auth_contents(&auth)?;
+    if auth.trim().is_empty() {
+        return Ok(0);
+    }
+    let Some(live_identity) = auth_contents_chatgpt_identity(&auth) else {
+        return Ok(0);
+    };
+
+    let mut updated = 0;
+    for profile in profiles {
+        if profile.relay_mode == crate::settings::RelayMode::Official
+            && !profile.auth_contents.trim().is_empty()
+            && auth_contents_looks_like_chatgpt_auth(&profile.auth_contents)
+            && auth_contents_chatgpt_identity(&profile.auth_contents)
+                .is_some_and(|identity| identity.can_refresh_from(&live_identity))
+            && profile.auth_contents != auth
+        {
+            profile.auth_contents = auth.clone();
+            updated += 1;
+        }
+    }
+    Ok(updated)
+}
+
 pub fn extract_common_config_from_config(config_text: &str) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(config_text)?;
     remove_provider_specific_common_keys(doc.as_table_mut());
@@ -2941,18 +2978,83 @@ fn account_label_from_tokens(tokens: &Value) -> Option<String> {
     })
 }
 
-fn account_label_from_jwt(token: &str) -> Option<String> {
-    let payload = token.split('.').nth(1)?;
-    use base64::Engine;
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload.as_bytes())
-        .ok()
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChatGptIdentity {
+    account_id: Option<String>,
+    email: Option<String>,
+}
+
+impl ChatGptIdentity {
+    fn can_refresh_from(&self, live: &Self) -> bool {
+        if let Some(profile_account_id) = self.account_id.as_deref() {
+            return live.account_id.as_deref() == Some(profile_account_id);
+        }
+        match (self.email.as_deref(), live.email.as_deref()) {
+            (Some(profile_email), Some(live_email)) => {
+                profile_email.eq_ignore_ascii_case(live_email)
+            }
+            _ => false,
+        }
+    }
+}
+
+fn auth_contents_chatgpt_identity(contents: &str) -> Option<ChatGptIdentity> {
+    let value: Value = serde_json::from_str(contents).ok()?;
+    let tokens = value.get("tokens")?;
+    let account_id = tokens
+        .get("account_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
         .or_else(|| {
-            base64::engine::general_purpose::URL_SAFE
-                .decode(payload.as_bytes())
-                .ok()
-        })?;
-    let value: Value = serde_json::from_slice(&decoded).ok()?;
+            ["id_token", "access_token"].iter().find_map(|key| {
+                tokens
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .and_then(jwt_chatgpt_account_id)
+            })
+        });
+    let email = ["id_token", "access_token"].iter().find_map(|key| {
+        tokens
+            .get(*key)
+            .and_then(Value::as_str)
+            .and_then(jwt_account_email)
+    });
+    if account_id.is_none() && email.is_none() {
+        return None;
+    }
+    Some(ChatGptIdentity { account_id, email })
+}
+
+fn jwt_chatgpt_account_id(token: &str) -> Option<String> {
+    jwt_payload(token)?
+        .get("https://api.openai.com/auth")
+        .and_then(|auth| auth.get("chatgpt_account_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn jwt_account_email(token: &str) -> Option<String> {
+    let value = jwt_payload(token)?;
+    value
+        .get("email")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            value
+                .get("https://api.openai.com/profile")
+                .and_then(|profile| profile.get("email"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn account_label_from_jwt(token: &str) -> Option<String> {
+    let value = jwt_payload(token)?;
     value
         .get("email")
         .and_then(Value::as_str)
@@ -2966,6 +3068,20 @@ fn account_label_from_jwt(token: &str) -> Option<String> {
         .map(str::trim)
         .filter(|label| !label.is_empty())
         .map(ToString::to_string)
+}
+
+fn jwt_payload(token: &str) -> Option<Value> {
+    let payload = token.split('.').nth(1)?;
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.as_bytes())
+        .ok()
+        .or_else(|| {
+            base64::engine::general_purpose::URL_SAFE
+                .decode(payload.as_bytes())
+                .ok()
+        })?;
+    serde_json::from_slice(&decoded).ok()
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ use anyhow::Context;
 
 use crate::relay_config::{
     backfill_relay_profile_from_home_with_common, relay_config_status_from_home,
+    sync_official_auth_from_live,
 };
 use crate::settings::{BackendSettings, RelayMode, SettingsStore};
 
@@ -34,6 +35,8 @@ pub fn switch_relay_profile_in_home(
     {
         backfill_profile_before_switch(home, &mut selected_settings, previous_active_relay_id)?;
     }
+    sync_official_auth_from_live(home, &mut selected_settings.relay_profiles)
+        .context("同步官方登录状态到供应商配置失败")?;
 
     store
         .save(&selected_settings)

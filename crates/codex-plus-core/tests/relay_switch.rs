@@ -1,3 +1,4 @@
+use codex_plus_core::relay_config::sync_official_auth_from_live;
 use codex_plus_core::relay_switch::switch_relay_profile_in_home;
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
@@ -191,6 +192,203 @@ base_url = "https://edited-a.example/v1"
 }
 
 #[test]
+fn switch_syncs_live_chatgpt_auth_to_all_official_profiles() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(home.join("config.toml"), "").unwrap();
+    let live_auth = r#"{
+  "auth_mode": "chatgpt",
+  "OPENAI_API_KEY": "must-not-be-copied",
+  "tokens": {
+    "access_token": "new-access",
+    "id_token": "x.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC1hIn19.y",
+    "account_id": "account-a",
+    "refresh_token": "new-refresh"
+  }
+}"#;
+    std::fs::write(home.join("auth.json"), live_auth).unwrap();
+    let expected_auth = serde_json::json!({
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "access_token": "new-access",
+            "id_token": "x.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC1hIn19.y",
+            "account_id": "account-a",
+            "refresh_token": "new-refresh"
+        }
+    });
+
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let official_a = official_profile(
+        "a",
+        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"old-a","account_id":"account-a"}}"#,
+    );
+    // Legacy snapshots without account_id still match by email.
+    let official_b = official_profile(
+        "b",
+        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"old-b","id_token":"x.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifQ.y"}}"#,
+    );
+    let official_mix = RelayProfile {
+        id: "mixed".to_string(),
+        name: "Mixed".to_string(),
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        config_contents: r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://mixed.example/v1"
+"#
+        .to_string(),
+        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"old-mixed","id_token":"x.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC1hIn19.y"}}"#
+            .to_string(),
+        ..RelayProfile::default()
+    };
+    let other_account = official_profile(
+        "other",
+        r#"{"auth_mode":"chatgpt","tokens":{"account_id":"account-b","id_token":"x.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC1iIn19.y"}}"#,
+    );
+    let pure = pure_profile("api", "https://api.example/v1", "sk-api");
+    let original = BackendSettings {
+        active_relay_id: "a".to_string(),
+        relay_profiles: vec![
+            official_a.clone(),
+            official_b.clone(),
+            official_mix.clone(),
+            other_account.clone(),
+            pure.clone(),
+        ],
+        ..BackendSettings::default()
+    };
+    store.save(&original).unwrap();
+    let next = BackendSettings {
+        active_relay_id: "b".to_string(),
+        relay_profiles: vec![
+            official_a,
+            official_b,
+            official_mix,
+            other_account.clone(),
+            pure.clone(),
+        ],
+        ..BackendSettings::default()
+    };
+
+    switch_relay_profile_in_home(&store, &home, next, "a").unwrap();
+
+    let stored = store.load().unwrap();
+    for profile in stored
+        .relay_profiles
+        .iter()
+        .filter(|profile| matches!(profile.id.as_str(), "a" | "b" | "mixed"))
+    {
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&profile.auth_contents).unwrap(),
+            expected_auth,
+            "official profile {} should carry live auth",
+            profile.id
+        );
+    }
+    let stored_pure = stored
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "api")
+        .unwrap();
+    assert_eq!(stored_pure.auth_contents, pure.auth_contents);
+    let stored_other = stored
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "other")
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stored_other.auth_contents).unwrap(),
+        serde_json::from_str::<serde_json::Value>(&other_account.auth_contents).unwrap()
+    );
+}
+
+#[test]
+fn switch_preserves_official_profiles_when_account_identity_is_unknown() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(home.join("config.toml"), "").unwrap();
+    std::fs::write(
+        home.join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"refresh_token":"live-refresh"}}"#,
+    )
+    .unwrap();
+
+    let first = official_profile(
+        "first",
+        r#"{"auth_mode":"chatgpt","tokens":{"refresh_token":"first-refresh"}}"#,
+    );
+    let second = official_profile(
+        "second",
+        r#"{"auth_mode":"chatgpt","tokens":{"refresh_token":"second-refresh"}}"#,
+    );
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let original = BackendSettings {
+        active_relay_id: "first".to_string(),
+        relay_profiles: vec![first.clone(), second.clone()],
+        ..BackendSettings::default()
+    };
+    store.save(&original).unwrap();
+    let next = BackendSettings {
+        active_relay_id: "second".to_string(),
+        relay_profiles: vec![first.clone(), second.clone()],
+        ..BackendSettings::default()
+    };
+
+    switch_relay_profile_in_home(&store, &home, next, "").unwrap();
+
+    let stored = store.load().unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stored.relay_profiles[0].auth_contents).unwrap(),
+        serde_json::from_str::<serde_json::Value>(&first.auth_contents).unwrap()
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stored.relay_profiles[1].auth_contents).unwrap(),
+        serde_json::from_str::<serde_json::Value>(&second.auth_contents).unwrap()
+    );
+}
+
+#[test]
+fn auth_sync_ignores_non_chatgpt_profile_auth() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"account_id":"account-a","access_token":"live"}}"#,
+    )
+    .unwrap();
+    let original_auth =
+        r#"{"auth_mode":"apikey","tokens":{"account_id":"account-a","access_token":"keep-me"}}"#;
+    let mut profiles = vec![official_profile("api-auth", original_auth)];
+
+    let updated = sync_official_auth_from_live(temp.path(), &mut profiles).unwrap();
+
+    assert_eq!(updated, 0);
+    assert_eq!(profiles[0].auth_contents, original_auth);
+}
+
+#[test]
+fn auth_sync_requires_live_account_id_for_bound_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"id_token":"x.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifQ.y","access_token":"live"}}"#,
+    )
+    .unwrap();
+    let original_auth = r#"{"auth_mode":"chatgpt","tokens":{"account_id":"bound-account","id_token":"x.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifQ.y","access_token":"stored"}}"#;
+    let mut profiles = vec![official_profile("bound", original_auth)];
+
+    let updated = sync_official_auth_from_live(temp.path(), &mut profiles).unwrap();
+
+    assert_eq!(updated, 0);
+    assert_eq!(profiles[0].auth_contents, original_auth);
+}
+
+#[test]
 fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("codex");
@@ -378,6 +576,16 @@ base_url = "{base_url}"
 "#
         ),
         auth_contents: format!(r#"{{"OPENAI_API_KEY":"{key}"}}"#),
+        ..RelayProfile::default()
+    }
+}
+
+fn official_profile(id: &str, auth_contents: &str) -> RelayProfile {
+    RelayProfile {
+        id: id.to_string(),
+        name: id.to_uppercase(),
+        relay_mode: RelayMode::Official,
+        auth_contents: auth_contents.to_string(),
         ..RelayProfile::default()
     }
 }
