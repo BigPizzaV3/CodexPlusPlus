@@ -943,6 +943,26 @@ async fn upstream_request_parts(
                             }
                         }
                     }
+                } else {
+                    // VLM 配置不完整，降级为 Strip（defense-in-depth，前端序列化层已防此场景）
+                    for key in &["messages", "input"] {
+                        if let Some(arr) = body.get_mut(key).and_then(Value::as_array_mut) {
+                            let n = crate::vision::strip_images_only_counted(arr);
+                            let n_data = crate::vision::strip_data_urls_in_messages(arr);
+                            let total = n + n_data;
+                            if total > 0 {
+                                let _ = crate::diagnostic_log::append_diagnostic_log(
+                                    "protocol_proxy.vl_strip",
+                                    json!({"reason": "vlm_config_missing", "n": total, "n_data_url": n_data}),
+                                );
+                                crate::vision::inject_cannot_see_note_slice(
+                                    arr,
+                                    total,
+                                    "VLM 配置不完整，图片已剥离",
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
