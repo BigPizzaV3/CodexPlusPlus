@@ -2480,6 +2480,47 @@ pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
 }
 
 #[tauri::command]
+pub async fn refresh_user_script_inventory() -> CommandResult<SettingsPayload> {
+    let debug_port = StatusStore::default()
+        .load_latest()
+        .ok()
+        .flatten()
+        .and_then(|status| status.debug_port)
+        .unwrap_or_else(default_debug_port);
+    let manager = default_user_script_manager();
+    let (user_scripts, message) = match codex_plus_core::user_scripts::live_runtime_status(
+        debug_port,
+    )
+    .await
+    {
+        Ok(runtime_status) => (
+            manager
+                .inventory_with_runtime_status(Some(&runtime_status))
+                .unwrap_or_else(
+                    |error| json!({ "enabled": true, "scripts": [], "error": error.to_string() }),
+                ),
+            "已同步 Codex 用户脚本运行状态。",
+        ),
+        Err(_) => (
+            manager.inventory().unwrap_or_else(
+                |error| json!({ "enabled": true, "scripts": [], "error": error.to_string() }),
+            ),
+            "Codex 未运行或暂不可连接，已显示本地脚本状态。",
+        ),
+    };
+    ok(
+        message,
+        SettingsPayload {
+            settings: SettingsStore::default().load().unwrap_or_default(),
+            settings_path: codex_plus_core::paths::default_settings_path()
+                .to_string_lossy()
+                .to_string(),
+            user_scripts,
+        },
+    )
+}
+
+#[tauri::command]
 pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayload> {
     let trimmed = id.trim();
     if trimmed.is_empty() {
