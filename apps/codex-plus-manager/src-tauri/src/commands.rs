@@ -3102,7 +3102,26 @@ pub fn save_relay_file(request: SaveRelayFileRequest) -> CommandResult<RelayFile
             }),
         );
     };
-    match save_relay_file_in_home(&home, &request.kind, &request.contents)
+    let active_profile = SettingsStore::default()
+        .load()
+        .unwrap_or_default()
+        .active_relay_profile();
+    let contents =
+        match prepare_relay_file_contents(&request.kind, &request.contents, &active_profile) {
+            Ok(contents) => contents,
+            Err(error) => {
+                return failed(
+                    &format!("保存配置文件失败：{error}"),
+                    relay_files_payload_from_home(&home).unwrap_or_else(|_| RelayFilesPayload {
+                        config_path: home.join("config.toml").to_string_lossy().to_string(),
+                        auth_path: home.join("auth.json").to_string_lossy().to_string(),
+                        config_contents: String::new(),
+                        auth_contents: String::new(),
+                    }),
+                );
+            }
+        };
+    match save_relay_file_in_home(&home, &request.kind, &contents)
         .and_then(|_| relay_files_payload_from_home(&home))
     {
         Ok(payload) => ok("配置文件已保存。", payload),
@@ -4322,6 +4341,19 @@ fn save_relay_file_in_home(
     }
     std::fs::write(path, contents)?;
     Ok(())
+}
+
+fn prepare_relay_file_contents(
+    kind: &str,
+    contents: &str,
+    profile: &RelayProfile,
+) -> anyhow::Result<String> {
+    if kind == "config" {
+        return codex_plus_core::relay_config::apply_deepseek_responses_compatibility(
+            profile, contents,
+        );
+    }
+    Ok(contents.to_string())
 }
 
 fn read_optional_text_file(path: &std::path::Path) -> anyhow::Result<String> {
@@ -5627,6 +5659,61 @@ mod tests {
             "{}\n"
         );
         assert!(save_relay_file_in_home(temp.path(), "../bad", "").is_err());
+    }
+
+    #[test]
+    fn config_save_applies_official_deepseek_responses_compatibility() {
+        let profile = RelayProfile {
+            id: "custom-deepseek".to_string(),
+            base_url: "https://api.deepseek.com/".to_string(),
+            upstream_base_url: "https://api.deepseek.com/".to_string(),
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            ..RelayProfile::default()
+        };
+        let config = r#"[features]
+unified_exec = true
+code_mode_only = true
+
+[features.code_mode]
+enabled = true
+"#;
+
+        let prepared = prepare_relay_file_contents("config", config, &profile).unwrap();
+
+        assert!(prepared.contains("unified_exec = true"));
+        assert!(prepared.contains("code_mode_only = false"));
+        assert!(prepared.contains("enabled = false"));
+    }
+
+    #[test]
+    fn config_save_preserves_third_party_responses_and_deepseek_chat_completions() {
+        let config = r#"[features]
+code_mode_only = true
+
+[features.code_mode]
+enabled = true
+"#;
+        let third_party = RelayProfile {
+            base_url: "https://relay.example/v1".to_string(),
+            upstream_base_url: "https://relay.example/v1".to_string(),
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            ..RelayProfile::default()
+        };
+        let chat_completions = RelayProfile {
+            base_url: "https://api.deepseek.com/".to_string(),
+            upstream_base_url: "https://api.deepseek.com/".to_string(),
+            protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+            ..RelayProfile::default()
+        };
+
+        assert_eq!(
+            prepare_relay_file_contents("config", config, &third_party).unwrap(),
+            config
+        );
+        assert_eq!(
+            prepare_relay_file_contents("config", config, &chat_completions).unwrap(),
+            config
+        );
     }
 
     #[test]
