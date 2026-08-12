@@ -25,6 +25,8 @@ const POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS: &[u64] = &[0, 5, 15, 30, 60, 120, 
 const POST_LAUNCH_COMPUTER_USE_GUARD_STABLE_ATTEMPTS: usize = 3;
 static PET_OVERLAY_SYNC_FAILED: AtomicBool = AtomicBool::new(false);
 static PET_CURSOR_DRIVER_FAILED: AtomicBool = AtomicBool::new(false);
+const MACOS_DEBUG_TAKEOVER_WAIT_MS: u64 = 5_000;
+const MACOS_DEBUG_TAKEOVER_INTERVAL_MS: u64 = 100;
 
 /// Asynchronous callback used by the bridge watchdog to restore a launcher-specific bridge.
 ///
@@ -57,6 +59,13 @@ pub enum ProcessWaitStrategy {
 pub enum MacosCleanupPolicy {
     QuitIfNotPreviouslyRunning,
     SkipQuitBecauseAlreadyRunning,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacosDebugLaunchAction {
+    LaunchNew,
+    ReuseRunningDebugApp,
+    RestartRunningApp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -766,10 +775,26 @@ impl LaunchHooks for DefaultLaunchHooks {
         }
 
         if app_dir.extension().and_then(|value| value.to_str()) == Some("app") {
-            let cleanup_policy = if is_macos_app_running(app_dir).await {
-                MacosCleanupPolicy::SkipQuitBecauseAlreadyRunning
-            } else {
-                MacosCleanupPolicy::QuitIfNotPreviouslyRunning
+            let launch_action = select_macos_debug_launch_action(
+                is_macos_app_running(app_dir).await,
+                crate::cdp::endpoint_available(debug_port),
+            );
+            let cleanup_policy = match launch_action {
+                MacosDebugLaunchAction::LaunchNew => MacosCleanupPolicy::QuitIfNotPreviouslyRunning,
+                MacosDebugLaunchAction::ReuseRunningDebugApp => {
+                    MacosCleanupPolicy::SkipQuitBecauseAlreadyRunning
+                }
+                MacosDebugLaunchAction::RestartRunningApp => {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.macos_existing_app_without_cdp_restart_requested",
+                        serde_json::json!({
+                            "app_dir": app_dir,
+                            "debug_port": debug_port
+                        }),
+                    );
+                    quit_macos_app_and_wait(app_dir).await?;
+                    MacosCleanupPolicy::QuitIfNotPreviouslyRunning
+                }
             };
             let command = if let Some(inspector_port) = native_menu_inspector_port {
                 build_macos_open_command_with_native_menu_inspector(
@@ -2780,6 +2805,17 @@ pub fn build_macos_cleanup_command(
     ])
 }
 
+pub fn select_macos_debug_launch_action(
+    app_running: bool,
+    codex_cdp_available: bool,
+) -> MacosDebugLaunchAction {
+    match (app_running, codex_cdp_available) {
+        (false, _) => MacosDebugLaunchAction::LaunchNew,
+        (true, true) => MacosDebugLaunchAction::ReuseRunningDebugApp,
+        (true, false) => MacosDebugLaunchAction::RestartRunningApp,
+    }
+}
+
 async fn run_macos_cleanup_command(
     app_dir: &Path,
     policy: MacosCleanupPolicy,
@@ -2797,6 +2833,31 @@ async fn run_macos_cleanup_command(
         .status()
         .await
         .with_context(|| format!("failed to request macOS app quit for {}", app_dir.display()))?;
+    Ok(())
+}
+
+async fn quit_macos_app_and_wait(app_dir: &Path) -> anyhow::Result<()> {
+    run_macos_cleanup_command(app_dir, MacosCleanupPolicy::QuitIfNotPreviouslyRunning).await?;
+    let deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_millis(MACOS_DEBUG_TAKEOVER_WAIT_MS);
+    while is_macos_app_running(app_dir).await {
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "macOS app did not exit before debug relaunch: {}",
+                app_dir.display()
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(
+            MACOS_DEBUG_TAKEOVER_INTERVAL_MS,
+        ))
+        .await;
+    }
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "launcher.macos_existing_app_without_cdp_stopped",
+        serde_json::json!({
+            "app_dir": app_dir
+        }),
+    );
     Ok(())
 }
 
