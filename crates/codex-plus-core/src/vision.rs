@@ -1820,6 +1820,68 @@ mod tests {
         );
     }
 
+    /// strip_image_blocks 端到端（Responses 协议）：input_image 被剥离，
+    /// VLM 描述以 `input_text` 块注入，且不产生 Chat 格式的 `text` 块。
+    #[tokio::test]
+    async fn strip_image_blocks_injects_input_text_for_responses_protocol() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "mock: responses E2E"}}]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let config = VlmConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: mock_server.uri(),
+        };
+
+        // Responses API 格式：input_text / input_image 内容块。
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "describe this image"},
+                {"type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgo="},
+            ]
+        })];
+
+        strip_image_blocks(&mut messages, &config, "{}", "272000", "gpt-4", true).await;
+
+        let parts = messages[0]["content"].as_array().unwrap();
+
+        // 1) 图片块被移除。
+        assert!(
+            parts
+                .iter()
+                .all(|p| p.get("type").and_then(Value::as_str) != Some("input_image")),
+            "input_image block should be stripped"
+        );
+
+        // 2) VLM 描述以 input_text 块注入。
+        let injected = parts.iter().find(|p| {
+            p.get("type").and_then(Value::as_str) == Some("input_text")
+                && p.get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t.contains("mock: responses E2E"))
+        });
+        assert!(
+            injected.is_some(),
+            "VLM description should be injected as input_text"
+        );
+
+        // 3) 不产生 Chat 格式的 text 块（Responses 上游会拒绝 text 块）。
+        assert!(
+            parts
+                .iter()
+                .all(|p| p.get("type").and_then(Value::as_str) != Some("text")),
+            "no chat-style text block should be injected for responses protocol"
+        );
+    }
+
     #[tokio::test]
     async fn strip_image_blocks_with_mock_vlm_processes_tool_images() {
         let mock_server = MockServer::start().await;
