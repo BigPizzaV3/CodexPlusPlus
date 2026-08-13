@@ -178,14 +178,14 @@ html.codex-dream-skin .dream-home {
   min-height: 100% !important;
 }
 
-.dream-home > div:first-child > div:first-child {
+.dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"]) {
   flex: 0 0 430px !important;
   min-height: 430px !important;
   align-items: flex-start !important;
   padding-bottom: 0 !important;
 }
 
-.dream-home > div:first-child > div:first-child > div:first-child {
+.dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"]) {
   position: relative !important;
   isolation: isolate;
   width: calc(100% - 44px) !important;
@@ -206,7 +206,7 @@ html.codex-dream-skin .dream-home {
   box-shadow: 0 14px 34px rgba(33,93,146,.20), inset 0 0 0 4px rgba(255,255,255,.22) !important;
 }
 
-.dream-home > div:first-child > div:first-child > div:first-child::before {
+.dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"])::before {
   content: "";
   position: absolute;
   z-index: 0;
@@ -433,15 +433,15 @@ html.codex-dream-skin [data-message-author-role] {
   .dream-polaroid { display: none !important; }
   .dream-ribbon { bottom: 70px; font-size: 20px; }
   .dream-home { --thread-content-max-width: min(860px, calc(100cqw - 30px)) !important; }
-  .dream-home > div:first-child > div:first-child > div:first-child { width: calc(100% - 28px) !important; }
+  .dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"]) { width: calc(100% - 28px) !important; }
 }
 
 @media (max-width: 900px) {
   .dream-signature { display: none !important; }
   .dream-brand { left: 15px; }
   .dream-brand b { font-size: 13px; }
-  .dream-home > div:first-child > div:first-child { flex-basis: 396px !important; min-height: 396px !important; }
-  .dream-home > div:first-child > div:first-child > div:first-child { height: 224px !important; min-height: 224px !important; background-size: 100% 100%, auto 145% !important; }
+  .dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"]) { flex-basis: 396px !important; min-height: 396px !important; }
+  .dream-home[data-dream-home-layout="structured"] > div:first-child > div:first-child > div:first-child:has([data-feature="game-source"], [data-testid="home-icon"]) { height: 224px !important; min-height: 224px !important; background-size: 100% 100%, auto 145% !important; }
   .dream-home > div:first-child > div:first-child > div:first-child > div:first-child { padding-left: 26px; }
   .dream-home > div:first-child > div:first-child > div:first-child > div:first-child > div:first-child { width: 66% !important; }
   .dream-home [data-feature="game-source"] { font-size: 18px !important; }
@@ -451,4 +451,50 @@ html.codex-dream-skin [data-message-author-role] {
 
 @media (prefers-reduced-motion: reduce) {
   .dream-sparkles i { animation: none !important; }
+}
+
+/* codex-plus new-chat interaction safeguards */
+html.codex-dream-skin aside.app-shell-left-panel,
+html.codex-dream-skin aside.app-shell-left-panel button,
+html.codex-dream-skin aside.app-shell-left-panel a,
+html.codex-dream-skin button[aria-label^="Start new chat in "],
+html.codex-dream-skin [data-app-action-sidebar-project-row],
+html.codex-dream-skin .composer-surface-chrome,
+html.codex-dream-skin .composer-footer,
+html.codex-dream-skin .ProseMirror,
+html.codex-dream-skin [role="main"] {
+  pointer-events: auto !important;
+}
+html.codex-dream-skin button[aria-label^="Start new chat in "],
+html.codex-dream-skin [data-app-action-sidebar-project-row] button {
+  position: relative !important;
+  z-index: 6 !important;
+}
+html.codex-dream-skin .composer-surface-chrome,
+html.codex-dream-skin .composer-footer {
+  position: relative !important;
+  z-index: 4 !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+html.codex-dream-skin .dream-home:not([data-dream-home-layout="structured"]) {
+  background: transparent !important;
+}
+html.codex-dream-skin .dream-home:not([data-dream-home-layout="structured"]) {
+  min-height: 0 !important;
+  overflow-y: auto !important;
+}
+html.codex-dream-skin .dream-home:not([data-dream-home-layout="structured"]) > div:first-child,
+html.codex-dream-skin .dream-home:not([data-dream-home-layout="structured"]) > div:first-child > div:first-child,
+html.codex-dream-skin .dream-home:not([data-dream-home-layout="structured"]) > div:first-child > div:first-child > div:first-child,
+html.codex-dream-skin .dream-home:not([data-dream-home-layout="structured"]) > div:first-child > div:first-child > div:first-child > div:first-child,
+html.codex-dream-skin .dream-home:not([data-dream-home-layout="structured"]) > div:first-child > div:first-child > div:first-child > div:first-child > div:first-child {
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  flex: 0 1 auto !important;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
 }
