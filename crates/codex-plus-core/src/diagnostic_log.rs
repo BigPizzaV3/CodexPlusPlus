@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 
 static TEST_LOG_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 
-const MAX_DIAGNOSTIC_LOG_BYTES: u64 = 50 * 1024 * 1024;
-const COMPACTED_DIAGNOSTIC_LOG_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_DIAGNOSTIC_LOG_BYTES: u64 = 10 * 1024 * 1024;
+const COMPACTED_DIAGNOSTIC_LOG_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 struct DiagnosticRecord {

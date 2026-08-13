@@ -486,10 +486,6 @@ type RelaySwitchResult = CommandResult<{
   relay: RelayPayload;
 }>;
 
-type SettingsBackfillResult = CommandResult<{
-  settings: BackendSettings;
-}>;
-
 type RelayProfileTestResult = CommandResult<{
   httpStatus: number;
   endpoint: string;
@@ -987,6 +983,7 @@ export function App() {
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
   const [relaySwitching, setRelaySwitching] = useState(false);
+  const relaySwitchingRef = useRef(false);
   const dreamSkinDraftDirty = Boolean(
     savedDreamSkinThemeDraft
       && dreamSkinThemeDraft
@@ -2384,7 +2381,7 @@ export function App() {
   };
 
   const switchRelayProfile = async (next: BackendSettings, previousActiveRelayId = settingsForm.activeRelayId) => {
-    if (relaySwitching) {
+    if (relaySwitchingRef.current) {
       showNotice(t("供应商切换中"), t("上一次切换还没有完成，请稍后再试。"), "failed");
       return;
     }
@@ -2411,16 +2408,16 @@ export function App() {
       showNotice(t("供应商配置可能不正确"), validationError, "failed");
       return;
     }
-    switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
-    const selectedAfterSave = activeRelayProfile(switchSettings);
-    const command = relayProfileSwitchCommand(selectedAfterSave);
+    const selectedProfile = activeRelayProfile(switchSettings);
+    const command = relayProfileSwitchCommand(selectedProfile);
 
     logDiagnostic("switchRelayProfile.apply_start", {
-      targetRelayId: selectedAfterSave.id,
-      targetRelayName: selectedAfterSave.name,
+      targetRelayId: selectedProfile.id,
+      targetRelayName: selectedProfile.name,
       previousActiveRelayId,
       command,
     });
+    relaySwitchingRef.current = true;
     setRelaySwitching(true);
     try {
       const result = await run(() =>
@@ -2430,7 +2427,7 @@ export function App() {
       );
       if (!result) {
         logDiagnostic("switchRelayProfile.apply_no_result", {
-          targetRelayId: selectedAfterSave.id,
+          targetRelayId: selectedProfile.id,
         });
         return;
       }
@@ -2443,7 +2440,7 @@ export function App() {
       await refreshRelayFiles(true);
       if (!isSuccessStatus(result.status)) {
         logDiagnostic("switchRelayProfile.apply_failed", {
-          targetRelayId: selectedAfterSave.id,
+          targetRelayId: selectedProfile.id,
           status: result.status,
           message: result.message,
           activeRelayId: selectedSettings.activeRelayId,
@@ -2466,28 +2463,9 @@ export function App() {
         status: result.status,
       });
     } finally {
+      relaySwitchingRef.current = false;
       setRelaySwitching(false);
     }
-  };
-
-  const snapshotActiveRelayFilesBeforeSwitch = async (
-    next: BackendSettings,
-    previousActiveRelayId: string,
-  ): Promise<BackendSettings> => {
-    const profileId = previousActiveRelayId.trim();
-    if (!profileId) return next;
-    const result = await run(() =>
-      call<SettingsBackfillResult>("backfill_relay_profile_from_live", {
-        request: { settings: next, profileId },
-      }),
-    );
-    if (!result) return next;
-    const normalized = normalizeSettings(result.settings);
-    if (!isSuccessStatus(result.status)) {
-      showNotice(t("供应商切换"), result.message, result.status);
-      return next;
-    }
-    return normalized;
   };
 
   const copyText = async (text: string, message: string) => {
@@ -5946,6 +5924,8 @@ function RelayProfileDetail({
   actions: Actions;
 }) {
   const [draft, setDraft] = useState<RelayProfile>(profile);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const [modelWindowRows, setModelWindowRows] = useState<ModelWindowRow[]>(
     modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || "", profile.modelVlm, profile.modelAutoCompact),
   );
@@ -5992,46 +5972,53 @@ function RelayProfileDetail({
     };
   };
   const saveDraft = async () => {
-    if (validationError) return;
-    const draftWithWindows = draftWithModelRows();
-    const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
-    const next = normalizeSettings(isNew
-      ? addRelayProfile(form, normalizedDraft)
-      : updateRelayProfile(form, profile.id, normalizedDraft));
-    const settingsValidationError = relayModelRoutesSettingsValidation(next);
-    if (settingsValidationError) return;
-    const activeLiveBaseUrl = codexBaseUrlFromConfig(
-      relayFiles?.configContents ?? profile.configContents,
-    );
-    const requiresRestart = isActive && modelRouteSaveRequiresRestart(
-      normalizeSettings(form),
-      next,
-      activeLiveBaseUrl,
-    );
-    if (requiresRestart && !window.confirm(t("首次启用单模型路由需要启动本地协议代理。保存后将立即重启 Codex，使路由安全生效。是否继续？"))) {
-      return;
-    }
-    const savedSettings = await onFormChange(next);
-    if (!savedSettings) return;
-    if (requiresRestart) {
-      const restarted = await actions.restart(true);
-      if (!restarted) return;
-      onSaved?.();
-      return;
-    }
-    const savedProfile = savedSettings.relayProfiles.find((candidate) => candidate.id === normalizedDraft.id)
-      ?? normalizedDraft;
-    if (isActive && savedSettings.relayProfilesEnabled && relayProfileUsesLiveFiles(savedProfile)) {
-      const configSaved = await actions.saveRelayFile(
-        "config",
-        effectiveRelayConfigPreview(savedProfile, savedSettings, savedProfile),
-        true,
+    if (validationError || savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      const draftWithWindows = draftWithModelRows();
+      const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
+      const next = normalizeSettings(isNew
+        ? addRelayProfile(form, normalizedDraft)
+        : updateRelayProfile(form, profile.id, normalizedDraft));
+      const settingsValidationError = relayModelRoutesSettingsValidation(next);
+      if (settingsValidationError) return;
+      const activeLiveBaseUrl = codexBaseUrlFromConfig(
+        relayFiles?.configContents ?? profile.configContents,
       );
-      if (!configSaved) return;
-      const authSaved = await actions.saveRelayFile("auth", savedProfile.authContents, true);
-      if (!authSaved) return;
+      const requiresRestart = isActive && modelRouteSaveRequiresRestart(
+        normalizeSettings(form),
+        next,
+        activeLiveBaseUrl,
+      );
+      if (requiresRestart && !window.confirm(t("首次启用单模型路由需要启动本地协议代理。保存后将立即重启 Codex，使路由安全生效。是否继续？"))) {
+        return;
+      }
+      const savedSettings = await onFormChange(next);
+      if (!savedSettings) return;
+      if (requiresRestart) {
+        const restarted = await actions.restart(true);
+        if (!restarted) return;
+        onSaved?.();
+        return;
+      }
+      const savedProfile = savedSettings.relayProfiles.find((candidate) => candidate.id === normalizedDraft.id)
+        ?? normalizedDraft;
+      if (isActive && savedSettings.relayProfilesEnabled && relayProfileUsesLiveFiles(savedProfile)) {
+        const configSaved = await actions.saveRelayFile(
+          "config",
+          effectiveRelayConfigPreview(savedProfile, savedSettings, savedProfile),
+          true,
+        );
+        if (!configSaved) return;
+        const authSaved = await actions.saveRelayFile("auth", savedProfile.authContents, true);
+        if (!authSaved) return;
+      }
+      onSaved?.();
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
-    onSaved?.();
   };
   const switchDraft = () => {
     if (isNew || !form.relayProfilesEnabled || validationError) return;
@@ -6092,9 +6079,9 @@ function RelayProfileDetail({
               {actions.relaySwitching ? t("切换中") : draft.id === form.activeRelayId ? t("使用中") : t("设为当前")}
             </Button>
           )}
-          <Button disabled={!!validationError} onClick={() => void saveDraft()} title={validationError || t("保存")} type="button">
+          <Button disabled={saving || !!validationError} onClick={() => void saveDraft()} title={validationError || t("保存")} type="button">
             <Save className="h-4 w-4" />
-            {t("保存")}
+            {saving ? t("保存中") : t("保存")}
           </Button>
         </div>
       </div>

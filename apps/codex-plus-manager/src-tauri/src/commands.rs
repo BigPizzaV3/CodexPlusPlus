@@ -3201,6 +3201,7 @@ pub async fn switch_relay_profile(
 fn switch_relay_profile_blocking(
     request: RelayProfileSwitchRequest,
 ) -> CommandResult<RelaySwitchPayload> {
+    let started_at = std::time::Instant::now();
     let Ok(_guard) = relay_switch_mutex().lock() else {
         let status = codex_plus_core::relay_config::default_relay_status();
         return failed(
@@ -3249,7 +3250,8 @@ fn switch_relay_profile_blocking(
                 json!({
                     "targetRelayId": result.settings.active_relay_id,
                     "configured": status.configured,
-                    "backupPath": result.backup_path.as_ref()
+                    "backupPath": result.backup_path.as_ref(),
+                    "elapsedMs": started_at.elapsed().as_millis()
                 }),
             );
             ok(
@@ -3265,7 +3267,8 @@ fn switch_relay_profile_blocking(
                 json!({
                     "previousActiveRelayId": previous_active_relay_id,
                     "activeRelayId": settings.active_relay_id,
-                    "error": error.to_string()
+                    "error": error.to_string(),
+                    "elapsedMs": started_at.elapsed().as_millis()
                 }),
             );
             failed(

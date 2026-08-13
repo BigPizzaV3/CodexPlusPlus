@@ -91,6 +91,13 @@ describe("model-windows helpers", () => {
     assert.match(source, /const saved = await onFormChange\(next\)/);
     assert.match(source, /const applied = await actions\.reapplyActiveRelayProfile\(true\)/);
     assert.doesNotMatch(source, /const applied = await actions\.switchRelayProfile\(next, profile\.id\)/);
+    assert.match(source, /if \(relaySwitchingRef\.current\)/);
+    assert.match(source, /relaySwitchingRef\.current = true/);
+    assert.match(source, /relaySwitchingRef\.current = false/);
+    assert.doesNotMatch(source, /snapshotActiveRelayFilesBeforeSwitch/);
+    assert.match(source, /savingRef\.current = true/);
+    assert.match(source, /disabled=\{saving \|\| !!validationError\}/);
+    assert.match(source, /profile\.id === form\.activeRelayId/);
     assert.doesNotMatch(source, /effectiveRelayConfigPreview\(normalizedDraft, form, normalizedDraft\)/);
     assert.match(source, /className="relay-model-import-workbench"/);
     assert.match(source, /serializeModelMetadataDocument\(\s*slug,\s*existingMetadata/);

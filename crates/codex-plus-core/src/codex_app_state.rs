@@ -112,12 +112,12 @@ pub fn sync_app_state_after_provider_switch(home: &Path) -> anyhow::Result<AppSt
 
     let next = Value::Object(state);
     if next == original {
-        let snapshot_path = capture_app_state_snapshot(home)?;
+        let snapshot_path = snapshot_path(home);
         return Ok(AppStateSyncResult {
             changed: false,
             changed_keys: Vec::new(),
             backup_path: None,
-            snapshot_path,
+            snapshot_path: snapshot_path.is_file().then_some(snapshot_path),
         });
     }
 

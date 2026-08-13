@@ -241,13 +241,39 @@ pub(crate) fn guard_config_text_with_marketplace(
 pub(crate) fn find_computer_use_notify_exe(home: &Path) -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        find_computer_use_notify_exe_windows(home)
+        static CACHED_NOTIFY_EXES: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<PathBuf, PathBuf>>,
+        > = std::sync::OnceLock::new();
+        let cache = CACHED_NOTIFY_EXES
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+        if let Ok(cached) = cache.lock()
+            && let Some(path) = cached.get(home)
+            && path.is_file()
+        {
+            return Some(path.clone());
+        }
+
+        let discovered = configured_computer_use_notify_exe(home)
+            .or_else(|| find_computer_use_notify_exe_windows(home));
+        if let (Some(path), Ok(mut cached)) = (&discovered, cache.lock()) {
+            cached.insert(home.to_path_buf(), path.clone());
+        }
+        discovered
     }
     #[cfg(not(windows))]
     {
         let _ = home;
         None
     }
+}
+
+#[cfg(windows)]
+fn configured_computer_use_notify_exe(home: &Path) -> Option<PathBuf> {
+    let config = std::fs::read_to_string(home.join("config.toml")).ok()?;
+    let doc = parse_toml_document(config.trim_start_matches('\u{feff}')).ok()?;
+    let notify = doc.get("notify")?.as_array()?;
+    let path = PathBuf::from(notify.get(0)?.as_str()?);
+    path.is_file().then_some(path)
 }
 
 #[cfg(windows)]
@@ -780,6 +806,40 @@ fn ensure_trailing_newline(mut contents: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn configured_notify_exe_uses_valid_config_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let notify = temp.path().join(COMPUTER_USE_EXE);
+        std::fs::write(&notify, b"test").unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            format!(
+                "notify = [{:?}, \"turn-ended\"]\n",
+                notify.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            configured_computer_use_notify_exe(temp.path()),
+            Some(notify)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn configured_notify_exe_ignores_missing_path() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "notify = ['C:/missing/codex-computer-use.exe', \"turn-ended\"]\n",
+        )
+        .unwrap();
+
+        assert_eq!(configured_computer_use_notify_exe(temp.path()), None);
+    }
 
     #[test]
     fn guard_config_text_repairs_computer_use_settings() {
