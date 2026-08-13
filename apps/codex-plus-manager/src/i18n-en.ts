@@ -642,6 +642,9 @@ export const EN_PLAIN: Record<string, string> = {
   "深色": "Dark",
   "混入 API": "Mixed-in API",
   "混入 API KEY": "Mix in API KEY",
+  "关闭官方低额度提示": "Hide official low-usage alert",
+  "关闭后仍可从 Codex 左下角账户菜单查看官方剩余额度。":
+    "When hidden, you can still view the official quota from the account menu in the lower-left corner of Codex.",
   "混入 API Key": "Mix in API Key",
   "添加供应商": "Add provider",
   "添加模型": "Add model",

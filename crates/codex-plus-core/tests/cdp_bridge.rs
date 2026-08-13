@@ -449,6 +449,52 @@ fn injection_script_exposes_image_overlay_config() {
 }
 
 #[test]
+fn official_login_usage_alert_setting_controls_renderer_injection() {
+    use codex_plus_core::settings::{RelayMode, RelayProfile};
+
+    let settings = |relay_mode, hide_official_usage_alert, official_mix_api_key| {
+        codex_plus_core::settings::BackendSettings {
+            active_relay_id: "official".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "official".to_string(),
+                relay_mode,
+                official_mix_api_key,
+                hide_official_usage_alert,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    };
+
+    assert!(
+        assets::injection_script_with_settings(57321, &settings(RelayMode::Official, true, false))
+            .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = true;")
+    );
+    assert!(
+        assets::injection_script_with_settings(57321, &settings(RelayMode::Official, true, true))
+            .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = true;")
+    );
+    assert!(
+        assets::injection_script_with_settings(57321, &settings(RelayMode::Official, false, false))
+            .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;")
+    );
+    assert!(
+        assets::injection_script_with_settings(57321, &settings(RelayMode::PureApi, true, false))
+            .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;")
+    );
+}
+
+#[test]
+fn usage_alert_hider_uses_sidebar_semantics_instead_of_percentage_copy() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("officialUsageAlertCards"));
+    assert!(script.contains("progress[max=\"100\"]"));
+    assert!(script.contains("dismiss usage alert|关闭使用量提醒"));
+    assert!(script.contains("codexPlusUsageAlertHidden"));
+}
+
+#[test]
 fn injection_script_installs_image_overlay_from_data_uri() {
     let script = assets::injection_script(57321);
 
@@ -2213,6 +2259,8 @@ fn manager_ui_exposes_pure_api_relay_mode_button() {
         std::fs::read_to_string(repo.join("apps/codex-plus-manager/src-tauri/src/lib.rs")).unwrap();
 
     assert!(source.contains("官方混入 API Key"));
+    assert!(source.contains("关闭官方低额度提示"));
+    assert!(source.contains("hideOfficialUsageAlert"));
     assert!(source.contains("纯 API"));
     assert!(source.contains("apply_pure_api_injection"));
     assert!(commands.contains("commands::apply_pure_api_injection"));

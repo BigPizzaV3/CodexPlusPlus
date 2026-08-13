@@ -435,7 +435,7 @@ async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
     );
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/backend/status", json!({})).await,
-        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION})
+        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION, "hideOfficialUsageAlert": false})
     );
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/ads", json!({})).await,
@@ -514,6 +514,29 @@ async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
         .await,
         json!({"status": "ok", "removed": 1})
     );
+}
+
+#[tokio::test]
+async fn backend_status_includes_active_official_usage_alert_setting() {
+    let settings = BackendSettings {
+        active_relay_id: "official".to_string(),
+        relay_profiles: vec![codex_plus_core::settings::RelayProfile {
+            id: "official".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::Official,
+            hide_official_usage_alert: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let result = handle_bridge_request(ctx, "/backend/status", json!({})).await;
+
+    assert_eq!(result["hideOfficialUsageAlert"], true);
 }
 
 #[tokio::test]
@@ -814,7 +837,7 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
 
     assert_eq!(
         status,
-        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION})
+        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION, "hideOfficialUsageAlert": false})
     );
     assert_eq!(reloaded["scripts"][0]["key"], "builtin:demo.js");
     let evaluated = evaluated.lock().unwrap();

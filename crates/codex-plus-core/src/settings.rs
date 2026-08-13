@@ -61,6 +61,8 @@ pub struct RelayProfile {
     pub relay_mode: RelayMode,
     #[serde(rename = "officialMixApiKey", default)]
     pub official_mix_api_key: bool,
+    #[serde(rename = "hideOfficialUsageAlert", default)]
+    pub hide_official_usage_alert: bool,
     #[serde(rename = "testModel", default)]
     pub test_model: String,
     #[serde(rename = "configContents", default)]
@@ -173,6 +175,7 @@ impl Default for RelayProfile {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            hide_official_usage_alert: false,
             test_model: String::new(),
             config_contents: String::new(),
             auth_contents: String::new(),
@@ -596,6 +599,7 @@ impl BackendSettings {
                 protocol: RelayProtocol::Responses,
                 relay_mode: RelayMode::MixedApi,
                 official_mix_api_key: true,
+                hide_official_usage_alert: false,
                 test_model: String::new(),
                 config_contents: String::new(),
                 auth_contents: String::new(),
@@ -648,6 +652,7 @@ impl BackendSettings {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            hide_official_usage_alert: false,
             test_model: String::new(),
             config_contents: String::new(),
             auth_contents: String::new(),
@@ -1720,6 +1725,7 @@ mod tests {
 
         assert_eq!(profile.relay_mode, RelayMode::Official);
         assert!(!profile.official_mix_api_key);
+        assert!(!profile.hide_official_usage_alert);
         assert!(profile.test_model.is_empty());
     }
 
@@ -1885,6 +1891,7 @@ base_url = "http://127.0.0.1:57321/v1"
                 name: "官方".to_string(),
                 relay_mode: RelayMode::Official,
                 official_mix_api_key: false,
+                hide_official_usage_alert: false,
                 model: "gpt-5.5".to_string(),
                 base_url: "https://relay.example/v1".to_string(),
                 api_key: "sk-test".to_string(),
@@ -1923,6 +1930,7 @@ requires_openai_auth = true
                 name: "官方混入".to_string(),
                 relay_mode: RelayMode::Official,
                 official_mix_api_key: true,
+                hide_official_usage_alert: false,
                 model: "gpt-5.5".to_string(),
                 base_url: "https://relay.example/v1".to_string(),
                 api_key: "sk-mix".to_string(),
@@ -1985,6 +1993,7 @@ experimental_bearer_token = "sk-mix"
                     name: "官方混入".to_string(),
                     relay_mode: RelayMode::Official,
                     official_mix_api_key: true,
+                    hide_official_usage_alert: false,
                     config_contents: r#"model_provider = "custom"
 
 [model_providers.other]
