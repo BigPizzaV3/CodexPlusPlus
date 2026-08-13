@@ -76,6 +76,7 @@ pub async fn read_codex_model_catalog() -> Value {
 fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Value {
     let models = relay_profile_model_ids(profile);
     let model = profile.model.trim().to_string();
+    let codex_model_provider = codex_model_provider_for_relay_profile(home, profile);
     let default_model = models.first().cloned().unwrap_or_default();
     let provider_name = if profile.name.trim().is_empty() {
         profile.id.trim()
@@ -90,6 +91,7 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
         "service_tier": config_service_tier_value(home),
         "model": model,
         "model_provider": profile.id.trim(),
+        "codex_model_provider": codex_model_provider,
         "provider_name": provider_name,
         "default_model": default_model,
         "models": models,
@@ -107,6 +109,20 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
         ],
         "responses_api": responses_api_status("unknown", "", "")
     })
+}
+
+pub fn codex_model_provider_for_relay_profile(home: &Path, profile: &RelayProfile) -> String {
+    let profile_config = parse_codex_config(&profile.config_contents);
+    let profile_provider = string_value(profile_config.root.get("model_provider"));
+    if !profile_provider.is_empty() {
+        return profile_provider;
+    }
+
+    let (live_config, _, error) = load_codex_config(&home.join("config.toml"));
+    if error.is_some() {
+        return String::new();
+    }
+    string_value(live_config.root.get("model_provider"))
 }
 
 fn relay_profile_model_ids(profile: &RelayProfile) -> Vec<String> {

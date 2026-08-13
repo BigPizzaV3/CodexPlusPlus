@@ -120,6 +120,9 @@ pub trait BridgeDataService: Send + Sync {
     ) -> anyhow::Result<Value>;
     async fn thread_sort_key(&self, session: SessionRef) -> anyhow::Result<Value>;
     async fn thread_sort_keys(&self, sessions: Vec<SessionRef>) -> anyhow::Result<Value>;
+    async fn recover_remote_control_session(&self, _thread_id: String) -> anyhow::Result<Value> {
+        anyhow::bail!("Remote Control session recovery is unavailable")
+    }
 }
 
 pub async fn handle_bridge_request(
@@ -267,6 +270,15 @@ pub async fn handle_bridge_request(
             ctx.data
                 .thread_sort_keys(sessions_from_payload(&payload))
                 .await
+        }
+        "/remote-control-session/recover" => {
+            let thread_id = payload
+                .get("thread_id")
+                .or_else(|| payload.get("threadId"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            ctx.data.recover_remote_control_session(thread_id).await
         }
         _ => {
             let _ = crate::diagnostic_log::append_diagnostic_log(

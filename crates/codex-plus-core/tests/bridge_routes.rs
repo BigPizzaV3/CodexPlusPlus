@@ -1515,6 +1515,10 @@ impl LaunchHooks for ContextHooks {
         Ok(())
     }
 
+    async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn start_helper(&self, _helper_port: u16) -> anyhow::Result<()> {
         Ok(())
     }

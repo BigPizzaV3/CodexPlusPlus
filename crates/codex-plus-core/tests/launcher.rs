@@ -1189,10 +1189,42 @@ async fn official_mix_responses_profile_starts_fixed_protocol_proxy_without_enha
     handle.wait_for_codex_exit().await.unwrap();
 
     let events = events.lock().unwrap().clone();
+    assert!(!events.contains(&"remote-control-session-recovery".to_string()));
+    assert!(!events.contains(&"provider-sync".to_string()));
     assert!(events.contains(&"select-helper:58123".to_string()));
     assert!(events.contains(&"start-helper:57321".to_string()));
     assert!(events.contains(&"shutdown-helper:57321".to_string()));
     assert!(!events.iter().any(|event| event.starts_with("inject:")));
+}
+
+#[tokio::test]
+async fn pending_remote_control_recovery_runs_without_an_official_mix_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_pending_remote_control_session_recoveries();
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 58123,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"remote-control-session-recovery".to_string())
+    );
 }
 
 #[tokio::test]
@@ -1744,6 +1776,7 @@ struct FakeHooks {
     inject_error: Option<String>,
     provider_sync_unsupported: bool,
     plugin_marketplace_error: Option<String>,
+    has_pending_remote_control_session_recoveries: bool,
 }
 
 impl FakeHooks {
@@ -1760,6 +1793,7 @@ impl FakeHooks {
             inject_error: None,
             provider_sync_unsupported: false,
             plugin_marketplace_error: None,
+            has_pending_remote_control_session_recoveries: false,
         }
     }
 
@@ -1790,6 +1824,11 @@ impl FakeHooks {
 
     fn with_plugin_marketplace_error(mut self, message: &str) -> Self {
         self.plugin_marketplace_error = Some(message.to_string());
+        self
+    }
+
+    fn with_pending_remote_control_session_recoveries(mut self) -> Self {
+        self.has_pending_remote_control_session_recoveries = true;
         self
     }
 
@@ -1830,6 +1869,15 @@ impl LaunchHooks for FakeHooks {
         if self.provider_sync_unsupported {
             anyhow::bail!("provider sync requires launcher hooks");
         }
+        Ok(())
+    }
+
+    fn has_pending_remote_control_session_recoveries(&self) -> bool {
+        self.has_pending_remote_control_session_recoveries
+    }
+
+    async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()> {
+        self.event("remote-control-session-recovery");
         Ok(())
     }
 
