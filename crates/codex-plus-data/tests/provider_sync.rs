@@ -1,6 +1,7 @@
 use codex_plus_data::{
     ProviderSyncStatus, ProviderSyncTargetSource, apply_session_index_cleanup,
-    load_provider_sync_targets, preview_session_index_cleanup, run_provider_sync,
+    load_provider_sync_targets, preview_session_index_cleanup,
+    remote_control_session_recovery_candidate_exists, run_provider_sync,
     run_provider_sync_with_target,
     run_remote_control_session_catalog_recovery_for_thread_with_target,
     run_remote_control_session_finalization_for_thread_with_target,
@@ -11,7 +12,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 
 static CODEX_HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -209,6 +210,46 @@ fn create_local_thread_catalog_db(path: &Path, rows: &[(&str, &str)]) {
         )
         .unwrap();
     }
+}
+
+#[test]
+fn remote_control_recovery_candidate_requires_a_recent_unarchived_openai_thread() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir_all(&home).unwrap();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            model_provider TEXT,
+            archived INTEGER,
+            created_at_ms INTEGER
+        )",
+        [],
+    )
+    .unwrap();
+    for (id, provider, archived, created_at_ms) in [
+        ("recent", "openai", 0, now_ms),
+        ("stale", "openai", 0, now_ms - 16 * 60 * 1000),
+        ("archived", "openai", 1, now_ms),
+        ("custom", "custom", 0, now_ms),
+    ] {
+        db.execute(
+            "INSERT INTO threads VALUES (?1, ?2, ?3, ?4)",
+            (id, provider, archived, created_at_ms),
+        )
+        .unwrap();
+    }
+    drop(db);
+
+    assert!(remote_control_session_recovery_candidate_exists(Some(&home), "recent").unwrap());
+    assert!(!remote_control_session_recovery_candidate_exists(Some(&home), "stale").unwrap());
+    assert!(!remote_control_session_recovery_candidate_exists(Some(&home), "archived").unwrap());
+    assert!(!remote_control_session_recovery_candidate_exists(Some(&home), "custom").unwrap());
 }
 
 #[test]

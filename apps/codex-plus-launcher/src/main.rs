@@ -336,11 +336,50 @@ impl LaunchHooks for LauncherHooks {
         codex_plus_core::paths::default_pending_remote_control_recovery_path().exists()
     }
 
+    fn remote_control_session_recovery_is_safe_to_run(&self) -> bool {
+        codex_plus_core::watcher::find_session_index_cleanup_blocking_processes().is_empty()
+    }
+
     async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()> {
         let outcomes = tokio::task::spawn_blocking(|| {
             let requests = codex_plus_core::remote_control_recovery::load_pending_remote_control_recoveries(None)?;
+            let settings = codex_plus_core::settings::SettingsStore::default()
+                .load()?;
             let mut outcomes = Vec::with_capacity(requests.len());
             for request in requests {
+                let current_profile = settings
+                    .relay_profiles
+                    .iter()
+                    .find(|profile| profile.id == request.profile_id);
+                let request_is_current = settings.active_relay_id == request.profile_id
+                    && current_profile.is_some_and(|profile| {
+                    codex_plus_core::remote_control_recovery::config_generation(
+                        profile,
+                        &request.target_provider,
+                    ) == request.config_generation
+                });
+                if !request_is_current {
+                    outcomes.push((
+                        request,
+                        codex_plus_data::ProviderSyncResult {
+                            status: codex_plus_data::ProviderSyncStatus::Skipped,
+                            message: "Remote Control session finalization deferred after relay profile changed".to_string(),
+                            target_provider: String::new(),
+                            backup_dir: None,
+                            changed_session_files: 0,
+                            sqlite_rows_updated: 0,
+                            sqlite_provider_rows_updated: 0,
+                            sqlite_user_event_rows_updated: 0,
+                            sqlite_cwd_rows_updated: 0,
+                            sqlite_catalog_rows_inserted: 0,
+                            updated_workspace_roots: 0,
+                            skipped_locked_rollout_files: Vec::new(),
+                            encrypted_content_warning: None,
+                        },
+                        None,
+                    ));
+                    continue;
+                }
                 let result = codex_plus_data::run_remote_control_session_finalization_for_thread_with_target(
                     None,
                     &request.thread_id,
@@ -616,6 +655,21 @@ impl BridgeDataService for LauncherDataService {
             return Ok(json!({
                 "status": "skipped",
                 "message": "Remote Control session recovery requires a non-openai target provider"
+            }));
+        }
+        let candidate_thread_id = thread_id.clone();
+        let candidate = tokio::task::spawn_blocking(move || {
+            codex_plus_data::remote_control_session_recovery_candidate_exists(
+                None,
+                &candidate_thread_id,
+            )
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("Remote Control candidate check failed: {error}"))??;
+        if !candidate {
+            return Ok(json!({
+                "status": "skipped",
+                "message": "Remote Control session recovery is waiting for a recent openai thread"
             }));
         }
         let request = codex_plus_core::remote_control_recovery::PendingRemoteControlRecovery {

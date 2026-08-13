@@ -148,6 +148,9 @@ pub trait LaunchHooks: Send + Sync {
     fn has_pending_remote_control_session_recoveries(&self) -> bool {
         false
     }
+    fn remote_control_session_recovery_is_safe_to_run(&self) -> bool {
+        true
+    }
     async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()>;
     async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
@@ -289,8 +292,15 @@ where
                 "launcher.after_provider_sync",
             );
         }
-        if hooks.has_pending_remote_control_session_recoveries() {
+        if hooks.has_pending_remote_control_session_recoveries()
+            && hooks.remote_control_session_recovery_is_safe_to_run()
+        {
             hooks.run_remote_control_session_recovery().await?;
+        } else if hooks.has_pending_remote_control_session_recoveries() {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.remote_control_session_finalization_deferred",
+                serde_json::json!({"reason": "desktop_writer_active"}),
+            );
         }
         crate::dream_skin::sync_default_dream_skin_base_theme(
             settings.enhancements_enabled
@@ -559,6 +569,10 @@ impl LaunchHooks for DefaultLaunchHooks {
         anyhow::bail!(
             "Remote Control session recovery requires launcher hooks with codex-plus-data integration"
         )
+    }
+
+    fn remote_control_session_recovery_is_safe_to_run(&self) -> bool {
+        crate::watcher::find_session_index_cleanup_blocking_processes().is_empty()
     }
 
     async fn apply_active_relay_profile(&self, settings: &BackendSettings) -> anyhow::Result<()> {

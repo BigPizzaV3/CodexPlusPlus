@@ -103,7 +103,27 @@ fn pending_path(path: Option<&Path>) -> PathBuf {
 
 fn load_state(path: &Path) -> anyhow::Result<PendingRemoteControlRecoveryState> {
     match std::fs::read_to_string(path) {
-        Ok(text) => Ok(serde_json::from_str(&text)?),
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(state) => Ok(state),
+            Err(_) => {
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let corrupt_path = path.with_file_name(format!(
+                    "{}.corrupt-{}-{timestamp}",
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("pending.json"),
+                    std::process::id()
+                ));
+                let _ = std::fs::rename(path, corrupt_path);
+                Ok(PendingRemoteControlRecoveryState {
+                    version: STATE_VERSION,
+                    requests: Vec::new(),
+                })
+            }
+        },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Ok(PendingRemoteControlRecoveryState {
                 version: STATE_VERSION,
@@ -171,5 +191,26 @@ mod tests {
         );
         complete_pending_remote_control_recovery(Some(&path), "two").unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn corrupt_pending_recovery_state_is_quarantined() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("pending.json");
+        std::fs::write(&path, "{broken").unwrap();
+
+        assert!(
+            load_pending_remote_control_recoveries(Some(&path))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!path.exists());
+        assert!(std::fs::read_dir(dir.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("pending.json.corrupt-")
+        }));
     }
 }

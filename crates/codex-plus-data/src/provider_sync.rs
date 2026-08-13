@@ -1,4 +1,4 @@
-use rusqlite::{Connection, params_from_iter, types::Value as SqlValue};
+use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const DEFAULT_PROVIDER: &str = "openai";
 const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
 const BACKUP_KEEP_COUNT: usize = 5;
+const REMOTE_CONTROL_CREATION_WINDOW_SECS: i64 = 15 * 60;
 
 fn default_codex_home_dir() -> PathBuf {
     codex_plus_core::codex_home::default_codex_home_dir()
@@ -186,6 +187,57 @@ impl SqliteUpdateCounts {
 
 pub fn run_provider_sync(codex_home: Option<&Path>) -> ProviderSyncResult {
     run_provider_sync_with_target(codex_home, None)
+}
+
+pub fn remote_control_session_recovery_candidate_exists(
+    codex_home: Option<&Path>,
+    thread_id: &str,
+) -> anyhow::Result<bool> {
+    let thread_id = thread_id.trim();
+    if thread_id.is_empty() || thread_id.len() > 128 {
+        return Ok(false);
+    }
+    let home = codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_codex_home_dir);
+    let minimum_created_at = now_secs() as i64 - REMOTE_CONTROL_CREATION_WINDOW_SECS;
+    for path in provider_sync_db_paths(&home) {
+        if !path.exists() {
+            continue;
+        }
+        let db = Connection::open(path)?;
+        let columns = table_columns(&db, "threads")?;
+        if !columns.contains("id") || !columns.contains("model_provider") {
+            continue;
+        }
+        let archived_expr = if columns.contains("archived") {
+            "COALESCE(archived, 0)"
+        } else {
+            "0"
+        };
+        let created_expr = if columns.contains("created_at_ms") {
+            "CAST(COALESCE(created_at_ms, 0) / 1000 AS INTEGER)"
+        } else if columns.contains("created_at") {
+            "CAST(COALESCE(created_at, 0) AS INTEGER)"
+        } else {
+            continue;
+        };
+        let sql = format!(
+            "SELECT 1 FROM threads WHERE id = ?1 AND model_provider = ?2 AND {archived_expr} = 0 AND {created_expr} >= ?3 LIMIT 1"
+        );
+        if db
+            .query_row(
+                &sql,
+                (thread_id, DEFAULT_PROVIDER, minimum_created_at),
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn run_remote_control_session_catalog_recovery_for_thread_with_target(
