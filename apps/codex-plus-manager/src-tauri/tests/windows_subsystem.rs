@@ -216,12 +216,20 @@ fn relay_settings_keeps_profile_config_and_auth_files_isolated() {
     let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
     let commands_rs = manifest_dir.join("src/commands.rs");
     let commands_rs = std::fs::read_to_string(&commands_rs).expect("read manager commands.rs");
+    let relay_switch_rs = manifest_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .join("crates/codex-plus-core/src/relay_switch.rs");
+    let relay_switch_rs =
+        std::fs::read_to_string(&relay_switch_rs).expect("read relay switch core");
 
-    assert!(app_tsx.contains("snapshotActiveRelayFilesBeforeSwitch"));
-    assert!(app_tsx.contains("backfill_relay_profile_from_live"));
+    assert!(!app_tsx.contains("snapshotActiveRelayFilesBeforeSwitch"));
+    assert!(!app_tsx.contains("backfill_relay_profile_from_live"));
     assert!(app_tsx.contains("relayProfileSwitchValidation(selectedBeforeSave, switchSettings)"));
     assert!(app_tsx.contains("缺少独立 config.toml"));
-    assert!(app_tsx.contains("const command = relayProfileSwitchCommand(selectedAfterSave)"));
+    assert!(app_tsx.contains("const command = relayProfileSwitchCommand(selectedProfile)"));
     assert!(app_tsx.contains("function relayProfileSwitchCommand"));
     assert!(app_tsx.contains("return \"apply_pure_api_injection\""));
     assert!(app_tsx.contains("return \"apply_relay_injection\""));
@@ -231,6 +239,10 @@ fn relay_settings_keeps_profile_config_and_auth_files_isolated() {
     assert!(!commands_rs.contains("缺少独立 auth.json"));
     assert!(commands_rs.contains("backfill_relay_profile_from_live"));
     assert!(commands_rs.contains("apply_relay_profile_to_home_with_switch_rules"));
+    assert!(relay_switch_rs.contains("backfill_profile_before_switch"));
+    assert!(
+        relay_switch_rs.contains("previous_active_relay_id != selected_settings.active_relay_id")
+    );
 }
 
 #[test]
