@@ -101,7 +101,8 @@ describe("model-windows helpers", () => {
     assert.doesNotMatch(source, /effectiveRelayConfigPreview\(normalizedDraft, form, normalizedDraft\)/);
     assert.match(source, /className="relay-model-import-workbench"/);
     assert.match(source, /serializeModelMetadataDocument\(\s*slug,\s*existingMetadata/);
-    assert.match(source, /synchronizeModelMetadataDocumentLimits\(/);
+    assert.match(source, /synchronizeModelMetadataDocumentLimitsPreview\(/);
+    assert.match(source, /metadataImportPreview\?\.autoCompactPercent \?\? row\.autoCompact/);
     assert.match(source, /originalWindow:/);
     assert.match(source, /originalAutoCompact:/);
     assert.match(source, /placeholder="90%"/);
@@ -267,7 +268,7 @@ describe("model-windows helpers", () => {
   });
 
   it("上下文窗口语法与 Rust u64 解析保持一致", () => {
-    for (const valid of ["", "1", "200K", "1M", "18446744073709551615"]) {
+      for (const valid of ["", "1", "256K", "1M", "18446744073709551615"]) {
       assert.strictEqual(isValidModelWindow(valid), true, valid);
     }
     for (const invalid of ["0", "1.5M", "abc", "-1", "18446744073709551616"]) {

@@ -1,7 +1,7 @@
 //! model_list 后缀语法解析与 catalog JSON 构建。
 //!
-//! 后缀语法：`deepseek-v4-pro[1M]` 表示 slug=deepseek-v4-pro、context_window=1000000。
-//! 单位 K/k=1000、M/m=1000000；纯数字也接受。后缀在生成 catalog 时剥离。
+//! 后缀语法：`deepseek-v4-pro[1M]` 表示 slug=deepseek-v4-pro、context_window=1048576。
+//! 单位 K/k=1024、M/m=1048576；纯数字也接受。后缀在生成 catalog 时剥离。
 
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -90,8 +90,8 @@ pub(crate) fn parse_window_token(token: &str) -> Option<u64> {
         return None;
     }
     let (num_part, multiplier) = match token.chars().last() {
-        Some('K' | 'k') => (&token[..token.len() - 1], 1_000u64),
-        Some('M' | 'm') => (&token[..token.len() - 1], 1_000_000u64),
+        Some('K' | 'k') => (&token[..token.len() - 1], 1_024u64),
+        Some('M' | 'm') => (&token[..token.len() - 1], 1_048_576u64),
         Some(_) => (token, 1u64),
         None => return None,
     };

@@ -106,7 +106,7 @@ import {
   replaceModelMetadataForSlug,
   retainModelMetadataForSlugs,
   serializeModelMetadataDocument,
-  synchronizeModelMetadataDocumentLimits,
+  synchronizeModelMetadataDocumentLimitsPreview,
   type ImportedModelMetadata,
 } from "./model-metadata";
 import { resolveProviderSyncCompletion } from "./provider-sync-flow";
@@ -6628,20 +6628,19 @@ function RelayProfileEditor({
                         const window = event.currentTarget.value;
                         updateModelWindowRow(index, { window });
                         if (!importing) return;
-                        const synchronizedDocument = synchronizeModelMetadataDocumentLimits(
+                        const synchronized = synchronizeModelMetadataDocumentLimitsPreview(
                           metadataImportDocument,
                           slug,
                           window,
-                          row.autoCompact,
+                          metadataImportPreview?.autoCompactCalculationPercent ?? metadataImportPreview?.autoCompactPercent ?? row.autoCompact,
                         );
-                        if (synchronizedDocument === null) {
+                        if (synchronized === null) {
                           setMetadataImportPreview(null);
                           setMetadataImportError(t("上下文窗口与自动压缩值无效，无法同步模型配置。"));
                           return;
                         }
-                        setMetadataImportDocument(synchronizedDocument);
-                        const synchronizedPreview = parseModelMetadataDocument(synchronizedDocument, slug);
-                        setMetadataImportPreview(synchronizedPreview.ok ? synchronizedPreview.value : null);
+                        setMetadataImportDocument(synchronized.document);
+                        setMetadataImportPreview(synchronized.preview);
                         setMetadataImportError("");
                       }}
                       placeholder="1M"
@@ -6652,20 +6651,19 @@ function RelayProfileEditor({
                         const autoCompact = event.currentTarget.value;
                         updateModelWindowRow(index, { autoCompact });
                         if (!importing) return;
-                        const synchronizedDocument = synchronizeModelMetadataDocumentLimits(
+                        const synchronized = synchronizeModelMetadataDocumentLimitsPreview(
                           metadataImportDocument,
                           slug,
                           row.window,
                           autoCompact,
                         );
-                        if (synchronizedDocument === null) {
+                        if (synchronized === null) {
                           setMetadataImportPreview(null);
                           setMetadataImportError(t("上下文窗口与自动压缩值无效，无法同步模型配置。"));
                           return;
                         }
-                        setMetadataImportDocument(synchronizedDocument);
-                        const synchronizedPreview = parseModelMetadataDocument(synchronizedDocument, slug);
-                        setMetadataImportPreview(synchronizedPreview.ok ? synchronizedPreview.value : null);
+                        setMetadataImportDocument(synchronized.document);
+                        setMetadataImportPreview(synchronized.preview);
                         setMetadataImportError("");
                       }}
                       onBlur={(event) => {
@@ -9235,7 +9233,7 @@ function codexModelFromConfig(contents: string): string {
   return "";
 }
 
-/// 解析模型后缀语法，如 deepseek-v4-flash[1M] -> { slug: "deepseek-v4-flash", window: 1000000 }
+/// 解析模型后缀语法，如 deepseek-v4-flash[1M] -> { slug: "deepseek-v4-flash", window: 1048576 }
 /// 非法或没有后缀时返回原串作为 slug。
 function parseModelSuffix(raw: string): { slug: string; window?: number } {
   const trimmed = raw.trim();
@@ -9243,8 +9241,8 @@ function parseModelSuffix(raw: string): { slug: string; window?: number } {
   if (!match) return { slug: trimmed };
   const inner = match[2];
   const numPart = inner.replace(/[KkMm]$/, "");
-  const multiplier = inner.endsWith("K") || inner.endsWith("k") ? 1_000
-    : inner.endsWith("M") || inner.endsWith("m") ? 1_000_000
+  const multiplier = inner.endsWith("K") || inner.endsWith("k") ? 1_024
+    : inner.endsWith("M") || inner.endsWith("m") ? 1_048_576
     : 1;
   const window = Number.parseInt(numPart, 10) * multiplier;
   if (!Number.isFinite(window) || window <= 0) return { slug: trimmed };

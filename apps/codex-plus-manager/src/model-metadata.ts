@@ -1,4 +1,4 @@
-import { DEFAULT_AUTO_COMPACT_PERCENT } from "./auto-compact.ts";
+import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactPercent } from "./auto-compact.ts";
 
 export type ModelMetadata = Record<string, unknown>;
 export type ModelMetadataMap = Record<string, ModelMetadata>;
@@ -8,6 +8,7 @@ export type ImportedModelMetadata = {
   metadata: ModelMetadata;
   contextWindow: string | null;
   autoCompactPercent: string | null;
+  autoCompactCalculationPercent?: string | null;
   ignoredFields: string[];
 };
 
@@ -61,37 +62,67 @@ export function serializeModelMetadataMap(map: ModelMetadataMap): string {
   return Object.keys(map).length > 0 ? JSON.stringify(map) : "";
 }
 
-function contextWindowToTokens(value: string): number | null {
+const MAX_U64 = 18_446_744_073_709_551_615n;
+const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
+const PERCENT_SCALE = 1_000_000n;
+const SCALED_PERCENT_DENOMINATOR = 100n * PERCENT_SCALE;
+
+function contextWindowToBigInt(value: string): bigint | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
-  if (/^\d+$/.test(trimmed)) {
-    const tokens = Number(trimmed);
-    return Number.isSafeInteger(tokens) && tokens > 0 ? tokens : null;
-  }
-
-  const compact = trimmed.match(/^(\d+)([KkMm])$/);
+  const compact = trimmed.match(/^(\d+)([KkMm])?$/);
   if (!compact) return null;
-  const multiplier = compact[2].toLowerCase() === "m" ? 1_000_000 : 1_000;
-  const tokens = Number(compact[1]) * multiplier;
-  return Number.isSafeInteger(tokens) && tokens > 0 ? tokens : null;
+  const multiplier = compact[2]?.toLowerCase() === "m"
+    ? 1_048_576n
+    : compact[2]
+      ? 1_024n
+      : 1n;
+  const tokens = BigInt(compact[1]) * multiplier;
+  return tokens > 0n && tokens <= MAX_U64 ? tokens : null;
+}
+
+function contextWindowToTokens(value: string): number | null {
+  const tokens = contextWindowToBigInt(value);
+  return tokens !== null && tokens <= MAX_SAFE_INTEGER ? Number(tokens) : null;
+}
+
+function autoCompactPercentToScaled(value: string): bigint | null {
+  const normalized = (value.trim() || DEFAULT_AUTO_COMPACT_PERCENT).replace(/%$/, "").trim();
+  const match = normalized.match(/^(\d+)(?:\.(\d{1,6}))?$/);
+  if (!match) return null;
+  const fraction = (match[2] ?? "").padEnd(6, "0");
+  const scaled = BigInt(match[1]) * PERCENT_SCALE + BigInt(fraction || "0");
+  return scaled > 0n && scaled <= SCALED_PERCENT_DENOMINATOR ? scaled : null;
 }
 
 function autoCompactPercentToTokenLimit(contextWindow: string, autoCompactPercent: string): number | null {
-  const contextWindowTokens = contextWindowToTokens(contextWindow);
-  if (!contextWindowTokens) return null;
-  const normalized = (autoCompactPercent.trim() || DEFAULT_AUTO_COMPACT_PERCENT).replace(/%$/, "").trim();
-  const percent = Number(normalized);
-  if (!Number.isFinite(percent) || percent <= 0 || percent > 100) return null;
-  return Math.round(contextWindowTokens * percent / 100);
+  const contextWindowTokens = contextWindowToBigInt(contextWindow);
+  const scaledPercent = autoCompactPercentToScaled(autoCompactPercent);
+  if (contextWindowTokens === null || scaledPercent === null) return null;
+  const rounded = (contextWindowTokens * scaledPercent + SCALED_PERCENT_DENOMINATOR / 2n)
+    / SCALED_PERCENT_DENOMINATOR;
+  const compactTokens = rounded > 0n ? rounded : 1n;
+  return compactTokens <= MAX_SAFE_INTEGER ? Number(compactTokens) : null;
 }
 
 function autoCompactTokenLimitToPercent(contextWindow: string, tokenLimit: string): string | null {
-  const contextWindowTokens = contextWindowToTokens(contextWindow);
-  const compactTokens = Number(tokenLimit);
-  if (!contextWindowTokens || !Number.isSafeInteger(compactTokens) || compactTokens <= 0) return null;
-  const percent = compactTokens / contextWindowTokens * 100;
-  if (percent > 100) return null;
-  return `${Math.round(percent * 1_000_000) / 1_000_000}%`;
+  const contextWindowTokens = contextWindowToBigInt(contextWindow);
+  const compactTokens = /^\d+$/.test(tokenLimit) ? BigInt(tokenLimit) : 0n;
+  if (contextWindowTokens === null || compactTokens <= 0n || compactTokens > contextWindowTokens) return null;
+  const scaled = (compactTokens * SCALED_PERCENT_DENOMINATOR + contextWindowTokens / 2n)
+    / contextWindowTokens;
+  if (scaled <= 0n || scaled > SCALED_PERCENT_DENOMINATOR) return null;
+  const whole = scaled / PERCENT_SCALE;
+  const fraction = (scaled % PERCENT_SCALE).toString().padStart(6, "0").replace(/0+$/, "");
+  return `${whole}${fraction ? `.${fraction}` : ""}%`;
+}
+
+function displayAutoCompactPercent(value: string | null): string | null {
+  if (!value) return value;
+  const scaled = autoCompactPercentToScaled(value);
+  if (scaled === null) return value;
+  const rounded = (scaled + PERCENT_SCALE / 2n) / PERCENT_SCALE;
+  return `${rounded}%`;
 }
 
 export function serializeModelMetadataDocument(
@@ -256,6 +287,35 @@ export function synchronizeModelMetadataDocumentLimits(
   return JSON.stringify(root, null, 2);
 }
 
+export function synchronizeModelMetadataDocumentLimitsPreview(
+  source: string,
+  targetSlug: string,
+  contextWindow: string,
+  autoCompactPercent: string,
+): { document: string; preview: ImportedModelMetadata } | null {
+  const document = synchronizeModelMetadataDocumentLimits(
+    source,
+    targetSlug,
+    contextWindow,
+    autoCompactPercent,
+  );
+  if (document === null) return null;
+  const parsed = parseModelMetadataDocument(document, targetSlug);
+  if (!parsed.ok) return null;
+  return {
+    document,
+    preview: {
+      ...parsed.value,
+      autoCompactPercent: autoCompactPercent.trim()
+        ? displayAutoCompactPercent(parsed.value.autoCompactPercent)
+        : "",
+      autoCompactCalculationPercent: autoCompactPercent.trim()
+        ? normalizeAutoCompactPercent(autoCompactPercent)
+        : "",
+    },
+  };
+}
+
 function positiveIntegerString(value: unknown): string | null {
   if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
     return String(value);
@@ -383,7 +443,8 @@ export function parseModelMetadataDocument(source: string, targetSlug: string): 
       slug: targetSlug,
       metadata,
       contextWindow,
-      autoCompactPercent,
+      autoCompactPercent: displayAutoCompactPercent(autoCompactPercent),
+      autoCompactCalculationPercent: autoCompactPercent,
       ignoredFields,
     },
   };

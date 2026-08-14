@@ -3666,9 +3666,9 @@ experimental_bearer_token = "sk-new"
     assert!(catalog_path.exists());
     let catalog = std::fs::read_to_string(&catalog_path).unwrap();
     assert!(catalog.contains(r#""slug": "deepseek-v4-pro""#));
-    assert!(catalog.contains(r#""context_window": 1000000"#));
+    assert!(catalog.contains(r#""context_window": 1048576"#));
     assert!(catalog.contains(r#""slug": "claude-sonnet-4""#));
-    assert!(catalog.contains(r#""context_window": 200000"#));
+    assert!(catalog.contains(r#""context_window": 204800"#));
     // 后缀不得进入 catalog 或 config
     assert!(!catalog.contains("[1M]"));
     assert!(!config.contains("[1M]"));
@@ -3975,9 +3975,9 @@ experimental_bearer_token = "sk-ark"
     assert!(catalog_path.exists());
     let catalog = std::fs::read_to_string(&catalog_path).unwrap();
     assert!(catalog.contains(r#""slug": "deepseek-v4-flash""#));
-    assert!(catalog.contains(r#""context_window": 1000000"#));
+    assert!(catalog.contains(r#""context_window": 1048576"#));
     assert!(catalog.contains(r#""slug": "glm-5.2""#));
-    assert!(catalog.contains(r#""context_window": 262000"#));
+    assert!(catalog.contains(r#""context_window": 268288"#));
     assert!(!catalog.contains("[1M]"));
 }
 
@@ -4025,7 +4025,7 @@ experimental_bearer_token = "sk-ark"
     let catalog =
         std::fs::read_to_string(temp.path().join("model-catalogs").join("relay-ark.json")).unwrap();
     assert!(catalog.contains(r#""slug": "glm-5.2""#));
-    assert!(catalog.contains(r#""context_window": 1000000"#));
+    assert!(catalog.contains(r#""context_window": 1048576"#));
     assert!(catalog.contains(r#""slug": "deepseek-v4-flash""#));
     assert!(!catalog.contains("[1M]"));
 }
@@ -4075,7 +4075,7 @@ experimental_bearer_token = "sk-new"
 
     let catalog =
         std::fs::read_to_string(temp.path().join("model-catalogs").join("relay-a.json")).unwrap();
-    assert!(catalog.contains(r#""context_window": 1000000"#));
+    assert!(catalog.contains(r#""context_window": 1048576"#));
     assert!(!catalog.contains(r#""context_window": 200000"#));
 }
 
@@ -4220,7 +4220,7 @@ experimental_bearer_token = "sk-new"
         .iter()
         .find(|m| m["slug"].as_str().unwrap() == "deepseek-v4-pro")
         .unwrap();
-    assert_eq!(flash["context_window"].as_u64().unwrap(), 1_000_000);
+    assert_eq!(flash["context_window"].as_u64().unwrap(), 1_048_576);
     assert_eq!(pro["context_window"].as_u64().unwrap(), 200_000);
 }
 
@@ -4529,7 +4529,7 @@ experimental_bearer_token = "sk-new"
         serde_json::from_str(&profile.model_windows).unwrap();
     assert_eq!(
         windows.get("deepseek-v4-flash").unwrap().as_str().unwrap(),
-        "1000000"
+        "1048576"
     );
     assert!(!windows.contains_key("deepseek-v4-pro"));
 }
@@ -4585,6 +4585,6 @@ fn normalize_merges_suffix_windows_with_existing_model_windows() {
     assert_eq!(profile.model_list, "deepseek-v4-flash\ndeepseek-v4-pro");
     let windows: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(&profile.model_windows).unwrap();
-    assert_eq!(windows["deepseek-v4-flash"], "1000000");
+    assert_eq!(windows["deepseek-v4-flash"], "1048576");
     assert_eq!(windows["deepseek-v4-pro"], "200K");
 }

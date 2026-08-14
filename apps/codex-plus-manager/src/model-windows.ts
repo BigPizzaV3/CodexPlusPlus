@@ -47,11 +47,11 @@ export function isValidModelWindow(value: string): boolean {
   if (!trimmed) return true;
   const match = trimmed.match(/^(\d+)([KkMm])?$/);
   if (!match) return false;
-  const multiplier = match[2]?.toLowerCase() === "m"
-    ? 1_000_000n
-    : match[2]
-      ? 1_000n
-      : 1n;
+    const multiplier = match[2]?.toLowerCase() === "m"
+      ? 1_048_576n
+      : match[2]
+        ? 1_024n
+        : 1n;
   const tokens = BigInt(match[1]) * multiplier;
   return tokens > 0n && tokens <= 18_446_744_073_709_551_615n;
 }

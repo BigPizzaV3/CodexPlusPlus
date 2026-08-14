@@ -9,15 +9,15 @@ use codex_plus_core::model_suffix::{
 fn parse_suffix_extracts_k_and_m_units() {
     assert_eq!(
         parse_model_suffix("deepseek-v4-pro[1M]"),
-        ("deepseek-v4-pro".to_string(), Some(1_000_000))
+        ("deepseek-v4-pro".to_string(), Some(1_048_576))
     );
     assert_eq!(
-        parse_model_suffix("claude-sonnet-4[200K]"),
-        ("claude-sonnet-4".to_string(), Some(200_000))
+        parse_model_suffix("claude-sonnet-4[256K]"),
+        ("claude-sonnet-4".to_string(), Some(262_144))
     );
     assert_eq!(
         parse_model_suffix("gpt-5.5[512k]"),
-        ("gpt-5.5".to_string(), Some(512_000))
+        ("gpt-5.5".to_string(), Some(524_288))
     );
     assert_eq!(
         parse_model_suffix("gpt-5.5[1000000]"),
@@ -71,7 +71,7 @@ fn collect_entries_includes_current_model_and_strips_suffix() {
     // 当前 model 与列表去重后共 2 条
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].slug, "deepseek-v4-pro");
-    assert_eq!(entries[0].suffix_window, Some(1_000_000));
+    assert_eq!(entries[0].suffix_window, Some(1_048_576));
     assert_eq!(entries[1].slug, "qwen3-coder");
     assert_eq!(entries[1].suffix_window, None);
 }
@@ -91,7 +91,7 @@ fn collect_entries_deduplicates() {
 fn build_catalog_json_writes_context_window_and_strips_suffix() {
     let mut windows = HashMap::new();
     windows.insert("deepseek-v4-pro".to_string(), "1M".to_string());
-    windows.insert("claude-sonnet-4".to_string(), "200K".to_string());
+    windows.insert("claude-sonnet-4".to_string(), "256K".to_string());
     let entries = collect_catalog_entries(
         "deepseek-v4-pro\nclaude-sonnet-4",
         &windows,
@@ -100,15 +100,15 @@ fn build_catalog_json_writes_context_window_and_strips_suffix() {
     );
     let catalog = build_model_catalog_json(&entries, None);
     assert!(catalog.contains(r#""slug": "deepseek-v4-pro""#));
-    assert!(catalog.contains(r#""context_window": 1000000"#));
-    assert!(catalog.contains(r#""max_context_window": 1000000"#));
+    assert!(catalog.contains(r#""context_window": 1048576"#));
+    assert!(catalog.contains(r#""max_context_window": 1048576"#));
     assert!(catalog.contains(r#""slug": "claude-sonnet-4""#));
-    assert!(catalog.contains(r#""context_window": 200000"#));
+    assert!(catalog.contains(r#""context_window": 262144"#));
     // 后缀不得进入 catalog
     assert!(!catalog.contains("[1M]"));
-    assert!(!catalog.contains("[200K]"));
-    // auto_compact 默认按 Codex 的 90% 计算（1M → 900K）
-    assert!(catalog.contains(r#""auto_compact_token_limit": 900000"#));
+    assert!(!catalog.contains("[256K]"));
+    // auto_compact 默认按 Codex 的 90% 计算（1M → 943718）
+    assert!(catalog.contains(r#""auto_compact_token_limit": 943718"#));
 }
 
 #[test]
@@ -119,8 +119,8 @@ fn build_catalog_json_writes_explicit_auto_compact_percent() {
     compacts.insert("deepseek-v4-pro".to_string(), "80".to_string());
     let entries = collect_catalog_entries("deepseek-v4-pro", &windows, &compacts, "");
     let catalog = build_model_catalog_json(&entries, None);
-    // 1M × 80% = 800000
-    assert!(catalog.contains(r#""auto_compact_token_limit": 800000"#));
+    // 1M × 80% = 838861（half-up）
+    assert!(catalog.contains(r#""auto_compact_token_limit": 838861"#));
     // 无显式百分比时兜底 90%
     let fallback = collect_catalog_entries("qwen3-coder", &HashMap::new(), &HashMap::new(), "");
     let fallback_catalog = build_model_catalog_json(&fallback, Some(200_000));
@@ -136,6 +136,60 @@ fn build_catalog_json_accepts_decimal_auto_compact_percent() {
     let entries = collect_catalog_entries("gpt-5.6-sol", &windows, &compacts, "");
     let catalog = build_model_catalog_json(&entries, None);
     assert!(catalog.contains(r#""auto_compact_token_limit": 229376"#));
+}
+
+#[test]
+fn build_catalog_json_recalculates_limit_without_changing_percent() {
+    let mut compacts = HashMap::new();
+    compacts.insert("gpt-5.6-sol".to_string(), "84.329412%".to_string());
+
+    let mut original_windows = HashMap::new();
+    original_windows.insert("gpt-5.6-sol".to_string(), "272000".to_string());
+    let original = collect_catalog_entries("gpt-5.6-sol", &original_windows, &compacts, "");
+    let original_catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&original, None)).unwrap();
+    assert_eq!(
+        original_catalog["models"][0]["auto_compact_token_limit"],
+        229_376
+    );
+
+    let mut changed_windows = HashMap::new();
+    changed_windows.insert("gpt-5.6-sol".to_string(), "800000".to_string());
+    let changed = collect_catalog_entries("gpt-5.6-sol", &changed_windows, &compacts, "");
+    assert_eq!(
+        changed[0].auto_compact_percent,
+        original[0].auto_compact_percent
+    );
+    let changed_catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&changed, None)).unwrap();
+    assert_eq!(
+        changed_catalog["models"][0]["auto_compact_token_limit"],
+        674_635
+    );
+}
+
+#[test]
+fn build_catalog_json_rounds_half_up_at_token_boundary() {
+    let mut windows = HashMap::new();
+    windows.insert("rounding-model".to_string(), "3".to_string());
+    let mut compacts = HashMap::new();
+    compacts.insert("rounding-model".to_string(), "50%".to_string());
+    let entries = collect_catalog_entries("rounding-model", &windows, &compacts, "");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    assert_eq!(catalog["models"][0]["auto_compact_token_limit"], 2);
+}
+
+#[test]
+fn build_catalog_json_default_percent_tracks_changed_window() {
+    let entries = collect_catalog_entries("default-model", &HashMap::new(), &HashMap::new(), "");
+    let small: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, Some(1))).unwrap();
+    assert_eq!(small["models"][0]["auto_compact_token_limit"], 1);
+
+    let changed: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, Some(800_000))).unwrap();
+    assert_eq!(changed["models"][0]["auto_compact_token_limit"], 720_000);
 }
 
 #[test]
@@ -296,7 +350,7 @@ fn collect_entries_adopts_suffix_for_current_model_from_list() {
     );
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].slug, "deepseek-v4-pro");
-    assert_eq!(entries[0].suffix_window, Some(1_000_000));
+    assert_eq!(entries[0].suffix_window, Some(1_048_576));
 }
 
 #[test]
@@ -312,7 +366,7 @@ fn collect_entries_prefers_later_suffix_for_duplicate_slug() {
     );
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].slug, "deepseek/deepseek-v4-flash");
-    assert_eq!(entries[0].suffix_window, Some(1_000_000));
+    assert_eq!(entries[0].suffix_window, Some(1_048_576));
 }
 
 #[test]
@@ -328,7 +382,7 @@ fn collect_entries_prefers_later_suffix_when_reversed() {
     );
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].slug, "deepseek/deepseek-v4-flash");
-    assert_eq!(entries[0].suffix_window, Some(200_000));
+    assert_eq!(entries[0].suffix_window, Some(204_800));
 }
 
 #[test]
@@ -342,8 +396,8 @@ fn migrate_model_list_with_suffixes_splits_slug_and_window() {
     );
     assert_eq!(
         windows.get("deepseek-v4-flash"),
-        Some(&"1000000".to_string())
+        Some(&"1048576".to_string())
     );
     assert_eq!(windows.get("deepseek-v4-pro"), None);
-    assert_eq!(windows.get("nvidia/...:free"), Some(&"200000".to_string()));
+    assert_eq!(windows.get("nvidia/...:free"), Some(&"204800".to_string()));
 }
