@@ -267,7 +267,7 @@ fn reapply_active_profile_generates_catalog_from_model_windows_without_metadata(
     )
     .unwrap();
     assert_eq!(catalog["models"][0]["slug"], "example-model");
-    assert_eq!(catalog["models"][0]["context_window"], 1_000_000);
+    assert_eq!(catalog["models"][0]["context_window"], 1_048_576);
     assert_eq!(
         store.load().unwrap().relay_profiles[0].model_windows,
         r#"{"example-model":"1M"}"#
