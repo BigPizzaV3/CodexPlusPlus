@@ -1575,7 +1575,8 @@ fn apply_model_catalog_to_config(
     );
     let custom_responses = custom_responses_provider(config_text);
     let mut config_text = config_text.to_string();
-    let official_deepseek_responses = uses_official_deepseek_responses(profile);
+    let official_deepseek_responses =
+        uses_official_deepseek_responses_for_config(profile, &config_text);
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
     // cc-switch 的固定文件名属于已知的其他管理器投影，不视为用户手写 catalog；

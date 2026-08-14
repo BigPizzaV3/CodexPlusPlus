@@ -3741,7 +3741,7 @@ experimental_bearer_token = "sk-deepseek"
         .iter()
         .find(|model| model["slug"] == "deepseek-v4-pro")
         .unwrap();
-    assert_eq!(pro["supported_in_api"], false);
+    assert_eq!(pro["supported_in_api"], true);
 }
 
 #[test]
@@ -3816,6 +3816,64 @@ base_url = "https://api.deepseek.com/v1"
         parsed["features"]["code_mode"]["enabled"].as_bool(),
         Some(false)
     );
+}
+
+#[test]
+fn third_party_responses_config_overrides_stale_deepseek_profile_for_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "stale-deepseek-profile".to_string(),
+        model: "relay-deepseek".to_string(),
+        base_url: "https://api.deepseek.com/".to_string(),
+        upstream_base_url: "https://api.deepseek.com/".to_string(),
+        protocol: RelayProtocol::Responses,
+        config_contents: r#"model = "relay-deepseek"
+model_provider = "custom"
+
+[features]
+code_mode_only = true
+
+[features.code_mode]
+enabled = true
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#
+        .to_string(),
+        model_list: "relay-deepseek[1M]".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(parsed["features"]["code_mode_only"].as_bool(), Some(true));
+    assert_eq!(
+        parsed["features"]["code_mode"]["enabled"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        parsed["model_catalog_json"].as_str(),
+        Some("model-catalogs/stale-deepseek-profile.json")
+    );
+
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            temp.path()
+                .join("model-catalogs")
+                .join("stale-deepseek-profile.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let model = &catalog["models"][0];
+    assert_eq!(model["slug"], "relay-deepseek");
+    assert_eq!(model["effective_context_window_percent"], 100);
+    assert_eq!(model["supported_in_api"], true);
 }
 
 #[test]
