@@ -87,9 +87,11 @@ describe("model-windows helpers", () => {
     assert.doesNotMatch(source, /autoCompact: metadataImportPreview\.autoCompactPercent \?\? ""/);
     assert.doesNotMatch(source, /setMetadataImportPreview\(parsed\.value\);\s*updateModelWindowRow\(index/);
     assert.match(source, /const modelRowsError = showApiFields\s*\?/);
-    assert.match(source, /relayProfileUsesLiveFiles\(draft\)\s*\?/);
-    assert.match(source, /const saved = await onFormChange\(next\)/);
-    assert.match(source, /const applied = await actions\.reapplyActiveRelayProfile\(true\)/);
+    assert.match(source, /modelWindowRowsValidationMessage\(modelWindowRowsValidationError\(modelWindowRows\)\)[\s\S]*relayModelRoutesSettingsValidation\(validationSettings\)/);
+    assert.match(source, /const savedSettings = await onFormChange\(next\)/);
+    assert.match(source, /const requiresRestart = isActive && modelRouteSaveRequiresRestart\(/);
+    assert.match(source, /await actions\.saveRelayFile\(\s*"config"/);
+    assert.doesNotMatch(source, /actions\.reapplyActiveRelayProfile\(true\)/);
     assert.doesNotMatch(source, /const applied = await actions\.switchRelayProfile\(next, profile\.id\)/);
     assert.match(source, /if \(relaySwitchingRef\.current\)/);
     assert.match(source, /relaySwitchingRef\.current = true/);
@@ -125,7 +127,7 @@ describe("model-windows helpers", () => {
     assert.match(styles, /\.app-select\.open-top \.app-select-menu/);
     assert.match(styles, /\.relay-model-import-workbench/);
     assert.doesNotMatch(styles, /\.relay-advanced-fields,\s*\.relay-api-fields\s*\{[^}]*overflow: hidden;/);
-    assert.match(styles, /\.relay-detail-sticky\s*\{[^}]*margin: 0;/);
+    assert.match(styles, /\.relay-detail-sticky\s*\{[^}]*display: flex;[^}]*padding: 10px 24px;/);
     assert.doesNotMatch(styles, /\.relay-detail-sticky\s*\{[^}]*margin: -/);
     assert.match(styles, /@media \(max-width: 600px\)/);
     assert.match(styles, /\.relay-model-row,\s*\.relay-model-row-actions\s*\{[\s\S]*grid-template-columns:/);
