@@ -151,6 +151,7 @@ function startTaskboard({ detached }) {
     cwd: projectRoot,
     detached,
     stdio: detached ? "ignore" : "inherit",
+    windowsHide: process.platform === "win32",
   });
 }
 
@@ -426,6 +427,7 @@ function startResidentInjector(
     cwd: projectRoot,
     detached: true,
     stdio: "ignore",
+    windowsHide: process.platform === "win32",
   });
   child.unref();
   return { pid: child.pid, started: true };

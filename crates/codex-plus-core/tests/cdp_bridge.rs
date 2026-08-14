@@ -1230,7 +1230,7 @@ fn injection_script_keeps_session_action_buttons_in_pr_style() {
     assert!(script.contains("viewBox=\"0 0 20 20\""));
     assert!(script.contains("fill=\"none\""));
     assert!(script.contains("fill=\"currentColor\" fill-rule=\"evenodd\""));
-    assert!(script.contains("codexDeleteStyleVersion = \"19\""));
+    assert!(script.contains("codexDeleteStyleVersion = \"20\""));
     assert!(script.contains("codexDeleteVersion = \"10\""));
     assert!(script.contains("codexActionGroupVersion = \"10\""));
     assert!(script.contains("[data-codex-action-native-slot=\"true\"] .${actionButtonClass}:focus-visible {\n        background: var(--color-token-list-hover-background"));

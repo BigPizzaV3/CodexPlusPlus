@@ -404,9 +404,10 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "19";
+  const codexDeleteStyleVersion = "20";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
+  const codexPlusMenuRightReservePx = 120;
   const codexDeleteVersion = "10";
   const codexExportVersion = "1";
   const codexProjectMoveVersion = "1";
@@ -1065,7 +1066,7 @@
       #${codexPlusMenuId}.${codexPlusMenuFloatingClass} {
         position: fixed;
         top: var(--codex-plus-menu-top, 0);
-        right: var(--codex-plus-menu-right, 140px);
+        right: var(--codex-plus-menu-right, ${140 + codexPlusMenuRightReservePx}px);
         left: auto;
         z-index: 2147483645;
         height: var(--codex-plus-menu-height, 30px);
@@ -1077,6 +1078,9 @@
         justify-content: center;
         pointer-events: auto;
         -webkit-app-region: no-drag;
+      }
+      #${codexPlusMenuId}:not(.${codexPlusMenuFloatingClass}) {
+        margin-right: ${codexPlusMenuRightReservePx}px;
       }
       #${codexPlusMenuId} {
         display: inline-flex;
@@ -3975,7 +3979,7 @@
       const gap = Math.max(numericCssValue(styles?.columnGap || styles?.gap), measuredGap, 0);
       setCssPropIfChanged(menu, "--codex-plus-menu-top", `${anchor.rect.top}px`);
       setCssPropIfChanged(menu, "--codex-plus-menu-height", `${anchor.rect.height}px`);
-      setCssPropIfChanged(menu, "--codex-plus-menu-right", `${Math.max(0, window.innerWidth - anchor.rect.left + gap)}px`);
+      setCssPropIfChanged(menu, "--codex-plus-menu-right", `${Math.max(0, window.innerWidth - anchor.rect.left + gap + codexPlusMenuRightReservePx)}px`);
       return;
     }
 
@@ -3991,7 +3995,7 @@
     const existing = document.getElementById(codexPlusMenuId);
     removeDuplicateCodexPlusMenus(existing);
     let insertionPoint = findNativeMenuInsertionPoint();
-    if (existing && existing.dataset.codexPlusMenuVersion !== "6") {
+    if (existing && existing.dataset.codexPlusMenuVersion !== "7") {
       existing.remove();
       insertionPoint = findNativeMenuInsertionPoint();
     } else if (existing && insertionPoint && existing.parentElement === insertionPoint.parent) {
@@ -4018,7 +4022,7 @@
     const menu = document.createElement("div");
     menu.id = codexPlusMenuId;
     menu.dataset.codexPlusMenu = "true";
-    menu.dataset.codexPlusMenuVersion = "6";
+    menu.dataset.codexPlusMenuVersion = "7";
     const trigger = document.createElement("button");
     trigger.type = "button";
     const indicator = ensureCodexPlusTriggerIndicator(trigger);

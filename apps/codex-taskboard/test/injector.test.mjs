@@ -67,6 +67,7 @@ test("the package injection command remains resident for tab-triggered recovery"
   assert.match(source, /port: defaultCodexDebuggingPort/);
   assert.match(source, /--startup-token/);
   assert.match(source, /__codexTaskboardHostStartupTokenV1/);
+  assert.ok([...source.matchAll(/windowsHide: process\.platform === "win32"/g)].length >= 2);
 });
 
 test("attach reconciles the renderer against a hashed current injection source", () => {

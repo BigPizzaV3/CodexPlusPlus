@@ -264,9 +264,12 @@
         display: none !important;
       }
       #${NATIVE_THREAD_PANEL_ID}[data-size="maximized"] {
-        inset: 12px;
-        width: auto;
-        height: auto;
+        right: 12px;
+        bottom: 12px;
+        width: min(760px, calc(100vw - 24px));
+        height: min(760px, calc(100vh - 24px));
+        max-width: calc(100vw - 24px);
+        max-height: calc(100vh - 24px);
         grid-template-rows: 40px minmax(0, 1fr);
       }
       #${NATIVE_THREAD_PANEL_ID} .codex-taskboard-native-thread-header {
@@ -366,12 +369,32 @@
         margin: 0 !important;
         min-width: 0 !important;
         min-height: 0 !important;
+        --thread-content-max-width: 100% !important;
         overflow: hidden !important;
         background: var(--color-token-main-surface-primary, Canvas) !important;
         border: 1px solid var(--color-token-border, color-mix(in srgb, CanvasText 14%, transparent)) !important;
         border-top: 0 !important;
         border-radius: 0 0 14px 14px !important;
         box-shadow: 0 14px 42px color-mix(in srgb, CanvasText 16%, transparent) !important;
+      }
+      [${NATIVE_THREAD_HOST_ATTRIBUTE}="true"] .thread-scroll-container > .flex.min-h-full.shrink-0.flex-col.justify-start {
+        transform: none !important;
+        width: 100% !important;
+        max-width: 100% !important;
+      }
+      [${NATIVE_THREAD_HOST_ATTRIBUTE}="true"] .thread-scroll-container {
+        scrollbar-color: color-mix(in srgb, CanvasText 36%, transparent) transparent !important;
+      }
+      [${NATIVE_THREAD_HOST_ATTRIBUTE}="true"] .thread-scroll-container .mx-auto.w-full[class*="max-w-"] {
+        width: 100% !important;
+        max-width: 100% !important;
+      }
+      [${NATIVE_THREAD_HOST_ATTRIBUTE}="true"] .thread-scroll-container .px-toolbar {
+        padding-left: 12px !important;
+        padding-right: 12px !important;
+      }
+      [${NATIVE_THREAD_HOST_ATTRIBUTE}="true"] .pointer-events-none.absolute[class*="right-0"][class*="z-40"] {
+        display: none !important;
       }
       @media (max-width: 720px) {
         #${NATIVE_THREAD_PANEL_ID} {
@@ -381,7 +404,12 @@
           max-width: calc(100vw - 16px);
         }
         #${NATIVE_THREAD_PANEL_ID}[data-size="maximized"] {
-          inset: 6px;
+          right: 8px;
+          bottom: 8px;
+          width: calc(100vw - 16px);
+          height: min(760px, calc(100vh - 16px));
+          max-width: calc(100vw - 16px);
+          max-height: calc(100vh - 16px);
         }
       }
       @media (max-height: 680px) {
@@ -391,7 +419,12 @@
           max-height: calc(100vh - 16px);
         }
         #${NATIVE_THREAD_PANEL_ID}[data-size="maximized"] {
-          inset: 6px;
+          right: 8px;
+          bottom: 8px;
+          width: min(760px, calc(100vw - 16px));
+          height: calc(100vh - 16px);
+          max-width: calc(100vw - 16px);
+          max-height: calc(100vh - 16px);
         }
       }
     `;

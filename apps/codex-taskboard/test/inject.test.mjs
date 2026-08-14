@@ -63,6 +63,24 @@ test("injected Codex controls reuse the app's icon style instead of text glyphs"
   assert.doesNotMatch(panelSource, /close\.textContent/);
 });
 
+test("native thread panel uses the compact and specified expanded sizes", () => {
+  assert.match(source, /width: min\(440px, calc\(100vw - 24px\)\)/);
+  assert.match(source, /height: min\(620px, calc\(100vh - 24px\)\)/);
+  assert.match(source, /width: min\(760px, calc\(100vw - 24px\)\)/);
+  assert.match(source, /height: min\(760px, calc\(100vh - 24px\)\)/);
+  assert.match(source, /@media \(max-width: 720px\)/);
+  assert.doesNotMatch(source, /#\$\{NATIVE_THREAD_PANEL_ID\}\[data-size="maximized"\][\s\S]*?inset:/);
+});
+
+test("native thread panel focuses the conversation column instead of Codex side chrome", () => {
+  assert.match(source, /--thread-content-max-width: 100% !important;/);
+  assert.match(source, /\.thread-scroll-container > \.flex\.min-h-full\.shrink-0\.flex-col\.justify-start \{/);
+  assert.match(source, /transform: none !important;/);
+  assert.match(source, /\.thread-scroll-container \.mx-auto\.w-full\[class\*="max-w-"\] \{/);
+  assert.match(source, /\.pointer-events-none\.absolute\[class\*="right-0"\]\[class\*="z-40"\] \{/);
+  assert.match(source, /display: none !important;/);
+});
+
 test("opening Taskboard suppresses native selection and contextual header until close", () => {
   assert.match(source, /aside nav\[role="navigation"\] \[aria-current\]/);
   assert.match(source, /const NATIVE_PAGE_LABELS = \[[\s\S]*"新对话"[\s\S]*"new conversation"/);
