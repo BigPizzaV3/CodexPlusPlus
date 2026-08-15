@@ -1916,6 +1916,13 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
             candidate_paths.push(path);
         }
     }
+    for path in codex_plus_core::codex_sqlite::codex_thread_reference_db_paths_from_home(
+        &codex_plus_core::codex_sqlite::default_codex_home_dir(),
+    ) {
+        if !candidate_paths.iter().any(|candidate| candidate == &path) {
+            candidate_paths.push(path);
+        }
+    }
     log_manager_event(
         "manager.delete_local_session.start",
         json!({
@@ -2314,24 +2321,24 @@ fn merge_manual_provider_sync_targets(
 
 #[tauri::command]
 pub async fn preview_session_index_cleanup() -> CommandResult<Value> {
-    let result = tauri::async_runtime::spawn_blocking(|| {
-        codex_plus_data::preview_session_index_cleanup(None)
-    })
-    .await
-    .map_err(|error| anyhow::anyhow!("session index cleanup preview task failed: {error}"))
-    .and_then(|result| result);
+    let result =
+        tauri::async_runtime::spawn_blocking(|| codex_plus_data::preview_historical_cleanup(None))
+            .await
+            .map_err(|error| anyhow::anyhow!("session index cleanup preview task failed: {error}"))
+            .and_then(|result| result);
     match result {
         Ok(preview) => ok(
             &format!(
-                "发现 {} 条仅存在于任务索引中的候选记录。",
+                "发现 {} 条已失去正文来源的历史残留记录。",
                 preview.candidates.len()
             ),
             json!({
                 "snapshotSha256": preview.snapshot_sha256,
+                "catalogRevision": preview.catalog_revision,
                 "candidates": preview.candidates,
             }),
         ),
-        Err(error) => failed(&format!("预览失效任务索引失败：{error}"), json!({})),
+        Err(error) => failed(&format!("预览历史已删除会话残留失败：{error}"), json!({})),
     }
 }
 
@@ -2341,18 +2348,27 @@ pub async fn apply_session_index_cleanup(
     thread_ids: Vec<String>,
 ) -> CommandResult<Value> {
     let result = tauri::async_runtime::spawn_blocking(move || {
-        codex_plus_data::apply_session_index_cleanup(None, &snapshot_sha256, &thread_ids)
+        codex_plus_data::apply_historical_cleanup(None, &snapshot_sha256, &thread_ids)
     })
     .await
     .map_err(|error| anyhow::anyhow!("session index cleanup task failed: {error}"));
     match result {
         Ok(Ok(cleanup)) => ok(
             &format!(
-                "已清理 {} 条失效任务索引；原索引已完整备份。",
-                cleanup.pruned_entries
+                "历史残留已清理：目录 {}、时间线 {}、任务索引 {}、全局状态 {}；已创建可撤销备份。",
+                cleanup.catalog_rows,
+                cleanup.timeline_rows,
+                cleanup.session_index_entries,
+                cleanup.global_state_references + cleanup.global_state_backup_references,
             ),
             json!({
-                "prunedEntries": cleanup.pruned_entries,
+                "prunedEntries": cleanup.session_index_entries,
+                "catalogRows": cleanup.catalog_rows,
+                "timelineRows": cleanup.timeline_rows,
+                "sessionIndexEntries": cleanup.session_index_entries,
+                "globalStateReferences": cleanup.global_state_references,
+                "globalStateBackupReferences": cleanup.global_state_backup_references,
+                "skipped": cleanup.skipped,
                 "backupDir": cleanup.backup_dir,
             }),
         ),
@@ -2363,11 +2379,46 @@ pub async fn apply_session_index_cleanup(
                 .map(|path| format!(" 备份目录：{}。", path.to_string_lossy()))
                 .unwrap_or_default();
             failed(
-                &format!("清理失效任务索引失败：{}{backup_hint}", error.message),
-                json!({ "backupDir": error.backup_dir }),
+                &format!("清理历史已删除会话残留失败：{}{backup_hint}", error.message),
+                json!({
+                    "backupDir": error.backup_dir,
+                    "catalogRows": error.partial_result.catalog_rows,
+                    "timelineRows": error.partial_result.timeline_rows,
+                    "sessionIndexEntries": error.partial_result.session_index_entries,
+                    "globalStateReferences": error.partial_result.global_state_references,
+                    "globalStateBackupReferences": error.partial_result.global_state_backup_references,
+                    "skipped": error.partial_result.skipped,
+                    "failureReason": error.message,
+                }),
             )
         }
-        Err(error) => failed(&format!("清理失效任务索引失败：{error}"), json!({})),
+        Err(error) => failed(&format!("清理历史已删除会话残留失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn undo_session_index_cleanup(backup_dir: String) -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_data::undo_historical_cleanup(None, std::path::Path::new(&backup_dir))
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("historical cleanup undo task failed: {error}"));
+    match result {
+        Ok(Ok(restored)) => ok(
+            "已从备份恢复历史会话目录、时间线、任务索引和全局状态引用。",
+            json!({
+                "catalogRows": restored.catalog_rows,
+                "timelineRows": restored.timeline_rows,
+                "sessionIndexEntries": restored.session_index_entries,
+                "globalStateReferences": restored.global_state_references,
+                "globalStateBackupReferences": restored.global_state_backup_references,
+            }),
+        ),
+        Ok(Err(error)) => failed(
+            &format!("撤销历史残留清理失败：{}", error.message),
+            json!({ "backupDir": error.backup_dir }),
+        ),
+        Err(error) => failed(&format!("撤销历史残留清理失败：{error}"), json!({})),
     }
 }
 
@@ -5552,6 +5603,96 @@ mod tests {
         assert_eq!(result.status, "ok");
         assert_eq!(thread_count(&current_db, "t1"), 0);
         assert_eq!(thread_count(&legacy_db, "t1"), 0);
+    }
+
+    #[test]
+    fn delete_local_session_removes_thread_rollout_and_catalog_reference() {
+        let _codex_home_guard = lock_codex_home_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        let codex_home = temp.path().join("codex-home");
+        let sqlite_dir = codex_home.join("sqlite");
+        std::fs::create_dir_all(&sqlite_dir).unwrap();
+        let thread_db = sqlite_dir.join("state_5.sqlite");
+        let catalog_db = sqlite_dir.join("codex-dev.db");
+        let rollout_path = codex_home.join("rollout.jsonl");
+        std::fs::write(&rollout_path, "{\"type\":\"message\"}\n").unwrap();
+        create_minimal_thread_db(&thread_db, "t1", "Current Thread", 100);
+        rusqlite::Connection::open(&thread_db)
+            .unwrap()
+            .execute(
+                "UPDATE threads SET rollout_path = ?1 WHERE id = 't1'",
+                [rollout_path.to_string_lossy().to_string()],
+            )
+            .unwrap();
+        let catalog = rusqlite::Connection::open(&catalog_db).unwrap();
+        catalog
+            .execute("CREATE TABLE automation_runs (thread_id TEXT NOT NULL)", [])
+            .unwrap();
+        catalog
+            .execute(
+                "CREATE TABLE local_thread_catalog (host_id TEXT NOT NULL, thread_id TEXT NOT NULL, display_title TEXT NOT NULL, PRIMARY KEY (host_id, thread_id))",
+                [],
+            )
+            .unwrap();
+        catalog
+            .execute(
+                "INSERT INTO local_thread_catalog VALUES ('local', 't1', 'Current Thread')",
+                [],
+            )
+            .unwrap();
+        catalog
+            .execute(
+                "CREATE TABLE local_thread_catalog_metadata (id INTEGER PRIMARY KEY, catalog_revision INTEGER NOT NULL DEFAULT 0)",
+                [],
+            )
+            .unwrap();
+        catalog
+            .execute(
+                "INSERT INTO local_thread_catalog_metadata VALUES (1, 12)",
+                [],
+            )
+            .unwrap();
+        drop(catalog);
+
+        unsafe {
+            std::env::set_var("CODEX_HOME", &codex_home);
+        }
+        let result = delete_local_session(DeleteLocalSessionRequest {
+            session_id: "t1".to_string(),
+            title: "Current Thread".to_string(),
+            db_path: Some(thread_db.to_string_lossy().to_string()),
+        });
+        restore_codex_home(previous_codex_home);
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(
+            result.payload.status,
+            codex_plus_core::models::DeleteStatus::LocalDeleted
+        );
+        assert_eq!(thread_count(&thread_db, "t1"), 0);
+        assert!(!rollout_path.exists());
+        let catalog = rusqlite::Connection::open(&catalog_db).unwrap();
+        assert_eq!(
+            catalog
+                .query_row(
+                    "SELECT COUNT(*) FROM local_thread_catalog WHERE thread_id = 't1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            catalog
+                .query_row(
+                    "SELECT catalog_revision FROM local_thread_catalog_metadata WHERE id = 1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            13
+        );
     }
 
     fn create_minimal_thread_db(path: &Path, id: &str, title: &str, updated_at_ms: i64) {

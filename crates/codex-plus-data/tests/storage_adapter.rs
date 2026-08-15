@@ -86,6 +86,40 @@ fn create_codex_thread_db(path: &Path, rollout_path: &Path) {
     .unwrap();
 }
 
+fn create_codex_catalog_db(path: &Path, revision: i64) {
+    let db = Connection::open(path).unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog (host_id TEXT NOT NULL, thread_id TEXT NOT NULL, display_title TEXT NOT NULL, PRIMARY KEY (host_id, thread_id))",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog VALUES ('local', 't1', 'Codex Thread')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog_metadata (id INTEGER PRIMARY KEY, catalog_revision INTEGER NOT NULL DEFAULT 0)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog_metadata VALUES (1, ?1)",
+        [revision],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE thread_timeline_ledger (host_id TEXT NOT NULL, thread_id TEXT NOT NULL, sequence INTEGER NOT NULL, record_id TEXT NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY (host_id, thread_id, sequence, record_id))",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO thread_timeline_ledger VALUES ('local', 't1', 1, 'r1', '{}')",
+        [],
+    )
+    .unwrap();
+}
+
 fn thread_count(path: &Path, id: &str) -> i64 {
     let db = Connection::open(path).unwrap();
     db.query_row("SELECT COUNT(*) FROM threads WHERE id = ?1", [id], |row| {
@@ -505,6 +539,124 @@ fn delete_local_from_paths_undo_restores_duplicate_threads_and_shared_rollout_to
         .unwrap(),
         42
     );
+}
+
+#[test]
+fn delete_local_from_paths_removes_and_restores_codex_catalog_references() {
+    let tmp = tempdir().unwrap();
+    let thread_db = tmp.path().join("state_5.sqlite");
+    let catalog_db = tmp.path().join("codex-dev.db");
+    let rollout = tmp.path().join("rollout.jsonl");
+    fs::write(&rollout, "{\"type\":\"message\"}\n").unwrap();
+    create_codex_thread_db(&thread_db, &rollout);
+    create_codex_catalog_db(&catalog_db, 7);
+    let backups = BackupStore::new(tmp.path().join("backups"));
+
+    let deleted = delete_local_from_paths(
+        vec![thread_db.clone(), catalog_db.clone()],
+        backups.clone(),
+        &session("t1", "Codex Thread"),
+    );
+
+    assert_eq!(deleted.status, DeleteStatus::LocalDeleted);
+    assert_eq!(thread_count(&thread_db, "t1"), 0);
+    assert!(!rollout.exists());
+    let catalog = Connection::open(&catalog_db).unwrap();
+    for table in ["local_thread_catalog", "thread_timeline_ledger"] {
+        assert_eq!(
+            catalog
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE thread_id = 't1'"),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+    }
+    assert_eq!(catalog_revision(&catalog), 8);
+    drop(catalog);
+
+    let token = deleted.undo_token.as_deref().unwrap();
+    let restored = SQLiteStorageAdapter::new(&thread_db, backups)
+        .with_allowed_db_paths(vec![thread_db.clone(), catalog_db.clone()])
+        .undo(token);
+
+    assert_eq!(restored.status, DeleteStatus::Undone);
+    assert_eq!(thread_count(&thread_db, "t1"), 1);
+    assert!(rollout.exists());
+    let catalog = Connection::open(&catalog_db).unwrap();
+    for table in ["local_thread_catalog", "thread_timeline_ledger"] {
+        assert_eq!(
+            catalog
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE thread_id = 't1'"),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+    assert_eq!(catalog_revision(&catalog), 9);
+}
+
+#[test]
+fn delete_local_from_paths_reports_partial_failure_and_keeps_successful_backup_undoable() {
+    let tmp = tempdir().unwrap();
+    let thread_db = tmp.path().join("state_5.sqlite");
+    let catalog_db = tmp.path().join("codex-dev.db");
+    let rollout = tmp.path().join("rollout.jsonl");
+    fs::write(&rollout, "{\"type\":\"message\"}\n").unwrap();
+    create_codex_thread_db(&thread_db, &rollout);
+    create_codex_catalog_db(&catalog_db, 7);
+    Connection::open(&catalog_db)
+        .unwrap()
+        .execute(
+            "CREATE TRIGGER fail_catalog_delete BEFORE DELETE ON local_thread_catalog BEGIN SELECT RAISE(ABORT, 'catalog busy'); END",
+            [],
+        )
+        .unwrap();
+    let backups = BackupStore::new(tmp.path().join("backups"));
+
+    let deleted = delete_local_from_paths(
+        vec![thread_db.clone(), catalog_db.clone()],
+        backups.clone(),
+        &session("t1", "Codex Thread"),
+    );
+
+    assert_eq!(deleted.status, DeleteStatus::Partial);
+    assert!(deleted.message.contains("catalog busy"));
+    assert_eq!(thread_count(&thread_db, "t1"), 0);
+    assert!(!rollout.exists());
+    assert_eq!(
+        Connection::open(&catalog_db)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM local_thread_catalog WHERE thread_id = 't1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+
+    let token = deleted.undo_token.as_deref().unwrap();
+    let restored = SQLiteStorageAdapter::new(&thread_db, backups)
+        .with_allowed_db_paths(vec![thread_db.clone(), catalog_db])
+        .undo(token);
+    assert_eq!(restored.status, DeleteStatus::Undone);
+    assert_eq!(thread_count(&thread_db, "t1"), 1);
+    assert!(rollout.exists());
+}
+
+fn catalog_revision(db: &Connection) -> i64 {
+    db.query_row(
+        "SELECT catalog_revision FROM local_thread_catalog_metadata WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap()
 }
 
 #[test]

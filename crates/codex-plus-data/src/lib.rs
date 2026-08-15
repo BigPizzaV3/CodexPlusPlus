@@ -1,9 +1,15 @@
 pub mod backup;
+pub mod historical_cleanup;
 pub mod markdown;
 pub mod provider_sync;
 pub mod storage;
 
 pub use backup::BackupStore;
+pub use historical_cleanup::{
+    HistoricalCleanupCandidate, HistoricalCleanupError, HistoricalCleanupPreview,
+    HistoricalCleanupResult, apply_historical_cleanup, preview_historical_cleanup,
+    undo_historical_cleanup,
+};
 pub use markdown::{MarkdownExportService, export_markdown_from_paths};
 pub use provider_sync::{
     ProviderSyncResult, ProviderSyncStatus, ProviderSyncTargetList, ProviderSyncTargetOption,

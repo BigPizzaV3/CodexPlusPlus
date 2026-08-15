@@ -593,15 +593,24 @@ type SessionIndexCleanupCandidate = {
   id: string;
   threadName: string;
   updatedAt: string;
+  workspace: string;
+  sources: string[];
 };
 
 type SessionIndexCleanupPreviewPayload = {
   snapshotSha256: string;
+  catalogRevision: number;
   candidates: SessionIndexCleanupCandidate[];
 };
 
 type SessionIndexCleanupApplyPayload = {
   prunedEntries?: number;
+  catalogRows?: number;
+  timelineRows?: number;
+  sessionIndexEntries?: number;
+  globalStateReferences?: number;
+  globalStateBackupReferences?: number;
+  skipped?: number;
   backupDir?: string | null;
 };
 
@@ -898,6 +907,7 @@ export function App() {
     candidates: SessionIndexCleanupCandidate[];
     resolve: (selectedIds: string[] | null) => void;
   } | null>(null);
+  const [historicalCleanupBackupDir, setHistoricalCleanupBackupDir] = useState<string | null>(null);
   const [overview, setOverview] = useState<OverviewResult | null>(null);
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [relay, setRelay] = useState<RelayResult | null>(null);
@@ -2108,27 +2118,34 @@ export function App() {
           if (!preview) {
             cleanupFailure = {
               status: "failed",
-              message: t("幽灵任务索引处理失败，请查看错误提示后重试。"),
+              message: t("历史已删除会话残留扫描失败，请查看错误提示后重试。"),
             };
           } else if (isSuccessStatus(preview.status) && preview.candidates.length > 0) {
             const selectedIds = await selectSessionIndexCleanupCandidates(preview.candidates);
             if (selectedIds?.length) {
-              const cleanup = await run(() =>
-                call<CommandResult<SessionIndexCleanupApplyPayload>>("apply_session_index_cleanup", {
-                  snapshotSha256: preview.snapshotSha256,
-                  threadIds: selectedIds,
-                }),
+              const confirmed = await confirmSessionDelete(
+                t("确认清理历史残留"),
+                tf("将清理所选 {0} 个已失去正文来源的会话索引，并创建可撤销备份。执行前必须完全退出 Codex App / ChatGPT。是否继续？", [selectedIds.length]),
               );
-              if (cleanup && isSuccessStatus(cleanup.status)) {
-                finalResult = {
-                  ...result,
-                  prunedSessionIndexEntries: cleanup.prunedEntries ?? 0,
-                };
-              } else {
-                cleanupFailure = cleanup ?? {
-                  status: "failed",
-                  message: t("幽灵任务索引处理失败，请查看错误提示后重试。"),
-                };
+              if (confirmed) {
+                const cleanup = await run(() =>
+                  call<CommandResult<SessionIndexCleanupApplyPayload>>("apply_session_index_cleanup", {
+                    snapshotSha256: preview.snapshotSha256,
+                    threadIds: selectedIds,
+                  }),
+                );
+                if (cleanup && isSuccessStatus(cleanup.status)) {
+                  setHistoricalCleanupBackupDir(cleanup.backupDir ?? null);
+                  finalResult = {
+                    ...result,
+                    prunedSessionIndexEntries: cleanup.prunedEntries ?? 0,
+                  };
+                } else {
+                  cleanupFailure = cleanup ?? {
+                    status: "failed",
+                    message: t("历史已删除会话残留清理失败，请查看错误提示后重试。"),
+                  };
+                }
               }
             }
           } else if (!isSuccessStatus(preview.status)) {
@@ -2158,7 +2175,7 @@ export function App() {
         }
         await refreshProviderSyncTargets(true);
         const noticeTitle =
-          completion.noticeKind === "cleanup" ? t("清理幽灵任务索引") : t("历史会话修复");
+          completion.noticeKind === "cleanup" ? t("清理历史已删除会话残留") : t("历史会话修复");
         showNotice(
           noticeTitle,
           completion.result.message,
@@ -2174,6 +2191,27 @@ export function App() {
       }
     } finally {
       window.clearInterval(progressTimer);
+    }
+  };
+
+  const undoHistoricalCleanup = async () => {
+    if (!historicalCleanupBackupDir) return;
+    const confirmed = await confirmSessionDelete(
+      t("撤销历史残留清理"),
+      t("将从最近一次备份恢复目录、时间线、任务索引和全局状态引用。若已出现同 ID 的新会话，系统会拒绝覆盖。是否继续？"),
+    );
+    if (!confirmed) return;
+    const result = await run(() =>
+      call<CommandResult<SessionIndexCleanupApplyPayload>>("undo_session_index_cleanup", {
+        backupDir: historicalCleanupBackupDir,
+      }),
+    );
+    if (result) {
+      showResultNotice(t("撤销历史残留清理"), result);
+      if (isSuccessStatus(result.status)) {
+        setHistoricalCleanupBackupDir(null);
+        await refreshLocalSessions(true);
+      }
     }
   };
 
@@ -2736,6 +2774,8 @@ export function App() {
         }
       },
       syncProvidersNow,
+      undoHistoricalCleanup,
+      canUndoHistoricalCleanup: Boolean(historicalCleanupBackupDir),
       refreshProviderSyncTargets,
       setProviderSyncTarget: (provider: string) => {
         setSelectedProviderSyncTarget(provider);
@@ -2800,7 +2840,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
+    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart, historicalCleanupBackupDir],
   );
   const hasUpdate = update?.updateAvailable === true;
 
@@ -3097,6 +3137,8 @@ type Actions = {
   saveDreamSkinScreenshot: () => Promise<void>;
   saveManualCodexAppPath: () => Promise<void>;
   syncProvidersNow: () => Promise<void>;
+  undoHistoricalCleanup: () => Promise<void>;
+  canUndoHistoricalCleanup: boolean;
   refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
   setProviderSyncTarget: (provider: string) => void;
   setLaunchMode: (launchMode: LaunchMode) => Promise<void>;
@@ -5034,6 +5076,12 @@ function SessionsScreen({
               <RefreshCw className="h-4 w-4" />
               {providerSyncProgress.active ? t("正在修复…") : t("立刻修复历史会话")}
             </Button>
+            {actions.canUndoHistoricalCleanup ? (
+              <Button disabled={providerSyncProgress.active} onClick={() => void actions.undoHistoricalCleanup()} variant="outline">
+                <RotateCcw className="h-4 w-4" />
+                {t("撤销最近一次残留清理")}
+              </Button>
+            ) : null}
           </Toolbar>
           <div className="provider-sync-progress" data-active={providerSyncProgress.active}>
             <div className="provider-sync-progress-head">
@@ -7379,9 +7427,9 @@ function SessionIndexCleanupDialog({
       <div className="modal-card session-index-cleanup-modal">
         <div className="modal-head">
           <div>
-            <h2>{t("清理幽灵任务索引")}</h2>
+            <h2>{t("历史已删除会话清理")}</h2>
             <p className="modal-message">
-              {tf("发现 {0} 条仅存在于 session_index.jsonl、未在本地数据库或 rollout 中找到来源的候选记录。它们也可能是云端或尚未落盘的任务，请逐项核对。任务标题仅用于预览，实际按 thread ID 与数据来源判断。清理前请先完全退出 Codex App / ChatGPT。", [request.candidates.length])}
+              {tf("发现 {0} 条已失去 threads、自动化记录和 rollout 正文来源的本地残留索引。请逐项核对；标题仅用于预览，清理严格按 thread ID 与残留来源执行。这不是普通会话删除。清理前请完全退出 Codex App / ChatGPT。", [request.candidates.length])}
             </p>
           </div>
           <button className="toast-close" onClick={onCancel} type="button">×</button>
@@ -7407,7 +7455,9 @@ function SessionIndexCleanupDialog({
               <span>
                 <strong>{candidate.threadName || t("未命名任务")}</strong>
                 <code>{candidate.id}</code>
-                <small>{candidate.updatedAt}</small>
+                <small>{candidate.updatedAt || t("未知更新时间")}</small>
+                {candidate.workspace ? <small>{tf("项目/工作区：{0}", [candidate.workspace])}</small> : null}
+                <small>{tf("残留来源：{0}", [candidate.sources.join("、")])}</small>
               </span>
             </label>
           ))}

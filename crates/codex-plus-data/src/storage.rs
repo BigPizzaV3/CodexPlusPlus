@@ -21,25 +21,69 @@ pub fn delete_local_from_paths(
     );
     let mut deleted_count = 0usize;
     let mut backup_tokens = Vec::new();
+    let mut failures = Vec::new();
     for db_path in db_paths {
         let adapter = SQLiteStorageAdapter::new(db_path, backup_store.clone());
         let candidate_result = adapter.delete_local(session);
-        if matches!(candidate_result.status, DeleteStatus::LocalDeleted) {
-            deleted_count += 1;
-            if let Some(token) = candidate_result.undo_token.as_ref() {
-                backup_tokens.push(token.clone());
+        match candidate_result.status {
+            DeleteStatus::LocalDeleted | DeleteStatus::Partial => {
+                deleted_count += 1;
+                if let Some(token) = candidate_result.undo_token.as_ref() {
+                    backup_tokens.push(token.clone());
+                }
+                if matches!(candidate_result.status, DeleteStatus::Partial) {
+                    failures.push(candidate_result.message.clone());
+                }
+                result = candidate_result;
             }
-            result = candidate_result;
-        } else if deleted_count == 0 {
-            result = candidate_result;
+            DeleteStatus::Failed if is_benign_delete_miss(&candidate_result.message) => {
+                if deleted_count == 0 && failures.is_empty() {
+                    result = candidate_result;
+                }
+            }
+            DeleteStatus::Failed => {
+                failures.push(candidate_result.message.clone());
+                if deleted_count == 0 {
+                    result = candidate_result;
+                }
+            }
+            _ => {}
         }
     }
-    if deleted_count > 1 {
-        result.message = format!("已从 {deleted_count} 个本地存储删除");
-        result.undo_token = Some(json!(backup_tokens).to_string());
-        result.backup_path = None;
+    if deleted_count > 0 {
+        result.status = if failures.is_empty() {
+            DeleteStatus::LocalDeleted
+        } else {
+            DeleteStatus::Partial
+        };
+        result.message = if failures.is_empty() {
+            if deleted_count > 1 {
+                format!("已从 {deleted_count} 个本地存储删除")
+            } else {
+                "已从本地存储删除".to_string()
+            }
+        } else {
+            format!(
+                "已从 {deleted_count} 个本地存储删除，但部分清理失败：{}",
+                failures.join("; ")
+            )
+        };
+        result.undo_token = match backup_tokens.as_slice() {
+            [] => None,
+            [token] => Some(token.clone()),
+            _ => Some(json!(backup_tokens).to_string()),
+        };
+        if backup_tokens.len() > 1 {
+            result.backup_path = None;
+        }
     }
     result
+}
+
+fn is_benign_delete_miss(message: &str) -> bool {
+    message.contains("not found in local storage")
+        || message.starts_with("Database not found:")
+        || message == "Unsupported local storage schema"
 }
 
 pub fn move_codex_thread_workspace_from_paths(
@@ -72,6 +116,7 @@ enum SchemaKind {
     GenericSessions,
     CodexThreads,
     CodexAutomationRuns,
+    CodexThreadReferences,
 }
 
 fn sqlite_limit(limit: usize) -> i64 {
@@ -133,6 +178,9 @@ impl SQLiteStorageAdapter {
                 Some(SchemaKind::CodexThreads) => self.delete_codex_thread(&mut db, session),
                 Some(SchemaKind::CodexAutomationRuns) => {
                     self.delete_codex_automation_run(&mut db, session)
+                }
+                Some(SchemaKind::CodexThreadReferences) => {
+                    self.delete_codex_thread_references(&mut db, session)
                 }
                 None => Ok(failed(
                     &session.session_id,
@@ -598,6 +646,7 @@ impl SQLiteStorageAdapter {
             "assigned_thread_id = ?1",
             &[&thread_id],
         )?;
+        backup_codex_thread_reference_rows(db, &mut tables, &thread_id)?;
         let file_backups = rollout_file_backups(tables.get("threads").and_then(Value::as_array));
         if !file_backups.is_empty() {
             tables.insert("__files".to_string(), Value::Array(file_backups.clone()));
@@ -625,6 +674,7 @@ impl SQLiteStorageAdapter {
                     [&thread_id],
                 )?;
             }
+            delete_codex_thread_reference_rows(&tx, &thread_id)?;
             tx.execute("DELETE FROM threads WHERE id = ?1", [&thread_id])?;
             tx.commit()?;
             Ok(())
@@ -683,6 +733,7 @@ impl SQLiteStorageAdapter {
             "thread_id = ?1",
             &[&thread_id],
         )?;
+        backup_codex_thread_reference_rows(db, &mut tables, &thread_id)?;
         if tables.values().all(|rows| {
             rows.as_array()
                 .map(|items| items.is_empty())
@@ -701,6 +752,7 @@ impl SQLiteStorageAdapter {
             let tx = db.transaction()?;
             delete_related_rows(&tx, "automation_runs", "thread_id = ?1", &[&thread_id])?;
             delete_related_rows(&tx, "inbox_items", "thread_id = ?1", &[&thread_id])?;
+            delete_codex_thread_reference_rows(&tx, &thread_id)?;
             tx.commit()?;
             Ok(())
         })();
@@ -714,6 +766,117 @@ impl SQLiteStorageAdapter {
         }
         Ok(local_deleted(&thread_id, &token, &backup_path))
     }
+
+    fn delete_codex_thread_references(
+        &self,
+        db: &mut Connection,
+        session: &SessionRef,
+    ) -> anyhow::Result<DeleteResult> {
+        let thread_id = normalize_codex_thread_id(&session.session_id);
+        let mut tables = Map::new();
+        backup_codex_thread_reference_rows(db, &mut tables, &thread_id)?;
+        if tables.values().all(|rows| {
+            rows.as_array()
+                .map(|items| items.is_empty())
+                .unwrap_or(true)
+        }) {
+            return Ok(failed(
+                &session.session_id,
+                "Thread not found in local storage".to_string(),
+            ));
+        }
+        let token =
+            self.backup_store
+                .write_backup(&thread_id, &self.db_path, Value::Object(tables))?;
+        let backup_path = self.backup_store.path_for(&token);
+        let delete_result = (|| -> anyhow::Result<()> {
+            let tx = db.transaction()?;
+            delete_codex_thread_reference_rows(&tx, &thread_id)?;
+            tx.commit()?;
+            Ok(())
+        })();
+        if let Err(err) = delete_result {
+            return Ok(failed_with_undo(
+                &thread_id,
+                err.to_string(),
+                &token,
+                Some(&backup_path),
+            ));
+        }
+        Ok(local_deleted(&thread_id, &token, &backup_path))
+    }
+}
+
+fn backup_codex_thread_reference_rows(
+    db: &Connection,
+    tables: &mut Map<String, Value>,
+    thread_id: &str,
+) -> anyhow::Result<()> {
+    if has_columns(db, "local_thread_catalog", &["thread_id"])? {
+        backup_related_rows(
+            db,
+            tables,
+            "local_thread_catalog",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
+    }
+    if has_columns(db, "thread_timeline_ledger", &["thread_id"])? {
+        backup_related_rows(
+            db,
+            tables,
+            "thread_timeline_ledger",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
+    }
+    Ok(())
+}
+
+fn delete_codex_thread_reference_rows(db: &Connection, thread_id: &str) -> anyhow::Result<()> {
+    let deleted_catalog_rows = if has_columns(db, "local_thread_catalog", &["thread_id"])? {
+        db.execute(
+            "DELETE FROM local_thread_catalog WHERE thread_id = ?1",
+            [thread_id],
+        )?
+    } else {
+        0
+    };
+    if has_columns(db, "thread_timeline_ledger", &["thread_id"])? {
+        delete_related_rows(
+            db,
+            "thread_timeline_ledger",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
+    }
+    if deleted_catalog_rows > 0 {
+        increment_local_catalog_revision(db, deleted_catalog_rows)?;
+    }
+    Ok(())
+}
+
+fn increment_local_catalog_revision(db: &Connection, amount: usize) -> anyhow::Result<()> {
+    if amount == 0 || !has_columns(db, "local_thread_catalog_metadata", &["catalog_revision"])? {
+        return Ok(());
+    }
+    let affected = db.execute(
+        "UPDATE local_thread_catalog_metadata SET catalog_revision = catalog_revision + ?1",
+        [amount as i64],
+    )?;
+    if affected == 0
+        && has_columns(
+            db,
+            "local_thread_catalog_metadata",
+            &["id", "catalog_revision"],
+        )?
+    {
+        db.execute(
+            "INSERT INTO local_thread_catalog_metadata (id, catalog_revision) VALUES (1, ?1)",
+            [amount as i64],
+        )?;
+    }
+    Ok(())
 }
 
 fn optional_column_expression<'a>(
@@ -908,6 +1071,12 @@ fn restore_backups(
         let mut db = Connection::open_with_flags(&source_db, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         let tx = db.transaction()?;
         restore_rows(&tx, tables)?;
+        let restored_catalog_rows = tables
+            .get("local_thread_catalog")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        increment_local_catalog_revision(&tx, restored_catalog_rows)?;
         tx.commit()?;
         if let Some(files) = tables.get("__files").and_then(Value::as_array) {
             for file in files {
@@ -1000,6 +1169,11 @@ fn schema_kind(db: &Connection) -> anyhow::Result<Option<SchemaKind>> {
     if has_table(db, "automation_runs")? && has_columns(db, "automation_runs", &["thread_id"])? {
         return Ok(Some(SchemaKind::CodexAutomationRuns));
     }
+    if has_columns(db, "local_thread_catalog", &["thread_id"])?
+        || has_columns(db, "thread_timeline_ledger", &["thread_id"])?
+    {
+        return Ok(Some(SchemaKind::CodexThreadReferences));
+    }
     Ok(None)
 }
 
@@ -1056,6 +1230,8 @@ fn validate_restore_tables(tables: &Map<String, Value>) -> anyhow::Result<()> {
         "agent_job_items",
         "automation_runs",
         "inbox_items",
+        "local_thread_catalog",
+        "thread_timeline_ledger",
         "__files",
     ];
     for table in tables.keys() {
@@ -1127,6 +1303,8 @@ fn restore_conflict_key_columns<'a>(table: &str, row: &'a Map<String, Value>) ->
         "thread_goals" => &["thread_id", "goal"],
         "thread_spawn_edges" => &["parent_thread_id", "child_thread_id"],
         "stage1_outputs" => &["thread_id"],
+        "local_thread_catalog" => &["host_id", "thread_id"],
+        "thread_timeline_ledger" => &["host_id", "thread_id", "sequence", "record_id"],
         _ => &[],
     };
     let keys = wanted
