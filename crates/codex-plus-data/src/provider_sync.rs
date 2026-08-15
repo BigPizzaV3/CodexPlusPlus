@@ -2535,7 +2535,7 @@ fn collect_catalog_marked_non_root_thread_ids(
     paths: &[PathBuf],
     spawned_child_ids: &HashSet<String>,
 ) -> anyhow::Result<HashMap<PathBuf, HashSet<String>>> {
-    let mut thread_ids_by_path = HashMap::new();
+    let mut thread_ids_by_path: HashMap<PathBuf, HashSet<String>> = HashMap::new();
     for path in paths {
         if !path.exists() {
             continue;
