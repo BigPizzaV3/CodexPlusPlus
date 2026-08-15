@@ -2397,37 +2397,65 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
                     "manager.sync_providers_now.after",
                 );
             }
-            ok(
-                &format!(
-                    "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。",
-                    sync.changed_session_files,
-                    sync.sqlite_rows_updated,
-                    sync.skipped_locked_rollout_files.len()
-                ),
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.provider_sync.completed",
                 json!({
-                    "syncStatus": sync.status,
-                    "targetProvider": sync.target_provider,
+                    "status": sync.status.clone(),
                     "changedSessionFiles": sync.changed_session_files,
-                    "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files,
                     "sqliteRowsUpdated": sync.sqlite_rows_updated,
-                    "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
-                    "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
-                    "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
                     "sqliteCatalogRowsInserted": sync.sqlite_catalog_rows_inserted,
                     "sqliteCatalogRowsRemoved": sync.sqlite_catalog_rows_removed,
-                    "updatedWorkspaceRoots": sync.updated_workspace_roots,
-                    "encryptedContentWarning": sync.encrypted_content_warning,
-                    "backupDir": sync.backup_dir,
-                    "syncMessage": sync.message,
+                    "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files.len(),
                 }),
-            )
+            );
+            provider_sync_command_result(sync)
         }
-        Err(error) => failed(&format!("供应商同步失败：{error}"), json!({})),
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.provider_sync.failed",
+                json!({ "message": error.to_string() }),
+            );
+            failed(&format!("供应商同步失败：{error}"), json!({}))
+        }
     }
 }
 
 fn is_success_sync_status(status: &codex_plus_data::ProviderSyncStatus) -> bool {
     matches!(status, codex_plus_data::ProviderSyncStatus::Synced)
+}
+
+fn provider_sync_command_result(
+    sync: codex_plus_data::ProviderSyncResult,
+) -> CommandResult<Value> {
+    let succeeded = is_success_sync_status(&sync.status);
+    let success_message = format!(
+        "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。",
+        sync.changed_session_files,
+        sync.sqlite_rows_updated,
+        sync.skipped_locked_rollout_files.len()
+    );
+    let failure_message = format!("历史会话修复未执行：{}", sync.message);
+    let payload = json!({
+        "syncStatus": sync.status,
+        "targetProvider": sync.target_provider,
+        "changedSessionFiles": sync.changed_session_files,
+        "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files,
+        "sqliteRowsUpdated": sync.sqlite_rows_updated,
+        "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
+        "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
+        "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
+        "sqliteCatalogRowsInserted": sync.sqlite_catalog_rows_inserted,
+        "sqliteCatalogRowsRemoved": sync.sqlite_catalog_rows_removed,
+        "updatedWorkspaceRoots": sync.updated_workspace_roots,
+        "encryptedContentWarning": sync.encrypted_content_warning,
+        "backupDir": sync.backup_dir,
+        "syncMessage": sync.message,
+    });
+    if succeeded {
+        ok(&success_message, payload)
+    } else {
+        failed(&failure_message, payload)
+    }
 }
 
 fn persist_provider_sync_selection(provider: &str) {
@@ -4772,6 +4800,51 @@ mod tests {
 
         assert_eq!(result.status, "ok");
         assert!(!result.payload.version.is_empty());
+    }
+
+    fn provider_sync_result_for_test(
+        status: codex_plus_data::ProviderSyncStatus,
+        message: &str,
+    ) -> codex_plus_data::ProviderSyncResult {
+        codex_plus_data::ProviderSyncResult {
+            status,
+            message: message.to_string(),
+            target_provider: "custom".to_string(),
+            backup_dir: None,
+            changed_session_files: 0,
+            skipped_locked_rollout_files: Vec::new(),
+            sqlite_rows_updated: 0,
+            sqlite_provider_rows_updated: 0,
+            sqlite_user_event_rows_updated: 0,
+            sqlite_cwd_rows_updated: 0,
+            sqlite_catalog_rows_inserted: 0,
+            sqlite_catalog_rows_removed: 0,
+            updated_workspace_roots: 0,
+            encrypted_content_warning: None,
+        }
+    }
+
+    #[test]
+    fn provider_sync_skipped_is_reported_as_command_failure() {
+        let result = provider_sync_command_result(provider_sync_result_for_test(
+            codex_plus_data::ProviderSyncStatus::Skipped,
+            "Provider sync lock exists",
+        ));
+
+        assert_eq!(result.status, "failed");
+        assert!(result.message.contains("Provider sync lock exists"));
+        assert_eq!(result.payload["syncStatus"], "skipped");
+    }
+
+    #[test]
+    fn provider_sync_synced_is_reported_as_command_success() {
+        let result = provider_sync_command_result(provider_sync_result_for_test(
+            codex_plus_data::ProviderSyncStatus::Synced,
+            "Provider sync complete",
+        ));
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.payload["syncStatus"], "synced");
     }
 
     #[test]

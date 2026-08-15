@@ -1994,6 +1994,71 @@ fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
     assert_eq!(backups, 5);
 }
 
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+#[test]
+fn provider_sync_recovers_lock_owned_by_dead_process() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let lock_dir = home.join("tmp/provider-sync.lock");
+    fs::create_dir_all(&lock_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    fs::write(
+        lock_dir.join("owner.json"),
+        json!({"pid": u32::MAX, "startedAt": 1234}).to_string(),
+    )
+    .unwrap();
+    let log_path = tmp.path().join("codex-plus.log");
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
+
+    let result = run_provider_sync(Some(&home));
+
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert!(!lock_dir.exists());
+    assert!(
+        fs::read_to_string(log_path)
+            .unwrap()
+            .contains("provider_sync.stale_lock_recovered")
+    );
+    assert!(fs::read_dir(home.join("tmp")).unwrap().next().is_none());
+}
+
+#[test]
+fn provider_sync_preserves_lock_owned_by_live_process() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let lock_dir = home.join("tmp/provider-sync.lock");
+    fs::create_dir_all(&lock_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    fs::write(
+        lock_dir.join("owner.json"),
+        json!({"pid": std::process::id(), "startedAt": 1234}).to_string(),
+    )
+    .unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Skipped);
+    assert!(result.message.to_lowercase().contains("lock"));
+    assert!(lock_dir.exists());
+}
+
+#[test]
+fn provider_sync_preserves_lock_with_malformed_owner() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let lock_dir = home.join("tmp/provider-sync.lock");
+    fs::create_dir_all(&lock_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    fs::write(lock_dir.join("owner.json"), "{not-json").unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Skipped);
+    assert!(result.message.to_lowercase().contains("lock"));
+    assert!(lock_dir.exists());
+}
+
 #[test]
 fn provider_sync_preserves_rollout_mtime() {
     let tmp = tempdir().unwrap();

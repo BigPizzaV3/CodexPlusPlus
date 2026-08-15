@@ -1,7 +1,8 @@
 use codex_plus_core::watcher::{
     build_spawn_launcher_command, build_watcher_install_plan, cdp_listening, codex_process_ids,
     disable_watcher_at, enable_watcher_at, filter_killable_launcher_processes,
-    process_ids_still_running, should_recover_stale_launcher, watcher_disabled_flag,
+    process_id_is_running, process_ids_still_running, should_recover_stale_launcher,
+    watcher_disabled_flag,
 };
 
 #[cfg(windows)]
@@ -140,6 +141,13 @@ fn stop_wait_tracks_only_expected_process_ids() {
         process_ids_still_running(&[10, 20, 30], [5, 20, 40, 30]),
         vec![20, 30]
     );
+}
+
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+#[test]
+fn process_liveness_distinguishes_current_and_missing_processes() {
+    assert_eq!(process_id_is_running(std::process::id()), Some(true));
+    assert_eq!(process_id_is_running(u32::MAX), Some(false));
 }
 
 #[cfg(windows)]

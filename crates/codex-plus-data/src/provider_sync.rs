@@ -13,6 +13,13 @@ const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
 const BACKUP_KEEP_COUNT: usize = 5;
 const REMOTE_CONTROL_CREATION_WINDOW_SECS: i64 = 15 * 60;
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderSyncLockOwner {
+    pid: u32,
+    started_at: u64,
+}
+
 fn default_codex_home_dir() -> PathBuf {
     codex_plus_core::codex_home::default_codex_home_dir()
 }
@@ -537,6 +544,7 @@ pub fn run_provider_sync_with_target(
     codex_home: Option<&Path>,
     explicit_target_provider: Option<&str>,
 ) -> ProviderSyncResult {
+    let require_stopped_app = codex_home.is_none();
     let home = codex_home
         .map(Path::to_path_buf)
         .unwrap_or_else(default_codex_home_dir);
@@ -564,6 +572,27 @@ pub fn run_provider_sync_with_target(
                 );
             }
         };
+    if require_stopped_app {
+        let running_processes =
+            codex_plus_core::watcher::find_session_index_cleanup_blocking_processes();
+        if !running_processes.is_empty() {
+            return result(
+                ProviderSyncStatus::Skipped,
+                format!(
+                    "Codex App / ChatGPT 仍在运行（进程：{}）；请完全退出 App 后再修复历史会话",
+                    running_processes
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                &target_provider,
+                None,
+                0,
+                0,
+            );
+        }
+    }
     let lock_dir = home.join("tmp/provider-sync.lock");
     if acquire_lock(&lock_dir).is_err() {
         return result(
@@ -905,11 +934,64 @@ fn toml_string_value(raw: &str) -> Option<String> {
 
 fn acquire_lock(path: &Path) -> std::io::Result<()> {
     fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))?;
+    match create_lock(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let Some((owner, isolated_path)) = isolate_stale_lock(path) else {
+                return Err(error);
+            };
+            match create_lock(path) {
+                Ok(()) => {
+                    let quarantine_cleanup_failed = fs::remove_dir_all(&isolated_path).is_err();
+                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "provider_sync.stale_lock_recovered",
+                        json!({
+                            "owner_pid": owner.pid,
+                            "owner_started_at": owner.started_at,
+                            "quarantine_cleanup_failed": quarantine_cleanup_failed,
+                        }),
+                    );
+                    Ok(())
+                }
+                Err(retry_error) => {
+                    let _ = fs::remove_dir_all(isolated_path);
+                    Err(retry_error)
+                }
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn create_lock(path: &Path) -> std::io::Result<()> {
     fs::create_dir(path)?;
-    fs::write(
+    let write_result = fs::write(
         path.join("owner.json"),
         json!({"pid": std::process::id(), "startedAt": now_secs()}).to_string(),
+    );
+    if let Err(error) = write_result {
+        let _ = fs::remove_dir_all(path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn isolate_stale_lock(path: &Path) -> Option<(ProviderSyncLockOwner, PathBuf)> {
+    let owner = serde_json::from_slice::<ProviderSyncLockOwner>(
+        &fs::read(path.join("owner.json")).ok()?,
     )
+    .ok()?;
+    if codex_plus_core::watcher::process_id_is_running(owner.pid) != Some(false) {
+        return None;
+    }
+    let file_name = path.file_name()?.to_string_lossy();
+    let isolated_path = path.with_file_name(format!(
+        "{file_name}.stale-{}-{}",
+        owner.pid,
+        uuid::Uuid::new_v4()
+    ));
+    fs::rename(path, &isolated_path).ok()?;
+    Some((owner, isolated_path))
 }
 
 fn release_lock(path: &Path) -> std::io::Result<()> {
