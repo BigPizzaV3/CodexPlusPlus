@@ -2414,6 +2414,7 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
                     "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
                     "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
                     "sqliteCatalogRowsInserted": sync.sqlite_catalog_rows_inserted,
+                    "sqliteCatalogRowsRemoved": sync.sqlite_catalog_rows_removed,
                     "updatedWorkspaceRoots": sync.updated_workspace_roots,
                     "encryptedContentWarning": sync.encrypted_content_warning,
                     "backupDir": sync.backup_dir,
