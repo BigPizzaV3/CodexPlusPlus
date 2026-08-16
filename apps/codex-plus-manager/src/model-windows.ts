@@ -93,6 +93,32 @@ export function mergeModelWindowRows(
   return rows.length ? rows : [{ model: "", window: "", autoCompact: "", imageHandling: "send-as-is" }];
 }
 
+/** 用上游清单同步本地模型；同名模型保留本地配置，已消失模型被移除。 */
+export function replaceModelWindowRowsFromUpstream(
+  currentRows: ModelWindowRow[],
+  incomingRows: ModelWindowRow[],
+): ModelWindowRow[] {
+  const currentByModel = new Map<string, ModelWindowRow>();
+  currentRows.forEach((row) => {
+    const model = row.model.trim();
+    if (model && !currentByModel.has(model)) currentByModel.set(model, row);
+  });
+  const seen = new Set<string>();
+  const rows = incomingRows.flatMap((row) => {
+    const model = row.model.trim();
+    if (!model || seen.has(model)) return [];
+    seen.add(model);
+    const current = currentByModel.get(model);
+    return [{
+      model,
+      window: current?.window.trim() || row.window.trim(),
+      autoCompact: normalizeAutoCompactPercent(current?.autoCompact ?? row.autoCompact ?? ""),
+      imageHandling: current?.imageHandling ?? row.imageHandling ?? "send-as-is",
+    }];
+  });
+  return rows.length ? rows : [{ model: "", window: "", autoCompact: "", imageHandling: "send-as-is" }];
+}
+
 export function modelWindowRowsFromProfile(modelList: string, modelWindows: string, modelVlm?: string, modelAutoCompact?: string): ModelWindowRow[] {
   let map: Record<string, string> = {};
   try {

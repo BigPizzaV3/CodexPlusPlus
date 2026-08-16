@@ -11,6 +11,7 @@ import {
   modelWindowsTextToMap,
   serializeModelWindowRows,
   mergeModelWindowRows,
+  replaceModelWindowRowsFromUpstream,
 } from "./model-windows.ts";
 
 // 类型检查：确保 RelayProfile 包含 modelWindows、modelMetadata 和 modelVlm 字段
@@ -249,6 +250,25 @@ describe("model-windows helpers", () => {
       [
         { model: "deepseek-v4-flash", window: "1M", autoCompact: "", imageHandling: "vlm" },
         { model: "deepseek-v4-pro", window: "", autoCompact: "", imageHandling: "vlm" },
+      ],
+    );
+  });
+
+  it("同步上游模型时删除已消失模型并保留仍存在模型的本地配置", () => {
+    assert.deepStrictEqual(
+      replaceModelWindowRowsFromUpstream(
+        [
+          { model: "removed-model", window: "1M", autoCompact: "90%", imageHandling: "vlm" },
+          { model: "kept-model", window: "256K", autoCompact: "85%", imageHandling: "strip" },
+        ],
+        [
+          { model: "kept-model", window: "", autoCompact: "", imageHandling: "send-as-is" },
+          { model: "new-model", window: "", autoCompact: "", imageHandling: "send-as-is" },
+        ],
+      ),
+      [
+        { model: "kept-model", window: "256K", autoCompact: "85%", imageHandling: "strip" },
+        { model: "new-model", window: "", autoCompact: "", imageHandling: "send-as-is" },
       ],
     );
   });
