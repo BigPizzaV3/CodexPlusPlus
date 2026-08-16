@@ -34,6 +34,7 @@ pub mod relay_config;
 pub mod relay_environment;
 pub mod relay_rotation;
 pub mod relay_switch;
+pub mod remote_control_recovery;
 pub mod routes;
 pub mod script_market;
 pub mod settings;

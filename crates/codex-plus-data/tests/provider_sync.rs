@@ -1,7 +1,10 @@
 use codex_plus_data::{
     ProviderSyncStatus, ProviderSyncTargetSource, apply_session_index_cleanup,
-    load_provider_sync_targets, preview_session_index_cleanup, run_provider_sync,
+    load_provider_sync_targets, preview_session_index_cleanup,
+    remote_control_session_recovery_candidate_exists, run_provider_sync,
     run_provider_sync_with_target,
+    run_remote_control_session_catalog_recovery_for_thread_with_target,
+    run_remote_control_session_finalization_for_thread_with_target,
 };
 use rusqlite::Connection;
 use serde_json::json;
@@ -9,7 +12,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 
 static CODEX_HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -113,6 +116,31 @@ fn create_state_db_with_providers(path: &Path, rows: &[(&str, &str, i64)]) {
     }
 }
 
+fn create_remote_control_state_db(path: &Path, rows: &[(&str, &str, i64, &Path)]) {
+    let db = Connection::open(path).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, title TEXT, rollout_path TEXT, source TEXT, created_at_ms INTEGER,
+            updated_at_ms INTEGER, thread_source TEXT, git_branch TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    for (id, provider, archived, rollout_path) in rows {
+        db.execute(
+            "INSERT INTO threads VALUES (?1, ?2, ?3, 1, 'C:/workspace', ?1, ?4, 'vscode', 100000, 200000, NULL, NULL)",
+            (
+                id,
+                provider,
+                archived,
+                rollout_path.to_string_lossy().to_string(),
+            ),
+        )
+        .unwrap();
+    }
+}
+
 fn create_local_thread_catalog_db(path: &Path, rows: &[(&str, &str)]) {
     let db = Connection::open(path).unwrap();
     db.execute(
@@ -182,6 +210,46 @@ fn create_local_thread_catalog_db(path: &Path, rows: &[(&str, &str)]) {
         )
         .unwrap();
     }
+}
+
+#[test]
+fn remote_control_recovery_candidate_requires_a_recent_unarchived_openai_thread() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir_all(&home).unwrap();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            model_provider TEXT,
+            archived INTEGER,
+            created_at_ms INTEGER
+        )",
+        [],
+    )
+    .unwrap();
+    for (id, provider, archived, created_at_ms) in [
+        ("recent", "openai", 0, now_ms),
+        ("stale", "openai", 0, now_ms - 16 * 60 * 1000),
+        ("archived", "openai", 1, now_ms),
+        ("custom", "custom", 0, now_ms),
+    ] {
+        db.execute(
+            "INSERT INTO threads VALUES (?1, ?2, ?3, ?4)",
+            (id, provider, archived, created_at_ms),
+        )
+        .unwrap();
+    }
+    drop(db);
+
+    assert!(remote_control_session_recovery_candidate_exists(Some(&home), "recent").unwrap());
+    assert!(!remote_control_session_recovery_candidate_exists(Some(&home), "stale").unwrap());
+    assert!(!remote_control_session_recovery_candidate_exists(Some(&home), "archived").unwrap());
+    assert!(!remote_control_session_recovery_candidate_exists(Some(&home), "custom").unwrap());
 }
 
 #[test]
@@ -595,6 +663,530 @@ fn provider_sync_repairs_missing_local_thread_catalog_rows_from_threads() {
     assert_eq!(sync_state.0, 1);
     assert_eq!(sync_state.1, 1);
     assert_eq!(sync_state.2, 1);
+}
+
+#[test]
+fn remote_control_catalog_recovery_for_thread_does_not_touch_other_candidates() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+
+    let state_db = home.join("state_5.sqlite");
+    let db = Connection::open(&state_db).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, title TEXT, rollout_path TEXT, source TEXT, created_at_ms INTEGER,
+            updated_at_ms INTEGER, thread_source TEXT, git_branch TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    for id in ["mobile-one", "mobile-two"] {
+        let rollout = home.join(format!("sessions/rollout-{id}.jsonl"));
+        write_rollout(&rollout, "openai", id, "C:/workspace");
+        db.execute(
+            "INSERT INTO threads VALUES (?1, 'openai', 0, 1, 'C:/workspace', ?1, ?2, 'vscode', 100000, 200000, NULL, NULL)",
+            (id, rollout.to_string_lossy().to_string()),
+        )
+        .unwrap();
+    }
+    drop(db);
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&catalog_db, &[]);
+
+    let result = run_remote_control_session_catalog_recovery_for_thread_with_target(
+        Some(&home),
+        "mobile-one",
+        "custom",
+    );
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.changed_session_files, 0);
+    assert_eq!(result.sqlite_catalog_rows_inserted, 1);
+    let db = Connection::open(&state_db).unwrap();
+    let providers = ["mobile-one", "mobile-two"]
+        .into_iter()
+        .map(|id| {
+            db.query_row(
+                "SELECT model_provider FROM threads WHERE id = ?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(providers, vec!["openai", "openai"]);
+    let catalog = Connection::open(&catalog_db).unwrap();
+    assert_eq!(
+        catalog
+            .query_row(
+                "SELECT COUNT(*) FROM local_thread_catalog WHERE thread_id = 'mobile-one' AND model_provider = 'custom'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        catalog
+            .query_row(
+                "SELECT COUNT(*) FROM local_thread_catalog WHERE thread_id = 'mobile-two'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    for id in ["mobile-one", "mobile-two"] {
+        let rollout = home.join(format!("sessions/rollout-{id}.jsonl"));
+        let first: serde_json::Value =
+            serde_json::from_str(fs::read_to_string(rollout).unwrap().lines().next().unwrap())
+                .unwrap();
+        assert_eq!(first["payload"]["model_provider"], "openai");
+    }
+}
+
+#[test]
+fn remote_control_catalog_recovery_for_thread_only_repairs_the_local_catalog_host() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-mobile.jsonl");
+    write_rollout(&rollout, "openai", "mobile", "C:/workspace");
+    create_state_db_with_providers(&home.join("state_5.sqlite"), &[("mobile", "openai", 0)]);
+
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&catalog_db, &[]);
+    let before_sync_state = Connection::open(&catalog_db)
+        .unwrap()
+        .query_row(
+            "SELECT watermark_updated_at, initial_build_complete, observation_sequence, last_full_reconciled_at FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, f64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    let db = Connection::open(&catalog_db).unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog_hosts VALUES ('aaa-remote', 'ssh')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog (
+            host_id, thread_id, display_title, source_created_at, source_updated_at, cwd,
+            source_kind, source_detail, model_provider, git_branch, observation_sequence,
+            missing_candidate, thread_source
+        ) VALUES ('aaa-remote', 'mobile', 'Remote copy', 100, 100, '/remote', 'cli', '', 'openai', NULL, 1, 0, 'user')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let result = run_remote_control_session_catalog_recovery_for_thread_with_target(
+        Some(&home),
+        "mobile",
+        "custom",
+    );
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.changed_session_files, 0);
+    assert_eq!(result.sqlite_catalog_rows_inserted, 1);
+    let db = Connection::open(&catalog_db).unwrap();
+    let rows = db
+        .prepare(
+            "SELECT host_id, model_provider FROM local_thread_catalog WHERE thread_id = 'mobile' ORDER BY host_id",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("aaa-remote".to_string(), "openai".to_string()),
+            ("local".to_string(), "custom".to_string()),
+        ]
+    );
+    let state = Connection::open(home.join("state_5.sqlite")).unwrap();
+    let provider: String = state
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'mobile'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "openai");
+    let after_sync_state = Connection::open(&catalog_db)
+        .unwrap()
+        .query_row(
+            "SELECT watermark_updated_at, initial_build_complete, observation_sequence, last_full_reconciled_at FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, f64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(after_sync_state, before_sync_state);
+}
+
+#[test]
+fn remote_control_finalization_uses_only_recorded_rollout_and_preserves_full_sync_state() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    let target_rollout = home.join("sessions/rollout-mobile.jsonl");
+    let other_rollout = home.join("sessions/rollout-other.jsonl");
+    write_rollout(&target_rollout, "openai", "mobile", "C:/workspace");
+    write_rollout(&other_rollout, "openai", "other", "C:/workspace");
+    create_remote_control_state_db(
+        &home.join("state_5.sqlite"),
+        &[
+            ("mobile", "openai", 0, &target_rollout),
+            ("other", "openai", 0, &other_rollout),
+        ],
+    );
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&catalog_db, &[]);
+
+    let before_sync_state = Connection::open(&catalog_db)
+        .unwrap()
+        .query_row(
+            "SELECT watermark_updated_at, initial_build_complete, observation_sequence, last_full_reconciled_at FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, f64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+
+    let result = run_remote_control_session_finalization_for_thread_with_target(
+        Some(&home),
+        "mobile",
+        "custom",
+    );
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.changed_session_files, 1);
+    assert_eq!(result.sqlite_catalog_rows_inserted, 1);
+    let target_first: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&target_rollout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    let other_first: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&other_rollout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(target_first["payload"]["model_provider"], "custom");
+    assert_eq!(other_first["payload"]["model_provider"], "openai");
+
+    let state = Connection::open(home.join("state_5.sqlite")).unwrap();
+    let providers = ["mobile", "other"]
+        .into_iter()
+        .map(|id| {
+            state
+                .query_row(
+                    "SELECT model_provider FROM threads WHERE id = ?1",
+                    [id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(providers, vec!["custom", "openai"]);
+
+    let catalog = Connection::open(&catalog_db).unwrap();
+    assert_eq!(
+        catalog
+            .query_row(
+                "SELECT COUNT(*) FROM local_thread_catalog WHERE thread_id = 'mobile' AND model_provider = 'custom'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        catalog
+            .query_row(
+                "SELECT COUNT(*) FROM local_thread_catalog WHERE thread_id = 'other'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    let after_sync_state = catalog
+        .query_row(
+            "SELECT watermark_updated_at, initial_build_complete, observation_sequence, last_full_reconciled_at FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, f64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(after_sync_state, before_sync_state);
+}
+
+#[test]
+fn remote_control_finalization_ignores_archived_and_other_provider_threads() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    let archived_rollout = home.join("sessions/rollout-archived.jsonl");
+    let other_rollout = home.join("sessions/rollout-other.jsonl");
+    write_rollout(&archived_rollout, "openai", "archived", "C:/workspace");
+    write_rollout(&other_rollout, "other", "other", "C:/workspace");
+    create_remote_control_state_db(
+        &home.join("state_5.sqlite"),
+        &[
+            ("archived", "openai", 1, &archived_rollout),
+            ("other", "other", 0, &other_rollout),
+        ],
+    );
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&catalog_db, &[]);
+
+    let archived = run_remote_control_session_finalization_for_thread_with_target(
+        Some(&home),
+        "archived",
+        "custom",
+    );
+    let other = run_remote_control_session_finalization_for_thread_with_target(
+        Some(&home),
+        "other",
+        "custom",
+    );
+
+    assert_eq!(archived.status, ProviderSyncStatus::Synced);
+    assert_eq!(other.status, ProviderSyncStatus::Synced);
+    assert!(archived.message.contains("archived"));
+    assert!(other.message.contains("another provider"));
+    for (id, provider) in [("archived", "openai"), ("other", "other")] {
+        let first: serde_json::Value = serde_json::from_str(
+            fs::read_to_string(home.join(format!("sessions/rollout-{id}.jsonl")))
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first["payload"]["model_provider"], provider);
+    }
+    assert_eq!(
+        Connection::open(&catalog_db)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM local_thread_catalog", [], |row| row
+                .get::<_, i64>(
+                0
+            ),)
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn remote_control_finalization_defers_when_rollout_changes_after_collection() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-mobile.jsonl");
+    write_rollout(&rollout, "openai", "mobile", "C:/workspace");
+    let state_db = home.join("state_5.sqlite");
+    create_remote_control_state_db(&state_db, &[("mobile", "openai", 0, &rollout)]);
+    let db = Connection::open(&state_db).unwrap();
+    db.execute("CREATE TABLE backup_padding (data BLOB)", [])
+        .unwrap();
+    db.execute("INSERT INTO backup_padding VALUES (zeroblob(33554432))", [])
+        .unwrap();
+    drop(db);
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&catalog_db, &[]);
+
+    let backup_root = home.join("backups_state/provider-sync");
+    let watched_rollout = rollout.clone();
+    let writer = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let backup_started = backup_root.exists()
+                && fs::read_dir(&backup_root)
+                    .map(|mut entries| entries.next().is_some())
+                    .unwrap_or(false);
+            if backup_started {
+                let mut file = fs::OpenOptions::new()
+                    .append(true)
+                    .open(&watched_rollout)
+                    .unwrap();
+                use std::io::Write as _;
+                writeln!(
+                    file,
+                    "{}",
+                    json!({"type": "event_msg", "payload": {"type": "task_started"}})
+                )
+                .unwrap();
+                return;
+            }
+            assert!(Instant::now() < deadline, "backup did not start in time");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+
+    let result = run_remote_control_session_finalization_for_thread_with_target(
+        Some(&home),
+        "mobile",
+        "custom",
+    );
+    writer.join().unwrap();
+
+    assert_eq!(result.status, ProviderSyncStatus::Skipped);
+    assert_eq!(result.changed_session_files, 0);
+    assert_eq!(result.skipped_locked_rollout_files.len(), 1);
+    assert_eq!(
+        fs::canonicalize(&result.skipped_locked_rollout_files[0]).unwrap(),
+        fs::canonicalize(&rollout).unwrap()
+    );
+    let text = fs::read_to_string(&rollout).unwrap();
+    assert!(text.contains("task_started"));
+    let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(first["payload"]["model_provider"], "openai");
+    let state = Connection::open(&state_db).unwrap();
+    let provider: String = state
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'mobile'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "openai");
+    let catalog = Connection::open(&catalog_db).unwrap();
+    let catalog_rows: i64 = catalog
+        .query_row(
+            "SELECT COUNT(*) FROM local_thread_catalog WHERE thread_id = 'mobile'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(catalog_rows, 0);
+}
+
+#[test]
+fn remote_control_finalization_retries_after_catalog_only_partial_commit() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-mobile.jsonl");
+    write_rollout(&rollout, "openai", "mobile", "C:/workspace");
+    let state_db = home.join("state_5.sqlite");
+    create_remote_control_state_db(&state_db, &[("mobile", "openai", 0, &rollout)]);
+    let db = Connection::open(&state_db).unwrap();
+    db.execute(
+        "CREATE TRIGGER fail_remote_recovery BEFORE UPDATE OF model_provider ON threads BEGIN SELECT RAISE(ABORT, 'boom'); END",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&catalog_db, &[]);
+
+    let first = run_remote_control_session_finalization_for_thread_with_target(
+        Some(&home),
+        "mobile",
+        "custom",
+    );
+
+    assert_eq!(first.status, ProviderSyncStatus::Skipped);
+    let first_line: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first_line["payload"]["model_provider"], "custom");
+    let catalog = Connection::open(&catalog_db).unwrap();
+    let catalog_provider: String = catalog
+        .query_row(
+            "SELECT model_provider FROM local_thread_catalog WHERE host_id = 'local' AND thread_id = 'mobile'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(catalog_provider, "custom");
+    let state = Connection::open(&state_db).unwrap();
+    let state_provider: String = state
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'mobile'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state_provider, "openai");
+    state
+        .execute("DROP TRIGGER fail_remote_recovery", [])
+        .unwrap();
+    drop(state);
+
+    let second = run_remote_control_session_finalization_for_thread_with_target(
+        Some(&home),
+        "mobile",
+        "custom",
+    );
+
+    assert_eq!(second.status, ProviderSyncStatus::Synced);
+    assert_eq!(second.changed_session_files, 0);
+    let state = Connection::open(&state_db).unwrap();
+    let state_provider: String = state
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'mobile'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state_provider, "custom");
 }
 
 #[test]

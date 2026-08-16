@@ -1,15 +1,17 @@
-use rusqlite::{Connection, params_from_iter, types::Value as SqlValue};
+use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_PROVIDER: &str = "openai";
 const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
 const BACKUP_KEEP_COUNT: usize = 5;
+const REMOTE_CONTROL_CREATION_WINDOW_SECS: i64 = 15 * 60;
 
 fn default_codex_home_dir() -> PathBuf {
     codex_plus_core::codex_home::default_codex_home_dir()
@@ -163,6 +165,13 @@ struct CatalogRepairThread {
     thread_source: Option<String>,
 }
 
+enum RemoteControlRolloutLookup {
+    Ready(PathBuf),
+    Archived,
+    UnsupportedProvider,
+    Missing,
+}
+
 impl SqliteUpdateCounts {
     fn total(&self) -> usize {
         self.provider_rows + self.user_event_rows + self.cwd_rows + self.catalog_insert_rows
@@ -178,6 +187,297 @@ impl SqliteUpdateCounts {
 
 pub fn run_provider_sync(codex_home: Option<&Path>) -> ProviderSyncResult {
     run_provider_sync_with_target(codex_home, None)
+}
+
+pub fn remote_control_session_recovery_candidate_exists(
+    codex_home: Option<&Path>,
+    thread_id: &str,
+) -> anyhow::Result<bool> {
+    let thread_id = thread_id.trim();
+    if thread_id.is_empty() || thread_id.len() > 128 {
+        return Ok(false);
+    }
+    let home = codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_codex_home_dir);
+    let minimum_created_at = now_secs() as i64 - REMOTE_CONTROL_CREATION_WINDOW_SECS;
+    for path in provider_sync_db_paths(&home) {
+        if !path.exists() {
+            continue;
+        }
+        let db = Connection::open(path)?;
+        let columns = table_columns(&db, "threads")?;
+        if !columns.contains("id") || !columns.contains("model_provider") {
+            continue;
+        }
+        let archived_expr = if columns.contains("archived") {
+            "COALESCE(archived, 0)"
+        } else {
+            "0"
+        };
+        let created_expr = if columns.contains("created_at_ms") {
+            "CAST(COALESCE(created_at_ms, 0) / 1000 AS INTEGER)"
+        } else if columns.contains("created_at") {
+            "CAST(COALESCE(created_at, 0) AS INTEGER)"
+        } else {
+            continue;
+        };
+        let sql = format!(
+            "SELECT 1 FROM threads WHERE id = ?1 AND model_provider = ?2 AND {archived_expr} = 0 AND {created_expr} >= ?3 LIMIT 1"
+        );
+        if db
+            .query_row(
+                &sql,
+                (thread_id, DEFAULT_PROVIDER, minimum_created_at),
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub fn run_remote_control_session_catalog_recovery_for_thread_with_target(
+    codex_home: Option<&Path>,
+    thread_id: &str,
+    target_provider: &str,
+) -> ProviderSyncResult {
+    let thread_id = thread_id.trim();
+    if thread_id.is_empty() || thread_id.len() > 128 {
+        return result(
+            ProviderSyncStatus::Skipped,
+            "Remote Control session recovery requires a valid thread id",
+            DEFAULT_PROVIDER,
+            None,
+            0,
+            0,
+        );
+    }
+    let target_provider = target_provider.trim();
+    if target_provider.is_empty() || target_provider == DEFAULT_PROVIDER {
+        return result(
+            ProviderSyncStatus::Skipped,
+            "Remote Control session recovery requires a non-openai target provider",
+            target_provider,
+            None,
+            0,
+            0,
+        );
+    }
+    let home = codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_codex_home_dir);
+    let lock_dir = home.join("tmp/provider-sync.lock");
+    if acquire_lock(&lock_dir).is_err() {
+        return result(
+            ProviderSyncStatus::Skipped,
+            format!("Provider sync lock exists: {}", lock_dir.to_string_lossy()),
+            target_provider,
+            None,
+            0,
+            0,
+        );
+    }
+    let thread_ids = HashSet::from([thread_id.to_string()]);
+    let recovery = run_remote_control_catalog_recovery_for_threads(
+        &provider_sync_db_paths(&home),
+        target_provider,
+        &thread_ids,
+    );
+    let _ = release_lock(&lock_dir);
+    recovery.unwrap_or_else(|error| {
+        result(
+            ProviderSyncStatus::Skipped,
+            format!("Remote Control session catalog recovery skipped: {error}"),
+            target_provider,
+            None,
+            0,
+            0,
+        )
+    })
+}
+
+pub fn run_remote_control_session_finalization_for_thread_with_target(
+    codex_home: Option<&Path>,
+    thread_id: &str,
+    target_provider: &str,
+) -> ProviderSyncResult {
+    let thread_id = thread_id.trim();
+    let target_provider = target_provider.trim();
+    if thread_id.is_empty()
+        || thread_id.len() > 128
+        || target_provider.is_empty()
+        || target_provider == DEFAULT_PROVIDER
+    {
+        return result(
+            ProviderSyncStatus::Skipped,
+            "Remote Control session finalization requires a thread id and target provider",
+            target_provider,
+            None,
+            0,
+            0,
+        );
+    }
+    let home = codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_codex_home_dir);
+    let lock_dir = home.join("tmp/provider-sync.lock");
+    if acquire_lock(&lock_dir).is_err() {
+        return result(
+            ProviderSyncStatus::Skipped,
+            format!("Provider sync lock exists: {}", lock_dir.to_string_lossy()),
+            target_provider,
+            None,
+            0,
+            0,
+        );
+    }
+    let recovery = (|| -> anyhow::Result<ProviderSyncResult> {
+        let sqlite_paths = provider_sync_db_paths(&home);
+        let rollout_path = match remote_control_rollout_for_thread(
+            &home,
+            &sqlite_paths,
+            thread_id,
+            target_provider,
+        )? {
+            RemoteControlRolloutLookup::Ready(path) => path,
+            RemoteControlRolloutLookup::Archived => {
+                return Ok(result(
+                    ProviderSyncStatus::Synced,
+                    "Remote Control session finalization ignored an archived thread",
+                    target_provider,
+                    None,
+                    0,
+                    0,
+                ));
+            }
+            RemoteControlRolloutLookup::UnsupportedProvider => {
+                return Ok(result(
+                    ProviderSyncStatus::Synced,
+                    "Remote Control session finalization ignored a thread owned by another provider",
+                    target_provider,
+                    None,
+                    0,
+                    0,
+                ));
+            }
+            RemoteControlRolloutLookup::Missing => {
+                return Ok(result(
+                    ProviderSyncStatus::Skipped,
+                    "Remote Control session finalization deferred until the thread rollout is available",
+                    target_provider,
+                    None,
+                    0,
+                    0,
+                ));
+            }
+        };
+        let collected = collect_session_change_for_path(
+            &rollout_path,
+            target_provider,
+            DEFAULT_PROVIDER,
+            thread_id,
+        )?;
+        let rewrite_changes = collected
+            .changes
+            .iter()
+            .filter(|change| change.rewrite_needed)
+            .cloned()
+            .collect::<Vec<_>>();
+        let backup_dir = create_backup(&home, target_provider, &rewrite_changes)?;
+        let applied = apply_session_changes(&rewrite_changes)?;
+        if !rollout_file_matches_provider(&rollout_path, thread_id, target_provider)? {
+            let mut deferred = result(
+                ProviderSyncStatus::Skipped,
+                "Remote Control session finalization deferred for a changed or locked rollout",
+                target_provider,
+                Some(backup_dir),
+                applied.changes.len(),
+                0,
+            );
+            deferred.skipped_locked_rollout_files = applied.skipped_locked_rollout_files;
+            return Ok(deferred);
+        }
+        let thread_ids = HashSet::from([thread_id.to_string()]);
+        let catalog_insert_rows = repair_missing_local_thread_catalog_rows_for_threads(
+            &sqlite_paths,
+            target_provider,
+            &thread_ids,
+        )?;
+        let mut sqlite_updates = apply_remote_control_recovery_sqlite_updates(
+            &sqlite_paths,
+            target_provider,
+            &thread_ids,
+        )?;
+        sqlite_updates.catalog_insert_rows = catalog_insert_rows;
+        prune_backups(&home)?;
+        let mut synced = result(
+            ProviderSyncStatus::Synced,
+            "Remote Control session finalization complete",
+            target_provider,
+            Some(backup_dir),
+            applied.changes.len(),
+            sqlite_updates.total(),
+        );
+        synced.sqlite_provider_rows_updated = sqlite_updates.provider_rows;
+        synced.sqlite_catalog_rows_inserted = sqlite_updates.catalog_insert_rows;
+        Ok(synced)
+    })();
+    let _ = release_lock(&lock_dir);
+    recovery.unwrap_or_else(|error| {
+        result(
+            ProviderSyncStatus::Skipped,
+            format!("Remote Control session finalization skipped: {error}"),
+            target_provider,
+            None,
+            0,
+            0,
+        )
+    })
+}
+
+fn run_remote_control_catalog_recovery_for_threads(
+    sqlite_paths: &[PathBuf],
+    target_provider: &str,
+    requested_thread_ids: &HashSet<String>,
+) -> anyhow::Result<ProviderSyncResult> {
+    let thread_ids = remote_control_catalog_recovery_thread_ids(
+        sqlite_paths,
+        target_provider,
+        requested_thread_ids,
+    )?;
+    if thread_ids.is_empty() {
+        return Ok(result(
+            ProviderSyncStatus::Synced,
+            "Remote Control session catalog already up to date",
+            target_provider,
+            None,
+            0,
+            0,
+        ));
+    }
+
+    let catalog_insert_rows = repair_missing_local_thread_catalog_rows_for_threads(
+        sqlite_paths,
+        target_provider,
+        &thread_ids,
+    )?;
+    let provider_rows =
+        apply_remote_control_catalog_updates(sqlite_paths, target_provider, &thread_ids)?;
+    let mut synced = result(
+        ProviderSyncStatus::Synced,
+        "Remote Control session catalog recovery complete",
+        target_provider,
+        None,
+        0,
+        provider_rows + catalog_insert_rows,
+    );
+    synced.sqlite_provider_rows_updated = provider_rows;
+    synced.sqlite_catalog_rows_inserted = catalog_insert_rows;
+    Ok(synced)
 }
 
 pub fn run_provider_sync_with_target(
@@ -602,6 +902,191 @@ fn collect_session_changes(home: &Path, target_provider: &str) -> anyhow::Result
     Ok(collected)
 }
 
+fn remote_control_rollout_for_thread(
+    home: &Path,
+    paths: &[PathBuf],
+    thread_id: &str,
+    target_provider: &str,
+) -> anyhow::Result<RemoteControlRolloutLookup> {
+    let mut archived_seen = false;
+    let mut unsupported_seen = false;
+    let mut candidate_seen = false;
+
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let db = Connection::open(path)?;
+        let columns = table_columns(&db, "threads")?;
+        if !columns.contains("id") {
+            continue;
+        }
+        let provider_expr = if columns.contains("model_provider") {
+            "COALESCE(model_provider, '')"
+        } else {
+            "''"
+        };
+        let archived_expr = if columns.contains("archived") {
+            "COALESCE(archived, 0)"
+        } else {
+            "0"
+        };
+        let rollout_expr = if columns.contains("rollout_path") {
+            "COALESCE(rollout_path, '')"
+        } else {
+            "''"
+        };
+        let sql = format!(
+            "SELECT {provider_expr}, {archived_expr}, {rollout_expr} FROM threads WHERE id = ?1"
+        );
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map([thread_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (provider, archived, rollout_path) = row?;
+            candidate_seen = true;
+            if archived != 0 {
+                archived_seen = true;
+                continue;
+            }
+            if !provider.is_empty() && provider != DEFAULT_PROVIDER && provider != target_provider {
+                unsupported_seen = true;
+                continue;
+            }
+            let Some(rollout_path) = resolve_active_rollout_path(home, &rollout_path) else {
+                continue;
+            };
+            let Some((rollout_thread_id, providers)) =
+                rollout_provider_state_for_path(&rollout_path)?
+            else {
+                continue;
+            };
+            if rollout_thread_id != thread_id {
+                continue;
+            }
+            if providers.is_empty()
+                || providers
+                    .iter()
+                    .any(|provider| provider != DEFAULT_PROVIDER && provider != target_provider)
+            {
+                unsupported_seen = true;
+                continue;
+            }
+            return Ok(RemoteControlRolloutLookup::Ready(rollout_path));
+        }
+    }
+
+    if archived_seen && !unsupported_seen {
+        Ok(RemoteControlRolloutLookup::Archived)
+    } else if unsupported_seen {
+        Ok(RemoteControlRolloutLookup::UnsupportedProvider)
+    } else if candidate_seen {
+        Ok(RemoteControlRolloutLookup::Missing)
+    } else {
+        Ok(RemoteControlRolloutLookup::Missing)
+    }
+}
+
+fn resolve_active_rollout_path(home: &Path, value: &str) -> Option<PathBuf> {
+    let raw = value.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(raw);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        home.join(path)
+    };
+    let canonical = fs::canonicalize(path).ok()?;
+    let sessions_root = fs::canonicalize(home.join("sessions")).ok()?;
+    if !canonical.starts_with(sessions_root) {
+        return None;
+    }
+    Some(canonical)
+}
+
+fn rollout_provider_state_for_path(
+    path: &Path,
+) -> anyhow::Result<Option<(String, HashSet<String>)>> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if is_locked_io_error(&error) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(rollout_thread_provider_state(&text))
+}
+
+fn collect_session_change_for_path(
+    path: &Path,
+    target_provider: &str,
+    source_provider: &str,
+    thread_id: &str,
+) -> anyhow::Result<SessionChanges> {
+    let mut collected = SessionChanges::default();
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if is_locked_io_error(&error) => {
+            collected
+                .skipped_locked_rollout_files
+                .push(path.to_path_buf());
+            return Ok(collected);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let rewrite = rewrite_rollout_session_meta_providers_for_threads(
+        &text,
+        target_provider,
+        source_provider,
+        &HashSet::from([thread_id.to_string()]),
+    )?;
+    if rewrite.session_meta_count == 0 || rewrite.thread_id.as_deref() != Some(thread_id) {
+        return Ok(collected);
+    }
+    let has_user_event = text.contains("\"user_message\"") || text.contains("\"user_input\"");
+    if text.contains("encrypted_content") {
+        for provider in &rewrite.providers {
+            *collected
+                .encrypted_content_counts
+                .entry(provider.clone())
+                .or_insert(0) += 1;
+        }
+    }
+    let original_mtime = fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    collected.changes.push(SessionChange {
+        path: path.to_path_buf(),
+        original_text: text,
+        next_text: rewrite.next_text,
+        original_session_meta_lines: rewrite.original_session_meta_lines,
+        thread_id: rewrite.thread_id,
+        cwd: rewrite.cwd,
+        has_user_event,
+        rewrite_needed: rewrite.rewrite_needed,
+        original_mtime,
+    });
+    Ok(collected)
+}
+
+fn rollout_file_matches_provider(
+    path: &Path,
+    thread_id: &str,
+    target_provider: &str,
+) -> anyhow::Result<bool> {
+    let Some((rollout_thread_id, providers)) = rollout_provider_state_for_path(path)? else {
+        return Ok(false);
+    };
+    Ok(rollout_thread_id == thread_id
+        && !providers.is_empty()
+        && providers.iter().all(|provider| provider == target_provider))
+}
+
 fn rewrite_rollout_session_meta_providers(
     text: &str,
     target_provider: &str,
@@ -641,6 +1126,81 @@ fn rewrite_rollout_session_meta_providers(
                     rewrite.providers.push(provider);
                     if payload.get("model_provider").and_then(Value::as_str)
                         != Some(target_provider)
+                    {
+                        payload.insert("model_provider".to_string(), json!(target_provider));
+                        next_line = serde_json::to_string(&record)?;
+                        rewrite.rewrite_needed = true;
+                    }
+                }
+            }
+        }
+        rewrite.next_text.push_str(&next_line);
+        rewrite.next_text.push_str(line_ending);
+    }
+    Ok(rewrite)
+}
+
+fn rewrite_rollout_session_meta_providers_for_threads(
+    text: &str,
+    target_provider: &str,
+    source_provider: &str,
+    thread_ids: &HashSet<String>,
+) -> anyhow::Result<RolloutRewrite> {
+    let rollout_thread_id = text.lines().find_map(|line| {
+        let record = serde_json::from_str::<Value>(line).ok()?;
+        if record.get("type").and_then(Value::as_str) != Some("session_meta") {
+            return None;
+        }
+        record
+            .get("payload")?
+            .get("id")?
+            .as_str()
+            .map(ToString::to_string)
+    });
+    if rollout_thread_id
+        .as_ref()
+        .is_none_or(|thread_id| !thread_ids.contains(thread_id))
+    {
+        return Ok(RolloutRewrite {
+            next_text: text.to_string(),
+            ..RolloutRewrite::default()
+        });
+    }
+
+    let mut rewrite = RolloutRewrite {
+        thread_id: rollout_thread_id,
+        ..RolloutRewrite::default()
+    };
+    for segment in text.split_inclusive('\n') {
+        let (line, line_ending) = split_line_ending(segment);
+        let mut next_line = line.to_string();
+        if !line.trim().is_empty() {
+            if let Ok(mut record) = serde_json::from_str::<Value>(line) {
+                if record.get("type").and_then(Value::as_str) == Some("session_meta") {
+                    let Some(payload) = record.get_mut("payload").and_then(Value::as_object_mut)
+                    else {
+                        rewrite.next_text.push_str(&next_line);
+                        rewrite.next_text.push_str(line_ending);
+                        continue;
+                    };
+                    rewrite.session_meta_count += 1;
+                    rewrite.original_session_meta_lines.push(line.to_string());
+                    if rewrite.cwd.is_none() {
+                        rewrite.cwd = payload
+                            .get("cwd")
+                            .and_then(Value::as_str)
+                            .and_then(to_desktop_workspace_path);
+                    }
+                    let provider = payload
+                        .get("model_provider")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
+                    rewrite
+                        .providers
+                        .push(provider.clone().unwrap_or_else(|| "(missing)".to_string()));
+                    if provider
+                        .as_deref()
+                        .is_none_or(|provider| provider == source_provider)
                     {
                         payload.insert("model_provider".to_string(), json!(target_provider));
                         next_line = serde_json::to_string(&record)?;
@@ -1049,8 +1609,10 @@ fn to_desktop_workspace_path(value: &str) -> Option<String> {
 }
 
 fn is_locked_io_error(error: &std::io::Error) -> bool {
-    matches!(error.kind(), std::io::ErrorKind::PermissionDenied)
-        || matches!(error.raw_os_error(), Some(32 | 33))
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
+    ) || matches!(error.raw_os_error(), Some(32 | 33))
 }
 
 fn build_encrypted_content_warning(
@@ -1173,8 +1735,18 @@ fn create_session_index_cleanup_backup(
 fn apply_session_changes(changes: &[SessionChange]) -> anyhow::Result<AppliedSessionChanges> {
     let mut applied = AppliedSessionChanges::default();
     for change in changes {
-        match fs::write(&change.path, &change.next_text) {
-            Ok(()) => {}
+        match replace_session_text_if_unchanged(
+            &change.path,
+            &change.original_text,
+            &change.next_text,
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                applied
+                    .skipped_locked_rollout_files
+                    .push(change.path.clone());
+                continue;
+            }
             Err(error) if is_locked_io_error(&error) => {
                 applied
                     .skipped_locked_rollout_files
@@ -1191,10 +1763,55 @@ fn apply_session_changes(changes: &[SessionChange]) -> anyhow::Result<AppliedSes
 
 fn restore_session_changes(changes: &[SessionChange]) -> anyhow::Result<()> {
     for change in changes {
-        fs::write(&change.path, &change.original_text)?;
-        restore_file_mtime(&change.path, change.original_mtime);
+        if replace_session_text_if_unchanged(
+            &change.path,
+            &change.next_text,
+            &change.original_text,
+        )? {
+            restore_file_mtime(&change.path, change.original_mtime);
+        }
     }
     Ok(())
+}
+
+fn replace_session_text_if_unchanged(
+    path: &Path,
+    expected_text: &str,
+    next_text: &str,
+) -> std::io::Result<bool> {
+    let mut file = open_session_file_for_update(path)?;
+    file.try_lock()?;
+    let mut current_text = String::new();
+    file.read_to_string(&mut current_text)?;
+    if current_text != expected_text {
+        return Ok(false);
+    }
+
+    file.seek(SeekFrom::Start(0))?;
+    file.set_len(0)?;
+    file.write_all(next_text.as_bytes())?;
+    file.flush()?;
+
+    file.seek(SeekFrom::Start(0))?;
+    let mut persisted_text = String::new();
+    file.read_to_string(&mut persisted_text)?;
+    if persisted_text != next_text {
+        return Err(std::io::Error::other(
+            "rollout changed while provider metadata was being written",
+        ));
+    }
+    Ok(true)
+}
+
+fn open_session_file_for_update(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
+    }
+    options.open(path)
 }
 
 fn restore_file_mtime(path: &Path, mtime: Option<SystemTime>) {
@@ -1238,6 +1855,112 @@ fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
         }
     }
     Ok(sorted_provider_ids(ids))
+}
+
+fn remote_control_catalog_recovery_thread_ids(
+    paths: &[PathBuf],
+    target_provider: &str,
+    requested_thread_ids: &HashSet<String>,
+) -> anyhow::Result<HashSet<String>> {
+    let mut known_thread_ids = HashSet::new();
+    let mut ready_thread_ids = HashSet::new();
+    let mut has_local_catalog = false;
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let db = Connection::open(path)?;
+        let thread_columns = table_columns(&db, "threads")?;
+        if thread_columns.contains("id") {
+            let mut stmt = db.prepare("SELECT id FROM threads WHERE COALESCE(id, '') <> ''")?;
+            for item in stmt.query_map([], |row| row.get::<_, String>(0))? {
+                let thread_id = item?;
+                if requested_thread_ids.contains(&thread_id) {
+                    known_thread_ids.insert(thread_id);
+                }
+            }
+        }
+
+        let catalog_columns = table_columns(&db, "local_thread_catalog")?;
+        if !catalog_columns.contains("thread_id") {
+            continue;
+        }
+        let Some(host_id) = local_catalog_host_id(&db)? else {
+            continue;
+        };
+        has_local_catalog = true;
+        let provider_expr = if catalog_columns.contains("model_provider") {
+            "COALESCE(model_provider, '')"
+        } else {
+            "''"
+        };
+        let missing_expr = if catalog_columns.contains("missing_candidate") {
+            "COALESCE(missing_candidate, 0)"
+        } else {
+            "0"
+        };
+        let host_filter = if catalog_columns.contains("host_id") {
+            " AND host_id = ?1"
+        } else {
+            " AND ?1 = ?1"
+        };
+        let sql = format!(
+            "SELECT thread_id, {provider_expr}, {missing_expr} FROM local_thread_catalog WHERE COALESCE(thread_id, '') <> ''{host_filter}"
+        );
+        let mut stmt = db.prepare(&sql)?;
+        for item in stmt.query_map([host_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })? {
+            let (thread_id, provider, missing_candidate) = item?;
+            if requested_thread_ids.contains(&thread_id)
+                && provider == target_provider
+                && missing_candidate == 0
+            {
+                ready_thread_ids.insert(thread_id);
+            }
+        }
+    }
+    if !has_local_catalog {
+        return Ok(HashSet::new());
+    }
+    known_thread_ids.retain(|thread_id| !ready_thread_ids.contains(thread_id));
+    Ok(known_thread_ids)
+}
+
+fn rollout_thread_provider_state(text: &str) -> Option<(String, HashSet<String>)> {
+    let mut thread_id = None;
+    let mut providers = HashSet::new();
+    for segment in text.split_inclusive('\n') {
+        let (line, _) = split_line_ending(segment);
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if record.get("type").and_then(Value::as_str) != Some("session_meta") {
+            continue;
+        }
+        let Some(payload) = record.get("payload").and_then(Value::as_object) else {
+            continue;
+        };
+        if thread_id.is_none() {
+            thread_id = payload
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+                .map(ToString::to_string);
+        }
+        providers.insert(
+            payload
+                .get("model_provider")
+                .and_then(Value::as_str)
+                .unwrap_or("(missing)")
+                .to_string(),
+        );
+    }
+    thread_id.map(|thread_id| (thread_id, providers))
 }
 
 fn count_sqlite_updates(
@@ -1373,11 +2096,126 @@ fn apply_sqlite_update_for_paths(
     Ok(total)
 }
 
+fn apply_remote_control_recovery_sqlite_updates(
+    paths: &[PathBuf],
+    target_provider: &str,
+    thread_ids: &HashSet<String>,
+) -> anyhow::Result<SqliteUpdateCounts> {
+    let mut counts = SqliteUpdateCounts::default();
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let mut db = Connection::open(path)?;
+        let thread_columns = table_columns(&db, "threads")?;
+        let catalog_columns = table_columns(&db, "local_thread_catalog")?;
+        let local_host_id = if catalog_columns.contains("thread_id") {
+            local_catalog_host_id(&db)?
+        } else {
+            None
+        };
+        let tx = db.transaction()?;
+        if thread_columns.contains("id") && thread_columns.contains("model_provider") {
+            for thread_id in thread_ids {
+                counts.provider_rows += tx.execute(
+                    "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND model_provider = ?3",
+                    (target_provider, thread_id, DEFAULT_PROVIDER),
+                )?;
+            }
+        }
+        if catalog_columns.contains("thread_id")
+            && catalog_columns.contains("model_provider")
+            && local_host_id.is_some()
+        {
+            let host_id = local_host_id.as_deref().unwrap_or("local");
+            let host_filter = if catalog_columns.contains("host_id") {
+                " AND host_id = ?3"
+            } else {
+                " AND ?3 = ?3"
+            };
+            for thread_id in thread_ids {
+                let sql = format!(
+                    "UPDATE local_thread_catalog SET model_provider = ?1 WHERE thread_id = ?2{host_filter} AND model_provider = ?4"
+                );
+                counts.provider_rows += tx.execute(
+                    &sql,
+                    (target_provider, thread_id, host_id, DEFAULT_PROVIDER),
+                )?;
+                if catalog_columns.contains("missing_candidate") {
+                    let sql = format!(
+                        "UPDATE local_thread_catalog SET missing_candidate = 0 WHERE thread_id = ?1{} AND COALESCE(missing_candidate, 0) <> 0",
+                        if catalog_columns.contains("host_id") {
+                            " AND host_id = ?2"
+                        } else {
+                            " AND ?2 = ?2"
+                        }
+                    );
+                    tx.execute(&sql, (thread_id, host_id))?;
+                }
+            }
+        }
+        tx.commit()?;
+    }
+    Ok(counts)
+}
+
+fn apply_remote_control_catalog_updates(
+    paths: &[PathBuf],
+    target_provider: &str,
+    thread_ids: &HashSet<String>,
+) -> anyhow::Result<usize> {
+    let mut total = 0;
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let mut db = Connection::open(path)?;
+        let columns = table_columns(&db, "local_thread_catalog")?;
+        if !columns.contains("thread_id") || !columns.contains("model_provider") {
+            continue;
+        }
+        let Some(host_id) = local_catalog_host_id(&db)? else {
+            continue;
+        };
+        let host_filter = if columns.contains("host_id") {
+            " AND host_id = ?3"
+        } else {
+            " AND ?3 = ?3"
+        };
+        let tx = db.transaction()?;
+        for thread_id in thread_ids {
+            let sql = format!(
+                "UPDATE local_thread_catalog SET model_provider = ?1{} WHERE thread_id = ?2{} AND COALESCE(model_provider, '') <> ?1",
+                if columns.contains("missing_candidate") {
+                    ", missing_candidate = 0"
+                } else {
+                    ""
+                },
+                host_filter
+            );
+            total += tx.execute(&sql, (target_provider, thread_id, &host_id))?;
+            if columns.contains("missing_candidate") {
+                let sql = format!(
+                    "UPDATE local_thread_catalog SET missing_candidate = 0 WHERE thread_id = ?1{} AND COALESCE(missing_candidate, 0) <> 0",
+                    if columns.contains("host_id") {
+                        " AND host_id = ?2"
+                    } else {
+                        " AND ?2 = ?2"
+                    }
+                );
+                tx.execute(&sql, (thread_id, &host_id))?;
+            }
+        }
+        tx.commit()?;
+    }
+    Ok(total)
+}
+
 fn count_missing_local_thread_catalog_rows(
     paths: &[PathBuf],
     target_provider: &str,
 ) -> anyhow::Result<usize> {
-    let source_threads = collect_catalog_repair_threads(paths, target_provider)?;
+    let source_threads = collect_catalog_repair_threads(paths, target_provider, None)?;
     if source_threads.is_empty() {
         return Ok(0);
     }
@@ -1391,7 +2229,9 @@ fn count_missing_local_thread_catalog_rows(
         if !catalog_supports_repair(&columns) {
             continue;
         }
-        let host_id = local_catalog_host_id(&db)?;
+        let Some(host_id) = local_catalog_host_id(&db)? else {
+            continue;
+        };
         for thread in source_threads.values() {
             if !local_catalog_contains_thread(&db, &host_id, &thread.id)? {
                 total += 1;
@@ -1405,7 +2245,29 @@ fn repair_missing_local_thread_catalog_rows(
     paths: &[PathBuf],
     target_provider: &str,
 ) -> anyhow::Result<usize> {
-    let source_threads = collect_catalog_repair_threads(paths, target_provider)?;
+    repair_missing_local_thread_catalog_rows_filtered(paths, target_provider, None, true)
+}
+
+fn repair_missing_local_thread_catalog_rows_for_threads(
+    paths: &[PathBuf],
+    target_provider: &str,
+    thread_ids: &HashSet<String>,
+) -> anyhow::Result<usize> {
+    repair_missing_local_thread_catalog_rows_filtered(
+        paths,
+        target_provider,
+        Some(thread_ids),
+        false,
+    )
+}
+
+fn repair_missing_local_thread_catalog_rows_filtered(
+    paths: &[PathBuf],
+    target_provider: &str,
+    thread_ids: Option<&HashSet<String>>,
+    update_full_sync_state: bool,
+) -> anyhow::Result<usize> {
+    let source_threads = collect_catalog_repair_threads(paths, target_provider, thread_ids)?;
     if source_threads.is_empty() {
         return Ok(0);
     }
@@ -1421,8 +2283,10 @@ fn repair_missing_local_thread_catalog_rows(
         }
         let sync_columns = table_columns(&db, "local_thread_catalog_sync_state")?;
         let metadata_columns = table_columns(&db, "local_thread_catalog_metadata")?;
-        let host_id = local_catalog_host_id(&db)?;
-        let mut observation_sequence = local_catalog_max_observation_sequence(&db)?;
+        let Some(host_id) = local_catalog_host_id(&db)? else {
+            continue;
+        };
+        let mut observation_sequence = local_catalog_max_observation_sequence(&db, &host_id)?;
         let insert_columns = local_catalog_insert_columns(&columns);
         let placeholders = std::iter::repeat_n("?", insert_columns.len())
             .collect::<Vec<_>>()
@@ -1453,13 +2317,15 @@ fn repair_missing_local_thread_catalog_rows(
         }
         if inserted > 0 {
             update_local_catalog_metadata(&tx, &metadata_columns, inserted)?;
-            update_local_catalog_sync_state(
-                &tx,
-                &sync_columns,
-                &host_id,
-                observation_sequence,
-                max_source_updated_at,
-            )?;
+            if update_full_sync_state {
+                update_local_catalog_sync_state(
+                    &tx,
+                    &sync_columns,
+                    &host_id,
+                    observation_sequence,
+                    max_source_updated_at,
+                )?;
+            }
         }
         tx.commit()?;
         total_inserted += inserted;
@@ -1470,6 +2336,7 @@ fn repair_missing_local_thread_catalog_rows(
 fn collect_catalog_repair_threads(
     paths: &[PathBuf],
     target_provider: &str,
+    thread_ids: Option<&HashSet<String>>,
 ) -> anyhow::Result<HashMap<String, CatalogRepairThread>> {
     let mut threads = HashMap::new();
     for path in paths {
@@ -1515,6 +2382,9 @@ fn collect_catalog_repair_threads(
         })?;
         for item in rows {
             let thread = item?;
+            if thread_ids.is_some_and(|thread_ids| !thread_ids.contains(&thread.id)) {
+                continue;
+            }
             let replace = threads
                 .get(&thread.id)
                 .map(|current: &CatalogRepairThread| {
@@ -1545,30 +2415,41 @@ fn catalog_supports_repair(columns: &HashSet<String>) -> bool {
     .all(|column| columns.contains(*column))
 }
 
-fn local_catalog_host_id(db: &Connection) -> anyhow::Result<String> {
-    if !table_columns(db, "local_thread_catalog_hosts")?.contains("host_id") {
-        return Ok("local".to_string());
+fn local_catalog_host_id(db: &Connection) -> anyhow::Result<Option<String>> {
+    let columns = table_columns(db, "local_thread_catalog_hosts")?;
+    if !columns.contains("host_id") {
+        return Ok(Some("local".to_string()));
     }
-    match db.query_row(
-        "SELECT host_id FROM local_thread_catalog_hosts ORDER BY host_id LIMIT 1",
-        [],
-        |row| row.get::<_, String>(0),
-    ) {
-        Ok(host_id) if !host_id.trim().is_empty() => Ok(host_id),
-        Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => Ok("local".to_string()),
+    let query = if columns.contains("host_kind") {
+        "SELECT host_id FROM local_thread_catalog_hosts WHERE LOWER(COALESCE(host_kind, '')) = 'local' ORDER BY host_id LIMIT 1"
+    } else {
+        "SELECT host_id FROM local_thread_catalog_hosts WHERE host_id = 'local' LIMIT 1"
+    };
+    match db.query_row(query, [], |row| row.get::<_, String>(0)) {
+        Ok(host_id) if !host_id.trim().is_empty() => Ok(Some(host_id)),
+        Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(error) => Err(error.into()),
     }
 }
 
-fn local_catalog_max_observation_sequence(db: &Connection) -> anyhow::Result<i64> {
-    if !table_columns(db, "local_thread_catalog")?.contains("observation_sequence") {
+fn local_catalog_max_observation_sequence(db: &Connection, host_id: &str) -> anyhow::Result<i64> {
+    let columns = table_columns(db, "local_thread_catalog")?;
+    if !columns.contains("observation_sequence") {
         return Ok(0);
     }
-    Ok(db.query_row(
-        "SELECT COALESCE(MAX(observation_sequence), 0) FROM local_thread_catalog",
-        [],
-        |row| row.get::<_, i64>(0),
-    )?)
+    if columns.contains("host_id") {
+        Ok(db.query_row(
+            "SELECT COALESCE(MAX(observation_sequence), 0) FROM local_thread_catalog WHERE host_id = ?1",
+            [host_id],
+            |row| row.get::<_, i64>(0),
+        )?)
+    } else {
+        Ok(db.query_row(
+            "SELECT COALESCE(MAX(observation_sequence), 0) FROM local_thread_catalog",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?)
+    }
 }
 
 fn local_catalog_contains_thread(

@@ -90,7 +90,11 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
             .contains("<string>Codex++ 管理工具</string>")
     );
     assert!(manager.info_plist.contains("<string>dreamskin</string>"));
-    assert!(manager.info_plist.contains("<string>codexplusplus</string>"));
+    assert!(
+        manager
+            .info_plist
+            .contains("<string>codexplusplus</string>")
+    );
     assert!(!silent.info_plist.contains("<string>dreamskin</string>"));
     assert_eq!(
         silent.binary_target_name.as_deref(),

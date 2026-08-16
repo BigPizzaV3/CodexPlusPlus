@@ -13,6 +13,7 @@ export type RelayProfile = {
   protocol: RelayProtocol;
   relayMode: string;
   officialMixApiKey: boolean;
+  hideOfficialUsageAlert: boolean;
   testModel: string;
   configContents: string;
   authContents: string;
@@ -48,6 +49,7 @@ export function createPresetPatch(preset: ProviderPreset): PresetPatch {
     modelList: preset.modelList?.join("\n") ?? "",
     relayMode: preset.category === "official" ? "official" : "pureApi",
     officialMixApiKey: false,
+    hideOfficialUsageAlert: false,
   };
 }
 

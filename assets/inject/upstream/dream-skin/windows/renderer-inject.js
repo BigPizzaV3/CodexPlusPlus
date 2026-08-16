@@ -289,7 +289,10 @@
     const root = document.documentElement;
     root?.classList.remove(...ROOT_CLASSES);
     for (const property of ROOT_PROPERTIES) root?.style.removeProperty(property);
-    document.querySelectorAll(".dream-home").forEach((node) => node.classList.remove("dream-home"));
+    document.querySelectorAll(".dream-home").forEach((node) => {
+      node.classList.remove("dream-home");
+      node.removeAttribute("data-dream-home-layout");
+    });
     document.querySelectorAll(".dream-task").forEach((node) => node.classList.remove("dream-task"));
     document.querySelectorAll(".dream-home-shell").forEach((node) => node.classList.remove("dream-home-shell"));
     document.querySelectorAll(`.${HOME_UTILITY_CLASS}`).forEach((node) => node.classList.remove(HOME_UTILITY_CLASS));
@@ -388,17 +391,41 @@
       style.dataset.dreamVersion = "3";
     }
 
-    const home = document.querySelector('[role="main"]:has([data-testid="home-icon"])');
+    const homeCandidate = document.querySelector('[role="main"]:has([data-testid="home-icon"])');
+    const homeHasClassicChrome = !!(
+      homeCandidate
+      && homeCandidate.querySelector('[data-feature="game-source"]')
+      && (
+        homeCandidate.querySelector('.group\\/home-suggestions')
+        || homeCandidate.querySelector('[class*="home-suggestions"]')
+        || homeCandidate.querySelector('[class*="_homeUtilityBar_"]')
+      )
+    );
+    // New-chat drafts look like home, but do not have the classic home structure.
+    const home = homeHasClassicChrome ? homeCandidate : null;
     for (const candidate of document.querySelectorAll('[role="main"]')) {
-      candidate.classList.toggle("dream-home", candidate === home);
-      candidate.classList.toggle("dream-task", candidate !== home);
+      const isStructuredHome = candidate === home;
+      const isSoftHome = candidate === homeCandidate && !home;
+      candidate.classList.toggle("dream-home", isStructuredHome || isSoftHome);
+      candidate.classList.toggle("dream-task", !(isStructuredHome || isSoftHome));
+      if (isStructuredHome) {
+        const hero = candidate.querySelector(":scope > div > div > div");
+        const structured = !!(
+          hero
+          && candidate.querySelector('[data-feature="game-source"]')
+          && hero.querySelector('[data-feature="game-source"], [data-testid="home-icon"]')
+        );
+        candidate.setAttribute("data-dream-home-layout", structured ? "structured" : "soft");
+      } else {
+        candidate.setAttribute("data-dream-home-layout", "soft");
+      }
     }
     const utilityBars = new Set(home ? home.querySelectorAll('[class*="_homeUtilityBar_"]') : []);
     for (const candidate of document.querySelectorAll(`.${HOME_UTILITY_CLASS}`)) {
       if (!utilityBars.has(candidate)) candidate.classList.remove(HOME_UTILITY_CLASS);
     }
     for (const candidate of utilityBars) candidate.classList.add(HOME_UTILITY_CLASS);
-    shellMain.classList.toggle("dream-home-shell", Boolean(home));
+    shellMain.classList.toggle("dream-home-shell", Boolean(homeCandidate));
     reconcileAuxiliaryPanels(shellMain);
 
     let chrome = document.getElementById(CHROME_ID);
@@ -445,7 +472,7 @@
   });
   const timer = setInterval(ensure, 5000);
   window[STATE_KEY] = {
-    ensure, cleanup, observer, timer, scheduler, artUrl, profile, config, installToken, version: "1.2.0",
+    ensure, cleanup, observer, timer, scheduler, artUrl, profile, config, installToken, version: "1.2.1-newchat-fix",
   };
   ensure();
   analyzeArt().then((result) => {
@@ -455,5 +482,5 @@
     state.profile = result;
     ensure();
   });
-  return { installed: true, version: "1.2.0", adaptive: true };
+  return { installed: true, version: "1.2.1-newchat-fix", adaptive: true };
 })(__DREAM_CSS_JSON__, __DREAM_ART_JSON__, __DREAM_THEME_JSON__)

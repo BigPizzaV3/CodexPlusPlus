@@ -113,7 +113,80 @@ experimental_bearer_token = "ark-key"
 }
 
 #[tokio::test]
-async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
+async fn model_catalog_reports_effective_service_tier_from_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server(json!({
+        "data": [
+            {"id": "qwen3-coder"}
+        ]
+    }));
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "qwen3-coder"
+model_provider = "relay"
+service_tier = "fast"
+
+[model_providers.relay]
+name = "Relay"
+base_url = "{}"
+experimental_bearer_token = "relay-key"
+"#,
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["service_tier"], "fast");
+    server.finish();
+}
+
+#[tokio::test]
+async fn model_catalog_service_tier_is_null_when_config_does_not_set_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server(json!({
+        "data": [
+            {"id": "qwen3-coder"}
+        ]
+    }));
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "qwen3-coder"
+model_provider = "relay"
+
+[model_providers.relay]
+name = "Relay"
+base_url = "{}"
+experimental_bearer_token = "relay-key"
+"#,
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["service_tier"], serde_json::Value::Null);
+    server.finish();
+}
+
+#[tokio::test]
+async fn model_catalog_uses_active_relay_profile_model_list_and_actual_provider() {
     let temp = tempfile::tempdir().unwrap();
     let codex_home = temp.path().join("codex-home");
     std::fs::create_dir_all(&codex_home).unwrap();
@@ -125,27 +198,38 @@ async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
         std::env::set_var("CODEX_HOME", &codex_home);
     }
 
-    let result = async {
-        SettingsStore::new(settings_path)
-            .save(&BackendSettings {
-                active_relay_id: "relay-a".to_string(),
-                relay_profiles: vec![RelayProfile {
-                    id: "relay-a".to_string(),
-                    name: "Relay A".to_string(),
-                    model: "qwen3-coder".to_string(),
-                    base_url: "https://example.test/v1".to_string(),
-                    protocol: RelayProtocol::Responses,
-                    relay_mode: RelayMode::MixedApi,
-                    model_list: "deepseek-coder\nqwen3-coder\nclaude-compatible\ngpt-5.6-sol"
-                        .to_string(),
-                    config_contents: "model = \"qwen3-coder\"\n".to_string(),
-                    ..RelayProfile::default()
-                }],
-                ..BackendSettings::default()
-            })
-            .unwrap();
+    let (result, live_fallback_result) = async {
+        write_config(
+            &codex_home,
+            "model = \"qwen3-coder\"\nmodel_provider = \"live_vendor\"\n",
+        );
+        let store = SettingsStore::new(settings_path);
+        let mut settings = BackendSettings {
+            active_relay_id: "relay-a".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "relay-a".to_string(),
+                name: "Relay A".to_string(),
+                model: "qwen3-coder".to_string(),
+                base_url: "https://example.test/v1".to_string(),
+                protocol: RelayProtocol::Responses,
+                relay_mode: RelayMode::MixedApi,
+                model_list: "deepseek-coder\nqwen3-coder\nclaude-compatible\ngpt-5.6-sol"
+                    .to_string(),
+                config_contents: "model = \"qwen3-coder\"\nmodel_provider = \"vendor_alpha\"\n"
+                    .to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+        store.save(&settings).unwrap();
+        let result = read_codex_model_catalog().await;
 
-        read_codex_model_catalog().await
+        settings.relay_profiles[0].relay_mode = RelayMode::Official;
+        settings.relay_profiles[0].official_mix_api_key = false;
+        settings.relay_profiles[0].config_contents = "model = \"qwen3-coder\"\n".to_string();
+        store.save(&settings).unwrap();
+        let live_fallback_result = read_codex_model_catalog().await;
+        (result, live_fallback_result)
     }
     .await;
 
@@ -161,6 +245,8 @@ async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
 
     assert_eq!(result["status"], "ok");
     assert_eq!(result["model_provider"], "relay-a");
+    assert_eq!(result["codex_model_provider"], "vendor_alpha");
+    assert_eq!(live_fallback_result["codex_model_provider"], "live_vendor");
     assert_eq!(result["provider_name"], "Relay A");
     assert_eq!(result["default_model"], "qwen3-coder");
     assert_eq!(

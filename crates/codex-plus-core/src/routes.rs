@@ -127,6 +127,9 @@ pub trait BridgeDataService: Send + Sync {
     ) -> anyhow::Result<Value>;
     async fn thread_sort_key(&self, session: SessionRef) -> anyhow::Result<Value>;
     async fn thread_sort_keys(&self, sessions: Vec<SessionRef>) -> anyhow::Result<Value>;
+    async fn recover_remote_control_session(&self, _thread_id: String) -> anyhow::Result<Value> {
+        anyhow::bail!("Remote Control session recovery is unavailable")
+    }
 }
 
 pub async fn handle_bridge_request(
@@ -187,7 +190,10 @@ pub async fn handle_bridge_request(
         "/manager/open" => ctx.runtime.open_manager().await,
         "/manager/open-transient" => ctx.runtime.open_transient_manager().await,
         "/taskboard/open" => taskboard_open_value(ctx.settings.get_settings().await),
-        "/backend/status" => ctx.runtime.backend_status().await,
+        "/backend/status" => backend_status_value(
+            ctx.runtime.backend_status().await,
+            ctx.settings.get_settings().await,
+        ),
         "/codex-model-catalog" | "/codex-config-model" => ctx.runtime.codex_model_catalog().await,
         "/diagnostics/log" => diagnostic_log_value(payload.clone()),
         "/llm-proxy" => llm_proxy_value(payload.clone()).await,
@@ -272,6 +278,15 @@ pub async fn handle_bridge_request(
             ctx.data
                 .thread_sort_keys(sessions_from_payload(&payload))
                 .await
+        }
+        "/remote-control-session/recover" => {
+            let thread_id = payload
+                .get("thread_id")
+                .or_else(|| payload.get("threadId"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            ctx.data.recover_remote_control_session(thread_id).await
         }
         _ => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -771,6 +786,20 @@ async fn settings_value(
     let settings = result?;
     let codex_app_version = ctx.settings.codex_app_version().await.unwrap_or_default();
     settings_payload_value(settings, codex_app_version)
+}
+
+fn backend_status_value(
+    status: anyhow::Result<Value>,
+    settings: anyhow::Result<BackendSettings>,
+) -> anyhow::Result<Value> {
+    let mut status = status?;
+    if let Some(object) = status.as_object_mut() {
+        let hide = settings
+            .map(|settings| crate::assets::hide_official_usage_alert_config(&settings))
+            .unwrap_or(false);
+        object.insert("hideOfficialUsageAlert".to_string(), Value::Bool(hide));
+    }
+    Ok(status)
 }
 
 fn result_value<T>(result: anyhow::Result<T>) -> anyhow::Result<Value>
