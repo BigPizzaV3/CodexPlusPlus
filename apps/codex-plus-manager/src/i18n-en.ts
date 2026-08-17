@@ -709,6 +709,7 @@ export const EN_PLAIN: Record<string, string> = {
   "添加供应商": "Add provider",
   "添加模型": "Add model",
   "添加聚合供应商": "Add aggregate provider",
+  "清空模型": "Clear models",
   "清空选择": "Clear selection",
   "清除保存路径": "Clear saved path",
   "清理幽灵任务索引": "Clean up ghost task index",

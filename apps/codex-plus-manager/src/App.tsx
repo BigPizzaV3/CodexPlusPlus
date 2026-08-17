@@ -95,7 +95,7 @@ import {
   type ImageHandling,
   type ModelWindowRow,
 } from "./model-windows";
-import { relayAuthForLiveDraft } from "./relay-live-files";
+import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
 import { resolveProviderSyncCompletion } from "./provider-sync-flow";
 import { resolveLaunchStatus } from "./launch-status";
 import {
@@ -2584,8 +2584,8 @@ export function App() {
     next: BackendSettings,
     previousActiveRelayId: string,
   ): Promise<BackendSettings> => {
+    if (!shouldBackfillRelayProfileBeforeSwitch(previousActiveRelayId, next.activeRelayId)) return next;
     const profileId = previousActiveRelayId.trim();
-    if (!profileId) return next;
     const result = await run(() =>
       call<SettingsBackfillResult>("backfill_relay_profile_from_live", {
         request: { settings: next, profileId },
@@ -6611,12 +6611,7 @@ function RelayProfileDetail({
     const savedProfile = savedSettings.relayProfiles.find((candidate) => candidate.id === normalizedDraft.id)
       ?? normalizedDraft;
     if (isActive && savedSettings.relayProfilesEnabled && relayProfileUsesLiveFiles(savedProfile)) {
-      await actions.saveRelayFile(
-        "config",
-        effectiveRelayConfigPreview(savedProfile, savedSettings, savedProfile),
-        true,
-      );
-      await actions.saveRelayFile("auth", savedProfile.authContents, true);
+      await actions.switchRelayProfile(savedSettings, savedSettings.activeRelayId);
     }
     onSaved?.();
   };
@@ -7051,6 +7046,17 @@ function RelayProfileEditor({
                 >
                   <Download className="h-4 w-4" />
                   {t("从上游获取")}
+                </Button>
+                <Button
+                  disabled={!modelWindowRows.some((row) => row.model.trim())}
+                  onClick={() => setModelWindowRows([{ model: "", window: "", imageHandling: "send-as-is" }])}
+                  size="sm"
+                  title={t("清空模型")}
+                  type="button"
+                  variant="outline"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {t("清空模型")}
                 </Button>
               </div>
             </div>

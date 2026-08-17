@@ -47,7 +47,7 @@ test("model route inputs keep focus while editing and label the example placehol
   assert.match(source, /relayModelRoutesSettingsValidation\(validationSettings\)/);
   assert.match(
     source,
-    /if \(requiresRestart\) \{[\s\S]*?actions\.restart\(true\)[\s\S]*?return;[\s\S]*?actions\.saveRelayFile/,
+    /if \(requiresRestart\) \{[\s\S]*?actions\.restart\(true\)[\s\S]*?return;[\s\S]*?actions\.switchRelayProfile\(savedSettings, savedSettings\.activeRelayId\)/,
   );
 });
 
