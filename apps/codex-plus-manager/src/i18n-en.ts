@@ -5,6 +5,10 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "主导航": "Main navigation",
+  "工作区": "Workspace",
+  "扩展": "Extensions",
+  "系统": "System",
   "Codex 启动失败。": "Codex failed to start.",
   "Codex 已启动，增强功能仍在等待页面连接。": "Codex started, but enhancements are still waiting for the page connection.",
   "Codex 已成功启动。": "Codex started successfully.",
@@ -337,6 +341,9 @@ export const EN_PLAIN: Record<string, string> = {
   "保存策略": "Save strategy",
   "保存自动修复设置": "Save auto-repair settings",
   "保存设置": "Save settings",
+  "设置有修改时，保存后才会写入本地配置。": "Save to write changed settings to the local configuration.",
+  "修复历史会话": "Repair historical sessions",
+  "启动 Codex 前整理旧对话的归属标记。": "Organize historical session ownership before Codex starts.",
   "保存路径": "Saved path",
   "修复入口": "Repair entrypoints",
   "修复快捷方式": "Repair shortcuts",
@@ -427,7 +434,6 @@ export const EN_PLAIN: Record<string, string> = {
   "启用": "Enable",
   "启用 Codex 图片覆盖层": "Enable Codex image overlay",
   "启用 Codex增强": "Enable Codex enhancements",
-  "启用 Windows Computer Use Guard": "Enable Windows Computer Use Guard",
   "启用供应商配置切换": "Enable provider configuration switching",
   "启用此扩展项": "Enable this entry",
   "启用目标功能": "Enable goals feature",
@@ -857,8 +863,6 @@ export const EN_PLAIN: Record<string, string> = {
   "额外参数": "Extra arguments",
   "高级选项，默认关闭；当前实现不主动改写 Zed settings。": "Advanced option, off by default; the current implementation doesn't actively modify Zed settings.",
   "默认中转": "Default relay",
-  "默认关闭；开启后启动 Codex 时会自动保留官方 Computer Use 插件所需的 config.toml、bundled 插件和 notify 配置。":
-    "Off by default; when on, launching Codex automatically preserves the config.toml, bundled plugins and notify config required by the official Computer Use plugin.",
   "默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。":
     "The model name used by default when launching Codex; don't include a suffix. Configure context windows per model in the “Model list” below.",
   "默认关闭；无 VPN 时可开启，让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。":
