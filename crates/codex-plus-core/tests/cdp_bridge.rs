@@ -868,6 +868,7 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
 fn injection_script_omits_plugin_auto_expand() {
     let script = assets::injection_script(57321);
 
+    assert!(!script.contains("schedulePluginAutoExpand"));
     assert!(!script.contains("pluginAutoExpand"));
     assert!(!script.contains("codexPluginAutoExpand"));
     assert!(!script.contains("plugin_auto_expand"));
