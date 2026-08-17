@@ -268,6 +268,7 @@ goals = true
         name: "官方".to_string(),
         relay_mode: RelayMode::Official,
         official_mix_api_key: false,
+        hide_official_usage_alert: false,
         auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#
             .to_string(),
         ..RelayProfile::default()

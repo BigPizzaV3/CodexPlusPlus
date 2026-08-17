@@ -193,6 +193,7 @@ async fn responses_compact_request_keeps_compact_path_upstream() {
             api_key: "sk-compact".to_string(),
             relay_mode: RelayMode::Official,
             official_mix_api_key: true,
+            hide_official_usage_alert: false,
             ..RelayProfile::default()
         }],
         ..BackendSettings::default()

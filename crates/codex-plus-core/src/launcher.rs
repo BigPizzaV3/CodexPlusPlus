@@ -145,6 +145,13 @@ pub trait LaunchHooks: Send + Sync {
     fn select_helper_port(&self, requested: u16) -> u16;
     async fn load_settings(&self) -> anyhow::Result<BackendSettings>;
     async fn run_provider_sync(&self) -> anyhow::Result<()>;
+    fn has_pending_remote_control_session_recoveries(&self) -> bool {
+        false
+    }
+    fn remote_control_session_recovery_is_safe_to_run(&self) -> bool {
+        true
+    }
+    async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()>;
     async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
     }
@@ -283,6 +290,16 @@ where
             crate::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
                 &home,
                 "launcher.after_provider_sync",
+            );
+        }
+        if hooks.has_pending_remote_control_session_recoveries()
+            && hooks.remote_control_session_recovery_is_safe_to_run()
+        {
+            hooks.run_remote_control_session_recovery().await?;
+        } else if hooks.has_pending_remote_control_session_recoveries() {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.remote_control_session_finalization_deferred",
+                serde_json::json!({"reason": "desktop_writer_active"}),
             );
         }
         crate::dream_skin::sync_default_dream_skin_base_theme(
@@ -546,6 +563,16 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
         anyhow::bail!("provider sync requires launcher hooks with codex-plus-data integration")
+    }
+
+    async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()> {
+        anyhow::bail!(
+            "Remote Control session recovery requires launcher hooks with codex-plus-data integration"
+        )
+    }
+
+    fn remote_control_session_recovery_is_safe_to_run(&self) -> bool {
+        crate::watcher::find_session_index_cleanup_blocking_processes().is_empty()
     }
 
     async fn apply_active_relay_profile(&self, settings: &BackendSettings) -> anyhow::Result<()> {
@@ -1162,6 +1189,9 @@ async fn handle_helper_connection(
                 "status": "ok",
                 "message": "后端已连接",
                 "version": crate::version::VERSION,
+                "hideOfficialUsageAlert": crate::assets::hide_official_usage_alert_config(
+                    &crate::settings::SettingsStore::default().load().unwrap_or_default()
+                ),
                 "transport": "http-helper"
             }))?,
             "application/json; charset=utf-8".to_string(),

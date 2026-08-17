@@ -449,6 +449,52 @@ fn injection_script_exposes_image_overlay_config() {
 }
 
 #[test]
+fn official_login_usage_alert_setting_controls_renderer_injection() {
+    use codex_plus_core::settings::{RelayMode, RelayProfile};
+
+    let settings = |relay_mode, hide_official_usage_alert, official_mix_api_key| {
+        codex_plus_core::settings::BackendSettings {
+            active_relay_id: "official".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "official".to_string(),
+                relay_mode,
+                official_mix_api_key,
+                hide_official_usage_alert,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    };
+
+    assert!(
+        assets::injection_script_with_settings(57321, &settings(RelayMode::Official, true, false))
+            .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = true;")
+    );
+    assert!(
+        assets::injection_script_with_settings(57321, &settings(RelayMode::Official, true, true))
+            .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = true;")
+    );
+    assert!(
+        assets::injection_script_with_settings(57321, &settings(RelayMode::Official, false, false))
+            .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;")
+    );
+    assert!(
+        assets::injection_script_with_settings(57321, &settings(RelayMode::PureApi, true, false))
+            .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;")
+    );
+}
+
+#[test]
+fn usage_alert_hider_uses_sidebar_semantics_instead_of_percentage_copy() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("officialUsageAlertCards"));
+    assert!(script.contains("progress[max=\"100\"]"));
+    assert!(script.contains("dismiss usage alert|关闭使用量提醒"));
+    assert!(script.contains("codexPlusUsageAlertHidden"));
+}
+
+#[test]
 fn injection_script_installs_image_overlay_from_data_uri() {
     let script = assets::injection_script(57321);
 
@@ -1307,7 +1353,139 @@ fn injection_script_refreshes_sidebar_after_session_undo() {
 }
 
 #[test]
-fn injection_script_moves_export_into_more_menu() {
+fn injection_script_guards_temporary_new_thread_ids_before_delete() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("function isClientNewThreadId(value)"));
+    assert!(script.contains("function normalizedCodexThreadUuid(value)"));
+    assert!(script.contains("function reactConversationIdFromRow(row)"));
+    assert!(script.contains("__reactFiber$"));
+    assert!(script.contains("props?.conversationId"));
+    assert!(!script.contains("props?.threadId || props?.sessionId"));
+    assert!(script.contains("|| /(?:^|[=/])(?:local:)?client-new-thread:/i.test(href)"));
+    assert!(script.contains(
+        "? canonicalHrefId || (!hrefIsTemporary ? reactConversationIdFromRow(row) : \"\")"
+    ));
+    assert!(script.contains("const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, sessionRefFromRow(row), event)"));
+    assert!(script.contains("会话仍在同步，请稍后重试"));
+    assert!(script.contains("attributeFilter: [\"data-app-action-sidebar-thread-id\", \"href\"]"));
+
+    let cases = run_session_ref_contract_harness();
+    assert_eq!(
+        cases["canonicalAttribute"],
+        "11111111-1111-4111-8111-111111111111"
+    );
+    assert_eq!(
+        cases["canonicalHref"],
+        "22222222-2222-4222-8222-222222222222"
+    );
+    assert_eq!(
+        cases["conversationId"],
+        "33333333-3333-4333-8333-333333333333"
+    );
+    assert_eq!(cases["unrelatedIds"], "");
+    assert_eq!(cases["temporaryHref"], "");
+}
+
+fn run_session_ref_contract_harness() -> serde_json::Value {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("renderer-inject.js");
+    let harness_path = temp.path().join("session-ref-harness.cjs");
+    std::fs::write(&script_path, assets::injection_script(57321))
+        .expect("injection script should be written");
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    write!(
+        harness,
+        r#"
+const scriptPath = {script_path};
+function node() {{
+  return {{
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
+    closest() {{ return null; }}, getAttribute() {{ return null; }},
+    classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
+    dataset: {{}}, style: {{}}, children: [], isConnected: true, textContent: "", innerHTML: "",
+  }};
+}}
+globalThis.window = globalThis;
+window.__CODEX_PLUS_TEST_SESSION_REF__ = true;
+window.addEventListener = () => {{}};
+window.removeEventListener = () => {{}};
+window.dispatchEvent = () => true;
+globalThis.MutationObserver = class {{ observe() {{}} disconnect() {{}} }};
+globalThis.ResizeObserver = class {{ observe() {{}} disconnect() {{}} }};
+globalThis.IntersectionObserver = class {{ observe() {{}} disconnect() {{}} }};
+globalThis.requestAnimationFrame = (callback) => setTimeout(callback, 0);
+globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
+globalThis.setInterval = () => 0;
+globalThis.clearInterval = () => {{}};
+globalThis.document = {{
+  scripts: [], documentElement: node(), body: node(), createElement: () => node(),
+  getElementById: () => null, querySelector: () => null, querySelectorAll: () => [],
+  addEventListener() {{}}, removeEventListener() {{}},
+}};
+globalThis.localStorage = {{ getItem: () => null, setItem() {{}}, removeItem() {{}} }};
+globalThis.sessionStorage = globalThis.localStorage;
+globalThis.location = {{ href: "https://codex.test/index.html", pathname: "/index.html", search: "", hash: "" }};
+window.location = globalThis.location;
+globalThis.navigator = {{ userAgent: "node-test", sendBeacon: () => false }};
+globalThis.performance = {{ getEntriesByType: () => [] }};
+globalThis.fetch = async () => ({{ ok: true, json: async () => ({{}}) }});
+require(scriptPath);
+
+const api = window.__codexPlusSessionRefTest;
+const placeholder = "local:client-new-thread:fixture";
+const row = (attributes, props = null) => {{
+  const value = {{
+    getAttribute: (name) => attributes[name] || null,
+    querySelector: () => null,
+    textContent: "Fixture",
+  }};
+  if (props) value.__reactFiber$fixture = {{ pendingProps: props, memoizedProps: null, return: null }};
+  return value;
+}};
+const sessionId = (value) => api.fromRow(value).session_id;
+const cases = {{
+  canonicalAttribute: sessionId(row({{ "data-app-action-sidebar-thread-id": "11111111-1111-4111-8111-111111111111" }})),
+  canonicalHref: sessionId(row({{
+    "data-app-action-sidebar-thread-id": placeholder,
+    href: "/thread/22222222-2222-4222-8222-222222222222",
+  }})),
+  conversationId: sessionId(row(
+    {{ "data-app-action-sidebar-thread-id": placeholder }},
+    {{ conversationId: "33333333-3333-4333-8333-333333333333" }},
+  )),
+  unrelatedIds: sessionId(row(
+    {{ "data-app-action-sidebar-thread-id": placeholder }},
+    {{ threadId: "44444444-4444-4444-8444-444444444444", sessionId: "55555555-5555-4555-8555-555555555555" }},
+  )),
+  temporaryHref: sessionId(row(
+    {{ "data-app-action-sidebar-thread-id": placeholder, href: "/thread/client-new-thread:fixture" }},
+    {{ conversationId: "66666666-6666-4666-8666-666666666666" }},
+  )),
+}};
+process.stdout.write(JSON.stringify(cases));
+process.exit(0);
+"#,
+        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+            .expect("script path should serialize")
+    )
+    .expect("harness should be written");
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should execute session reference harness");
+    assert!(
+        output.status.success(),
+        "session reference harness failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("session reference harness output should be JSON")
+}
+
+#[test]
+fn injection_script_moves_export_and_project_move_into_more_menu() {
     let script = assets::injection_script(57321).replace("\r\n", "\n");
 
     assert!(script.contains("moreButtonClass = \"codex-session-more-button\""));
@@ -1362,7 +1540,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"4\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"5\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -1373,6 +1551,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("model_whitelist_refresh_scheduled"));
     assert!(script.contains("available_models"));
     assert!(script.contains("modelWhitelistUnlock"));
+    assert!(!script.contains("|| settingsResp.relayProfiles[0]"));
     assert!(script.contains("refreshCodexModelWhitelistFromScan"));
     assert!(script.contains("codexPlusModelListRequestIds.size === 0"));
     assert!(!script.contains("function patchReactModelState"));
@@ -1528,21 +1707,6 @@ fn injection_script_refreshes_sidebar_after_undo_without_stale_asset_exports() {
 }
 
 #[test]
-fn injection_script_clears_project_state_when_moving_to_projectless() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("async function clearThreadWorkspaceHints"));
-    assert!(script.contains("async function clearThreadWritableRoots"));
-    assert!(script.contains("async function clearThreadProjectlessOutputDirectories"));
-    assert!(script.contains("thread-workspace-root-hints"));
-    assert!(script.contains("thread-writable-roots"));
-    assert!(script.contains("thread-projectless-output-directories"));
-    assert!(script.contains("await clearThreadWorkspaceHints(ref)"));
-    assert!(script.contains("await clearThreadWritableRoots(ref)"));
-    assert!(script.contains("await clearThreadProjectlessOutputDirectories(ref)"));
-}
-
-#[test]
 fn injection_script_applies_fast_service_tier_contract() {
     let cases = run_service_tier_contract_harness();
 
@@ -1631,7 +1795,54 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["legacyStateApi"], true);
     assert_eq!(cases["currentStateApi"], true);
     assert_eq!(cases["appServerParamsUnchanged"], true);
-    assert_eq!(cases["appServerSentCount"], 1);
+    assert_eq!(cases["appServerSentCount"], 2);
+    assert_eq!(
+        cases["providerFromMissing"]["modelProvider"],
+        "vendor_alpha"
+    );
+    assert_eq!(cases["providerFromOpenAi"]["modelProvider"], "vendor_alpha");
+    assert_eq!(cases["providerFromOtherUnchanged"], true);
+    assert_eq!(cases["nonThreadProviderUnchanged"], true);
+    assert_eq!(
+        cases["providerWithServiceTierControlsDisabled"]["modelProvider"],
+        "vendor_alpha"
+    );
+    assert_eq!(cases["appServerProviderOverride"], "vendor_alpha");
+    assert_eq!(cases["directThreadStartedId"], "thread-mobile-direct");
+    assert_eq!(cases["nestedThreadStartedId"], "thread-mobile-nested");
+    assert_eq!(
+        cases["browserUseRouteThreadId"],
+        "thread-mobile-browser-route"
+    );
+    assert_eq!(cases["inactiveBrowserUseUnscheduled"], true);
+    assert_eq!(cases["remoteRecoveryScheduled"], true);
+    assert_eq!(cases["remoteRecoveryThreadId"], "thread-mobile-notify");
+    assert_eq!(cases["remoteRecoveryCallCountAfterSuccess"], 1);
+    assert_eq!(cases["remoteRecoveryDispatcherInstalled"], true);
+    assert_eq!(
+        cases["remoteRecoveryDispatcherThreadId"],
+        "thread-mobile-dispatcher"
+    );
+    assert_eq!(
+        cases["remoteRecoveryBrowserUseDispatcherThreadId"],
+        "thread-mobile-browser-dispatcher"
+    );
+    assert_eq!(
+        cases["remoteRecoveryOutboundRouteThreadId"],
+        "thread-mobile-browser-outbound"
+    );
+    assert_eq!(cases["remoteRecoveryListenerInstalled"], true);
+    assert_eq!(
+        cases["remoteRecoveryViewEventThreadId"],
+        "thread-mobile-view-event"
+    );
+    assert_eq!(cases["remoteRecoveryRetried"], true);
+    assert_eq!(cases["remoteRecoveryRetryAttempts"], json!([0, 1]));
+    assert_eq!(cases["missingActiveProviderUnchanged"], true);
+    assert_eq!(cases["missingActiveRecoveryUnscheduled"], true);
+    assert_eq!(cases["pureApiProviderUnchanged"], true);
+    assert_eq!(cases["pureApiRecoveryUnscheduled"], true);
+    assert_eq!(cases["pureOfficialProviderUnchanged"], true);
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
@@ -1669,6 +1880,11 @@ function node() {{
 }}
 globalThis.window = globalThis;
 window.__CODEX_PLUS_TEST_SERVICE_TIER__ = true;
+const windowListeners = new Map();
+window.addEventListener = (type, listener) => windowListeners.set(type, listener);
+window.removeEventListener = (type, listener) => {{
+  if (windowListeners.get(type) === listener) windowListeners.delete(type);
+}};
 globalThis.document = {{
   scripts: [],
   documentElement: node(),
@@ -1904,6 +2120,160 @@ const appServerParamsUnchanged = appServerCalls[0]?.params === nativeAppServerPa
   && appServerCalls[0]?.params?.workspaceKind === "project"
   && appServerCalls[0]?.params?.cwd === "C:/native/work"
   && appServerCalls[0]?.params?.projectAssignment?.projectId === "C:/native/work";
+api.setBackendSettings({{
+  relayProfilesEnabled: true,
+  activeRelayId: "custom-relay",
+  relayProfiles: [{{ id: "custom-relay", relayMode: "official", officialMixApiKey: true }}],
+}});
+api.setModelCatalog({{
+  status: "ok",
+  model: "gpt-5.6-sol",
+  default_model: "gpt-5.6-sol",
+  model_provider: "relay-ms0ihvx9",
+  codex_model_provider: "vendor_alpha",
+  models: ["gpt-5.6-sol"],
+}});
+localStorage.setItem("codexPlusSettings", JSON.stringify({{ serviceTierControls: false }}));
+const providerFromMissing = api.applyProviderOverride("thread/start", {{ cwd: "C:/mobile" }});
+const providerFromOpenAi = api.applyProviderOverride("thread/start", {{ cwd: "C:/mobile", modelProvider: "openai" }});
+const explicitOtherProvider = {{ cwd: "C:/mobile", modelProvider: "other" }};
+const providerFromOther = api.applyProviderOverride("thread/start", explicitOtherProvider);
+const nonThreadParams = {{ cwd: "C:/mobile", modelProvider: "openai" }};
+const nonThreadProviderUnchanged = api.applyProviderOverride("turn/start", nonThreadParams) === nonThreadParams;
+const providerWithServiceTierControlsDisabled = api.requestOverride({{
+  type: "start-conversation",
+  cwd: "C:/mobile",
+  modelProvider: "openai",
+}});
+await appServerClient.sendRequest("thread/start", {{ cwd: "C:/mobile", modelProvider: "openai" }}, {{ signal: "mobile" }});
+const appServerProviderOverride = appServerCalls[1]?.params?.modelProvider;
+const directThreadStartedId = api.remoteSessionStartedThreadId({{
+  method: "thread/started",
+  params: {{ thread: {{ id: "thread-mobile-direct" }} }},
+}});
+const nestedThreadStartedId = api.remoteSessionStartedThreadId({{
+  type: "mcp-response",
+  message: {{ method: "thread/started", params: {{ thread: {{ id: "thread-mobile-nested" }} }} }},
+}});
+const browserUseRouteThreadId = api.remoteSessionStartedThreadId({{
+  type: "browser-use-session-route-capture",
+  conversationId: "thread-mobile-browser-route",
+}});
+const inactiveBrowserUseUnscheduled = api.observeRemoteSessionNotification({{
+  type: "browser-sidebar-browser-use-state",
+  conversationId: "thread-mobile-browser-inactive",
+  isActive: false,
+}}) === false;
+const remoteRecoveryCalls = [];
+const remoteRecoveryDispatcherHandlers = new Map();
+const remoteRecoveryDispatcher = {{
+  subscribe(type, callback) {{
+    remoteRecoveryDispatcherHandlers.set(type, callback);
+    return () => remoteRecoveryDispatcherHandlers.delete(type);
+  }},
+}};
+window.__CODEX_PLUS_TEST_REMOTE_RECOVERY__ = (payload, attempt) => {{
+  remoteRecoveryCalls.push({{ payload, attempt }});
+  return {{ status: "synced", message: "Remote Control session catalog recovery complete" }};
+}};
+const remoteRecoveryScheduled = api.observeRemoteSessionNotification({{
+  response: {{ method: "thread/started", params: {{ thread: {{ id: "thread-mobile-notify" }} }} }},
+}});
+await new Promise((resolve) => setTimeout(resolve, 500));
+const remoteRecoveryCallCountAfterSuccess = remoteRecoveryCalls.length;
+const remoteRecoveryDispatcherCalls = [];
+window.__CODEX_PLUS_TEST_REMOTE_RECOVERY__ = (payload, attempt) => {{
+  remoteRecoveryDispatcherCalls.push({{ payload, attempt }});
+  return {{ status: "synced", message: "Remote Control session catalog recovery complete" }};
+}};
+const remoteRecoveryDispatcherInstalled = api.installRemoteSessionDispatcherSubscription(remoteRecoveryDispatcher);
+remoteRecoveryDispatcherHandlers.get("thread/started")?.({{ id: "thread-mobile-dispatcher" }});
+await new Promise((resolve) => setTimeout(resolve, 500));
+const remoteRecoveryDispatcherThreadId = remoteRecoveryDispatcherCalls[0]?.payload?.thread_id || "";
+const remoteRecoveryBrowserUseDispatcherCalls = [];
+window.__CODEX_PLUS_TEST_REMOTE_RECOVERY__ = (payload, attempt) => {{
+  remoteRecoveryBrowserUseDispatcherCalls.push({{ payload, attempt }});
+  return {{ status: "synced", message: "Remote Control session catalog recovery complete" }};
+}};
+remoteRecoveryDispatcherHandlers.get("browser-sidebar-browser-use-state")?.({{
+  conversationId: "thread-mobile-browser-dispatcher",
+  isActive: true,
+}});
+await new Promise((resolve) => setTimeout(resolve, 500));
+const remoteRecoveryBrowserUseDispatcherThreadId = remoteRecoveryBrowserUseDispatcherCalls[0]?.payload?.thread_id || "";
+const remoteRecoveryOutboundRouteCalls = [];
+window.__CODEX_PLUS_TEST_REMOTE_RECOVERY__ = (payload, attempt) => {{
+  remoteRecoveryOutboundRouteCalls.push({{ payload, attempt }});
+  return {{ status: "synced", message: "Remote Control session catalog recovery complete" }};
+}};
+const outboundDispatcherMessages = [];
+const outboundDispatcher = {{
+  __codexServiceTierOriginalDispatchMessage(type, payload) {{
+    outboundDispatcherMessages.push({{ type, payload }});
+    return true;
+  }},
+}};
+api.dispatchMessage(outboundDispatcher, "browser-use-session-route-capture", {{
+  conversationId: "thread-mobile-browser-outbound",
+}});
+await new Promise((resolve) => setTimeout(resolve, 500));
+const remoteRecoveryOutboundRouteThreadId = remoteRecoveryOutboundRouteCalls[0]?.payload?.thread_id || "";
+const remoteRecoveryViewEventCalls = [];
+window.__CODEX_PLUS_TEST_REMOTE_RECOVERY__ = (payload, attempt) => {{
+  remoteRecoveryViewEventCalls.push({{ payload, attempt }});
+  return {{ status: "synced", message: "Remote Control session catalog recovery complete" }};
+}};
+const remoteRecoveryListenerInstalled = api.installRemoteSessionRecoveryListener();
+windowListeners.get("codex-message-from-view")?.({{
+  detail: {{
+    type: "browser-use-session-route-capture",
+    conversationId: "thread-mobile-view-event",
+  }},
+}});
+await new Promise((resolve) => setTimeout(resolve, 500));
+const remoteRecoveryViewEventThreadId = remoteRecoveryViewEventCalls[0]?.payload?.thread_id || "";
+const remoteRecoveryRetryCalls = [];
+window.__CODEX_PLUS_TEST_REMOTE_RECOVERY__ = (payload, attempt) => {{
+  remoteRecoveryRetryCalls.push({{ payload, attempt }});
+  if (attempt === 0) {{
+    return {{ status: "synced", message: "Remote Control session recovery already up to date" }};
+  }}
+  return {{ status: "synced", message: "Remote Control session recovery complete" }};
+}};
+const remoteRecoveryRetried = api.observeRemoteSessionNotification({{
+  response: {{ method: "thread/started", params: {{ thread: {{ id: "thread-mobile-retry" }} }} }},
+}});
+await new Promise((resolve) => setTimeout(resolve, 500));
+const remoteRecoveryRetryAttempts = remoteRecoveryRetryCalls.map((call) => call.attempt);
+api.setBackendSettings({{
+  relayProfilesEnabled: true,
+  activeRelayId: "missing",
+  relayProfiles: [{{ id: "eligible", relayMode: "official", officialMixApiKey: true }}],
+}});
+const missingActiveParams = {{ cwd: "C:/mobile", modelProvider: "openai" }};
+const missingActiveProviderUnchanged = api.applyProviderOverride("thread/start", missingActiveParams) === missingActiveParams;
+const missingActiveRecoveryUnscheduled = api.observeRemoteSessionNotification({{
+  method: "thread/started",
+  params: {{ thread: {{ id: "thread-mobile-missing-active" }} }},
+}}) === false;
+api.setBackendSettings({{
+  relayProfilesEnabled: true,
+  activeRelayId: "pure-api",
+  relayProfiles: [{{ id: "pure-api", relayMode: "pureApi", officialMixApiKey: true }}],
+}});
+const pureApiParams = {{ cwd: "C:/mobile", modelProvider: "openai" }};
+const pureApiProviderUnchanged = api.applyProviderOverride("thread/start", pureApiParams) === pureApiParams;
+const pureApiRecoveryUnscheduled = api.observeRemoteSessionNotification({{
+  method: "thread/started",
+  params: {{ thread: {{ id: "thread-mobile-pure-api" }} }},
+}}) === false;
+api.setBackendSettings({{
+  relayProfilesEnabled: true,
+  activeRelayId: "official",
+  relayProfiles: [{{ id: "official", relayMode: "official", officialMixApiKey: false }}],
+}});
+const pureOfficialParams = {{ cwd: "C:/mobile", modelProvider: "openai" }};
+const pureOfficialProviderUnchanged = api.applyProviderOverride("thread/start", pureOfficialParams) === pureOfficialParams;
 process.stdout.write(JSON.stringify({{
   supportedFast,
   unsupportedModel,
@@ -1932,6 +2302,32 @@ process.stdout.write(JSON.stringify({{
   currentStateApi,
   appServerParamsUnchanged,
   appServerSentCount: appServerCalls.length,
+  providerFromMissing,
+  providerFromOpenAi,
+  providerFromOtherUnchanged: providerFromOther === explicitOtherProvider,
+  nonThreadProviderUnchanged,
+  providerWithServiceTierControlsDisabled,
+  appServerProviderOverride,
+  directThreadStartedId,
+  nestedThreadStartedId,
+  browserUseRouteThreadId,
+  inactiveBrowserUseUnscheduled,
+  remoteRecoveryScheduled,
+  remoteRecoveryThreadId: remoteRecoveryCalls[0]?.payload?.thread_id || "",
+  remoteRecoveryCallCountAfterSuccess,
+  remoteRecoveryDispatcherInstalled,
+  remoteRecoveryDispatcherThreadId,
+  remoteRecoveryBrowserUseDispatcherThreadId,
+  remoteRecoveryOutboundRouteThreadId,
+  remoteRecoveryListenerInstalled,
+  remoteRecoveryViewEventThreadId,
+  remoteRecoveryRetried,
+  remoteRecoveryRetryAttempts,
+  missingActiveProviderUnchanged,
+  missingActiveRecoveryUnscheduled,
+  pureApiProviderUnchanged,
+  pureApiRecoveryUnscheduled,
+  pureOfficialProviderUnchanged,
 }}));
 }}).catch((error) => {{
   console.error(error);
@@ -1969,7 +2365,7 @@ fn injection_script_leaves_new_threads_to_the_codex_app() {
     assert!(!script.contains("hotkey-window-projectless-default-enabled"));
     assert!(script.contains("installCodexServiceTierDispatcherPatch"));
     assert!(script.contains("installAppServerModelRequestPatch"));
-    assert!(script.contains("originalSendRequest(method, params, options)"));
+    assert!(script.contains("originalSendRequest(method, nextParams, options)"));
 }
 
 #[test]
@@ -2081,6 +2477,8 @@ fn manager_ui_exposes_pure_api_relay_mode_button() {
         std::fs::read_to_string(repo.join("apps/codex-plus-manager/src-tauri/src/lib.rs")).unwrap();
 
     assert!(source.contains("官方混入 API Key"));
+    assert!(source.contains("关闭官方低额度提示"));
+    assert!(source.contains("hideOfficialUsageAlert"));
     assert!(source.contains("纯 API"));
     assert!(source.contains("apply_pure_api_injection"));
     assert!(commands.contains("commands::apply_pure_api_injection"));
