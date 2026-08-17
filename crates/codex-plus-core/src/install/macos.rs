@@ -50,13 +50,27 @@ fn launch_script(binary: &str) -> String {
 }
 
 fn install_binary_source(target: std::path::PathBuf, binary: &str) -> std::path::PathBuf {
-    if is_bundle_macos_target(&target) {
+    let sidecar = if is_bundle_macos_target(&target) {
         let sidecar = target
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(binary);
-        if sidecar.exists() {
-            return sidecar;
+        sidecar.exists().then_some(sidecar)
+    } else {
+        None
+    };
+    if let Some(sidecar) = sidecar {
+        return sidecar;
+    }
+    if target == Path::new(".") || !target.exists() || is_shell_script(&target) {
+        if let Ok(exe) = std::env::current_exe() {
+            let companion = exe
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(binary);
+            if companion.exists() && !is_shell_script(&companion) {
+                return companion;
+            }
         }
     }
     target
@@ -113,17 +127,36 @@ fn write_bundle(bundle: &MacosAppBundle) -> anyhow::Result<()> {
     fs::create_dir_all(&macos)?;
     fs::create_dir_all(&resources)?;
     fs::write(contents.join("Info.plist"), &bundle.info_plist)?;
-    if let (Some(source), Some(target_name)) = (&bundle.binary_source, &bundle.binary_target_name) {
-        if source.exists() {
-            let target = macos.join(target_name);
-            if source != &target {
-                fs::copy(source, &target)?;
-                let mut permissions = fs::metadata(&target)?.permissions();
-                permissions.set_mode(0o755);
-                fs::set_permissions(target, permissions)?;
-            }
-        }
+    let (source, target_name) = match (&bundle.binary_source, &bundle.binary_target_name) {
+        (Some(source), Some(target_name)) => (source, target_name),
+        _ => anyhow::bail!(
+            "缺少二进制源信息，无法生成可启动的 App bundle（路径：{}）",
+            bundle.app_path.display()
+        ),
+    };
+    if !source.exists() {
+        anyhow::bail!(
+            "二进制源不存在：{}。请从 Codex++ DMG 重新安装，或确认 {} 未被移动/删除",
+            source.display(),
+            bundle.app_path.display()
+        );
     }
+    if is_shell_script(source) {
+        anyhow::bail!(
+            "二进制源是 shell 脚本而非可执行文件：{}。该 bundle 已损坏，请从 Codex++ DMG 重新安装",
+            source.display()
+        );
+    }
+    let target = macos.join(target_name);
+    if source != &target {
+        fs::copy(source, &target)?;
+    } else if !is_real_binary(&target) {
+        anyhow::bail!(
+            "二进制位于 bundle 自身（{}），但目标文件缺失或非可执行文件，无法自修复。请从 Codex++ DMG 重新安装",
+            target.display()
+        );
+    }
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o755))?;
     let executable = macos.join(executable_name_from_plist(&bundle.info_plist));
     fs::write(&executable, &bundle.launch_script)?;
     let mut permissions = fs::metadata(&executable)?.permissions();
@@ -131,6 +164,19 @@ fn write_bundle(bundle: &MacosAppBundle) -> anyhow::Result<()> {
     fs::set_permissions(executable, permissions)?;
     copy_icon(&resources)?;
     Ok(())
+}
+
+fn is_shell_script(path: &Path) -> bool {
+    fs::read(path)
+        .ok()
+        .map(|bytes| bytes.starts_with(b"#!"))
+        .unwrap_or(false)
+}
+
+fn is_real_binary(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.len() > 1024 && !metadata.is_dir())
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "macos")]
