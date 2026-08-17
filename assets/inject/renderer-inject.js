@@ -378,8 +378,6 @@
   const helperBase = window.__CODEX_SESSION_DELETE_HELPER__ || "http://127.0.0.1:57321";
   const buttonClass = "codex-delete-button";
   const exportButtonClass = "codex-export-button";
-  const projectMoveButtonClass = "codex-project-move-button";
-  const projectMoveOverlayClass = "codex-project-move-overlay";
   const actionButtonClass = "codex-session-action-button";
   const actionGroupClass = "codex-session-actions";
   const moreButtonClass = "codex-session-more-button";
@@ -399,20 +397,12 @@
   const upstreamProjectContextKey = "codexUpstreamProjectContext";
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
-  const projectMoveProjectionKey = "codexProjectMoveProjection";
-  const legacyProjectMoveOverridesKey = "codexProjectMoveOverrides";
-  const projectMoveProjectionTtlMs = 24 * 60 * 60 * 1000;
-  const projectMoveProjectionSettleMs = 5 * 60 * 1000;
-  const projectMoveRefreshDelaysMs = [50, 250, 750, 1500];
-  const chatsSortRefreshIntervalMs = 1500;
-  const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
   const codexDeleteStyleVersion = "14";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "7";
   const codexExportVersion = "1";
-  const codexProjectMoveVersion = "1";
   const codexActionGroupVersion = "5";
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
@@ -486,12 +476,6 @@
   const codexPlusDreamSkinStyleId = "codex-dream-skin-style";
   const codexPlusDreamSkinPlatform = String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || "macos");
   const codexPlusDreamSkinRevision = String(window.__CODEX_PLUS_DREAM_SKIN_REVISION__ || "1");
-  window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
-  const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
-  clearTimeout(window.__codexProjectMoveProjectionTimer);
-  clearTimeout(window.__codexProjectMoveChatsSortTimer);
-  window.__codexProjectMoveProjectionTimer = null;
-  window.__codexProjectMoveChatsSortTimer = null;
   clearTimeout(window.__codexThreadScrollSaveTimer);
   window.__codexThreadScrollSaveTimer = null;
   (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
@@ -791,45 +775,6 @@
         pointer-events: none;
         white-space: nowrap;
       }
-      .${projectMoveOverlayClass} {
-        position: fixed;
-        inset: 0;
-        z-index: 2147483200;
-        background: rgba(15,23,42,.28);
-      }
-      .codex-project-move-panel {
-        position: fixed;
-        width: min(360px, calc(100vw - 32px));
-        max-height: min(520px, calc(100vh - 32px));
-        overflow: hidden;
-        border: 1px solid rgba(15,23,42,.14);
-        border-radius: 10px;
-        background: #ffffff;
-        color: #111827;
-        font: 13px system-ui, sans-serif;
-        box-shadow: 0 18px 60px rgba(15,23,42,.25);
-      }
-      .codex-project-move-header { border-bottom: 1px solid #e5e7eb; padding: 10px 12px; }
-      .codex-project-move-title { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-project-move-list { max-height: min(440px, calc(100vh - 110px)); overflow-y: auto; padding: 6px; }
-      .codex-project-move-item {
-        display: block;
-        width: 100%;
-        border: 0;
-        border-radius: 7px;
-        background: transparent;
-        color: #111827;
-        padding: 8px 9px;
-        text-align: left;
-        cursor: pointer;
-      }
-      .codex-project-move-item:hover,
-      .codex-project-move-item:focus-visible { background: #f3f4f6; outline: none; }
-      .codex-project-move-item-title { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-project-move-item-path { margin-top: 2px; color: #6b7280; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-project-move-empty { padding: 18px 12px; color: #6b7280; text-align: center; }
-      .codex-project-move-hidden { display: none !important; }
-      [data-codex-project-move-injected-list="true"] { display: flex; flex-direction: column; }
       .codex-archive-delete-all {
         border: 1px solid #ef4444;
         border-radius: 7px;
@@ -902,7 +847,7 @@
         background: #dc2626;
         color: #ffffff;
       }
-      /* Dark theme overrides for delete-confirm and project-move dialogs.
+      /* Dark theme overrides for delete-confirm dialogs.
          Triggered either by Codex applying a "dark" class / data-theme="dark"
          on its document root, or by the OS-level prefers-color-scheme hint.
          Palette matches the existing Codex++ dark modal (.codex-plus-modal-content). */
@@ -938,45 +883,6 @@
         background: #dc2626;
         color: #ffffff;
       }
-      html.dark .${projectMoveOverlayClass},
-      html[data-theme="dark"] .${projectMoveOverlayClass},
-      :root[data-theme="dark"] .${projectMoveOverlayClass} {
-        background: rgba(0,0,0,.55);
-      }
-      html.dark .codex-project-move-panel,
-      html[data-theme="dark"] .codex-project-move-panel,
-      :root[data-theme="dark"] .codex-project-move-panel {
-        border-color: rgba(255,255,255,.12);
-        background: #2b2b2b;
-        color: #f3f4f6;
-        box-shadow: 0 18px 60px rgba(0,0,0,.55);
-      }
-      html.dark .codex-project-move-header,
-      html[data-theme="dark"] .codex-project-move-header,
-      :root[data-theme="dark"] .codex-project-move-header {
-        border-bottom-color: rgba(255,255,255,.1);
-      }
-      html.dark .codex-project-move-item,
-      html[data-theme="dark"] .codex-project-move-item,
-      :root[data-theme="dark"] .codex-project-move-item {
-        color: #f3f4f6;
-      }
-      html.dark .codex-project-move-item:hover,
-      html.dark .codex-project-move-item:focus-visible,
-      html[data-theme="dark"] .codex-project-move-item:hover,
-      html[data-theme="dark"] .codex-project-move-item:focus-visible,
-      :root[data-theme="dark"] .codex-project-move-item:hover,
-      :root[data-theme="dark"] .codex-project-move-item:focus-visible {
-        background: rgba(255,255,255,.08);
-      }
-      html.dark .codex-project-move-item-path,
-      html[data-theme="dark"] .codex-project-move-item-path,
-      :root[data-theme="dark"] .codex-project-move-item-path,
-      html.dark .codex-project-move-empty,
-      html[data-theme="dark"] .codex-project-move-empty,
-      :root[data-theme="dark"] .codex-project-move-empty {
-        color: #9ca3af;
-      }
       @media (prefers-color-scheme: dark) {
         html:not(.light):not([data-theme="light"]) .codex-delete-confirm-overlay {
           background: rgba(0,0,0,.55);
@@ -999,29 +905,6 @@
           border-color: #ef4444;
           background: #dc2626;
           color: #ffffff;
-        }
-        html:not(.light):not([data-theme="light"]) .${projectMoveOverlayClass} {
-          background: rgba(0,0,0,.55);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-panel {
-          border-color: rgba(255,255,255,.12);
-          background: #2b2b2b;
-          color: #f3f4f6;
-          box-shadow: 0 18px 60px rgba(0,0,0,.55);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-header {
-          border-bottom-color: rgba(255,255,255,.1);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-item {
-          color: #f3f4f6;
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-item:hover,
-        html:not(.light):not([data-theme="light"]) .codex-project-move-item:focus-visible {
-          background: rgba(255,255,255,.08);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-item-path,
-        html:not(.light):not([data-theme="light"]) .codex-project-move-empty {
-          color: #9ca3af;
         }
       }
       #${codexPlusMenuId}.${codexPlusMenuFloatingClass} {
@@ -1291,7 +1174,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1299,7 +1182,6 @@
     modelWhitelistUnlock: "codexAppModelWhitelistUnlock",
     sessionDelete: "codexAppSessionDelete",
     markdownExport: "codexAppMarkdownExport",
-    projectMove: "codexAppProjectMove",
     threadIdBadge: "codexAppThreadIdBadge",
     conversationView: "codexAppConversationView",
     threadScrollRestore: "codexAppThreadScrollRestore",
@@ -1337,7 +1219,6 @@
         sessionDelete: false,
         markdownExport: false,
         pasteFix: false,
-        projectMove: false,
         threadIdBadge: false,
         conversationView: false,
         conversationViewMaxWidth: conversationViewDefaultWidth,
@@ -3577,7 +3458,7 @@
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Codex增强</div><div class="codex-plus-row-description">关闭后停用删除、导出、移动、插件相关和菜单位置增强。</div></div>
+              <div><div class="codex-plus-row-title">Codex增强</div><div class="codex-plus-row-description">关闭后停用删除、导出、插件相关和菜单位置增强。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="enhancementsEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
@@ -3631,10 +3512,6 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pasteFix"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">会话项目移动</div><div class="codex-plus-row-description">在会话列表悬停显示移动按钮，可移动到普通对话或其他本地项目。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="projectMove"><span></span></button>
-            </div>
-            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">会话 ID 标识</div><div class="codex-plus-row-description">在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadIdBadge"><span></span></button>
             </div>
@@ -3665,7 +3542,7 @@
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">页面增强模式</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强：保留会话删除、导出、项目移动和用户脚本，仅关闭插件市场相关增强。" : "完整增强：加载插件市场、项目路径移动等全部页面能力。"}</div></div>
+              <div><div class="codex-plus-row-title">页面增强模式</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强：保留会话删除、导出和用户脚本，仅关闭插件市场相关增强。" : "完整增强：加载插件市场、会话管理等全部页面能力。"}</div></div>
               <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
             </div>
             <div class="codex-plus-row">
@@ -4830,7 +4707,7 @@
   }
 
   function threadIdBadgeMeta(sessionId) {
-    const id = projectMoveSessionKey(sessionId);
+    const id = sessionKey(sessionId);
     const compact = id.replaceAll("-", "");
     const shortId = compact.slice(0, 8);
     const createdAt = threadIdBadgeCreatedAt(sessionId);
@@ -4976,7 +4853,7 @@
   }
 
   function validThreadScrollSessionKey(sessionId) {
-    const key = projectMoveSessionKey(sessionId);
+    const key = sessionKey(sessionId);
     if (!key || key === "__proto__" || key === "prototype" || key === "constructor") return "";
     return /^[A-Za-z0-9_.-]{8,128}$/.test(key) ? key : "";
   }
@@ -6365,54 +6242,17 @@
     return uniqueValues([id, bareId, `local:${bareId}`]);
   }
 
-  function projectMoveSessionKey(sessionId) {
+  function sessionKey(sessionId) {
     const variants = threadIdVariants(sessionId);
     const bareId = variants.find((id) => !id.startsWith("local:"));
     return bareId || variants[0] || "";
   }
 
   function uuidV7TimestampMs(sessionId) {
-    const id = projectMoveSessionKey(sessionId).replaceAll("-", "");
+    const id = sessionKey(sessionId).replaceAll("-", "");
     if (!/^[0-9a-fA-F]{12}/.test(id)) return 0;
     const timestamp = Number.parseInt(id.slice(0, 12), 16);
     return Number.isFinite(timestamp) ? timestamp : 0;
-  }
-
-  function numericTimestamp(value) {
-    const timestamp = Number(value);
-    return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0;
-  }
-
-  function timestampValueToMs(value) {
-    const timestamp = numericTimestamp(value);
-    if (!timestamp) return 0;
-    return timestamp < 1000000000000 ? timestamp * 1000 : timestamp;
-  }
-
-  function sortMsForSession(sessionId, preferredValue) {
-    return numericTimestamp(preferredValue) || uuidV7TimestampMs(sessionId);
-  }
-
-  function timestampMsFromPayload(payload) {
-    return numericTimestamp(payload?.updated_at_ms) || timestampValueToMs(payload?.updated_at) || numericTimestamp(payload?.created_at_ms);
-  }
-
-  function relativeTimeLabel(timestampMs, nowMs = Date.now()) {
-    const timestamp = numericTimestamp(timestampMs);
-    if (!timestamp) return "";
-    const elapsedSeconds = Math.max(0, Math.floor((nowMs - timestamp) / 1000));
-    if (elapsedSeconds < 60) return "刚刚";
-    const elapsedMinutes = Math.floor(elapsedSeconds / 60);
-    if (elapsedMinutes < 60) return `${elapsedMinutes} 分`;
-    const elapsedHours = Math.floor(elapsedMinutes / 60);
-    if (elapsedHours < 24) return `${elapsedHours} 小时`;
-    const elapsedDays = Math.floor(elapsedHours / 24);
-    if (elapsedDays < 7) return `${elapsedDays} 天`;
-    const elapsedWeeks = Math.floor(elapsedDays / 7);
-    if (elapsedWeeks < 5) return `${elapsedWeeks} 周`;
-    const elapsedMonths = Math.floor(elapsedDays / 30);
-    if (elapsedMonths < 12) return `${Math.max(1, elapsedMonths)} 月`;
-    return `${Math.floor(elapsedDays / 365)} 年`;
   }
 
   function normalizeWorkspacePath(path) {
@@ -6439,545 +6279,6 @@
     return document.querySelector('[data-app-action-sidebar-section-heading="Projects"]');
   }
 
-  function chatsSection() {
-    return document.querySelector('[data-app-action-sidebar-section-heading="Chats"]');
-  }
-
-  function projectRowListItem(projectRow) {
-    return projectRow.closest?.('[role="listitem"][aria-label]') || projectRow.closest?.('[role="listitem"]') || projectRow;
-  }
-
-  function nativeProjectTargets() {
-    const section = projectsSection();
-    const seen = new Set();
-    const targets = [];
-    Array.from(document.querySelectorAll('[data-app-action-sidebar-project-row]')).forEach((row) => {
-      if (section && !section.contains(row)) return;
-      const path = row.getAttribute("data-app-action-sidebar-project-id") || "";
-      const normalizedPath = normalizeWorkspacePath(path);
-      if (!normalizedPath || seen.has(normalizedPath)) return;
-      const label = row.getAttribute("data-app-action-sidebar-project-label") || row.getAttribute("aria-label") || displayProjectName(path);
-      seen.add(normalizedPath);
-      targets.push({ kind: "project", label: String(label || displayProjectName(path)), description: path, path, normalizedPath, row, listItem: projectRowListItem(row) });
-    });
-    return targets;
-  }
-
-  function serializableProjectTarget(target) {
-    return { kind: target.kind, label: target.label, description: target.description, path: target.path, normalizedPath: target.normalizedPath || normalizeWorkspacePath(target.path) };
-  }
-
-  function projectMoveTargets() {
-    return [
-      { kind: "projectless", label: "普通对话", description: "不属于任何项目", path: "", normalizedPath: "" },
-      ...nativeProjectTargets().map(serializableProjectTarget),
-    ];
-  }
-
-  function readLegacyProjectMoveProjection() {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(legacyProjectMoveOverridesKey) || "{}");
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-      const now = Date.now();
-      const next = {};
-      for (const [key, value] of Object.entries(parsed)) {
-        if (!value || typeof value !== "object" || !value.targetCwd) continue;
-        const sessionId = projectMoveSessionKey(value.sessionId || key);
-        if (!sessionId) continue;
-        next[sessionId] = {
-          sessionId,
-          targetKind: "project",
-          targetCwd: String(value.targetCwd),
-          targetLabel: String(value.targetLabel || displayProjectName(value.targetCwd)),
-          title: String(value.title || ""),
-          sortMs: sortMsForSession(sessionId, value.sortMs || value.updatedAtMs || value.updated_at_ms),
-          sortMsTrusted: false,
-          at: typeof value.at === "number" ? value.at : now,
-        };
-      }
-      return next;
-    } catch {
-      return {};
-    }
-  }
-
-  function readProjectMoveProjection() {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(projectMoveProjectionKey) || "{}");
-      const raw = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-      const merged = { ...readLegacyProjectMoveProjection(), ...raw };
-      const now = Date.now();
-      const projection = {};
-      for (const [key, value] of Object.entries(merged)) {
-        if (!value || typeof value !== "object") continue;
-        const sessionId = projectMoveSessionKey(value.sessionId || key);
-        if (!sessionId) continue;
-        if (typeof value.at === "number" && now - value.at > projectMoveProjectionTtlMs) continue;
-        const targetKind = value.targetKind === "projectless" ? "projectless" : "project";
-        const targetCwd = String(value.targetCwd || value.path || "");
-        if (targetKind === "project" && !targetCwd) continue;
-        projection[sessionId] = {
-          sessionId,
-          targetKind,
-          targetCwd,
-          targetLabel: String(value.targetLabel || value.label || (targetKind === "projectless" ? "普通对话" : displayProjectName(targetCwd))),
-          title: String(value.title || ""),
-          sortMs: sortMsForSession(sessionId, value.sortMs || value.updatedAtMs || value.updated_at_ms),
-          sortMsTrusted: value.sortMsTrusted === true,
-          at: typeof value.at === "number" ? value.at : now,
-        };
-      }
-      return projection;
-    } catch {
-      return readLegacyProjectMoveProjection();
-    }
-  }
-
-  function writeProjectMoveProjection(projection) {
-    try {
-      localStorage.setItem(projectMoveProjectionKey, JSON.stringify(projection || {}));
-      localStorage.removeItem(legacyProjectMoveOverridesKey);
-    } catch (error) {
-      window.__codexProjectMoveProjectionFailures = window.__codexProjectMoveProjectionFailures || [];
-      window.__codexProjectMoveProjectionFailures.push(String(error?.stack || error));
-    }
-  }
-
-  function saveProjectMoveProjection(ref, target, sortMs) {
-    const id = projectMoveSessionKey(ref.session_id);
-    if (!id || !target) return;
-    const projection = readProjectMoveProjection();
-    projection[id] = {
-      sessionId: id,
-      targetKind: target.kind === "projectless" ? "projectless" : "project",
-      targetCwd: target.path || "",
-      targetLabel: target.label || (target.kind === "projectless" ? "普通对话" : displayProjectName(target.path)),
-      title: ref.title || "",
-      sortMs: sortMsForSession(ref.session_id, sortMs || target.sortMs),
-      sortMsTrusted: target.sortMsTrusted === true,
-      at: Date.now(),
-    };
-    writeProjectMoveProjection(projection);
-  }
-
-  function clearProjectMoveProjection(ref) {
-    const projection = readProjectMoveProjection();
-    const keys = threadIdVariants(ref.session_id).map(projectMoveSessionKey).filter(Boolean);
-    let changed = false;
-    keys.forEach((key) => {
-      if (Object.prototype.hasOwnProperty.call(projection, key)) {
-        delete projection[key];
-        changed = true;
-      }
-    });
-    if (changed) writeProjectMoveProjection(projection);
-  }
-
-  function projectionForSessionId(sessionId, projection = readProjectMoveProjection()) {
-    const key = projectMoveSessionKey(sessionId);
-    return key ? projection[key] || null : null;
-  }
-
-  function projectRowFromListItem(projectItem) {
-    if (!projectItem) return null;
-    if (projectItem.matches?.("[data-app-action-sidebar-project-row]")) return projectItem;
-    return projectItem.querySelector?.("[data-app-action-sidebar-project-row]") || null;
-  }
-
-  function targetPath(target) {
-    return target?.path || target?.targetCwd || "";
-  }
-
-  function targetLabel(target) {
-    return target?.label || target?.targetLabel || displayProjectName(targetPath(target));
-  }
-
-  function projectItemMatchesTarget(projectItem, target) {
-    const projectRow = projectRowFromListItem(projectItem);
-    const projectPath = projectRow?.getAttribute?.("data-app-action-sidebar-project-id") || "";
-    if (projectPath && sameWorkspacePath(projectPath, targetPath(target))) return true;
-    const actual = normalizeProjectLabel(projectRow?.getAttribute?.("data-app-action-sidebar-project-label") || projectItem?.getAttribute?.("aria-label"));
-    const labels = uniqueValues([targetLabel(target), displayProjectName(targetPath(target))]).map(normalizeProjectLabel).filter(Boolean);
-    return !!actual && labels.includes(actual);
-  }
-
-  function findProjectListItem(target) {
-    const nativeTarget = nativeProjectTargets().find((project) => sameWorkspacePath(project.path, targetPath(target)));
-    if (nativeTarget?.listItem) return nativeTarget.listItem;
-    const section = projectsSection();
-    if (!section) return null;
-    return Array.from(section.querySelectorAll('[role="listitem"][aria-label]')).find((item) => projectItemMatchesTarget(item, target)) || null;
-  }
-
-  function closestProjectListItem(row) {
-    const item = row.closest?.('[role="listitem"][aria-label]');
-    return item?.closest?.('[data-app-action-sidebar-section-heading="Projects"]') ? item : null;
-  }
-
-  function rowIsInChats(row) {
-    return !!row.closest?.('[data-app-action-sidebar-section-heading="Chats"]');
-  }
-
-  function chatsThreadList() {
-    return chatsSection()?.querySelector?.('[role="list"][aria-label="对话"], [role="list"]') || null;
-  }
-
-  function rowIsUnderTargetProject(row, target) {
-    const item = closestProjectListItem(row);
-    return !!item && projectItemMatchesTarget(item, target);
-  }
-
-  function rowIsUnderTarget(row, target) {
-    return target?.targetKind === "projectless" || target?.kind === "projectless" ? rowIsInChats(row) : rowIsUnderTargetProject(row, target);
-  }
-
-  function rowListItem(row) {
-    return row.closest?.('[role="listitem"]') || row;
-  }
-
-  function rowContentRoot(row) {
-    return Array.from(row?.children || []).find((child) => String(child.className || "").includes("h-full w-full items-center")) || null;
-  }
-
-  function normalizedText(node) {
-    return String(node?.textContent || "").replace(/\s+/g, " ").trim();
-  }
-
-  function classNameText(node) {
-    return String(node?.className || "");
-  }
-
-  function isRelativeTimeText(text) {
-    const value = String(text || "").replace(/\s+/g, " ").trim();
-    return /^(刚刚|just now|\d+\s*(秒|秒钟|分|分钟|小时|天|日|周|星期|个月|月|年|sec|secs|second|seconds|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks|mo|mos|month|months|y|yr|yrs|year|years))$/i.test(value);
-  }
-
-  function nodeIsThreadTitle(row, node) {
-    return Array.from(row?.querySelectorAll?.('[data-thread-title], .truncate.select-none, .truncate.text-base') || [])
-      .some((titleNode) => titleNode === node || titleNode.contains(node));
-  }
-
-  function closestTimeWrapper(row, node) {
-    const root = rowContentRoot(row) || row;
-    let current = node?.parentElement || null;
-    while (current && current !== root && current !== row) {
-      const className = classNameText(current);
-      if (current.dataset?.codexProjectMoveTimeWrapper === "true" || (className.includes("ml-[3px]") && className.includes("min-w-[26px]"))) return current;
-      current = current.parentElement;
-    }
-    return null;
-  }
-
-  function nodeInsideStatusIcon(row, node) {
-    const stop = closestTimeWrapper(row, node) || rowContentRoot(row) || row;
-    let current = node || null;
-    while (current && current !== stop && current !== row) {
-      const className = classNameText(current);
-      if (className.includes("animate-spin")) return true;
-      if (className.includes("size-5") && className.includes("shrink-0")) return true;
-      if (className.includes("contain-paint") && className.includes("contain-layout")) return true;
-      current = current.parentElement;
-    }
-    return false;
-  }
-
-  function cleanupManagedStatusIconTimeNodes(row) {
-    Array.from(row?.querySelectorAll?.('[data-codex-project-move-time="true"]') || []).forEach((node) => {
-      if (!nodeInsideStatusIcon(row, node)) return;
-      const text = normalizedText(node);
-      delete node.dataset.codexProjectMoveTime;
-      delete node.dataset.codexProjectMoveTimeMs;
-      if (node.children.length === 0 && isRelativeTimeText(text)) node.textContent = "";
-    });
-  }
-
-  function nodeLooksLikeTimeLabel(row, node) {
-    if (nodeInsideStatusIcon(row, node)) return false;
-    if (node?.dataset?.codexProjectMoveTime === "true") return true;
-    if (node.children.length > 0) return false;
-    const text = normalizedText(node);
-    const className = classNameText(node);
-    if ((className.includes("tabular-nums") || className.includes("text-token-description-foreground")) && text.length <= 24) return true;
-    if (!isRelativeTimeText(text)) return false;
-    const rowRect = row?.getBoundingClientRect?.();
-    const nodeRect = node?.getBoundingClientRect?.();
-    if (!rowRect || !nodeRect || rowRect.width <= 0 || nodeRect.width <= 0) return false;
-    return nodeRect.left >= rowRect.left + rowRect.width * 0.45 || nodeRect.right >= rowRect.right - 96;
-  }
-
-  function rowTimeLabelCandidates(row) {
-    cleanupManagedStatusIconTimeNodes(row);
-    const root = rowContentRoot(row) || row;
-    const raw = Array.from(root?.querySelectorAll?.("div, span, time, small") || []).filter((node) => {
-      if (nodeIsThreadTitle(row, node)) return false;
-      return nodeLooksLikeTimeLabel(row, node);
-    });
-    return raw.filter((node) => !raw.some((other) => other !== node && node.contains(other)));
-  }
-
-  function rowTimeLabelNode(row) {
-    const candidates = rowTimeLabelCandidates(row);
-    return candidates.find((node) => node.dataset?.codexProjectMoveTime !== "true" && !node.closest?.('[data-codex-project-move-time-wrapper="true"]')) || candidates[0] || null;
-  }
-
-  function removeTimeLabelNode(row, node) {
-    if (!node || !row?.contains?.(node)) return;
-    const wrapper = node.closest?.('[data-codex-project-move-time-wrapper="true"]') || closestTimeWrapper(row, node);
-    if (wrapper && wrapper !== row && row.contains(wrapper)) {
-      wrapper.remove();
-      return;
-    }
-    node.remove();
-  }
-
-  function cleanupRowTimeLabels(row, keepNode) {
-    if (!keepNode) return;
-    rowTimeLabelCandidates(row).forEach((node) => {
-      if (node === keepNode) return;
-      if (node.dataset?.codexProjectMoveTime === "true" || node.closest?.('[data-codex-project-move-time-wrapper="true"]')) removeTimeLabelNode(row, node);
-    });
-  }
-
-  function ensureRowTimeLabelNode(row) {
-    const existing = rowTimeLabelNode(row);
-    if (existing) {
-      cleanupRowTimeLabels(row, existing);
-      return existing;
-    }
-    const root = rowContentRoot(row);
-    if (!root) return null;
-    const wrapper = document.createElement("div");
-    wrapper.className = "ml-[3px] flex items-center justify-end gap-1 min-w-[26px]";
-    wrapper.dataset.codexProjectMoveTimeWrapper = "true";
-    const inner = document.createElement("div");
-    const label = document.createElement("div");
-    label.className = "text-token-description-foreground text-sm leading-4 empty:hidden tabular-nums overflow-visible truncate text-right group-focus-within:opacity-0 group-hover:opacity-0";
-    label.dataset.codexProjectMoveTime = "true";
-    inner.appendChild(label);
-    wrapper.appendChild(inner);
-    root.appendChild(wrapper);
-    return label;
-  }
-
-  function updateRowTimeLabel(row, sortMs) {
-    const label = ensureRowTimeLabelNode(row);
-    if (!label) return;
-    const timestamp = numericTimestamp(sortMs);
-    const text = relativeTimeLabel(timestamp);
-    label.dataset.codexProjectMoveTime = "true";
-    label.dataset.codexProjectMoveTimeMs = String(timestamp || 0);
-    if (text && label.textContent !== text) label.textContent = text;
-    cleanupRowTimeLabels(row, label);
-  }
-
-  function rowProjectionKind(row) {
-    return row?.dataset?.codexProjectMoveTargetKind || rowListItem(row)?.dataset?.codexProjectMoveTargetKind || "";
-  }
-
-  function rowSortMs(row, ref = sessionRefFromRow(row), target = null) {
-    return sortMsForSession(ref.session_id, target?.sortMs || row?.dataset?.codexProjectMoveSortMs || rowListItem(row)?.dataset?.codexProjectMoveSortMs);
-  }
-
-  function threadRowFromListItem(item) {
-    if (!item) return null;
-    if (item.matches?.("[data-app-action-sidebar-thread-id]")) return item;
-    return item.querySelector?.("[data-app-action-sidebar-thread-id]") || null;
-  }
-
-  function rowPinned(row) {
-    return row?.getAttribute?.("data-app-action-sidebar-thread-pinned") === "true" || rowListItem(row)?.getAttribute?.("data-app-action-sidebar-thread-pinned") === "true";
-  }
-
-  function insertRowItemByTime(list, item, row, target) {
-    const ref = sessionRefFromRow(row);
-    const sortMs = rowSortMs(row, ref, target);
-    item.dataset.codexProjectMoveSortMs = String(sortMs || 0);
-    row.dataset.codexProjectMoveSortMs = String(sortMs || 0);
-    if (target?.sortMsTrusted) updateRowTimeLabel(row, sortMs);
-    const pinned = rowPinned(row);
-    const sessionKey = projectMoveSessionKey(ref.session_id);
-    const existingItems = Array.from(list.children).filter((child) => child !== item);
-    let firstNonThreadItem = null;
-    for (const child of existingItems) {
-      const childRow = threadRowFromListItem(child);
-      if (!childRow) {
-        firstNonThreadItem = firstNonThreadItem || child;
-        continue;
-      }
-      const childPinned = rowPinned(childRow);
-      if (childPinned && !pinned) continue;
-      if (!childPinned && pinned) {
-        list.insertBefore(item, child);
-        return;
-      }
-      const childRef = sessionRefFromRow(childRow);
-      const childSortMs = rowSortMs(childRow, childRef);
-      const childKey = projectMoveSessionKey(childRef.session_id);
-      if (sortMs > childSortMs || (sortMs === childSortMs && sessionKey > childKey)) {
-        list.insertBefore(item, child);
-        return;
-      }
-    }
-    if (firstNonThreadItem) {
-      list.insertBefore(item, firstNonThreadItem);
-      return;
-    }
-    list.appendChild(item);
-  }
-
-  function projectMoveInjectedList(projectItem) {
-    let list = projectItem.querySelector('[data-codex-project-move-injected-list="true"]');
-    if (!list) {
-      const body = Array.from(projectItem.children).find((child) => child.classList?.contains("overflow-hidden")) || projectItem;
-      list = document.createElement("div");
-      list.setAttribute("role", "list");
-      list.setAttribute("data-codex-project-move-injected-list", "true");
-      list.className = "flex flex-col";
-      body.appendChild(list);
-    }
-    return list;
-  }
-
-  function projectThreadList(projectItem, target) {
-    const targetCwd = targetPath(target);
-    const projectLists = Array.from(projectItem.querySelectorAll("[data-app-action-sidebar-project-list-id]"));
-    return projectLists.find((list) => sameWorkspacePath(list.getAttribute("data-app-action-sidebar-project-list-id"), targetCwd))
-      || projectLists[0]
-      || projectMoveInjectedList(projectItem);
-  }
-
-  function projectEmptyStateNodes(projectItem) {
-    const emptyLabels = new Set(["暂无对话", "No conversations"]);
-    return Array.from(projectItem.querySelectorAll("div, span")).filter((node) => {
-      if (node.classList?.contains("overflow-hidden")) return false;
-      if (node.closest('[data-app-action-sidebar-thread-id], [data-codex-project-move-injected-list="true"]')) return false;
-      return emptyLabels.has(normalizeProjectLabel(node.textContent));
-    });
-  }
-
-  function setProjectEmptyStateHidden(projectItem, hidden) {
-    projectEmptyStateNodes(projectItem).forEach((node) => {
-      if (hidden) {
-        node.dataset.codexProjectMoveEmptyHidden = "true";
-        node.classList.add("codex-project-move-hidden");
-      } else if (node.dataset.codexProjectMoveEmptyHidden === "true") {
-        delete node.dataset.codexProjectMoveEmptyHidden;
-        node.classList.remove("codex-project-move-hidden");
-      }
-    });
-  }
-
-  function updateProjectMoveEmptyStates() {
-    document.querySelectorAll('[data-codex-project-move-injected-list="true"]').forEach((list) => {
-      const projectItem = list.closest('[role="listitem"][aria-label]');
-      const hasRows = Array.from(list.children).some((child) => child.querySelector?.("[data-app-action-sidebar-thread-id]") || child.matches?.("[data-app-action-sidebar-thread-id]"));
-      if (!hasRows) list.remove();
-      if (projectItem) setProjectEmptyStateHidden(projectItem, hasRows);
-    });
-    document.querySelectorAll('[data-codex-project-move-empty-hidden="true"]').forEach((node) => {
-      const projectItem = node.closest('[role="listitem"][aria-label]');
-      const list = projectItem?.querySelector?.('[data-codex-project-move-injected-list="true"]');
-      if (!list || list.children.length === 0) {
-        delete node.dataset.codexProjectMoveEmptyHidden;
-        node.classList.remove("codex-project-move-hidden");
-      }
-    });
-  }
-
-  function moveRowToProjectList(row, target) {
-    const projectItem = findProjectListItem(target);
-    if (!projectItem) return false;
-    const list = projectThreadList(projectItem, target);
-    const item = rowListItem(row);
-    if (!list) return false;
-    insertRowItemByTime(list, item, row, target);
-    cachedSessionRowsAt = 0;
-    item.dataset.codexProjectMoveTargetKind = "project";
-    item.dataset.codexProjectMoveTargetCwd = targetPath(target);
-    row.dataset.codexProjectMoveTargetKind = "project";
-    row.dataset.codexProjectMoveTargetCwd = targetPath(target);
-    setProjectEmptyStateHidden(projectItem, true);
-    return true;
-  }
-
-  function moveRowToChats(row, target = null) {
-    const list = chatsThreadList();
-    if (!list) return false;
-    const item = rowListItem(row);
-    insertRowItemByTime(list, item, row, target);
-    cachedSessionRowsAt = 0;
-    item.dataset.codexProjectMoveTargetKind = "projectless";
-    row.dataset.codexProjectMoveTargetKind = "projectless";
-    delete item.dataset.codexProjectMoveTargetCwd;
-    delete row.dataset.codexProjectMoveTargetCwd;
-    updateProjectMoveEmptyStates();
-    return true;
-  }
-
-  function applyProjectMoveProjection() {
-    if (!codexPlusSettings().projectMove) return;
-    const projection = readProjectMoveProjection();
-    const targetRowsById = new Map();
-    const settledRefs = [];
-    const now = Date.now();
-    const rows = sessionRows(true);
-    rows.forEach((row) => {
-      const ref = sessionRefFromRow(row);
-      const target = projectionForSessionId(ref.session_id, projection);
-      if (target && rowIsUnderTarget(row, target)) {
-        const rowId = projectMoveSessionKey(ref.session_id);
-        const hadProjectionKind = !!rowProjectionKind(row);
-        const existingRow = targetRowsById.get(rowId);
-        if (existingRow && existingRow !== row) {
-          const existingIsProjection = !!rowProjectionKind(existingRow);
-          const currentIsProjection = !!rowProjectionKind(row);
-          const rowToRemove = existingIsProjection && !currentIsProjection ? existingRow : row;
-          rowListItem(rowToRemove).remove();
-          if (rowToRemove === existingRow) targetRowsById.set(rowId, row);
-          if (rowToRemove === row) return;
-        } else {
-          targetRowsById.set(rowId, row);
-        }
-        if (!hadProjectionKind && typeof target.at === "number" && now - target.at > projectMoveProjectionSettleMs) settledRefs.push(ref);
-        const moved = target.targetKind === "projectless" ? moveRowToChats(row, target) : moveRowToProjectList(row, target);
-        if (moved) targetRowsById.set(rowId, row);
-        const projectItem = closestProjectListItem(row);
-        if (projectItem) setProjectEmptyStateHidden(projectItem, true);
-      }
-    });
-    rows.forEach((row) => {
-      const ref = sessionRefFromRow(row);
-      const rowId = projectMoveSessionKey(ref.session_id);
-      const target = projectionForSessionId(ref.session_id, projection);
-      if (!target) {
-        const item = rowListItem(row);
-        delete row.dataset.codexProjectMoveTargetKind;
-        delete row.dataset.codexProjectMoveTargetCwd;
-        delete item.dataset.codexProjectMoveTargetKind;
-        delete item.dataset.codexProjectMoveTargetCwd;
-        return;
-      }
-      if (rowIsUnderTarget(row, target)) return;
-      if (targetRowsById.has(rowId)) {
-        rowListItem(row).remove();
-        return;
-      }
-      const moved = target.targetKind === "projectless" ? moveRowToChats(row, target) : moveRowToProjectList(row, target);
-      if (moved) targetRowsById.set(rowId, row);
-    });
-    settledRefs.forEach(clearProjectMoveProjection);
-    updateProjectMoveEmptyStates();
-  }
-
-  function scheduleProjectMoveProjection() {
-    if (!codexPlusSettings().projectMove || window.__codexProjectMoveProjectionTimer) return;
-    window.__codexProjectMoveProjectionTimer = setTimeout(() => {
-      if (window.__codexProjectMoveRuntimeId !== codexProjectMoveRuntimeId) return;
-      window.__codexProjectMoveProjectionTimer = null;
-      applyProjectMoveProjection();
-    }, 80);
-  }
-
   async function refreshRecentConversationsForHost() {
     try {
       const signals = await loadOptionalCodexAppModule("app-server-manager-signals-");
@@ -6994,190 +6295,10 @@
       await sendRequest("refresh-recent-conversations-for-host", { hostId: "local", sortKey: "updated_at" });
       return true;
     } catch (error) {
-      window.__codexProjectMoveRefreshFailures = window.__codexProjectMoveRefreshFailures || [];
-      window.__codexProjectMoveRefreshFailures.push(String(error?.stack || error));
+      window.__codexRecentConversationRefreshFailures = window.__codexRecentConversationRefreshFailures || [];
+      window.__codexRecentConversationRefreshFailures.push(String(error?.stack || error));
       return false;
     }
-  }
-
-  function refreshAfterProjectMove() {
-    const refreshVisibleSidebar = () => {
-      applyProjectMoveProjection();
-      scheduleChatsSortCorrection(0);
-    };
-    refreshVisibleSidebar();
-    refreshRecentConversationsForHost().finally(() => {
-      projectMoveRefreshDelaysMs.forEach((delay) => setTimeout(refreshVisibleSidebar, delay));
-    });
-  }
-
-  function visibleChatsRows() {
-    const list = chatsThreadList();
-    if (!list) return [];
-    return Array.from(list.children).map(threadRowFromListItem).filter(Boolean).filter((row) => rowIsInChats(row));
-  }
-
-  function chatsSortNeedsCorrection(rows) {
-    let previousPinned = true;
-    let previousSortMs = Infinity;
-    let previousKey = "\uffff";
-    for (const row of rows) {
-      const pinned = rowPinned(row);
-      const ref = sessionRefFromRow(row);
-      const sortMs = rowSortMs(row, ref);
-      const key = projectMoveSessionKey(ref.session_id);
-      if (previousPinned && !pinned) {
-        previousPinned = false;
-        previousSortMs = sortMs;
-        previousKey = key;
-        continue;
-      }
-      if (!previousPinned && pinned) return true;
-      if (sortMs > previousSortMs || (sortMs === previousSortMs && key > previousKey)) return true;
-      previousSortMs = sortMs;
-      previousKey = key;
-    }
-    return false;
-  }
-
-  function reorderChatsRows(rows) {
-    const list = chatsThreadList();
-    if (!list || rows.length < 2) return;
-    const rowItems = new Set(rows.map(rowListItem));
-    const firstNonThreadItem = Array.from(list.children).find((child) => !rowItems.has(child) && !threadRowFromListItem(child));
-    const orderedRows = [...rows].sort((left, right) => {
-      const leftPinned = rowPinned(left);
-      const rightPinned = rowPinned(right);
-      if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
-      const leftRef = sessionRefFromRow(left);
-      const rightRef = sessionRefFromRow(right);
-      const leftSortMs = rowSortMs(left, leftRef);
-      const rightSortMs = rowSortMs(right, rightRef);
-      if (leftSortMs !== rightSortMs) return rightSortMs - leftSortMs;
-      return projectMoveSessionKey(rightRef.session_id).localeCompare(projectMoveSessionKey(leftRef.session_id));
-    });
-    orderedRows.forEach((row) => list.insertBefore(rowListItem(row), firstNonThreadItem || null));
-    cachedSessionRowsAt = 0;
-  }
-
-  async function applyChatsSortCorrection() {
-    if (!codexPlusSettings().projectMove || chatsSortInFlight) return;
-    const rows = visibleChatsRows();
-    if (rows.length < 2) return;
-    const refs = rows.map(sessionRefFromRow).filter((ref) => ref.session_id);
-    const signature = refs.map((ref) => projectMoveSessionKey(ref.session_id)).join("|");
-    const allRowsHaveSortMs = rows.every((row) => numericTimestamp(row.dataset.codexProjectMoveSortMs || rowListItem(row).dataset.codexProjectMoveSortMs));
-    const shouldRefreshSortKeys = signature !== chatsSortSignature || !allRowsHaveSortMs || Date.now() - chatsSortLastFetchAt > chatsSortDbRefreshIntervalMs;
-    if (!shouldRefreshSortKeys && !chatsSortNeedsCorrection(rows)) return;
-    chatsSortInFlight = true;
-    try {
-      if (shouldRefreshSortKeys) {
-        const result = await postJson("/thread-sort-keys", { sessions: refs }).catch(() => ({ status: "failed", sort_keys: [] }));
-        chatsSortLastFetchAt = Date.now();
-        const byId = new Map();
-        if (result?.status === "ok" && Array.isArray(result?.sort_keys)) {
-          result.sort_keys.forEach((item) => {
-            const key = projectMoveSessionKey(String(item?.session_id || ""));
-            if (key) byId.set(key, item);
-          });
-        }
-        rows.forEach((row) => {
-          const ref = sessionRefFromRow(row);
-          const payload = byId.get(projectMoveSessionKey(ref.session_id));
-          const trustedSortMs = timestampMsFromPayload(payload);
-          const sortMs = trustedSortMs || sortMsForSession(ref.session_id, row.dataset.codexProjectMoveSortMs || rowListItem(row).dataset.codexProjectMoveSortMs);
-          row.dataset.codexProjectMoveSortMs = String(sortMs || 0);
-          rowListItem(row).dataset.codexProjectMoveSortMs = String(sortMs || 0);
-          if (trustedSortMs) updateRowTimeLabel(row, trustedSortMs);
-        });
-      }
-      if (chatsSortNeedsCorrection(rows)) reorderChatsRows(rows);
-      chatsSortSignature = visibleChatsRows().map((row) => projectMoveSessionKey(sessionRefFromRow(row).session_id)).join("|");
-    } finally {
-      chatsSortInFlight = false;
-    }
-  }
-
-  function scheduleChatsSortCorrection(delay = chatsSortRefreshIntervalMs) {
-    if (!codexPlusSettings().projectMove || window.__codexProjectMoveChatsSortTimer) return;
-    window.__codexProjectMoveChatsSortTimer = setTimeout(() => {
-      if (window.__codexProjectMoveRuntimeId !== codexProjectMoveRuntimeId) return;
-      window.__codexProjectMoveChatsSortTimer = null;
-      applyChatsSortCorrection().catch((error) => {
-        window.__codexProjectMoveSortFailures = window.__codexProjectMoveSortFailures || [];
-        window.__codexProjectMoveSortFailures.push(String(error?.stack || error));
-      }).finally(() => {
-        if (codexPlusSettings().projectMove) scheduleChatsSortCorrection();
-      });
-    }, delay);
-  }
-
-  async function setProjectlessThreadIds(ref, mode) {
-    const variants = threadIdVariants(ref.session_id);
-    if (variants.length === 0) throw new Error("未找到会话 ID");
-    const existingIds = await getCodexGlobalState("projectless-thread-ids").catch(() => []);
-    const ids = Array.isArray(existingIds) ? existingIds : [];
-    const variantSet = new Set(variants);
-    const nextIds = mode === "add" ? uniqueValues([...ids, ...variants]) : ids.filter((id) => !variantSet.has(id));
-    if (nextIds.length !== ids.length || nextIds.some((id, index) => id !== ids[index])) await setCodexGlobalState("projectless-thread-ids", nextIds);
-  }
-
-  async function clearThreadWorkspaceHints(ref) {
-    const variants = threadIdVariants(ref.session_id);
-    if (variants.length === 0) return;
-    const hints = objectGlobalState(await getCodexGlobalState("thread-workspace-root-hints").catch(() => ({})));
-    const hintKeys = variants.filter((id) => Object.prototype.hasOwnProperty.call(hints, id));
-    if (hintKeys.length > 0) {
-      hintKeys.forEach((id) => delete hints[id]);
-      await setCodexGlobalState("thread-workspace-root-hints", hints);
-    }
-  }
-
-  async function clearThreadWritableRoots(ref) {
-    const variants = threadIdVariants(ref.session_id);
-    if (variants.length === 0) return;
-    const roots = objectGlobalState(await getCodexGlobalState("thread-writable-roots").catch(() => ({})));
-    const rootKeys = variants.filter((id) => Object.prototype.hasOwnProperty.call(roots, id));
-    if (rootKeys.length > 0) {
-      rootKeys.forEach((id) => delete roots[id]);
-      await setCodexGlobalState("thread-writable-roots", roots);
-    }
-  }
-
-  async function clearThreadProjectlessOutputDirectories(ref) {
-    const variants = threadIdVariants(ref.session_id);
-    if (variants.length === 0) return;
-    const dirs = objectGlobalState(await getCodexGlobalState("thread-projectless-output-directories").catch(() => ({})));
-    const dirKeys = variants.filter((id) => Object.prototype.hasOwnProperty.call(dirs, id));
-    if (dirKeys.length > 0) {
-      dirKeys.forEach((id) => delete dirs[id]);
-      await setCodexGlobalState("thread-projectless-output-directories", dirs);
-    }
-  }
-
-  async function moveSessionToProjectless(ref) {
-    if (!ref.session_id) throw new Error("未找到会话 ID");
-    await setProjectlessThreadIds(ref, "add");
-    await clearThreadWorkspaceHints(ref);
-    await clearThreadWritableRoots(ref);
-    await clearThreadProjectlessOutputDirectories(ref);
-    const sortKey = await postJson("/thread-sort-key", ref).catch(() => ({}));
-    return { status: "moved", session_id: ref.session_id, updated_at: sortKey?.updated_at, updated_at_ms: sortKey?.updated_at_ms, created_at_ms: sortKey?.created_at_ms };
-  }
-
-  function isNativeProjectTarget(target) {
-    return target?.kind === "project" && nativeProjectTargets().some((project) => sameWorkspacePath(project.path, target.path));
-  }
-
-  async function moveSessionToProject(ref, target) {
-    if (!ref.session_id) throw new Error("未找到会话 ID");
-    if (!target?.path) throw new Error("目标项目路径为空");
-    if (!isNativeProjectTarget(target)) throw new Error("目标项目不在 Codex 项目列表中");
-    const result = await postJson("/move-thread-workspace", { ...ref, target_cwd: target.path });
-    if (result.status !== "moved") throw new Error(result.message || "移动项目失败");
-    await setProjectlessThreadIds(ref, "remove");
-    await clearThreadWorkspaceHints(ref);
-    return result;
   }
 
   function showToast(message, undoToken) {
@@ -8213,103 +7334,6 @@
     showToast(result.message || "导出失败", null);
   }
 
-  function sortStateFromMoveResult(result, ref, row) {
-    const trustedSortMs = timestampMsFromPayload(result);
-    return { sortMs: trustedSortMs || rowSortMs(row, ref), sortMsTrusted: !!trustedSortMs };
-  }
-
-  function finishProjectMove(row, button, ref, target, message) {
-    releaseDeleteFocus(row, button);
-    button.disabled = false;
-    button.textContent = "移动";
-    saveProjectMoveProjection(ref, target, target.sortMs || rowSortMs(row, ref, target));
-    if (target.kind === "projectless") moveRowToChats(row, target);
-    refreshAfterProjectMove();
-    showToast(message, null);
-  }
-
-  async function applyProjectMove(row, button, ref, target) {
-    button.disabled = true;
-    button.textContent = "移动中";
-    try {
-      if (target.kind === "projectless") {
-        const result = await moveSessionToProjectless(ref);
-        finishProjectMove(row, button, ref, { ...target, ...sortStateFromMoveResult(result, ref, row) }, `已移动到普通对话：“${ref.title || ref.session_id}”`);
-      } else {
-        const result = await moveSessionToProject(ref, target);
-        finishProjectMove(row, button, ref, { ...target, ...sortStateFromMoveResult(result, ref, row) }, `已移动到“${target.label}”：“${ref.title || ref.session_id}”`);
-      }
-    } catch (error) {
-      button.disabled = false;
-      button.textContent = "移动";
-      showToast(`移动失败：${error?.message || error}`, null);
-    }
-  }
-
-  async function openProjectMoveMenuForRow(row, button, ref, event) {
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation?.();
-    releaseDeleteFocus(row, button);
-    document.querySelectorAll(`.${projectMoveOverlayClass}`).forEach((node) => node.remove());
-    const overlay = document.createElement("div");
-    overlay.className = projectMoveOverlayClass;
-    overlay.innerHTML = `
-      <div class="codex-project-move-panel" role="dialog" aria-modal="true" aria-label="移动对话">
-        <div class="codex-project-move-header">
-          <div class="codex-project-move-title">移动“${escapeHtml(ref.title || ref.session_id)}”</div>
-        </div>
-        <div class="codex-project-move-list"><div class="codex-project-move-empty">加载项目中...</div></div>
-      </div>
-    `;
-    const panel = overlay.querySelector(".codex-project-move-panel");
-    const rect = button.getBoundingClientRect();
-    const panelWidth = Math.min(360, Math.max(240, window.innerWidth - 32));
-    panel.style.left = `${Math.max(16, Math.min(window.innerWidth - panelWidth - 16, rect.right - panelWidth))}px`;
-    panel.style.top = `${Math.max(16, Math.min(window.innerHeight - 120, rect.bottom + 6))}px`;
-    const close = () => overlay.remove();
-    overlay.addEventListener("click", (clickEvent) => {
-      if (clickEvent.target === overlay) close();
-    }, true);
-    overlay.addEventListener("keydown", (keyEvent) => {
-      if (keyEvent.key === "Escape") {
-        keyEvent.preventDefault();
-        close();
-      }
-    }, true);
-    document.body.appendChild(overlay);
-    try {
-      const targets = projectMoveTargets();
-      const list = overlay.querySelector(".codex-project-move-list");
-      if (!list) return;
-      list.innerHTML = "";
-      if (targets.length === 0) {
-        list.innerHTML = `<div class="codex-project-move-empty">没有可用目标</div>`;
-        return;
-      }
-      for (const target of targets) {
-        const item = document.createElement("button");
-        item.type = "button";
-        item.className = "codex-project-move-item";
-        item.innerHTML = `
-          <div class="codex-project-move-item-title">${escapeHtml(target.label)}</div>
-          <div class="codex-project-move-item-path">${escapeHtml(target.description)}</div>
-        `;
-        item.addEventListener("click", async (selectEvent) => {
-          selectEvent.preventDefault();
-          selectEvent.stopPropagation();
-          close();
-          await applyProjectMove(row, button, ref, target);
-        }, true);
-        list.appendChild(item);
-      }
-      list.querySelector("button")?.focus();
-    } catch (error) {
-      close();
-      showToast(`加载项目失败：${error?.message || error}`, null);
-    }
-  }
-
   function installDeleteButtonEventDelegation() {
     document.removeEventListener("click", window.__codexSessionDeleteDocumentDeleteHandler, true);
     const handler = (event) => {
@@ -8545,40 +7569,35 @@
 
   function attachButton(row) {
     const settings = codexPlusSettings();
-    if (!settings.sessionDelete && !settings.markdownExport && !settings.projectMove) {
+    if (!settings.sessionDelete && !settings.markdownExport) {
       removeActionGroups(row);
       row.dataset.codexDeleteRow = "false";
-      row.dataset.codexProjectMoveRow = "false";
       return;
     }
     const existingGroup = actionGroupFromRow(row);
     const existingDeleteButton = existingGroup?.querySelector(`.${buttonClass}`);
     const existingMoreButton = existingGroup?.querySelector(`.${moreButtonClass}`);
     const existingExportButton = existingGroup?.querySelector(`.${exportButtonClass}`);
-    const existingMoveButton = existingGroup?.querySelector(`.${projectMoveButtonClass}`);
-    const needsMoreMenu = settings.markdownExport || settings.projectMove;
+    const needsMoreMenu = settings.markdownExport;
     const hasUnexpectedDelete = !settings.sessionDelete && !!existingDeleteButton;
     const hasUnexpectedMore = !needsMoreMenu && !!existingMoreButton;
     const hasUnexpectedExport = !!existingExportButton;
-    const hasUnexpectedMove = !!existingMoveButton;
     const missingDelete = settings.sessionDelete && !existingDeleteButton;
     const missingMore = needsMoreMenu && !existingMoreButton;
     const deleteReady = !settings.sessionDelete || existingDeleteButton?.dataset.codexDeleteVersion === codexDeleteVersion;
     const groupReady = existingGroup?.dataset.codexActionGroupVersion === codexActionGroupVersion;
-    if (groupReady && deleteReady && !hasUnexpectedDelete && !hasUnexpectedMore && !hasUnexpectedExport && !hasUnexpectedMove && !missingDelete && !missingMore) {
+    if (groupReady && deleteReady && !hasUnexpectedDelete && !hasUnexpectedMore && !hasUnexpectedExport && !missingDelete && !missingMore) {
       return;
     }
     removeActionGroups(row);
     row.dataset.codexDeleteRow = "false";
-    row.dataset.codexProjectMoveRow = "false";
     const ref = sessionRefFromRow(row);
     if (!ref.session_id) return;
     row.dataset.codexDeleteRow = "true";
-    row.dataset.codexProjectMoveRow = String(!!settings.projectMove);
     const group = document.createElement("div");
     group.className = actionGroupClass;
     group.dataset.codexActionGroupVersion = codexActionGroupVersion;
-    if (settings.markdownExport || settings.projectMove) {
+    if (settings.markdownExport) {
       const moreButton = document.createElement("button");
       moreButton.type = "button";
       moreButton.className = `${actionButtonClass} ${moreButtonClass}`;
@@ -8594,13 +7613,6 @@
           stopActionButtonEvent(row, moreButton, event);
           closeSessionMoreMenus();
           exportMarkdown(ref);
-        }));
-      }
-      if (settings.projectMove) {
-        moreMenu.appendChild(createSessionMoreMenuItem("移动", "↗", (event) => {
-          stopActionButtonEvent(row, moreButton, event);
-          closeSessionMoreMenus();
-          openProjectMoveMenuForRow(row, moreButton, ref, event);
         }));
       }
       const openMoreMenu = (event) => {
@@ -9800,8 +8812,6 @@
     refreshThreadIdBadges();
     sessionRows().forEach(tryAttachButton);
     updateDeleteButtonOffsets();
-    scheduleProjectMoveProjection();
-    scheduleChatsSortCorrection();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     refreshConversationView();
     installCodexServiceTierBadge();
@@ -9824,7 +8834,7 @@
   }
 
   function isExtensionUiNode(node) {
-    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${projectMoveOverlayClass}, .${codexServiceTierBadgeClass}, .codex-zed-remote-button, .codex-zed-remote-toast, #codex-plus-menu`);
+    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexServiceTierBadgeClass}, .codex-zed-remote-button, .codex-zed-remote-toast, #codex-plus-menu`);
   }
 
   function scanRelevantSelector() {
@@ -9832,7 +8842,6 @@
       selectors.sidebarThread,
       '[data-app-action-sidebar-section-heading="Chats"]',
       '[data-app-action-sidebar-section-heading="Projects"]',
-      '[data-codex-project-move-row="true"]',
       '[data-codex-archive-page-row="true"]',
       "[data-codex-archive-delete-all]",
       '[data-message-author-role]',
@@ -9902,10 +8911,6 @@
   installUpstreamBranchDropdownAdapter();
   installUpstreamWorktreeNativeAdapter();
   scan();
-  window.__codexProjectMoveApplyProjection = applyProjectMoveProjection;
-  window.__codexProjectMoveReadProjection = readProjectMoveProjection;
-  window.__codexProjectMoveTargets = projectMoveTargets;
-  window.__codexProjectMoveSortChats = applyChatsSortCorrection;
   window.removeEventListener("resize", window.__codexPlusResizeHandler);
   let codexPlusResizeRafId = 0;
   window.__codexPlusResizeHandler = () => {

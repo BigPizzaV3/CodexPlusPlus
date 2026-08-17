@@ -1209,7 +1209,7 @@ fn injection_script_loads_backend_settings_before_initial_scan() {
         .find("scan();")
         .expect("script should perform an initial scan");
     let footer_marker = footer
-        .find("window.__codexProjectMoveApplyProjection")
+        .find("window.removeEventListener(\"resize\"")
         .expect("script should continue bootstrapping after the initial scan");
 
     assert!(initial_scan < footer_marker);
@@ -1289,8 +1289,8 @@ fn injection_script_refreshes_sidebar_after_session_undo() {
         .split_once("async function refreshRecentConversationsForHost()")
         .expect("recent conversation refresh helper should exist")
         .1
-        .split_once("function refreshAfterProjectMove")
-        .expect("refresh helper should end before project move refresh")
+        .split_once("function showToast")
+        .expect("refresh helper should end before toast helper")
         .0;
     let toast = script
         .split_once("function showToast(message, undoToken)")
@@ -1307,14 +1307,14 @@ fn injection_script_refreshes_sidebar_after_session_undo() {
 }
 
 #[test]
-fn injection_script_moves_export_and_project_move_into_more_menu() {
+fn injection_script_moves_export_into_more_menu() {
     let script = assets::injection_script(57321).replace("\r\n", "\n");
 
     assert!(script.contains("moreButtonClass = \"codex-session-more-button\""));
     assert!(script.contains("moreMenuClass = \"codex-session-more-menu\""));
     assert!(script.contains("configureActionButton(moreButton, \"更多操作\", \"…\")"));
     assert!(script.contains("createSessionMoreMenuItem(\"导出\""));
-    assert!(script.contains("createSessionMoreMenuItem(\"移动\""));
+    assert!(!script.contains("createSessionMoreMenuItem(\"移动\""));
     assert!(script.contains("group.appendChild(moreButton)"));
     assert!(script.contains("installMoreButtonEvents(row, moreButton, openMoreMenu)"));
     assert!(script.contains("installSessionMoreMenuAutoClose(row, moreMenu)"));

@@ -6,6 +6,7 @@ use codex_plus_core::launcher::{
 };
 use codex_plus_core::models::{DeleteResult, ExportResult, SessionRef};
 use codex_plus_core::routes::{BridgeContext, BridgeDataService, BridgeRuntimeService};
+use codex_plus_core::status::LaunchStatus;
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -45,22 +46,38 @@ impl LauncherHooks {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    if let Err(error) = launcher_main().await {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let helper_only = args.iter().any(|arg| arg == "--helper-only");
+    let options = parse_launch_options(args.iter());
+    if let Err(error) = launcher_main(args, helper_only, options.clone()).await {
         let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
             "launcher.failed",
             json!({
                 "message": error.to_string()
             }),
         );
+        if !helper_only {
+            let _ = options.status_store.save_latest(&LaunchStatus {
+                status: "failed".to_string(),
+                message: error.to_string(),
+                started_at_ms: current_timestamp_ms(),
+                debug_port: Some(options.debug_port),
+                helper_port: Some(options.helper_port),
+                codex_app: options
+                    .app_dir
+                    .map(|path| path.to_string_lossy().to_string()),
+            });
+        }
         return Err(error);
     }
     Ok(())
 }
 
-async fn launcher_main() -> Result<()> {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let helper_only = args.iter().any(|arg| arg == "--helper-only");
-    let options = parse_launch_options(args.iter());
+async fn launcher_main(
+    args: Vec<String>,
+    helper_only: bool,
+    options: LaunchOptions,
+) -> Result<()> {
     if helper_only {
         let hooks = LauncherHooks::default();
         hooks.start_helper(options.helper_port).await?;
@@ -70,6 +87,16 @@ async fn launcher_main() -> Result<()> {
     }
     let Some(_guard) = acquire_single_instance_guard(options.debug_port)? else {
         activate_existing_codex_app(&options).await?;
+        options.status_store.save_latest(&LaunchStatus {
+            status: "running".to_string(),
+            message: "Existing Codex instance activated".to_string(),
+            started_at_ms: current_timestamp_ms(),
+            debug_port: Some(options.debug_port),
+            helper_port: Some(options.helper_port),
+            codex_app: options
+                .app_dir
+                .map(|path| path.to_string_lossy().to_string()),
+        })?;
         return Ok(());
     };
     tokio::spawn(async {
@@ -79,6 +106,13 @@ async fn launcher_main() -> Result<()> {
     let handle = launch_and_inject_with_hooks(options, &hooks).await?;
     handle.wait_for_codex_exit().await?;
     Ok(())
+}
+
+fn current_timestamp_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn acquire_single_instance_guard(
@@ -482,38 +516,6 @@ impl BridgeDataService for LauncherDataService {
             .map_err(|error| anyhow::anyhow!("archived lookup task failed: {error}"))
     }
 
-    async fn move_thread_workspace(
-        &self,
-        session: SessionRef,
-        target_cwd: String,
-    ) -> anyhow::Result<Value> {
-        let db_paths = self.candidate_db_paths();
-        let backup_store = codex_plus_data::BackupStore::new(self.backup_dir.clone());
-        tokio::task::spawn_blocking(move || {
-            codex_plus_data::move_codex_thread_workspace_from_paths(
-                db_paths,
-                backup_store,
-                &session,
-                &target_cwd,
-            )
-        })
-        .await
-        .map_err(|error| anyhow::anyhow!("move thread workspace task failed: {error}"))
-    }
-
-    async fn thread_sort_key(&self, session: SessionRef) -> anyhow::Result<Value> {
-        let adapter = self.storage_adapter();
-        tokio::task::spawn_blocking(move || adapter.codex_thread_sort_key(&session))
-            .await
-            .map_err(|error| anyhow::anyhow!("thread sort key task failed: {error}"))
-    }
-
-    async fn thread_sort_keys(&self, sessions: Vec<SessionRef>) -> anyhow::Result<Value> {
-        let adapter = self.storage_adapter();
-        tokio::task::spawn_blocking(move || adapter.codex_thread_sort_keys(&sessions))
-            .await
-            .map_err(|error| anyhow::anyhow!("thread sort keys task failed: {error}"))
-    }
 }
 
 impl LauncherDataService {
@@ -862,6 +864,8 @@ mod tests {
         assert!(source.contains("acquire_single_instance_guard(options.debug_port)?"));
         assert!(source.contains("launcher_guard_port"));
         assert!(source.contains("launcher.already_running"));
+        assert!(source.contains("Existing Codex instance activated"));
+        assert!(source.contains("status: \"failed\".to_string()"));
     }
 
     #[test]
@@ -906,17 +910,9 @@ mod tests {
 
         hooks.bridge_context(9229, &test_dir).await.unwrap();
         let ctx = hooks.watchdog_bridge_context().unwrap();
-        let result = codex_plus_core::routes::handle_bridge_request(
-            ctx,
-            "/move-thread-workspace",
-            json!({"session_id": "missing", "title": "Missing", "target_cwd": "/new"}),
-        )
-        .await;
+        let result = codex_plus_core::routes::handle_bridge_request(ctx, "/backend-status", json!({})).await;
 
-        assert_ne!(
-            result["message"],
-            "Move workspace service is not wired in core launcher hooks"
-        );
+        assert_ne!(result["message"], "Unknown bridge path");
     }
 }
 

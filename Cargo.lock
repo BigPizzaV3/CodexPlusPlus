@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-core"
-version = "1.2.47"
+version = "1.2.48"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -427,6 +427,7 @@ dependencies = [
  "directories",
  "fs2",
  "futures-util",
+ "qrcode",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
@@ -447,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-data"
-version = "1.2.47"
+version = "1.2.48"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -464,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-launcher"
-version = "1.2.47"
+version = "1.2.48"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -478,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-manager"
-version = "1.2.47"
+version = "1.2.48"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2765,6 +2766,12 @@ checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quick-xml"

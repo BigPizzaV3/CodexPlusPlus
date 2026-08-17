@@ -2853,6 +2853,379 @@ body {
   gap: 12px;
 }
 
+.weixin-connect-page {
+  display: grid;
+  gap: 16px;
+  width: min(100%, 1120px);
+  margin: 0 auto;
+}
+
+.panel.weixin-status-panel {
+  position: relative;
+  overflow: hidden;
+}
+
+.weixin-status-panel::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: hsl(var(--muted-foreground) / 0.4);
+  content: "";
+}
+
+.weixin-status-panel.is-running::before {
+  background: hsl(var(--status-success));
+}
+
+.weixin-status-panel.is-error::before {
+  background: hsl(var(--status-error));
+}
+
+.weixin-status-content {
+  padding: 16px 18px 14px !important;
+}
+
+.weixin-connect-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.weixin-status-primary {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+}
+
+.weixin-status-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-raised));
+  color: hsl(var(--muted-foreground));
+}
+
+.weixin-status-panel.is-running .weixin-status-icon {
+  border-color: hsl(var(--status-success) / 0.34);
+  background: hsl(var(--status-success) / 0.08);
+  color: hsl(var(--status-success));
+}
+
+.weixin-connect-head h2 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+.weixin-connect-head .muted {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.weixin-connect-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  margin-top: 0;
+}
+
+.weixin-connect-actions button {
+  height: 36px;
+}
+
+.weixin-runtime-meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 112px minmax(0, 1.15fr);
+  gap: 16px;
+  margin-top: 14px;
+  border-top: 1px solid hsl(var(--border));
+  padding-top: 13px;
+}
+
+.weixin-runtime-meta > div {
+  min-width: 0;
+}
+
+.weixin-runtime-meta span,
+.weixin-runtime-meta strong,
+.weixin-runtime-meta code {
+  display: block;
+}
+
+.weixin-runtime-meta span {
+  margin-bottom: 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.weixin-runtime-meta strong,
+.weixin-runtime-meta code {
+  overflow: hidden;
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.weixin-runtime-meta code {
+  font-family: var(--font-mono);
+}
+
+.weixin-settings-head {
+  display: block;
+  border-bottom: 1px solid hsl(var(--border));
+  padding: 16px 20px 14px;
+}
+
+.weixin-settings-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.weixin-settings-head p {
+  margin-top: 5px;
+  font-size: 12px;
+}
+
+.weixin-connect-form {
+  max-width: none;
+  padding: 0 !important;
+}
+
+.weixin-form-section {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 22px;
+  padding: 20px;
+}
+
+.weixin-form-section + .weixin-form-section {
+  border-top: 1px solid hsl(var(--border));
+}
+
+.weixin-form-section-title {
+  display: flex;
+  align-items: center;
+  align-self: start;
+  gap: 8px;
+  min-height: 40px;
+  color: hsl(var(--muted-foreground));
+}
+
+.weixin-form-section-title strong {
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.weixin-form-fields {
+  display: grid;
+  gap: 15px;
+  width: min(100%, 760px);
+}
+
+.weixin-connect-form .field {
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+}
+
+.weixin-connect-form .field > span {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.weixin-connect-form input,
+.weixin-connect-form .field-select {
+  width: 100%;
+  height: 40px;
+}
+
+.weixin-path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  gap: 8px;
+}
+
+.weixin-path-row > button {
+  width: 40px;
+  height: 40px;
+}
+
+.weixin-search-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.weixin-search-input-wrap {
+  position: relative;
+}
+
+.weixin-search-input-wrap input {
+  padding-right: 56px;
+  padding-left: 34px;
+}
+
+.weixin-search-input-icon,
+.weixin-search-input-chevron {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  color: hsl(var(--muted-foreground));
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.weixin-search-input-icon {
+  left: 11px;
+}
+
+.weixin-search-input-chevron {
+  right: 11px;
+  transition: transform 120ms ease;
+}
+
+.weixin-search-input-chevron.is-open {
+  transform: translateY(-50%) rotate(180deg);
+}
+
+.weixin-search-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  z-index: 30;
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid hsl(var(--border));
+  border-radius: 7px;
+  background: hsl(var(--surface-raised));
+  box-shadow: 0 10px 24px hsl(var(--foreground) / 0.18);
+  padding: 4px;
+}
+
+.weixin-search-option {
+  display: grid;
+  width: 100%;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  padding: 9px 10px;
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.weixin-search-option:hover,
+.weixin-search-option[aria-selected="true"] {
+  background: hsl(var(--accent) / 0.12);
+}
+
+.weixin-search-option > span,
+.weixin-search-option > small {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.weixin-search-option > span {
+  color: hsl(var(--foreground));
+  font-size: 12px;
+}
+
+.weixin-session-option {
+  gap: 2px;
+}
+
+.weixin-session-option strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.weixin-search-empty {
+  padding: 12px 10px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.weixin-field-hint {
+  display: block;
+  margin-top: 5px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.weixin-qr-content {
+  max-height: 104px;
+  overflow: auto;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--muted) / 0.45);
+  padding: 10px 12px;
+  color: hsl(var(--foreground));
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.weixin-qr-image {
+  width: min(320px, 100%);
+  margin-bottom: 14px;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: #fff;
+  padding: 10px;
+}
+
+.weixin-qr-image svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+@media (max-width: 760px) {
+  .weixin-connect-head {
+    display: grid;
+  }
+
+  .weixin-connect-actions {
+    justify-content: flex-start;
+  }
+
+  .weixin-runtime-meta,
+  .weixin-form-section {
+    grid-template-columns: 1fr;
+  }
+
+  .weixin-form-section {
+    gap: 10px;
+  }
+
+  .weixin-form-section-title {
+    min-height: auto;
+  }
+}
+
 .settings-block {
   margin-top: 14px;
   padding-top: 14px;
