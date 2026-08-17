@@ -92,7 +92,6 @@ import {
   mergeModelWindowRows,
   modelWindowRowsFromProfile,
   modelWindowRowsValidationError,
-  replaceModelWindowRowsFromUpstream,
   serializeModelWindowRows,
   type ImageHandling,
   type ModelWindowRowsValidationIssue,
@@ -6590,11 +6589,8 @@ function RelayProfileEditor({
                       modelWindows: serializedRows.modelWindows,
                       modelAutoCompact: serializedRows.modelAutoCompact,
                     });
-                    if (models) {
-                      setModelWindowRows(replaceModelWindowRowsFromUpstream(
-                        modelWindowRows,
-                        models.map((model) => ({ model, window: "", autoCompact: "", imageHandling: "" })),
-                      ));
+                    if (models?.length) {
+                      addModelWindowRows(models.map((model) => ({ model, window: "", autoCompact: "", imageHandling: "" })));
                     }
                   }}
                   size="sm"
