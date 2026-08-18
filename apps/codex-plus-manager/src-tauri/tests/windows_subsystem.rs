@@ -331,7 +331,7 @@ fn provider_presets_include_runapi() {
     assert!(presets.contains("id: \"runapi\""));
     assert!(presets.contains("name: \"RunAPI\""));
     assert!(presets.contains("category: \"aggregator\""));
-    assert!(presets.contains("baseUrl: \"https://runapi.co/v1\""));
+    assert!(presets.contains("baseUrl: \"https://runapi.host/v1\""));
 }
 
 #[test]

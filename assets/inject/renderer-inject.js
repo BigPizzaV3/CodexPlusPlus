@@ -776,46 +776,7 @@
         pointer-events: none;
         white-space: nowrap;
       }
-      .${projectMoveOverlayClass} {
-        position: fixed;
-        inset: 0;
-        z-index: 2147483200;
-        background: rgba(15,23,42,.28);
-      }
-      .codex-project-move-panel {
-        position: fixed;
-        width: min(360px, calc(100vw - 32px));
-        max-height: min(520px, calc(100vh - 32px));
-        overflow: hidden;
-        border: 1px solid rgba(15,23,42,.14);
-        border-radius: 10px;
-        background: #ffffff;
-        color: #111827;
-        font: 13px system-ui, sans-serif;
-        box-shadow: 0 18px 60px rgba(15,23,42,.25);
-      }
-      .codex-project-move-header { border-bottom: 1px solid #e5e7eb; padding: 10px 12px; }
-      .codex-project-move-title { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-project-move-list { max-height: min(440px, calc(100vh - 110px)); overflow-y: auto; padding: 6px; }
-      .codex-project-move-item {
-        display: block;
-        width: 100%;
-        border: 0;
-        border-radius: 7px;
-        background: transparent;
-        color: #111827;
-        padding: 8px 9px;
-        text-align: left;
-        cursor: pointer;
-      }
-      .codex-project-move-item:hover,
-      .codex-project-move-item:focus-visible { background: #f3f4f6; outline: none; }
-      .codex-project-move-item-title { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-project-move-item-path { margin-top: 2px; color: #6b7280; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-project-move-empty { padding: 18px 12px; color: #6b7280; text-align: center; }
-      .codex-project-move-hidden { display: none !important; }
       [data-codex-plus-usage-alert-hidden="true"] { display: none !important; }
-      [data-codex-project-move-injected-list="true"] { display: flex; flex-direction: column; }
       .codex-archive-delete-all {
         border: 1px solid #ef4444;
         border-radius: 7px;

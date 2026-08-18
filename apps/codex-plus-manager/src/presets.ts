@@ -185,10 +185,10 @@ export const PRESETS: ProviderPreset[] = [
   {
     id: "runapi",
     name: "RunAPI",
-    websiteUrl: "https://runapi.co",
-    apiKeyUrl: "https://runapi.co",
+    websiteUrl: "https://runapi.host",
+    apiKeyUrl: "https://runapi.host",
     category: "aggregator",
-    baseUrl: "https://runapi.co/v1",
+    baseUrl: "https://runapi.host/v1",
     protocol: "responses",
     model: "gpt-5.5",
   },
