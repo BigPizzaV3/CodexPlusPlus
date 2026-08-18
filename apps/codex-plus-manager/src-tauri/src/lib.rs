@@ -113,6 +113,7 @@ pub fn run() {
             commands::sync_providers_now,
             commands::load_ads,
             commands::refresh_script_market,
+            commands::refresh_user_script_inventory,
             commands::install_market_script,
             commands::set_user_script_enabled,
             commands::delete_user_script,

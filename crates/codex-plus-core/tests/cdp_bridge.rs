@@ -2699,6 +2699,31 @@ fn pick_injectable_codex_page_target_ignores_embedded_browser_page_named_codex()
 }
 
 #[test]
+fn pick_injectable_codex_page_target_ignores_standalone_manager() {
+    let targets = vec![
+        target(
+            "manager",
+            "page",
+            "Codex++ 管理工具",
+            "http://127.0.0.1:1420/",
+            Some("ws://manager"),
+        ),
+        target(
+            "main",
+            "page",
+            "Codex",
+            "app://-/index.html",
+            Some("ws://main"),
+        ),
+    ];
+
+    let picked = pick_injectable_codex_page_target(&targets)
+        .expect("native Codex app page should win over the standalone manager");
+
+    assert_eq!(picked.id, "main");
+}
+
+#[test]
 fn pick_injectable_codex_page_target_rejects_embedded_browser_only_page() {
     let targets = vec![target(
         "browser-pr",
