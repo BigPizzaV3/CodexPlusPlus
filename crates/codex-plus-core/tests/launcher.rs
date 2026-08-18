@@ -8,12 +8,13 @@ use codex_plus_core::app_paths::{
 };
 use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
-    browser_identity_changed, build_codex_arguments, build_codex_arguments_for_settings,
-    build_codex_arguments_with_native_menu_inspector, build_codex_command,
-    build_codex_command_with_native_menu_inspector, build_macos_cleanup_command,
-    build_macos_open_command, build_macos_open_command_with_native_menu_inspector,
-    build_packaged_activation, build_packaged_activation_with_native_menu_inspector,
-    launch_and_inject_with_hooks,
+    MacosDebugLaunchAction, browser_identity_changed, build_codex_arguments,
+    build_codex_arguments_for_settings, build_codex_arguments_with_native_menu_inspector,
+    build_codex_command, build_codex_command_with_native_menu_inspector,
+    build_macos_cleanup_command, build_macos_open_command,
+    build_macos_open_command_with_native_menu_inspector, build_packaged_activation,
+    build_packaged_activation_with_native_menu_inspector, launch_and_inject_with_hooks,
+    select_macos_debug_launch_action,
 };
 #[cfg(windows)]
 use codex_plus_core::launcher::{WindowsProcessControlStrategy, windows_process_control_strategy};
@@ -1665,6 +1666,30 @@ fn launcher_macos_cleanup_is_skipped_when_app_was_already_running() {
     );
 
     assert_eq!(command, None);
+}
+
+#[test]
+fn launcher_macos_debug_launch_starts_when_app_is_not_running() {
+    assert_eq!(
+        select_macos_debug_launch_action(false, false),
+        MacosDebugLaunchAction::LaunchNew
+    );
+}
+
+#[test]
+fn launcher_macos_debug_launch_reuses_existing_codex_cdp_instance() {
+    assert_eq!(
+        select_macos_debug_launch_action(true, true),
+        MacosDebugLaunchAction::ReuseRunningDebugApp
+    );
+}
+
+#[test]
+fn launcher_macos_debug_launch_restarts_existing_non_cdp_instance() {
+    assert_eq!(
+        select_macos_debug_launch_action(true, false),
+        MacosDebugLaunchAction::RestartRunningApp
+    );
 }
 
 #[tokio::test]
