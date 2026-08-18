@@ -279,12 +279,26 @@
     const root = document.documentElement;
     root?.classList.remove(...ROOT_CLASSES);
     for (const property of ROOT_PROPERTIES) root?.style.removeProperty(property);
+    document.querySelectorAll('main[data-codex-plus-dream-surface="true"]').forEach((node) => {
+      node.classList.remove("main-surface");
+      node.removeAttribute("data-codex-plus-dream-surface");
+    });
     document.querySelectorAll(".dream-home").forEach((node) => { node.classList.remove("dream-home"); node.removeAttribute("data-dream-home-layout"); });
     document.querySelectorAll(".dream-task").forEach((node) => node.classList.remove("dream-task"));
     document.querySelectorAll(".dream-home-shell").forEach((node) => node.classList.remove("dream-home-shell"));
     document.querySelectorAll(`.${HOME_UTILITY_CLASS}`).forEach((node) => node.classList.remove(HOME_UTILITY_CLASS));
     document.getElementById(STYLE_ID)?.remove();
     document.getElementById(CHROME_ID)?.remove();
+  };
+
+  const ensureShellMain = () => {
+    const classic = document.querySelector("main.main-surface");
+    if (classic) return classic;
+    const modern = document.querySelector('main[class*="MainContentSurface"], main[class*="_MainContentSurface_"]');
+    if (!modern) return null;
+    modern.classList.add("main-surface");
+    modern.setAttribute("data-codex-plus-dream-surface", "true");
+    return modern;
   };
 
   const applyProfile = (root) => {
@@ -326,7 +340,7 @@
     const root = document.documentElement;
     if (!root || !document.body) return;
 
-    const shellMain = document.querySelector("main.main-surface");
+    const shellMain = ensureShellMain();
     const shellSidebar = document.querySelector("aside.app-shell-left-panel");
     if (!shellMain || !shellSidebar) {
       clearSkinDom();

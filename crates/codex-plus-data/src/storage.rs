@@ -3,7 +3,7 @@ use codex_plus_core::models::{DeleteResult, DeleteStatus, SessionRef};
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
@@ -163,9 +163,34 @@ impl SQLiteStorageAdapter {
             "NULL"
         };
         let rollout_path = optional_column_expression(&columns, "rollout_path", "''");
+        let mut subagent_filters = Vec::new();
+        if has_table(db, "thread_spawn_edges")?
+            && table_columns(db, "thread_spawn_edges")?
+                .iter()
+                .any(|column| column == "child_thread_id")
+        {
+            subagent_filters.push(
+                "NOT EXISTS (SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = threads.id)",
+            );
+        }
+        if has_table(db, "agent_job_items")?
+            && table_columns(db, "agent_job_items")?
+                .iter()
+                .any(|column| column == "assigned_thread_id")
+        {
+            subagent_filters.push(
+                "NOT EXISTS (SELECT 1 FROM agent_job_items j WHERE j.assigned_thread_id = threads.id)",
+            );
+        }
+        let child_thread_filter = if subagent_filters.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", subagent_filters.join(" AND "))
+        };
         let sql = format!(
             "SELECT id, {title}, {cwd}, {model_provider}, {archived}, {updated_at_ms}, {rollout_path}
              FROM threads
+             {child_thread_filter}
              ORDER BY COALESCE({updated_at_ms}, 0) DESC, id DESC
              LIMIT ?1"
         );

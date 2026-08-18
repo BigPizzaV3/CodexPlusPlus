@@ -178,4 +178,17 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /\[data-codex-plus-usage-alert-hidden="true"\] \{ display: none !important; \}/);
     assert.doesNotMatch(renderer, /container\.style\.(?:setProperty|removeProperty)\("display"/);
   });
+
+  it("keeps Windows Dream Skin compatible with the modern Codex main surface", async () => {
+    const windowsRenderers = await Promise.all([
+      readFile(new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url), "utf8"),
+      readFile(new URL("../../../assets/inject/upstream/cidala-tiger/windows/renderer-inject.js", import.meta.url), "utf8"),
+    ]);
+
+    for (const renderer of windowsRenderers) {
+      assert.match(renderer, /MainContentSurface/);
+      assert.match(renderer, /data-codex-plus-dream-surface/);
+      assert.match(renderer, /ensureShellMain/);
+    }
+  });
 });

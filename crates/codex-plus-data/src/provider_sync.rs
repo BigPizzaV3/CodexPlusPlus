@@ -523,7 +523,9 @@ pub fn run_provider_sync_with_target(
         );
     }
     let sync_result = (|| -> anyhow::Result<ProviderSyncResult> {
-        let collected = collect_session_changes(&home, &target_provider)?;
+        let sqlite_paths = provider_sync_db_paths(&home);
+        let excluded_thread_ids = sqlite_subagent_thread_ids(&sqlite_paths)?;
+        let collected = collect_session_changes(&home, &target_provider, &excluded_thread_ids)?;
         let encrypted_content_warning =
             build_encrypted_content_warning(&collected.encrypted_content_counts, &target_provider);
         let rewrite_changes = collected
@@ -546,7 +548,6 @@ pub fn run_provider_sync_with_target(
             .filter_map(|change| Some((change.thread_id.clone()?, change.cwd.clone()?)))
             .filter(|(thread_id, _)| !projectless_thread_ids.contains(thread_id))
             .collect::<HashMap<_, _>>();
-        let sqlite_paths = provider_sync_db_paths(&home);
         let sqlite_update_count = count_sqlite_updates_for_paths(
             &sqlite_paths,
             &target_provider,
@@ -862,7 +863,11 @@ fn release_lock(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn collect_session_changes(home: &Path, target_provider: &str) -> anyhow::Result<SessionChanges> {
+fn collect_session_changes(
+    home: &Path,
+    target_provider: &str,
+    excluded_thread_ids: &HashSet<String>,
+) -> anyhow::Result<SessionChanges> {
     let mut collected = SessionChanges::default();
     for path in rollout_files(home)? {
         let text = match fs::read_to_string(&path) {
@@ -875,6 +880,13 @@ fn collect_session_changes(home: &Path, target_provider: &str) -> anyhow::Result
         };
         let rewrite = rewrite_rollout_session_meta_providers(&text, target_provider)?;
         if rewrite.session_meta_count == 0 {
+            continue;
+        }
+        if rewrite
+            .thread_id
+            .as_ref()
+            .is_some_and(|thread_id| excluded_thread_ids.contains(thread_id))
+        {
             continue;
         }
         let has_user_event = text.contains("\"user_message\"") || text.contains("\"user_input\"");
@@ -1844,8 +1856,15 @@ fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
         if !columns.contains("model_provider") {
             continue;
         }
+        let subagent_filter = if table == "threads" {
+            subagent_filter(&db, "threads.id")?
+        } else if columns.contains("thread_id") {
+            subagent_filter(&db, "local_thread_catalog.thread_id")?
+        } else {
+            String::new()
+        };
         let mut stmt = db.prepare(&format!(
-            "SELECT DISTINCT COALESCE(model_provider, '') FROM {table} WHERE COALESCE(model_provider, '') <> ''"
+            "SELECT DISTINCT COALESCE(model_provider, '') FROM {table} WHERE COALESCE(model_provider, '') <> ''{subagent_filter}"
         ))?;
         for item in stmt.query_map([], |row| row.get::<_, String>(0))? {
             let id = item?;
@@ -1855,6 +1874,57 @@ fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
         }
     }
     Ok(sorted_provider_ids(ids))
+}
+
+fn sqlite_subagent_thread_ids(paths: &[PathBuf]) -> anyhow::Result<HashSet<String>> {
+    let mut ids = HashSet::new();
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let db = Connection::open(path)?;
+        for (table, column) in [
+            ("thread_spawn_edges", "child_thread_id"),
+            ("agent_job_items", "assigned_thread_id"),
+        ] {
+            if !table_columns(&db, table)?.contains(column) {
+                continue;
+            }
+            let sql =
+                format!("SELECT DISTINCT {column} FROM {table} WHERE COALESCE({column}, '') <> ''");
+            ids.extend(
+                db.prepare(&sql)?
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<HashSet<_>>>()?,
+            );
+        }
+    }
+    Ok(ids)
+}
+
+fn subagent_filter(db: &Connection, id_expr: &str) -> anyhow::Result<String> {
+    let mut filters = Vec::new();
+    if table_columns(db, "thread_spawn_edges")?
+        .iter()
+        .any(|column| column == "child_thread_id")
+    {
+        filters.push(format!(
+            "NOT EXISTS (SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = {id_expr})"
+        ));
+    }
+    if table_columns(db, "agent_job_items")?
+        .iter()
+        .any(|column| column == "assigned_thread_id")
+    {
+        filters.push(format!(
+            "NOT EXISTS (SELECT 1 FROM agent_job_items j WHERE j.assigned_thread_id = {id_expr})"
+        ));
+    }
+    if filters.is_empty() {
+        Ok(String::new())
+    } else {
+        Ok(format!(" AND {}", filters.join(" AND ")))
+    }
 }
 
 fn remote_control_catalog_recovery_thread_ids(
@@ -1975,17 +2045,19 @@ fn count_sqlite_updates(
     let db = Connection::open(path)?;
     let columns = table_columns(&db, "threads")?;
     let catalog_columns = table_columns(&db, "local_thread_catalog")?;
+    let thread_filter = subagent_filter(&db, "threads.id")?;
+    let catalog_filter = subagent_filter(&db, "local_thread_catalog.thread_id")?;
     let mut total = 0;
     if columns.contains("model_provider") {
         total += db.query_row(
-            "SELECT COUNT(*) FROM threads WHERE COALESCE(model_provider, '') <> ?1",
+            &format!("SELECT COUNT(*) FROM threads WHERE COALESCE(model_provider, '') <> ?1{thread_filter}"),
             [target_provider],
             |row| row.get::<_, i64>(0),
         )? as usize;
     }
     if catalog_columns.contains("model_provider") {
         total += db.query_row(
-            "SELECT COUNT(*) FROM local_thread_catalog WHERE COALESCE(model_provider, '') <> ?1",
+            &format!("SELECT COUNT(*) FROM local_thread_catalog WHERE COALESCE(model_provider, '') <> ?1{catalog_filter}"),
             [target_provider],
             |row| row.get::<_, i64>(0),
         )? as usize;
@@ -2041,6 +2113,8 @@ fn apply_sqlite_update(
     let mut db = Connection::open(path)?;
     let columns = table_columns(&db, "threads")?;
     let catalog_columns = table_columns(&db, "local_thread_catalog")?;
+    let thread_filter = subagent_filter(&db, "threads.id")?;
+    let catalog_filter = subagent_filter(&db, "local_thread_catalog.thread_id")?;
     if !columns.contains("model_provider") && !catalog_columns.contains("model_provider") {
         return Ok(SqliteUpdateCounts::default());
     }
@@ -2048,13 +2122,13 @@ fn apply_sqlite_update(
     let mut counts = SqliteUpdateCounts::default();
     if columns.contains("model_provider") {
         counts.provider_rows += tx.execute(
-            "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
+            &format!("UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1{thread_filter}"),
             [target_provider],
         )?;
     }
     if catalog_columns.contains("model_provider") {
         counts.provider_rows += tx.execute(
-            "UPDATE local_thread_catalog SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
+            &format!("UPDATE local_thread_catalog SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1{catalog_filter}"),
             [target_provider],
         )?;
     }
@@ -2360,8 +2434,9 @@ fn collect_catalog_repair_threads(
         let source_detail = text_expr(&columns, "rollout_path", "''");
         let git_branch = text_expr(&columns, "git_branch", "NULL");
         let thread_source = text_expr(&columns, "thread_source", "NULL");
+        let subagent_filter = subagent_filter(&db, "threads.id")?;
         let sql = format!(
-            "SELECT id, {display_title}, {source_created_at}, {source_updated_at}, {cwd}, {source_kind}, {source_detail}, {git_branch}, {thread_source} FROM threads WHERE COALESCE(id, '') <> ''"
+            "SELECT id, {display_title}, {source_created_at}, {source_updated_at}, {cwd}, {source_kind}, {source_detail}, {git_branch}, {thread_source} FROM threads WHERE COALESCE(id, '') <> ''{subagent_filter}"
         );
         let mut stmt = db.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {

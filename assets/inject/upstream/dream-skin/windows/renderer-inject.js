@@ -289,6 +289,10 @@
     const root = document.documentElement;
     root?.classList.remove(...ROOT_CLASSES);
     for (const property of ROOT_PROPERTIES) root?.style.removeProperty(property);
+    document.querySelectorAll('main[data-codex-plus-dream-surface="true"]').forEach((node) => {
+      node.classList.remove("main-surface");
+      node.removeAttribute("data-codex-plus-dream-surface");
+    });
     document.querySelectorAll(".dream-home").forEach((node) => {
       node.classList.remove("dream-home");
       node.removeAttribute("data-dream-home-layout");
@@ -299,6 +303,16 @@
     clearAuxiliaryPanelClasses();
     document.getElementById(STYLE_ID)?.remove();
     document.getElementById(CHROME_ID)?.remove();
+  };
+
+  const ensureShellMain = () => {
+    const classic = document.querySelector("main.main-surface");
+    if (classic) return classic;
+    const modern = document.querySelector('main[class*="MainContentSurface"], main[class*="_MainContentSurface_"]');
+    if (!modern) return null;
+    modern.classList.add("main-surface");
+    modern.setAttribute("data-codex-plus-dream-surface", "true");
+    return modern;
   };
 
   const applyProfile = (root) => {
@@ -371,7 +385,7 @@
     const root = document.documentElement;
     if (!root || !document.body) return;
 
-    const shellMain = document.querySelector("main.main-surface");
+    const shellMain = ensureShellMain();
     if (!shellMain) {
       clearSkinDom();
       return;

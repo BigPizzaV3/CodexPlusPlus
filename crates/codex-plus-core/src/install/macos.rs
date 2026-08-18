@@ -5,8 +5,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use super::{
-    InstallOptions, MANAGER_BINARY, MANAGER_NAME, MacosAppBundle, SILENT_BINARY, SILENT_NAME,
-    install_root_or_default, option_or_current_exe,
+    install_root_or_default, option_or_current_exe, InstallOptions, MacosAppBundle, MANAGER_BINARY,
+    MANAGER_NAME, SILENT_BINARY, SILENT_NAME,
 };
 
 pub fn build_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBundle {
@@ -114,15 +114,17 @@ fn write_bundle(bundle: &MacosAppBundle) -> anyhow::Result<()> {
     fs::create_dir_all(&resources)?;
     fs::write(contents.join("Info.plist"), &bundle.info_plist)?;
     if let (Some(source), Some(target_name)) = (&bundle.binary_source, &bundle.binary_target_name) {
-        if source.exists() {
-            let target = macos.join(target_name);
-            if source != &target {
-                fs::copy(source, &target)?;
-                let mut permissions = fs::metadata(&target)?.permissions();
-                permissions.set_mode(0o755);
-                fs::set_permissions(target, permissions)?;
-            }
+        validate_binary_source(source)?;
+        let target = macos.join(target_name);
+        if source != &target {
+            fs::copy(source, &target)?;
         }
+        validate_binary_source(&target)?;
+        let mut permissions = fs::metadata(&target)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(target, permissions)?;
+    } else {
+        anyhow::bail!("macOS bundle is missing its binary source");
     }
     let executable = macos.join(executable_name_from_plist(&bundle.info_plist));
     fs::write(&executable, &bundle.launch_script)?;
@@ -130,6 +132,39 @@ fn write_bundle(bundle: &MacosAppBundle) -> anyhow::Result<()> {
     permissions.set_mode(0o755);
     fs::set_permissions(executable, permissions)?;
     copy_icon(&resources)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn validate_binary_source(path: &Path) -> anyhow::Result<()> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        anyhow::anyhow!(
+            "macOS bundle binary is unavailable at {}: {error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        anyhow::bail!(
+            "macOS bundle binary is not a regular file: {}",
+            path.display()
+        );
+    }
+    if metadata.len() < 1024 {
+        anyhow::bail!(
+            "macOS bundle binary is unexpectedly small: {}",
+            path.display()
+        );
+    }
+    let mut header = [0_u8; 2];
+    let mut file = fs::File::open(path)?;
+    use std::io::Read;
+    let read = file.read(&mut header)?;
+    if read == header.len() && header == *b"#!" {
+        anyhow::bail!(
+            "macOS bundle binary points to a shell script: {}",
+            path.display()
+        );
+    }
     Ok(())
 }
 

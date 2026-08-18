@@ -47,7 +47,7 @@ const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
 const PET_REAL_MOUSE_SCRIPT: &str = include_str!("../../../assets/inject/pet-real-mouse-inject.js");
 const STEPWISE_SCRIPT: &str = include_str!("../../../assets/inject/stepwise-inject.js");
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "19-newchat-fix";
+const DREAM_SKIN_RENDERER_REVISION: &str = "20-modern-main-surface";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT
