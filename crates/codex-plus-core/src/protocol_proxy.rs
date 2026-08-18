@@ -960,6 +960,7 @@ async fn upstream_request_parts(
                                 &relay.model_windows,
                                 &relay.context_window,
                                 &model,
+                                relay.protocol == crate::settings::RelayProtocol::Responses,
                             )
                             .await;
                         }
