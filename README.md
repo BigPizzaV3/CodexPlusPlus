@@ -95,6 +95,14 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
   <tr>
     <td align="center">
+      <a href="https://app.everyapi.ai/signin?aff=imP7QQfaZm&amp;utm_source=referral&amp;utm_medium=codexplusplus">
+        <img src="docs/images/sponsor-everyapi.png" alt="EveryAPI" height="80">
+      </a>
+    </td>
+    <td><a href="https://app.everyapi.ai/signin?aff=imP7QQfaZm&amp;utm_source=referral&amp;utm_medium=codexplusplus"><strong>EveryAPI</strong></a><br>EveryAPI 自带桌面客户端，可为 Claude Code、Codex、Cursor 等 20 多款 AI 工具自动完成配置。一把密钥即可调用 Claude、GPT、DeepSeek、GLM、MiniMax、Kimi、豆包等模型，并支持自建节点直连和渠道供货。通过专属链接注册即送 14 元额度，首充额外赠送 20%；付款时使用优惠码 <code>codexplusplus</code> 再享长期 8 折。</td>
+  </tr>
+  <tr>
+    <td align="center">
       <a href="https://xc.y1yun.net/">
         <img src="docs/images/sponsor-yiyun-tech.jpg" alt="屹芸科技" height="80">
       </a>
