@@ -1,3 +1,11 @@
+export function shouldBackfillRelayProfileBeforeSwitch(
+  previousActiveRelayId: string,
+  nextActiveRelayId: string,
+): boolean {
+  const previousId = previousActiveRelayId.trim();
+  return previousId.length > 0 && previousId !== nextActiveRelayId.trim();
+}
+
 export type RelayProfileFileSnapshot = {
   relayMode: "official" | "pureApi" | "mixedApi" | "aggregate";
   authContents: string;
