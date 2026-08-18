@@ -911,6 +911,9 @@ export const EN_PLAIN: Record<string, string> = {
 export const EN_TEMPLATE: Record<string, string> = {
   "作者：{0} · {1}": "Author: {0} · {1}",
   "清单更新于 {0}，安装后会保存到“我的主题”。": "Manifest updated {0}. Installed themes are saved under My themes.",
+  "，补齐 {0} 条侧边栏索引": ", added {0} missing sidebar index entry/entries",
+  "，清理 {0} 条误列的子任务侧边栏索引":
+    ", removed {0} incorrectly listed subtask sidebar index entry/entries",
   "，清理 {0} 条失效任务索引": ", pruned {0} stale task index entry/entries",
   "\n...以及另外 {0} 个会话": "\n...and {0} more session(s)",
   "{0}（{1}）": "{0} ({1})",
@@ -954,8 +957,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "已删除 {0} 个会话。": "Deleted {0} session(s).",
   "已删除 {0} 个，失败 {1} 个：{2}": "Deleted {0}, failed {1}: {2}",
   "已加载 {0} 条推荐": "Loaded {0} recommendation(s)",
-  "已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引{3}{4}。":
-    "Synced to {0}: repaired {1} session file(s) and updated {2} database index row(s){3}{4}.",
+  "已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引{3}{4}{5}{6}。":
+    "Synced to {0}: repaired {1} session file(s) and updated {2} database index row(s){3}{4}{5}{6}.",
   "已安装 {0}": "Installed {0}",
   "已缓存 {0} 个插件 / {1} 个技能。": "Cached {0} plugin(s) / {1} skill(s).",
   "已运行 {0} 分钟": "Running for {0} minute(s)",

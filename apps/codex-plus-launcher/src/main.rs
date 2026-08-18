@@ -403,6 +403,7 @@ impl LaunchHooks for LauncherHooks {
                             sqlite_user_event_rows_updated: 0,
                             sqlite_cwd_rows_updated: 0,
                             sqlite_catalog_rows_inserted: 0,
+                            sqlite_catalog_rows_removed: 0,
                             updated_workspace_roots: 0,
                             skipped_locked_rollout_files: Vec::new(),
                             encrypted_content_warning: None,

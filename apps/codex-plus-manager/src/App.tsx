@@ -609,6 +609,7 @@ type RemoveEnvConflictsResult = CommandResult<{
 
 type ProviderSyncPayload = {
   syncStatus?: string;
+  syncMessage?: string;
   targetProvider?: string;
   changedSessionFiles?: number;
   skippedLockedRolloutFiles?: string[];
@@ -617,9 +618,11 @@ type ProviderSyncPayload = {
   sqliteUserEventRowsUpdated?: number;
   sqliteCwdRowsUpdated?: number;
   sqliteCatalogRowsInserted?: number;
+  sqliteCatalogRowsRemoved?: number;
   updatedWorkspaceRoots?: number;
   prunedSessionIndexEntries?: number;
   encryptedContentWarning?: string | null;
+  backupDir?: string | null;
 };
 
 type SessionIndexCleanupCandidate = {
@@ -747,17 +750,22 @@ function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>)
   const changed = result.changedSessionFiles ?? 0;
   const rows = result.sqliteRowsUpdated ?? 0;
   const insertedCatalogRows = result.sqliteCatalogRowsInserted ?? 0;
+  const removedCatalogRows = result.sqliteCatalogRowsRemoved ?? 0;
   const pruned = result.prunedSessionIndexEntries ?? 0;
   const target = result.targetProvider || t("当前 provider");
   const skipped = result.skippedLockedRolloutFiles?.length ?? 0;
   const prunedText = pruned ? tf("，清理 {0} 条失效任务索引", [pruned]) : "";
   const skippedText = skipped ? tf("，跳过 {0} 个占用文件", [skipped]) : "";
   const catalogText = insertedCatalogRows ? tf("，补齐 {0} 条侧边栏索引", [insertedCatalogRows]) : "";
-  return tf("已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引{3}{4}{5}。", [
+  const catalogCleanupText = removedCatalogRows
+    ? tf("，清理 {0} 条误列的子任务侧边栏索引", [removedCatalogRows])
+    : "";
+  return tf("已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引{3}{4}{5}{6}。", [
     target,
     changed,
     rows,
     catalogText,
+    catalogCleanupText,
     prunedText,
     skippedText,
   ]);
@@ -2270,9 +2278,17 @@ export function App() {
         call<CommandResult<ProviderSyncPayload>>("sync_providers_now", { targetProvider }),
       );
       if (result) {
-        let finalResult = result;
+        const syncSucceeded = isSuccessStatus(result.status) && result.syncStatus === "synced";
+        let finalResult =
+          isSuccessStatus(result.status) && !syncSucceeded
+            ? {
+                ...result,
+                status: "failed",
+                message: result.syncMessage || t("历史会话修复失败，请查看错误提示后重试。"),
+              }
+            : result;
         let cleanupFailure: { status: Status; message: string } | null = null;
-        if (isSuccessStatus(result.status)) {
+        if (syncSucceeded) {
           const preview = await run(() =>
             call<CommandResult<SessionIndexCleanupPreviewPayload>>("preview_session_index_cleanup"),
           );
@@ -2317,7 +2333,7 @@ export function App() {
               : completion.result.message),
           result: completion.result,
         });
-        if (targetProvider) {
+        if (targetProvider && syncSucceeded) {
           const next = {
             ...settingsForm,
             providerSyncLastSelectedProvider: targetProvider,
