@@ -10,7 +10,9 @@ use codex_plus_core::install::SILENT_BINARY;
 use codex_plus_core::models::{DeleteResult, SessionRef};
 use codex_plus_core::relay_environment::RelayEnvironmentReport;
 use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
-use codex_plus_core::settings::{BackendSettings, RelayProfile, SettingsStore};
+use codex_plus_core::settings::{
+    BackendSettings, RelayProfile, RelaySessionProvider, SettingsStore,
+};
 use codex_plus_core::status::{LaunchStatus, StatusStore};
 use codex_plus_core::user_scripts::UserScriptManager;
 use codex_plus_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
@@ -723,7 +725,10 @@ fn sync_active_relay_to_home(
         if settings.active_aggregate_relay_profile().is_none() {
             anyhow::bail!("当前聚合供应商配置不完整");
         }
-        return codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
+        let aggregate = settings
+            .active_aggregate_relay_profile()
+            .ok_or_else(|| anyhow::anyhow!("当前聚合供应商配置不完整"))?;
+        return codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
             home,
             &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
                 codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
@@ -731,6 +736,7 @@ fn sync_active_relay_to_home(
             "codex-plus-aggregate",
             codex_plus_core::settings::RelayProtocol::Responses,
             codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            aggregate.session_provider,
         );
     }
     if relay.relay_mode == codex_plus_core::settings::RelayMode::Official
@@ -760,12 +766,15 @@ fn sync_active_relay_to_home(
         protocol = codex_plus_core::settings::RelayProtocol::Responses;
     }
     if relay.relay_mode == codex_plus_core::settings::RelayMode::PureApi {
-        return codex_plus_core::relay_config::apply_pure_api_config_to_home_with_protocol(
+        return codex_plus_core::relay_config::apply_pure_api_config_to_home_with_session_provider(
             home,
             &base_url,
             &relay.api_key,
             protocol,
             codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::relay_config::relay_session_provider_from_config(
+                &relay.config_contents,
+            ),
         );
     }
 
@@ -773,12 +782,13 @@ fn sync_active_relay_to_home(
     if !auth.authenticated {
         anyhow::bail!("未检测到 ChatGPT 登录状态，已停止同步 live 配置");
     }
-    codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
+    codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
         home,
         &base_url,
         &relay.api_key,
         protocol,
         codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     )
 }
 
@@ -4374,8 +4384,8 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     prepare_codex_app_state_before_provider_switch(&home, "manager.apply_relay_injection.before");
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
-    if settings.active_aggregate_relay_profile().is_some() {
-        let response = apply_aggregate_relay_injection_to_home(&home);
+    if let Some(aggregate) = settings.active_aggregate_relay_profile() {
+        let response = apply_aggregate_relay_injection_to_home(&home, aggregate.session_provider);
         if response.status == "ok" {
             finish_codex_app_state_after_provider_switch(
                 &home,
@@ -4441,12 +4451,13 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         );
     }
 
-    match codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
+    match codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
         &home,
         &relay.base_url,
         &relay.api_key,
         relay.protocol,
         codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     ) {
         Ok(result) => {
             finish_codex_app_state_after_provider_switch(
@@ -4483,8 +4494,11 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     }
 }
 
-fn apply_aggregate_relay_injection_to_home(home: &Path) -> CommandResult<RelayPayload> {
-    match codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
+fn apply_aggregate_relay_injection_to_home(
+    home: &Path,
+    session_provider: RelaySessionProvider,
+) -> CommandResult<RelayPayload> {
+    match codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
         home,
         &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
             codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
@@ -4492,6 +4506,7 @@ fn apply_aggregate_relay_injection_to_home(home: &Path) -> CommandResult<RelayPa
         "codex-plus-aggregate",
         codex_plus_core::settings::RelayProtocol::Responses,
         codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        session_provider,
     ) {
         Ok(result) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(home);
@@ -4581,12 +4596,13 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
         };
     }
 
-    match codex_plus_core::relay_config::apply_pure_api_config_to_home_with_protocol(
+    match codex_plus_core::relay_config::apply_pure_api_config_to_home_with_session_provider(
         &home,
         &relay.base_url,
         &relay.api_key,
         relay.protocol,
         codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     ) {
         Ok(result) => {
             finish_codex_app_state_after_provider_switch(
@@ -5690,7 +5706,10 @@ mod tests {
     fn aggregate_relay_injection_writes_local_proxy_without_chatgpt_auth() {
         let temp = tempfile::tempdir().unwrap();
 
-        let result = apply_aggregate_relay_injection_to_home(temp.path());
+        let result = apply_aggregate_relay_injection_to_home(
+            temp.path(),
+            codex_plus_core::settings::RelaySessionProvider::Custom,
+        );
         let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
 
         assert_eq!(result.status, "ok");
@@ -5803,6 +5822,7 @@ mod tests {
             aggregate_relay_profiles: vec![codex_plus_core::settings::AggregateRelayProfile {
                 id: "aggregate".to_string(),
                 name: "Aggregate".to_string(),
+                session_provider: codex_plus_core::settings::RelaySessionProvider::Custom,
                 strategy: codex_plus_core::settings::AggregateRelayStrategy::Failover,
                 members: Vec::new(),
             }],

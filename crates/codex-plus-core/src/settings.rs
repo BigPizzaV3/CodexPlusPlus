@@ -152,11 +152,30 @@ pub struct AggregateRelayMember {
     pub weight: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RelaySessionProvider {
+    #[default]
+    Custom,
+    Openai,
+}
+
+impl RelaySessionProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Custom => "custom",
+            Self::Openai => "openai",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AggregateRelayProfile {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub session_provider: RelaySessionProvider,
     #[serde(default)]
     pub strategy: AggregateRelayStrategy,
     #[serde(default)]
@@ -730,10 +749,33 @@ impl BackendSettings {
             .cloned()
     }
 
+    pub fn active_relay_session_provider(&self) -> RelaySessionProvider {
+        if let Some(profile) = self.active_aggregate_relay_profile() {
+            return profile.session_provider;
+        }
+        if self
+            .active_relay_profile()
+            .config_contents
+            .parse::<DocumentMut>()
+            .ok()
+            .is_some_and(|doc| {
+                doc.get("model_provider")
+                    .and_then(Item::as_str)
+                    .map(str::trim)
+                    .is_some_and(|provider| provider == "openai")
+            })
+        {
+            RelaySessionProvider::Openai
+        } else {
+            RelaySessionProvider::Custom
+        }
+    }
+
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
         self.active_aggregate_relay_profile().is_some()
             || self.active_relay_profile().protocol == RelayProtocol::ChatCompletions
             || self.active_relay_profile().has_model_routes()
+            || self.active_relay_session_provider() == RelaySessionProvider::Openai
     }
 }
 
@@ -1418,9 +1460,15 @@ fn preserve_official_mix_bearer_tokens(
 
 fn set_or_replace_experimental_bearer_token(contents: &str, token: &str) -> String {
     let mut doc = parse_toml_document(contents).unwrap_or_else(|_| DocumentMut::new());
-    let provider_id = active_provider_id(&doc).unwrap_or_else(|| "codex-plus-relay".to_string());
-    doc["model_provider"] = toml_edit::value(provider_id.as_str());
-    doc["model_providers"][provider_id.as_str()]["experimental_bearer_token"] =
+    let session_provider_id =
+        active_provider_id(&doc).unwrap_or_else(|| "codex-plus-relay".to_string());
+    let transport_provider_id = if session_provider_id == "openai" {
+        "custom"
+    } else {
+        session_provider_id.as_str()
+    };
+    doc["model_provider"] = toml_edit::value(session_provider_id.as_str());
+    doc["model_providers"][transport_provider_id]["experimental_bearer_token"] =
         toml_edit::value(token.trim());
     ensure_text_newline(doc.to_string())
 }
@@ -1435,15 +1483,22 @@ fn ensure_text_newline(mut value: String) -> String {
 fn experimental_bearer_token_from_config_text(contents: &str) -> Option<String> {
     let doc = parse_toml_document(contents).ok()?;
     let provider_id = active_provider_id(&doc)?;
-    doc.get("model_providers")
-        .and_then(Item::as_table)
-        .and_then(|providers| providers.get(&provider_id))
-        .and_then(Item::as_table)
-        .and_then(|provider| provider.get("experimental_bearer_token"))
-        .and_then(Item::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
+    let token_from = |provider_id: &str| {
+        doc.get("model_providers")
+            .and_then(Item::as_table)
+            .and_then(|providers| providers.get(provider_id))
+            .and_then(Item::as_table)
+            .and_then(|provider| provider.get("experimental_bearer_token"))
+            .and_then(Item::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    };
+    token_from(&provider_id).or_else(|| {
+        (provider_id == "openai")
+            .then(|| token_from("custom"))
+            .flatten()
+    })
 }
 
 fn active_provider_id(doc: &DocumentMut) -> Option<String> {
@@ -2282,6 +2337,7 @@ experimental_bearer_token = "sk-existing""#
             aggregate_relay_profiles: vec![AggregateRelayProfile {
                 id: "agg".to_string(),
                 name: "聚合".to_string(),
+                session_provider: RelaySessionProvider::Openai,
                 strategy: AggregateRelayStrategy::WeightedRoundRobin,
                 members: vec![
                     AggregateRelayMember {
@@ -2310,7 +2366,37 @@ experimental_bearer_token = "sk-existing""#
         );
         assert_eq!(active_aggregate.members[1].relay_id, "relay-b");
         assert_eq!(active_aggregate.members[1].weight, 3);
+        assert_eq!(
+            active_aggregate.session_provider,
+            RelaySessionProvider::Openai
+        );
+        assert_eq!(
+            loaded.active_relay_session_provider(),
+            RelaySessionProvider::Openai
+        );
         assert!(loaded.active_relay_uses_protocol_proxy());
+    }
+
+    #[test]
+    fn active_relay_session_provider_reads_standard_profile_config() {
+        let mut settings = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                config_contents: "model_provider = \"openai\"\n".to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        assert_eq!(
+            settings.active_relay_session_provider(),
+            RelaySessionProvider::Openai
+        );
+
+        settings.relay_profiles[0].config_contents = "model_provider = \"custom\"\n".to_string();
+        assert_eq!(
+            settings.active_relay_session_provider(),
+            RelaySessionProvider::Custom
+        );
     }
 
     #[test]

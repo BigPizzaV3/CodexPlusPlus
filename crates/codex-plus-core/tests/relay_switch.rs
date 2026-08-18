@@ -1,7 +1,7 @@
 use codex_plus_core::relay_switch::switch_relay_profile_in_home;
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
-    LaunchMode, RelayMode, RelayProfile, SettingsStore,
+    LaunchMode, RelayMode, RelayProfile, RelaySessionProvider, SettingsStore,
 };
 
 #[test]
@@ -217,6 +217,7 @@ fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
         aggregate_relay_profiles: vec![AggregateRelayProfile {
             id: "agg".to_string(),
             name: "聚合供应商 1".to_string(),
+            session_provider: RelaySessionProvider::Custom,
             strategy: AggregateRelayStrategy::Failover,
             members: vec![AggregateRelayMember {
                 relay_id: "api".to_string(),
