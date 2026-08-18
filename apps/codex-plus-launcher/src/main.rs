@@ -1111,7 +1111,8 @@ mod tests {
 
         hooks.bridge_context(9229, &test_dir).await.unwrap();
         let ctx = hooks.watchdog_bridge_context().unwrap();
-        let result = codex_plus_core::routes::handle_bridge_request(ctx, "/backend-status", json!({})).await;
+        let result =
+            codex_plus_core::routes::handle_bridge_request(ctx, "/backend/status", json!({})).await;
 
         assert_ne!(result["message"], "Unknown bridge path");
     }
