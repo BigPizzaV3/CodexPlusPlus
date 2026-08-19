@@ -992,7 +992,7 @@ fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
 fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"15\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"16\""));
     assert!(!script.contains("function pluginMarketplaceAliasForName"));
     assert!(
         !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
@@ -1004,7 +1004,7 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
 fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"15\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"16\""));
     assert!(script.contains("codexPluginFilterSourceCache = new WeakMap()"));
     assert!(script.contains("function codexPluginFilterCallbackSource(callback)"));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
@@ -1019,7 +1019,7 @@ fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
 fn injection_script_expands_api_key_plugin_marketplace_requests() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"15\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"16\""));
     assert!(script.contains("installPluginMarketplaceRequestPatch"));
     assert!(script.contains("installPluginMarketplaceBridgePatch"));
     assert!(script.contains("installPluginBuildFlavorFilterPatch"));
@@ -1028,9 +1028,7 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
     assert!(script.contains("!filtered.includes(plugin) : !callback(plugin)"));
     assert!(script.contains("isCodexPluginMarketplaceHiddenFilter"));
-    assert!(script.contains(
-        "!filtered.includes(marketplace) : !callback(marketplace)"
-    ));
+    assert!(script.contains("!filtered.includes(marketplace) : !callback(marketplace)"));
     assert!(script.contains("plugin_marketplace_hidden_filter_bypassed"));
     assert!(script.contains("method === \"list-plugins\""));
     assert!(script.contains("method === \"vscode://codex/list-plugins\""));
@@ -1116,6 +1114,13 @@ fn injection_script_recovers_plugin_search_from_remote_auth_errors() {
     assert_eq!(cases["buildFlavorMatchedAgain"], true);
     assert_eq!(cases["cachedFunctionToStringCalls"], 1);
     assert_eq!(cases["initialKinds"], json!(["local", "vertical"]));
+    assert_eq!(
+        cases["bundledPluginNames"],
+        json!(["browser", "sites", "future-tool"])
+    );
+    assert_eq!(cases["existingBundledDisabled"], true);
+    assert_eq!(cases["bundledSourceLeaked"], false);
+    assert_eq!(cases["addedAppBundledPlugins"], 2);
     assert_eq!(cases["latestBroadOmittedHasKinds"], false);
     assert_eq!(cases["latestBroadOmittedKinds"], serde_json::Value::Null);
     assert_eq!(cases["latestBroadNullHasKinds"], true);
@@ -1144,9 +1149,12 @@ fn injection_script_recovers_plugin_search_from_remote_auth_errors() {
     assert_eq!(cases["generalAfterFallbackCwds"], json!(["C:/workspace"]));
     assert_eq!(
         cases["localFallbackMarketplaceNames"],
-        json!(["fixture-local"])
+        json!(["fixture-local", "openai-bundled"])
     );
-    assert_eq!(cases["localFallbackPluginNames"], json!(["alpha"]));
+    assert_eq!(
+        cases["localFallbackPluginNames"],
+        json!(["alpha", "browser", "sites", "future-tool"])
+    );
     assert_eq!(cases["chatGptKinds"], json!(["created-by-me-remote"]));
     assert_eq!(cases["unrelatedErrorMatched"], false);
 }
@@ -1198,6 +1206,14 @@ window.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = [{{
   displayName: "Fixture Local",
   path: "C:/fixture/marketplace.json",
   plugins: [{{ id: "alpha@fixture-local", name: "alpha", marketplaceName: "fixture-local" }}],
+}}, {{
+  name: "openai-bundled",
+  codexPlusSource: "app-bundled",
+  plugins: [
+    {{ id: "browser@openai-bundled", name: "browser", marketplaceName: "openai-bundled" }},
+    {{ id: "sites@openai-bundled", name: "sites", marketplaceName: "openai-bundled" }},
+    {{ id: "future-tool@openai-bundled", name: "future-tool", marketplaceName: "openai-bundled" }},
+  ],
 }}];
 const api = window.__codexPlusPluginMarketplaceTest;
 api.reset();
@@ -1220,6 +1236,14 @@ const buildFlavorMatched = api.isBuildFlavorFilter(buildFlavorFilter, officialPl
 const buildFlavorMatchedAgain = api.isBuildFlavorFilter(buildFlavorFilter, officialPlugins);
 const cachedFunctionToStringCalls = functionToStringCalls - ordinaryFunctionToStringCalls;
 Function.prototype.toString = nativeFunctionToString;
+const nativeBundledResult = {{
+  marketplaces: [{{
+    name: "openai-bundled",
+    plugins: [{{ id: "browser@openai-bundled", disabled: true }}],
+  }}],
+}};
+const bundledMerge = api.mergeLocal(nativeBundledResult);
+const recoveredBundled = nativeBundledResult.marketplaces[0];
 const initial = api.patchRequestParams("list-plugins", {{ cwds: ["C:/workspace"] }});
 api.setCodexAppVersion("26.803.41515");
 const latestBroadOmitted = api.patchRequestParams("list-plugins", {{ cwds: ["C:/workspace"] }});
@@ -1257,6 +1281,10 @@ const cases = {{
   buildFlavorMatchedAgain,
   cachedFunctionToStringCalls,
   initialKinds: initial.marketplaceKinds,
+  bundledPluginNames: recoveredBundled.plugins.map((plugin) => plugin.name),
+  existingBundledDisabled: recoveredBundled.plugins.find((plugin) => plugin.name === "browser")?.disabled,
+  bundledSourceLeaked: Object.prototype.hasOwnProperty.call(recoveredBundled, "codexPlusSource"),
+  addedAppBundledPlugins: bundledMerge.addedAppBundledPlugins,
   latestBroadOmittedHasKinds: Object.prototype.hasOwnProperty.call(latestBroadOmitted, "marketplaceKinds"),
   latestBroadOmittedKinds: latestBroadOmitted.marketplaceKinds ?? null,
   latestBroadNullHasKinds: Object.prototype.hasOwnProperty.call(latestBroadNull, "marketplaceKinds"),

@@ -1,7 +1,7 @@
 use base64::Engine;
 use serde_json::Map;
 use serde_json::{Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::settings::BackendSettings;
 
@@ -393,13 +393,30 @@ pub fn hide_official_usage_alert_config(settings: &BackendSettings) -> bool {
 }
 
 pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettings) -> String {
+    injection_script_with_settings_and_app_dir(helper_port, settings, None)
+}
+
+pub fn injection_script_with_settings_and_app_dir(
+    helper_port: u16,
+    settings: &BackendSettings,
+    app_dir: Option<&Path>,
+) -> String {
+    let resolved_app_dir = if app_dir.is_none() {
+        crate::app_paths::resolve_codex_app_dir_with_saved(
+            None,
+            Some(settings.codex_app_path.as_str()),
+        )
+    } else {
+        None
+    };
+    let app_dir = app_dir.or(resolved_app_dir.as_deref());
     let helper_url = format!("http://127.0.0.1:{helper_port}");
     let image_overlay = image_overlay_config(helper_port, settings);
     let dream_skin_art = dream_skin_art_data_uri(settings);
     let dream_skin_art_signature = dream_skin_art_content_signature(settings);
     let dream_skin_theme = &settings.codex_app_dream_skin_theme_config;
     let dream_skin_target_runtime = dream_skin_target_runtime_script(settings, false);
-    let plugin_marketplaces = local_plugin_marketplaces();
+    let plugin_marketplaces = local_plugin_marketplaces(app_dir);
     let paste_fix = paste_fix_enabled_config(settings);
     let force_chinese_locale = force_chinese_locale_config(settings);
     let fast_startup = fast_startup_config(settings);
@@ -476,42 +493,106 @@ fn dream_skin_content_signature(value: &[u8]) -> String {
     format!("{}-{hash:x}", value.len())
 }
 
-fn local_plugin_marketplaces() -> Value {
+fn local_plugin_marketplaces(app_dir: Option<&Path>) -> Value {
     let home = crate::codex_home::default_codex_home_dir();
-    local_plugin_marketplaces_from_home(&home)
+    local_plugin_marketplaces_from_sources(&home, app_dir)
 }
 
+#[cfg(test)]
 fn local_plugin_marketplaces_from_home(home: &Path) -> Value {
+    local_plugin_marketplaces_from_sources(home, None)
+}
+
+fn local_plugin_marketplaces_from_sources(home: &Path, app_dir: Option<&Path>) -> Value {
     let installed_plugins = installed_plugins_from_config(&home);
     let marketplace_dir = home
         .join(".tmp")
         .join("plugins")
         .join(".agents")
         .join("plugins");
-    let candidates = [
-        marketplace_dir.join("marketplace.json"),
-        marketplace_dir.join("api_marketplace.json"),
-        home.join(".tmp")
-            .join("plugins-remote")
-            .join(".agents")
-            .join("plugins")
-            .join("marketplace.json"),
-    ];
-    let marketplaces = candidates
-        .iter()
-        .filter_map(|path| {
-            let text = std::fs::read_to_string(path).ok()?;
-            let mut marketplace: Value = serde_json::from_str(&text).ok()?;
-            expand_local_plugin_marketplace(&mut marketplace, path, &home, &installed_plugins);
-            if let Some(object) = marketplace.as_object_mut() {
-                object
-                    .entry("path")
-                    .or_insert_with(|| Value::String(path.to_string_lossy().to_string()));
+    let mut candidates = Vec::new();
+    if let Some(app_dir) = app_dir {
+        candidates.extend(
+            app_bundled_plugin_marketplace_paths(app_dir)
+                .into_iter()
+                .map(|path| (path, true)),
+        );
+    }
+    candidates.extend([
+        (marketplace_dir.join("marketplace.json"), false),
+        (marketplace_dir.join("api_marketplace.json"), false),
+        (
+            home.join(".tmp")
+                .join("plugins-remote")
+                .join(".agents")
+                .join("plugins")
+                .join("marketplace.json"),
+            false,
+        ),
+    ]);
+
+    let mut marketplace_names = std::collections::BTreeSet::new();
+    let mut marketplaces = Vec::new();
+    for (path, app_bundled) in candidates {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut marketplace) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if app_bundled && !is_app_bundled_plugin_marketplace(&marketplace) {
+            continue;
+        }
+        let Some(name) = marketplace
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if !marketplace_names.insert(name) {
+            continue;
+        }
+        expand_local_plugin_marketplace(&mut marketplace, &path, home, &installed_plugins);
+        if let Some(object) = marketplace.as_object_mut() {
+            object
+                .entry("path")
+                .or_insert_with(|| Value::String(path.to_string_lossy().to_string()));
+            if app_bundled {
+                object.insert(
+                    "codexPlusSource".to_string(),
+                    Value::String("app-bundled".to_string()),
+                );
             }
-            Some(marketplace)
-        })
-        .collect::<Vec<_>>();
+        }
+        marketplaces.push(marketplace);
+    }
     Value::Array(marketplaces)
+}
+
+fn app_bundled_plugin_marketplace_paths(app_dir: &Path) -> [PathBuf; 4] {
+    let relative = Path::new("plugins")
+        .join("openai-bundled")
+        .join(".agents")
+        .join("plugins")
+        .join("marketplace.json");
+    [
+        app_dir.join("resources").join(&relative),
+        app_dir.join("Contents").join("Resources").join(&relative),
+        app_dir.join("resources").join("app").join(&relative),
+        app_dir
+            .join("resources")
+            .join("app.asar.unpacked")
+            .join(&relative),
+    ]
+}
+
+fn is_app_bundled_plugin_marketplace(marketplace: &Value) -> bool {
+    marketplace.get("name").and_then(Value::as_str) == Some("openai-bundled")
+        && marketplace
+            .get("plugins")
+            .and_then(Value::as_array)
+            .is_some_and(|plugins| !plugins.is_empty())
 }
 
 fn expand_local_plugin_marketplace(
@@ -812,5 +893,136 @@ mod tests {
             array[2]["plugins"][0]["marketplacePath"].as_str(),
             Some("openai-curated-remote")
         );
+    }
+
+    #[test]
+    fn local_plugin_marketplaces_includes_every_app_bundled_plugin() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let app_dir = temp.path().join("Codex");
+        let bundled_root = app_dir
+            .join("resources")
+            .join("plugins")
+            .join("openai-bundled");
+        let marketplace_dir = bundled_root.join(".agents").join("plugins");
+        let future_plugin_dir = bundled_root.join("plugins").join("future-tool");
+        std::fs::create_dir_all(&marketplace_dir).unwrap();
+        std::fs::create_dir_all(future_plugin_dir.join(".codex-plugin")).unwrap();
+        std::fs::write(
+            marketplace_dir.join("marketplace.json"),
+            r#"{"name":"openai-bundled","plugins":[{"name":"future-tool"},{"name":"sites"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            future_plugin_dir.join(".codex-plugin").join("plugin.json"),
+            r#"{"interface":{"displayName":"Future Tool"}}"#,
+        )
+        .unwrap();
+
+        let marketplaces = local_plugin_marketplaces_from_sources(&home, Some(&app_dir));
+        let array = marketplaces.as_array().unwrap();
+
+        assert_eq!(array.len(), 1);
+        assert_eq!(array[0]["name"].as_str(), Some("openai-bundled"));
+        assert_eq!(array[0]["codexPlusSource"].as_str(), Some("app-bundled"));
+        assert_eq!(array[0]["plugins"].as_array().unwrap().len(), 2);
+        assert_eq!(array[0]["plugins"][0]["name"].as_str(), Some("future-tool"));
+        assert_eq!(
+            array[0]["plugins"][0]["interface"]["displayName"].as_str(),
+            Some("Future Tool")
+        );
+        assert_eq!(array[0]["plugins"][1]["name"].as_str(), Some("sites"));
+    }
+
+    #[test]
+    fn local_plugin_marketplaces_ignores_invalid_app_bundled_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_dir = temp.path().join("Codex");
+        let marketplace_dir = app_dir
+            .join("resources")
+            .join("plugins")
+            .join("openai-bundled")
+            .join(".agents")
+            .join("plugins");
+        std::fs::create_dir_all(&marketplace_dir).unwrap();
+        std::fs::write(
+            marketplace_dir.join("marketplace.json"),
+            r#"{"name":"not-openai-bundled","plugins":[{"name":"browser"}]}"#,
+        )
+        .unwrap();
+
+        let marketplaces = local_plugin_marketplaces_from_sources(temp.path(), Some(&app_dir));
+
+        assert!(marketplaces.as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn injection_script_uses_the_exact_app_bundle_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_dir = temp.path().join("Explicit Codex");
+        let marketplace_dir = app_dir
+            .join("resources")
+            .join("plugins")
+            .join("openai-bundled")
+            .join(".agents")
+            .join("plugins");
+        std::fs::create_dir_all(&marketplace_dir).unwrap();
+        std::fs::write(
+            marketplace_dir.join("marketplace.json"),
+            r#"{"name":"openai-bundled","plugins":[{"name":"future-exact-app-tool"}]}"#,
+        )
+        .unwrap();
+
+        let script = injection_script_with_settings_and_app_dir(
+            57321,
+            &BackendSettings::default(),
+            Some(&app_dir),
+        );
+
+        assert!(script.contains("future-exact-app-tool"));
+        assert!(script.contains(r#""codexPlusSource":"app-bundled""#));
+    }
+
+    #[test]
+    fn injection_script_falls_back_to_the_saved_app_bundle_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let app_dir = temp.path().join("Saved Codex");
+        #[cfg(not(windows))]
+        let app_dir = temp.path().join("Saved Codex.app");
+        #[cfg(windows)]
+        {
+            std::fs::create_dir_all(&app_dir).unwrap();
+            std::fs::write(app_dir.join("ChatGPT.exe"), []).unwrap();
+        }
+        #[cfg(windows)]
+        let marketplace_dir = app_dir
+            .join("resources")
+            .join("plugins")
+            .join("openai-bundled")
+            .join(".agents")
+            .join("plugins");
+        #[cfg(not(windows))]
+        let marketplace_dir = app_dir
+            .join("Contents")
+            .join("Resources")
+            .join("plugins")
+            .join("openai-bundled")
+            .join(".agents")
+            .join("plugins");
+        std::fs::create_dir_all(&marketplace_dir).unwrap();
+        std::fs::write(
+            marketplace_dir.join("marketplace.json"),
+            r#"{"name":"openai-bundled","plugins":[{"name":"future-saved-app-tool"}]}"#,
+        )
+        .unwrap();
+        let settings = BackendSettings {
+            codex_app_path: app_dir.to_string_lossy().to_string(),
+            ..BackendSettings::default()
+        };
+
+        let script = injection_script_with_settings(57321, &settings);
+
+        assert!(script.contains("future-saved-app-tool"));
     }
 }

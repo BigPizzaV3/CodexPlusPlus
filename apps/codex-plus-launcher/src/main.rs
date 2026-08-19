@@ -554,11 +554,39 @@ impl LaunchHooks for LauncherHooks {
         helper_port: u16,
         ctx: BridgeContext,
     ) -> anyhow::Result<()> {
-        inject_with_context(debug_port, helper_port, ctx, self.runtime.clone()).await
+        inject_with_context(debug_port, helper_port, ctx, self.runtime.clone(), None).await
+    }
+
+    async fn inject_bridge_for_app(
+        &self,
+        debug_port: u16,
+        helper_port: u16,
+        ctx: BridgeContext,
+        app_dir: &Path,
+    ) -> anyhow::Result<()> {
+        inject_with_context(
+            debug_port,
+            helper_port,
+            ctx,
+            self.runtime.clone(),
+            Some(app_dir.to_path_buf()),
+        )
+        .await
     }
 
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         self.core.inject(debug_port, helper_port).await
+    }
+
+    async fn inject_for_app(
+        &self,
+        debug_port: u16,
+        helper_port: u16,
+        app_dir: &Path,
+    ) -> anyhow::Result<()> {
+        self.core
+            .inject_for_app(debug_port, helper_port, app_dir)
+            .await
     }
 
     async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
@@ -567,9 +595,9 @@ impl LaunchHooks for LauncherHooks {
         let reinjector: BridgeReinjector = Arc::new(move || {
             let ctx = ctx.clone();
             let runtime = runtime.clone();
-            Box::pin(
-                async move { inject_with_context(debug_port, helper_port, ctx, runtime).await },
-            )
+            Box::pin(async move {
+                inject_with_context(debug_port, helper_port, ctx, runtime, None).await
+            })
         });
         self.core.set_bridge_reinjector(reinjector).await;
         self.core
@@ -929,10 +957,19 @@ async fn inject_with_context(
     helper_port: u16,
     ctx: BridgeContext,
     runtime: Arc<LauncherRuntimeService>,
+    app_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let mut last_error = None;
     for _ in 0..20 {
-        match try_inject_with_context(debug_port, helper_port, ctx.clone(), runtime.clone()).await {
+        match try_inject_with_context(
+            debug_port,
+            helper_port,
+            ctx.clone(),
+            runtime.clone(),
+            app_dir.as_deref(),
+        )
+        .await
+        {
             Ok(()) => return Ok(()),
             Err(error) => {
                 last_error = Some(error);
@@ -957,6 +994,7 @@ async fn try_inject_with_context(
     helper_port: u16,
     ctx: BridgeContext,
     runtime: Arc<LauncherRuntimeService>,
+    app_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
     let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
     let target = codex_plus_core::cdp::pick_injectable_codex_page_target(&targets)?;
@@ -968,7 +1006,11 @@ async fn try_inject_with_context(
     let settings = codex_plus_core::settings::SettingsStore::default()
         .load()
         .unwrap_or_default();
-    let script = codex_plus_core::assets::injection_script_with_settings(helper_port, &settings);
+    let script = codex_plus_core::assets::injection_script_with_settings_and_app_dir(
+        helper_port,
+        &settings,
+        app_dir,
+    );
     let user_bundle = runtime
         .user_scripts
         .build_enabled_bundle()

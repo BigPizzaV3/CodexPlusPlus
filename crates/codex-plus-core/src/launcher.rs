@@ -182,6 +182,14 @@ pub trait LaunchHooks: Send + Sync {
         Ok(None)
     }
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()>;
+    async fn inject_for_app(
+        &self,
+        debug_port: u16,
+        helper_port: u16,
+        _app_dir: &Path,
+    ) -> anyhow::Result<()> {
+        self.inject(debug_port, helper_port).await
+    }
     async fn inject_bridge(
         &self,
         debug_port: u16,
@@ -190,11 +198,23 @@ pub trait LaunchHooks: Send + Sync {
     ) -> anyhow::Result<()> {
         self.inject(debug_port, helper_port).await
     }
+    async fn inject_bridge_for_app(
+        &self,
+        debug_port: u16,
+        helper_port: u16,
+        ctx: crate::routes::BridgeContext,
+        _app_dir: &Path,
+    ) -> anyhow::Result<()> {
+        self.inject_bridge(debug_port, helper_port, ctx).await
+    }
     async fn ensure_injection(&self, debug_port: u16, helper_port: u16, app_dir: &Path) -> bool {
         for attempt in 1..=120 {
             let result = match self.bridge_context(debug_port, app_dir).await {
-                Ok(Some(ctx)) => self.inject_bridge(debug_port, helper_port, ctx).await,
-                Ok(None) => self.inject(debug_port, helper_port).await,
+                Ok(Some(ctx)) => {
+                    self.inject_bridge_for_app(debug_port, helper_port, ctx, app_dir)
+                        .await
+                }
+                Ok(None) => self.inject_for_app(debug_port, helper_port, app_dir).await,
                 Err(error) => Err(error),
             };
             match result {
@@ -819,7 +839,15 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
-        retry_injection(debug_port, helper_port).await
+        retry_injection(debug_port, helper_port, None).await
+    }
+    async fn inject_for_app(
+        &self,
+        debug_port: u16,
+        helper_port: u16,
+        app_dir: &Path,
+    ) -> anyhow::Result<()> {
+        retry_injection(debug_port, helper_port, Some(app_dir)).await
     }
     async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         let bridge_reinjector = self.bridge_reinjector.lock().await.clone();
@@ -2293,10 +2321,14 @@ pub fn build_packaged_activation_with_native_menu_inspector(
     })
 }
 
-async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+async fn retry_injection(
+    debug_port: u16,
+    helper_port: u16,
+    app_dir: Option<&Path>,
+) -> anyhow::Result<()> {
     let mut last_error = None;
     for _ in 0..20 {
-        match try_inject(debug_port, helper_port).await {
+        match try_inject(debug_port, helper_port, app_dir).await {
             Ok(()) => return Ok(()),
             Err(error) => {
                 last_error = Some(error);
@@ -2359,8 +2391,9 @@ async fn check_and_reinject_bridge_inner(
             "browser_identity_changed": browser_identity_changed
         }),
     );
-    let default_reinjector: BridgeReinjector =
-        Arc::new(move || Box::pin(async move { retry_injection(debug_port, helper_port).await }));
+    let default_reinjector: BridgeReinjector = Arc::new(move || {
+        Box::pin(async move { retry_injection(debug_port, helper_port, None).await })
+    });
     let reinject_result = run_bridge_reinjector(bridge_reinjector, default_reinjector).await;
     match reinject_result {
         Ok(()) => {
@@ -2422,7 +2455,11 @@ fn runtime_evaluate_result_is_true(result: &Value) -> bool {
         .unwrap_or(false)
 }
 
-async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+async fn try_inject(
+    debug_port: u16,
+    helper_port: u16,
+    app_dir: Option<&Path>,
+) -> anyhow::Result<()> {
     let targets = crate::cdp::list_targets(debug_port).await?;
     let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
@@ -2430,7 +2467,8 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
     let settings = SettingsStore::default().load().unwrap_or_default();
-    let script = crate::assets::injection_script_with_settings(helper_port, &settings);
+    let script =
+        crate::assets::injection_script_with_settings_and_app_dir(helper_port, &settings, app_dir);
     let ctx = crate::routes::BridgeContext::core(Arc::new(crate::routes::CoreRuntimeService::new(
         debug_port,
         StatusStore::default(),

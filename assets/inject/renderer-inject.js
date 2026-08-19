@@ -468,7 +468,7 @@
   const codexServiceTierRequestOverrideVersion = "9";
   const codexAppServerModelRequestPatchVersion = "6";
   const codexRemoteSessionRecoveryVersion = "5";
-  const codexPluginMarketplaceUnlockVersion = "15";
+  const codexPluginMarketplaceUnlockVersion = "16";
   const codexThreadScrollMaxEntries = 120;
   const codexThreadScrollSaveThrottleMs = 120;
   const codexThreadScrollRestoreWindowMs = 3200;
@@ -4349,7 +4349,11 @@
 
   function pluginMarketplacePluginKey(plugin) {
     if (!plugin || typeof plugin !== "object") return "";
-    return String(plugin.name || plugin.id || plugin.pluginName || "").trim();
+    const name = String(plugin.name || plugin.pluginName || "").trim();
+    if (name) return name;
+    const id = String(plugin.id || "").trim();
+    const marketplaceSeparator = id.lastIndexOf("@");
+    return marketplaceSeparator > 0 ? id.slice(0, marketplaceSeparator) : id;
   }
 
   function normalizeLocalPluginMarketplacePlugin(plugin, marketplaceName) {
@@ -4367,19 +4371,36 @@
     return cloned;
   }
 
+  function fillMissingPluginMarketplaceMetadata(target, source) {
+    if (!target || !source || typeof target !== "object" || typeof source !== "object") return;
+    for (const key of ["name", "id", "marketplaceName", "marketplacePath", "interface", "keywords", "category", "policy", "source", "installed"]) {
+      if (target[key] != null || source[key] == null) continue;
+      const sourceValue = source[key];
+      target[key] = sourceValue && typeof sourceValue === "object"
+        ? cloneCodexPluginMarketplace(sourceValue)
+        : sourceValue;
+    }
+  }
+
   function mergePluginMarketplacePlugins(target, source) {
     if (!target || !source || !Array.isArray(source.plugins)) return 0;
     if (!Array.isArray(target.plugins)) target.plugins = [];
     const marketplaceName = restorePluginMarketplaceName(target.name || source.name || "");
-    const existing = new Set(target.plugins.map(pluginMarketplacePluginKey).filter(Boolean));
+    const existing = new Map(
+      target.plugins.map((plugin) => [pluginMarketplacePluginKey(plugin), plugin]).filter(([key]) => Boolean(key)),
+    );
     let added = 0;
     source.plugins.forEach((plugin) => {
       const key = pluginMarketplacePluginKey(plugin);
-      if (!key || existing.has(key)) return;
       const cloned = normalizeLocalPluginMarketplacePlugin(plugin, marketplaceName);
-      if (!cloned) return;
+      if (!key || !cloned) return;
+      const current = existing.get(key);
+      if (current) {
+        fillMissingPluginMarketplaceMetadata(current, cloned);
+        return;
+      }
       target.plugins.push(cloned);
-      existing.add(key);
+      existing.set(key, cloned);
       added += 1;
     });
     return added;
@@ -4400,16 +4421,21 @@
     });
     let addedMarketplaces = 0;
     let addedPlugins = 0;
+    let addedAppBundledPlugins = 0;
     localMarketplaces.forEach((marketplace) => {
       const name = restorePluginMarketplaceName(marketplace?.name || "");
       if (!name) return;
+      const appBundled = name === "openai-bundled" && marketplace?.codexPlusSource === "app-bundled";
       const existing = byName.get(name);
       if (existing) {
-        addedPlugins += mergePluginMarketplacePlugins(existing, marketplace);
+        const added = mergePluginMarketplacePlugins(existing, marketplace);
+        addedPlugins += added;
+        if (appBundled) addedAppBundledPlugins += added;
         return;
       }
       const cloned = cloneCodexPluginMarketplace(marketplace);
       if (!cloned) return;
+      delete cloned.codexPlusSource;
       cloned.plugins = Array.isArray(cloned.plugins)
         ? cloned.plugins.map((plugin) => normalizeLocalPluginMarketplacePlugin(plugin, name)).filter(Boolean)
         : [];
@@ -4417,11 +4443,15 @@
       byName.set(name, cloned);
       addedMarketplaces += 1;
       addedPlugins += Array.isArray(cloned.plugins) ? cloned.plugins.length : 0;
+      if (appBundled) addedAppBundledPlugins += Array.isArray(cloned.plugins) ? cloned.plugins.length : 0;
     });
     if (addedMarketplaces > 0 || addedPlugins > 0) {
       sendCodexPlusDiagnostic("plugin_marketplace_local_merged", { addedMarketplaces, addedPlugins });
     }
-    return { addedMarketplaces, addedPlugins };
+    if (addedAppBundledPlugins > 0) {
+      sendCodexPlusDiagnostic("plugin_marketplace_app_bundled_recovered", { addedPlugins: addedAppBundledPlugins });
+    }
+    return { addedMarketplaces, addedPlugins, addedAppBundledPlugins };
   }
 
   function restorePluginMarketplaceName(name) {
@@ -4820,6 +4850,7 @@
       patchResponseData: patchPluginMarketplaceResponseData,
       remoteAuthError: pluginMarketplaceRemoteAuthError,
       localFallback: localPluginMarketplaceFallbackResult,
+      mergeLocal: mergeLocalPluginMarketplaces,
       remoteOnlyFallback: remoteOnlyPluginMarketplaceFallbackResult,
       requestProfile: pluginMarketplaceRequestProfile,
       isBuildFlavorFilter: isCodexPluginBuildFlavorFilter,
