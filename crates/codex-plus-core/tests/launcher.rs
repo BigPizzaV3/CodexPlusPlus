@@ -8,19 +8,22 @@ use codex_plus_core::app_paths::{
 };
 use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
-    browser_identity_changed, build_codex_arguments, build_codex_arguments_for_settings,
-    build_codex_arguments_with_native_menu_inspector, build_codex_command,
-    build_codex_command_with_native_menu_inspector, build_macos_cleanup_command,
-    build_macos_open_command, build_macos_open_command_with_native_menu_inspector,
-    build_packaged_activation, build_packaged_activation_with_native_menu_inspector,
-    launch_and_inject_with_hooks,
+    MacosDebugLaunchAction, browser_identity_changed, build_codex_arguments,
+    build_codex_arguments_for_settings, build_codex_arguments_with_native_menu_inspector,
+    build_codex_command, build_codex_command_with_native_menu_inspector,
+    build_macos_cleanup_command, build_macos_open_command,
+    build_macos_open_command_with_native_menu_inspector, build_packaged_activation,
+    build_packaged_activation_with_native_menu_inspector, launch_and_inject_with_hooks,
+    select_macos_debug_launch_action,
 };
 #[cfg(windows)]
 use codex_plus_core::launcher::{WindowsProcessControlStrategy, windows_process_control_strategy};
 use codex_plus_core::ports::{
     select_packaged_codex_debug_port_with, select_platform_loopback_port_with,
 };
-use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
+use codex_plus_core::settings::{
+    BackendSettings, RelayMode, RelayModelRoute, RelayProfile, RelayProtocol,
+};
 use codex_plus_core::status::StatusStore;
 
 #[test]
@@ -475,6 +478,14 @@ fn launcher_does_not_override_codex_app_environment() {
 }
 
 #[test]
+fn launcher_uses_all_com_server_contexts_for_packaged_app_activation() {
+    let source = include_str!("../src/launcher.rs");
+
+    assert!(source.contains("CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_ALL)?"));
+    assert!(!source.contains("CLSCTX_LOCAL_SERVER"));
+}
+
+#[test]
 fn launcher_does_not_prepare_projectless_main_window() {
     let source = include_str!("../src/launcher.rs");
 
@@ -810,6 +821,7 @@ async fn default_helper_serves_backend_status_over_http() {
     let payload: serde_json::Value = response.json().await.unwrap();
     assert_eq!(payload["status"], "ok");
     assert_eq!(payload["transport"], "http-helper");
+    assert!(payload["hideOfficialUsageAlert"].is_boolean());
 
     let repair_response = client
         .post(format!("http://127.0.0.1:{port}/backend/repair"))
@@ -869,7 +881,6 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
         .with_settings(BackendSettings {
             provider_sync_enabled: true,
             relay_profiles_enabled: true,
-            computer_use_guard_enabled: true,
             codex_app_plugin_marketplace_unlock: true,
             ..BackendSettings::default()
         })
@@ -899,10 +910,8 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
             "select-helper:57321",
             "load-settings",
             "provider-sync",
-            "computer-use-guard",
             "start-helper:57321",
             "launch:9229",
-            "computer-use-guard-watchdog",
             "inject:9229:57321",
             "status:running",
             "wait-codex",
@@ -912,8 +921,6 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
     let events = events.lock().unwrap().clone();
     assert!(!events.contains(&"apply-relay".to_string()));
     assert!(events.contains(&"provider-sync".to_string()));
-    assert!(events.contains(&"computer-use-guard".to_string()));
-    assert!(events.contains(&"computer-use-guard-watchdog".to_string()));
     assert_eq!(
         handle
             .status_store
@@ -1072,77 +1079,6 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
 }
 
 #[tokio::test]
-async fn launch_lifecycle_runs_computer_use_guard_when_enabled() {
-    let temp = tempfile::tempdir().unwrap();
-    let app_dir = temp.path().join("Codex.app");
-    std::fs::create_dir_all(&app_dir).unwrap();
-    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
-    let events = Arc::new(Mutex::new(Vec::<String>::new()));
-    let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
-        computer_use_guard_enabled: true,
-        ..BackendSettings::default()
-    });
-
-    let handle = launch_and_inject_with_hooks(
-        LaunchOptions {
-            app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
-            status_store,
-        },
-        &hooks,
-    )
-    .await
-    .unwrap();
-    handle.wait_for_codex_exit().await.unwrap();
-
-    assert_eq!(
-        *events.lock().unwrap(),
-        vec![
-            "select-debug:9229",
-            "select-helper:57321",
-            "load-settings",
-            "computer-use-guard",
-            "start-helper:57321",
-            "launch:9229",
-            "computer-use-guard-watchdog",
-            "inject:9229:57321",
-            "status:running",
-            "wait-codex",
-            "shutdown-helper:57321",
-        ]
-    );
-}
-
-#[tokio::test]
-async fn launch_lifecycle_skips_computer_use_guard_by_default() {
-    let temp = tempfile::tempdir().unwrap();
-    let app_dir = temp.path().join("Codex.app");
-    std::fs::create_dir_all(&app_dir).unwrap();
-    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
-    let events = Arc::new(Mutex::new(Vec::<String>::new()));
-    let hooks = FakeHooks::new(events.clone());
-
-    let handle = launch_and_inject_with_hooks(
-        LaunchOptions {
-            app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
-            status_store,
-        },
-        &hooks,
-    )
-    .await
-    .unwrap();
-    handle.wait_for_codex_exit().await.unwrap();
-
-    let events = events.lock().unwrap().clone();
-    assert!(!events.contains(&"computer-use-guard".to_string()));
-    assert!(!events.contains(&"computer-use-guard-watchdog".to_string()));
-    assert!(events.contains(&"launch:9229".to_string()));
-}
-
-#[tokio::test]
 async fn official_mix_responses_profile_starts_fixed_protocol_proxy_without_enhancements() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
@@ -1157,6 +1093,7 @@ async fn official_mix_responses_profile_starts_fixed_protocol_proxy_without_enha
             id: "official-mix".to_string(),
             relay_mode: RelayMode::Official,
             official_mix_api_key: true,
+            hide_official_usage_alert: false,
             protocol: RelayProtocol::Responses,
             ..RelayProfile::default()
         }],
@@ -1177,10 +1114,42 @@ async fn official_mix_responses_profile_starts_fixed_protocol_proxy_without_enha
     handle.wait_for_codex_exit().await.unwrap();
 
     let events = events.lock().unwrap().clone();
+    assert!(!events.contains(&"remote-control-session-recovery".to_string()));
+    assert!(!events.contains(&"provider-sync".to_string()));
     assert!(events.contains(&"select-helper:58123".to_string()));
     assert!(events.contains(&"start-helper:57321".to_string()));
     assert!(events.contains(&"shutdown-helper:57321".to_string()));
     assert!(!events.iter().any(|event| event.starts_with("inject:")));
+}
+
+#[tokio::test]
+async fn pending_remote_control_recovery_runs_without_an_official_mix_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_pending_remote_control_session_recoveries();
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 58123,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"remote-control-session-recovery".to_string())
+    );
 }
 
 #[tokio::test]
@@ -1198,6 +1167,7 @@ async fn official_mix_responses_profile_keeps_proxy_when_profile_switching_is_di
             id: "official-mix".to_string(),
             relay_mode: RelayMode::Official,
             official_mix_api_key: true,
+            hide_official_usage_alert: false,
             protocol: RelayProtocol::Responses,
             ..RelayProfile::default()
         }],
@@ -1281,7 +1251,6 @@ async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabl
 
     let events = events.lock().unwrap().clone();
     assert!(!events.contains(&"apply-relay".to_string()));
-    assert!(!events.contains(&"computer-use-guard".to_string()));
     assert!(events.contains(&"launch:9229".to_string()));
 }
 
@@ -1333,7 +1302,6 @@ experimental_bearer_token = "sk-test"
 
     let events = events.lock().unwrap().clone();
     assert!(!events.contains(&"apply-relay".to_string()));
-    assert!(!events.contains(&"computer-use-guard".to_string()));
     assert!(events.contains(&"launch:9229".to_string()));
 }
 
@@ -1436,6 +1404,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             protocol: RelayProtocol::ChatCompletions,
             relay_mode: codex_plus_core::settings::RelayMode::MixedApi,
             official_mix_api_key: false,
+            hide_official_usage_alert: false,
             test_model: String::new(),
             config_contents: String::new(),
             auth_contents: String::new(),
@@ -1454,6 +1423,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             user_agent: String::new(),
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
+            model_routes: Vec::new(),
         }],
         active_relay_id: "relay-chat".to_string(),
         ..BackendSettings::default()
@@ -1481,6 +1451,63 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
 
     let after_stop = events.lock().unwrap().clone();
     assert!(after_stop.contains(&"wait-codex".to_string()));
+    assert!(after_stop.contains(&"shutdown-helper:57321".to_string()));
+}
+
+#[tokio::test]
+async fn launch_starts_helper_when_model_routing_is_enabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let settings = BackendSettings {
+        enhancements_enabled: false,
+        active_relay_id: "source".to_string(),
+        relay_profiles: vec![
+            RelayProfile {
+                id: "source".to_string(),
+                name: "Source".to_string(),
+                base_url: "https://source.example.test/v1".to_string(),
+                api_key: "sk-source".to_string(),
+                model_routes: vec![RelayModelRoute {
+                    model: "gpt-5.6-luna".to_string(),
+                    target_relay_id: "target".to_string(),
+                    target_model: String::new(),
+                }],
+                ..RelayProfile::default()
+            },
+            RelayProfile {
+                id: "target".to_string(),
+                name: "Target".to_string(),
+                base_url: "https://target.example.test/v1".to_string(),
+                api_key: "sk-target".to_string(),
+                ..RelayProfile::default()
+            },
+        ],
+        ..BackendSettings::default()
+    };
+    let hooks = FakeHooks::new(events.clone()).with_settings(settings);
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 58000,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+
+    let before_stop = events.lock().unwrap().clone();
+    assert!(before_stop.contains(&"select-helper:58000".to_string()));
+    assert!(before_stop.contains(&"start-helper:57321".to_string()));
+    assert!(!before_stop.contains(&"inject:9229:57321".to_string()));
+
+    handle.wait_for_codex_exit().await.unwrap();
+    let after_stop = events.lock().unwrap().clone();
     assert!(after_stop.contains(&"shutdown-helper:57321".to_string()));
 }
 
@@ -1641,6 +1668,30 @@ fn launcher_macos_cleanup_is_skipped_when_app_was_already_running() {
     assert_eq!(command, None);
 }
 
+#[test]
+fn launcher_macos_debug_launch_starts_when_app_is_not_running() {
+    assert_eq!(
+        select_macos_debug_launch_action(false, false),
+        MacosDebugLaunchAction::LaunchNew
+    );
+}
+
+#[test]
+fn launcher_macos_debug_launch_reuses_existing_codex_cdp_instance() {
+    assert_eq!(
+        select_macos_debug_launch_action(true, true),
+        MacosDebugLaunchAction::ReuseRunningDebugApp
+    );
+}
+
+#[test]
+fn launcher_macos_debug_launch_restarts_existing_non_cdp_instance() {
+    assert_eq!(
+        select_macos_debug_launch_action(true, false),
+        MacosDebugLaunchAction::RestartRunningApp
+    );
+}
+
 #[tokio::test]
 async fn default_launch_hooks_provider_sync_enabled_returns_explicit_error() {
     let error = DefaultLaunchHooks::default()
@@ -1672,6 +1723,7 @@ struct FakeHooks {
     inject_error: Option<String>,
     provider_sync_unsupported: bool,
     plugin_marketplace_error: Option<String>,
+    has_pending_remote_control_session_recoveries: bool,
 }
 
 impl FakeHooks {
@@ -1688,6 +1740,7 @@ impl FakeHooks {
             inject_error: None,
             provider_sync_unsupported: false,
             plugin_marketplace_error: None,
+            has_pending_remote_control_session_recoveries: false,
         }
     }
 
@@ -1718,6 +1771,11 @@ impl FakeHooks {
 
     fn with_plugin_marketplace_error(mut self, message: &str) -> Self {
         self.plugin_marketplace_error = Some(message.to_string());
+        self
+    }
+
+    fn with_pending_remote_control_session_recoveries(mut self) -> Self {
+        self.has_pending_remote_control_session_recoveries = true;
         self
     }
 
@@ -1761,16 +1819,20 @@ impl LaunchHooks for FakeHooks {
         Ok(())
     }
 
+    fn has_pending_remote_control_session_recoveries(&self) -> bool {
+        self.has_pending_remote_control_session_recoveries
+    }
+
+    async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()> {
+        self.event("remote-control-session-recovery");
+        Ok(())
+    }
+
     async fn apply_active_relay_profile(&self, settings: &BackendSettings) -> anyhow::Result<()> {
         if !settings.relay_profiles_enabled {
             return Ok(());
         }
         self.event("apply-relay");
-        Ok(())
-    }
-
-    async fn ensure_computer_use_config(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
-        self.event("computer-use-guard");
         Ok(())
     }
 
@@ -1832,14 +1894,6 @@ impl LaunchHooks for FakeHooks {
         _debug_port: u16,
         _helper_port: u16,
     ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn start_computer_use_guard_watchdog(
-        &self,
-        _settings: &BackendSettings,
-    ) -> anyhow::Result<()> {
-        self.event("computer-use-guard-watchdog");
         Ok(())
     }
 

@@ -19,12 +19,10 @@ use tokio::sync::Mutex;
 use crate::settings::{BackendSettings, SettingsStore, normalize_codex_extra_args};
 use crate::status::{LaunchStatus, StatusStore};
 
-#[cfg(windows)]
-const POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS: &[u64] = &[0, 5, 15, 30, 60, 120, 180, 240, 300];
-#[cfg_attr(not(windows), allow(dead_code))]
-const POST_LAUNCH_COMPUTER_USE_GUARD_STABLE_ATTEMPTS: usize = 3;
 static PET_OVERLAY_SYNC_FAILED: AtomicBool = AtomicBool::new(false);
 static PET_CURSOR_DRIVER_FAILED: AtomicBool = AtomicBool::new(false);
+const MACOS_DEBUG_TAKEOVER_WAIT_MS: u64 = 5_000;
+const MACOS_DEBUG_TAKEOVER_INTERVAL_MS: u64 = 100;
 
 /// Asynchronous callback used by the bridge watchdog to restore a launcher-specific bridge.
 ///
@@ -57,6 +55,13 @@ pub enum ProcessWaitStrategy {
 pub enum MacosCleanupPolicy {
     QuitIfNotPreviouslyRunning,
     SkipQuitBecauseAlreadyRunning,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacosDebugLaunchAction {
+    LaunchNew,
+    ReuseRunningDebugApp,
+    RestartRunningApp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,10 +150,14 @@ pub trait LaunchHooks: Send + Sync {
     fn select_helper_port(&self, requested: u16) -> u16;
     async fn load_settings(&self) -> anyhow::Result<BackendSettings>;
     async fn run_provider_sync(&self) -> anyhow::Result<()>;
-    async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
-        Ok(())
+    fn has_pending_remote_control_session_recoveries(&self) -> bool {
+        false
     }
-    async fn ensure_computer_use_config(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
+    fn remote_control_session_recovery_is_safe_to_run(&self) -> bool {
+        true
+    }
+    async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()>;
+    async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
     }
     async fn ensure_plugin_marketplace_config(
@@ -213,12 +222,6 @@ pub trait LaunchHooks: Send + Sync {
     ) -> anyhow::Result<()> {
         Ok(())
     }
-    async fn start_computer_use_guard_watchdog(
-        &self,
-        _settings: &BackendSettings,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
     async fn write_status(&self, status: &str);
     async fn wait_for_codex_exit(
         &self,
@@ -235,8 +238,6 @@ pub struct DefaultLaunchHooks {
     helper: Mutex<Option<HelperRuntime>>,
     bridge_watchdog: Mutex<Option<BridgeWatchdogRuntime>>,
     bridge_reinjector: Mutex<Option<BridgeReinjector>>,
-    computer_use_guard_watchdog: Mutex<Option<ComputerUseGuardWatchdogRuntime>>,
-    computer_use_guard_artifacts: Mutex<Option<crate::computer_use_guard::GuardArtifacts>>,
 }
 
 struct HelperRuntime {
@@ -245,11 +246,6 @@ struct HelperRuntime {
 }
 
 struct BridgeWatchdogRuntime {
-    shutdown: tokio::sync::oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-struct ComputerUseGuardWatchdogRuntime {
     shutdown: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -285,6 +281,16 @@ where
                 "launcher.after_provider_sync",
             );
         }
+        if hooks.has_pending_remote_control_session_recoveries()
+            && hooks.remote_control_session_recovery_is_safe_to_run()
+        {
+            hooks.run_remote_control_session_recovery().await?;
+        } else if hooks.has_pending_remote_control_session_recoveries() {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.remote_control_session_finalization_deferred",
+                serde_json::json!({"reason": "desktop_writer_active"}),
+            );
+        }
         crate::dream_skin::sync_default_dream_skin_base_theme(
             settings.enhancements_enabled
                 && settings.codex_app_dream_skin_enabled
@@ -298,9 +304,6 @@ where
                     "message": error.to_string()
                 }),
             );
-        }
-        if settings.computer_use_guard_enabled {
-            hooks.ensure_computer_use_config(&settings).await?;
         }
         match crate::codex_sqlite::sanitize_historical_model_suffixes(&home) {
             Ok(result) if result.updated > 0 => {
@@ -337,9 +340,6 @@ where
             .await?;
         launched = Some(launch.clone());
         keep_launched_on_error = true;
-        if settings.computer_use_guard_enabled {
-            hooks.start_computer_use_guard_watchdog(&settings).await?;
-        }
 
         let mut injection_degraded = false;
         if settings.enhancements_enabled {
@@ -548,6 +548,16 @@ impl LaunchHooks for DefaultLaunchHooks {
         anyhow::bail!("provider sync requires launcher hooks with codex-plus-data integration")
     }
 
+    async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()> {
+        anyhow::bail!(
+            "Remote Control session recovery requires launcher hooks with codex-plus-data integration"
+        )
+    }
+
+    fn remote_control_session_recovery_is_safe_to_run(&self) -> bool {
+        crate::watcher::find_session_index_cleanup_blocking_processes().is_empty()
+    }
+
     async fn apply_active_relay_profile(&self, settings: &BackendSettings) -> anyhow::Result<()> {
         if !settings.relay_profiles_enabled {
             return Ok(());
@@ -570,30 +580,14 @@ impl LaunchHooks for DefaultLaunchHooks {
         {
             let auth_contents = (!profile.auth_contents.trim().is_empty())
                 .then_some(profile.auth_contents.as_str());
-            crate::relay_config::clear_relay_config_to_home_with_auth_and_computer_use_guard(
-                &home,
-                auth_contents,
-                settings.computer_use_guard_enabled,
-            )?;
+            crate::relay_config::clear_relay_config_to_home_with_auth(&home, auth_contents)?;
             return Ok(());
         }
-        crate::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+        crate::relay_config::apply_relay_profile_to_home_with_switch_rules(
             &home,
             &profile,
             &common_config,
-            settings.computer_use_guard_enabled,
         )?;
-        Ok(())
-    }
-
-    async fn ensure_computer_use_config(&self, settings: &BackendSettings) -> anyhow::Result<()> {
-        if !settings.computer_use_guard_enabled {
-            return Ok(());
-        }
-        let home = crate::relay_config::default_codex_home_dir();
-        let artifacts = crate::computer_use_guard::resolve_computer_use_guard_artifacts(&home)?;
-        crate::computer_use_guard::ensure_computer_use_config_with_artifacts(&home, &artifacts)?;
-        *self.computer_use_guard_artifacts.lock().await = Some(artifacts);
         Ok(())
     }
 
@@ -739,10 +733,26 @@ impl LaunchHooks for DefaultLaunchHooks {
         }
 
         if app_dir.extension().and_then(|value| value.to_str()) == Some("app") {
-            let cleanup_policy = if is_macos_app_running(app_dir).await {
-                MacosCleanupPolicy::SkipQuitBecauseAlreadyRunning
-            } else {
-                MacosCleanupPolicy::QuitIfNotPreviouslyRunning
+            let launch_action = select_macos_debug_launch_action(
+                is_macos_app_running(app_dir).await,
+                crate::cdp::endpoint_available(debug_port),
+            );
+            let cleanup_policy = match launch_action {
+                MacosDebugLaunchAction::LaunchNew => MacosCleanupPolicy::QuitIfNotPreviouslyRunning,
+                MacosDebugLaunchAction::ReuseRunningDebugApp => {
+                    MacosCleanupPolicy::SkipQuitBecauseAlreadyRunning
+                }
+                MacosDebugLaunchAction::RestartRunningApp => {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.macos_existing_app_without_cdp_restart_requested",
+                        serde_json::json!({
+                            "app_dir": app_dir,
+                            "debug_port": debug_port
+                        }),
+                    );
+                    quit_macos_app_and_wait(app_dir).await?;
+                    MacosCleanupPolicy::QuitIfNotPreviouslyRunning
+                }
             };
             let command = if let Some(inspector_port) = native_menu_inspector_port {
                 build_macos_open_command_with_native_menu_inspector(
@@ -866,58 +876,6 @@ impl LaunchHooks for DefaultLaunchHooks {
         Ok(())
     }
 
-    async fn start_computer_use_guard_watchdog(
-        &self,
-        settings: &BackendSettings,
-    ) -> anyhow::Result<()> {
-        #[cfg(windows)]
-        {
-            if !settings.computer_use_guard_enabled {
-                return Ok(());
-            }
-            let home = crate::relay_config::default_codex_home_dir();
-            let artifacts = self.computer_use_guard_artifacts.lock().await.clone();
-            let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
-            let task = tokio::spawn(async move {
-                run_post_launch_computer_use_guard(home, artifacts, &mut shutdown_rx).await;
-            });
-            if let Some(runtime) = self
-                .computer_use_guard_watchdog
-                .lock()
-                .await
-                .replace(ComputerUseGuardWatchdogRuntime { shutdown, task })
-            {
-                let _ = runtime.shutdown.send(());
-                let _ = runtime.task.await;
-            }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let _ = &settings;
-            let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
-            let task = tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = &mut shutdown_rx => break,
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
-                            crate::computer_use_guard::kill_orphaned_computer_use_processes();
-                        }
-                    }
-                }
-            });
-            if let Some(runtime) = self
-                .computer_use_guard_watchdog
-                .lock()
-                .await
-                .replace(ComputerUseGuardWatchdogRuntime { shutdown, task })
-            {
-                let _ = runtime.shutdown.send(());
-                let _ = runtime.task.await;
-            }
-        }
-        Ok(())
-    }
-
     async fn write_status(&self, _status: &str) {}
 
     async fn wait_for_codex_exit(
@@ -964,10 +922,6 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn shutdown_helper(&self, _helper_port: u16) {
-        if let Some(runtime) = self.computer_use_guard_watchdog.lock().await.take() {
-            let _ = runtime.shutdown.send(());
-            let _ = runtime.task.await;
-        }
         if let Some(runtime) = self.bridge_watchdog.lock().await.take() {
             let _ = runtime.shutdown.send(());
             let _ = runtime.task.await;
@@ -1162,6 +1116,9 @@ async fn handle_helper_connection(
                 "status": "ok",
                 "message": "后端已连接",
                 "version": crate::version::VERSION,
+                "hideOfficialUsageAlert": crate::assets::hide_official_usage_alert_config(
+                    &crate::settings::SettingsStore::default().load().unwrap_or_default()
+                ),
                 "transport": "http-helper"
             }))?,
             "application/json; charset=utf-8".to_string(),
@@ -2750,6 +2707,17 @@ pub fn build_macos_cleanup_command(
     ])
 }
 
+pub fn select_macos_debug_launch_action(
+    app_running: bool,
+    codex_cdp_available: bool,
+) -> MacosDebugLaunchAction {
+    match (app_running, codex_cdp_available) {
+        (false, _) => MacosDebugLaunchAction::LaunchNew,
+        (true, true) => MacosDebugLaunchAction::ReuseRunningDebugApp,
+        (true, false) => MacosDebugLaunchAction::RestartRunningApp,
+    }
+}
+
 async fn run_macos_cleanup_command(
     app_dir: &Path,
     policy: MacosCleanupPolicy,
@@ -2767,6 +2735,31 @@ async fn run_macos_cleanup_command(
         .status()
         .await
         .with_context(|| format!("failed to request macOS app quit for {}", app_dir.display()))?;
+    Ok(())
+}
+
+async fn quit_macos_app_and_wait(app_dir: &Path) -> anyhow::Result<()> {
+    run_macos_cleanup_command(app_dir, MacosCleanupPolicy::QuitIfNotPreviouslyRunning).await?;
+    let deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_millis(MACOS_DEBUG_TAKEOVER_WAIT_MS);
+    while is_macos_app_running(app_dir).await {
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "macOS app did not exit before debug relaunch: {}",
+                app_dir.display()
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(
+            MACOS_DEBUG_TAKEOVER_INTERVAL_MS,
+        ))
+        .await;
+    }
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "launcher.macos_existing_app_without_cdp_stopped",
+        serde_json::json!({
+            "app_dir": app_dir
+        }),
+    );
     Ok(())
 }
 
@@ -2801,119 +2794,6 @@ async fn is_macos_app_running(app_dir: &Path) -> bool {
         && String::from_utf8_lossy(&output.stdout)
             .trim()
             .eq_ignore_ascii_case("true")
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-fn post_launch_guard_artifacts_ready(
-    artifacts: &crate::computer_use_guard::GuardArtifacts,
-) -> bool {
-    artifacts.notify_exe.is_some()
-        && artifacts.marketplace_path.is_some()
-        && (!artifacts.runtime_exports_needed || artifacts.sky_package_json.is_some())
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-fn should_stop_post_launch_computer_use_guard(
-    stable_unchanged_attempts: usize,
-    artifacts: &crate::computer_use_guard::GuardArtifacts,
-) -> bool {
-    stable_unchanged_attempts >= POST_LAUNCH_COMPUTER_USE_GUARD_STABLE_ATTEMPTS
-        && post_launch_guard_artifacts_ready(artifacts)
-}
-
-#[cfg(windows)]
-async fn run_post_launch_computer_use_guard(
-    home: PathBuf,
-    mut artifacts: Option<crate::computer_use_guard::GuardArtifacts>,
-    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
-) {
-    let mut previous_delay = 0_u64;
-    let mut stable_unchanged_attempts = 0_usize;
-    for (index, delay) in POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS
-        .iter()
-        .copied()
-        .enumerate()
-    {
-        let wait_seconds = delay.saturating_sub(previous_delay);
-        previous_delay = delay;
-        if wait_seconds > 0 {
-            tokio::select! {
-                _ = &mut *shutdown_rx => return,
-                _ = tokio::time::sleep(std::time::Duration::from_secs(wait_seconds)) => {}
-            }
-        }
-        let attempt = index + 1;
-        let resolved_artifacts = match artifacts.take() {
-            Some(artifacts) => artifacts,
-            None => match crate::computer_use_guard::resolve_computer_use_guard_artifacts(&home) {
-                Ok(resolved) => resolved,
-                Err(error) => {
-                    stable_unchanged_attempts = 0;
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "computer_use_guard.post_launch_failed",
-                        serde_json::json!({
-                            "attempt": attempt,
-                            "delay_seconds": delay,
-                            "phase": "resolve_artifacts",
-                            "message": error.to_string()
-                        }),
-                    );
-                    continue;
-                }
-            },
-        };
-        let artifacts_ready = post_launch_guard_artifacts_ready(&resolved_artifacts);
-        artifacts = artifacts_ready.then_some(resolved_artifacts.clone());
-        match crate::computer_use_guard::ensure_computer_use_config_with_artifacts(
-            &home,
-            &resolved_artifacts,
-        ) {
-            Ok(result) => {
-                if !result.changed && artifacts_ready {
-                    stable_unchanged_attempts += 1;
-                } else {
-                    stable_unchanged_attempts = 0;
-                }
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "computer_use_guard.post_launch_ok",
-                    serde_json::json!({
-                        "attempt": attempt,
-                        "delay_seconds": delay,
-                        "changed": result.changed,
-                        "stable_unchanged_attempts": stable_unchanged_attempts,
-                        "notify_exe": result
-                            .notify_exe
-                            .map(|path| path.to_string_lossy().to_string())
-                    }),
-                );
-                if should_stop_post_launch_computer_use_guard(
-                    stable_unchanged_attempts,
-                    &resolved_artifacts,
-                ) {
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "computer_use_guard.post_launch_stable_stop",
-                        serde_json::json!({
-                            "attempt": attempt,
-                            "delay_seconds": delay,
-                            "stable_unchanged_attempts": stable_unchanged_attempts
-                        }),
-                    );
-                    return;
-                }
-            }
-            Err(error) => {
-                stable_unchanged_attempts = 0;
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "computer_use_guard.post_launch_failed",
-                    serde_json::json!({
-                        "attempt": attempt,
-                        "delay_seconds": delay,
-                        "message": error.to_string()
-                    }),
-                );
-            }
-        }
-    }
 }
 
 #[cfg(windows)]
@@ -3068,8 +2948,7 @@ pub async fn activate_packaged_app(
 #[cfg(windows)]
 fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> anyhow::Result<u32> {
     use windows::Win32::System::Com::{
-        CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
-        CoUninitialize,
+        CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
     };
     use windows::Win32::UI::Shell::{ApplicationActivationManager, IApplicationActivationManager};
     use windows::core::HSTRING;
@@ -3088,7 +2967,7 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
 
         let result: windows::core::Result<u32> = (|| {
             let manager: IApplicationActivationManager =
-                CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER)?;
+                CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_ALL)?;
             let process_id = manager.ActivateApplication(
                 &HSTRING::from(app_user_model_id),
                 &HSTRING::from(arguments),
@@ -3505,53 +3384,5 @@ mod tests {
         helper.await.unwrap();
         assert_eq!(upstream.await.unwrap(), expected_body);
         crate::paths::set_settings_path_for_tests(previous_settings_path);
-    }
-
-    #[test]
-    fn post_launch_guard_stops_after_stable_ready_artifacts() {
-        let artifacts = crate::computer_use_guard::GuardArtifacts {
-            notify_exe: Some(PathBuf::from("codex-computer-use.exe")),
-            marketplace_path: Some(PathBuf::from("openai-bundled")),
-            sky_package_json: None,
-            runtime_exports_needed: false,
-        };
-
-        assert!(!should_stop_post_launch_computer_use_guard(2, &artifacts));
-        assert!(should_stop_post_launch_computer_use_guard(3, &artifacts));
-    }
-
-    #[test]
-    fn post_launch_guard_keeps_retrying_until_artifacts_are_ready() {
-        let missing_notify = crate::computer_use_guard::GuardArtifacts {
-            notify_exe: None,
-            marketplace_path: Some(PathBuf::from("openai-bundled")),
-            sky_package_json: None,
-            runtime_exports_needed: false,
-        };
-        let missing_marketplace = crate::computer_use_guard::GuardArtifacts {
-            notify_exe: Some(PathBuf::from("codex-computer-use.exe")),
-            marketplace_path: None,
-            sky_package_json: None,
-            runtime_exports_needed: false,
-        };
-        let missing_runtime_package = crate::computer_use_guard::GuardArtifacts {
-            notify_exe: Some(PathBuf::from("codex-computer-use.exe")),
-            marketplace_path: Some(PathBuf::from("openai-bundled")),
-            sky_package_json: None,
-            runtime_exports_needed: true,
-        };
-
-        assert!(!should_stop_post_launch_computer_use_guard(
-            3,
-            &missing_notify
-        ));
-        assert!(!should_stop_post_launch_computer_use_guard(
-            3,
-            &missing_marketplace
-        ));
-        assert!(!should_stop_post_launch_computer_use_guard(
-            3,
-            &missing_runtime_package
-        ));
     }
 }

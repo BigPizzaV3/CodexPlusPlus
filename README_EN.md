@@ -79,11 +79,11 @@ For first-time setup, open the manager, verify the detected app path, configure 
   </tr>
   <tr>
     <td align="center">
-      <a href="https://runapi.co/register?aff=AWJq">
+      <a href="https://runapi.host/register?aff=AWJq">
         <img src="docs/images/sponsor-runapi.png" alt="RunAPI" width="150">
       </a>
     </td>
-    <td><a href="https://runapi.co/register?aff=AWJq"><strong>RunAPI</strong></a><br>Thanks to RunAPI for sponsoring this project! RunAPI is an efficient and stable OpenRouter alternative API platform. One API key can access OpenAI, Claude, Gemini, DeepSeek, Grok, and 150+ mainstream models at prices as low as 10% of the original rate, with seamless compatibility for tools such as Claude Code and OpenClaw.</td>
+    <td><a href="https://runapi.host/register?aff=AWJq"><strong>RunAPI</strong></a><br>Thanks to RunAPI for sponsoring this project! RunAPI is an efficient and stable OpenRouter alternative API platform. One API key can access OpenAI, Claude, Gemini, DeepSeek, Grok, and 150+ mainstream models at prices as low as 10% of the original rate, with seamless compatibility for tools such as Claude Code and OpenClaw.</td>
   </tr>
   <tr>
     <td align="center">
@@ -127,11 +127,11 @@ For first-time setup, open the manager, verify the detected app path, configure 
   </tr>
   <tr>
     <td align="center">
-      <a href="https://hb-api.online/register?aff=8KA2ZKWNHND8">
+      <a href="https://cn.hb-api.online/register?aff=8KA2ZKWNHND8">
         <img src="docs/images/sponsor-baikewei-ai.jpg" alt="Baikewei AI" width="150">
       </a>
     </td>
-    <td><a href="https://hb-api.online/register?aff=8KA2ZKWNHND8"><strong>Baikewei AI</strong></a><br>Baikewei AI is an all-in-one large-model API platform for developers, teams, and AI tool users. It supports Claude, OpenAI, Gemini, Codex, and other mainstream model capabilities, with stable relay access, flexible billing, usage statistics, balance management, and APIs for Claude Code, Codex, image generation, automation scripts, and intelligent applications. New users can claim free credit and start integrating immediately.</td>
+    <td><a href="https://cn.hb-api.online/register?aff=8KA2ZKWNHND8"><strong>Baikewei AI</strong></a><br>Baikewei AI is an all-in-one large-model API platform for developers, teams, and AI tool users. It supports Claude, OpenAI, Gemini, Codex, and other mainstream model capabilities, with stable relay access, flexible billing, usage statistics, balance management, and APIs for Claude Code, Codex, image generation, automation scripts, and intelligent applications. New users can claim free credit and start integrating immediately.</td>
   </tr>
   <tr>
     <td align="center">

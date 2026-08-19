@@ -58,6 +58,7 @@ pub async fn read_codex_model_catalog() -> Value {
                 "status": "failed",
                 "path": home.join("config.toml").to_string_lossy(),
                 "message": error.to_string(),
+                "service_tier": config_service_tier_value(&home),
                 "model": "",
                 "model_provider": "",
                 "provider_name": "",
@@ -75,6 +76,7 @@ pub async fn read_codex_model_catalog() -> Value {
 fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Value {
     let models = relay_profile_model_ids(profile);
     let model = profile.model.trim().to_string();
+    let codex_model_provider = codex_model_provider_for_relay_profile(home, profile);
     let default_model = models.first().cloned().unwrap_or_default();
     let provider_name = if profile.name.trim().is_empty() {
         profile.id.trim()
@@ -86,8 +88,10 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
     json!({
         "status": if models.is_empty() { "not_configured" } else { "ok" },
         "path": home.join("config.toml").to_string_lossy(),
+        "service_tier": config_service_tier_value(home),
         "model": model,
         "model_provider": profile.id.trim(),
+        "codex_model_provider": codex_model_provider,
         "provider_name": provider_name,
         "default_model": default_model,
         "models": models,
@@ -105,6 +109,20 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
         ],
         "responses_api": responses_api_status("unknown", "", "")
     })
+}
+
+pub fn codex_model_provider_for_relay_profile(home: &Path, profile: &RelayProfile) -> String {
+    let profile_config = parse_codex_config(&profile.config_contents);
+    let profile_provider = string_value(profile_config.root.get("model_provider"));
+    if !profile_provider.is_empty() {
+        return profile_provider;
+    }
+
+    let (live_config, _, error) = load_codex_config(&home.join("config.toml"));
+    if error.is_some() {
+        return String::new();
+    }
+    string_value(live_config.root.get("model_provider"))
 }
 
 fn relay_profile_model_ids(profile: &RelayProfile) -> Vec<String> {
@@ -157,6 +175,7 @@ pub async fn read_codex_model_catalog_from_home(
             "status": "failed",
             "path": config_path.to_string_lossy(),
             "message": error,
+            "service_tier": service_tier_value(&effective),
             "model": model,
             "model_provider": model_provider,
             "provider_name": provider_name,
@@ -222,6 +241,7 @@ pub async fn read_codex_model_catalog_from_home(
     json!({
         "status": status,
         "path": config_path.to_string_lossy(),
+        "service_tier": service_tier_value(&effective),
         "model": model,
         "model_provider": model_provider,
         "provider_name": provider_name,
@@ -235,6 +255,21 @@ pub async fn read_codex_model_catalog_from_home(
 
 fn codex_home_dir() -> PathBuf {
     crate::codex_home::default_codex_home_dir()
+}
+
+// 读取 config.toml（含 profile 覆盖）里生效的 service_tier；未配置时返回 null。
+fn service_tier_value(effective: &HashMap<String, String>) -> Value {
+    let tier = string_value(effective.get("service_tier"));
+    if tier.is_empty() {
+        Value::Null
+    } else {
+        Value::String(tier)
+    }
+}
+
+fn config_service_tier_value(home: &Path) -> Value {
+    let (_, effective, _) = load_codex_config(&home.join("config.toml"));
+    service_tier_value(&effective)
 }
 
 fn load_codex_config(path: &Path) -> (CodexConfig, HashMap<String, String>, Option<String>) {

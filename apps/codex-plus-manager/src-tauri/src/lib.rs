@@ -58,6 +58,7 @@ pub fn run() {
             }
             let main_window = main_window_builder.build()?;
             install_tray(app)?;
+            commands::start_weixin_connect_from_saved_settings();
             register_main_window_events(main_window, startup_is_transient());
             Ok(())
         })
@@ -69,6 +70,11 @@ pub fn run() {
             commands::restart_codex_plus,
             commands::load_settings,
             commands::save_settings,
+            commands::weixin_connect_qr_start,
+            commands::weixin_connect_qr_status,
+            commands::weixin_connect_status,
+            commands::weixin_connect_start,
+            commands::weixin_connect_stop,
             commands::dream_skin_status,
             commands::import_dream_skin_image,
             commands::reset_dream_skin_image,
@@ -107,6 +113,7 @@ pub fn run() {
             commands::sync_providers_now,
             commands::load_ads,
             commands::refresh_script_market,
+            commands::refresh_user_script_inventory,
             commands::install_market_script,
             commands::set_user_script_enabled,
             commands::delete_user_script,

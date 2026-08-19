@@ -485,16 +485,20 @@ async fn background_analyze_and_cache(urls: &[String], config: &VlmConfig) {
 // ── Description injection ─────────────────────────────────────────────
 
 /// 向指定 user/tool 消息末尾注入分析文本。
-fn inject_text_into_message(msg: &mut Value, text: &str) {
+/// `responses` 为 true 时生成 Responses API 的 `input_text` 块,
+/// 否则生成 Chat Completions 的 `text` 块。
+fn inject_text_into_message(msg: &mut Value, text: &str, responses: bool) {
+    let block_type = if responses { "input_text" } else { "text" };
+    let make_block = |t: &str| serde_json::json!({"type": block_type, "text": t});
     match msg.get_mut("content") {
         Some(Value::Array(parts)) => {
-            parts.push(serde_json::json!({"type": "text", "text": text}));
+            parts.push(make_block(text));
         }
         Some(Value::String(existing)) => {
             let old = existing.clone();
             *msg.get_mut("content").unwrap() = serde_json::json!([
-                {"type": "text", "text": old},
-                {"type": "text", "text": text},
+                make_block(&old),
+                make_block(text),
             ]);
         }
         _ => {}
@@ -502,7 +506,7 @@ fn inject_text_into_message(msg: &mut Value, text: &str) {
 }
 
 /// 注入分析结果到**最后一条** user 消息（兼容旧接口，供 analyze_all 返回值注入）。
-pub fn inject_analysis(messages: &mut [Value], result: &Result<String, String>) {
+pub fn inject_analysis(messages: &mut [Value], result: &Result<String, String>, responses: bool) {
     let text = match result {
         Ok(c) => c.clone(),
         Err(_) => "用户发送了图片，但是 Router VLM 调用失败。请在回复中包含 \"Router VLM 调用失败，未能识别图片内容\""
@@ -510,7 +514,7 @@ pub fn inject_analysis(messages: &mut [Value], result: &Result<String, String>) 
     };
     for msg in messages.iter_mut().rev() {
         if msg.get("role").and_then(Value::as_str) == Some("user") {
-            inject_text_into_message(msg, &text);
+            inject_text_into_message(msg, &text, responses);
             break;
         }
     }
@@ -532,6 +536,7 @@ pub async fn strip_image_blocks(
     model_windows_json: &str,
     context_window_str: &str,
     request_model: &str,
+    responses: bool,
 ) {
     // 0. 上下文溢出保护：基于剥离图片后的纯文本预估，因为图片最终会被删掉。
     let context_window =
@@ -560,6 +565,7 @@ pub async fn strip_image_blocks(
                         "\n[系统：当前轮次有 {} 张图片因上下文已满未完成 VLM 分析，图片已被清理以释放空间]",
                         image_count
                     ),
+                    responses,
                 );
             }
         }
@@ -860,7 +866,7 @@ pub async fn strip_image_blocks(
     // 9. 注入描述文本。
     for (msg_idx, desc) in &descriptions {
         if *msg_idx < messages.len() {
-            inject_text_into_message(&mut messages[*msg_idx], desc);
+            inject_text_into_message(&mut messages[*msg_idx], desc, responses);
         }
     }
 
@@ -1046,7 +1052,7 @@ mod tests {
             serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "ok"}]}),
             serde_json::json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}),
         ];
-        inject_analysis(&mut messages, &Ok("image description".to_string()));
+        inject_analysis(&mut messages, &Ok("image description".to_string()), false);
         let parts = messages[1]["content"].as_array().unwrap();
         assert_eq!(parts.last().unwrap()["type"], "text");
         assert_eq!(parts.last().unwrap()["text"], "image description");
@@ -1058,7 +1064,7 @@ mod tests {
             "role": "user",
             "content": [{"type": "text", "text": "hi"}]
         })];
-        inject_analysis(&mut messages, &Err("failed".to_string()));
+        inject_analysis(&mut messages, &Err("failed".to_string()), false);
         let parts = messages[0]["content"].as_array().unwrap();
         let last = parts.last().unwrap();
         assert_eq!(last["type"], "text");
@@ -1071,11 +1077,38 @@ mod tests {
             "role": "user",
             "content": "a plain string message"
         })];
-        inject_analysis(&mut messages, &Ok("vlm result".to_string()));
+        inject_analysis(&mut messages, &Ok("vlm result".to_string()), false);
         let parts = messages[0]["content"].as_array().unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0]["text"], "a plain string message");
         assert_eq!(parts[1]["text"], "vlm result");
+    }
+
+    #[test]
+    fn inject_analysis_uses_input_text_block_for_responses_protocol() {
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}]
+        })];
+        inject_analysis(&mut messages, &Ok("image description".to_string()), true);
+        let parts = messages[0]["content"].as_array().unwrap();
+        let last = parts.last().unwrap();
+        // Responses API 要求 input_text 块,不能用 chat 的 text 块(DeepSeek 会拒)。
+        assert_eq!(last["type"], "input_text");
+        assert_eq!(last["text"], "image description");
+        // 原有块不受影响。
+        assert_eq!(parts[0]["type"], "text");
+    }
+
+    #[test]
+    fn inject_text_into_message_keeps_chat_text_block_when_not_responses() {
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}]
+        })];
+        inject_analysis(&mut messages, &Ok("desc".to_string()), false);
+        let parts = messages[0]["content"].as_array().unwrap();
+        assert_eq!(parts.last().unwrap()["type"], "text");
     }
 
     #[test]
@@ -1275,7 +1308,7 @@ mod tests {
             base_url: String::new(),
         };
 
-        strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4", false).await;
 
         // 图片已被删除
         let parts = messages[0]["content"].as_array().unwrap();
@@ -1315,6 +1348,7 @@ mod tests {
             "{}",
             "1", // 上下文窗口 = 1 token → 必然溢出
             "gpt-4",
+            false,
         )
         .await;
 
@@ -1353,7 +1387,7 @@ mod tests {
             base_url: String::new(),
         };
 
-        strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4", false).await;
 
         // 消息应保持不变
         let parts = messages[0]["content"].as_array().unwrap();
@@ -1380,7 +1414,7 @@ mod tests {
             base_url: "https://127.0.0.1:1".to_string(), // 故意不可达
         };
 
-        strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "272000", "gpt-4", false).await;
 
         // fail-closed：图片保留
         let parts = messages[0]["content"].as_array().unwrap();
@@ -1433,7 +1467,7 @@ mod tests {
             base_url: "https://127.0.0.1:1".to_string(), // VLM 不可达，触发 fail-closed 路径
         };
 
-        strip_image_blocks(&mut messages, &vlm_config, "{}", "900000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "900000", "gpt-4", false).await;
 
         // VLM 不可达 → analyze_all 返回 Err → strip_image_blocks early return
         // → fail-closed：全部图片保留，不注入任何描述。
@@ -1492,7 +1526,7 @@ mod tests {
             base_url: String::new(),
         };
 
-        strip_image_blocks(&mut messages, &vlm_config, "{}", "900000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "900000", "gpt-4", false).await;
 
         // 所有图片已删除
         for msg in &messages {
@@ -1602,7 +1636,7 @@ mod tests {
             base_url: String::new(),
         };
 
-        strip_image_blocks(&mut messages, &vlm_config, "{}", "800", "gpt-4").await;
+        strip_image_blocks(&mut messages, &vlm_config, "{}", "800", "gpt-4", false).await;
 
         // 所有图片已删除
         for msg in &messages {
@@ -1771,7 +1805,7 @@ mod tests {
             ]
         })];
 
-        strip_image_blocks(&mut messages, &config, "{}", "272000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &config, "{}", "272000", "gpt-4", false).await;
 
         let parts = messages[0]["content"].as_array().unwrap();
         let has_image = parts
@@ -1783,6 +1817,68 @@ mod tests {
         assert!(
             last_text.contains("mock: E2E network call"),
             "VLM result not injected: {last_text}"
+        );
+    }
+
+    /// strip_image_blocks 端到端（Responses 协议）：input_image 被剥离，
+    /// VLM 描述以 `input_text` 块注入，且不产生 Chat 格式的 `text` 块。
+    #[tokio::test]
+    async fn strip_image_blocks_injects_input_text_for_responses_protocol() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "mock: responses E2E"}}]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let config = VlmConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: mock_server.uri(),
+        };
+
+        // Responses API 格式：input_text / input_image 内容块。
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "describe this image"},
+                {"type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgo="},
+            ]
+        })];
+
+        strip_image_blocks(&mut messages, &config, "{}", "272000", "gpt-4", true).await;
+
+        let parts = messages[0]["content"].as_array().unwrap();
+
+        // 1) 图片块被移除。
+        assert!(
+            parts
+                .iter()
+                .all(|p| p.get("type").and_then(Value::as_str) != Some("input_image")),
+            "input_image block should be stripped"
+        );
+
+        // 2) VLM 描述以 input_text 块注入。
+        let injected = parts.iter().find(|p| {
+            p.get("type").and_then(Value::as_str) == Some("input_text")
+                && p.get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t.contains("mock: responses E2E"))
+        });
+        assert!(
+            injected.is_some(),
+            "VLM description should be injected as input_text"
+        );
+
+        // 3) 不产生 Chat 格式的 text 块（Responses 上游会拒绝 text 块）。
+        assert!(
+            parts
+                .iter()
+                .all(|p| p.get("type").and_then(Value::as_str) != Some("text")),
+            "no chat-style text block should be injected for responses protocol"
         );
     }
 
@@ -1819,7 +1915,7 @@ mod tests {
             }),
         ];
 
-        strip_image_blocks(&mut messages, &config, "{}", "272000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &config, "{}", "272000", "gpt-4", false).await;
 
         let parts = messages[1]["content"].as_array().unwrap();
         assert!(
@@ -1917,7 +2013,7 @@ mod tests {
             ]
         })];
 
-        strip_image_blocks(&mut messages, &config, "{}", "272000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &config, "{}", "272000", "gpt-4", false).await;
 
         let parts = messages[0]["content"].as_array().unwrap();
         let has_image = parts.iter().any(|p| {
@@ -2012,7 +2108,7 @@ mod tests {
             }),
         ];
 
-        strip_image_blocks(&mut messages, &config, "{}", "900000", "gpt-4").await;
+        strip_image_blocks(&mut messages, &config, "{}", "900000", "gpt-4", false).await;
 
         // 两轮图片均应被剥离
         for (i, label) in ["historical", "current"].iter().enumerate() {

@@ -130,13 +130,15 @@ describe("dream skin theme helpers", () => {
       "utf8",
     );
 
-    assert.match(renderer, /const shellMain = document\.querySelector\("main\.main-surface"\)/);
+    assert.match(renderer, /const ensureShellMain = \(\) =>/);
+    assert.match(renderer, /main\[class\*="MainContentSurface"\]/);
+    assert.match(renderer, /data-codex-plus-dream-surface/);
     assert.doesNotMatch(renderer, /!shellMain\s*\|\|\s*!shellSidebar/);
     assert.match(compatibility, /main\[class\*="_MainContentSurface_"\]/);
     assert.match(compatibility, /shellMain\.classList\.add\("main-surface"\)/);
     assert.match(compatibility, /data-codex-plus-dream-skin-main-surface/);
     assert.match(compatibility, /clearDreamSkinMainSurfaceCompatibility\(\)/);
-    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "18"/);
+    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "20-modern-main-surface"/);
   });
 
   it("extends the Windows wallpaper treatment to right and bottom dock panels", async () => {
@@ -158,6 +160,24 @@ describe("dream skin theme helpers", () => {
     assert.match(css, /\.dream-aux-panel-right/);
     assert.match(css, /\.dream-aux-panel-bottom/);
     assert.match(css, /\[data-codex-terminal="true"\]/);
+  });
+
+  it("keeps transient new-chat drafts on native geometry", async () => {
+    const renderer = await readFile(
+      new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url),
+      "utf8",
+    );
+    const css = await readFile(
+      new URL("../../../assets/inject/upstream/dream-skin/windows/dream-skin.css", import.meta.url),
+      "utf8",
+    );
+
+    assert.match(renderer, /homeHasClassicChrome/);
+    assert.match(renderer, /data-dream-home-layout/);
+    assert.match(renderer, /data-dream-home-layout.*soft/);
+    assert.match(css, /data-dream-home-layout.*structured/);
+    assert.match(css, /overflow-y: auto !important/);
+    assert.match(css, /\.composer-surface-chrome/);
   });
 
   it("exposes companion image controls in the theme editor", async () => {
