@@ -110,6 +110,7 @@ export const EN_PLAIN: Record<string, string> = {
   "允许修改工作目录": "Allow workspace changes",
   "完全访问": "Full access",
   "留空时从 PATH 查找 codex": "Leave empty to find codex in PATH",
+  "使用桌面版内置 CLI": "Use desktop bundled CLI",
   "选择 Codex CLI": "Choose Codex CLI",
   "账号标识": "Account ID",
   "扫码后自动填写": "Filled automatically after QR login",

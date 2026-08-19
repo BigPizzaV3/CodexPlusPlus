@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use codex_plus_core::app_paths::{
-    build_codex_executable, codex_app_version, find_latest_codex_app_dir,
+    build_codex_executable, codex_app_version, find_bundled_codex_cli, find_latest_codex_app_dir,
     find_latest_codex_app_dir_from_roots, find_macos_codex_app, normalize_codex_app_path,
     packaged_app_user_model_id, resolve_codex_app_dir_with_saved, user_data_candidates_from,
 };
@@ -293,6 +293,37 @@ fn app_paths_build_macos_bundle_executable() {
         build_codex_executable(&app),
         PathBuf::from("/Applications/OpenAI Codex.app/Contents/MacOS/Codex")
     );
+}
+
+#[test]
+fn app_paths_finds_macos_bundled_codex_cli() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("ChatGPT.app");
+    let cli = app.join("Contents/Resources/codex");
+    std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+    std::fs::write(&cli, "").unwrap();
+
+    assert_eq!(find_bundled_codex_cli(&app).as_deref(), Some(cli.as_path()));
+}
+
+#[test]
+fn app_paths_finds_windows_bundled_codex_cli() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("OpenAI.Codex_1.0.0.0_x64__abc/app");
+    let cli = app.join("resources/codex.exe");
+    std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+    std::fs::write(&cli, "").unwrap();
+
+    assert_eq!(find_bundled_codex_cli(&app).as_deref(), Some(cli.as_path()));
+}
+
+#[test]
+fn app_paths_returns_none_when_bundled_codex_cli_is_missing() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("ChatGPT.app");
+    std::fs::create_dir_all(app.join("Contents/Resources")).unwrap();
+
+    assert_eq!(find_bundled_codex_cli(&app), None);
 }
 
 #[test]

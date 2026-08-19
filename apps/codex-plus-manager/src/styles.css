@@ -3061,6 +3061,16 @@ body {
   height: 40px;
 }
 
+.weixin-cli-path-row {
+  grid-template-columns: minmax(0, 1fr) auto 40px;
+}
+
+.weixin-path-row > .weixin-bundled-cli-button {
+  width: auto;
+  padding-inline: 12px;
+  white-space: nowrap;
+}
+
 .weixin-search-picker {
   position: relative;
   min-width: 0;
@@ -3223,6 +3233,16 @@ body {
 
   .weixin-form-section-title {
     min-height: auto;
+  }
+
+  .weixin-cli-path-row {
+    grid-template-columns: minmax(0, 1fr) 40px;
+  }
+
+  .weixin-path-row > .weixin-bundled-cli-button {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: start;
   }
 }
 

@@ -435,6 +435,20 @@ pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
     app_dir.join("Codex.exe")
 }
 
+pub fn find_bundled_codex_cli(app_dir: &Path) -> Option<PathBuf> {
+    let candidates = if app_dir.extension() == Some(OsStr::new("app")) {
+        vec![app_dir.join("Contents").join("Resources").join("codex")]
+    } else {
+        vec![
+            app_dir.join("resources").join("codex.exe"),
+            app_dir.join("Resources").join("codex.exe"),
+            app_dir.join("resources").join("codex"),
+            app_dir.join("Resources").join("codex"),
+        ]
+    };
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
 pub fn codex_app_version(app_dir: &Path) -> Option<String> {
     if app_dir.extension() == Some(OsStr::new("app")) {
         return macos_app_version(app_dir);

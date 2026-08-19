@@ -400,6 +400,10 @@ type WeixinQrResult = CommandResult<{
   hasToken: boolean;
 }>;
 
+type DesktopCodexCliResult = CommandResult<{
+  path: string | null;
+}>;
+
 type RelayResult = CommandResult<{
   authenticated: boolean;
   authSource: string;
@@ -2223,6 +2227,19 @@ export function App() {
     }
   };
 
+  const useDesktopCodexCli = async () => {
+    const result = await run(() => call<DesktopCodexCliResult>("find_desktop_codex_cli"));
+    if (!result) return;
+    const path = result.path?.trim();
+    if (isSuccessStatus(result.status) && path) {
+      setSettingsForm((current) => ({
+        ...current,
+        weixinConnectCodexPath: path,
+      }));
+    }
+    showResultNotice(t("Codex CLI 路径"), result);
+  };
+
   const resetSettings = async () => {
     const result = await run(() => call<SettingsResult>("reset_settings"));
     if (result) {
@@ -3180,6 +3197,7 @@ export function App() {
               onStop={() => void stopWeixinConnect()}
               onChooseWorkDir={() => void chooseWeixinPath("workDir")}
               onChooseCodexPath={() => void chooseWeixinPath("codexPath")}
+              onUseDesktopCodexCli={() => void useDesktopCodexCli()}
               onOpenQr={(url) => void openExternalUrl(url)}
               onCopyQr={(url) => void copyText(url, t("微信登录链接已复制。"))}
             />
@@ -3592,6 +3610,7 @@ function WeixinConnectScreen({
   onStop,
   onChooseWorkDir,
   onChooseCodexPath,
+  onUseDesktopCodexCli,
   onOpenQr,
   onCopyQr,
 }: {
@@ -3606,6 +3625,7 @@ function WeixinConnectScreen({
   onStop: () => void;
   onChooseWorkDir: () => void;
   onChooseCodexPath: () => void;
+  onUseDesktopCodexCli: () => void;
   onOpenQr: (url: string) => void;
   onCopyQr: (url: string) => void;
 }) {
@@ -3844,13 +3864,24 @@ function WeixinConnectScreen({
             <div className="weixin-form-fields">
               <label className="field">
                 <span>{t("Codex CLI 路径")}</span>
-                <div className="weixin-path-row">
+                <div className="weixin-path-row weixin-cli-path-row">
                   <Input
                     className="h-10"
                     onChange={(event) => onFormChange({ ...form, weixinConnectCodexPath: event.target.value })}
                     placeholder={t("留空时从 PATH 查找 codex")}
                     value={form.weixinConnectCodexPath}
                   />
+                  <Button
+                    className="weixin-bundled-cli-button"
+                    onClick={onUseDesktopCodexCli}
+                    size="sm"
+                    title={t("使用桌面版内置 CLI")}
+                    type="button"
+                    variant="secondary"
+                  >
+                    <PackageOpen className="h-4 w-4" />
+                    {t("使用桌面版内置 CLI")}
+                  </Button>
                   <Button onClick={onChooseCodexPath} size="icon" title={t("选择 Codex CLI")} type="button" variant="outline">
                     <ExternalLink className="h-4 w-4" />
                   </Button>

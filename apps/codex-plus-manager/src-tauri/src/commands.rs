@@ -1113,6 +1113,35 @@ pub fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::WeixinCo
     )
 }
 
+#[tauri::command]
+pub fn find_desktop_codex_cli() -> CommandResult<Value> {
+    let settings = match SettingsStore::default().load() {
+        Ok(settings) => settings,
+        Err(error) => {
+            return failed(
+                &format!("读取 Codex 应用设置失败：{error}"),
+                json!({ "path": null }),
+            );
+        }
+    };
+    let Some(app_dir) = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
+        None,
+        Some(settings.codex_app_path.as_str()),
+    ) else {
+        return failed("未找到 Codex Desktop 应用。", json!({ "path": null }));
+    };
+    let Some(path) = codex_plus_core::app_paths::find_bundled_codex_cli(&app_dir) else {
+        return failed(
+            "已找到 Codex Desktop，但包内没有可用的 Codex CLI。",
+            json!({ "path": null }),
+        );
+    };
+    ok(
+        "已填入桌面版内置 Codex CLI。",
+        json!({ "path": path.to_string_lossy() }),
+    )
+}
+
 fn spawn_weixin_connect(
     settings: BackendSettings,
 ) -> anyhow::Result<codex_plus_core::connect::WeixinConnectStatus> {
