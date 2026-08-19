@@ -27,6 +27,32 @@ pub fn codex_session_db_paths_from_home(home: &Path) -> Vec<PathBuf> {
     codex_session_db_paths_in_home(&sqlite_home)
 }
 
+pub fn mark_thread_visible(home: &Path, thread_id: &str) -> anyhow::Result<usize> {
+    let thread_id = thread_id.trim();
+    if thread_id.is_empty() {
+        anyhow::bail!("缺少要显示的会话 ID");
+    }
+    let mut updated = 0usize;
+    for path in codex_session_db_paths_from_home(home) {
+        if !path.is_file() || !sqlite_has_table(&path, "threads") {
+            continue;
+        }
+        let db = Connection::open(&path)?;
+        let has_user_event = db
+            .prepare("PRAGMA table_info(threads)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .any(|column| column == "has_user_event");
+        if has_user_event {
+            updated += db.execute(
+                "UPDATE threads SET has_user_event = 1 WHERE id = ?1 AND COALESCE(has_user_event, 0) <> 1",
+                [thread_id],
+            )?;
+        }
+    }
+    Ok(updated)
+}
+
 fn codex_session_db_paths_in_home(home: &Path) -> Vec<PathBuf> {
     let mut paths = codex_sqlite_dir_session_dbs(home);
     let legacy = legacy_state_db_path(home);

@@ -73,11 +73,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn launcher_main(
-    args: Vec<String>,
-    helper_only: bool,
-    options: LaunchOptions,
-) -> Result<()> {
+async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOptions) -> Result<()> {
     if helper_only {
         let hooks = LauncherHooks::default();
         hooks.start_helper(options.helper_port).await?;
@@ -685,6 +681,89 @@ impl BridgeDataService for LauncherDataService {
         })
         .await
         .map_err(|error| anyhow::anyhow!("Remote Control session recovery task failed: {error}"))?
+    }
+
+    async fn fork_session(
+        &self,
+        thread_id: String,
+        model: Option<String>,
+        model_provider: Option<String>,
+        source_title: Option<String>,
+    ) -> anyhow::Result<Value> {
+        if thread_id.trim().is_empty() {
+            anyhow::bail!("缺少要继续的本地会话 ID");
+        }
+        let settings = codex_plus_core::settings::SettingsStore::default()
+            .load()
+            .unwrap_or_default();
+        let configured_cli = settings.weixin_connect_codex_path.trim();
+        let npm_cli = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|dir| {
+                dir.join("npm")
+                    .join(if cfg!(windows) { "codex.cmd" } else { "codex" })
+            })
+            .filter(|path| path.is_file());
+        let bundled_cli = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
+            None,
+            Some(settings.codex_app_path.as_str()),
+        )
+        .map(|dir| {
+            dir.join("resources")
+                .join(if cfg!(windows) { "codex.exe" } else { "codex" })
+        })
+        .filter(|path| path.is_file());
+        let executable = if !configured_cli.is_empty() {
+            configured_cli.to_string()
+        } else if let Some(path) = npm_cli {
+            path.to_string_lossy().into_owned()
+        } else if let Some(path) = bundled_cli {
+            path.to_string_lossy().into_owned()
+        } else {
+            "codex".to_string()
+        };
+        let work_dir = std::env::current_dir()
+            .unwrap_or_else(|_| codex_plus_core::codex_sqlite::default_codex_home_dir());
+        let mut server = codex_plus_core::connect::app_server::CodexAppServer::start(
+            codex_plus_core::connect::app_server::AppServerConfig {
+                executable,
+                work_dir,
+                model: model.clone().unwrap_or_default(),
+                sandbox: "read-only".to_string(),
+            },
+        )
+        .await?;
+        let result = server
+            .fork_thread(&thread_id, model.as_deref(), model_provider.as_deref())
+            .await;
+        let next_thread_id = result?;
+        let source_title = source_title.unwrap_or_default();
+        let trimmed_title = source_title.trim();
+        let short_id = next_thread_id.chars().take(8).collect::<String>();
+        let base_title = if trimmed_title.is_empty() {
+            "新会话"
+        } else {
+            trimmed_title.strip_prefix("new-").unwrap_or(trimmed_title)
+        };
+        let new_title = format!("new-{base_title}-{short_id}")
+            .chars()
+            .take(160)
+            .collect::<String>();
+        let rename_result = server.set_thread_name(&next_thread_id, &new_title).await;
+        server.close().await;
+        rename_result?;
+        let visible_thread_id = next_thread_id.clone();
+        let codex_home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_core::codex_sqlite::mark_thread_visible(&codex_home, &visible_thread_id)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("更新新会话可见状态失败: {error}"))??;
+        Ok(json!({
+            "status": "forked",
+            "thread": { "id": next_thread_id, "name": new_title },
+            "sourceThreadId": thread_id
+        }))
     }
 }
 

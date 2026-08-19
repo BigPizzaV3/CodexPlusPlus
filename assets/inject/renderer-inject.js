@@ -403,7 +403,7 @@
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexDeleteVersion = "7";
   const codexExportVersion = "1";
-  const codexActionGroupVersion = "5";
+  const codexActionGroupVersion = "6";
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationViewVersion = "1";
@@ -7702,6 +7702,74 @@
     showToast(result.message || "导出失败", null);
   }
 
+  function forkedThreadId(result) {
+    const candidates = [
+      result?.thread?.id,
+      result?.threadId,
+      result?.id,
+      result?.data?.thread?.id,
+      result?.data?.threadId,
+      result?.data?.id,
+    ];
+    return candidates.map((value) => validThreadScrollSessionKey(value)).find(Boolean) || "";
+  }
+
+  function openForkedThread(row, sourceThreadId, nextThreadId) {
+    const href = rowHref(row);
+    if (!href) return false;
+    try {
+      const url = new URL(href, window.location.href);
+      const encodedSource = encodeURIComponent(sourceThreadId);
+      const encodedFork = encodeURIComponent(nextThreadId);
+      const nextHref = url.href.includes(encodedSource)
+        ? url.href.replace(encodedSource, encodedFork)
+        : url.href.replace(sourceThreadId, nextThreadId);
+      if (nextHref === url.href) return false;
+      window.location.assign(nextHref);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function continueSessionWithCurrentApi(row, ref) {
+    const threadId = validThreadScrollSessionKey(ref?.session_id);
+    if (!threadId) {
+      showToast("无法继续：未找到有效的本地会话 ID", null);
+      return;
+    }
+    showToast("正在从本地历史创建可继续的新会话…", null);
+    try {
+      await loadCodexModelCatalog();
+      const modelProvider = codexRemoteSessionTargetProvider();
+      const model = String(codexModelCatalog?.model || codexModelCatalog?.default_model || "").trim();
+      const result = await postJson("/fork-session", {
+        threadId,
+        sourceTitle: String(ref?.title || "").trim(),
+        ...(modelProvider ? { modelProvider } : {}),
+        ...(model ? { model } : {}),
+      });
+      if (result?.status === "failed") {
+        throw new Error(result.message || "Codex++ 后端创建新会话失败");
+      }
+      const nextThreadId = forkedThreadId(result);
+      if (!nextThreadId) throw new Error("Codex app-server 未返回新会话 ID");
+      await refreshRecentConversationsForHost();
+      showToast("已创建新会话，原历史会话保持不变", null);
+      if (!openForkedThread(row, threadId, nextThreadId)) {
+        showToast(`已创建新会话：${nextThreadId.slice(0, 8)}，正在刷新侧边栏`, null);
+        window.setTimeout(() => window.location.reload(), 800);
+      }
+    } catch (error) {
+      sendCodexPlusDiagnostic("session_fork_failed", {
+        threadId,
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+      showToast(`无法从本地历史继续：${error?.message || String(error)}`, null);
+    }
+  }
+
   function installDeleteButtonEventDelegation() {
     document.removeEventListener("click", window.__codexSessionDeleteDocumentDeleteHandler, true);
     const handler = (event) => {
@@ -7946,16 +8014,11 @@
 
   function attachButton(row) {
     const settings = codexPlusSettings();
-    if (!settings.sessionDelete && !settings.markdownExport) {
-      removeActionGroups(row);
-      row.dataset.codexDeleteRow = "false";
-      return;
-    }
     const existingGroup = actionGroupFromRow(row);
     const existingDeleteButton = existingGroup?.querySelector(`.${buttonClass}`);
     const existingMoreButton = existingGroup?.querySelector(`.${moreButtonClass}`);
     const existingExportButton = existingGroup?.querySelector(`.${exportButtonClass}`);
-    const needsMoreMenu = settings.markdownExport;
+    const needsMoreMenu = true;
     const hasUnexpectedDelete = !settings.sessionDelete && !!existingDeleteButton;
     const hasUnexpectedMore = !needsMoreMenu && !!existingMoreButton;
     const hasUnexpectedExport = !!existingExportButton;
@@ -7985,6 +8048,11 @@
       moreMenu.className = moreMenuClass;
       moreMenu.setAttribute("role", "menu");
       moreMenu.hidden = true;
+      moreMenu.appendChild(createSessionMoreMenuItem("用当前 API 继续", "↪", (event) => {
+        stopActionButtonEvent(row, moreButton, event);
+        closeSessionMoreMenus();
+        continueSessionWithCurrentApi(row, ref);
+      }));
       if (settings.markdownExport) {
         moreMenu.appendChild(createSessionMoreMenuItem("导出", "⇩", (event) => {
           stopActionButtonEvent(row, moreButton, event);

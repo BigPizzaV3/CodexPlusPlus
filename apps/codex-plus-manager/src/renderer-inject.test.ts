@@ -133,6 +133,19 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /codexPlusIsNodeTestHarness/);
   });
 
+  it("offers a non-destructive local-history fork for the current API", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /postJson\("\/fork-session",\s*\{/);
+    assert.match(renderer, /sourceTitle: String\(ref\?\.title \|\| ""\)\.trim\(\)/);
+    assert.match(renderer, /result\?\.status === "failed"/);
+    assert.match(renderer, /正在刷新侧边栏/);
+    assert.match(renderer, /\.\.\.\(modelProvider \? \{ modelProvider \} : \{\}\)/);
+    assert.match(renderer, /\.\.\.\(model \? \{ model \} : \{\}\)/);
+    assert.match(renderer, /用当前 API 继续/);
+    assert.match(renderer, /原历史会话保持不变/);
+  });
+
   it("initializes renderer styles without unresolved template identifiers", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
