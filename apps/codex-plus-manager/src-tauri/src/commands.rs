@@ -2900,10 +2900,19 @@ fn provider_sync_command_result(
 ) -> CommandResult<Value> {
     let succeeded = is_success_sync_status(&sync.status);
     let success_message = format!(
-        "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。",
+        "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。{}",
         sync.changed_session_files,
         sync.sqlite_rows_updated,
-        sync.skipped_locked_rollout_files.len()
+        sync.skipped_locked_rollout_files.len(),
+        if sync.repair_audit.catalog_only_sessions > 0 {
+            format!(
+                " 审计发现 {} 条仅存在于会话目录的记录，其中 {} 条没有可用恢复来源。",
+                sync.repair_audit.catalog_only_sessions,
+                sync.repair_audit.catalog_only_without_recovery_source,
+            )
+        } else {
+            String::new()
+        }
     );
     let failure_message = format!("历史会话修复未执行：{}", sync.message);
     let payload = json!({
@@ -2919,6 +2928,7 @@ fn provider_sync_command_result(
         "sqliteCatalogRowsRemoved": sync.sqlite_catalog_rows_removed,
         "updatedWorkspaceRoots": sync.updated_workspace_roots,
         "encryptedContentWarning": sync.encrypted_content_warning,
+        "repairAudit": sync.repair_audit,
         "backupDir": sync.backup_dir,
         "syncMessage": sync.message,
     });
@@ -5423,6 +5433,7 @@ mod tests {
             sqlite_catalog_rows_removed: 0,
             updated_workspace_roots: 0,
             encrypted_content_warning: None,
+            repair_audit: codex_plus_data::ProviderSyncAudit::default(),
         }
     }
 

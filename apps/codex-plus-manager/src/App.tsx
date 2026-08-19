@@ -629,6 +629,12 @@ type ProviderSyncPayload = {
   updatedWorkspaceRoots?: number;
   prunedSessionIndexEntries?: number;
   encryptedContentWarning?: string | null;
+  repairAudit?: {
+    catalogOnlySessions: number;
+    catalogOnlyWithCurrentRollout: number;
+    catalogOnlyWithBackupDatabase: number;
+    catalogOnlyWithoutRecoverySource: number;
+  };
   backupDir?: string | null;
 };
 
