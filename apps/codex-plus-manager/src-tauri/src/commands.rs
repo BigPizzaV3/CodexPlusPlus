@@ -2334,6 +2334,7 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
         session_id: session_id.to_string(),
         title: request.title,
     };
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     let mut candidate_paths = Vec::new();
     if let Some(path) = request.db_path.as_deref() {
         let path = PathBuf::from(path);
@@ -2341,9 +2342,7 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
             candidate_paths.push(path);
         }
     }
-    for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(
-        &codex_plus_core::codex_sqlite::default_codex_home_dir(),
-    ) {
+    for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home) {
         if !candidate_paths.iter().any(|candidate| candidate == &path) {
             candidate_paths.push(path);
         }
@@ -2366,6 +2365,7 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
             codex_plus_core::paths::default_app_state_dir().join("backups"),
         ),
         &session,
+        Some(&home),
     );
     log_manager_event(
         "manager.delete_local_session.finish",
