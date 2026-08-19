@@ -208,11 +208,19 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
     let auth_contents = std::fs::read_to_string(home.join("auth.json")).unwrap_or_default();
     let root_provider = root_key_string(&contents, "model_provider");
     let provider = root_provider.as_ref().and_then(|provider| {
-        table_values(&contents, &format!("model_providers.{provider}")).or_else(|| {
-            (provider == "openai")
-                .then(|| table_values(&contents, &format!("model_providers.{RELAY_PROVIDER}")))
-                .flatten()
-        })
+        let active = table_values(&contents, &format!("model_providers.{provider}"));
+        if provider != "openai" {
+            return active;
+        }
+
+        table_values(&contents, &format!("model_providers.{RELAY_PROVIDER}"))
+            .filter(|values| {
+                values
+                    .get("base_url")
+                    .map(|value| !unquote_toml_string(value).trim().is_empty())
+                    .unwrap_or(false)
+            })
+            .or(active)
     });
     let requires_openai_auth = provider
         .as_ref()
