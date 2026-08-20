@@ -584,16 +584,28 @@ impl BridgeDataService for UnavailableDataService {
     ) -> anyhow::Result<Option<SessionRef>> {
         Ok(None)
     }
-
 }
 
 fn settings_payload_value(
     settings: BackendSettings,
     codex_app_version: String,
 ) -> anyhow::Result<Value> {
+    let active_relay_session_provider = settings.active_relay_session_provider();
+    let active_relay_codex_provider = crate::model_catalog::codex_model_provider_for_relay_profile(
+        &crate::relay_config::default_codex_home_dir(),
+        &settings.active_relay_profile(),
+    );
     let mut value = serde_json::to_value(settings)?;
     if let Some(object) = value.as_object_mut() {
         object.remove("codexAppStepwiseApiKey");
+        object.insert(
+            "activeRelaySessionProvider".to_string(),
+            Value::String(active_relay_session_provider.as_str().to_string()),
+        );
+        object.insert(
+            "activeRelayCodexProvider".to_string(),
+            Value::String(active_relay_codex_provider),
+        );
         object.insert(
             "codexAppVersion".to_string(),
             Value::String(codex_app_version),

@@ -3018,7 +3018,7 @@
     return nextParams;
   }
 
-  function codexRemoteSessionProviderNormalizationEnabled() {
+  function codexRemoteSessionProviderPatchEnabled() {
     if (!codexPlusBackendSettings.relayProfilesEnabled) return false;
     const profiles = Array.isArray(codexPlusBackendSettings.relayProfiles)
       ? codexPlusBackendSettings.relayProfiles
@@ -3027,15 +3027,22 @@
     const profile = profiles.find((item) => String(item?.id || "") === activeId);
     if (!profile) return false;
     const relayMode = String(profile.relayMode || "");
-    const targetProvider = codexRemoteSessionTargetProvider();
     return relayMode === "official"
-      && !!profile.officialMixApiKey
-      && targetProvider !== "openai";
+      && !!profile.officialMixApiKey;
+  }
+
+  function codexRemoteSessionProviderNormalizationEnabled() {
+    if (!codexRemoteSessionProviderPatchEnabled()) return false;
+    const sessionProvider = String(
+      codexPlusBackendSettings.activeRelaySessionProvider || "custom"
+    ).trim().toLowerCase();
+    return sessionProvider !== "openai";
   }
 
   function codexRemoteSessionTargetProvider() {
     return String(
-      codexModelCatalog?.codex_model_provider
+      codexPlusBackendSettings.activeRelayCodexProvider
+      || codexModelCatalog?.codex_model_provider
       || codexModelCatalog?.codexModelProvider
       || codexModelCatalog?.model_provider
       || codexModelCatalog?.modelProvider
@@ -3411,7 +3418,7 @@
     void patch();
   }
 
-  async function loadBackendSettings() {
+  async function loadBackendSettingsState() {
     const seq = codexPlusBackendSettingsSeq;
     try {
       const settings = await postJson("/settings/get", {});
@@ -3423,15 +3430,19 @@
       }
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
-      if (codexRemoteSessionProviderNormalizationEnabled()) {
-        void loadCodexModelCatalog();
-      }
-      refreshCodexPlusBackendToggles();
       return true;
     } catch (_) {
-      refreshCodexPlusBackendToggles();
       return false;
     }
+  }
+
+  async function loadBackendSettings() {
+    const loaded = await loadBackendSettingsState();
+    if (loaded && codexRemoteSessionProviderNormalizationEnabled()) {
+      void loadCodexModelCatalog();
+    }
+    refreshCodexPlusBackendToggles();
+    return loaded;
   }
 
   function loadBackendSettingsForStartup(attempt = 0) {
@@ -6041,6 +6052,8 @@
         codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
         codexPlusBackendSettingsLoaded = true;
       },
+      providerPatchEnabled: () => codexRemoteSessionProviderPatchEnabled(),
+      providerNormalizationEnabled: () => codexRemoteSessionProviderNormalizationEnabled(),
       setServiceTierState: (state = {}) => {
         codexServiceTierState = { ...codexServiceTierState, ...state };
       },
@@ -6469,12 +6482,19 @@
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
     client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
+      let providerRefreshFailed = false;
       if (codexRemoteSessionThreadStartMethod(requestMethod)
-          && codexRemoteSessionProviderNormalizationEnabled()
-          && !codexRemoteSessionTargetProvider()) {
-        await loadCodexModelCatalog();
+          && codexRemoteSessionProviderPatchEnabled()
+          && window.__codexSessionDeleteBridge) {
+        const settingsLoaded = await loadBackendSettingsState();
+        providerRefreshFailed = !settingsLoaded;
+        if (providerRefreshFailed) {
+          sendCodexPlusDiagnostic("remote_session_provider_refresh_failed", {});
+        }
       }
-      const nextParams = applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const nextParams = providerRefreshFailed
+        ? params
+        : applyCodexRemoteSessionProviderOverride(requestMethod, params);
       const result = await originalSendRequest(method, nextParams, options);
       if (!codexPlusModelUnlockEnabled()) return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
@@ -6491,7 +6511,7 @@
   let appServerModelRequestPatchRetryTimer = 0;
 
   function scheduleAppServerModelRequestPatchRetry() {
-    if (!codexRemoteSessionProviderNormalizationEnabled()) return;
+    if (!codexRemoteSessionProviderPatchEnabled()) return;
     if (appServerModelRequestPatchRetryTimer) return;
     appServerModelRequestPatchRetryTimer = window.setTimeout(() => {
       appServerModelRequestPatchRetryTimer = 0;
@@ -6513,7 +6533,7 @@
     if (appServerModelRequestPatchMissCount === 1) {
       sendCodexPlusDiagnostic(event, detail);
     }
-    if (codexRemoteSessionProviderNormalizationEnabled()) {
+    if (codexRemoteSessionProviderPatchEnabled()) {
       scheduleAppServerModelRequestPatchRetry();
       return;
     }
@@ -6578,7 +6598,7 @@
 
   function ensureCodexModelWhitelistInstalls() {
     if (codexPlusModelUnlockEnabled()
-        || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderNormalizationEnabled())) {
+        || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())) {
       installAppServerModelRequestPatch();
     }
     if (!codexPlusModelUnlockEnabled()) return;
