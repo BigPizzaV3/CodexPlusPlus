@@ -4117,6 +4117,13 @@ fn apply_chat_reasoning_options(result: &mut Value, body: &Value, model: &str) {
         {
             result["reasoning_effort"] = json!(mapped);
         }
+        // Kimi For Coding (K3 / K2.7 Code): 官方接受 reasoning_effort 三档
+        // low/high/max (默认 high), 且服务端会把 medium→high、xhigh→max。
+        // 仅限 for-coding 模型 ID, 避免给 glm/mimo/kimi-k2 等其它
+        // Thinking 方言上游误发该字段。
+        ChatReasoningStyle::Thinking if is_kimi_coding_model(model) => {
+            result["reasoning_effort"] = json!(mapped);
+        }
         _ => {}
     }
 }
@@ -4145,6 +4152,7 @@ fn infer_chat_reasoning_style(model: &str) -> ChatReasoningStyle {
     }
     if model.contains("kimi")
         || model.contains("moonshot")
+        || model.starts_with("k3")
         || model.contains("glm")
         || model.contains("zhipu")
         || model.contains("z.ai")
@@ -4187,6 +4195,14 @@ fn map_chat_reasoning_effort(effort: &str, style: ChatReasoningStyle) -> Option<
             "minimal" => Some("minimal"),
             _ => None,
         },
+        // Kimi For Coding 官方映射: minimal/low→low, medium/high→high,
+        // xhigh/max→max。注意不能直接透传 "minimal", 服务端不认会 400。
+        ChatReasoningStyle::Thinking => match effort.as_str() {
+            "minimal" | "low" => Some("low"),
+            "medium" | "high" => Some("high"),
+            "xhigh" | "max" => Some("max"),
+            _ => None,
+        },
         _ => match effort.as_str() {
             "minimal" => Some("minimal"),
             "low" => Some("low"),
@@ -4197,6 +4213,14 @@ fn map_chat_reasoning_effort(effort: &str, style: ChatReasoningStyle) -> Option<
             _ => None,
         },
     }
+}
+
+/// Kimi For Coding 专属模型 ID(k3 / k3-256k / kimi-for-coding[-highspeed])。
+/// 只有这些上游接受 `reasoning_effort` 三档; kimi-k2-thinking 等旧模型
+/// 仍只发 thinking 开关。
+fn is_kimi_coding_model(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    model.starts_with("k3") || model.contains("for-coding")
 }
 
 fn supports_reasoning_effort(model: &str) -> bool {
