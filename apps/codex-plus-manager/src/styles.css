@@ -2836,6 +2836,10 @@ body {
   margin-bottom: 12px;
 }
 
+.settings-test-model-field {
+  margin-top: 16px;
+}
+
 .field span,
 .check-row span {
   color: hsl(var(--foreground));

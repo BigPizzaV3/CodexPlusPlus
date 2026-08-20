@@ -227,7 +227,9 @@ type BackendSettings = {
   codexAppServiceTierControls: boolean;
   codexAppPetRealMouseLook: boolean;
   codexAppStepwiseEnabled: boolean;
+  codexAppAnswerOutlineEnabled: boolean;
   codexAppStepwiseDirectSend: boolean;
+  codexAppStepwiseGenerationMode: StepwiseGenerationMode;
   codexAppStepwiseBaseUrl: string;
   codexAppStepwiseApiKey: string;
   codexAppStepwiseApiKeyEnv: string;
@@ -350,6 +352,7 @@ type CodexContextEntries = {
 };
 
 type RelayProtocol = "responses" | "chatCompletions";
+type StepwiseGenerationMode = "auto" | "manual";
 type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
 type RelaySessionProvider = "custom" | "openai";
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
@@ -820,8 +823,16 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
+type ManagerNavigationIntent = {
+  page: "settings";
+  section?: "stepwise";
+};
+
 type Route = "overview" | "relay" | "relayEnvironment" | "sessions" | "context" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
+
+const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
+const SETTINGS_STEPWISE_SECTION_ID = "settings-stepwise";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
   { id: "overview", label: t("概览"), icon: LayoutDashboard },
@@ -885,12 +896,14 @@ const defaultSettings: BackendSettings = {
   codexAppServiceTierControls: false,
   codexAppPetRealMouseLook: false,
   codexAppStepwiseEnabled: false,
+  codexAppAnswerOutlineEnabled: false,
   codexAppStepwiseDirectSend: false,
+  codexAppStepwiseGenerationMode: "auto",
   codexAppStepwiseBaseUrl: "",
   codexAppStepwiseApiKey: "",
   codexAppStepwiseApiKeyEnv: "CODEX_STEPWISE_API_KEY",
   codexAppStepwiseModel: "",
-  codexAppStepwiseMaxItems: 6,
+  codexAppStepwiseMaxItems: 4,
   codexAppStepwiseMaxInputChars: 6000,
   codexAppStepwiseMaxOutputTokens: 500,
   codexAppStepwiseTimeoutMs: 8000,
@@ -959,6 +972,7 @@ const defaultSettings: BackendSettings = {
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
+  const [pendingSettingsSection, setPendingSettingsSection] = useState<ManagerNavigationIntent["section"] | null>(null);
   const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     title: string;
@@ -1875,6 +1889,22 @@ export function App() {
     }
   };
 
+  const consumePendingManagerNavigation = async (): Promise<boolean> => {
+    try {
+      const navigation = await invoke<ManagerNavigationIntent | null>("consume_pending_manager_navigation");
+      if (!navigation) return false;
+      if (navigation.page === "settings") {
+        setPendingSettingsSection(navigation.section ?? null);
+        setRoute("settings");
+        await refreshSettings(true);
+        return true;
+      }
+    } catch (error) {
+      logDiagnostic("manager.navigation_failed", { error: stringifyError(error) });
+    }
+    return false;
+  };
+
   const launch = async () => {
     const result = await launchCommand("launch_codex_plus");
     if (!result) return;
@@ -2705,14 +2735,15 @@ export function App() {
   useEffect(() => {
     void (async () => {
       const startup = await run(() => call<StartupResult>("startup_options"));
-      if (startup?.showUpdate) {
+      const handledNavigation = await consumePendingManagerNavigation();
+      if (!handledNavigation && startup?.showUpdate) {
         setRoute("about");
         void checkUpdate(false);
       } else {
         void checkUpdate(true);
       }
       await refreshOverview(true);
-      await refreshSettings(true);
+      if (!handledNavigation) await refreshSettings(true);
       await refreshRelay(true);
       await refreshEnvConflicts(true);
       await refreshProviderSyncTargets(true);
@@ -2721,6 +2752,42 @@ export function App() {
       await refreshRemotePluginMarketplace(true);
     })();
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let stopListening: (() => void) | undefined;
+    void listen(MANAGER_NAVIGATION_EVENT, () => {
+      if (!disposed) void consumePendingManagerNavigation();
+    }).then((unlisten) => {
+      if (disposed) {
+        unlisten();
+      } else {
+        stopListening = unlisten;
+      }
+    });
+    return () => {
+      disposed = true;
+      stopListening?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (route !== "settings" || pendingSettingsSection !== "stepwise") return;
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        document.getElementById(SETTINGS_STEPWISE_SECTION_ID)?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+        setPendingSettingsSection(null);
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [pendingSettingsSection, route]);
 
   useEffect(() => {
     if (getLanguage() === "en") {
@@ -4398,9 +4465,9 @@ function EnhanceScreen({
               <FeatureToggle title={t("对话居中宽度")} detail={t("把主对话和输入框限制到固定最大宽度，适合大屏阅读。")} checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
               <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
             </FeatureGroup>
-            <FeatureGroup title="Stepwise" detail={t("基于当前对话生成下一步建议，使用独立 API 配置。")}>
-              <FeatureToggle title="Stepwise" detail={t("在 Codex 页面显示可拖动的后续建议浮层；建议由单独配置的 Stepwise API 生成。启停后需重启 Codex++ 生效。")} checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseEnabled", value)} />
-              <FeatureToggle title={t("Stepwise 直接发送")} detail={t("点击建议后自动发送；关闭时只填入输入框。")} checked={form.codexAppStepwiseDirectSend} disabled={!masterEnabled || !form.codexAppStepwiseEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseDirectSend", value)} />
+            <FeatureGroup title={t("悬浮球")} detail={t("控制下一步建议与回答大纲。")}>
+              <FeatureToggle title="Stepwise" detail={t("根据当前回答生成下一步建议。")} checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppStepwiseEnabled", value)} />
+              <FeatureToggle title={t("回答大纲")} detail={t("整理当前回答的结构。")} checked={form.codexAppAnswerOutlineEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppAnswerOutlineEnabled", value)} />
             </FeatureGroup>
             <FeatureGroup title={t("界面与启动")} detail={t("控制语言、启动速度和 Codex 原生界面调整。")}>
               {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
@@ -6186,14 +6253,14 @@ function SettingsScreen({
             </div>
             <Button variant="secondary" onClick={actions.toggleTheme}>{t("切换主题")}</Button>
           </div>
-          <Field label={t("供应商测试模型")}>
+          <Field className="settings-test-model-field" label={t("供应商测试模型")}>
             <Input
               value={form.relayTestModel}
               onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
               placeholder={t("例如 gpt-5.4-mini")}
             />
           </Field>
-          <div className="settings-block stepwise-settings-block">
+          <div className="settings-block stepwise-settings-block" id={SETTINGS_STEPWISE_SECTION_ID}>
             <div className="section-title">Stepwise</div>
             <div className="stepwise-settings-section">{t("连接")}</div>
             <div className="form-row">
@@ -6209,6 +6276,18 @@ function SettingsScreen({
                   value={form.codexAppStepwiseModel}
                   onChange={(event) => onFormChange({ ...form, codexAppStepwiseModel: event.currentTarget.value })}
                   placeholder={t("例如 gpt-5.4-mini")}
+                />
+              </Field>
+            </div>
+            <div className="form-row">
+              <Field label={t("模式")}>
+                <AppSelect
+                  value={form.codexAppStepwiseGenerationMode}
+                  onChange={(value) => onFormChange({ ...form, codexAppStepwiseGenerationMode: value })}
+                  options={[
+                    { value: "auto", label: t("自动生成") },
+                    { value: "manual", label: t("手动刷新") },
+                  ]}
                 />
               </Field>
             </div>
@@ -9289,7 +9368,8 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     codexAppDreamSkinPaused: settings.codexAppDreamSkinPaused === true,
     codexAppDreamSkinThemeConfig: normalizeDreamSkinTheme(settings.codexAppDreamSkinThemeConfig),
     codexAppDreamSkinImagePath: (settings.codexAppDreamSkinImagePath || "").trim(),
-    codexAppStepwiseMaxItems: clampNumber(settings.codexAppStepwiseMaxItems ?? 6, 0, 6),
+    codexAppStepwiseGenerationMode: normalizeStepwiseGenerationMode(settings.codexAppStepwiseGenerationMode),
+    codexAppStepwiseMaxItems: clampNumber(settings.codexAppStepwiseMaxItems ?? 4, 0, 6),
     codexAppStepwiseMaxInputChars: clampNumber(settings.codexAppStepwiseMaxInputChars || 6000, 1000, 24000),
     codexAppStepwiseMaxOutputTokens: clampNumber(settings.codexAppStepwiseMaxOutputTokens || 500, 100, 4000),
     codexAppStepwiseTimeoutMs: clampNumber(settings.codexAppStepwiseTimeoutMs || 8000, 1000, 60000),
@@ -9307,6 +9387,10 @@ function backendSettingsEqual(left: BackendSettings, right: BackendSettings): bo
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function normalizeStepwiseGenerationMode(value: StepwiseGenerationMode | undefined): StepwiseGenerationMode {
+  return value === "manual" ? "manual" : "auto";
 }
 
 function parsePort(value: string, fallback: number): number {

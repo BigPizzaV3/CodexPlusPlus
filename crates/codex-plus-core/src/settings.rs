@@ -1904,6 +1904,12 @@ mod tests {
         let defaults: BackendSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(defaults.codex_app_stepwise_generation_mode, "auto");
         assert!(!defaults.codex_app_answer_outline_enabled);
+
+        let explicitly_enabled: BackendSettings = serde_json::from_value(json!({
+            "codexAppAnswerOutlineEnabled": true
+        }))
+        .unwrap();
+        assert!(explicitly_enabled.codex_app_answer_outline_enabled);
     }
 
     #[test]
