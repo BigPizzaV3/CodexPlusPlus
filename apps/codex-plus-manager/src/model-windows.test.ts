@@ -31,6 +31,7 @@ const _profileTypeCheck: RelayProfile = {
   autoCompactLimit: "",
   modelList: "",
   modelWindows: "",
+  modelAutoCompact: "",
   modelVlm: "",
   vlmApiKey: "",
   vlmModel: "",
@@ -89,9 +90,9 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       modelWindowRowsFromProfile("a\nb\nc", '{"a":"1M","c":"200K"}'),
       [
-        { model: "a", window: "1M", imageHandling: "send-as-is" },
-        { model: "b", window: "", imageHandling: "send-as-is" },
-        { model: "c", window: "200K", imageHandling: "send-as-is" },
+        { model: "a", window: "1M", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "b", window: "", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "c", window: "200K", autoCompact: "", imageHandling: "send-as-is" },
       ],
     );
   });
@@ -100,9 +101,9 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       modelWindowRowsFromProfile("a\nb\nc", '{}', '{"a":"vlm","b":"strip"}'),
       [
-        { model: "a", window: "", imageHandling: "vlm" },
-        { model: "b", window: "", imageHandling: "strip" },
-        { model: "c", window: "", imageHandling: "send-as-is" },
+        { model: "a", window: "", autoCompact: "", imageHandling: "vlm" },
+        { model: "b", window: "", autoCompact: "", imageHandling: "strip" },
+        { model: "c", window: "", autoCompact: "", imageHandling: "send-as-is" },
       ],
     );
   });
@@ -110,14 +111,15 @@ describe("model-windows helpers", () => {
   it("serializeModelWindowRows 从行控件生成 modelList、modelWindows 和 modelVlm", () => {
     assert.deepStrictEqual(
       serializeModelWindowRows([
-        { model: "a", window: "1M", imageHandling: "vlm" },
-        { model: "", window: "400K", imageHandling: "send-as-is" },
-        { model: "b", window: "", imageHandling: "send-as-is" },
+        { model: "a", window: "1M", autoCompact: "", imageHandling: "vlm" },
+        { model: "", window: "400K", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "b", window: "", autoCompact: "", imageHandling: "send-as-is" },
       ]),
       {
         modelList: "a\nb",
         modelWindows: '{"a":"1M"}',
         modelVlm: '{"a":"vlm"}',
+        modelAutoCompact: "{}",
       },
     );
   });
@@ -126,18 +128,18 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       mergeModelWindowRows(
         [
-          { model: "deepseek-v4-flash", window: "1M", imageHandling: "vlm" },
-          { model: "  ", window: "", imageHandling: "send-as-is" },
+          { model: "deepseek-v4-flash", window: "1M", autoCompact: "90%", imageHandling: "vlm" },
+          { model: "  ", window: "", autoCompact: "", imageHandling: "send-as-is" },
         ],
         [
-          { model: "deepseek-v4-flash", window: "", imageHandling: "send-as-is" },
-          { model: "deepseek-v4-pro", window: "", imageHandling: "vlm" },
-          { model: " deepseek-v4-pro ", window: "200K", imageHandling: "send-as-is" },
+          { model: "deepseek-v4-flash", window: "", autoCompact: "", imageHandling: "send-as-is" },
+          { model: "deepseek-v4-pro", window: "", autoCompact: "", imageHandling: "vlm" },
+          { model: " deepseek-v4-pro ", window: "200K", autoCompact: "", imageHandling: "send-as-is" },
         ],
       ),
       [
-        { model: "deepseek-v4-flash", window: "1M", imageHandling: "vlm" },
-        { model: "deepseek-v4-pro", window: "", imageHandling: "vlm" },
+        { model: "deepseek-v4-flash", window: "1M", autoCompact: "90%", imageHandling: "vlm" },
+        { model: "deepseek-v4-pro", window: "", autoCompact: "", imageHandling: "vlm" },
       ],
     );
   });
