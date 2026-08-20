@@ -154,6 +154,64 @@ pub fn process_ids_still_running(
 }
 
 #[cfg(windows)]
+pub fn process_id_is_running(process_id: u32) -> Option<bool> {
+    if process_id == 0 {
+        return Some(false);
+    }
+    let processes = crate::windows_integration::enumerate_processes();
+    if processes.is_empty() {
+        return None;
+    }
+    Some(
+        processes
+            .iter()
+            .any(|process| process.process_id == process_id),
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub fn process_id_is_running(process_id: u32) -> Option<bool> {
+    if process_id == 0 {
+        return Some(false);
+    }
+    match std::fs::metadata(Path::new("/proc").join(process_id.to_string())) {
+        Ok(_) => Some(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn process_id_is_running(process_id: u32) -> Option<bool> {
+    if process_id == 0 {
+        return Some(false);
+    }
+    let process_id_arg = process_id.to_string();
+    let output = Command::new("ps")
+        .args(["-p", process_id_arg.as_str(), "-o", "pid="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return match output.status.code() {
+            Some(1) => Some(false),
+            _ => None,
+        };
+    }
+    let process_ids = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.trim().parse::<u32>())
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    Some(process_ids.contains(&process_id))
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+pub fn process_id_is_running(_process_id: u32) -> Option<bool> {
+    None
+}
+
+#[cfg(windows)]
 pub fn install_watcher(launcher_path: &Path, debug_port: u16) -> anyhow::Result<()> {
     let plan = build_watcher_install_plan(launcher_path.to_path_buf(), debug_port);
     crate::windows_integration::set_current_user_string_value(

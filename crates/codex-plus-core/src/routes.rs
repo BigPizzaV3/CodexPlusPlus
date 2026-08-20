@@ -113,13 +113,6 @@ pub trait BridgeDataService: Send + Sync {
         &self,
         title: String,
     ) -> anyhow::Result<Option<SessionRef>>;
-    async fn move_thread_workspace(
-        &self,
-        session: SessionRef,
-        target_cwd: String,
-    ) -> anyhow::Result<Value>;
-    async fn thread_sort_key(&self, session: SessionRef) -> anyhow::Result<Value>;
-    async fn thread_sort_keys(&self, sessions: Vec<SessionRef>) -> anyhow::Result<Value>;
     async fn recover_remote_control_session(&self, _thread_id: String) -> anyhow::Result<Value> {
         anyhow::bail!("Remote Control session recovery is unavailable")
     }
@@ -250,26 +243,6 @@ pub async fn handle_bridge_request(
                 .unwrap_or_default()
                 .to_string();
             archived_thread_value(ctx.data.find_archived_thread_by_title(title).await)
-        }
-        "/move-thread-workspace" => {
-            let target_cwd = payload
-                .get("target_cwd")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            ctx.data
-                .move_thread_workspace(session_from_payload(&payload), target_cwd)
-                .await
-        }
-        "/thread-sort-key" => {
-            ctx.data
-                .thread_sort_key(session_from_payload(&payload))
-                .await
-        }
-        "/thread-sort-keys" => {
-            ctx.data
-                .thread_sort_keys(sessions_from_payload(&payload))
-                .await
         }
         "/remote-control-session/recover" => {
             let thread_id = payload
@@ -612,33 +585,6 @@ impl BridgeDataService for UnavailableDataService {
         Ok(None)
     }
 
-    async fn move_thread_workspace(
-        &self,
-        session: SessionRef,
-        _target_cwd: String,
-    ) -> anyhow::Result<Value> {
-        Ok(json!({
-            "status": "failed",
-            "session_id": session.session_id,
-            "message": "Move workspace service is not wired in core launcher hooks"
-        }))
-    }
-
-    async fn thread_sort_key(&self, session: SessionRef) -> anyhow::Result<Value> {
-        Ok(json!({
-            "status": "failed",
-            "session_id": session.session_id,
-            "message": "Thread sort service is not wired in core launcher hooks"
-        }))
-    }
-
-    async fn thread_sort_keys(&self, _sessions: Vec<SessionRef>) -> anyhow::Result<Value> {
-        Ok(json!({
-            "status": "failed",
-            "message": "Thread sort service is not wired in core launcher hooks",
-            "sort_keys": []
-        }))
-    }
 }
 
 fn settings_payload_value(
@@ -942,31 +888,6 @@ fn session_from_payload(payload: &Value) -> SessionRef {
             .unwrap_or_default()
             .to_string(),
     }
-}
-
-fn sessions_from_payload(payload: &Value) -> Vec<SessionRef> {
-    payload
-        .get("sessions")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.as_object())
-                .map(|item| SessionRef {
-                    session_id: item
-                        .get("session_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    title: item
-                        .get("title")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 pub fn devtools_url(debug_port: u16, target_id: &str) -> String {

@@ -20,7 +20,7 @@
 - 数据模型：`crates/codex-plus-core/src/settings.rs` 的 `RelayProfile` 结构体
 - 配置生成：`crates/codex-plus-core/src/relay_config.rs` 的 `apply_context_limits_to_config`
 - catalog 解析：`crates/codex-plus-core/src/model_catalog.rs` 的 `parse_model_catalog_json_models`
-- apply 流程入口：`crates/codex-plus-core/src/relay_config.rs` 的 `apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard`
+- apply 流程入口：`crates/codex-plus-core/src/relay_config.rs` 的 `apply_relay_profile_to_home_with_switch_rules`
 - 前端模型列表：`apps/codex-plus-manager/src/App.tsx` 的 `modelList` textarea
 
 ## 安全规则

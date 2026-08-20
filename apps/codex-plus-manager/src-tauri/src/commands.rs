@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use codex_plus_core::install::SILENT_BINARY;
@@ -58,6 +59,29 @@ pub struct SettingsPayload {
     pub settings: BackendSettings,
     pub settings_path: String,
     pub user_scripts: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeixinQrPayload {
+    pub qr_status: String,
+    pub qr_content: String,
+    pub qr_svg: String,
+    pub account_id: String,
+    pub linked_user_id: String,
+    pub has_token: bool,
+}
+
+struct WeixinQrSession {
+    base_url: String,
+    route_tag: String,
+    qr_code: String,
+    qr_content: String,
+    qr_svg: String,
+}
+
+struct WeixinRuntime {
+    stop: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -564,6 +588,22 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             "sync_active_relay": request.sync_active_relay
         }),
     );
+    let launch_started_at_ms = current_timestamp_ms();
+    if let Err(error) = save_requested_launch_status(
+        &request,
+        "starting",
+        "Codex++ launcher is starting",
+        launch_started_at_ms,
+    ) {
+        return failed(
+            &format!("记录重启状态失败，未执行重启：{error}"),
+            json!({
+                "debugPort": request.debug_port,
+                "helperPort": request.helper_port,
+                "syncActiveRelay": request.sync_active_relay
+            }),
+        );
+    }
     match restart_codex_plus_after_stop(&request, &home, settings.as_ref(), spawn_silent_launcher) {
         Ok(()) => CommandResult {
             status: "accepted".to_string(),
@@ -571,17 +611,28 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             payload: json!({
                 "debugPort": request.debug_port,
                 "helperPort": request.helper_port,
-                "syncActiveRelay": request.sync_active_relay
+                "syncActiveRelay": request.sync_active_relay,
+                "launchStartedAtMs": launch_started_at_ms
             }),
         },
-        Err(error) => failed(
-            &format!("重启 Codex++ 失败：{error}"),
-            json!({
-                "debugPort": request.debug_port,
-                "helperPort": request.helper_port,
-                "syncActiveRelay": request.sync_active_relay
-            }),
-        ),
+        Err(error) => {
+            let message = format!("重启 Codex++ 失败：{error}");
+            let _ = save_requested_launch_status(
+                &request,
+                "failed",
+                &message,
+                launch_started_at_ms,
+            );
+            failed(
+                &message,
+                json!({
+                    "debugPort": request.debug_port,
+                    "helperPort": request.helper_port,
+                    "syncActiveRelay": request.sync_active_relay,
+                    "launchStartedAtMs": launch_started_at_ms
+                }),
+            )
+        }
     }
 }
 
@@ -687,18 +738,16 @@ fn sync_active_relay_to_home(
     {
         let auth_contents =
             (!relay.auth_contents.trim().is_empty()).then_some(relay.auth_contents.as_str());
-        return codex_plus_core::relay_config::clear_relay_config_to_home_with_auth_and_computer_use_guard(
+        return codex_plus_core::relay_config::clear_relay_config_to_home_with_auth(
             home,
             auth_contents,
-            settings.computer_use_guard_enabled,
         );
     }
     if relay_has_complete_files(&relay) {
-        return codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+        return codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
             home,
             &relay,
             &relay_combined_common_config(settings),
-            settings.computer_use_guard_enabled,
         );
     }
 
@@ -736,6 +785,7 @@ fn sync_active_relay_to_home(
 fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> CommandResult<Value> {
     let debug_port = request.debug_port;
     let helper_port = request.helper_port;
+    let launch_started_at_ms = current_timestamp_ms();
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "manager.launch_requested",
         json!({
@@ -744,23 +794,86 @@ fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> Co
             "app_path": request.app_path.trim()
         }),
     );
+    if let Err(error) = save_requested_launch_status(
+        &request,
+        "starting",
+        "Codex++ launcher is starting",
+        launch_started_at_ms,
+    ) {
+        return failed(
+            &format!("记录启动状态失败，未执行启动：{error}"),
+            json!({
+                "debugPort": debug_port,
+                "helperPort": helper_port
+            }),
+        );
+    }
     match spawn_silent_launcher(&request) {
         Ok(()) => CommandResult {
             status: "accepted".to_string(),
             message: accepted_message.to_string(),
             payload: json!({
                 "debugPort": debug_port,
-                "helperPort": helper_port
+                "helperPort": helper_port,
+                "launchStartedAtMs": launch_started_at_ms
             }),
         },
-        Err(error) => failed(
-            &format!("启动静默入口失败：{error}"),
-            json!({
-                "debugPort": debug_port,
-                "helperPort": helper_port
-            }),
-        ),
+        Err(error) => {
+            let message = format!("启动静默入口失败：{error}");
+            let _ = save_requested_launch_status(
+                &request,
+                "failed",
+                &message,
+                launch_started_at_ms,
+            );
+            failed(
+                &message,
+                json!({
+                    "debugPort": debug_port,
+                    "helperPort": helper_port,
+                    "launchStartedAtMs": launch_started_at_ms
+                }),
+            )
+        }
     }
+}
+
+fn save_requested_launch_status(
+    request: &LaunchRequest,
+    status: &str,
+    message: &str,
+    started_at_ms: u64,
+) -> anyhow::Result<()> {
+    StatusStore::default().save_latest(&requested_launch_status(
+        request,
+        status,
+        message,
+        started_at_ms,
+    ))
+}
+
+fn requested_launch_status(
+    request: &LaunchRequest,
+    status: &str,
+    message: &str,
+    started_at_ms: u64,
+) -> LaunchStatus {
+    LaunchStatus {
+        status: status.to_string(),
+        message: message.to_string(),
+        started_at_ms,
+        debug_port: Some(request.debug_port),
+        helper_port: Some(request.helper_port),
+        codex_app: (!request.app_path.trim().is_empty())
+            .then(|| request.app_path.trim().to_string()),
+    }
+}
+
+fn current_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
@@ -774,6 +887,354 @@ fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
     args.push("--helper-port".to_string());
     args.push(request.helper_port.to_string());
     codex_plus_core::install::spawn_companion(SILENT_BINARY, &args).map(|_| ())
+}
+
+pub fn start_weixin_connect_from_saved_settings() {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    if settings.weixin_connect_enabled && !settings.weixin_connect_token.trim().is_empty() {
+        let _ = spawn_weixin_connect(settings);
+    }
+}
+
+#[tauri::command]
+pub async fn weixin_connect_qr_start(
+    base_url: String,
+    route_tag: String,
+) -> CommandResult<WeixinQrPayload> {
+    match codex_plus_core::connect::weixin::WeixinClient::fetch_qr_code(
+        &base_url,
+        &route_tag,
+    )
+    .await
+    {
+        Ok(qr) => {
+            let qr_svg = codex_plus_core::connect::weixin::render_qr_svg(&qr.qr_content)
+                .unwrap_or_default();
+            let session = WeixinQrSession {
+                base_url: if base_url.trim().is_empty() {
+                    codex_plus_core::connect::DEFAULT_WEIXIN_BASE_URL.to_string()
+                } else {
+                    base_url.trim().trim_end_matches('/').to_string()
+                },
+                route_tag: route_tag.trim().to_string(),
+                qr_code: qr.qr_code,
+                qr_content: qr.qr_content.clone(),
+                qr_svg: qr_svg.clone(),
+            };
+            if let Ok(mut current) = weixin_qr_session().lock() {
+                *current = Some(session);
+            }
+            ok(
+                "微信登录二维码已生成。",
+                WeixinQrPayload {
+                    qr_status: "wait".to_string(),
+                    qr_content: qr.qr_content,
+                    qr_svg,
+                    account_id: String::new(),
+                    linked_user_id: String::new(),
+                    has_token: false,
+                },
+            )
+        }
+        Err(error) => failed(
+            &format!("生成微信登录二维码失败：{error}"),
+            empty_weixin_qr_payload("failed"),
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn weixin_connect_qr_status() -> CommandResult<WeixinQrPayload> {
+    let session = weixin_qr_session().lock().ok().and_then(|current| {
+        current.as_ref().map(|session| WeixinQrSession {
+            base_url: session.base_url.clone(),
+            route_tag: session.route_tag.clone(),
+            qr_code: session.qr_code.clone(),
+            qr_content: session.qr_content.clone(),
+            qr_svg: session.qr_svg.clone(),
+        })
+    });
+    let Some(session) = session else {
+        return failed("当前没有待确认的微信二维码。", empty_weixin_qr_payload("missing"));
+    };
+
+    let result = codex_plus_core::connect::weixin::WeixinClient::poll_qr_status(
+        &session.base_url,
+        &session.route_tag,
+        &session.qr_code,
+    )
+    .await;
+    let qr_status = match result {
+        Ok(status) => status,
+        Err(error) => {
+            return failed(
+                &format!("查询微信扫码状态失败：{error}"),
+                WeixinQrPayload {
+                    qr_status: "failed".to_string(),
+                    qr_content: session.qr_content,
+                    qr_svg: session.qr_svg,
+                    account_id: String::new(),
+                    linked_user_id: String::new(),
+                    has_token: false,
+                },
+            );
+        }
+    };
+
+    if qr_status.status == "confirmed" {
+        if qr_status.bot_token.trim().is_empty() || qr_status.ilink_bot_id.trim().is_empty() {
+            return failed(
+                "微信已确认登录，但网关未返回完整凭据。",
+                WeixinQrPayload {
+                    qr_status: "failed".to_string(),
+                    qr_content: session.qr_content,
+                    qr_svg: session.qr_svg,
+                    account_id: String::new(),
+                    linked_user_id: String::new(),
+                    has_token: false,
+                },
+            );
+        }
+        let store = SettingsStore::default();
+        let mut settings = store.load().unwrap_or_default();
+        settings.weixin_connect_token = qr_status.bot_token;
+        settings.weixin_connect_account_id = qr_status.ilink_bot_id.clone();
+        if !qr_status.baseurl.trim().is_empty() {
+            settings.weixin_connect_base_url = qr_status.baseurl.trim().trim_end_matches('/').to_string();
+        } else {
+            settings.weixin_connect_base_url = session.base_url.clone();
+        }
+        if settings.weixin_connect_allow_from.trim().is_empty()
+            && !qr_status.ilink_user_id.trim().is_empty()
+        {
+            settings.weixin_connect_allow_from = qr_status.ilink_user_id.clone();
+        }
+        settings.weixin_connect_route_tag = session.route_tag;
+        if let Err(error) = store.save(&settings) {
+            return failed(
+                &format!("微信登录成功，但保存连接凭据失败：{error}"),
+                WeixinQrPayload {
+                    qr_status: "failed".to_string(),
+                    qr_content: session.qr_content,
+                    qr_svg: session.qr_svg,
+                    account_id: qr_status.ilink_bot_id,
+                    linked_user_id: qr_status.ilink_user_id,
+                    has_token: false,
+                },
+            );
+        }
+        if let Ok(mut current) = weixin_qr_session().lock() {
+            *current = None;
+        }
+        return ok(
+            "微信扫码登录成功。",
+            WeixinQrPayload {
+                qr_status: "confirmed".to_string(),
+                qr_content: String::new(),
+                qr_svg: String::new(),
+                account_id: qr_status.ilink_bot_id,
+                linked_user_id: qr_status.ilink_user_id,
+                has_token: true,
+            },
+        );
+    }
+
+    ok(
+        "微信扫码状态已更新。",
+        WeixinQrPayload {
+            qr_status: qr_status.status,
+            qr_content: session.qr_content,
+            qr_svg: session.qr_svg,
+            account_id: String::new(),
+            linked_user_id: String::new(),
+            has_token: false,
+        },
+    )
+}
+
+#[tauri::command]
+pub fn weixin_connect_status() -> CommandResult<codex_plus_core::connect::WeixinConnectStatus> {
+    let status = weixin_status()
+        .lock()
+        .map(|status| status.clone())
+        .unwrap_or_default();
+    ok("微信连接状态已读取。", status)
+}
+
+#[tauri::command]
+pub fn weixin_connect_start() -> CommandResult<codex_plus_core::connect::WeixinConnectStatus> {
+    let store = SettingsStore::default();
+    let mut settings = store.load().unwrap_or_default();
+    if settings.weixin_connect_token.trim().is_empty() {
+        return failed("请先扫码登录微信。", current_weixin_status());
+    }
+    settings.weixin_connect_enabled = true;
+    if let Err(error) = store.save(&settings) {
+        return failed(&format!("保存微信连接设置失败：{error}"), current_weixin_status());
+    }
+    match spawn_weixin_connect(settings) {
+        Ok(status) => ok("微信连接正在启动。", status),
+        Err(error) => failed(&format!("启动微信连接失败：{error}"), current_weixin_status()),
+    }
+}
+
+#[tauri::command]
+pub fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::WeixinConnectStatus> {
+    let stopping = weixin_runtime()
+        .lock()
+        .ok()
+        .and_then(|runtime| runtime.as_ref().map(|runtime| Arc::clone(&runtime.stop)))
+        .map(|stop| {
+            stop.store(true, Ordering::SeqCst);
+            true
+        })
+        .unwrap_or(false);
+    let store = SettingsStore::default();
+    if let Ok(mut settings) = store.load() {
+        settings.weixin_connect_enabled = false;
+        let _ = store.save(&settings);
+    }
+    if let Ok(mut status) = weixin_status().lock() {
+        if stopping {
+            status.state = "stopping".to_string();
+            status.message = "正在停止微信连接，当前长轮询结束后生效。".to_string();
+        } else {
+            status.state = "stopped".to_string();
+            status.message = "微信连接已停止。".to_string();
+        }
+    }
+    ok(
+        if stopping {
+            "正在停止微信连接。"
+        } else {
+            "微信连接已停止。"
+        },
+        current_weixin_status(),
+    )
+}
+
+#[tauri::command]
+pub fn find_desktop_codex_cli() -> CommandResult<Value> {
+    let settings = match SettingsStore::default().load() {
+        Ok(settings) => settings,
+        Err(error) => {
+            return failed(
+                &format!("读取 Codex 应用设置失败：{error}"),
+                json!({ "path": null }),
+            );
+        }
+    };
+    let Some(app_dir) = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
+        None,
+        Some(settings.codex_app_path.as_str()),
+    ) else {
+        return failed("未找到 Codex Desktop 应用。", json!({ "path": null }));
+    };
+    let Some(path) = codex_plus_core::app_paths::find_bundled_codex_cli(&app_dir) else {
+        return failed(
+            "已找到 Codex Desktop，但包内没有可用的 Codex CLI。",
+            json!({ "path": null }),
+        );
+    };
+    ok(
+        "已填入桌面版内置 Codex CLI。",
+        json!({ "path": path.to_string_lossy() }),
+    )
+}
+
+fn spawn_weixin_connect(
+    settings: BackendSettings,
+) -> anyhow::Result<codex_plus_core::connect::WeixinConnectStatus> {
+    let config = codex_plus_core::connect::WeixinConnectConfig {
+        base_url: settings.weixin_connect_base_url,
+        token: settings.weixin_connect_token,
+        account_id: settings.weixin_connect_account_id,
+        allow_from: settings.weixin_connect_allow_from,
+        route_tag: settings.weixin_connect_route_tag,
+        work_dir: settings.weixin_connect_work_dir,
+        model: settings.weixin_connect_model,
+        sandbox: settings.weixin_connect_sandbox,
+        codex_path: settings.weixin_connect_codex_path,
+    }
+    .normalized();
+    if config.token.is_empty() {
+        anyhow::bail!("微信连接 token 为空");
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut runtime = weixin_runtime()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("微信连接运行锁已损坏"))?;
+    if runtime.is_some() {
+        anyhow::bail!("微信连接已在运行或正在停止");
+    }
+    *runtime = Some(WeixinRuntime {
+        stop: Arc::clone(&stop),
+    });
+    drop(runtime);
+    let status = weixin_status();
+    if let Ok(mut current) = status.lock() {
+        current.state = "starting".to_string();
+        current.message = "正在启动微信连接...".to_string();
+        current.account_id = config.account_id.clone();
+        current.has_token = true;
+    }
+    let task_status = Arc::clone(&status);
+    let task_stop = Arc::clone(&stop);
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = codex_plus_core::connect::run_weixin_connect(
+            config,
+            stop,
+            Arc::clone(&task_status),
+        )
+        .await
+            && let Ok(mut current) = task_status.lock()
+        {
+            current.state = "error".to_string();
+            current.message = format!("微信连接已停止：{error}");
+        }
+        if let Ok(mut runtime) = weixin_runtime().lock()
+            && runtime
+                .as_ref()
+                .map(|runtime| Arc::ptr_eq(&runtime.stop, &task_stop))
+                .unwrap_or(false)
+        {
+            *runtime = None;
+        }
+    });
+    Ok(current_weixin_status())
+}
+
+fn weixin_qr_session() -> &'static Mutex<Option<WeixinQrSession>> {
+    static SESSION: OnceLock<Mutex<Option<WeixinQrSession>>> = OnceLock::new();
+    SESSION.get_or_init(|| Mutex::new(None))
+}
+
+fn weixin_runtime() -> &'static Mutex<Option<WeixinRuntime>> {
+    static RUNTIME: OnceLock<Mutex<Option<WeixinRuntime>>> = OnceLock::new();
+    RUNTIME.get_or_init(|| Mutex::new(None))
+}
+
+fn weixin_status() -> codex_plus_core::connect::SharedWeixinConnectStatus {
+    static STATUS: OnceLock<codex_plus_core::connect::SharedWeixinConnectStatus> = OnceLock::new();
+    Arc::clone(STATUS.get_or_init(|| Arc::new(Mutex::new(Default::default()))))
+}
+
+fn current_weixin_status() -> codex_plus_core::connect::WeixinConnectStatus {
+    weixin_status()
+        .lock()
+        .map(|status| status.clone())
+        .unwrap_or_default()
+}
+
+fn empty_weixin_qr_payload(status: &str) -> WeixinQrPayload {
+    WeixinQrPayload {
+        qr_status: status.to_string(),
+        qr_content: String::new(),
+        qr_svg: String::new(),
+        account_id: String::new(),
+        linked_user_id: String::new(),
+        has_token: false,
+    }
 }
 
 #[tauri::command]
@@ -1902,6 +2363,7 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
         session_id: session_id.to_string(),
         title: request.title,
     };
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     let mut candidate_paths = Vec::new();
     if let Some(path) = request.db_path.as_deref() {
         let path = PathBuf::from(path);
@@ -1909,9 +2371,7 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
             candidate_paths.push(path);
         }
     }
-    for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(
-        &codex_plus_core::codex_sqlite::default_codex_home_dir(),
-    ) {
+    for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home) {
         if !candidate_paths.iter().any(|candidate| candidate == &path) {
             candidate_paths.push(path);
         }
@@ -1941,6 +2401,7 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
             codex_plus_core::paths::default_app_state_dir().join("backups"),
         ),
         &session,
+        Some(&home),
     );
     log_manager_event(
         "manager.delete_local_session.finish",
@@ -2448,36 +2909,65 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
                     "manager.sync_providers_now.after",
                 );
             }
-            ok(
-                &format!(
-                    "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。",
-                    sync.changed_session_files,
-                    sync.sqlite_rows_updated,
-                    sync.skipped_locked_rollout_files.len()
-                ),
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.provider_sync.completed",
                 json!({
-                    "syncStatus": sync.status,
-                    "targetProvider": sync.target_provider,
+                    "status": sync.status.clone(),
                     "changedSessionFiles": sync.changed_session_files,
-                    "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files,
                     "sqliteRowsUpdated": sync.sqlite_rows_updated,
-                    "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
-                    "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
-                    "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
                     "sqliteCatalogRowsInserted": sync.sqlite_catalog_rows_inserted,
-                    "updatedWorkspaceRoots": sync.updated_workspace_roots,
-                    "encryptedContentWarning": sync.encrypted_content_warning,
-                    "backupDir": sync.backup_dir,
-                    "syncMessage": sync.message,
+                    "sqliteCatalogRowsRemoved": sync.sqlite_catalog_rows_removed,
+                    "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files.len(),
                 }),
-            )
+            );
+            provider_sync_command_result(sync)
         }
-        Err(error) => failed(&format!("供应商同步失败：{error}"), json!({})),
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.provider_sync.failed",
+                json!({ "message": error.to_string() }),
+            );
+            failed(&format!("供应商同步失败：{error}"), json!({}))
+        }
     }
 }
 
 fn is_success_sync_status(status: &codex_plus_data::ProviderSyncStatus) -> bool {
     matches!(status, codex_plus_data::ProviderSyncStatus::Synced)
+}
+
+fn provider_sync_command_result(
+    sync: codex_plus_data::ProviderSyncResult,
+) -> CommandResult<Value> {
+    let succeeded = is_success_sync_status(&sync.status);
+    let success_message = format!(
+        "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。",
+        sync.changed_session_files,
+        sync.sqlite_rows_updated,
+        sync.skipped_locked_rollout_files.len()
+    );
+    let failure_message = format!("历史会话修复未执行：{}", sync.message);
+    let payload = json!({
+        "syncStatus": sync.status,
+        "targetProvider": sync.target_provider,
+        "changedSessionFiles": sync.changed_session_files,
+        "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files,
+        "sqliteRowsUpdated": sync.sqlite_rows_updated,
+        "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
+        "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
+        "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
+        "sqliteCatalogRowsInserted": sync.sqlite_catalog_rows_inserted,
+        "sqliteCatalogRowsRemoved": sync.sqlite_catalog_rows_removed,
+        "updatedWorkspaceRoots": sync.updated_workspace_roots,
+        "encryptedContentWarning": sync.encrypted_content_warning,
+        "backupDir": sync.backup_dir,
+        "syncMessage": sync.message,
+    });
+    if succeeded {
+        ok(&success_message, payload)
+    } else {
+        failed(&failure_message, payload)
+    }
 }
 
 fn persist_provider_sync_selection(provider: &str) {
@@ -2528,6 +3018,47 @@ pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
             failed_script_market_payload(&format!("脚本市场加载失败：{error}")),
         ),
     }
+}
+
+#[tauri::command]
+pub async fn refresh_user_script_inventory() -> CommandResult<SettingsPayload> {
+    let debug_port = StatusStore::default()
+        .load_latest()
+        .ok()
+        .flatten()
+        .and_then(|status| status.debug_port)
+        .unwrap_or_else(default_debug_port);
+    let manager = default_user_script_manager();
+    let (user_scripts, message) = match codex_plus_core::user_scripts::live_runtime_status(
+        debug_port,
+    )
+    .await
+    {
+        Ok(runtime_status) => (
+            manager
+                .inventory_with_runtime_status(Some(&runtime_status))
+                .unwrap_or_else(
+                    |error| json!({ "enabled": true, "scripts": [], "error": error.to_string() }),
+                ),
+            "已同步 Codex 用户脚本运行状态。",
+        ),
+        Err(_) => (
+            manager.inventory().unwrap_or_else(
+                |error| json!({ "enabled": true, "scripts": [], "error": error.to_string() }),
+            ),
+            "Codex 未运行或暂不可连接，已显示本地脚本状态。",
+        ),
+    };
+    ok(
+        message,
+        SettingsPayload {
+            settings: SettingsStore::default().load().unwrap_or_default(),
+            settings_path: codex_plus_core::paths::default_settings_path()
+                .to_string_lossy()
+                .to_string(),
+            user_scripts,
+        },
+    )
 }
 
 #[tauri::command]
@@ -3153,7 +3684,26 @@ pub fn save_relay_file(request: SaveRelayFileRequest) -> CommandResult<RelayFile
             }),
         );
     };
-    match save_relay_file_in_home(&home, &request.kind, &request.contents)
+    let active_profile = SettingsStore::default()
+        .load()
+        .unwrap_or_default()
+        .active_relay_profile();
+    let contents =
+        match prepare_relay_file_contents(&request.kind, &request.contents, &active_profile) {
+            Ok(contents) => contents,
+            Err(error) => {
+                return failed(
+                    &format!("保存配置文件失败：{error}"),
+                    relay_files_payload_from_home(&home).unwrap_or_else(|_| RelayFilesPayload {
+                        config_path: home.join("config.toml").to_string_lossy().to_string(),
+                        auth_path: home.join("auth.json").to_string_lossy().to_string(),
+                        config_contents: String::new(),
+                        auth_contents: String::new(),
+                    }),
+                );
+            }
+        };
+    match save_relay_file_in_home(&home, &request.kind, &contents)
         .and_then(|_| relay_files_payload_from_home(&home))
     {
         Ok(payload) => ok("配置文件已保存。", payload),
@@ -3915,11 +4465,10 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         return response;
     }
     if relay_has_complete_files(&relay) {
-        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
             &home,
             &relay,
             &relay_combined_common_config(&settings),
-            settings.computer_use_guard_enabled,
         ) {
             Ok(result) => {
                 finish_codex_app_state_after_provider_switch(
@@ -4066,11 +4615,10 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_pure_api_injection", &settings, &relay);
     if relay_has_complete_files(&relay) {
-        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
             &home,
             &relay,
             &relay_combined_common_config(&settings),
-            settings.computer_use_guard_enabled,
         ) {
             Ok(result) => {
                 finish_codex_app_state_after_provider_switch(
@@ -4373,6 +4921,19 @@ fn save_relay_file_in_home(
     }
     std::fs::write(path, contents)?;
     Ok(())
+}
+
+fn prepare_relay_file_contents(
+    kind: &str,
+    contents: &str,
+    profile: &RelayProfile,
+) -> anyhow::Result<String> {
+    if kind == "config" {
+        return codex_plus_core::relay_config::apply_deepseek_responses_compatibility(
+            profile, contents,
+        );
+    }
+    Ok(contents.to_string())
 }
 
 fn read_optional_text_file(path: &std::path::Path) -> anyhow::Result<String> {
@@ -4755,6 +5316,39 @@ mod tests {
     }
 
     #[test]
+    fn requested_launch_status_identifies_the_current_request() {
+        let request = LaunchRequest {
+            app_path: "C:/Program Files/Codex".to_string(),
+            debug_port: 9333,
+            helper_port: 57322,
+            sync_active_relay: false,
+        };
+
+        let status = requested_launch_status(&request, "starting", "starting", 12345);
+
+        assert_eq!(status.status, "starting");
+        assert_eq!(status.message, "starting");
+        assert_eq!(status.started_at_ms, 12345);
+        assert_eq!(status.debug_port, Some(9333));
+        assert_eq!(status.helper_port, Some(57322));
+        assert_eq!(status.codex_app.as_deref(), Some("C:/Program Files/Codex"));
+    }
+
+    #[test]
+    fn requested_launch_status_omits_an_unresolved_app_path() {
+        let request = LaunchRequest {
+            app_path: "  ".to_string(),
+            debug_port: 9229,
+            helper_port: 57321,
+            sync_active_relay: false,
+        };
+
+        let status = requested_launch_status(&request, "starting", "starting", 1);
+
+        assert_eq!(status.codex_app, None);
+    }
+
+    #[test]
     fn provider_switch_state_helpers_restore_only_safe_state() {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("codex-home");
@@ -4822,6 +5416,51 @@ mod tests {
 
         assert_eq!(result.status, "ok");
         assert!(!result.payload.version.is_empty());
+    }
+
+    fn provider_sync_result_for_test(
+        status: codex_plus_data::ProviderSyncStatus,
+        message: &str,
+    ) -> codex_plus_data::ProviderSyncResult {
+        codex_plus_data::ProviderSyncResult {
+            status,
+            message: message.to_string(),
+            target_provider: "custom".to_string(),
+            backup_dir: None,
+            changed_session_files: 0,
+            skipped_locked_rollout_files: Vec::new(),
+            sqlite_rows_updated: 0,
+            sqlite_provider_rows_updated: 0,
+            sqlite_user_event_rows_updated: 0,
+            sqlite_cwd_rows_updated: 0,
+            sqlite_catalog_rows_inserted: 0,
+            sqlite_catalog_rows_removed: 0,
+            updated_workspace_roots: 0,
+            encrypted_content_warning: None,
+        }
+    }
+
+    #[test]
+    fn provider_sync_skipped_is_reported_as_command_failure() {
+        let result = provider_sync_command_result(provider_sync_result_for_test(
+            codex_plus_data::ProviderSyncStatus::Skipped,
+            "Provider sync lock exists",
+        ));
+
+        assert_eq!(result.status, "failed");
+        assert!(result.message.contains("Provider sync lock exists"));
+        assert_eq!(result.payload["syncStatus"], "skipped");
+    }
+
+    #[test]
+    fn provider_sync_synced_is_reported_as_command_success() {
+        let result = provider_sync_command_result(provider_sync_result_for_test(
+            codex_plus_data::ProviderSyncStatus::Synced,
+            "Provider sync complete",
+        ));
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.payload["syncStatus"], "synced");
     }
 
     #[test]
@@ -5768,6 +6407,61 @@ mod tests {
             "{}\n"
         );
         assert!(save_relay_file_in_home(temp.path(), "../bad", "").is_err());
+    }
+
+    #[test]
+    fn config_save_applies_official_deepseek_responses_compatibility() {
+        let profile = RelayProfile {
+            id: "custom-deepseek".to_string(),
+            base_url: "https://api.deepseek.com/".to_string(),
+            upstream_base_url: "https://api.deepseek.com/".to_string(),
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            ..RelayProfile::default()
+        };
+        let config = r#"[features]
+unified_exec = true
+code_mode_only = true
+
+[features.code_mode]
+enabled = true
+"#;
+
+        let prepared = prepare_relay_file_contents("config", config, &profile).unwrap();
+
+        assert!(prepared.contains("unified_exec = true"));
+        assert!(prepared.contains("code_mode_only = false"));
+        assert!(prepared.contains("enabled = false"));
+    }
+
+    #[test]
+    fn config_save_preserves_third_party_responses_and_deepseek_chat_completions() {
+        let config = r#"[features]
+code_mode_only = true
+
+[features.code_mode]
+enabled = true
+"#;
+        let third_party = RelayProfile {
+            base_url: "https://relay.example/v1".to_string(),
+            upstream_base_url: "https://relay.example/v1".to_string(),
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            ..RelayProfile::default()
+        };
+        let chat_completions = RelayProfile {
+            base_url: "https://api.deepseek.com/".to_string(),
+            upstream_base_url: "https://api.deepseek.com/".to_string(),
+            protocol: codex_plus_core::settings::RelayProtocol::ChatCompletions,
+            ..RelayProfile::default()
+        };
+
+        assert_eq!(
+            prepare_relay_file_contents("config", config, &third_party).unwrap(),
+            config
+        );
+        assert_eq!(
+            prepare_relay_file_contents("config", config, &chat_completions).unwrap(),
+            config
+        );
     }
 
     #[test]

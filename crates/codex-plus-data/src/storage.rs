@@ -3,7 +3,7 @@ use codex_plus_core::models::{DeleteResult, DeleteStatus, SessionRef};
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
@@ -14,6 +14,7 @@ pub fn delete_local_from_paths(
     db_paths: impl IntoIterator<Item = PathBuf>,
     backup_store: BackupStore,
     session: &SessionRef,
+    codex_home: Option<&Path>,
 ) -> DeleteResult {
     let mut result = failed(
         &session.session_id,
@@ -23,7 +24,11 @@ pub fn delete_local_from_paths(
     let mut backup_tokens = Vec::new();
     let mut failures = Vec::new();
     for db_path in db_paths {
-        let adapter = SQLiteStorageAdapter::new(db_path, backup_store.clone());
+        let adapter = match codex_home {
+            Some(home) => SQLiteStorageAdapter::new(db_path, backup_store.clone())
+                .with_codex_home(home),
+            None => SQLiteStorageAdapter::new(db_path, backup_store.clone()),
+        };
         let candidate_result = adapter.delete_local(session);
         match candidate_result.status {
             DeleteStatus::LocalDeleted | DeleteStatus::Partial => {
@@ -86,29 +91,12 @@ fn is_benign_delete_miss(message: &str) -> bool {
         || message == "Unsupported local storage schema"
 }
 
-pub fn move_codex_thread_workspace_from_paths(
-    db_paths: impl IntoIterator<Item = PathBuf>,
-    backup_store: BackupStore,
-    session: &SessionRef,
-    target_cwd: &str,
-) -> Value {
-    let mut result = json!({"status": "failed", "session_id": session.session_id, "message": "Thread not found in local storage"});
-    for db_path in db_paths {
-        let adapter = SQLiteStorageAdapter::new(db_path, backup_store.clone());
-        let candidate_result = adapter.move_codex_thread_workspace(session, target_cwd);
-        if candidate_result.get("status").and_then(Value::as_str) == Some("moved") {
-            return candidate_result;
-        }
-        result = candidate_result;
-    }
-    result
-}
-
 #[derive(Debug, Clone)]
 pub struct SQLiteStorageAdapter {
     db_path: PathBuf,
     backup_store: BackupStore,
     allowed_db_paths: Vec<PathBuf>,
+    codex_home: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +140,7 @@ impl SQLiteStorageAdapter {
             allowed_db_paths: vec![db_path.clone()],
             db_path,
             backup_store,
+            codex_home: None,
         }
     }
 
@@ -161,6 +150,11 @@ impl SQLiteStorageAdapter {
                 self.allowed_db_paths.push(db_path);
             }
         }
+        self
+    }
+
+    pub fn with_codex_home(mut self, codex_home: impl Into<PathBuf>) -> Self {
+        self.codex_home = Some(codex_home.into());
         self
     }
 
@@ -229,9 +223,34 @@ impl SQLiteStorageAdapter {
             "NULL"
         };
         let rollout_path = optional_column_expression(&columns, "rollout_path", "''");
+        let mut subagent_filters = Vec::new();
+        if has_table(db, "thread_spawn_edges")?
+            && table_columns(db, "thread_spawn_edges")?
+                .iter()
+                .any(|column| column == "child_thread_id")
+        {
+            subagent_filters.push(
+                "NOT EXISTS (SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = threads.id)",
+            );
+        }
+        if has_table(db, "agent_job_items")?
+            && table_columns(db, "agent_job_items")?
+                .iter()
+                .any(|column| column == "assigned_thread_id")
+        {
+            subagent_filters.push(
+                "NOT EXISTS (SELECT 1 FROM agent_job_items j WHERE j.assigned_thread_id = threads.id)",
+            );
+        }
+        let child_thread_filter = if subagent_filters.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", subagent_filters.join(" AND "))
+        };
         let sql = format!(
             "SELECT id, {title}, {cwd}, {model_provider}, {archived}, {updated_at_ms}, {rollout_path}
              FROM threads
+             {child_thread_filter}
              ORDER BY COALESCE({updated_at_ms}, 0) DESC, id DESC
              LIMIT ?1"
         );
@@ -297,7 +316,12 @@ impl SQLiteStorageAdapter {
         let result = (|| -> anyhow::Result<DeleteResult> {
             let backups = undo_backups(&self.backup_store, token)?;
             let session_id = backups[0]["session_id"].as_str().unwrap_or("").to_string();
-            restore_backups(&backups, &self.db_path, &self.allowed_db_paths)?;
+            restore_backups(
+                &backups,
+                &self.db_path,
+                &self.allowed_db_paths,
+                self.codex_home.as_deref(),
+            )?;
             Ok(DeleteResult {
                 status: DeleteStatus::Undone,
                 session_id,
@@ -328,154 +352,6 @@ impl SQLiteStorageAdapter {
         let id: String = row.get(0).ok()?;
         let row_title: Option<String> = row.get(1).ok()?;
         SessionRef::new(id, row_title.unwrap_or_else(|| title.to_string())).ok()
-    }
-
-    pub fn move_codex_thread_workspace(
-        &self,
-        session: &SessionRef,
-        target_cwd: &str,
-    ) -> serde_json::Value {
-        let target = target_cwd.trim();
-        if target.is_empty() {
-            return json!({"status": "failed", "session_id": session.session_id, "message": "目标项目路径为空"});
-        }
-        if !self.db_path.exists() {
-            return json!({"status": "failed", "session_id": session.session_id, "message": format!("Database not found: {}", self.db_path.to_string_lossy())});
-        }
-        let result = (|| -> anyhow::Result<Value> {
-            let db = Connection::open(&self.db_path)?;
-            if schema_kind(&db)? != Some(SchemaKind::CodexThreads)
-                || !has_columns(&db, "threads", &["cwd", "rollout_path"])?
-            {
-                return Ok(
-                    json!({"status": "failed", "session_id": session.session_id, "message": "Unsupported local storage schema"}),
-                );
-            }
-            let thread_id = normalize_codex_thread_id(&session.session_id);
-            let timestamp_columns = codex_thread_timestamp_columns(&db)?;
-            let mut columns = vec![
-                "id".to_string(),
-                "title".to_string(),
-                "cwd".to_string(),
-                "rollout_path".to_string(),
-            ];
-            columns.extend(timestamp_columns);
-            let sql = format!("SELECT {} FROM threads WHERE id = ?1", columns.join(", "));
-            let mut stmt = db.prepare(&sql)?;
-            let row = stmt.query_row([&thread_id], |row| {
-                let mut data = Map::new();
-                for (index, column) in columns.iter().enumerate() {
-                    data.insert(column.clone(), sql_value_to_json(row.get_ref(index)?));
-                }
-                Ok(data)
-            });
-            let row = match row {
-                Ok(row) => row,
-                Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    return Ok(
-                        json!({"status": "failed", "session_id": thread_id, "message": "Thread not found in local storage"}),
-                    );
-                }
-                Err(err) => return Err(err.into()),
-            };
-            let previous_cwd = row
-                .get("cwd")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let rollout_path = row
-                .get("rollout_path")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            db.execute(
-                "UPDATE threads SET cwd = ?1 WHERE id = ?2",
-                (target, thread_id.as_str()),
-            )?;
-            let rollout = update_rollout_session_meta_cwd(&rollout_path, &thread_id, target);
-            let mut payload = json!({
-                "status": "moved",
-                "session_id": thread_id,
-                "message": "已移动对话",
-                "previous_cwd": previous_cwd,
-                "target_cwd": target,
-                "rollout_updated": rollout.0,
-                "rollout_error": rollout.1,
-            });
-            if let Some(payload) = payload.as_object_mut() {
-                add_timestamp_payload(payload, &row);
-                payload.insert(
-                    "db_path".to_string(),
-                    json!(self.db_path.to_string_lossy().to_string()),
-                );
-            }
-            Ok(payload)
-        })();
-        result.unwrap_or_else(|err| json!({"status": "failed", "session_id": session.session_id, "message": err.to_string()}))
-    }
-
-    pub fn codex_thread_sort_key(&self, session: &SessionRef) -> serde_json::Value {
-        if !self.db_path.exists() {
-            return json!({"status": "failed", "session_id": session.session_id, "message": format!("Database not found: {}", self.db_path.to_string_lossy())});
-        }
-        let result = (|| -> anyhow::Result<Value> {
-            let db = Connection::open(&self.db_path)?;
-            if schema_kind(&db)? != Some(SchemaKind::CodexThreads) {
-                return Ok(
-                    json!({"status": "failed", "session_id": session.session_id, "message": "Unsupported local storage schema"}),
-                );
-            }
-            let thread_id = normalize_codex_thread_id(&session.session_id);
-            match fetch_thread_timestamp_payload(&db, &thread_id)? {
-                Some(mut payload) => {
-                    payload.insert("status".to_string(), json!("ok"));
-                    payload.insert("session_id".to_string(), json!(thread_id));
-                    Ok(Value::Object(payload))
-                }
-                None => Ok(
-                    json!({"status": "failed", "session_id": thread_id, "message": "Thread not found in local storage"}),
-                ),
-            }
-        })();
-        result.unwrap_or_else(|err| json!({"status": "failed", "session_id": session.session_id, "message": err.to_string()}))
-    }
-
-    pub fn codex_thread_sort_keys(&self, sessions: &[SessionRef]) -> serde_json::Value {
-        if !self.db_path.exists() {
-            return json!({"status": "failed", "message": format!("Database not found: {}", self.db_path.to_string_lossy()), "sort_keys": []});
-        }
-        let thread_ids = sessions
-            .iter()
-            .filter(|session| !session.session_id.is_empty())
-            .map(|session| normalize_codex_thread_id(&session.session_id))
-            .fold(Vec::<String>::new(), |mut acc, id| {
-                if !acc.contains(&id) && acc.len() < 200 {
-                    acc.push(id);
-                }
-                acc
-            });
-        if thread_ids.is_empty() {
-            return json!({"status": "ok", "sort_keys": []});
-        }
-        let result = (|| -> anyhow::Result<Value> {
-            let db = Connection::open(&self.db_path)?;
-            if schema_kind(&db)? != Some(SchemaKind::CodexThreads) {
-                return Ok(
-                    json!({"status": "failed", "message": "Unsupported local storage schema", "sort_keys": []}),
-                );
-            }
-            let mut sort_keys = Vec::new();
-            for thread_id in thread_ids {
-                if let Some(mut payload) = fetch_thread_timestamp_payload(&db, &thread_id)? {
-                    payload.insert("session_id".to_string(), json!(thread_id));
-                    sort_keys.push(Value::Object(payload));
-                }
-            }
-            Ok(json!({"status": "ok", "sort_keys": sort_keys}))
-        })();
-        result.unwrap_or_else(
-            |err| json!({"status": "failed", "message": err.to_string(), "sort_keys": []}),
-        )
     }
 
     pub fn codex_thread_usage_history(&self, session: &SessionRef) -> serde_json::Value {
@@ -651,6 +527,24 @@ impl SQLiteStorageAdapter {
         if !file_backups.is_empty() {
             tables.insert("__files".to_string(), Value::Array(file_backups.clone()));
         }
+        let session_index_lines = self
+            .codex_home
+            .as_deref()
+            .and_then(|home| {
+                crate::provider_sync::session_index_lines_for_thread(home, &thread_id).ok()
+            })
+            .unwrap_or_default();
+        if !session_index_lines.is_empty() {
+            tables.insert(
+                "__session_index".to_string(),
+                Value::Array(
+                    session_index_lines
+                        .iter()
+                        .map(|line| Value::String(line.clone()))
+                        .collect(),
+                ),
+            );
+        }
         let token =
             self.backup_store
                 .write_backup(&thread_id, &self.db_path, Value::Object(tables))?;
@@ -697,19 +591,32 @@ impl SQLiteStorageAdapter {
                 }
             }
         }
+        let session_index_note = self
+            .codex_home
+            .as_deref()
+            .and_then(|home| {
+                crate::provider_sync::remove_session_index_entry(home, &thread_id)
+                    .err()
+                    .map(|error| format!("session_index.jsonl 清理失败：{error}"))
+            });
         if !file_errors.is_empty() {
+            let mut message = format!("本地数据库已删除，但文件删除失败：{}", file_errors.join("; "));
+            if let Some(note) = session_index_note.as_deref() {
+                message = format!("{message}；{note}");
+            }
             return Ok(DeleteResult {
                 status: DeleteStatus::Failed,
                 session_id: thread_id,
-                message: format!(
-                    "本地数据库已删除，但文件删除失败：{}",
-                    file_errors.join("; ")
-                ),
+                message,
                 undo_token: Some(token.clone()),
                 backup_path: Some(backup_path.to_string_lossy().to_string()),
             });
         }
-        Ok(local_deleted(&thread_id, &token, &backup_path))
+        let mut result = local_deleted(&thread_id, &token, &backup_path);
+        if let Some(note) = session_index_note.as_deref() {
+            result.message = format!("{}；{}", result.message, note);
+        }
+        Ok(result)
     }
 
     fn delete_codex_automation_run(
@@ -1050,6 +957,7 @@ fn restore_backups(
     backups: &[Value],
     fallback_db_path: &Path,
     allowed_db_paths: &[PathBuf],
+    codex_home: Option<&Path>,
 ) -> anyhow::Result<()> {
     for backup in backups {
         let Some(tables) = backup["tables"].as_object() else {
@@ -1092,6 +1000,18 @@ fn restore_backups(
                     fs::create_dir_all(parent)?;
                 }
                 fs::write(path, bytes)?;
+            }
+        }
+        if let Some(entries) = tables.get("__session_index").and_then(Value::as_array) {
+            let lines = entries
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            if !lines.is_empty() {
+                if let Some(home) = codex_home {
+                    let _ = crate::provider_sync::restore_session_index_entries(home, &lines);
+                }
             }
         }
     }
@@ -1233,6 +1153,7 @@ fn validate_restore_tables(tables: &Map<String, Value>) -> anyhow::Result<()> {
         "local_thread_catalog",
         "thread_timeline_ledger",
         "__files",
+        "__session_index",
     ];
     for table in tables.keys() {
         if !allowed.contains(&table.as_str()) {
@@ -1460,93 +1381,6 @@ fn rollout_file_backups(thread_rows: Option<&Vec<Value>>) -> Vec<Value> {
             }))
         })
         .collect()
-}
-
-fn update_rollout_session_meta_cwd(
-    rollout_path: &str,
-    thread_id: &str,
-    target_cwd: &str,
-) -> (bool, String) {
-    if rollout_path.is_empty() || !Path::new(rollout_path).is_file() {
-        return (false, String::new());
-    }
-    let result = (|| -> anyhow::Result<bool> {
-        let text = fs::read_to_string(rollout_path)?;
-        let mut changed = false;
-        let mut output = String::new();
-        for line in text.split_inclusive('\n') {
-            let (body, end) = line
-                .strip_suffix('\n')
-                .map_or((line, ""), |body| (body, "\n"));
-            let mut raw = line.to_string();
-            if let Ok(mut item) = serde_json::from_str::<Value>(body) {
-                if item.get("type") == Some(&json!("session_meta"))
-                    && item["payload"]["id"] == thread_id
-                    && item["payload"]["cwd"] != target_cwd
-                {
-                    if let Some(payload) = item.get_mut("payload").and_then(Value::as_object_mut) {
-                        payload.insert("cwd".to_string(), json!(target_cwd));
-                        raw = serde_json::to_string(&item)? + end;
-                        changed = true;
-                    }
-                }
-            }
-            output.push_str(&raw);
-        }
-        if changed {
-            fs::write(rollout_path, output)?;
-        }
-        Ok(changed)
-    })();
-    match result {
-        Ok(changed) => (changed, String::new()),
-        Err(err) => (false, err.to_string()),
-    }
-}
-
-fn codex_thread_timestamp_columns(db: &Connection) -> anyhow::Result<Vec<String>> {
-    let existing: HashSet<String> = table_columns(db, "threads")?.into_iter().collect();
-    Ok(["updated_at", "updated_at_ms", "created_at_ms"]
-        .iter()
-        .filter(|column| existing.contains(**column))
-        .map(|column| column.to_string())
-        .collect())
-}
-
-fn fetch_thread_timestamp_payload(
-    db: &Connection,
-    thread_id: &str,
-) -> anyhow::Result<Option<Map<String, Value>>> {
-    let timestamp_columns = codex_thread_timestamp_columns(db)?;
-    let mut columns = vec!["id".to_string()];
-    columns.extend(timestamp_columns);
-    let sql = format!("SELECT {} FROM threads WHERE id = ?1", columns.join(", "));
-    let mut stmt = db.prepare(&sql)?;
-    let row = stmt.query_row([thread_id], |row| {
-        let mut selected = Map::new();
-        for (index, column) in columns.iter().enumerate() {
-            selected.insert(column.clone(), sql_value_to_json(row.get_ref(index)?));
-        }
-        Ok(selected)
-    });
-    match row {
-        Ok(row) => {
-            let mut payload = Map::new();
-            add_timestamp_payload(&mut payload, &row);
-            Ok(Some(payload))
-        }
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(err) => Err(err.into()),
-    }
-}
-
-fn add_timestamp_payload(payload: &mut Map<String, Value>, row: &Map<String, Value>) {
-    for column in ["updated_at", "updated_at_ms", "created_at_ms"] {
-        payload.insert(
-            column.to_string(),
-            row.get(column).cloned().unwrap_or(Value::Null),
-        );
-    }
 }
 
 fn sql_value_to_json(value: ValueRef<'_>) -> Value {

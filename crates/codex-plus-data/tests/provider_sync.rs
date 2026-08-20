@@ -56,6 +56,21 @@ fn write_rollout(path: &Path, provider: &str, thread_id: &str, cwd: &str) {
     fs::write(path, format!("{first}\n{event}\n")).unwrap();
 }
 
+fn write_subagent_rollout(path: &Path, provider: &str, thread_id: &str, cwd: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let first = json!({
+        "type": "session_meta",
+        "payload": {
+            "id": thread_id,
+            "model_provider": provider,
+            "cwd": cwd,
+            "source": { "subagent": { "thread_spawn": { "depth": 1 } } }
+        }
+    });
+    let event = json!({"type": "event_msg", "payload": {"type": "user_message"}});
+    fs::write(path, format!("{first}\n{event}\n")).unwrap();
+}
+
 fn session_index_line(id: &str, title: &str) -> String {
     json!({
         "id": id,
@@ -430,6 +445,191 @@ fn provider_sync_rewrites_all_session_meta_model_providers() {
 }
 
 #[test]
+fn provider_sync_ignores_spawned_subagent_threads() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    let parent_rollout = home.join("sessions/2026/rollout-parent.jsonl");
+    let child_rollout = home.join("sessions/2026/rollout-child.jsonl");
+    write_rollout(&parent_rollout, "openai", "parent", "C:/workspace");
+    write_rollout(&child_rollout, "openai", "child", "C:/child-new");
+    let state = home.join("state_5.sqlite");
+    let db = Connection::open(&state).unwrap();
+    db.execute(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER, cwd TEXT)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads VALUES ('parent', 'openai', 0, 1, 'C:/workspace')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads VALUES ('child', 'openai', 0, 0, 'C:/child-old')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO thread_spawn_edges VALUES ('parent', 'child')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.changed_session_files, 1);
+    let child_first: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&child_rollout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(child_first["payload"]["model_provider"], "openai");
+    let db = Connection::open(state).unwrap();
+    let child: (String, i64, String) = db
+        .query_row(
+            "SELECT model_provider, has_user_event, cwd FROM threads WHERE id = 'child'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        child,
+        ("openai".to_string(), 0, "C:/child-old".to_string())
+    );
+}
+
+#[test]
+fn provider_sync_preserves_marked_subagents_and_explicit_user_priority() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+
+    let structured_rollout = home.join("sessions/2026/rollout-structured-child.jsonl");
+    let rollout_child = home.join("sessions/2026/rollout-source-child.jsonl");
+    let marked_rollout = home.join("sessions/2026/rollout-marked-child.jsonl");
+    let explicit_user_rollout = home.join("sessions/2026/rollout-explicit-user.jsonl");
+    write_rollout(
+        &structured_rollout,
+        "openai",
+        "structured-child",
+        "C:/structured-new",
+    );
+    write_subagent_rollout(
+        &rollout_child,
+        "openai",
+        "rollout-child",
+        "C:/rollout-new",
+    );
+    write_rollout(
+        &marked_rollout,
+        "openai",
+        "marked-child",
+        "C:/marked-new",
+    );
+    write_subagent_rollout(
+        &explicit_user_rollout,
+        "openai",
+        "explicit-user",
+        "C:/user-new",
+    );
+
+    let state = home.join("state_5.sqlite");
+    let db = Connection::open(&state).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, source TEXT, thread_source TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    let structured_source = json!({"subagent": {"thread_spawn": {"depth": 1}}}).to_string();
+    for (id, cwd, source, thread_source) in [
+        (
+            "structured-child",
+            "C:/structured-old",
+            structured_source.as_str(),
+            None,
+        ),
+        ("rollout-child", "C:/rollout-old", "cli", None),
+        ("marked-child", "C:/marked-old", "cli", Some("subagent")),
+        (
+            "explicit-user",
+            "C:/user-old",
+            structured_source.as_str(),
+            Some("user"),
+        ),
+    ] {
+        db.execute(
+            "INSERT INTO threads VALUES (?1, 'openai', 0, 0, ?2, ?3, ?4)",
+            rusqlite::params![id, cwd, source, thread_source],
+        )
+        .unwrap();
+    }
+    db.execute(
+        "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO thread_spawn_edges VALUES ('parent', 'explicit-user')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.changed_session_files, 1);
+    for (path, provider) in [
+        (&structured_rollout, "openai"),
+        (&rollout_child, "openai"),
+        (&marked_rollout, "openai"),
+        (&explicit_user_rollout, "apigather"),
+    ] {
+        let first: serde_json::Value = serde_json::from_str(
+            fs::read_to_string(path).unwrap().lines().next().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first["payload"]["model_provider"], provider);
+    }
+
+    let db = Connection::open(state).unwrap();
+    for (id, expected) in [
+        (
+            "structured-child",
+            ("openai", 0_i64, "C:/structured-old"),
+        ),
+        ("rollout-child", ("openai", 0_i64, "C:/rollout-old")),
+        ("marked-child", ("openai", 0_i64, "C:/marked-old")),
+        ("explicit-user", ("apigather", 1_i64, "C:/user-new")),
+    ] {
+        let actual: (String, i64, String) = db
+            .query_row(
+                "SELECT model_provider, has_user_event, cwd FROM threads WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(actual, (expected.0.to_string(), expected.1, expected.2.to_string()));
+    }
+}
+
+#[test]
 fn provider_sync_target_discovery_reads_all_session_meta_providers() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
@@ -666,6 +866,324 @@ fn provider_sync_repairs_missing_local_thread_catalog_rows_from_threads() {
 }
 
 #[test]
+fn provider_sync_catalogs_user_threads_but_skips_subagents() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+
+    let state_db = home.join("state_5.sqlite");
+    let db = Connection::open(&state_db).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, title TEXT, rollout_path TEXT, source TEXT, created_at_ms INTEGER,
+            updated_at_ms INTEGER, thread_source TEXT, git_branch TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    for (id, source, thread_source, updated_at) in [
+        ("user-one", "vscode", "user", 200000_i64),
+        (
+            "explicit-user",
+            r#"{"sub_agent":{"other":"review"}}"#,
+            "user",
+            205000_i64,
+        ),
+        ("marked-child", "vscode", "subagent", 210000_i64),
+        (
+            "memory-child",
+            "internal_memory_consolidation",
+            "memory_consolidation",
+            215000_i64,
+        ),
+    ] {
+        db.execute(
+            "INSERT INTO threads VALUES (
+                ?1, 'apigather', 0, 1, 'C:/workspace', 'Same title',
+                ?2, ?3, 100000, ?4, ?5, 'main'
+            )",
+            rusqlite::params![id, format!("C:/{id}.jsonl"), source, updated_at, thread_source],
+        )
+        .unwrap();
+    }
+    db.execute(
+        "INSERT INTO threads VALUES (
+            'null-source-child', 'apigather', 0, 1, 'C:/workspace', 'Same title',
+            'C:/null-source-child.jsonl', '{\"sub_agent\":{\"other\":\"guardian\"}}',
+            100000, 217000, NULL, 'main'
+        )",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let legacy_state_db = sqlite_dir.join("state_5.sqlite");
+    let db = Connection::open(&legacy_state_db).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, title TEXT, rollout_path TEXT, source TEXT, created_at_ms INTEGER,
+            updated_at_ms INTEGER, git_branch TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    for (id, source, updated_at) in [
+        ("user-two", "custom-subagent-bridge", 220000_i64),
+        ("malformed-user", r#"{"sub_agent":"#, 221000_i64),
+        ("nested-user", r#"{"origin":"subagent"}"#, 222000_i64),
+        (
+            "source-child",
+            r#"{"subagent":{"other":"guardian"}}"#,
+            230000_i64,
+        ),
+        (
+            "serde-source-child",
+            r#"{"sub_agent":{"other":"review"}}"#,
+            235000_i64,
+        ),
+        ("internal-child", "internal_memory_consolidation", 237000_i64),
+        ("edge-child", "cli", 240000_i64),
+    ] {
+        db.execute(
+            "INSERT INTO threads VALUES (
+                ?1, 'apigather', 0, 1, 'C:/workspace', 'Same title',
+                ?2, ?3, 100000, ?4, 'main'
+            )",
+            rusqlite::params![id, format!("C:/{id}.jsonl"), source, updated_at],
+        )
+        .unwrap();
+    }
+    db.execute(
+        "CREATE TABLE thread_spawn_edges (
+            parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL, status TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO thread_spawn_edges VALUES
+            ('user-one', 'edge-child', 'open'),
+            ('user-one', 'explicit-user', 'open')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&catalog_db, &[]);
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.sqlite_catalog_rows_inserted, 5);
+    assert_eq!(result.sqlite_catalog_rows_removed, 0);
+    assert_eq!(result.sqlite_rows_updated, 5);
+    let db = Connection::open(&catalog_db).unwrap();
+    let mut stmt = db
+        .prepare("SELECT thread_id FROM local_thread_catalog WHERE host_id = 'local' ORDER BY thread_id")
+        .unwrap();
+    let ids = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        ids,
+        vec![
+            "explicit-user",
+            "malformed-user",
+            "nested-user",
+            "user-one",
+            "user-two",
+        ]
+    );
+    let duplicate_titles = db
+        .query_row(
+            "SELECT COUNT(*) FROM local_thread_catalog WHERE display_title = 'Same title'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(duplicate_titles, 5);
+}
+
+#[test]
+fn provider_sync_prunes_existing_local_subagent_catalog_rows() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+
+    let state_db = home.join("state_5.sqlite");
+    let db = Connection::open(&state_db).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, title TEXT, rollout_path TEXT, source TEXT, created_at_ms INTEGER,
+            updated_at_ms INTEGER, thread_source TEXT, git_branch TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    for (id, thread_source) in [("root", "user"), ("child", "subagent")] {
+        db.execute(
+            "INSERT INTO threads VALUES (
+                ?1, 'apigather', 0, 1, 'C:/workspace', ?1,
+                ?2, 'vscode', 100000, 200000, ?3, 'main'
+            )",
+            rusqlite::params![id, format!("C:/{id}.jsonl"), thread_source],
+        )
+        .unwrap();
+    }
+    drop(db);
+
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(
+        &catalog_db,
+        &[
+            ("root", "apigather"),
+            ("child", "apigather"),
+            ("orphan", "apigather"),
+            ("stale-child", "apigather"),
+        ],
+    );
+    let secondary_catalog_db = sqlite_dir.join("state_5.sqlite");
+    create_local_thread_catalog_db(
+        &secondary_catalog_db,
+        &[("root", "apigather"), ("stale-child", "apigather")],
+    );
+    let db = Connection::open(&catalog_db).unwrap();
+    db.execute(
+        "UPDATE local_thread_catalog SET source_kind = 'subagent_review', thread_source = 'subagent' WHERE thread_id = 'stale-child'",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog_hosts VALUES ('remote', 'ssh')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog (
+            host_id, thread_id, display_title, source_created_at, source_updated_at, cwd,
+            source_kind, source_detail, model_provider, git_branch, observation_sequence,
+            missing_candidate, thread_source
+        ) VALUES ('remote', 'child', 'Remote child', 100, 100, '/remote', 'cli', '',
+            'apigather', NULL, 1, 0, 'subagent')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.sqlite_catalog_rows_inserted, 0);
+    assert_eq!(result.sqlite_catalog_rows_removed, 2);
+    assert_eq!(result.sqlite_rows_updated, 2);
+    let backup_dir = result.backup_dir.unwrap();
+    assert!(backup_dir.join("db/sqlite/codex-dev.db").exists());
+
+    let db = Connection::open(&catalog_db).unwrap();
+    let mut stmt = db
+        .prepare(
+            "SELECT host_id, thread_id FROM local_thread_catalog ORDER BY host_id, thread_id",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("local".to_string(), "orphan".to_string()),
+            ("local".to_string(), "root".to_string()),
+            ("remote".to_string(), "child".to_string()),
+        ]
+    );
+    let revision = db
+        .query_row(
+            "SELECT catalog_revision FROM local_thread_catalog_metadata WHERE id = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(revision, 2);
+    let sync_state = db
+        .query_row(
+            "SELECT watermark_updated_at, initial_build_complete, observation_sequence FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, f64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(sync_state, (100.0, 1, 4));
+    drop(stmt);
+    drop(db);
+    let secondary = Connection::open(&secondary_catalog_db).unwrap();
+    let secondary_stale_row = secondary
+        .query_row(
+            "SELECT thread_source FROM local_thread_catalog WHERE thread_id = 'stale-child'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    assert_eq!(secondary_stale_row, "user");
+    let secondary_rows = secondary
+        .prepare("SELECT thread_id FROM local_thread_catalog ORDER BY thread_id")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(secondary_rows, vec!["root", "stale-child"]);
+    let secondary_revision = secondary
+        .query_row(
+            "SELECT catalog_revision FROM local_thread_catalog_metadata WHERE id = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(secondary_revision, 0);
+    let secondary_sync_state = secondary
+        .query_row(
+            "SELECT watermark_updated_at, initial_build_complete, observation_sequence FROM local_thread_catalog_sync_state WHERE host_id = 'local'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, f64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(secondary_sync_state, (100.0, 1, 0));
+    drop(secondary);
+
+    let second = run_provider_sync(Some(&home));
+    assert_eq!(second.status, ProviderSyncStatus::Synced);
+    assert_eq!(second.sqlite_catalog_rows_inserted, 0);
+    assert_eq!(second.sqlite_catalog_rows_removed, 0);
+    assert_eq!(second.sqlite_rows_updated, 0);
+    assert!(second.backup_dir.is_none());
+}
+
+#[test]
 fn remote_control_catalog_recovery_for_thread_does_not_touch_other_candidates() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
@@ -747,6 +1265,99 @@ fn remote_control_catalog_recovery_for_thread_does_not_touch_other_candidates() 
                 .unwrap();
         assert_eq!(first["payload"]["model_provider"], "openai");
     }
+}
+
+#[test]
+fn remote_control_catalog_recovery_does_not_insert_subagent() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+
+    let state_db = home.join("state_5.sqlite");
+    let db = Connection::open(&state_db).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, title TEXT, rollout_path TEXT, source TEXT, created_at_ms INTEGER,
+            updated_at_ms INTEGER, thread_source TEXT, git_branch TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    for id in ["requested-child", "existing-child"] {
+        db.execute(
+            "INSERT INTO threads VALUES (
+                ?1, 'openai', 0, 1, 'C:/workspace', 'Parent title',
+                ?2, 'vscode', 100000, 200000, 'subagent', NULL
+            )",
+            rusqlite::params![id, format!("C:/{id}.jsonl")],
+        )
+        .unwrap();
+    }
+    drop(db);
+
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(&catalog_db, &[("existing-child", "openai")]);
+    Connection::open(&catalog_db)
+        .unwrap()
+        .execute(
+            "UPDATE local_thread_catalog SET source_kind = 'subagent_review', thread_source = 'subagent' WHERE thread_id = 'existing-child'",
+            [],
+        )
+        .unwrap();
+
+    let result = run_remote_control_session_catalog_recovery_for_thread_with_target(
+        Some(&home),
+        "requested-child",
+        "custom",
+    );
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.sqlite_catalog_rows_inserted, 0);
+    assert_eq!(result.sqlite_catalog_rows_removed, 0);
+    assert_eq!(result.sqlite_rows_updated, 0);
+    let catalog = Connection::open(&catalog_db).unwrap();
+    let ids = catalog
+        .prepare("SELECT thread_id FROM local_thread_catalog ORDER BY thread_id")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(ids, vec!["existing-child"]);
+    drop(catalog);
+
+    let existing = run_remote_control_session_catalog_recovery_for_thread_with_target(
+        Some(&home),
+        "existing-child",
+        "custom",
+    );
+    assert_eq!(existing.status, ProviderSyncStatus::Synced);
+    assert_eq!(existing.sqlite_provider_rows_updated, 1);
+    assert_eq!(existing.sqlite_catalog_rows_inserted, 0);
+    assert_eq!(existing.sqlite_catalog_rows_removed, 0);
+    assert_eq!(existing.sqlite_rows_updated, 1);
+    let catalog = Connection::open(&catalog_db).unwrap();
+    let existing_provider = catalog
+        .query_row(
+            "SELECT model_provider FROM local_thread_catalog WHERE thread_id = 'existing-child'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    assert_eq!(existing_provider, "custom");
+    assert_eq!(
+        catalog
+            .query_row(
+                "SELECT COUNT(*) FROM local_thread_catalog WHERE thread_id = 'requested-child'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
 }
 
 #[test]
@@ -1581,6 +2192,71 @@ fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
         .filter(|entry| entry.as_ref().unwrap().path().is_dir())
         .count();
     assert_eq!(backups, 5);
+}
+
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+#[test]
+fn provider_sync_recovers_lock_owned_by_dead_process() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let lock_dir = home.join("tmp/provider-sync.lock");
+    fs::create_dir_all(&lock_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    fs::write(
+        lock_dir.join("owner.json"),
+        json!({"pid": u32::MAX, "startedAt": 1234}).to_string(),
+    )
+    .unwrap();
+    let log_path = tmp.path().join("codex-plus.log");
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
+
+    let result = run_provider_sync(Some(&home));
+
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert!(!lock_dir.exists());
+    assert!(
+        fs::read_to_string(log_path)
+            .unwrap()
+            .contains("provider_sync.stale_lock_recovered")
+    );
+    assert!(fs::read_dir(home.join("tmp")).unwrap().next().is_none());
+}
+
+#[test]
+fn provider_sync_preserves_lock_owned_by_live_process() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let lock_dir = home.join("tmp/provider-sync.lock");
+    fs::create_dir_all(&lock_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    fs::write(
+        lock_dir.join("owner.json"),
+        json!({"pid": std::process::id(), "startedAt": 1234}).to_string(),
+    )
+    .unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Skipped);
+    assert!(result.message.to_lowercase().contains("lock"));
+    assert!(lock_dir.exists());
+}
+
+#[test]
+fn provider_sync_preserves_lock_with_malformed_owner() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let lock_dir = home.join("tmp/provider-sync.lock");
+    fs::create_dir_all(&lock_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    fs::write(lock_dir.join("owner.json"), "{not-json").unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Skipped);
+    assert!(result.message.to_lowercase().contains("lock"));
+    assert!(lock_dir.exists());
 }
 
 #[test]

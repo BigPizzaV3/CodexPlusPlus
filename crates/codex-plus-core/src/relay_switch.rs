@@ -137,18 +137,13 @@ fn apply_selected_relay_profile(
     let result = if relay.relay_mode == RelayMode::Official && !relay.official_mix_api_key {
         let auth_contents =
             (!relay.auth_contents.trim().is_empty()).then_some(relay.auth_contents.as_str());
-        crate::relay_config::clear_relay_config_to_home_with_auth_and_computer_use_guard(
-            home,
-            auth_contents,
-            settings.computer_use_guard_enabled,
-        )?
+        crate::relay_config::clear_relay_config_to_home_with_auth(home, auth_contents)?
     } else {
         validate_switch_profile_files(&relay)?;
-        crate::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+        crate::relay_config::apply_relay_profile_to_home_with_switch_rules(
             home,
             &relay,
             &common_config,
-            settings.computer_use_guard_enabled,
         )?
     };
     let status = relay_config_status_from_home(home);

@@ -1,6 +1,17 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { relayAuthForLiveDraft } from "./relay-live-files.ts";
+import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files.ts";
+
+describe("shouldBackfillRelayProfileBeforeSwitch", () => {
+  it("backfills live files only when switching to a different provider", () => {
+    assert.strictEqual(shouldBackfillRelayProfileBeforeSwitch("provider-a", "provider-b"), true);
+    assert.strictEqual(shouldBackfillRelayProfileBeforeSwitch("provider-a", "provider-a"), false);
+  });
+
+  it("does not backfill without a previous active provider", () => {
+    assert.strictEqual(shouldBackfillRelayProfileBeforeSwitch("  ", "provider-a"), false);
+  });
+});
 
 describe("relayAuthForLiveDraft", () => {
   it("preserves the complete pure API provider auth snapshot", () => {

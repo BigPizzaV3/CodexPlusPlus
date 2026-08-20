@@ -9,6 +9,41 @@ use serde_json::{Map, Value, json};
 
 use crate::script_market::MarketScript;
 
+/// Query the live renderer-side user-script registry through a one-shot CDP
+/// connection. This is intentionally read-only and does not touch the
+/// launcher-owned bridge websocket.
+pub async fn live_runtime_status(debug_port: u16) -> anyhow::Result<Value> {
+    let targets = crate::cdp::list_targets(debug_port).await?;
+    let target = live_runtime_target(&targets)?;
+    let websocket = target
+        .web_socket_debugger_url
+        .as_deref()
+        .context("Codex renderer has no WebSocket URL")?;
+    let response = crate::bridge::evaluate_script(
+        websocket,
+        "(() => JSON.stringify(window.__codexPlusUserScripts?.scripts || {}))()",
+    )
+    .await?;
+    parse_live_runtime_status_response(&response)
+}
+
+fn live_runtime_target(targets: &[crate::cdp::CdpTarget]) -> anyhow::Result<crate::cdp::CdpTarget> {
+    crate::cdp::pick_injectable_codex_page_target(targets)
+}
+
+fn parse_live_runtime_status_response(response: &Value) -> anyhow::Result<Value> {
+    let encoded = response
+        .pointer("/result/result/value")
+        .and_then(Value::as_str)
+        .context("user-script runtime probe returned no value")?;
+    let status: Value =
+        serde_json::from_str(encoded).context("invalid user-script runtime status JSON")?;
+    if !status.is_object() {
+        anyhow::bail!("user-script runtime status must be a JSON object");
+    }
+    Ok(status)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UserScriptConfig {
     pub enabled: bool,
@@ -429,4 +464,64 @@ fn current_unix_timestamp_string() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_secs().to_string())
         .unwrap_or_else(|_| "0".to_string())
+}
+
+#[cfg(test)]
+mod runtime_status_tests {
+    use super::*;
+
+    fn target(id: &str, title: &str, url: &str, websocket: &str) -> crate::cdp::CdpTarget {
+        crate::cdp::CdpTarget {
+            id: id.to_string(),
+            target_type: "page".to_string(),
+            title: title.to_string(),
+            url: url.to_string(),
+            web_socket_debugger_url: Some(websocket.to_string()),
+        }
+    }
+
+    #[test]
+    fn parses_live_runtime_status_response() {
+        let response = json!({
+            "result": { "result": { "value": r#"{"user:test.js":{"status":"loaded","error":""}}"# } }
+        });
+
+        let status = parse_live_runtime_status_response(&response).unwrap();
+
+        assert_eq!(status["user:test.js"]["status"], "loaded");
+    }
+
+    #[test]
+    fn rejects_missing_or_invalid_live_runtime_status() {
+        assert!(parse_live_runtime_status_response(&json!({})).is_err());
+        assert!(
+            parse_live_runtime_status_response(&json!({
+                "result": { "result": { "value": "not json" } }
+            }))
+            .is_err()
+        );
+        assert!(
+            parse_live_runtime_status_response(&json!({
+                "result": { "result": { "value": "[]" } }
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn live_runtime_probe_selects_codex_page_over_manager() {
+        let targets = vec![
+            target(
+                "manager",
+                "Codex++ 管理工具",
+                "http://127.0.0.1:1420/",
+                "ws://manager",
+            ),
+            target("main", "Codex", "app://-/index.html", "ws://main"),
+        ];
+
+        let selected = live_runtime_target(&targets).unwrap();
+
+        assert_eq!(selected.id, "main");
+    }
 }

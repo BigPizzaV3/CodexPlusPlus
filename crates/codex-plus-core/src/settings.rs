@@ -372,8 +372,6 @@ pub struct BackendSettings {
     pub relay_profiles_enabled: bool,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
     pub enhancements_enabled: bool,
-    #[serde(rename = "computerUseGuardEnabled", default)]
-    pub computer_use_guard_enabled: bool,
     #[serde(rename = "codexAppPluginMarketplaceUnlock", default = "default_true")]
     pub codex_app_plugin_marketplace_unlock: bool,
     #[serde(rename = "codexAppModelWhitelistUnlock", default = "default_true")]
@@ -388,8 +386,6 @@ pub struct BackendSettings {
     pub codex_app_force_chinese_locale: bool,
     #[serde(rename = "codexAppFastStartup", default)]
     pub codex_app_fast_startup: bool,
-    #[serde(rename = "codexAppProjectMove", default = "default_true")]
-    pub codex_app_project_move: bool,
     #[serde(rename = "codexAppThreadIdBadge", default)]
     pub codex_app_thread_id_badge: bool,
     #[serde(rename = "codexAppConversationView", default)]
@@ -486,6 +482,32 @@ pub struct BackendSettings {
     pub codex_app_dream_skin_image_path: String,
     #[serde(rename = "codexGoalsEnabled", default)]
     pub codex_goals_enabled: bool,
+    #[serde(rename = "weixinConnectEnabled", default)]
+    pub weixin_connect_enabled: bool,
+    #[serde(
+        rename = "weixinConnectBaseUrl",
+        default = "default_weixin_connect_base_url"
+    )]
+    pub weixin_connect_base_url: String,
+    #[serde(rename = "weixinConnectToken", default)]
+    pub weixin_connect_token: String,
+    #[serde(rename = "weixinConnectAccountId", default)]
+    pub weixin_connect_account_id: String,
+    #[serde(rename = "weixinConnectAllowFrom", default)]
+    pub weixin_connect_allow_from: String,
+    #[serde(rename = "weixinConnectRouteTag", default)]
+    pub weixin_connect_route_tag: String,
+    #[serde(rename = "weixinConnectWorkDir", default)]
+    pub weixin_connect_work_dir: String,
+    #[serde(rename = "weixinConnectModel", default)]
+    pub weixin_connect_model: String,
+    #[serde(
+        rename = "weixinConnectSandbox",
+        default = "default_weixin_connect_sandbox"
+    )]
+    pub weixin_connect_sandbox: String,
+    #[serde(rename = "weixinConnectCodexPath", default)]
+    pub weixin_connect_codex_path: String,
     #[serde(rename = "launchMode", default)]
     pub launch_mode: LaunchMode,
     #[serde(rename = "relayBaseUrl", default = "default_relay_base_url")]
@@ -519,7 +541,6 @@ impl Default for BackendSettings {
             provider_sync_last_selected_provider: String::new(),
             relay_profiles_enabled: true,
             enhancements_enabled: true,
-            computer_use_guard_enabled: false,
             codex_app_plugin_marketplace_unlock: true,
             codex_app_model_whitelist_unlock: true,
             codex_app_session_delete: true,
@@ -527,7 +548,6 @@ impl Default for BackendSettings {
             codex_app_paste_fix: false,
             codex_app_force_chinese_locale: true,
             codex_app_fast_startup: false,
-            codex_app_project_move: true,
             codex_app_thread_id_badge: false,
             codex_app_conversation_view: false,
             codex_app_thread_scroll_restore: true,
@@ -560,6 +580,16 @@ impl Default for BackendSettings {
             codex_app_dream_skin_theme_config: DreamSkinThemeConfig::default(),
             codex_app_dream_skin_image_path: String::new(),
             codex_goals_enabled: false,
+            weixin_connect_enabled: false,
+            weixin_connect_base_url: default_weixin_connect_base_url(),
+            weixin_connect_token: String::new(),
+            weixin_connect_account_id: String::new(),
+            weixin_connect_allow_from: String::new(),
+            weixin_connect_route_tag: String::new(),
+            weixin_connect_work_dir: String::new(),
+            weixin_connect_model: String::new(),
+            weixin_connect_sandbox: default_weixin_connect_sandbox(),
+            weixin_connect_codex_path: String::new(),
             launch_mode: LaunchMode::Patch,
             relay_base_url: default_relay_base_url(),
             relay_api_key: String::new(),
@@ -873,6 +903,14 @@ pub fn default_relay_base_url() -> String {
     String::new()
 }
 
+fn default_weixin_connect_base_url() -> String {
+    crate::connect::DEFAULT_WEIXIN_BASE_URL.to_string()
+}
+
+fn default_weixin_connect_sandbox() -> String {
+    "read-only".to_string()
+}
+
 pub fn default_active_relay_id() -> String {
     "default".to_string()
 }
@@ -1061,6 +1099,7 @@ impl SettingsStore {
 
 fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<String, Value>) {
     target.remove("codexAppPluginAutoExpand");
+    target.remove("computerUseGuardEnabled");
     if let Some(value) = source.get("codexAppPath").and_then(Value::as_str) {
         target.insert("codexAppPath".to_string(), Value::String(value.to_string()));
     }
@@ -1089,12 +1128,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     if let Some(value) = source.get("enhancementsEnabled").and_then(Value::as_bool) {
         target.insert("enhancementsEnabled".to_string(), Value::Bool(value));
     }
-    if let Some(value) = source
-        .get("computerUseGuardEnabled")
-        .and_then(Value::as_bool)
-    {
-        target.insert("computerUseGuardEnabled".to_string(), Value::Bool(value));
-    }
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
     merge_bool_setting(target, source, "codexAppSessionDelete");
@@ -1102,7 +1135,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppPasteFix");
     merge_bool_setting(target, source, "codexAppForceChineseLocale");
     merge_bool_setting(target, source, "codexAppFastStartup");
-    merge_bool_setting(target, source, "codexAppProjectMove");
     merge_bool_setting(target, source, "codexAppThreadIdBadge");
     merge_bool_setting(target, source, "codexAppConversationView");
     merge_bool_setting(target, source, "codexAppThreadScrollRestore");
@@ -1251,6 +1283,22 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     if let Some(value) = source.get("codexGoalsEnabled").and_then(Value::as_bool) {
         target.insert("codexGoalsEnabled".to_string(), Value::Bool(value));
+    }
+    merge_bool_setting(target, source, "weixinConnectEnabled");
+    for key in [
+        "weixinConnectBaseUrl",
+        "weixinConnectToken",
+        "weixinConnectAccountId",
+        "weixinConnectAllowFrom",
+        "weixinConnectRouteTag",
+        "weixinConnectWorkDir",
+        "weixinConnectModel",
+        "weixinConnectSandbox",
+        "weixinConnectCodexPath",
+    ] {
+        if let Some(value) = source.get(key).and_then(Value::as_str) {
+            target.insert(key.to_string(), Value::String(value.trim().to_string()));
+        }
     }
     if let Some(value) = source.get("launchMode").and_then(Value::as_str) {
         if matches!(value, "patch" | "relay") {
@@ -1462,6 +1510,27 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
             settings.codex_app_stepwise_api_key_env.trim().to_string()
         };
     settings.codex_app_stepwise_model = settings.codex_app_stepwise_model.trim().to_string();
+    settings.weixin_connect_base_url = settings
+        .weixin_connect_base_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    if settings.weixin_connect_base_url.is_empty() {
+        settings.weixin_connect_base_url = default_weixin_connect_base_url();
+    }
+    settings.weixin_connect_token = settings.weixin_connect_token.trim().to_string();
+    settings.weixin_connect_account_id = settings.weixin_connect_account_id.trim().to_string();
+    settings.weixin_connect_allow_from = settings.weixin_connect_allow_from.trim().to_string();
+    settings.weixin_connect_route_tag = settings.weixin_connect_route_tag.trim().to_string();
+    settings.weixin_connect_work_dir = settings.weixin_connect_work_dir.trim().to_string();
+    settings.weixin_connect_model = settings.weixin_connect_model.trim().to_string();
+    settings.weixin_connect_sandbox = match settings.weixin_connect_sandbox.trim() {
+        "workspace-write" => "workspace-write",
+        "danger-full-access" => "danger-full-access",
+        _ => "read-only",
+    }
+    .to_string();
+    settings.weixin_connect_codex_path = settings.weixin_connect_codex_path.trim().to_string();
     settings.codex_app_stepwise_max_items =
         clamp_stepwise_max_items(settings.codex_app_stepwise_max_items);
     settings.codex_app_stepwise_max_input_chars =
@@ -1624,7 +1693,6 @@ mod tests {
         assert!(!settings.provider_sync_enabled);
         assert!(settings.relay_profiles_enabled);
         assert!(settings.enhancements_enabled);
-        assert!(!settings.computer_use_guard_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
         assert!(!settings.codex_app_thread_id_badge);
         assert!(settings.codex_app_force_chinese_locale);
@@ -1657,6 +1725,13 @@ mod tests {
         assert_eq!(settings.codex_app_stepwise_max_input_chars, 6000);
         assert_eq!(settings.codex_app_stepwise_max_output_tokens, 500);
         assert_eq!(settings.codex_app_stepwise_timeout_ms, 8000);
+        assert!(!settings.weixin_connect_enabled);
+        assert_eq!(
+            settings.weixin_connect_base_url,
+            crate::connect::DEFAULT_WEIXIN_BASE_URL
+        );
+        assert!(settings.weixin_connect_token.is_empty());
+        assert_eq!(settings.weixin_connect_sandbox, "read-only");
     }
 
     #[test]
@@ -2419,6 +2494,39 @@ experimental_bearer_token = "sk-existing""#
     }
 
     #[test]
+    fn settings_store_update_persists_weixin_connect_settings() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "weixinConnectEnabled": true,
+                "weixinConnectBaseUrl": "https://ilink.example.test/",
+                "weixinConnectToken": " token ",
+                "weixinConnectAccountId": " bot-1 ",
+                "weixinConnectAllowFrom": " user@im.wechat ",
+                "weixinConnectRouteTag": " route ",
+                "weixinConnectWorkDir": " /workspace ",
+                "weixinConnectModel": " gpt-test ",
+                "weixinConnectSandbox": "workspace-write",
+                "weixinConnectCodexPath": " /usr/local/bin/codex "
+            }))
+            .unwrap();
+
+        assert!(updated.weixin_connect_enabled);
+        assert_eq!(updated.weixin_connect_base_url, "https://ilink.example.test");
+        assert_eq!(updated.weixin_connect_token, "token");
+        assert_eq!(updated.weixin_connect_account_id, "bot-1");
+        assert_eq!(updated.weixin_connect_allow_from, "user@im.wechat");
+        assert_eq!(updated.weixin_connect_route_tag, "route");
+        assert_eq!(updated.weixin_connect_work_dir, "/workspace");
+        assert_eq!(updated.weixin_connect_model, "gpt-test");
+        assert_eq!(updated.weixin_connect_sandbox, "workspace-write");
+        assert_eq!(updated.weixin_connect_codex_path, "/usr/local/bin/codex");
+        assert_eq!(store.load().unwrap(), updated);
+    }
+
+    #[test]
     fn settings_store_update_persists_launch_mode() {
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("settings.json"));
@@ -2641,13 +2749,13 @@ experimental_bearer_token = "sk-existing""#
     }
 
     #[test]
-    fn settings_store_update_removes_obsolete_plugin_auto_expand_field() {
+    fn settings_store_update_removes_obsolete_setting_fields() {
         let dir = temp_dir();
         let path = dir.join("settings.json");
         let store = SettingsStore::new(path.clone());
         std::fs::write(
             &path,
-            r#"{"providerSyncEnabled":false,"codexAppPluginAutoExpand":true,"customField":1}"#,
+            r#"{"providerSyncEnabled":false,"codexAppPluginAutoExpand":true,"computerUseGuardEnabled":true,"customField":1}"#,
         )
         .unwrap();
 
@@ -2659,6 +2767,7 @@ experimental_bearer_token = "sk-existing""#
         let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
 
         assert!(saved.get("codexAppPluginAutoExpand").is_none());
+        assert!(saved.get("computerUseGuardEnabled").is_none());
         assert_eq!(saved["customField"], json!(1));
     }
 
