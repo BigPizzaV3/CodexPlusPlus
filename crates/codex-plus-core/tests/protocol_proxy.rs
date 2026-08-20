@@ -966,6 +966,74 @@ fn chat_completion_response_maps_reasoning_tool_calls_and_usage_details() {
 }
 
 #[test]
+fn chat_completion_response_defaults_missing_reasoning_tokens_to_zero() {
+    // Kimi 等上游在一次响应无 reasoning 时会省略 completion_tokens_details
+    // 里的 reasoning_tokens; Codex 将该字段当必填解析, 缺省会报
+    // "missing field `reasoning_tokens`" 并把整轮判为断流。
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_no_reasoning",
+        "created": 123,
+        "model": "k3-256k",
+        "choices": [{
+            "finish_reason": "stop",
+            "message": { "role": "assistant", "content": "done" }
+        }],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "completion_tokens_details": {}
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        converted["usage"]["output_tokens_details"]["reasoning_tokens"],
+        0
+    );
+}
+
+#[test]
+fn chat_sse_defaults_missing_reasoning_tokens_to_zero() {
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_kimi","created":123,"model":"k3-256k","choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10,"completion_tokens_details":{}}}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.completed"));
+    assert!(sse.contains("\"reasoning_tokens\":0"));
+}
+
+#[test]
+fn chat_sse_without_usage_details_still_emits_reasoning_tokens() {
+    // 上游连 completion_tokens_details 都没有时也要补上, Codex 才能解析。
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_plain","created":123,"model":"k3-256k","choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10}}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.completed"));
+    assert!(sse.contains("\"output_tokens_details\":{\"reasoning_tokens\":0}"));
+}
+
+#[test]
+fn chat_sse_without_any_usage_still_emits_reasoning_tokens() {
+    // 上游全程未发 usage chunk → default usage 兜底同样带齐结构。
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_nousg","created":123,"model":"k3-256k","choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.completed"));
+    assert!(sse.contains("\"reasoning_tokens\":0"));
+}
+
+#[test]
 fn chat_completion_response_extracts_reasoning_details_like_ccswitch() {
     let converted = chat_completion_to_response(json!({
         "id": "chatcmpl_reasoning_details",

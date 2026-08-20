@@ -3493,7 +3493,14 @@ fn extract_reasoning_summary_text(value: &Value) -> Option<String> {
 }
 
 fn default_responses_usage() -> Value {
-    json!({ "input_tokens": 0, "output_tokens": 0, "total_tokens": 0 })
+    // Codex 把 output_tokens_details.reasoning_tokens 当必填解析,
+    // 兜底 usage 也必须带齐该结构。
+    json!({
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "output_tokens_details": { "reasoning_tokens": 0 }
+    })
 }
 
 fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
@@ -3597,7 +3604,19 @@ fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
         result["input_tokens_details"] = json!({ "cached_tokens": cached_tokens });
     }
     if let Some(details) = usage.get("completion_tokens_details") {
-        result["output_tokens_details"] = details.clone();
+        // Codex parses output_tokens_details.reasoning_tokens as a required field;
+        // upstreams (e.g. Kimi) omit the key when a response had no reasoning,
+        // which makes the Responses client fail with "missing field
+        // `reasoning_tokens`" and abort the whole turn. Default it to 0.
+        let mut details = details.clone();
+        if details.is_object() && details.get("reasoning_tokens").is_none() {
+            details["reasoning_tokens"] = json!(0);
+        }
+        result["output_tokens_details"] = details;
+    } else {
+        // 上游连 completion_tokens_details 都没给时同样补全, 避免
+        // Codex 解析 response.completed 时缺字段断流。
+        result["output_tokens_details"] = json!({ "reasoning_tokens": 0 });
     }
     if let Some(cache_read) = usage.get("cache_read_input_tokens") {
         result["cache_read_input_tokens"] = cache_read.clone();
