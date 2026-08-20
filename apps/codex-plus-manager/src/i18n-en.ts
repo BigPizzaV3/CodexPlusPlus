@@ -311,6 +311,7 @@ export const EN_PLAIN: Record<string, string> = {
   "会话删除、导出和用户脚本等界面能力": "UI capabilities like session deletion, export and user scripts",
   "会话删除、导出和脚本能力": "Session deletion, export and script capabilities",
   "会话管理": "Session management",
+  "Codex 会话身份": "Codex session identity",
   "使用": "Use",
   "使用中": "In use",
   "例如 C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app": "e.g. C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app",
@@ -761,6 +762,17 @@ export const EN_PLAIN: Record<string, string> = {
   "纯 API 模式": "Pure API mode",
   "纯 API 配置未完整写入：请检查此供应商是否有 OPENAI_API_KEY，且 config.toml 是否包含 model_provider / provider / base_url。":
     "Pure API config is incomplete: check whether this provider has OPENAI_API_KEY and whether config.toml includes model_provider / provider / base_url.",
+  "官方登录未混入 API 时不写入会话 provider": "Official login without mixed API does not write a session provider",
+  "Custom（默认）": "Custom (default)",
+  "OpenAI（兼容 ChatGPT Remote）": "OpenAI (ChatGPT Remote compatible)",
+  "选择 OpenAI 后，Codex Remote 会把当前会话识别为 ChatGPT 会话；中转仍使用 custom 表。":
+    "OpenAI makes Codex Remote identify the session as a ChatGPT session; the relay still uses the custom table.",
+  "OpenAI 会话身份需要 Responses API；Chat Completions 不支持远程压缩。":
+    "OpenAI session identity requires the Responses API; Chat Completions does not support remote compaction.",
+  "聚合请求仍由本地 Responses 代理轮转成员；OpenAI 身份用于让 ChatGPT Remote 识别会话。":
+    "Aggregate requests still rotate members through the local Responses proxy; OpenAI identity lets ChatGPT Remote recognize the session.",
+  "OpenAI 会话身份仅支持 Responses API；Chat Completions 不支持 ChatGPT Remote 的远程压缩。请切换协议或改回 Custom。":
+    "OpenAI session identity only supports the Responses API; Chat Completions does not support ChatGPT Remote remote compaction. Switch protocol or return to Custom.",
   "维护 Codex++ 自己的远程项目最近列表。": "Maintain Codex++'s own recent list of remote projects.",
   "编辑": "Edit",
   "编辑后保存列表，再切换模式时会使用新配置": "After editing, save the list; the new config is used the next time you switch modes",

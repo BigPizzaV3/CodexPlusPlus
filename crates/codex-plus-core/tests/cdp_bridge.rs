@@ -1875,6 +1875,8 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
     assert_eq!(cases["remoteRecoveryRetried"], true);
     assert_eq!(cases["remoteRecoveryRetryAttempts"], json!([0, 1]));
+    assert_eq!(cases["openAiSessionProviderUnchanged"], true);
+    assert_eq!(cases["openAiRecoveryUnscheduled"], true);
     assert_eq!(cases["missingActiveProviderUnchanged"], true);
     assert_eq!(cases["missingActiveRecoveryUnscheduled"], true);
     assert_eq!(cases["pureApiProviderUnchanged"], true);
@@ -2284,6 +2286,24 @@ await new Promise((resolve) => setTimeout(resolve, 500));
 const remoteRecoveryRetryAttempts = remoteRecoveryRetryCalls.map((call) => call.attempt);
 api.setBackendSettings({{
   relayProfilesEnabled: true,
+  activeRelayId: "openai-relay",
+  relayProfiles: [{{ id: "openai-relay", relayMode: "official", officialMixApiKey: true }}],
+}});
+api.setModelCatalog({{
+  status: "ok",
+  model: "gpt-5.6-sol",
+  default_model: "gpt-5.6-sol",
+  codex_model_provider: "openai",
+  models: ["gpt-5.6-sol"],
+}});
+const openAiSessionParams = {{ cwd: "C:/mobile", modelProvider: "openai" }};
+const openAiSessionProviderUnchanged = api.applyProviderOverride("thread/start", openAiSessionParams) === openAiSessionParams;
+const openAiRecoveryUnscheduled = api.observeRemoteSessionNotification({{
+  method: "thread/started",
+  params: {{ thread: {{ id: "thread-mobile-openai" }} }},
+}}) === false;
+api.setBackendSettings({{
+  relayProfilesEnabled: true,
   activeRelayId: "missing",
   relayProfiles: [{{ id: "eligible", relayMode: "official", officialMixApiKey: true }}],
 }});
@@ -2360,6 +2380,8 @@ process.stdout.write(JSON.stringify({{
   remoteRecoveryViewEventThreadId,
   remoteRecoveryRetried,
   remoteRecoveryRetryAttempts,
+  openAiSessionProviderUnchanged,
+  openAiRecoveryUnscheduled,
   missingActiveProviderUnchanged,
   missingActiveRecoveryUnscheduled,
   pureApiProviderUnchanged,

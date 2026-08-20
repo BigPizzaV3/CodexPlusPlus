@@ -467,7 +467,7 @@
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "8";
   const codexAppServerModelRequestPatchVersion = "5";
-  const codexRemoteSessionRecoveryVersion = "4";
+  const codexRemoteSessionRecoveryVersion = "5";
   const codexPluginMarketplaceUnlockVersion = "15";
   const codexThreadScrollMaxEntries = 120;
   const codexThreadScrollSaveThrottleMs = 120;
@@ -3027,7 +3027,10 @@
     const profile = profiles.find((item) => String(item?.id || "") === activeId);
     if (!profile) return false;
     const relayMode = String(profile.relayMode || "");
-    return relayMode === "official" && !!profile.officialMixApiKey;
+    const targetProvider = codexRemoteSessionTargetProvider();
+    return relayMode === "official"
+      && !!profile.officialMixApiKey
+      && targetProvider !== "openai";
   }
 
   function codexRemoteSessionTargetProvider() {
