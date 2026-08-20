@@ -580,7 +580,12 @@ impl BridgeDataService for LauncherDataService {
         let db_paths = self.candidate_db_paths();
         let backup_store = codex_plus_data::BackupStore::new(self.backup_dir.clone());
         tokio::task::spawn_blocking(move || {
-            codex_plus_data::delete_local_from_paths(db_paths, backup_store, &session)
+            codex_plus_data::delete_local_from_paths(
+                db_paths,
+                backup_store,
+                &session,
+                Some(&codex_plus_core::codex_sqlite::default_codex_home_dir()),
+            )
         })
         .await
         .map_err(|error| anyhow::anyhow!("delete task failed: {error}"))
@@ -708,6 +713,7 @@ impl LauncherDataService {
             codex_plus_data::BackupStore::new(self.backup_dir.clone()),
         )
         .with_allowed_db_paths(allowed_db_paths)
+        .with_codex_home(codex_plus_core::codex_sqlite::default_codex_home_dir())
     }
 }
 

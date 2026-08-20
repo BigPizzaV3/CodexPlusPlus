@@ -1655,6 +1655,113 @@ pub fn apply_session_index_cleanup(
     result
 }
 
+/// Return the `session_index.jsonl` lines (without trailing newline) that
+/// reference `thread_id`. Used by the delete flow to keep a backup of the
+/// entries it is about to remove.
+pub fn session_index_lines_for_thread(
+    codex_home: &Path,
+    thread_id: &str,
+) -> anyhow::Result<Vec<String>> {
+    let path = codex_home.join("session_index.jsonl");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = fs::read_to_string(&path)?;
+    let mut lines = Vec::new();
+    for segment in text.split_inclusive('\n') {
+        let (line, _) = split_line_ending(segment);
+        if known_session_index_candidate(line).is_some_and(|candidate| candidate.id == thread_id) {
+            lines.push(line.to_string());
+        }
+    }
+    Ok(lines)
+}
+
+/// Remove every `session_index.jsonl` entry for `thread_id` and write the
+/// result back atomically. Returns the number of removed entries.
+///
+/// Best-effort: returns `Ok(0)` without writing when the file is missing or
+/// changed since it was read, so a delete flow never clobbers fresh entries.
+pub fn remove_session_index_entry(
+    codex_home: &Path,
+    thread_id: &str,
+) -> anyhow::Result<usize> {
+    let path = codex_home.join("session_index.jsonl");
+    if !path.exists() {
+        return Ok(0);
+    }
+    let original_bytes = fs::read(&path)?;
+    let original_text = String::from_utf8(original_bytes.clone())?;
+    let plan = SessionIndexPlan {
+        path,
+        snapshot_sha256: sha256_hex(&original_bytes),
+        original_bytes,
+        original_text,
+        candidates: Vec::new(),
+    };
+    let selected_ids = HashSet::from([thread_id.to_string()]);
+    let (next_text, removed_entries) = filtered_session_index_text(&plan, &selected_ids);
+    if removed_entries == 0 {
+        return Ok(0);
+    }
+    if fs::read(&plan.path)? != plan.original_bytes {
+        return Ok(0);
+    }
+    codex_plus_core::settings::atomic_write(&plan.path, next_text.as_bytes())?;
+    Ok(removed_entries)
+}
+
+/// Append previously removed `session_index.jsonl` lines back (undo flow).
+/// Lines whose `id` already exists are skipped. Returns the number of
+/// appended lines. Best-effort: returns `Ok(0)` without writing when the
+/// file changed since it was read.
+pub fn restore_session_index_entries(
+    codex_home: &Path,
+    lines: &[String],
+) -> anyhow::Result<usize> {
+    if lines.is_empty() {
+        return Ok(0);
+    }
+    let path = codex_home.join("session_index.jsonl");
+    let original_bytes = if path.exists() {
+        fs::read(&path)?
+    } else {
+        Vec::new()
+    };
+    let original_text = String::from_utf8(original_bytes.clone())?;
+    let mut existing_ids = HashSet::new();
+    for segment in original_text.split_inclusive('\n') {
+        let (line, _) = split_line_ending(segment);
+        if let Some(candidate) = known_session_index_candidate(line) {
+            existing_ids.insert(candidate.id);
+        }
+    }
+    let mut next_text = original_text;
+    if !next_text.is_empty() && !next_text.ends_with('\n') {
+        next_text.push('\n');
+    }
+    let mut appended = 0usize;
+    for line in lines {
+        if let Some(candidate) = known_session_index_candidate(line) {
+            if existing_ids.contains(&candidate.id) {
+                continue;
+            }
+            existing_ids.insert(candidate.id);
+        }
+        next_text.push_str(line);
+        next_text.push('\n');
+        appended += 1;
+    }
+    if appended == 0 {
+        return Ok(0);
+    }
+    if fs::read(&path)? != original_bytes {
+        return Ok(0);
+    }
+    codex_plus_core::settings::atomic_write(&path, next_text.as_bytes())?;
+    Ok(appended)
+}
+
 fn ensure_codex_app_stopped(
     backup_dir: Option<PathBuf>,
 ) -> Result<(), SessionIndexCleanupApplyError> {
