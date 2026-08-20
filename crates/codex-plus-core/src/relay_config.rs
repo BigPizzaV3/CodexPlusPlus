@@ -1,7 +1,7 @@
 use anyhow::Context;
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
@@ -206,6 +206,7 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
     let config_path = home.join("config.toml");
     let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
     let auth_contents = std::fs::read_to_string(home.join("auth.json")).unwrap_or_default();
+    let has_auth_api_key = codex_auth_api_key(&auth_contents).is_some();
     let root_provider = root_key_string(&contents, "model_provider");
     let provider = root_provider.as_ref().and_then(|provider| {
         let active = table_values(&contents, &format!("model_providers.{provider}"));
@@ -213,13 +214,21 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
             return active;
         }
 
+        if active
+            .as_ref()
+            .is_some_and(|values| provider_values_are_configured(values, has_auth_api_key))
+        {
+            return active;
+        }
+
+        let uses_managed_openai_identity = root_key_string(&contents, OPENAI_BASE_URL_KEY)
+            .is_some_and(|value| value.trim() == managed_openai_base_url());
+        if !uses_managed_openai_identity {
+            return active;
+        }
+
         table_values(&contents, &format!("model_providers.{RELAY_PROVIDER}"))
-            .filter(|values| {
-                values
-                    .get("base_url")
-                    .map(|value| !unquote_toml_string(value).trim().is_empty())
-                    .unwrap_or(false)
-            })
+            .filter(|values| provider_values_are_configured(values, has_auth_api_key))
             .or(active)
     });
     let requires_openai_auth = provider
@@ -240,12 +249,25 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
         .unwrap_or(false);
     RelayConfigStatus {
         configured: root_provider.is_some()
-            && (has_bearer_token || codex_auth_api_key(&auth_contents).is_some())
+            && (has_bearer_token || has_auth_api_key)
             && has_base_url,
         requires_openai_auth,
         has_bearer_token,
         config_path: config_path.to_string_lossy().to_string(),
     }
+}
+
+fn provider_values_are_configured(
+    values: &HashMap<String, String>,
+    has_auth_api_key: bool,
+) -> bool {
+    let has_base_url = values
+        .get("base_url")
+        .is_some_and(|value| !unquote_toml_string(value).trim().is_empty());
+    let has_bearer_token = values
+        .get("experimental_bearer_token")
+        .is_some_and(|value| !unquote_toml_string(value).trim().is_empty());
+    has_base_url && (has_bearer_token || has_auth_api_key)
 }
 
 pub fn responses_proxy_configured_in_home(home: &Path) -> bool {

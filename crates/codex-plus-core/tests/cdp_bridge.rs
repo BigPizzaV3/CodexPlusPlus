@@ -1721,6 +1721,17 @@ fn injection_script_exposes_fast_service_tier_control() {
 }
 
 #[test]
+fn injection_script_keeps_remote_provider_patch_installed_for_openai_identity() {
+    let script = assets::injection_script(57321);
+
+    assert!(
+        script
+            .contains("codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled()")
+    );
+    assert!(script.contains("if (!codexRemoteSessionProviderPatchEnabled()) return;"));
+}
+
+#[test]
 fn injection_script_prompts_for_markdown_export_path_when_supported() {
     let script = assets::injection_script(57321);
 
@@ -1863,7 +1874,7 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["legacyStateApi"], true);
     assert_eq!(cases["currentStateApi"], true);
     assert_eq!(cases["appServerParamsUnchanged"], true);
-    assert_eq!(cases["appServerSentCount"], 2);
+    assert_eq!(cases["appServerSentCount"], 6);
     assert_eq!(
         cases["providerFromMissing"]["modelProvider"],
         "vendor_alpha"
@@ -1908,6 +1919,12 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["remoteRecoveryRetryAttempts"], json!([0, 1]));
     assert_eq!(cases["openAiSessionProviderUnchanged"], true);
     assert_eq!(cases["openAiRecoveryUnscheduled"], true);
+    assert_eq!(cases["openAiPatchRemainsInstalled"], true);
+    assert_eq!(cases["openAiNormalizationDisabled"], true);
+    assert_eq!(cases["refreshedCustomProviderOverride"], "refreshed_vendor");
+    assert_eq!(cases["refreshedOpenAiProvider"], "openai");
+    assert_eq!(cases["refreshedPureApiResumeProvider"], "custom");
+    assert_eq!(cases["failedRefreshProviderUnchanged"], "openai");
     assert_eq!(cases["missingActiveProviderUnchanged"], true);
     assert_eq!(cases["missingActiveRecoveryUnscheduled"], true);
     assert_eq!(cases["pureApiThreadStartProvider"], "custom");
@@ -2197,6 +2214,8 @@ const appServerParamsUnchanged = appServerCalls[0]?.params === nativeAppServerPa
 api.setBackendSettings({{
   relayProfilesEnabled: true,
   activeRelayId: "custom-relay",
+  activeRelaySessionProvider: "custom",
+  activeRelayCodexProvider: "vendor_alpha",
   relayProfiles: [{{ id: "custom-relay", relayMode: "official", officialMixApiKey: true }}],
 }});
 api.setModelCatalog({{
@@ -2322,13 +2341,15 @@ const remoteRecoveryRetryAttempts = remoteRecoveryRetryCalls.map((call) => call.
 api.setBackendSettings({{
   relayProfilesEnabled: true,
   activeRelayId: "openai-relay",
+  activeRelaySessionProvider: "openai",
+  activeRelayCodexProvider: "openai",
   relayProfiles: [{{ id: "openai-relay", relayMode: "official", officialMixApiKey: true }}],
 }});
 api.setModelCatalog({{
   status: "ok",
   model: "gpt-5.6-sol",
   default_model: "gpt-5.6-sol",
-  codex_model_provider: "openai",
+  codex_model_provider: "stale_custom_provider",
   models: ["gpt-5.6-sol"],
 }});
 const openAiSessionParams = {{ cwd: "C:/mobile", modelProvider: "openai" }};
@@ -2337,6 +2358,113 @@ const openAiRecoveryUnscheduled = api.observeRemoteSessionNotification({{
   method: "thread/started",
   params: {{ thread: {{ id: "thread-mobile-openai" }} }},
 }}) === false;
+const openAiPatchRemainsInstalled = api.providerPatchEnabled();
+const openAiNormalizationDisabled = !api.providerNormalizationEnabled();
+api.setBackendSettings({{
+  relayProfilesEnabled: true,
+  activeRelayId: "stale-openai-relay",
+  activeRelaySessionProvider: "openai",
+  activeRelayCodexProvider: "openai",
+  relayProfiles: [{{ id: "stale-openai-relay", relayMode: "official", officialMixApiKey: true }}],
+}});
+api.setModelCatalog({{
+  status: "ok",
+  model: "gpt-5.6-sol",
+  default_model: "gpt-5.6-sol",
+  codex_model_provider: "openai",
+  models: ["gpt-5.6-sol"],
+}});
+window.__codexSessionDeleteBridge = async (path) => {{
+  if (path === "/settings/get") return {{
+    launchMode: "patch",
+    enhancementsEnabled: true,
+    providerSyncEnabled: true,
+    relayProfilesEnabled: true,
+    activeRelayId: "refreshed-custom-relay",
+    activeRelaySessionProvider: "custom",
+    activeRelayCodexProvider: "refreshed_vendor",
+    relayProfiles: [{{ id: "refreshed-custom-relay", relayMode: "official", officialMixApiKey: true }}],
+  }};
+  if (path === "/codex-model-catalog") return {{
+    status: "ok",
+    model: "gpt-5.6-sol",
+    default_model: "gpt-5.6-sol",
+    codex_model_provider: "refreshed_vendor",
+    models: ["gpt-5.6-sol"],
+  }};
+  return {{ status: "failed" }};
+}};
+await appServerClient.sendRequest("thread/start", {{ cwd: "C:/mobile", modelProvider: "openai" }}, {{ signal: "provider-switch" }});
+const refreshedCustomProviderOverride = appServerCalls.at(-1)?.params?.modelProvider || "";
+api.setBackendSettings({{
+  relayProfilesEnabled: true,
+  activeRelayId: "stale-custom-relay",
+  activeRelaySessionProvider: "custom",
+  activeRelayCodexProvider: "stale_custom_provider",
+  relayProfiles: [{{ id: "stale-custom-relay", relayMode: "official", officialMixApiKey: true }}],
+}});
+api.setModelCatalog({{
+  status: "ok",
+  model: "gpt-5.6-sol",
+  default_model: "gpt-5.6-sol",
+  codex_model_provider: "stale_custom_provider",
+  models: ["gpt-5.6-sol"],
+}});
+window.__codexSessionDeleteBridge = async (path) => {{
+  if (path === "/settings/get") return {{
+    launchMode: "patch",
+    enhancementsEnabled: true,
+    providerSyncEnabled: true,
+    relayProfilesEnabled: true,
+    activeRelayId: "refreshed-openai-relay",
+    activeRelaySessionProvider: "openai",
+    activeRelayCodexProvider: "openai",
+    relayProfiles: [{{ id: "refreshed-openai-relay", relayMode: "official", officialMixApiKey: true }}],
+  }};
+  if (path === "/codex-model-catalog") return {{
+    status: "ok",
+    model: "gpt-5.6-sol",
+    default_model: "gpt-5.6-sol",
+    codex_model_provider: "stale_custom_provider",
+    models: ["gpt-5.6-sol"],
+  }};
+  return {{ status: "failed" }};
+}};
+await appServerClient.sendRequest("thread/start", {{ cwd: "C:/mobile", modelProvider: "openai" }}, {{ signal: "openai-switch" }});
+const refreshedOpenAiProvider = appServerCalls.at(-1)?.params?.modelProvider || "";
+window.__codexSessionDeleteBridge = async (path) => {{
+  if (path === "/settings/get") return {{
+    launchMode: "patch",
+    enhancementsEnabled: true,
+    providerSyncEnabled: true,
+    relayProfilesEnabled: true,
+    activeRelayId: "refreshed-pure-api",
+    activeRelaySessionProvider: "custom",
+    activeRelayCodexProvider: "custom",
+    relayProfiles: [{{ id: "refreshed-pure-api", relayMode: "pureApi", officialMixApiKey: false }}],
+  }};
+  return {{ status: "failed" }};
+}};
+await appServerClient.sendRequest("thread/resume", {{
+  threadId: "thread-mobile-pure-api-refresh",
+  modelProvider: "openai",
+}}, {{ signal: "pure-api-switch" }});
+const refreshedPureApiResumeProvider = appServerCalls.at(-1)?.params?.modelProvider || "";
+delete window.__codexSessionDeleteBridge;
+api.setBackendSettings({{
+  relayProfilesEnabled: true,
+  activeRelayId: "stale-custom-relay",
+  activeRelaySessionProvider: "custom",
+  activeRelayCodexProvider: "stale_custom_provider",
+  relayProfiles: [{{ id: "stale-custom-relay", relayMode: "official", officialMixApiKey: true }}],
+}});
+window.__codexSessionDeleteBridge = async (path) => {{
+  if (path === "/settings/get") throw new Error("settings unavailable");
+  return {{ status: "failed" }};
+}};
+await appServerClient.sendRequest("thread/start", {{ cwd: "C:/mobile", modelProvider: "openai" }}, {{ signal: "provider-refresh-failed" }});
+const failedRefreshProviderUnchanged = appServerCalls.at(-1)?.params?.modelProvider || "";
+delete window.__codexSessionDeleteBridge;
 api.setBackendSettings({{
   relayProfilesEnabled: true,
   activeRelayId: "missing",
@@ -2429,6 +2557,12 @@ process.stdout.write(JSON.stringify({{
   remoteRecoveryRetryAttempts,
   openAiSessionProviderUnchanged,
   openAiRecoveryUnscheduled,
+  openAiPatchRemainsInstalled,
+  openAiNormalizationDisabled,
+  refreshedCustomProviderOverride,
+  refreshedOpenAiProvider,
+  refreshedPureApiResumeProvider,
+  failedRefreshProviderUnchanged,
   missingActiveProviderUnchanged,
   missingActiveRecoveryUnscheduled,
   pureApiThreadStartProvider,

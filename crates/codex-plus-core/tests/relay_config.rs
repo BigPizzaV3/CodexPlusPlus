@@ -307,6 +307,153 @@ experimental_bearer_token = "sk-test-redacted"
 }
 
 #[test]
+fn reports_complete_openai_provider_before_incomplete_custom_transport() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model_provider = "openai"
+openai_base_url = "http://127.0.0.1:57321/v1"
+
+[model_providers.openai]
+name = "openai"
+wire_api = "responses"
+requires_openai_auth = false
+base_url = "https://openai.example.test/v1"
+experimental_bearer_token = "sk-openai"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://stale-relay.example.test/v1"
+"#,
+    )
+    .unwrap();
+
+    let status = relay_config_status_from_home(temp.path());
+
+    assert!(status.configured);
+    assert!(!status.requires_openai_auth);
+    assert!(status.has_bearer_token);
+}
+
+#[test]
+fn reports_complete_openai_provider_before_complete_custom_transport() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model_provider = "openai"
+openai_base_url = "http://127.0.0.1:57321/v1"
+
+[model_providers.openai]
+name = "openai"
+wire_api = "responses"
+requires_openai_auth = false
+base_url = "https://openai.example.test/v1"
+experimental_bearer_token = "sk-openai"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example.test/v1"
+experimental_bearer_token = "sk-custom"
+"#,
+    )
+    .unwrap();
+
+    let status = relay_config_status_from_home(temp.path());
+
+    assert!(status.configured);
+    assert!(!status.requires_openai_auth);
+    assert!(status.has_bearer_token);
+}
+
+#[test]
+fn does_not_use_custom_transport_without_managed_openai_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model_provider = "openai"
+openai_base_url = "https://user-openai.example.test/v1"
+
+[model_providers.openai]
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://stale-relay.example.test/v1"
+experimental_bearer_token = "sk-stale"
+"#,
+    )
+    .unwrap();
+
+    let status = relay_config_status_from_home(temp.path());
+
+    assert!(!status.configured);
+    assert!(!status.requires_openai_auth);
+    assert!(!status.has_bearer_token);
+}
+
+#[test]
+fn managed_openai_identity_requires_custom_transport_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model_provider = "openai"
+openai_base_url = "http://127.0.0.1:57321/v1"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example.test/v1"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"oauth-token"}}"#,
+    )
+    .unwrap();
+
+    let status = relay_config_status_from_home(temp.path());
+
+    assert!(!status.configured);
+    assert!(!status.requires_openai_auth);
+    assert!(!status.has_bearer_token);
+}
+
+#[test]
+fn managed_openai_identity_accepts_auth_api_key_for_custom_transport() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model_provider = "openai"
+openai_base_url = "http://127.0.0.1:57321/v1"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example.test/v1"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-pure-api"}"#,
+    )
+    .unwrap();
+
+    let status = relay_config_status_from_home(temp.path());
+
+    assert!(status.configured);
+    assert!(!status.requires_openai_auth);
+    assert!(!status.has_bearer_token);
+}
+
+#[test]
 fn reports_pure_api_configured_from_auth_api_key_without_bearer_token() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -411,7 +558,11 @@ fn openai_session_provider_rejects_chat_completions() {
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("OpenAI 会话身份仅支持 Responses API"));
+    assert!(
+        error
+            .to_string()
+            .contains("OpenAI 会话身份仅支持 Responses API")
+    );
     assert!(!temp.path().join("config.toml").exists());
 }
 
@@ -3879,7 +4030,10 @@ requires_openai_auth = true
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     let parsed: toml::Value = toml::from_str(&config).unwrap();
     assert_eq!(parsed["features"]["code_mode_only"].as_bool(), Some(true));
-    assert_eq!(parsed["features"]["code_mode"]["enabled"].as_bool(), Some(true));
+    assert_eq!(
+        parsed["features"]["code_mode"]["enabled"].as_bool(),
+        Some(true)
+    );
 
     let catalog: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(
