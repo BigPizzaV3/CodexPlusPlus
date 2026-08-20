@@ -784,6 +784,17 @@ function providerSyncTargetLabel(target: ProviderSyncTargetOption): string {
   return [...labels, ...current].join(" / ") || t("发现");
 }
 
+function providerSyncActionText(targetProvider: string, active: boolean): string {
+  if (active) return t("正在修复…");
+  return targetProvider === "openai" ? t("显示 API 登录历史") : t("修复历史会话");
+}
+
+function providerSyncHelpText(targetProvider: string): string {
+  return targetProvider === "openai"
+    ? t("将 JOJO Code/custom 等 API 登录创建的本地历史归到官方登录可见。")
+    : t("启动 Codex 前整理旧对话的归属标记。");
+}
+
 function syncMarketInstalledState(current: ScriptMarketResult | null, userScripts: UserScriptInventory): ScriptMarketResult | null {
   if (!current) return current;
   const installed = new Map(
@@ -5764,7 +5775,7 @@ function SessionsScreen({
               />
               <span>
                 <strong>{t("启动前自动修复历史会话")}</strong>
-                <small>{t("启动 Codex 前整理旧对话的归属标记。")}</small>
+                <small>{providerSyncHelpText(selectedProviderSyncTarget)}</small>
               </span>
               <ToggleVisual />
             </label>
@@ -5776,7 +5787,7 @@ function SessionsScreen({
               </Button>
               <Button disabled={providerSyncProgress.active} onClick={() => void actions.syncProvidersNow()} variant="outline">
                 <Wrench className="h-4 w-4" />
-                {providerSyncProgress.active ? t("正在修复…") : t("修复历史会话")}
+                {providerSyncActionText(selectedProviderSyncTarget, providerSyncProgress.active)}
               </Button>
               <Button onClick={() => void actions.saveSettings()}>
                 <Save className="h-4 w-4" />
