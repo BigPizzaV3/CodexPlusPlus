@@ -1577,7 +1577,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"5\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"6\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -1879,7 +1879,11 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["openAiRecoveryUnscheduled"], true);
     assert_eq!(cases["missingActiveProviderUnchanged"], true);
     assert_eq!(cases["missingActiveRecoveryUnscheduled"], true);
-    assert_eq!(cases["pureApiProviderUnchanged"], true);
+    assert_eq!(cases["pureApiThreadStartProvider"], "custom");
+    assert_eq!(cases["pureApiThreadResumeProvider"], "custom");
+    assert_eq!(cases["pureApiTurnStartProvider"], "custom");
+    assert_eq!(cases["pureApiTurnWithoutProviderUnchanged"], true);
+    assert_eq!(cases["pureApiOtherProviderUnchanged"], true);
     assert_eq!(cases["pureApiRecoveryUnscheduled"], true);
     assert_eq!(cases["pureOfficialProviderUnchanged"], true);
 }
@@ -2319,7 +2323,19 @@ api.setBackendSettings({{
   relayProfiles: [{{ id: "pure-api", relayMode: "pureApi", officialMixApiKey: true }}],
 }});
 const pureApiParams = {{ cwd: "C:/mobile", modelProvider: "openai" }};
-const pureApiProviderUnchanged = api.applyProviderOverride("thread/start", pureApiParams) === pureApiParams;
+const pureApiThreadStartProvider = api.applyProviderOverride("thread/start", pureApiParams)?.modelProvider;
+const pureApiThreadResumeProvider = api.applyProviderOverride("thread/resume", {{
+  threadId: "thread-mobile-pure-api",
+  model_provider: "openai",
+}})?.modelProvider;
+const pureApiTurnStartProvider = api.applyProviderOverride("turn/start", {{
+  threadId: "thread-mobile-pure-api",
+  modelProvider: "openai",
+}})?.modelProvider;
+const pureApiTurnWithoutProvider = {{ threadId: "thread-mobile-pure-api", model: "gpt-5.6-luna" }};
+const pureApiTurnWithoutProviderUnchanged = api.applyProviderOverride("turn/start", pureApiTurnWithoutProvider) === pureApiTurnWithoutProvider;
+const pureApiOtherProvider = {{ threadId: "thread-mobile-pure-api", modelProvider: "other" }};
+const pureApiOtherProviderUnchanged = api.applyProviderOverride("turn/start", pureApiOtherProvider) === pureApiOtherProvider;
 const pureApiRecoveryUnscheduled = api.observeRemoteSessionNotification({{
   method: "thread/started",
   params: {{ thread: {{ id: "thread-mobile-pure-api" }} }},
@@ -2384,7 +2400,11 @@ process.stdout.write(JSON.stringify({{
   openAiRecoveryUnscheduled,
   missingActiveProviderUnchanged,
   missingActiveRecoveryUnscheduled,
-  pureApiProviderUnchanged,
+  pureApiThreadStartProvider,
+  pureApiThreadResumeProvider,
+  pureApiTurnStartProvider,
+  pureApiTurnWithoutProviderUnchanged,
+  pureApiOtherProviderUnchanged,
   pureApiRecoveryUnscheduled,
   pureOfficialProviderUnchanged,
 }}));

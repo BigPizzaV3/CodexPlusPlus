@@ -465,8 +465,8 @@
   const codexThreadServiceTierKey = "codexThreadServiceTierOverrides";
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
-  const codexServiceTierRequestOverrideVersion = "8";
-  const codexAppServerModelRequestPatchVersion = "5";
+  const codexServiceTierRequestOverrideVersion = "9";
+  const codexAppServerModelRequestPatchVersion = "6";
   const codexRemoteSessionRecoveryVersion = "5";
   const codexPluginMarketplaceUnlockVersion = "15";
   const codexThreadScrollMaxEntries = 120;
@@ -3018,13 +3018,17 @@
     return nextParams;
   }
 
-  function codexRemoteSessionProviderNormalizationEnabled() {
-    if (!codexPlusBackendSettings.relayProfilesEnabled) return false;
+  function codexRemoteSessionActiveProfile() {
+    if (!codexPlusBackendSettings.relayProfilesEnabled) return null;
     const profiles = Array.isArray(codexPlusBackendSettings.relayProfiles)
       ? codexPlusBackendSettings.relayProfiles
       : [];
     const activeId = String(codexPlusBackendSettings.activeRelayId || "");
-    const profile = profiles.find((item) => String(item?.id || "") === activeId);
+    return profiles.find((item) => String(item?.id || "") === activeId) || null;
+  }
+
+  function codexRemoteSessionProviderNormalizationEnabled() {
+    const profile = codexRemoteSessionActiveProfile();
     if (!profile) return false;
     const relayMode = String(profile.relayMode || "");
     const targetProvider = codexRemoteSessionTargetProvider();
@@ -3033,7 +3037,17 @@
       && targetProvider !== "openai";
   }
 
+  function codexRemoteSessionProviderOverrideEnabled() {
+    const profile = codexRemoteSessionActiveProfile();
+    if (!profile) return false;
+    const relayMode = String(profile.relayMode || "");
+    if (relayMode === "pureApi") return true;
+    return codexRemoteSessionProviderNormalizationEnabled();
+  }
+
   function codexRemoteSessionTargetProvider() {
+    const profile = codexRemoteSessionActiveProfile();
+    if (String(profile?.relayMode || "") === "pureApi") return "custom";
     return String(
       codexModelCatalog?.codex_model_provider
       || codexModelCatalog?.codexModelProvider
@@ -3043,20 +3057,30 @@
     ).trim();
   }
 
-  function codexRemoteSessionThreadStartMethod(method) {
+  function codexRemoteSessionProviderRequestMethod(method) {
     return [
       "thread/start",
+      "thread/resume",
       "start-conversation",
       "start-thread-for-host",
       "thread-prewarm-start",
       "prewarm-thread-start-for-host",
+      "turn/start",
     ].includes(String(method || ""));
   }
 
   function applyCodexRemoteSessionProviderOverride(method, params) {
-    if (!codexRemoteSessionThreadStartMethod(method)) return params;
-    if (!codexRemoteSessionProviderNormalizationEnabled()) return params;
+    const requestMethod = String(method || "");
+    if (!codexRemoteSessionProviderRequestMethod(requestMethod)) return params;
+    if (!codexRemoteSessionProviderOverrideEnabled()) return params;
     if (!params || typeof params !== "object" || Array.isArray(params)) return params;
+    const profile = codexRemoteSessionActiveProfile();
+    const pureApi = String(profile?.relayMode || "") === "pureApi";
+    const isExtendedPureApiRequest = requestMethod === "thread/resume" || requestMethod === "turn/start";
+    if (isExtendedPureApiRequest && !pureApi) return params;
+    const hasModelProvider = Object.prototype.hasOwnProperty.call(params, "modelProvider")
+      || Object.prototype.hasOwnProperty.call(params, "model_provider");
+    if (requestMethod === "turn/start" && !hasModelProvider) return params;
     const targetProvider = codexRemoteSessionTargetProvider();
     if (!targetProvider || targetProvider === "openai") return params;
     const requestedProvider = String(params.modelProvider || params.model_provider || "").trim();
@@ -3069,7 +3093,7 @@
     const nextParams = { ...params, modelProvider: targetProvider };
     delete nextParams.model_provider;
     sendCodexPlusDiagnostic("remote_session_provider_override_applied", {
-      method,
+      method: requestMethod,
       from: requestedProvider || "(missing)",
       to: targetProvider,
     });
@@ -3423,7 +3447,7 @@
       }
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
-      if (codexRemoteSessionProviderNormalizationEnabled()) {
+      if (codexRemoteSessionProviderOverrideEnabled()) {
         void loadCodexModelCatalog();
       }
       refreshCodexPlusBackendToggles();
@@ -6469,8 +6493,8 @@
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
     client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
-      if (codexRemoteSessionThreadStartMethod(requestMethod)
-          && codexRemoteSessionProviderNormalizationEnabled()
+      if (codexRemoteSessionProviderRequestMethod(requestMethod)
+          && codexRemoteSessionProviderOverrideEnabled()
           && !codexRemoteSessionTargetProvider()) {
         await loadCodexModelCatalog();
       }
@@ -6491,7 +6515,7 @@
   let appServerModelRequestPatchRetryTimer = 0;
 
   function scheduleAppServerModelRequestPatchRetry() {
-    if (!codexRemoteSessionProviderNormalizationEnabled()) return;
+    if (!codexRemoteSessionProviderOverrideEnabled()) return;
     if (appServerModelRequestPatchRetryTimer) return;
     appServerModelRequestPatchRetryTimer = window.setTimeout(() => {
       appServerModelRequestPatchRetryTimer = 0;
@@ -6513,7 +6537,7 @@
     if (appServerModelRequestPatchMissCount === 1) {
       sendCodexPlusDiagnostic(event, detail);
     }
-    if (codexRemoteSessionProviderNormalizationEnabled()) {
+    if (codexRemoteSessionProviderOverrideEnabled()) {
       scheduleAppServerModelRequestPatchRetry();
       return;
     }
@@ -6578,7 +6602,7 @@
 
   function ensureCodexModelWhitelistInstalls() {
     if (codexPlusModelUnlockEnabled()
-        || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderNormalizationEnabled())) {
+        || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderOverrideEnabled())) {
       installAppServerModelRequestPatch();
     }
     if (!codexPlusModelUnlockEnabled()) return;
