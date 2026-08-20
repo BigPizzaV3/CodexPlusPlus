@@ -72,10 +72,27 @@ fn injection_script_prefixes_helper_url_and_metadata() {
 
 #[test]
 fn injection_script_omits_stepwise_runtime_when_disabled() {
-    let script = assets::injection_script_with_settings(57321, &BackendSettings::default());
+    let settings = BackendSettings {
+        codex_app_stepwise_enabled: false,
+        codex_app_answer_outline_enabled: false,
+        ..BackendSettings::default()
+    };
+    let script = assets::injection_script_with_settings(57321, &settings);
 
     assert!(!script.contains("const API_KEY = \"__codexStepwisePanel\";"));
     assert!(script.contains("data-codex-plus-setting=\"stepwise\""));
+}
+
+#[test]
+fn injection_script_includes_stepwise_runtime_for_outline_only() {
+    let settings = BackendSettings {
+        codex_app_stepwise_enabled: false,
+        codex_app_answer_outline_enabled: true,
+        ..BackendSettings::default()
+    };
+    let script = assets::injection_script_with_settings(57321, &settings);
+
+    assert!(script.contains("const API_KEY = \"__codexStepwisePanel\";"));
 }
 
 #[test]
@@ -788,12 +805,29 @@ fn injection_script_menu_exposes_stepwise_switch_and_syncs_panel() {
 fn stepwise_runtime_stops_work_when_disabled() {
     let script = assets::stepwise_script().replace("\r\n", "\n");
 
-    assert!(script.contains("function stepwiseEnabled()"));
-    assert!(script.contains("if (!stepwiseEnabled()) {"));
+    assert!(script.contains("function stepwiseEnabled(settings = state.settings)"));
+    assert!(script.contains("function runtimeEnabled(settings = state.settings)"));
+    assert!(script.contains("if (!runtimeEnabled()) {"));
     assert!(script.contains("stopRuntime();"));
     assert!(script.contains(
-        "function requestBridgeStepwise(key, userText, assistantText) {\n    if (!stepwiseEnabled()) return;"
+        "function requestBridgeStepwise(key, userText, assistantText, requestMode = stepwiseGenerationMode(), options = {})"
     ));
+    assert!(script.contains("if (!stepwiseEnabled() || !key"));
+}
+
+#[test]
+fn stepwise_keeps_settings_sync_alive_when_features_are_disabled() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("const SETTINGS_SYNC_INTERVAL_MS = 2000;"));
+    assert!(script.contains("function scheduleSettingsSync("));
+    assert!(script.contains("await reloadSettings();"));
+    assert!(script.contains("scheduleSettingsSync();"));
+    assert!(
+        script
+            .contains("if (state.settingsSyncTimer) window.clearTimeout(state.settingsSyncTimer);")
+    );
+    assert!(!script.contains("function stopRuntime() {\n    if (state.settingsSyncTimer)"));
 }
 
 #[test]
@@ -804,7 +838,7 @@ fn stepwise_direct_send_targets_main_chat_composer() {
     assert!(script.contains("function horizontalOverlapRatio("));
     assert!(script.contains("function ignoredComposerContainer("));
     assert!(script.contains("function mainComposerCandidate("));
-    assert!(script.contains("mainComposerCandidate(candidates)"));
+    assert!(script.contains("mainComposerCandidate(candidates, targetRoot)"));
     assert!(!script.contains("const target = candidates[candidates.length - 1];"));
 }
 
@@ -834,9 +868,7 @@ fn stepwise_refreshes_suggestions_for_virtualized_assistant_bubbles() {
     assert!(script.contains("candidates.push(...assistantBubbleCandidates())"));
     assert!(script.contains("function latestMessageByDocumentOrder("));
     assert!(script.contains("function clearPromptsForNewAssistant("));
-    assert!(script.contains(
-        "if (state.prompts.length || state.currentHash) clearPromptsForNewAssistant(hash);"
-    ));
+    assert!(script.contains("clearPromptsForNewAssistant(hash);"));
     assert!(script.contains("function setScanStatus("));
     assert!(script.contains("setScanStatus(\"not-ready\""));
     assert!(script.contains("setScanStatus(\"no-assistant-message\""));
@@ -849,18 +881,1071 @@ fn stepwise_exposes_manual_refresh_without_refreshing_busy_chats() {
     let script = assets::stepwise_script();
 
     assert!(script.contains("data-action=\"refresh\""));
+    assert!(script.contains("function refreshCurrentView("));
+    assert!(script.contains("if (state.activeTab === \"settings\") return reloadSettings();"));
+    assert!(script.contains("if (state.activeTab === \"outline\") return refreshOutline();"));
+    assert!(script.contains("return forceRefreshStepwise();"));
     assert!(script.contains("function forceRefreshStepwise("));
-    assert!(script.contains("state.bridgeStatus === \"pending\" || chatBusy()"));
+    assert!(script.contains("if (state.bridgeStatus === \"pending\")"));
+    assert!(script.contains("if (chatBusy())"));
     assert!(script.contains("setScanStatus(\"manual-refresh-busy\""));
     assert!(script.contains("state.bridgeCache.delete(bridgeKey)"));
-    assert!(script.contains("requestBridgeStepwise(bridgeKey, userText, assistantText)"));
+    let refresh_start = script
+        .find("function forceRefreshStepwise(")
+        .expect("manual refresh function should exist");
+    let refresh_end = script[refresh_start..]
+        .find("function clearPromptsForNewAssistant(")
+        .expect("manual refresh function should have an end")
+        + refresh_start;
+    let refresh = &script[refresh_start..refresh_end];
+    let delete_cache = refresh
+        .find("state.bridgeCache.delete(bridgeKey)")
+        .expect("manual refresh should invalidate the current cache entry");
+    let request = refresh
+        .find("requestBridgeStepwise(bridgeKey, userText, assistantText, generationMode, { userInitiated: true })")
+        .expect("manual refresh should issue a new request");
+    assert!(delete_cache < request);
+    assert!(!refresh.contains("const cachedResult = state.bridgeCache.get(bridgeKey);"));
+    assert!(!refresh.contains("manual-refresh-cache"));
+    assert!(script.contains(
+        "requestBridgeStepwise(bridgeKey, userText, assistantText, generationMode, { userInitiated: true })"
+    ));
+}
+
+#[test]
+fn stepwise_manual_mode_waits_for_refresh_while_auto_mode_reuses_successful_cache() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("const generationMode = stepwiseGenerationMode();"));
+    assert!(script.contains("if (generationMode === \"manual\" && !manualResultVisible) {"));
+    assert!(
+        script.contains(
+            "if (normalizedMode === \"manual\" && options.userInitiated !== true) return;"
+        )
+    );
+    assert!(script.contains("state.bridgeStatus = \"manual-ready\";"));
+    assert!(script.contains("title: \"当前为手动模式\","));
+    assert!(script.contains("state: \"manual\","));
+    assert!(script.contains("const hasSuccessfulCache = bridgeResult?.status === \"ok\";"));
+    assert!(script.contains("} else if (hasSuccessfulCache) {"));
+    assert!(script.contains("const hasSuccessfulCache = bridgeResult?.status === \"ok\";"));
+    assert!(script.contains("} else if (hasSuccessfulCache) {"));
+    assert!(!script.contains("manual-refresh-cache"));
+}
+
+#[test]
+fn stepwise_generation_mode_is_shared_through_backend_settings() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("bridgeCall(\"/settings/set\", {"));
+    assert!(script.contains("codexAppStepwiseGenerationMode: nextMode"));
+    assert!(
+        script
+            .contains("Object.prototype.hasOwnProperty.call(normalizedPatch, \"generationMode\")")
+    );
+    assert!(script.contains("settingsSyncEpoch += 1;"));
+    assert!(
+        script.contains("pendingSettingsPatch = { ...pendingSettingsPatch, ...normalizedPatch };")
+    );
+    assert!(
+        script.contains(
+            "if (!Object.prototype.hasOwnProperty.call(nextSettings, \"generationMode\"))"
+        )
+    );
+    assert!(script.contains("nextSettings.generationMode = stepwiseGenerationMode();"));
+}
+
+#[test]
+fn stepwise_restores_cached_bridge_status_after_context_switches() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("status: bridgeStatus,"));
+    assert!(script.contains("status: \"failed\","));
+    assert!(script.contains("if (bridgeResult) {"));
+    assert!(script.contains(
+        "state.bridgeStatus = bridgeResult.status || (bridgeResult.error ? \"failed\" : bridgeResult.disabled ? \"disabled\" : \"ok\");"
+    ));
+    assert!(script.contains("state.bridgeError = bridgeResult.error || \"\";"));
+}
+
+#[test]
+fn stepwise_releases_only_the_stale_request_that_still_owns_pending_state() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("const requestId = ++state.bridgeRequestSequence;"));
+    assert!(script.contains("const requestOwned = () => state.bridgePendingHash === key"));
+    assert!(script.contains("&& state.bridgePendingRequestId === requestId"));
+    assert!(script.contains("&& state.bridgePendingMode === normalizedMode;"));
+    assert!(script.contains("if (!requestOwned() || !requestCurrent()) return;"));
+    assert!(script.contains("if (!requestOwned()) return;"));
+    assert!(script.contains("state.bridgePendingRequestId = 0;"));
+    assert!(script.contains("if (state.bridgeStatus === \"pending\") {"));
+    assert!(script.contains("state.bridgeStatus = \"idle\";"));
+    assert!(
+        !script.contains(
+            "if (!requestCurrent()) return;\n        if (state.bridgePendingHash === key)"
+        )
+    );
+}
+
+#[test]
+fn stepwise_rejects_generation_results_after_the_answer_identity_changes() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("bridgeActiveKey: \"\","));
+    assert!(
+        script.contains("const requestAssistantMessageId = requestContext.assistantMessageId;")
+    );
+    assert!(script.contains("&& contextMatches(requestContext)"));
+    assert!(
+        script.contains("&& state.activeContext.assistantMessageId === requestAssistantMessageId")
+    );
+    assert!(script.contains("&& state.bridgeActiveKey === key"));
+    assert!(script.contains("&& !chatBusy();"));
+    assert!(script.contains("state.bridgeActiveKey = bridgeKey;"));
+    assert!(script.contains(
+        "function clearPromptsForNewAssistant(hash) {\n    state.stepwiseEpoch += 1;\n    state.bridgeActiveKey = \"\";"
+    ));
+}
+
+#[test]
+fn stepwise_shows_preparation_state_while_answer_text_settles() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("function nextProgressState() {"));
+    assert!(script.contains(
+        "state.scanStatus === \"assistant-changed\" || state.scanStatus === \"assistant-settling\""
+    ));
+    assert!(script.contains("title: \"正在整理回答\","));
+}
+
+#[test]
+fn stepwise_distinguishes_chat_busy_from_missing_answer() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("state.scanStatus === \"not-ready\" && state.scanBusy"));
+    assert!(script.contains("title: \"等待回答完成\","));
+}
+
+#[test]
+fn stepwise_replaces_an_unhealthy_same_version_runtime() {
+    let script = assets::stepwise_script();
+
+    assert!(
+        script.contains("const previousRuntimeHealthy = previous?.state?.runtimeActive === true")
+    );
+    assert!(script.contains("previous?.state?.settingsLoaded === true"));
+    assert!(script.contains("document.readyState !== \"loading\""));
+    assert!(script.contains("previous?.state?.root?.isConnected === true"));
+    assert!(script.contains("previous?.state?.popover?.isConnected === true"));
+    assert!(script.contains("Boolean(previous?.state?.observer)"));
+    assert!(script.contains("document.querySelectorAll?.(`[${ROOT_ATTR}=\"true\"]`).length === 1"));
+    assert!(script.contains("document.querySelectorAll?.(`#${STYLE_ID}`).length === 1"));
+    assert!(script.contains("&& previousRuntimeHealthy)"));
+}
+
+#[test]
+fn stepwise_records_only_real_bridge_generation_requests() {
+    let script = assets::stepwise_script();
+
+    assert_eq!(script.matches("bridge:generate-request").count(), 1);
+    assert!(script.contains("function requestBridgeStepwise(key, userText, assistantText, requestMode = stepwiseGenerationMode(), options = {})"));
+    assert!(script.contains("if (!stepwiseEnabled() || !key || state.bridgePendingHash === key || state.bridgeCache.has(key)) return;"));
+    assert!(
+        script.contains(
+            "if (normalizedMode === \"manual\" && options.userInitiated !== true) return;"
+        )
+    );
+    assert!(script.contains("pushDiagnostic(\"bridge:generate-request\""));
 }
 
 #[test]
 fn stepwise_opens_manager_as_transient_window() {
     let script = assets::stepwise_script();
 
-    assert!(script.contains("bridgeCall(\"/manager/open-transient\", {})"));
+    assert!(script.contains("bridgeCall(\"/manager/open-transient\", {"));
+    assert!(script.contains("page: \"settings\""));
+    assert!(script.contains("section: \"stepwise\""));
+}
+
+#[test]
+fn stepwise_uses_one_glass_shell_and_maps_visible_states() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        "const MATERIAL_MODES = [\"frosted\", \"clear\", \"liquid\", \"crystal\", \"matte\"];",
+        "function resolveFabExpression(",
+        "state.glass.className = \"csw-glass\";",
+        "materialLayer.append(",
+        "state.popover.append(materialLayer",
+        "function unfoldAxes(",
+        "function unfoldShell(",
+        "function startMorph(",
+        "function setOpen(",
+        "state.glass.addEventListener(\"click\", onGlassClick);",
+        "state.panel.inert = !expanded;",
+        "data-action=\"collapse\"",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing shell contract: {contract}"
+        );
+    }
+
+    assert_eq!(
+        script
+            .matches("state.glass.className = \"csw-glass\";")
+            .count(),
+        1
+    );
+    for expression in [
+        "idle",
+        "answering",
+        "surprise",
+        "generating",
+        "ready",
+        "empty",
+        "error",
+    ] {
+        assert!(script.contains(&format!("data-expression=\"{expression}\"")));
+    }
+    for obsolete_contract in [
+        ".csw-chip-shell",
+        "state.chipShell",
+        "--csw-material-progress",
+        "function materialFrame(",
+        "state.materialMorphAnimation",
+    ] {
+        assert!(
+            !script.contains(obsolete_contract),
+            "obsolete shell contract: {obsolete_contract}"
+        );
+    }
+}
+
+#[test]
+fn stepwise_morph_animation_always_reaches_a_stable_state() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        "const MORPH_FALLBACK_BUFFER_MS = 180;",
+        "state.morphTransition = transition;",
+        "if (transition.cancelled || settled) return;",
+        "path.duration + MORPH_FALLBACK_BUFFER_MS",
+        "Promise.all(transition.animations.map((item) => item.finished.catch(() => null)))",
+        "transition.cancelled = true;",
+        "if (transition.fallbackTimer) window.clearTimeout(transition.fallbackTimer);",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing morph lifecycle contract: {contract}"
+        );
+    }
+}
+
+#[test]
+fn stepwise_settings_cycles_prompt_and_generation_modes_in_place() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        "const PROMPT_CLICK_MODE_KEY = \"codex-stepwise-prompt-click-mode-v1\";",
+        "const PROMPT_CLICK_MODES = [\"direct\", \"hybrid\", \"fill\"];",
+        "const DEFAULT_PROMPT_CLICK_MODE = \"hybrid\";",
+        "function nextPromptClickMode(",
+        "return PROMPT_CLICK_MODES[(index + 1) % PROMPT_CLICK_MODES.length];",
+        "function promptClickSubmits(",
+        "if (mode === \"direct\") return true;",
+        "if (mode === \"fill\") return false;",
+        "return clickDetail >= 2;",
+        "data-action=\"prompt-click-mode\"",
+        "function writePromptClickMode(",
+        "function togglePromptClickMode(",
+        "class=\"csw-metric-action\"",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing prompt mode contract: {contract}"
+        );
+    }
+
+    for contract in [
+        "const GENERATION_MODES = [\"auto\", \"manual\"];",
+        "function nextGenerationMode(",
+        "return GENERATION_MODES[(index + 1) % GENERATION_MODES.length];",
+        "data-action=\"generation-mode\"",
+        "function toggleGenerationMode(",
+        "function setGenerationMode(value)",
+        "手动刷新",
+        "自动生成",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing generation mode contract: {contract}"
+        );
+    }
+
+    for obsolete_contract in [
+        "role=\"menuitemradio\"",
+        "function generationModeOptionsHtml()",
+        "data-generation-mode-menu role=\"menu\"",
+        "function closeSettingsChoiceMenus(",
+        "state.settingsMenuCleanup = () => {",
+    ] {
+        assert!(
+            !script.contains(obsolete_contract),
+            "obsolete settings menu contract: {obsolete_contract}"
+        );
+    }
+}
+
+#[test]
+fn stepwise_settings_footer_keeps_ui_typography_and_responsive_layout() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        "font-size: var(--csw-chrome-font);",
+        "grid-template-columns: minmax(0, max-content) minmax(0, 1fr);",
+        ".csw-click-mode .csw-metric-action {\n        overflow-wrap: anywhere;\n        white-space: normal;",
+        "button.csw-metric-action {",
+        "font-family: inherit;\n        font-size: 11px;",
+        ".csw-command-deck {\n        align-items: center;\n        display: flex;\n        flex: 0 0 auto;",
+        "@container csw-panel (max-width: 360px) {",
+        ".csw-runtime-grid {\n          gap: 6px;\n          grid-template-columns: minmax(0, 1fr);",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing responsive settings footer contract: {contract}"
+        );
+    }
+
+    let metric_button = script
+        .split_once("button.csw-metric-action {")
+        .expect("metric action button styles should exist")
+        .1
+        .split_once('}')
+        .expect("metric action button styles should be closed")
+        .0;
+    assert!(!metric_button.contains("font: inherit;"));
+}
+
+#[test]
+fn stepwise_resize_keeps_the_status_face_as_the_geometry_anchor() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        "const resizeDrag = state.resizeDrag;",
+        "typeof resizeDrag?.lockedOpensDown === \"boolean\"",
+        "function resizePositionFromFace(nextHeight, resize)",
+        "x: resize.faceCenterX - resize.chipWidth / 2,",
+        "const panelTop = resize.faceCenterY - resize.faceOffsetY;",
+        "const faceRect = state.panel?.querySelector(\".csw-head-face\")?.getBoundingClientRect();",
+        "faceCenterX,",
+        "faceCenterY,",
+        "faceOffsetY: faceCenterY - startRect.top,",
+        "lockedOpensDown: state.layout.opensDown,",
+        "startWidth - dx * 2 : startWidth + dx * 2",
+        "const nextHeight = clampPanelHeight(startHeight + dy);",
+        "state.position = clampPosition(resizePositionFromFace(nextHeight, resize));",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing status-face resize anchor contract: {contract}"
+        );
+    }
+}
+
+#[test]
+fn stepwise_generation_mode_updates_without_rebuilding_the_panel_on_success() {
+    let script = assets::stepwise_script();
+    let body = script
+        .split_once("async function setGenerationMode(value)")
+        .expect("generation mode setter")
+        .1
+        .split_once("// Manager settings are the source of truth")
+        .expect("generation mode setter boundary")
+        .0;
+
+    assert!(script.contains("function updateGenerationModeControl("));
+    assert!(body.contains("updateGenerationModeControl(nextMode, true);"));
+    assert!(body.contains("updateGenerationModeControl(nextMode);"));
+    assert_eq!(body.matches("renderFloat();").count(), 1);
+    assert!(body.contains(
+        "state.settingsStatus = payload.error || \"模式保存失败\";\n      renderFloat();"
+    ));
+}
+
+#[test]
+fn stepwise_header_tools_keep_stable_pointer_hit_regions() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        ".csw-head-side {",
+        "cursor: default;",
+        "pointer-events: auto;",
+        ".csw-head-side .csw-icon {\n        pointer-events: none;",
+        ".csw-head:has(:focus-visible) .csw-head-side .csw-icon {\n        pointer-events: auto;",
+        "if (target.closest(\".csw-head-side\")) return true;",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing stable header hit-region contract: {contract}"
+        );
+    }
+}
+
+#[test]
+fn stepwise_uses_one_shot_completion_beam_for_ready_suggestions_in_both_shapes() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        "state.completionBeam.className = \"csw-completion-beam\";",
+        "function clearCompletionBeam()",
+        "function triggerCompletionBeam(promptCount)",
+        "if (promptCount < 1 || prefersReducedMotion() || !state.popover) return;",
+        "state.popover.dataset.completionBeam = \"true\";",
+        "if (bridgeStatus === \"ok\") triggerCompletionBeam(prompts.length);",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing completion beam contract: {contract}"
+        );
+    }
+}
+
+#[test]
+fn stepwise_uses_eye_bob_only_while_generation_is_pending() {
+    let script = assets::stepwise_script();
+    let stepwise_expression = script
+        .split("function resolveStepwiseExpression")
+        .nth(1)
+        .unwrap()
+        .split("function resolveOutlineExpression")
+        .next()
+        .unwrap();
+    let outline_expression = script
+        .split("function resolveOutlineExpression")
+        .nth(1)
+        .unwrap()
+        .split("function usesOutlineExpression")
+        .next()
+        .unwrap();
+
+    assert!(script.contains("@keyframes csw-face-generate-bob"));
+    assert!(script.contains("[data-expression=\"generating\"] .csw-fab-eye"));
+    assert!(!script.contains("class=\"csw-thinking-orbs\""));
+    assert!(
+        stepwise_expression
+            .find("state.bridgeStatus === \"pending\"")
+            .unwrap()
+            < stepwise_expression.find("state.scanBusy").unwrap()
+    );
+    assert!(
+        outline_expression
+            .find("state.outlineStatus === \"pending\"")
+            .unwrap()
+            < outline_expression.find("state.scanBusy").unwrap()
+    );
+}
+
+#[test]
+fn stepwise_material_names_are_semantic_and_migrate_legacy_storage() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        "const MATERIAL_KEY = \"codex-stepwise-material-v3\";",
+        "const PREVIOUS_MATERIAL_KEY = \"codex-stepwise-material-v2\";",
+        "const LEGACY_MATERIAL_KEY = \"codex-stepwise-material-v1\";",
+        "const MATERIAL_ORIGIN_KEY = \"codex-stepwise-material-v3-origin\";",
+        "const MATERIAL_MIGRATION_KEY = \"codex-stepwise-material-v3-migrated\";",
+        "const DEFAULT_MATERIAL = \"frosted\";",
+        "function migrateMaterialStorageV3()",
+        "storage.set(MATERIAL_KEY, migrated.material);",
+        "storage.set(MATERIAL_ORIGIN_KEY, migrated.origin);",
+        "storage.set(MATERIAL_MIGRATION_KEY, \"true\");",
+        "const CLEAR_FILTER_ID = \"codex-stepwise-clear-distortion\";",
+        "const LIQUID_FILTER_ID = \"codex-stepwise-liquid-distortion\";",
+        "const CRYSTAL_FILTER_ID = \"codex-stepwise-crystal-distortion\";",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing material contract: {contract}"
+        );
+    }
+    for migration in [
+        "glass: \"frosted\"",
+        "liquid: \"clear\"",
+        "liquid2: \"liquid\"",
+        "solid: \"matte\"",
+        "opaque: \"matte\"",
+    ] {
+        assert!(script.contains(migration));
+    }
+    for obsolete_runtime_name in [
+        "LIQUID2_FILTER_ID",
+        "createLiquid2Filter",
+        ".csw-liquid2-",
+        "state.liquid2",
+        "data-material=\"glass\"",
+        "data-material=\"solid\"",
+        "data-material=\"liquid2\"",
+    ] {
+        assert!(!script.contains(obsolete_runtime_name));
+    }
+}
+
+#[test]
+fn stepwise_materials_use_mode_specific_layers_without_legacy_runtime_paths() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        "const MATERIAL_MODES = [\"frosted\", \"clear\", \"liquid\", \"crystal\", \"matte\"];",
+        "const DEFAULT_MATERIAL = \"frosted\";",
+        "function createClearFilter()",
+        "function createLiquidFilter()",
+        "function createCrystalFilter()",
+        "clearTexture.className = \"csw-clear-texture\";",
+        "state.clearDistortion.className = \"csw-clear-distortion\";",
+        "state.displacementTexture.className = \"csw-displacement-texture\";",
+        "materialLayer.append(state.displacementTexture, state.glass, state.rim);",
+        ".csw-popover[data-material=\"clear\"] .csw-clear-texture",
+        ".csw-popover[data-material=\"clear\"] .csw-clear-distortion",
+        ".csw-popover[data-material=\"liquid\"] .csw-displacement-texture",
+        ".csw-popover[data-material=\"crystal\"] .csw-displacement-texture",
+        "state.popover?.setAttribute(\"data-material\", mode);",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing material layer contract: {contract}"
+        );
+    }
+
+    for obsolete_runtime_path in [
+        "CodexMaterialMorphicons",
+        "createMorph",
+        "MATERIAL_MORPHICONS_VERSION",
+        "LIQUID2_FILTER_ID",
+        ".csw-liquid2-",
+    ] {
+        assert!(
+            !script.contains(obsolete_runtime_path),
+            "obsolete material runtime path: {obsolete_runtime_path}"
+        );
+    }
+}
+
+#[test]
+fn stepwise_shows_layered_active_pane_feedback() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        "class=\"csw-status-stage\"",
+        "class=\"csw-source-track\"",
+        "function statusStageHtml()",
+        "function sourceTrackHtml(",
+        "function paneCueForTrack(",
+        "function animateSourceCue(",
+        "function cancelSourceCueAnimation(",
+        "cancelAnimationFrame(state.sourceCueAnimation);",
+        "state.sourceCueAnimation = requestAnimationFrame(tick);",
+        "prefersReducedMotion()",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing pane feedback contract: {contract}"
+        );
+    }
+    assert!(!script.contains("function flashActivePaneHighlight("));
+    assert!(!script.contains("function panelStatusText("));
+}
+
+#[test]
+fn stepwise_settings_reflow_uses_container_queries() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("container-name: csw-panel;"));
+    assert!(script.contains("container-type: inline-size;"));
+    assert!(script.contains("@container csw-panel"));
+    assert!(script.contains("overflow-y: auto;"));
+    assert!(script.contains("grid-template-columns: minmax(max-content, 1fr) auto;"));
+    assert!(
+        script.contains("grid-template-columns: minmax(0, max-content) minmax(0, 1fr);")
+    );
+    assert!(script.contains("grid-template-columns: minmax(0, 1fr);"));
+    assert!(script.contains("grid-column: 1 / -1;"));
+}
+
+#[test]
+fn stepwise_supports_panel_drag_eye_tracking_outline_and_compact_progress() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        "const MARK_ATTR = \"data-codex-stepwise-outline-id\";",
+        "function outlineBuild(",
+        "function outlineMarkItems(",
+        "function outlineJumpTo(",
+        "function refreshOutline(",
+        "state.activeTab = \"outline\";",
+        "data-view=\"next\"",
+        "data-view=\"outline\"",
+        "data-view=\"settings\"",
+        "function installPanelDrag(",
+        "beginDrag(event, \"panel\")",
+        "function installEyeTracking(",
+        "window.addEventListener(\"pointermove\", onPointerMove, { passive: true });",
+        "state.dragCleanup?.();",
+        "state.eyeCleanup?.();",
+        "function bridgeErrorPresentation(",
+        "class=\"csw-empty\"",
+        "class=\"csw-progress-ring\"",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing interaction contract: {contract}"
+        );
+    }
+    assert!(!script.contains("const OUTLINE_API_KEY = \"__codexAnswerOutline\";"));
+    assert!(!script.contains("csw-skeleton"));
+    assert!(!script.contains(".csw-row-index"));
+}
+
+#[test]
+fn stepwise_outline_jump_uses_direction_aware_bounded_scroll() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        "const OUTLINE_TARGET_TOP_OFFSET = 28;",
+        "const OUTLINE_SCROLL_SETTLE_MS = 720;",
+        "const OUTLINE_SCROLL_RECHECK_MS = 140;",
+        "function outlineIsDocumentScroller(container)",
+        "function outlineScrollBounds(container)",
+        "style.flexDirection === \"column-reverse\" || container.scrollTop < -1",
+        "? { min: -maxDistance, max: 0 }",
+        ": { min: 0, max: maxDistance }",
+        "function outlineTargetScrollTop(element, container)",
+        "const safeTop = Math.max(0, contentSafeBounds().top - PANEL_SAFE_MARGIN);",
+        "return Math.max(safeTop, container.getBoundingClientRect().top);",
+        "function outlineScrollScale(container)",
+        "const deltaInScrollSpace = delta / outlineScrollScale(container);",
+        "const targetViewportTop = outlineScrollViewportTop(container) + OUTLINE_TARGET_TOP_OFFSET;",
+        "return clamp(container.scrollTop + deltaInScrollSpace, bounds.min, bounds.max);",
+        "function outlineScheduleScrollSettle(element, container)",
+        "container.addEventListener(\"scrollend\", settle, { once: true });",
+        "container.addEventListener(\"wheel\", cancel, { once: true, passive: true });",
+        "container.addEventListener(\"pointerdown\", cancel, { once: true, passive: true });",
+        "settleTimer = window.setTimeout(settle, OUTLINE_SCROLL_SETTLE_MS);",
+        "recheckTimer = window.setTimeout(() => {",
+        "}, OUTLINE_SCROLL_RECHECK_MS);",
+        "if (Math.abs(container.scrollTop - targetTop) > 1) container.scrollTop = targetTop;",
+        "container.scrollTo({ top: targetTop, behavior: \"smooth\" });",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing direction-aware outline scroll contract: {contract}"
+        );
+    }
+
+    let jump = script
+        .split_once("function outlineJumpTo(id) {")
+        .expect("outline jump function should exist")
+        .1
+        .split_once("function outlineBuild(")
+        .expect("outline build function should follow jump logic")
+        .0;
+    assert!(jump.contains("outlineScrollToElement(element);"));
+    assert!(!jump.contains("scrollIntoView"));
+    assert!(!jump.contains("scrollMarginTop"));
+    assert!(!jump.contains("requestAnimationFrame"));
+    assert!(!jump.contains("delta * direction"));
+}
+
+#[test]
+fn stepwise_outline_adds_turn_start_and_end_navigation_without_changing_headings() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        "data-outline-anchor=\"start\"",
+        "data-outline-anchor=\"end\"",
+        "title=\"本轮开头\"",
+        "title=\"本轮结尾\"",
+        "aria-label=\"定位到本轮开头\"",
+        "aria-label=\"定位到本轮结尾\"",
+        "function outlineJumpToAnchor(anchor)",
+        "return labeledMessageContainer(turn, \"user\") || turn;",
+        "outlineScrollToElement(startElement);",
+        "return outlineScrollToEnd(message);",
+        "const targetTop = outlineScrollBounds(container).max;",
+        "state.panel.querySelectorAll(\"[data-outline-anchor]\")",
+        "outlineJumpToAnchor(button.dataset.outlineAnchor)",
+        ".csw-outline-view {",
+        ".csw-outline-toolbar {",
+        ".csw-outline-nav-button {",
+        ".csw-outline-nav-button svg {",
+        "align-content: start;",
+        "flex: 0 0 auto;",
+        "grid-auto-rows: max-content;",
+        "min-height: max-content;",
+        "margin-top: auto;",
+        "opacity: 0;",
+        "pointer-events: none;",
+        ".csw-popover[data-open=\"true\"]:hover .csw-outline-toolbar,",
+        ".csw-popover[data-open=\"true\"]:focus-within .csw-outline-toolbar {",
+        "@media (hover: none), (pointer: coarse) {",
+        "position: sticky;",
+        "bottom: 0;",
+        ".csw-outline-row[data-outline-id] {",
+        "grid-template-columns: 16px max-content minmax(0, 1fr);",
+        "padding-left: calc(12px + var(--csw-outline-indent, 0px));",
+        "<span class=\"csw-outline-heading-marker\" aria-hidden=\"true\"></span>",
+        ".csw-outline-heading-marker::before {",
+        "background: var(--csw-accent);",
+        ".csw-outline-row[data-level=\"0\"] .csw-outline-heading-marker::before {",
+        ".csw-outline-prefix {",
+        "font-variant-numeric: tabular-nums;",
+        ".csw-outline-label {",
+        "data-numbered=\"${numberPrefix ? \"true\" : \"false\"}\"",
+        "aria-label=\"${escapeAttr(item.text)}\"",
+        "<span class=\"csw-outline-prefix\" aria-hidden=\"true\">",
+        "<span class=\"csw-outline-label\">",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing outline turn navigation contract: {contract}"
+        );
+    }
+
+    let outline_html = script
+        .split_once("function outlineHtml() {")
+        .expect("outline html function should exist")
+        .1
+        .split_once("function attachOutlineEvents()")
+        .expect("outline events should follow outline html")
+        .0;
+    assert!(outline_html.contains("state.outlineItems.map((item) =>"));
+    assert!(outline_html.contains("const numberPrefix = item.numberPrefix || \"\";"));
+    assert!(outline_html.contains("const labelText = item.labelText || item.text;"));
+    assert!(outline_html.contains("class=\"csw-outline-toolbar\""));
+    assert!(outline_html.contains("class=\"csw-outline-nav-button\""));
+    assert!(!script.contains("csw-outline-nav-row"));
+    assert!(!script.contains("csw-outline-nav-icon"));
+    assert!(!outline_html.contains("<span class=\"csw-outline-text\">本轮开头</span>"));
+    assert!(!outline_html.contains("<span class=\"csw-outline-text\">本轮结尾</span>"));
+    assert!(!outline_html.contains("state.outlineItems.unshift"));
+    assert!(!outline_html.contains("state.outlineItems.push"));
+    assert!(!script.contains("margin-left: var(--csw-outline-indent, 0px);"));
+}
+
+#[test]
+fn stepwise_outline_aligns_matching_numbering_patterns_without_overriding_raw_levels() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("function outlineHeadingNumbering(text)"));
+    assert!(script.contains("return { prefix: match[1], title: match[2], pattern: key };"));
+    assert!(script.contains("const numbering = outlineHeadingNumbering(displayText);"));
+    assert!(script.contains("const numberedLevels = new Map();"));
+    assert!(script.contains("item.displayLevel = numberedLevels.get(item.numberingPattern);"));
+    assert!(!script.contains("outlineIsTopLevelNumberedHeading"));
+    let strong_branch = script
+        .split_once("if (node.matches(\"strong,b\")) {")
+        .expect("strong heading branch should exist")
+        .1
+        .split_once("const rect = node.getBoundingClientRect();")
+        .expect("generic pseudo-heading branch should follow strong headings")
+        .0;
+    assert!(strong_branch.contains("level: 3,"));
+    assert!(strong_branch.contains("numberingPattern: numbering.pattern,"));
+    assert!(strong_branch.contains("numberPrefix: numbering.prefix,"));
+    assert!(strong_branch.contains("labelText: numbering.title,"));
+}
+
+#[test]
+fn stepwise_preserves_scroll_when_same_view_rerenders() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("function captureViewScroll("));
+    assert!(script.contains("body.dataset.viewBody !== state.activeTab"));
+    assert!(script.contains("function viewScrollTargets("));
+    assert!(script.contains("body.querySelector(\".csw-prompt-preview-scroll\")"));
+    assert!(script.contains("function restoreViewScroll("));
+    assert!(script.contains("snapshot.view !== state.activeTab"));
+    assert!(script.contains("body.scrollHeight - body.clientHeight"));
+    assert!(script.contains("body.scrollTop = clamp(snapshot.top, 0, maxTop)"));
+    assert!(script.contains("preview.dataset.previewIndex !== snapshot.preview.index"));
+    assert!(script.contains("prompt !== snapshot.preview.prompt"));
+    assert!(
+        script.contains("previewScroll.scrollTop = clamp(snapshot.preview.top, 0, previewMaxTop)")
+    );
+    assert!(script.contains("const viewScroll = captureViewScroll();"));
+    assert!(script.contains("restoreViewScroll(viewScroll);"));
+}
+
+#[test]
+fn stepwise_tracks_content_overflow_without_fading_settings() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        "function syncContentFade()",
+        "function installContentFadeTracking()",
+        "state.activeTab !== \"settings\"",
+        "popover.dataset.contentFade = String(overflowing && !atEnd);",
+        "target.addEventListener(\"scroll\", onScroll, { passive: true })",
+        "new window.ResizeObserver(onScroll)",
+        "resizeObserver?.disconnect();",
+        "state.contentFadeCleanup?.();",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing content fade contract: {contract}"
+        );
+    }
+    assert!(!script.contains(
+        ".csw-popover[data-content-fade=\"true\"] .csw-body[data-view-body=\"settings\"]"
+    ));
+}
+
+#[test]
+fn stepwise_previews_prompt_after_hover_or_focus() {
+    let script = assets::stepwise_script();
+
+    for contract in [
+        "data-label-only=\"${state.labelOnly}\"",
+        "class=\"csw-prompt-preview\"",
+        "class=\"csw-prompt-preview-scroll\"",
+        "class=\"csw-prompt-preview-content\"",
+        ".csw-prompt-preview::before {",
+        ".csw-popover[data-material=\"matte\"] .csw-prompt-preview::before {",
+        "button.addEventListener(\"pointerenter\", () => schedulePromptPreview(button));",
+        "button.addEventListener(\"pointerleave\", cancelScheduledPromptPreview);",
+        "button.addEventListener(\"focus\", () => showPromptPreview(button, true));",
+        "function schedulePromptPreview(button)",
+        "function cancelScheduledPromptPreview()",
+        "function showPromptPreview(button, immediate = false)",
+        "if (body) body.textContent = item.prompt;",
+        "if (scroll) scroll.scrollTop = 0;",
+        "if (preview.isConnected) syncContentFade();",
+    ] {
+        assert!(
+            script.contains(contract),
+            "missing prompt preview contract: {contract}"
+        );
+    }
+    assert!(!script.contains(
+        ".csw-popover[data-material=\"matte\"] .csw-prompt-preview::before {
+        display: none;"
+    ));
+    assert!(!script.contains("function expandPromptRow(button)"));
+    assert!(!script.contains("data-prompt-expanded"));
+}
+
+#[test]
+fn stepwise_keeps_context_stable_during_passive_scrolling() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("pinThreadFromTarget(event.target, \"pointer\")"));
+    assert!(script.contains("pinThreadFromTarget(event.target, \"focus\")"));
+    assert!(!script.contains("pinThreadFromTarget(event.target, \"scroll\")"));
+    assert!(!script.contains("document.addEventListener(\"scroll\", state.scrollHandler, true);"));
+    assert!(script.contains(
+        "const CONVERSATION_TURN_SELECTOR = \"div.contents[data-content-search-turn-key]\";"
+    ));
+    assert!(script.contains("function conversationTurns()"));
+    assert!(script.contains("latestTurnAnchor: null,"));
+    assert!(script.contains("function latestConversationTurnByKey(turns)"));
+    assert!(script.contains("function nextLatestTurnAnchor(previous, turns, sessionId)"));
+    assert!(
+        script.contains(
+            "const sameSession = Boolean(sessionId) && previous?.sessionId === sessionId;"
+        )
+    );
+    assert!(script.contains(
+        "if (sameSession && compareConversationTurnKeys(mounted.turnKey, previous.turnKey) < 0) return previous;"
+    ));
+    assert!(script.contains("sessionId,"));
+    assert!(script.contains("data-above-composer-conversation-id"));
+    assert!(script.contains("data-response-annotation-conversation"));
+    assert!(script.contains("const tabId = current.getAttribute?.(\"data-tab-id\");"));
+    let marker_priority = script
+        .find("const conversationMarkers = [")
+        .expect("conversation markers should exist");
+    let tab_fallback = script
+        .find("// Side chats do not expose the main conversation marker; their tab ID is stable.")
+        .expect("side-chat tab fallback should exist");
+    assert!(marker_priority < tab_fallback);
+    assert!(
+        script.contains("return assistantMessageFromTurnAnchor(updateLatestTurnAnchor(turns));")
+    );
+    assert!(!script.contains("if (turns.length) return turns.at(-1)?.assistantMessage || null;"));
+    assert!(script.contains("if (message?.turnKey) return `turn:${message.turnKey}`;"));
+    assert!(script.contains("const snapshotUserText = normalizeText(message?.userText || \"\");"));
+    assert!(script.contains("const userText = findPreviousUserText(message);"));
+    assert!(!script.contains(
+        "return Array.from(root.querySelectorAll(selectors))\n      .filter(visibleElement)"
+    ));
+}
+
+#[test]
+fn stepwise_keeps_latest_turn_anchor_when_virtualized_history_mounts() {
+    let script = assets::stepwise_script();
+    let helper_start = script
+        .find("function compareConversationTurnKeys(")
+        .expect("turn anchor helpers should exist");
+    let helper_end = script[helper_start..]
+        .find("function updateLatestTurnAnchor(")
+        .expect("turn anchor runtime wrapper should exist")
+        + helper_start;
+    let helpers = &script[helper_start..helper_end];
+
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let harness_path = temp.path().join("stepwise-turn-anchor.cjs");
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    writeln!(
+        harness,
+        "const vm = require('node:vm');\nconst source = {};",
+        serde_json::to_string(helpers).expect("helper source should serialize")
+    )
+    .expect("helper source should be written");
+    harness
+        .write_all(
+            br#"
+const context = {};
+vm.runInNewContext(`${source}\nthis.api = { nextLatestTurnAnchor, assistantMessageFromTurnAnchor };`, context);
+const { nextLatestTurnAnchor, assistantMessageFromTurnAnchor } = context.api;
+
+const turn = (turnKey, userText, assistantText) => ({
+  turnKey,
+  userText,
+  node: `turn:${turnKey}`,
+  assistantMessage: assistantText == null ? null : {
+    node: `assistant:${turnKey}`,
+    role: "assistant",
+    text: assistantText,
+    turnKey,
+  },
+});
+
+let anchor = null;
+let activeKey = "";
+let requests = 0;
+const observe = (sessionId, turns) => {
+  anchor = nextLatestTurnAnchor(anchor, turns, sessionId);
+  const message = assistantMessageFromTurnAnchor(anchor);
+  const key = message ? `${message.userText}\n${message.text}` : "";
+  if (key && key !== activeKey) {
+    activeKey = key;
+    requests += 1;
+  }
+  return {
+    anchor: anchor?.turnKey || null,
+    message: message?.text || null,
+    userText: message?.userText || null,
+    requests,
+  };
+};
+
+const a = "019fe7ac-d560-79e1-b23f-fb6efc941e96";
+const b = "019fe7ab-d560-79e1-b23f-fb6efc941e96";
+const c = "019fe7ad-d560-79e1-b23f-fb6efc941e96";
+const d = "019fe7ae-d560-79e1-b23f-fb6efc941e96";
+const result = {
+  afterA: observe("session-a", [turn(a, "A user", "A assistant answer")]),
+  afterHistoryB: observe("session-a", [turn(b, "B user", "B historical answer")]),
+  afterC: observe("session-a", [turn(c, "C user", "C assistant answer")]),
+  afterDStarts: observe("session-a", [turn(d, "D user", null)]),
+  afterDCompletes: observe("session-a", [turn(d, "D user", "D assistant answer")]),
+  afterDTransientRemount: observe("session-a", [turn(d, "D user", null)]),
+  afterSessionB: observe("session-b", [turn(b, "B user", "B session answer")]),
+};
+process.stdout.write(JSON.stringify(result));
+"#,
+        )
+        .expect("harness should be written");
+    drop(harness);
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should run turn anchor harness");
+    assert!(
+        output.status.success(),
+        "turn anchor harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("harness stdout should be JSON");
+
+    assert_eq!(
+        result["afterA"]["anchor"],
+        "019fe7ac-d560-79e1-b23f-fb6efc941e96"
+    );
+    assert_eq!(result["afterA"]["requests"], 1);
+    assert_eq!(result["afterHistoryB"], result["afterA"]);
+    assert_eq!(
+        result["afterC"]["anchor"],
+        "019fe7ad-d560-79e1-b23f-fb6efc941e96"
+    );
+    assert_eq!(result["afterC"]["message"], "C assistant answer");
+    assert_eq!(result["afterC"]["userText"], "C user");
+    assert_eq!(result["afterC"]["requests"], 2);
+    assert_eq!(
+        result["afterDStarts"]["anchor"],
+        "019fe7ae-d560-79e1-b23f-fb6efc941e96"
+    );
+    assert_eq!(result["afterDStarts"]["message"], serde_json::Value::Null);
+    assert_eq!(result["afterDStarts"]["requests"], 2);
+    assert_eq!(result["afterDCompletes"]["message"], "D assistant answer");
+    assert_eq!(result["afterDCompletes"]["userText"], "D user");
+    assert_eq!(result["afterDCompletes"]["requests"], 3);
+    assert_eq!(result["afterDTransientRemount"], result["afterDCompletes"]);
+    assert_eq!(
+        result["afterSessionB"]["anchor"],
+        "019fe7ab-d560-79e1-b23f-fb6efc941e96"
+    );
+    assert_eq!(result["afterSessionB"]["message"], "B session answer");
+    assert_eq!(result["afterSessionB"]["requests"], 4);
+}
+
+#[test]
+fn stepwise_sends_the_latest_turn_user_and_assistant_text() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("function labeledMessageContainer(turn, role)"));
+    assert!(script.contains("function labeledMessageText(container)"));
+    assert!(script.contains("const turnUserText = conversationTurn(turn)?.userText || \"\";"));
+    assert!(script.contains("lastUserMessage: userText,"));
+    assert!(script.contains("lastAssistantMessage: assistantText,"));
+}
+
+#[test]
+fn stepwise_prompt_selection_keeps_the_panel_open() {
+    let script = assets::stepwise_script();
+    let start = script
+        .find("function selectPrompt(button, submit)")
+        .unwrap();
+    let end = script[start..]
+        .find("function settingsModelLabel(")
+        .unwrap()
+        + start;
+    let select_prompt = &script[start..end];
+
+    assert!(select_prompt.contains("fillComposer(item.prompt, submit);"));
+    assert!(!select_prompt.contains("setOpen(false)"));
+    assert!(!script.contains("PROMPT_FILL_CLOSE_MS"));
+    assert!(!script.contains("promptCloseTimer"));
+}
+
+#[test]
+fn stepwise_does_not_rebuild_stable_empty_states() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("if (state.lastScanStatus === key) return false;"));
+    assert!(script.contains("pushDiagnostic(`scan:${status}`, details);\n    return true;"));
+    assert!(
+        script
+            .matches("const statusChanged = setScanStatus(")
+            .count()
+            >= 2
+    );
+    assert!(script.matches("if (statusChanged) renderFloat();").count() >= 2);
 }
 
 #[test]
@@ -1251,7 +2336,7 @@ const cases = {{
   chatGptKinds: chatGpt.marketplaceKinds,
   unrelatedErrorMatched: api.remoteAuthError({{ message: "network unavailable" }}),
 }};
-process.stdout.write(JSON.stringify(cases));
+process.stdout.write(JSON.stringify(cases), () => process.exit(0));
 "#,
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
             .expect("script path should serialize")
@@ -2387,7 +3472,7 @@ process.stdout.write(JSON.stringify({{
   pureApiProviderUnchanged,
   pureApiRecoveryUnscheduled,
   pureOfficialProviderUnchanged,
-}}));
+}}), () => process.exit(0));
 }}).catch((error) => {{
   console.error(error);
   process.exit(1);

@@ -9,6 +9,8 @@ use serde_json::{Value, json};
 use crate::settings::BackendSettings;
 
 const MAX_PROMPT_LENGTH: usize = 420;
+const MAX_LABEL_LENGTH: usize = 36;
+const MAX_SUMMARY_LENGTH: usize = 72;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +43,6 @@ struct StepwiseUpstreamRequest {
     headers: HeaderMap,
     body: Value,
 }
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepwiseRequest {
@@ -59,6 +60,8 @@ pub struct StepwiseRequest {
 pub struct StepwiseItem {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
     pub prompt: String,
 }
 
@@ -66,6 +69,8 @@ pub struct StepwiseItem {
 #[serde(rename_all = "camelCase")]
 pub struct StepwisePublicSettings {
     pub enabled: bool,
+    pub generation_mode: String,
+    pub answer_outline_enabled: bool,
     pub direct_send: bool,
     pub base_url_configured: bool,
     pub api_key_configured: bool,
@@ -82,6 +87,8 @@ pub struct StepwisePublicSettings {
 pub fn public_settings(settings: &BackendSettings) -> StepwisePublicSettings {
     StepwisePublicSettings {
         enabled: settings.codex_app_stepwise_enabled,
+        generation_mode: settings.codex_app_stepwise_generation_mode.clone(),
+        answer_outline_enabled: settings.codex_app_answer_outline_enabled,
         direct_send: settings.codex_app_stepwise_direct_send,
         base_url_configured: !settings.codex_app_stepwise_base_url.trim().is_empty(),
         api_key_configured: !stepwise_api_key(settings).is_empty(),
@@ -107,6 +114,19 @@ pub fn settings_with_payload(mut settings: BackendSettings, payload: &Value) -> 
         .and_then(Value::as_bool)
     {
         settings.codex_app_stepwise_enabled = value;
+    }
+    if let Some(value) = raw_settings
+        .get("codexAppStepwiseGenerationMode")
+        .and_then(Value::as_str)
+    {
+        settings.codex_app_stepwise_generation_mode =
+            crate::settings::normalize_stepwise_generation_mode(value);
+    }
+    if let Some(value) = raw_settings
+        .get("codexAppAnswerOutlineEnabled")
+        .and_then(Value::as_bool)
+    {
+        settings.codex_app_answer_outline_enabled = value;
     }
     if let Some(value) = raw_settings
         .get("codexAppStepwiseDirectSend")
@@ -489,22 +509,22 @@ pub fn build_messages(request: &StepwiseRequest, settings: &BackendSettings) -> 
         &request.last_assistant_message,
         limit.saturating_mul(60) / 100,
     );
-    let language_input = if last_user_message.trim().is_empty() {
-        last_assistant_message.clone()
-    } else {
-        last_user_message.clone()
-    };
     let system_content = [
         "You generate concise Codex Stepwise actions.",
         "Return strict JSON only, no markdown.",
-        "Schema: {\"items\":[{\"prompt\":\"...\",\"label\":\"optional short label\"}]}",
+        "Schema: {\"items\":[{\"label\":\"short action name\",\"summary\":\"one concise preview sentence\",\"prompt\":\"complete user message\"}]}",
         &format!(
             "Generate 1 to {} items when the assistant result is non-empty.",
             settings.codex_app_stepwise_max_items
         ),
         "Every prompt must be directly sendable by the user.",
+        "Keep label compact and summary within 72 characters when natural; prompt may be detailed and must not omit necessary context.",
         "Use the latest user intent and assistant result. Avoid generic filler.",
-        "Language policy: write Stepwise prompts in the dominant natural language of languageInput.",
+        "Order items by expected usefulness.",
+        "The first item must be the single most recommended next step for the user.",
+        "Prioritize unresolved user intent first, useful verification second, and optional improvements or exploration last.",
+        "Each item must represent a meaningfully different direction. Do not return duplicates, paraphrases, or near-duplicates.",
+        "Language policy: infer the dominant natural language from lastUserMessage, falling back to lastAssistantMessage, and write Stepwise prompts in that language.",
         "Ignore technical terms, file names, commands, APIs, and product names when detecting language; keep them in their original language when natural.",
         "Return {\"items\":[]} only when both the user intent and assistant result are empty or unusable.",
     ]
@@ -519,7 +539,6 @@ pub fn build_messages(request: &StepwiseRequest, settings: &BackendSettings) -> 
             "content": json!({
                 "lastUserMessage": last_user_message,
                 "lastAssistantMessage": last_assistant_message,
-                "languageInput": language_input,
                 "threadTitle": short_text(&request.thread_title, 240),
                 "pageUrl": short_text(&request.page_url, 240),
                 "maxItems": settings.codex_app_stepwise_max_items,
@@ -540,17 +559,23 @@ pub fn clamp_items(value: Value, max_items: u8) -> Vec<StepwiseItem> {
         let prompt = first_string_field(raw, &["prompt", "text", "action", "content", "message"])
             .or_else(|| raw.as_str())
             .unwrap_or("");
-        let prompt = normalize_spaces(prompt);
-        if prompt.is_empty() || seen.contains(&prompt) {
+        let prompt = normalize_text(prompt);
+        let dedupe_key = normalize_spaces(&prompt);
+        if prompt.is_empty() || seen.contains(&dedupe_key) {
             continue;
         }
-        seen.insert(prompt.clone());
+        seen.insert(dedupe_key);
         let label = first_string_field(raw, &["label", "title", "name"])
             .map(normalize_spaces)
             .unwrap_or_default();
+        let summary = first_string_field(raw, &["summary", "preview", "description"])
+            .map(normalize_spaces)
+            .filter(|summary| !summary.is_empty())
+            .unwrap_or_else(|| summary_for_prompt(&prompt));
         items.push(StepwiseItem {
-            label: short_text(&label, 36),
-            prompt: short_text(&prompt, MAX_PROMPT_LENGTH),
+            label: leading_text(&label, MAX_LABEL_LENGTH),
+            summary: leading_text(&summary, MAX_SUMMARY_LENGTH),
+            prompt,
         });
         if items.len() >= max_items {
             break;
@@ -573,8 +598,7 @@ pub fn extract_stepwise_items(data: &Value, max_items: u8) -> Vec<StepwiseItem> 
 }
 
 fn stepwise_payload_candidates(data: &Value) -> Vec<Value> {
-    let mut candidates = Vec::new();
-    candidates.push(data.clone());
+    let mut candidates = vec![data.clone()];
 
     if let Some(content) = data
         .get("choices")
@@ -713,6 +737,22 @@ fn normalize_spaces(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn leading_text(value: &str, limit: usize) -> String {
+    let text = normalize_text(value);
+    if text.chars().count() <= limit {
+        return text;
+    }
+    let mut result = text
+        .chars()
+        .take(limit.saturating_sub(1))
+        .collect::<String>();
+    result.push('…');
+    result
+}
+
+fn summary_for_prompt(prompt: &str) -> String {
+    leading_text(&normalize_spaces(prompt), MAX_SUMMARY_LENGTH)
+}
 
 #[cfg(test)]
 mod tests {
@@ -747,8 +787,8 @@ mod tests {
     fn clamp_items_dedupes_and_limits() {
         let items = clamp_items(
             json!([
-                {"label": "继续", "prompt": "继续排查"},
-                {"label": "重复", "prompt": "继续排查"},
+                {"label": "继续", "summary": "检查当前失败路径", "prompt": "继续排查\n并保留换行"},
+                {"label": "重复", "prompt": "继续排查 并保留换行"},
                 {"prompt": "补测试"},
                 "更新文档"
             ]),
@@ -757,8 +797,22 @@ mod tests {
 
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].label, "继续");
-        assert_eq!(items[0].prompt, "继续排查");
+        assert_eq!(items[0].summary, "检查当前失败路径");
+        assert_eq!(items[0].prompt, "继续排查\n并保留换行");
+        assert_eq!(items[1].summary, "补测试");
         assert_eq!(items[1].prompt, "补测试");
+    }
+
+    #[test]
+    fn clamp_items_keeps_long_prompt_and_backfills_summary() {
+        let long_prompt = format!("第一段\n\n{}", "完整上下文".repeat(120));
+        let items = clamp_items(json!([{"prompt": long_prompt}]), 6);
+
+        assert_eq!(items.len(), 1);
+        assert!(items[0].prompt.starts_with("第一段\n\n完整上下文"));
+        assert!(items[0].prompt.chars().count() > 420);
+        assert!(!items[0].summary.is_empty());
+        assert!(items[0].summary.chars().count() <= MAX_SUMMARY_LENGTH);
     }
 
     #[test]
@@ -775,6 +829,7 @@ mod tests {
 
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].label, "继续排查");
+        assert_eq!(items[0].summary, "请继续检查 Stepwise 返回内容");
         assert_eq!(items[0].prompt, "请继续检查 Stepwise 返回内容");
         assert_eq!(items[1].prompt, "补一个解析测试");
     }
@@ -799,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_contains_language_policy() {
+    fn prompt_infers_language_without_duplicate_input() {
         let settings = BackendSettings {
             codex_app_stepwise_max_items: 4,
             ..BackendSettings::default()
@@ -815,11 +870,23 @@ mod tests {
         );
         let system = messages[0].get("content").and_then(Value::as_str).unwrap();
         let user = messages[1].get("content").and_then(Value::as_str).unwrap();
+        let user_payload: Value = serde_json::from_str(user).unwrap();
 
         assert!(system.contains("dominant natural language"));
+        assert!(system.contains("lastUserMessage"));
+        assert!(system.contains("falling back to lastAssistantMessage"));
         assert!(system.contains("Generate 1 to 4 items when the assistant result is non-empty."));
-        assert!(user.contains("directSend"));
-        assert!(user.contains("languageInput"));
+        assert!(system.contains("summary within 72 characters"));
+        assert!(system.contains("prompt may be detailed"));
+        assert!(system.contains("Order items by expected usefulness."));
+        assert!(system.contains("The first item must be the single most recommended next step"));
+        assert!(system.contains("Do not return duplicates, paraphrases, or near-duplicates."));
+        assert_eq!(
+            user_payload["lastUserMessage"],
+            "请补一个 directSend selftest，覆盖 ProseMirror。"
+        );
+        assert_eq!(user_payload["lastAssistantMessage"], "已完成实现。");
+        assert!(user_payload.get("languageInput").is_none());
     }
 
     #[test]
@@ -829,6 +896,8 @@ mod tests {
             &json!({
                 "settings": {
                     "codexAppStepwiseEnabled": true,
+                    "codexAppStepwiseGenerationMode": "manual",
+                    "codexAppAnswerOutlineEnabled": false,
                     "codexAppStepwiseDirectSend": true,
                     "codexAppStepwiseBaseUrl": "https://api.example.test/v1/",
                     "codexAppStepwiseApiKey": " sk-test ",
@@ -844,6 +913,8 @@ mod tests {
         );
 
         assert!(settings.codex_app_stepwise_enabled);
+        assert_eq!(settings.codex_app_stepwise_generation_mode, "manual");
+        assert!(!settings.codex_app_answer_outline_enabled);
         assert!(settings.codex_app_stepwise_direct_send);
         assert_eq!(
             settings.codex_app_stepwise_base_url,

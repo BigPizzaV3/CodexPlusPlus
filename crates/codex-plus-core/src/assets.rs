@@ -404,7 +404,9 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let force_chinese_locale = force_chinese_locale_config(settings);
     let fast_startup = fast_startup_config(settings);
     let hide_official_usage_alert = hide_official_usage_alert_config(settings);
-    let stepwise_runtime = if settings.codex_app_stepwise_enabled {
+    let stepwise_runtime = if settings.codex_app_stepwise_enabled
+        || settings.codex_app_answer_outline_enabled
+    {
         stepwise_script()
     } else {
         ""
