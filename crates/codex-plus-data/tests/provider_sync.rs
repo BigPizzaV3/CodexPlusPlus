@@ -56,6 +56,21 @@ fn write_rollout(path: &Path, provider: &str, thread_id: &str, cwd: &str) {
     fs::write(path, format!("{first}\n{event}\n")).unwrap();
 }
 
+fn write_subagent_rollout(path: &Path, provider: &str, thread_id: &str, cwd: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let first = json!({
+        "type": "session_meta",
+        "payload": {
+            "id": thread_id,
+            "model_provider": provider,
+            "cwd": cwd,
+            "source": { "subagent": { "thread_spawn": { "depth": 1 } } }
+        }
+    });
+    let event = json!({"type": "event_msg", "payload": {"type": "user_message"}});
+    fs::write(path, format!("{first}\n{event}\n")).unwrap();
+}
+
 fn session_index_line(id: &str, title: &str) -> String {
     json!({
         "id": id,
@@ -438,7 +453,7 @@ fn provider_sync_ignores_spawned_subagent_threads() {
     let parent_rollout = home.join("sessions/2026/rollout-parent.jsonl");
     let child_rollout = home.join("sessions/2026/rollout-child.jsonl");
     write_rollout(&parent_rollout, "openai", "parent", "C:/workspace");
-    write_rollout(&child_rollout, "openai", "child", "C:/workspace");
+    write_rollout(&child_rollout, "openai", "child", "C:/child-new");
     let state = home.join("state_5.sqlite");
     let db = Connection::open(&state).unwrap();
     db.execute(
@@ -457,7 +472,7 @@ fn provider_sync_ignores_spawned_subagent_threads() {
     )
     .unwrap();
     db.execute(
-        "INSERT INTO threads VALUES ('child', 'openai', 0, 1, 'C:/workspace')",
+        "INSERT INTO threads VALUES ('child', 'openai', 0, 0, 'C:/child-old')",
         [],
     )
     .unwrap();
@@ -482,14 +497,136 @@ fn provider_sync_ignores_spawned_subagent_threads() {
     .unwrap();
     assert_eq!(child_first["payload"]["model_provider"], "openai");
     let db = Connection::open(state).unwrap();
-    let child_provider: String = db
+    let child: (String, i64, String) = db
         .query_row(
-            "SELECT model_provider FROM threads WHERE id = 'child'",
+            "SELECT model_provider, has_user_event, cwd FROM threads WHERE id = 'child'",
             [],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(child_provider, "openai");
+    assert_eq!(
+        child,
+        ("openai".to_string(), 0, "C:/child-old".to_string())
+    );
+}
+
+#[test]
+fn provider_sync_preserves_marked_subagents_and_explicit_user_priority() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+
+    let structured_rollout = home.join("sessions/2026/rollout-structured-child.jsonl");
+    let rollout_child = home.join("sessions/2026/rollout-source-child.jsonl");
+    let marked_rollout = home.join("sessions/2026/rollout-marked-child.jsonl");
+    let explicit_user_rollout = home.join("sessions/2026/rollout-explicit-user.jsonl");
+    write_rollout(
+        &structured_rollout,
+        "openai",
+        "structured-child",
+        "C:/structured-new",
+    );
+    write_subagent_rollout(
+        &rollout_child,
+        "openai",
+        "rollout-child",
+        "C:/rollout-new",
+    );
+    write_rollout(
+        &marked_rollout,
+        "openai",
+        "marked-child",
+        "C:/marked-new",
+    );
+    write_subagent_rollout(
+        &explicit_user_rollout,
+        "openai",
+        "explicit-user",
+        "C:/user-new",
+    );
+
+    let state = home.join("state_5.sqlite");
+    let db = Connection::open(&state).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, source TEXT, thread_source TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    let structured_source = json!({"subagent": {"thread_spawn": {"depth": 1}}}).to_string();
+    for (id, cwd, source, thread_source) in [
+        (
+            "structured-child",
+            "C:/structured-old",
+            structured_source.as_str(),
+            None,
+        ),
+        ("rollout-child", "C:/rollout-old", "cli", None),
+        ("marked-child", "C:/marked-old", "cli", Some("subagent")),
+        (
+            "explicit-user",
+            "C:/user-old",
+            structured_source.as_str(),
+            Some("user"),
+        ),
+    ] {
+        db.execute(
+            "INSERT INTO threads VALUES (?1, 'openai', 0, 0, ?2, ?3, ?4)",
+            rusqlite::params![id, cwd, source, thread_source],
+        )
+        .unwrap();
+    }
+    db.execute(
+        "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO thread_spawn_edges VALUES ('parent', 'explicit-user')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.changed_session_files, 1);
+    for (path, provider) in [
+        (&structured_rollout, "openai"),
+        (&rollout_child, "openai"),
+        (&marked_rollout, "openai"),
+        (&explicit_user_rollout, "apigather"),
+    ] {
+        let first: serde_json::Value = serde_json::from_str(
+            fs::read_to_string(path).unwrap().lines().next().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first["payload"]["model_provider"], provider);
+    }
+
+    let db = Connection::open(state).unwrap();
+    for (id, expected) in [
+        (
+            "structured-child",
+            ("openai", 0_i64, "C:/structured-old"),
+        ),
+        ("rollout-child", ("openai", 0_i64, "C:/rollout-old")),
+        ("marked-child", ("openai", 0_i64, "C:/marked-old")),
+        ("explicit-user", ("apigather", 1_i64, "C:/user-new")),
+    ] {
+        let actual: (String, i64, String) = db
+            .query_row(
+                "SELECT model_provider, has_user_event, cwd FROM threads WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(actual, (expected.0.to_string(), expected.1, expected.2.to_string()));
+    }
 }
 
 #[test]
