@@ -5820,7 +5820,7 @@ function SessionsScreen({
             <div className="provider-sync-progress session-repair-progress" data-active={providerSyncProgress.active}>
               <div className="provider-sync-progress-head">
                 <strong>{providerSyncProgress.active ? t("正在修复历史会话") : t("历史会话修复进度")}</strong>
-                <span>{providerSyncProgress.percent}%</span>
+                <span>{formatProgressPercent(providerSyncProgress.percent)}%</span>
               </div>
               <div
                 aria-valuemax={100}
@@ -6138,7 +6138,7 @@ function AboutScreen({
             <Metric label={t("状态")} value={update?.status ?? "not_checked"} />
             <Metric label={t("最新版本")} value={update?.latestVersion ?? t("未检查")} />
             <Metric label={t("资源")} value={update?.assetName ?? "-"} />
-            <Metric label={t("进度")} value={`${update?.progress ?? 0}%`} />
+            <Metric label={t("进度")} value={`${formatProgressPercent(update?.progress ?? 0)}%`} />
           </div>
           <Textarea className="log-view" readOnly value={update?.releaseSummary || update?.message || t("尚未检查 GitHub Release；更新会下载并启动安装包。")} />
           <TaskProgressBox completedTitle={t("上次更新结果")} progress={updateInstallProgress} title={t("安装包更新进度")} />
@@ -8028,6 +8028,11 @@ function formatBytes(bytes: number) {
   return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
 
+function formatProgressPercent(value: number): string {
+  if (!Number.isFinite(value)) return "0.00";
+  return Math.min(100, Math.max(0, value)).toFixed(2);
+}
+
 function GuideList({ items }: { items: string[] }) {
   return (
     <div className="guide-list">
@@ -8290,7 +8295,7 @@ function TaskProgressBox({ progress, title, completedTitle = t("上次修复结�
     <div className="provider-sync-progress task-progress" data-active={progress.active}>
       <div className="provider-sync-progress-head">
         <strong>{progress.active ? title : completedTitle}</strong>
-        <span>{progress.percent}%</span>
+        <span>{formatProgressPercent(progress.percent)}%</span>
       </div>
       <div
         aria-valuemax={100}
