@@ -255,6 +255,47 @@ fn responses_request_applies_ccswitch_reasoning_dialects() {
 }
 
 #[test]
+fn responses_request_maps_kimi_coding_reasoning_effort_per_official_spec() {
+    // 官方映射 (kimi.com/code/docs): K3 接受 reasoning_effort low/high/max,
+    // Codex 档位 minimal/low→low, medium/high→high, xhigh/max→max。
+    for (effort, expected) in [
+        ("minimal", "low"),
+        ("low", "low"),
+        ("medium", "high"),
+        ("high", "high"),
+        ("xhigh", "max"),
+        ("max", "max"),
+    ] {
+        let converted = responses_to_chat_completions(json!({
+            "model": "k3-256k",
+            "reasoning": { "effort": effort },
+            "input": "hi"
+        }))
+        .unwrap();
+        assert_eq!(converted["thinking"]["type"], "enabled", "{effort}");
+        assert_eq!(converted["reasoning_effort"], expected, "{effort}");
+    }
+
+    let k2_coding = responses_to_chat_completions(json!({
+        "model": "kimi-for-coding",
+        "reasoning": { "effort": "xhigh" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(k2_coding["reasoning_effort"], "max");
+
+    // effort none → thinking disabled (官方: K3 关思考会被路由到 K2.6, 保持现状)
+    let off = responses_to_chat_completions(json!({
+        "model": "k3-256k",
+        "reasoning": { "effort": "none" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(off["thinking"]["type"], "disabled");
+    assert!(off.get("reasoning_effort").is_none());
+}
+
+#[test]
 fn responses_request_maps_developer_role_to_system_for_chat_upstream() {
     let converted = responses_to_chat_completions(json!({
         "model": "deepseek-chat",
