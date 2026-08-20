@@ -625,7 +625,21 @@ pub fn run_provider_sync_with_target(
     let sync_result = (|| -> anyhow::Result<ProviderSyncResult> {
         let sqlite_paths = provider_sync_db_paths(&home);
         let thread_kinds = sqlite_provider_sync_thread_kinds(&sqlite_paths)?;
-        let repair_audit = audit_provider_sync_state(&home, &sqlite_paths)?;
+        let repair_audit = match audit_provider_sync_state(&home, &sqlite_paths) {
+            Ok(audit) => audit,
+            Err(error) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "provider_sync.repair_audit_failed",
+                    json!({
+                        "error": error.to_string(),
+                        "backup_root": home
+                            .join("backups_state/provider-sync")
+                            .to_string_lossy(),
+                    }),
+                );
+                ProviderSyncAudit::default()
+            }
+        };
         let collected = collect_session_changes(
             &home,
             &target_provider,
@@ -879,10 +893,15 @@ fn backup_database_thread_ids(home: &Path) -> anyhow::Result<HashSet<String>> {
 
 fn collect_files_recursive(root: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     for entry in fs::read_dir(root)? {
-        let path = entry?.path();
-        if path.is_dir() {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
             collect_files_recursive(&path, files)?;
-        } else if path.is_file() {
+        } else if file_type.is_file() {
             files.push(path);
         }
     }
