@@ -1005,6 +1005,8 @@ fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"15\""));
+    assert!(script.contains("codexPluginFilterSourceCache = new WeakMap()"));
+    assert!(script.contains("function codexPluginFilterCallbackSource(callback)"));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
     assert!(script.contains("source.includes(\"!u(e.marketplaceName)||e.marketplaceName===r\")"));
     assert!(script.contains("source.includes(\"!Eu(e.marketplaceName)||e.marketplaceName===n\")"));
@@ -1024,12 +1026,10 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("Array.prototype.filter"));
     assert!(script.contains("codexPluginBuildFlavorFilterPatch"));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
-    assert!(script.contains(
-        "codexPluginOfficialMarketplaceName(plugin?.marketplaceName) && !callback(plugin)"
-    ));
+    assert!(script.contains("!filtered.includes(plugin) : !callback(plugin)"));
     assert!(script.contains("isCodexPluginMarketplaceHiddenFilter"));
     assert!(script.contains(
-        "codexPluginOfficialMarketplaceName(marketplace?.name) && !callback(marketplace)"
+        "!filtered.includes(marketplace) : !callback(marketplace)"
     ));
     assert!(script.contains("plugin_marketplace_hidden_filter_bypassed"));
     assert!(script.contains("method === \"list-plugins\""));
@@ -1109,6 +1109,12 @@ fn injection_script_logs_marketplace_grouping_diagnostics() {
 fn injection_script_recovers_plugin_search_from_remote_auth_errors() {
     let cases = run_plugin_marketplace_search_contract_harness();
 
+    assert_eq!(cases["ordinaryBuildMatched"], false);
+    assert_eq!(cases["ordinaryHiddenMatched"], false);
+    assert_eq!(cases["ordinaryFunctionToStringCalls"], 0);
+    assert_eq!(cases["buildFlavorMatched"], true);
+    assert_eq!(cases["buildFlavorMatchedAgain"], true);
+    assert_eq!(cases["cachedFunctionToStringCalls"], 1);
     assert_eq!(cases["initialKinds"], json!(["local", "vertical"]));
     assert_eq!(cases["latestBroadOmittedHasKinds"], false);
     assert_eq!(cases["latestBroadOmittedKinds"], serde_json::Value::Null);
@@ -1195,6 +1201,25 @@ window.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = [{{
 }}];
 const api = window.__codexPlusPluginMarketplaceTest;
 api.reset();
+const nativeFunctionToString = Function.prototype.toString;
+let functionToStringCalls = 0;
+Function.prototype.toString = function(...args) {{
+  functionToStringCalls += 1;
+  return nativeFunctionToString.apply(this, args);
+}};
+const ordinaryFilter = (value) => value > 1;
+const ordinaryBuildMatched = api.isBuildFlavorFilter(ordinaryFilter, [1, 2, 3]);
+const ordinaryHiddenMatched = api.isHiddenMarketplaceFilter(ordinaryFilter, [1, 2, 3]);
+const ordinaryFunctionToStringCalls = functionToStringCalls;
+const buildFlavorFilter = function(e) {{
+  /* !u(e.marketplaceName)||e.marketplaceName===r */
+  return false;
+}};
+const officialPlugins = [{{ name: "product-design", marketplaceName: "openai-bundled" }}];
+const buildFlavorMatched = api.isBuildFlavorFilter(buildFlavorFilter, officialPlugins);
+const buildFlavorMatchedAgain = api.isBuildFlavorFilter(buildFlavorFilter, officialPlugins);
+const cachedFunctionToStringCalls = functionToStringCalls - ordinaryFunctionToStringCalls;
+Function.prototype.toString = nativeFunctionToString;
 const initial = api.patchRequestParams("list-plugins", {{ cwds: ["C:/workspace"] }});
 api.setCodexAppVersion("26.803.41515");
 const latestBroadOmitted = api.patchRequestParams("list-plugins", {{ cwds: ["C:/workspace"] }});
@@ -1225,6 +1250,12 @@ const remoteUnavailable = api.remoteCatalogUnavailable();
 api.reset();
 const chatGpt = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote"] }});
 const cases = {{
+  ordinaryBuildMatched,
+  ordinaryHiddenMatched,
+  ordinaryFunctionToStringCalls,
+  buildFlavorMatched,
+  buildFlavorMatchedAgain,
+  cachedFunctionToStringCalls,
   initialKinds: initial.marketplaceKinds,
   latestBroadOmittedHasKinds: Object.prototype.hasOwnProperty.call(latestBroadOmitted, "marketplaceKinds"),
   latestBroadOmittedKinds: latestBroadOmitted.marketplaceKinds ?? null,
