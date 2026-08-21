@@ -521,6 +521,7 @@ fn provider_sync_preserves_marked_subagents_and_explicit_user_priority() {
     let rollout_child = home.join("sessions/2026/rollout-source-child.jsonl");
     let marked_rollout = home.join("sessions/2026/rollout-marked-child.jsonl");
     let explicit_user_rollout = home.join("sessions/2026/rollout-explicit-user.jsonl");
+    let guardian_user_rollout = home.join("sessions/2026/rollout-guardian-user.jsonl");
     write_rollout(
         &structured_rollout,
         "openai",
@@ -539,11 +540,17 @@ fn provider_sync_preserves_marked_subagents_and_explicit_user_priority() {
         "marked-child",
         "C:/marked-new",
     );
-    write_subagent_rollout(
+    write_rollout(
         &explicit_user_rollout,
         "openai",
         "explicit-user",
         "C:/user-new",
+    );
+    write_subagent_rollout(
+        &guardian_user_rollout,
+        "openai",
+        "guardian-user",
+        "C:/guardian-new",
     );
 
     let state = home.join("state_5.sqlite");
@@ -569,6 +576,12 @@ fn provider_sync_preserves_marked_subagents_and_explicit_user_priority() {
         (
             "explicit-user",
             "C:/user-old",
+            "subagent_review",
+            Some("user"),
+        ),
+        (
+            "guardian-user",
+            "C:/guardian-old",
             structured_source.as_str(),
             Some("user"),
         ),
@@ -600,6 +613,7 @@ fn provider_sync_preserves_marked_subagents_and_explicit_user_priority() {
         (&rollout_child, "openai"),
         (&marked_rollout, "openai"),
         (&explicit_user_rollout, "apigather"),
+        (&guardian_user_rollout, "openai"),
     ] {
         let first: serde_json::Value = serde_json::from_str(
             fs::read_to_string(path).unwrap().lines().next().unwrap(),
@@ -617,6 +631,7 @@ fn provider_sync_preserves_marked_subagents_and_explicit_user_priority() {
         ("rollout-child", ("openai", 0_i64, "C:/rollout-old")),
         ("marked-child", ("openai", 0_i64, "C:/marked-old")),
         ("explicit-user", ("apigather", 1_i64, "C:/user-new")),
+        ("guardian-user", ("openai", 0_i64, "C:/guardian-old")),
     ] {
         let actual: (String, i64, String) = db
             .query_row(
@@ -888,9 +903,15 @@ fn provider_sync_catalogs_user_threads_but_skips_subagents() {
         ("user-one", "vscode", "user", 200000_i64),
         (
             "explicit-user",
-            r#"{"sub_agent":{"other":"review"}}"#,
+            "subagent_review",
             "user",
             205000_i64,
+        ),
+        (
+            "guardian-user",
+            r#"{"subagent":{"other":"guardian"}}"#,
+            "user",
+            207000_i64,
         ),
         ("marked-child", "vscode", "subagent", 210000_i64),
         (
