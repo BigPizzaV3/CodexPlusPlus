@@ -140,6 +140,7 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /sourceTitle: String\(ref\?\.title \|\| ""\)\.trim\(\)/);
     assert.match(renderer, /result\?\.status === "failed"/);
     assert.match(renderer, /正在刷新侧边栏/);
+    assert.match(renderer, /已创建新会话，但重命名失败/);
     assert.match(renderer, /\.\.\.\(modelProvider \? \{ modelProvider \} : \{\}\)/);
     assert.match(renderer, /\.\.\.\(model \? \{ model \} : \{\}\)/);
     assert.match(renderer, /用当前 API 继续/);

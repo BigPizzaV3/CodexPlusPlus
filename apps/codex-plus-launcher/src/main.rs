@@ -737,21 +737,6 @@ impl BridgeDataService for LauncherDataService {
             .fork_thread(&thread_id, model.as_deref(), model_provider.as_deref())
             .await;
         let next_thread_id = result?;
-        let source_title = source_title.unwrap_or_default();
-        let trimmed_title = source_title.trim();
-        let short_id = next_thread_id.chars().take(8).collect::<String>();
-        let base_title = if trimmed_title.is_empty() {
-            "新会话"
-        } else {
-            trimmed_title.strip_prefix("new-").unwrap_or(trimmed_title)
-        };
-        let new_title = format!("new-{base_title}-{short_id}")
-            .chars()
-            .take(160)
-            .collect::<String>();
-        let rename_result = server.set_thread_name(&next_thread_id, &new_title).await;
-        server.close().await;
-        rename_result?;
         let visible_thread_id = next_thread_id.clone();
         let codex_home = codex_plus_core::codex_sqlite::default_codex_home_dir();
         tokio::task::spawn_blocking(move || {
@@ -759,12 +744,46 @@ impl BridgeDataService for LauncherDataService {
         })
         .await
         .map_err(|error| anyhow::anyhow!("更新新会话可见状态失败: {error}"))??;
+        let new_title = forked_session_title(source_title.as_deref(), &next_thread_id);
+        let rename_warning = server
+            .set_thread_name(&next_thread_id, &new_title)
+            .await
+            .err()
+            .map(|error| error.to_string());
+        server.close().await;
+        if let Some(message) = rename_warning.as_deref() {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "launcher.fork_session_rename_warning",
+                json!({
+                    "thread_id": next_thread_id.clone(),
+                    "message": message
+                }),
+            );
+        }
         Ok(json!({
             "status": "forked",
             "thread": { "id": next_thread_id, "name": new_title },
-            "sourceThreadId": thread_id
+            "sourceThreadId": thread_id,
+            "warning": rename_warning
         }))
     }
+}
+
+fn forked_session_title(source_title: Option<&str>, thread_id: &str) -> String {
+    const MAX_TITLE_CHARS: usize = 160;
+    let short_id = thread_id.chars().take(8).collect::<String>();
+    let trimmed_title = source_title.unwrap_or_default().trim();
+    let base_title = if trimmed_title.is_empty() {
+        "新会话"
+    } else {
+        trimmed_title.strip_prefix("new-").unwrap_or(trimmed_title)
+    };
+    let prefix = "new-";
+    let suffix = format!("-{short_id}");
+    let reserved = prefix.chars().count() + suffix.chars().count();
+    let base_limit = MAX_TITLE_CHARS.saturating_sub(reserved);
+    let truncated_base = base_title.chars().take(base_limit).collect::<String>();
+    format!("{prefix}{truncated_base}{suffix}")
 }
 
 impl LauncherDataService {
@@ -1149,6 +1168,49 @@ mod tests {
             true,
             &[42]
         ));
+    }
+
+    #[test]
+    fn fork_session_marks_thread_visible_before_best_effort_rename() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn fork_session")
+            .expect("fork_session implementation");
+        let end = source[start..]
+            .find("\n    }\n}\n\nfn forked_session_title")
+            .expect("fork_session implementation end");
+        let body = &source[start..start + end];
+        let fork = body
+            .find(".fork_thread(&thread_id")
+            .expect("fork request should run");
+        let visible = body
+            .find("mark_thread_visible(&codex_home, &visible_thread_id)")
+            .expect("forked thread should be marked visible");
+        let rename = body
+            .find(".set_thread_name(&next_thread_id, &new_title)")
+            .expect("forked thread should be renamed");
+
+        assert!(fork < visible);
+        assert!(visible < rename);
+        assert!(body.contains("\"warning\": rename_warning"));
+        assert!(!body.contains("rename_result?"));
+    }
+
+    #[test]
+    fn forked_session_title_preserves_short_id_suffix_with_long_titles() {
+        let title = forked_session_title(Some(&"很长".repeat(120)), "abcdef1234567890");
+
+        assert!(title.starts_with("new-"));
+        assert!(title.ends_with("-abcdef12"));
+        assert_eq!(title.chars().count(), 160);
+    }
+
+    #[test]
+    fn forked_session_title_strips_existing_new_prefix() {
+        assert_eq!(
+            forked_session_title(Some("new-原会话"), "1234567890"),
+            "new-原会话-12345678"
+        );
     }
 
     #[test]

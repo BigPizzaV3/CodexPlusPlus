@@ -7755,7 +7755,8 @@
       const nextThreadId = forkedThreadId(result);
       if (!nextThreadId) throw new Error("Codex app-server 未返回新会话 ID");
       await refreshRecentConversationsForHost();
-      showToast("已创建新会话，原历史会话保持不变", null);
+      const warning = String(result?.warning || "").trim();
+      showToast(warning ? `已创建新会话，但重命名失败：${warning}` : "已创建新会话，原历史会话保持不变", null);
       if (!openForkedThread(row, threadId, nextThreadId)) {
         showToast(`已创建新会话：${nextThreadId.slice(0, 8)}，正在刷新侧边栏`, null);
         window.setTimeout(() => window.location.reload(), 800);
