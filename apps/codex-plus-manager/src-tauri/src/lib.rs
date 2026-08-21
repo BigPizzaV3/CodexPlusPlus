@@ -75,6 +75,7 @@ pub fn run() {
             commands::weixin_connect_status,
             commands::weixin_connect_start,
             commands::weixin_connect_stop,
+            commands::find_desktop_codex_cli,
             commands::dream_skin_status,
             commands::import_dream_skin_image,
             commands::reset_dream_skin_image,
