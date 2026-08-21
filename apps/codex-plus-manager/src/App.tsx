@@ -96,7 +96,10 @@ import {
   type ModelWindowRow,
 } from "./model-windows";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
-import { resolveProviderSyncCompletion } from "./provider-sync-flow";
+import {
+  historicalCleanupRecoveryBackupDir,
+  resolveProviderSyncCompletion,
+} from "./provider-sync-flow";
 import { resolveLaunchStatus } from "./launch-status";
 import {
   defaultDreamSkinTheme,
@@ -2350,8 +2353,11 @@ export function App() {
                     threadIds: selectedIds,
                   }),
                 );
+                const recoveryBackupDir = historicalCleanupRecoveryBackupDir(cleanup);
+                if (recoveryBackupDir) {
+                  setHistoricalCleanupBackupDir(recoveryBackupDir);
+                }
                 if (cleanup && isSuccessStatus(cleanup.status)) {
-                  setHistoricalCleanupBackupDir(cleanup.backupDir ?? null);
                   finalResult = {
                     ...result,
                     prunedSessionIndexEntries: cleanup.prunedEntries ?? 0,

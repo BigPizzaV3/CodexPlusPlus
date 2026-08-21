@@ -10,11 +10,31 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+fn remove_rollout_file(path: &Path) -> std::io::Result<()> {
+    fs::remove_file(path)
+}
+
 pub fn delete_local_from_paths(
     db_paths: impl IntoIterator<Item = PathBuf>,
     backup_store: BackupStore,
     session: &SessionRef,
     codex_home: Option<&Path>,
+) -> DeleteResult {
+    delete_local_from_paths_with_remover(
+        db_paths,
+        backup_store,
+        session,
+        codex_home,
+        remove_rollout_file,
+    )
+}
+
+fn delete_local_from_paths_with_remover(
+    db_paths: impl IntoIterator<Item = PathBuf>,
+    backup_store: BackupStore,
+    session: &SessionRef,
+    codex_home: Option<&Path>,
+    rollout_remover: fn(&Path) -> std::io::Result<()>,
 ) -> DeleteResult {
     let mut result = failed(
         &session.session_id,
@@ -26,8 +46,10 @@ pub fn delete_local_from_paths(
     for db_path in db_paths {
         let adapter = match codex_home {
             Some(home) => SQLiteStorageAdapter::new(db_path, backup_store.clone())
-                .with_codex_home(home),
-            None => SQLiteStorageAdapter::new(db_path, backup_store.clone()),
+                .with_codex_home(home)
+                .with_rollout_remover(rollout_remover),
+            None => SQLiteStorageAdapter::new(db_path, backup_store.clone())
+                .with_rollout_remover(rollout_remover),
         };
         let candidate_result = adapter.delete_local(session);
         match candidate_result.status {
@@ -97,6 +119,7 @@ pub struct SQLiteStorageAdapter {
     backup_store: BackupStore,
     allowed_db_paths: Vec<PathBuf>,
     codex_home: Option<PathBuf>,
+    rollout_remover: fn(&Path) -> std::io::Result<()>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +164,7 @@ impl SQLiteStorageAdapter {
             db_path,
             backup_store,
             codex_home: None,
+            rollout_remover: remove_rollout_file,
         }
     }
 
@@ -155,6 +179,11 @@ impl SQLiteStorageAdapter {
 
     pub fn with_codex_home(mut self, codex_home: impl Into<PathBuf>) -> Self {
         self.codex_home = Some(codex_home.into());
+        self
+    }
+
+    fn with_rollout_remover(mut self, rollout_remover: fn(&Path) -> std::io::Result<()>) -> Self {
+        self.rollout_remover = rollout_remover;
         self
     }
 
@@ -584,28 +613,28 @@ impl SQLiteStorageAdapter {
         let mut file_errors = Vec::new();
         for file in file_backups {
             if let Some(path) = file.get("path").and_then(Value::as_str) {
-                if let Err(err) = fs::remove_file(path) {
+                if let Err(err) = (self.rollout_remover)(Path::new(path)) {
                     if err.kind() != std::io::ErrorKind::NotFound {
                         file_errors.push(format!("{path}: {err}"));
                     }
                 }
             }
         }
-        let session_index_note = self
-            .codex_home
-            .as_deref()
-            .and_then(|home| {
-                crate::provider_sync::remove_session_index_entry(home, &thread_id)
-                    .err()
-                    .map(|error| format!("session_index.jsonl 清理失败：{error}"))
-            });
+        let session_index_note = self.codex_home.as_deref().and_then(|home| {
+            crate::provider_sync::remove_session_index_entry(home, &thread_id)
+                .err()
+                .map(|error| format!("session_index.jsonl 清理失败：{error}"))
+        });
         if !file_errors.is_empty() {
-            let mut message = format!("本地数据库已删除，但文件删除失败：{}", file_errors.join("; "));
+            let mut message = format!(
+                "本地数据库已删除，但文件删除失败：{}",
+                file_errors.join("; ")
+            );
             if let Some(note) = session_index_note.as_deref() {
                 message = format!("{message}；{note}");
             }
             return Ok(DeleteResult {
-                status: DeleteStatus::Failed,
+                status: DeleteStatus::Partial,
                 session_id: thread_id,
                 message,
                 undo_token: Some(token.clone()),
@@ -1251,11 +1280,13 @@ fn detect_file_restore_conflicts(tables: &Map<String, Value>) -> anyhow::Result<
             if !allowed_paths.contains(path) {
                 anyhow::bail!("unexpected backup file path: {path}");
             }
-            if Path::new(path).exists() {
-                anyhow::bail!("restore conflict: file already exists: {path}");
-            }
             if let Some(content) = file.get("content_b64").and_then(Value::as_str) {
-                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, content)?;
+                let expected =
+                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, content)?;
+                let path = Path::new(path);
+                if path.exists() && fs::read(path)? != expected {
+                    anyhow::bail!("restore conflict: file already exists: {}", path.display());
+                }
             }
         }
     }
@@ -1411,5 +1442,75 @@ fn json_to_sql_value(value: &Value) -> SqlValue {
         }
         Value::String(value) => SqlValue::Text(value.clone()),
         other => SqlValue::Text(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn reject_rollout_delete(_: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "injected rollout delete failure",
+        ))
+    }
+
+    #[test]
+    fn rollout_delete_failure_is_partial_and_keeps_the_aggregate_undo_token() {
+        let temp = tempdir().unwrap();
+        let db_path = temp.path().join("state_5.sqlite");
+        let rollout_path = temp.path().join("rollout.jsonl");
+        let rollout_text = "{\"type\":\"message\"}\n";
+        fs::write(&rollout_path, rollout_text).unwrap();
+        let db = Connection::open(&db_path).unwrap();
+        db.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO threads VALUES ('t1', ?1, 'Codex Thread')",
+            [rollout_path.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        drop(db);
+        let backups = BackupStore::new(temp.path().join("backups"));
+        let session = SessionRef::new("t1", "Codex Thread").unwrap();
+
+        let deleted = delete_local_from_paths_with_remover(
+            vec![db_path.clone()],
+            backups.clone(),
+            &session,
+            None,
+            reject_rollout_delete,
+        );
+
+        assert_eq!(deleted.status, DeleteStatus::Partial);
+        assert!(deleted.message.contains("文件删除失败"));
+        assert!(deleted.undo_token.is_some());
+        assert!(rollout_path.exists());
+        assert_eq!(
+            Connection::open(&db_path)
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM threads", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+
+        let restored = SQLiteStorageAdapter::new(&db_path, backups)
+            .undo(deleted.undo_token.as_deref().unwrap());
+        assert_eq!(restored.status, DeleteStatus::Undone);
+        assert_eq!(fs::read_to_string(&rollout_path).unwrap(), rollout_text);
+        assert_eq!(
+            Connection::open(&db_path)
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM threads", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 }

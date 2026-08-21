@@ -3,6 +3,13 @@ export type ProviderSyncNoticeResult = {
   message: string;
 };
 
+export function historicalCleanupRecoveryBackupDir(
+  result: { backupDir?: string | null } | null,
+): string | null {
+  const backupDir = result?.backupDir?.trim();
+  return backupDir ? backupDir : null;
+}
+
 export function resolveProviderSyncCompletion<T extends ProviderSyncNoticeResult>(
   syncResult: T,
   cleanupFailure: ProviderSyncNoticeResult | null,

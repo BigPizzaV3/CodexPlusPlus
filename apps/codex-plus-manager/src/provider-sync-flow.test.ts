@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveProviderSyncCompletion } from "./provider-sync-flow.ts";
+import {
+  historicalCleanupRecoveryBackupDir,
+  resolveProviderSyncCompletion,
+} from "./provider-sync-flow.ts";
 
 test("provider sync success remains the final visible result when cleanup succeeds", () => {
   const syncResult = { status: "ok", message: "sync complete", changedSessionFiles: 2 };
@@ -28,4 +31,17 @@ test("cleanup failure remains final and preserves its recovery path", () => {
   assert.equal(completion.result.message, cleanupFailure.message);
   assert.equal(completion.result.changedSessionFiles, 2);
   assert.notEqual(completion.result.message, syncResult.message);
+});
+
+test("cleanup failure with a backup keeps the UI recovery entry available", () => {
+  const cleanupFailure = {
+    status: "failed",
+    message: "the second database failed",
+    backupDir: "C:/backup/history-cleanup/partial",
+  };
+
+  assert.equal(
+    historicalCleanupRecoveryBackupDir(cleanupFailure),
+    cleanupFailure.backupDir,
+  );
 });

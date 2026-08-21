@@ -1,6 +1,6 @@
 use base64::Engine;
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
-use rusqlite::{Connection, ToSql, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, ToSql, params_from_iter};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -287,7 +287,8 @@ pub fn undo_historical_cleanup(
     for file in &manifest.files {
         let path = home.join(&file.name);
         let current = fs::read(&path).unwrap_or_default();
-        if sha256_hex(&current) != file.post_cleanup_sha256 {
+        let current_sha256 = sha256_hex(&current);
+        if current_sha256 != file.post_cleanup_sha256 && current_sha256 != file.original_sha256 {
             return Err(cleanup_error(
                 format!("{} 已在清理后发生变化，撤销已拒绝", file.name),
                 Some(backup_dir),
@@ -789,17 +790,20 @@ fn delete_database_rows(rows: &DbRows, selected: &HashSet<String>) -> anyhow::Re
 fn preflight_restore_databases(rows: &[DbRows], selected: &HashSet<String>) -> anyhow::Result<()> {
     for rows in rows {
         let db = Connection::open(&rows.path)?;
-        for table in ["local_thread_catalog", "thread_timeline_ledger"] {
+        for (table, expected) in [
+            ("local_thread_catalog", &rows.catalog_rows),
+            ("thread_timeline_ledger", &rows.timeline_rows),
+        ] {
             if !table_columns(&db, table)?.contains("thread_id") {
                 continue;
             }
             for id in selected {
-                let exists: i64 = db.query_row(
-                    &format!("SELECT COUNT(*) FROM {table} WHERE thread_id = ?1"),
-                    [id],
-                    |row| row.get(0),
+                let current = select_rows(
+                    &db,
+                    &format!("SELECT * FROM {table} WHERE thread_id = ?1"),
+                    &[OwnedSqlValue(SqlValue::Text(id.clone()))],
                 )?;
-                if exists > 0 {
+                if current.iter().any(|row| !expected.contains(row)) {
                     anyhow::bail!("restore conflict: {table} already contains {id}");
                 }
             }
@@ -815,13 +819,19 @@ fn preflight_restore_databases(rows: &[DbRows], selected: &HashSet<String>) -> a
 fn restore_database_rows(rows: &DbRows) -> anyhow::Result<()> {
     let mut db = Connection::open(&rows.path)?;
     let tx = db.transaction()?;
+    let mut restored_catalog_rows = 0;
     for row in &rows.catalog_rows {
-        insert_row(&tx, "local_thread_catalog", row)?;
+        if !row_exists_exactly(&tx, "local_thread_catalog", row)? {
+            insert_row(&tx, "local_thread_catalog", row)?;
+            restored_catalog_rows += 1;
+        }
     }
     for row in &rows.timeline_rows {
-        insert_row(&tx, "thread_timeline_ledger", row)?;
+        if !row_exists_exactly(&tx, "thread_timeline_ledger", row)? {
+            insert_row(&tx, "thread_timeline_ledger", row)?;
+        }
     }
-    increment_catalog_revision(&tx, rows.catalog_rows.len())?;
+    increment_catalog_revision(&tx, restored_catalog_rows)?;
     tx.commit()?;
     Ok(())
 }
@@ -1078,6 +1088,35 @@ fn insert_row(db: &Connection, table: &str, row: &Map<String, Value>) -> anyhow:
         params_from_iter(values),
     )?;
     Ok(())
+}
+
+fn row_exists_exactly(
+    db: &Connection,
+    table: &str,
+    row: &Map<String, Value>,
+) -> anyhow::Result<bool> {
+    if row.is_empty() || !table_columns(db, table)?.contains("thread_id") {
+        return Ok(false);
+    }
+    let columns = row.keys().collect::<Vec<_>>();
+    let predicates = columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| format!("\"{}\" IS ?{}", column.replace('"', "\"\""), index + 1))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let values = columns
+        .iter()
+        .map(|column| OwnedSqlValue(json_to_sql(&row[*column])))
+        .collect::<Vec<_>>();
+    Ok(db
+        .query_row(
+            &format!("SELECT 1 FROM {table} WHERE {predicates} LIMIT 1"),
+            params_from_iter(values),
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
 }
 
 fn sql_to_json(value: ValueRef<'_>) -> Value {

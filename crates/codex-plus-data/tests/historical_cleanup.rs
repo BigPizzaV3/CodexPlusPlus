@@ -348,6 +348,50 @@ fn sqlite_failure_is_reported_and_backup_remains_available() {
 }
 
 #[test]
+fn later_sqlite_failure_can_be_undone_from_the_reported_backup() {
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    let first_db = catalog_db(home);
+    add_ghost(&first_db, "");
+    let second_db = home.join("sqlite/z-failing.db");
+    fs::copy(&first_db, &second_db).unwrap();
+    Connection::open(&second_db)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_catalog_delete BEFORE DELETE ON local_thread_catalog
+             BEGIN SELECT RAISE(ABORT, 'second database blocked'); END;",
+        )
+        .unwrap();
+    write_index_and_global_state(home);
+
+    let preview = preview_historical_cleanup(Some(home)).unwrap();
+    let error =
+        apply_historical_cleanup(Some(home), &preview.snapshot_sha256, &[GHOST.to_string()])
+            .unwrap_err();
+    let backup = error.backup_dir.as_ref().unwrap();
+
+    assert_eq!(error.partial_result.catalog_rows, 1);
+    assert_eq!(error.partial_result.timeline_rows, 1);
+    assert_eq!(count(&first_db, "local_thread_catalog", GHOST), 0);
+    assert_eq!(count(&second_db, "local_thread_catalog", GHOST), 1);
+    assert!(
+        !fs::read_to_string(home.join("session_index.jsonl"))
+            .unwrap()
+            .contains(GHOST)
+    );
+
+    undo_historical_cleanup(Some(home), backup).unwrap();
+
+    assert_eq!(count(&first_db, "local_thread_catalog", GHOST), 1);
+    assert_eq!(count(&second_db, "local_thread_catalog", GHOST), 1);
+    assert!(
+        fs::read_to_string(home.join("session_index.jsonl"))
+            .unwrap()
+            .contains(GHOST)
+    );
+}
+
+#[test]
 fn json_write_failure_is_reported_before_database_changes() {
     let temp = tempdir().unwrap();
     let home = temp.path();
