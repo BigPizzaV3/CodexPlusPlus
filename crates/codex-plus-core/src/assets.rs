@@ -46,10 +46,7 @@ const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
     include_bytes!("../../../assets/inject/upstream/dream-skin/macos/portal-hero.png");
 const PET_REAL_MOUSE_SCRIPT: &str = include_str!("../../../assets/inject/pet-real-mouse-inject.js");
 const STEPWISE_SCRIPT: &str = include_str!("../../../assets/inject/stepwise-inject.js");
-const FLOATING_PANEL_SCRIPT: &str =
-    include_str!("../../../assets/inject/floating-panel-inject.js");
-const FLOATING_PANEL_VISUAL_SCRIPT: &str =
-    include_str!("../../../assets/inject/floating-panel-visual-inject.js");
+const FLOATING_PANEL_SCRIPT: &str = include_str!("../../../assets/inject/floating-panel-inject.js");
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
 const DREAM_SKIN_RENDERER_REVISION: &str = "20-modern-main-surface";
 
@@ -278,10 +275,6 @@ pub fn floating_panel_script() -> &'static str {
     FLOATING_PANEL_SCRIPT
 }
 
-pub fn floating_panel_visual_script() -> &'static str {
-    FLOATING_PANEL_VISUAL_SCRIPT
-}
-
 pub fn pet_real_mouse_script() -> &'static str {
     PET_REAL_MOUSE_SCRIPT
 }
@@ -417,12 +410,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let fast_startup = fast_startup_config(settings);
     let hide_official_usage_alert = hide_official_usage_alert_config(settings);
     let stepwise_runtime = if floating_panel_enabled(settings) {
-        format!(
-            "{}\n{}\n{}",
-            stepwise_script(),
-            floating_panel_script(),
-            floating_panel_visual_script()
-        )
+        format!("{}\n{}", stepwise_script(), floating_panel_script())
     } else {
         String::new()
     };
@@ -458,7 +446,11 @@ fn floating_panel_enabled(settings: &BackendSettings) -> bool {
     }
     serde_json::to_value(settings)
         .ok()
-        .and_then(|value| value.get("codexAppAnswerOutlineEnabled").and_then(Value::as_bool))
+        .and_then(|value| {
+            value
+                .get("codexAppAnswerOutlineEnabled")
+                .and_then(Value::as_bool)
+        })
         .unwrap_or(false)
 }
 

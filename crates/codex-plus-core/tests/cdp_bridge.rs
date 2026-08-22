@@ -105,18 +105,16 @@ fn injection_script_includes_stepwise_runtime_when_enabled() {
 }
 
 #[test]
-fn injection_script_includes_visual_layer_only_with_stepwise() {
-    let disabled = assets::injection_script_with_settings(57321, &BackendSettings::default());
-    assert!(!disabled.contains("__codexFloatingPanelVisual"));
+fn floating_panel_structure_does_not_embed_visual_layer() {
+    let script = assets::floating_panel_script();
 
-    let enabled = BackendSettings {
-        codex_app_stepwise_enabled: true,
-        ..Default::default()
-    };
-    let script = assets::injection_script_with_settings(57321, &enabled);
-    assert!(script.contains("__codexFloatingPanelVisual"));
-    assert!(script.contains("cfp-noise-filter"));
-    assert!(script.contains("prefers-reduced-motion"));
+    assert!(script.contains("const API_KEY = \"__codexFloatingPanel\";"));
+    assert!(script.contains("const OUTLINE_KEY = \"__codexAnswerOutline\";"));
+    assert!(script.contains("function setOpen(open)"));
+    assert!(script.contains("function beginResize(event)"));
+    assert!(script.contains("function switchTab(tab)"));
+    assert!(!script.contains("cfp-noise-filter"));
+    assert!(!script.contains("floating-panel-visual-inject.js"));
 }
 
 #[test]
