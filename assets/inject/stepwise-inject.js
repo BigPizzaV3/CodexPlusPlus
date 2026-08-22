@@ -5,8 +5,9 @@
   const STYLE_ID = "codex-stepwise-panel-style";
   const ROOT_ATTR = "data-codex-stepwise-root";
   const PAYLOAD_ATTR = "data-codex-stepwise-payload";
-  const SCRIPT_VERSION = "1.0.0-core";
+  const SCRIPT_VERSION = "1.1.0-runtime-stability";
   const PAGE_BRIDGE = "__codexSessionDeleteBridge";
+  const CONVERSATION_TURN_SELECTOR = "div.contents[data-content-search-turn-key]";
   const POSITION_KEY = "codex-stepwise-float-position-v1";
   const DIAGNOSTICS_KEY = "codex-stepwise-diagnostics-v1";
   const SCAN_DELAY_MS = 220;
@@ -23,8 +24,22 @@
   let codexAppActionsPromise = null;
   let settingsPromise = null;
   let startupPromise = null;
+  let settingsRequestId = 0;
+  let settingsSyncEpoch = 0;
+  let pendingSettingsPatch = {};
 
   const previous = window[API_KEY];
+  const previousRuntimeHealthy = previous?.state?.runtimeActive === true
+    && Boolean(previous?.state?.observer)
+    && document.querySelectorAll?.(`[${ROOT_ATTR}="true"]`).length === 1
+    && document.querySelectorAll?.(`#${STYLE_ID}`).length === 1;
+  if (previous?.version === SCRIPT_VERSION
+    && previous?.state?.destroyed !== true
+    && previousRuntimeHealthy) {
+    previous.syncSettings?.();
+    previous.start?.();
+    return;
+  }
   if (previous && typeof previous.destroy === "function") previous.destroy();
   document.querySelectorAll?.(`[${ROOT_ATTR}="true"]`).forEach((node) => node.remove());
   document.getElementById(STYLE_ID)?.remove();
@@ -45,15 +60,37 @@
     currentHash: "",
     lastScanStatus: "",
     bridgeCache: new Map(),
+    bridgeActiveKey: "",
     bridgePendingHash: "",
+    bridgePendingRequestId: 0,
+    bridgeRequestSequence: 0,
     bridgeStatus: "idle",
     bridgeError: "",
     prompts: [],
+    promptContext: null,
     settings: null,
+    settingsLoaded: false,
+    settingsFingerprint: "",
     settingsStatus: "",
     theme: "dark",
     themeMode: "auto",
     scans: 0,
+    runtimeGeneration: 0,
+    runtimeActive: false,
+    stepwiseEpoch: 0,
+    pinnedThreadRoot: null,
+    pinnedPaneKey: "",
+    pinnedSessionId: "",
+    latestTurnAnchor: null,
+    nodeKeySeq: 0,
+    nodeKeys: new WeakMap(),
+    activeContext: {
+      paneRoot: null,
+      paneKey: "",
+      sessionId: "",
+      assistantMessageId: "",
+      generation: 0,
+    },
     destroyed: false,
     diagnostics: readDiagnostics(),
   };
@@ -62,8 +99,40 @@
     return !state.destroyed && window[API_KEY]?.instanceId === INSTANCE_ID;
   }
 
+  function isCurrentRuntime(generation = state.runtimeGeneration) {
+    return isCurrentInstance() && state.runtimeActive && generation === state.runtimeGeneration;
+  }
+
   function stepwiseEnabled() {
     return state.settings?.enabled === true;
+  }
+
+  function normalizeGenerationMode(value) {
+    return value === "manual" ? "manual" : "auto";
+  }
+
+  function stepwiseGenerationMode(settings = state.settings) {
+    return normalizeGenerationMode(settings?.generationMode);
+  }
+
+  function settingsFingerprint(settings) {
+    if (!settings) return "";
+    return JSON.stringify({
+      enabled: settings.enabled === true,
+      generationMode: stepwiseGenerationMode(settings),
+      directSend: settings.directSend === true,
+      baseUrlConfigured: settings.baseUrlConfigured === true,
+      apiKeyConfigured: settings.apiKeyConfigured === true,
+      model: settings.model || "",
+      maxItems: settings.maxItems || 0,
+    });
+  }
+
+  function applyRuntimeSettings(settings) {
+    state.settings = settings;
+    state.settingsLoaded = true;
+    state.settingsFingerprint = settingsFingerprint(settings);
+    state.settingsStatus = statusLine(settings);
   }
 
   function normalizeText(value) {
@@ -1161,11 +1230,18 @@
   }
 
   async function loadSettings() {
+    const requestId = ++settingsRequestId;
+    const requestEpoch = settingsSyncEpoch;
     const payload = await bridgeCall("/stepwise/settings", {});
-    if (!isCurrentInstance()) return null;
+    if (!isCurrentInstance()
+      || requestId !== settingsRequestId
+      || requestEpoch !== settingsSyncEpoch) return null;
     if (payload?.settings) {
-      state.settings = payload.settings;
-      state.settingsStatus = statusLine(payload.settings);
+      const nextSettings = { ...payload.settings, ...pendingSettingsPatch };
+      pendingSettingsPatch = {};
+      if (settingsFingerprint(nextSettings) !== state.settingsFingerprint) {
+        applyRuntimeSettings(nextSettings);
+      }
     } else {
       state.settingsStatus = payload?.error || "Bridge 未就绪";
     }
@@ -1174,11 +1250,13 @@
   }
 
   async function ensureSettings() {
-    if (state.settings) return state.settings;
+    if (state.settingsLoaded) return state.settings;
     if (!settingsPromise) {
-      settingsPromise = loadSettings().finally(() => {
-        settingsPromise = null;
+      const request = loadSettings();
+      const tracked = request.finally(() => {
+        if (settingsPromise === tracked) settingsPromise = null;
       });
+      settingsPromise = tracked;
     }
     return settingsPromise;
   }
@@ -1225,14 +1303,126 @@
     return "";
   }
 
-  function chatRoot() {
+  function threadRoots() {
     return Array.from(document.querySelectorAll(".thread-scroll-container"))
-      .filter((node) => visibleElement(node) && !state.root?.contains(node))
+      .filter((node) => node instanceof HTMLElement)
+      .filter((node) => visibleElement(node) && !state.root?.contains(node));
+  }
+
+  function threadRootOf(node) {
+    return node instanceof Element ? node.closest?.(".thread-scroll-container") : null;
+  }
+
+  function nodeIdentity(node, prefix = "node") {
+    if (!(node instanceof Node)) return "";
+    const existing = state.nodeKeys.get(node);
+    if (existing) return existing;
+    const key = `${prefix}-${++state.nodeKeySeq}`;
+    state.nodeKeys.set(node, key);
+    return key;
+  }
+
+  function stablePaneKeyForRoot(root) {
+    if (!(root instanceof Element)) return "";
+    return root.getAttribute("data-thread-id")
+      || root.getAttribute("data-testid")
+      || root.id
+      || nodeIdentity(root, "pane");
+  }
+
+  function sessionIdForRoot(root) {
+    const pathMatch = location.pathname.match(/\/(?:c|thread)\/([^/?#]+)/i);
+    return root?.getAttribute?.("data-thread-id") || pathMatch?.[1] || "";
+  }
+
+  function resolveActiveThreadRoot() {
+    if (state.pinnedThreadRoot?.isConnected && visibleElement(state.pinnedThreadRoot)) {
+      return state.pinnedThreadRoot;
+    }
+    const root = threadRoots()
       .sort((left, right) => {
         const leftRect = visibleRect(left);
         const rightRect = visibleRect(right);
         return (rightRect.width * rightRect.height) - (leftRect.width * leftRect.height);
       })[0] || null;
+    state.pinnedThreadRoot = root;
+    state.pinnedPaneKey = stablePaneKeyForRoot(root);
+    state.pinnedSessionId = sessionIdForRoot(root);
+    state.activeContext = {
+      ...state.activeContext,
+      paneRoot: root,
+      paneKey: state.pinnedPaneKey,
+      sessionId: state.pinnedSessionId,
+      generation: state.activeContext.generation + 1,
+    };
+    return root;
+  }
+
+  function contextSnapshot() {
+    return {
+      paneKey: state.activeContext.paneKey,
+      sessionId: state.activeContext.sessionId,
+      assistantMessageId: state.activeContext.assistantMessageId,
+      generation: state.activeContext.generation,
+    };
+  }
+
+  function contextMatches(snapshot) {
+    return Boolean(snapshot)
+      && snapshot.paneKey === state.activeContext.paneKey
+      && snapshot.sessionId === state.activeContext.sessionId
+      && snapshot.assistantMessageId === state.activeContext.assistantMessageId
+      && snapshot.generation === state.activeContext.generation;
+  }
+
+  function conversationTurn(turn) {
+    if (!(turn instanceof Element)) return null;
+    const turnKey = turn.getAttribute("data-content-search-turn-key") || nodeIdentity(turn, "turn");
+    const messages = Array.from(turn.querySelectorAll("[data-message-author-role]"));
+    const userNode = messages.find((node) => roleFromElement(node) === "user") || null;
+    const assistantNode = [...messages].reverse().find((node) => roleFromElement(node) === "assistant") || null;
+    const userText = elementText(userNode);
+    const assistantText = elementText(assistantNode);
+    if (!assistantNode || assistantText.length < 8) return null;
+    return {
+      node: assistantNode,
+      turn,
+      turnKey,
+      role: "assistant",
+      text: assistantText,
+      userText,
+    };
+  }
+
+  function conversationTurns() {
+    const root = resolveActiveThreadRoot();
+    if (!root) return [];
+    return Array.from(root.querySelectorAll(CONVERSATION_TURN_SELECTOR))
+      .map(conversationTurn)
+      .filter(Boolean);
+  }
+
+  function compareConversationTurnKeys(left, right) {
+    return String(left || "").localeCompare(String(right || ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  }
+
+  function latestConversationTurnByKey(turns) {
+    return turns.reduce((latest, candidate) => {
+      if (!latest) return candidate;
+      return compareConversationTurnKeys(candidate.turnKey, latest.turnKey) > 0 ? candidate : latest;
+    }, null);
+  }
+
+  function assistantMessageId(message) {
+    if (!message?.node) return "";
+    return message.turnKey || message.node.getAttribute?.("data-message-id") || nodeIdentity(message.node, "assistant");
+  }
+
+  function chatRoot() {
+    return resolveActiveThreadRoot();
   }
 
   function elementCenter(rect) {
@@ -1545,6 +1735,25 @@
   }
 
   function findLatestAssistantMessage() {
+    const turns = conversationTurns();
+    const latestTurn = latestConversationTurnByKey(turns);
+    if (latestTurn) {
+      if (!state.latestTurnAnchor
+        || compareConversationTurnKeys(latestTurn.turnKey, state.latestTurnAnchor.turnKey) >= 0
+        || !state.latestTurnAnchor.node?.isConnected) {
+        state.latestTurnAnchor = latestTurn;
+      }
+      const anchored = turns.find((turn) => turn.turnKey === state.latestTurnAnchor?.turnKey)
+        || state.latestTurnAnchor;
+      if (anchored?.node?.isConnected) {
+        const messageId = assistantMessageId(anchored);
+        if (messageId && state.activeContext.assistantMessageId !== messageId) {
+          state.activeContext.assistantMessageId = messageId;
+        }
+        return anchored;
+      }
+    }
+
     const candidates = [];
     const rows = allActionRows();
     for (let index = 0; index < rows.length; index += 1) {
@@ -1555,10 +1764,17 @@
 
     candidates.push(...messageCandidates().filter((item) => item.role === "assistant"));
     candidates.push(...assistantBubbleCandidates());
-    return latestMessageByDocumentOrder(candidates);
+    const message = latestMessageByDocumentOrder(candidates);
+    const messageId = assistantMessageId(message);
+    if (messageId && state.activeContext.assistantMessageId !== messageId) {
+      state.activeContext.assistantMessageId = messageId;
+    }
+    return message;
   }
 
-  function findPreviousUserText(assistantNode) {
+  function findPreviousUserText(message) {
+    if (message?.userText) return shortText(message.userText, 2000);
+    const assistantNode = message?.node || message;
     const candidates = messageCandidates();
     const before = candidates.filter((item) => {
       if (item.node === assistantNode) return false;
@@ -1740,7 +1956,11 @@
           typeof item === "string" ? "" : item?.label || item?.title || item?.name || "",
           36
         ).replace(/\s+/g, " ");
-        return prompt ? { label: label || labelForPrompt(prompt), prompt } : null;
+        const summary = shortText(
+          typeof item === "string" ? "" : item?.summary || item?.description || item?.preview || "",
+          72
+        ).replace(/\s+/g, " ");
+        return prompt ? { label: label || labelForPrompt(prompt), summary, prompt } : null;
       })
       .filter(Boolean);
     return uniquePrompts(items);
@@ -1757,16 +1977,30 @@
   }
 
   function bridgeRequestKey(userText, assistantText) {
-    return hashText(`${shortText(userText, 2400)}\n\n--- assistant ---\n\n${shortText(assistantText, 5200)}`);
+    return hashText(`${state.activeContext.sessionId}\n${shortText(userText, 2400)}\n\n--- assistant ---\n\n${shortText(assistantText, 5200)}`);
   }
 
-  function requestBridgeStepwise(key, userText, assistantText) {
+  function requestBridgeStepwise(key, userText, assistantText, options = {}) {
     if (!stepwiseEnabled()) return;
     if (!key || state.bridgePendingHash === key || state.bridgeCache.has(key)) return;
 
+    if (stepwiseGenerationMode() === "manual" && options.userInitiated !== true) return;
+    const requestContext = contextSnapshot();
+    const requestEpoch = state.stepwiseEpoch;
+    const requestId = ++state.bridgeRequestSequence;
+    const requestOwned = () => state.bridgePendingHash === key
+      && state.bridgePendingRequestId === requestId;
+    const requestCurrent = () => stepwiseEnabled()
+      && requestEpoch === state.stepwiseEpoch
+      && contextMatches(requestContext)
+      && state.bridgeActiveKey === key
+      && !chatBusy();
+
     state.bridgePendingHash = key;
+    state.bridgePendingRequestId = requestId;
     state.bridgeStatus = "pending";
     state.bridgeError = "";
+    state.promptContext = requestContext;
     renderFloat();
 
     bridgeCall(
@@ -1781,7 +2015,7 @@
       }
     )
       .then((payload) => {
-        if (!isCurrentInstance()) return;
+        if (!requestOwned() || !requestCurrent()) return;
         const prompts = payload?.disabled || payload?.error ? [] : payloadPrompts(payload);
         pushDiagnostic("bridge:generate-result", {
           status: payload?.status || "",
@@ -1798,17 +2032,24 @@
         });
         state.bridgeStatus = payload?.disabled ? "disabled" : payload?.error ? "failed" : "ok";
         state.bridgeError = normalizeText(payload?.error || "");
+        state.promptContext = requestContext;
       })
       .catch((error) => {
-        if (!isCurrentInstance()) return;
+        if (!requestOwned() || !requestCurrent()) return;
         pushDiagnostic("bridge:generate-failed", { error: error.message });
         state.bridgeCache.set(key, { disabled: true, error: error.message, prompts: [] });
         state.bridgeStatus = "failed";
         state.bridgeError = error.message;
       })
       .finally(() => {
-        if (!isCurrentInstance()) return;
-        if (state.bridgePendingHash === key) state.bridgePendingHash = "";
+        if (!requestOwned()) return;
+        state.bridgePendingHash = "";
+        state.bridgePendingRequestId = 0;
+        if (state.bridgeStatus === "pending") {
+          state.bridgeStatus = "idle";
+          state.bridgeError = "";
+          state.promptContext = null;
+        }
         scheduleScan(0);
       });
   }
@@ -1838,23 +2079,33 @@
     const stepwisePayload = extractStepwisePayload(message);
     hideStepwisePayload(message.node);
     const assistantText = shortText(stepwisePayload.textWithoutPayload || message.text);
-    const userText = findPreviousUserText(message.node);
+    const userText = findPreviousUserText(message);
     const bridgeKey = bridgeRequestKey(userText, assistantText);
+    state.bridgeActiveKey = bridgeKey;
+    state.stepwiseEpoch += 1;
+    state.bridgePendingHash = "";
+    state.bridgePendingRequestId = 0;
     if (bridgeKey) state.bridgeCache.delete(bridgeKey);
 
     state.lastAssistantHash = hashText(assistantText);
     state.lastAssistantAt = 0;
     state.currentHash = `${state.lastAssistantHash}:manual-refresh`;
     state.prompts = [];
+    state.promptContext = contextSnapshot();
     state.bridgeError = "";
     setScanStatus("manual-refresh", { hash: state.lastAssistantHash, textLength: assistantText.length });
-    requestBridgeStepwise(bridgeKey, userText, assistantText);
+    requestBridgeStepwise(bridgeKey, userText, assistantText, { userInitiated: true });
     renderFloat();
   }
 
   function clearPromptsForNewAssistant(hash) {
+    state.stepwiseEpoch += 1;
+    state.bridgeActiveKey = "";
+    state.bridgePendingHash = "";
+    state.bridgePendingRequestId = 0;
     state.currentHash = `${hash}:pending`;
     state.prompts = [];
+    state.promptContext = contextSnapshot();
     state.bridgeError = "";
     renderFloat();
   }
@@ -2032,13 +2283,14 @@
     return false;
   }
 
-  function scan() {
-    if (!isCurrentInstance()) return;
+  function scan(generation = state.runtimeGeneration, timerId = 0) {
+    if (!isCurrentRuntime(generation)) return;
+    if (timerId && state.timer !== timerId) return;
+    if (timerId) state.timer = 0;
     if (!stepwiseEnabled()) {
       stopRuntime();
       return;
     }
-    state.timer = 0;
     state.scans += 1;
     installStyle();
     installFloat();
@@ -2085,12 +2337,17 @@
       return;
     }
 
-    const userText = findPreviousUserText(message.node);
+    const userText = findPreviousUserText(message);
     const bridgeKey = bridgeRequestKey(userText, assistantText);
+    state.bridgeActiveKey = bridgeKey;
     const bridgeResult = state.bridgeCache.get(bridgeKey);
     const prompts = bridgeResult?.prompts?.length ? bridgeResult.prompts : stepwisePayload.prompts;
 
-    if (!bridgeResult) {
+    if (bridgeResult) {
+      state.bridgeStatus = bridgeResult.disabled ? "disabled" : bridgeResult.error ? "failed" : "ok";
+      state.bridgeError = bridgeResult.error || "";
+      state.promptContext = contextSnapshot();
+    } else if (stepwiseGenerationMode() === "auto") {
       pushDiagnostic("bridge:generate-request", {
         userTextLength: userText.length,
         assistantTextLength: assistantText.length,
@@ -2098,6 +2355,9 @@
         inlinePromptCount: stepwisePayload.prompts.length,
       });
       requestBridgeStepwise(bridgeKey, userText, assistantText);
+    } else {
+      state.bridgeStatus = "manual-ready";
+      state.bridgeError = "";
     }
     setScanStatus("ready", {
       hash,
@@ -2114,17 +2374,19 @@
   }
 
   function scheduleScan(delay = SCAN_DELAY_MS) {
-    if (!isCurrentInstance()) return;
+    if (!isCurrentRuntime()) return;
     if (!stepwiseEnabled()) {
       stopRuntime();
       return;
     }
     if (state.timer) window.clearTimeout(state.timer);
-    state.timer = window.setTimeout(scan, delay);
+    const generation = state.runtimeGeneration;
+    const timerId = window.setTimeout(() => scan(generation, timerId), delay);
+    state.timer = timerId;
   }
 
   function installObserver() {
-    if (!isCurrentInstance() || !stepwiseEnabled()) return false;
+    if (!isCurrentRuntime() || !stepwiseEnabled()) return false;
     const root = document.body || document.documentElement;
     if (!root) return false;
 
@@ -2144,6 +2406,9 @@
   }
 
   function stopRuntime() {
+    state.runtimeActive = false;
+    state.runtimeGeneration += 1;
+    state.stepwiseEpoch += 1;
     if (state.timer) window.clearTimeout(state.timer);
     state.timer = 0;
     window.removeEventListener("resize", onResize);
@@ -2151,6 +2416,23 @@
     state.observer = null;
     state.themeObserver?.disconnect();
     state.themeObserver = null;
+    state.bridgeActiveKey = "";
+    state.bridgePendingHash = "";
+    state.bridgePendingRequestId = 0;
+    state.bridgeStatus = "idle";
+    state.bridgeError = "";
+    state.promptContext = null;
+    state.latestTurnAnchor = null;
+    state.pinnedThreadRoot = null;
+    state.pinnedPaneKey = "";
+    state.pinnedSessionId = "";
+    state.activeContext = {
+      paneRoot: null,
+      paneKey: "",
+      sessionId: "",
+      assistantMessageId: "",
+      generation: state.activeContext.generation + 1,
+    };
     state.root?.remove();
     state.root = null;
     state.fab = null;
@@ -2160,17 +2442,23 @@
   }
 
   function activateRuntime() {
+    if (!isCurrentInstance()) return false;
     if (!stepwiseEnabled()) {
       stopRuntime();
-      return;
+      return false;
     }
+    if (!state.runtimeActive) {
+      state.runtimeGeneration += 1;
+      state.runtimeActive = true;
+    }
+    const generation = state.runtimeGeneration;
     installStyle();
     installFloat();
     if (!state.observer && !installObserver()) {
       document.addEventListener(
         "DOMContentLoaded",
         () => {
-          if (!isCurrentInstance() || !stepwiseEnabled()) return;
+          if (!isCurrentRuntime(generation) || !stepwiseEnabled()) return;
           installObserver();
           installFloat();
           void ensureSettings();
@@ -2180,28 +2468,36 @@
       );
     }
     scheduleScan(0);
+    return true;
   }
 
   async function syncSettings(patch = {}) {
     if (!isCurrentInstance()) return null;
+    const normalizedPatch = {};
     if (patch && typeof patch === "object") {
-      state.settings = { ...(state.settings || {}), ...patch };
+      Object.entries(patch).forEach(([key, value]) => {
+        if (value !== undefined) normalizedPatch[key] = value;
+      });
     }
-    if (patch?.enabled === false) {
-      stopRuntime();
+    if (Object.keys(normalizedPatch).length) {
+      pendingSettingsPatch = { ...pendingSettingsPatch, ...normalizedPatch };
+      applyRuntimeSettings({ ...(state.settings || {}), ...normalizedPatch });
+      settingsSyncEpoch += 1;
       settingsPromise = null;
-      startupPromise = null;
-      const settings = await loadSettings();
-      if (!isCurrentInstance()) return null;
-      if (settings?.enabled) activateRuntime();
-      else pushDiagnostic("settings:disabled-sync", {});
-      return settings;
     }
-    if (patch?.enabled === true) {
-      pushDiagnostic("settings:enabled-sync", {});
-      activateRuntime();
+    if (typeof normalizedPatch.enabled === "boolean"
+      || Object.prototype.hasOwnProperty.call(normalizedPatch, "generationMode")) {
+      if (!stepwiseEnabled()) {
+        pushDiagnostic("settings:disabled-sync", {});
+        if (state.runtimeActive) stopRuntime();
+      } else {
+        activateRuntime();
+        scheduleScan(0);
+      }
+      void loadSettings();
       return state.settings;
     }
+
     settingsPromise = null;
     startupPromise = null;
     const settings = await loadSettings();
@@ -2237,9 +2533,10 @@
 
   async function start() {
     if (startupPromise) return startupPromise;
+    const generation = state.runtimeGeneration;
     startupPromise = (async () => {
       const settings = await ensureSettings();
-      if (!isCurrentInstance()) return;
+      if (!isCurrentInstance() || generation !== state.runtimeGeneration) return;
       if (!settings?.enabled) {
         pushDiagnostic("startup:disabled", {});
         startupPromise = null;
@@ -2255,6 +2552,7 @@
     instanceId: INSTANCE_ID,
     state,
     scan,
+    forceRefresh: forceRefreshStepwise,
     start,
     destroy,
     loadSettings,

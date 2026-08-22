@@ -780,7 +780,7 @@ fn injection_script_menu_exposes_stepwise_switch_and_syncs_panel() {
     assert!(script.contains("function syncStepwisePanel"));
     assert!(script.contains("window.__codexStepwisePanel?.syncSettings"));
     assert!(script.contains("if (key === \"stepwise\") syncStepwisePanel(value)"));
-    assert!(script.contains("if (patch?.enabled === true)"));
+    assert!(script.contains("typeof normalizedPatch.enabled === \"boolean\""));
     assert!(script.contains("activateRuntime();"));
 }
 
@@ -791,9 +791,8 @@ fn stepwise_runtime_stops_work_when_disabled() {
     assert!(script.contains("function stepwiseEnabled()"));
     assert!(script.contains("if (!stepwiseEnabled()) {"));
     assert!(script.contains("stopRuntime();"));
-    assert!(script.contains(
-        "function requestBridgeStepwise(key, userText, assistantText) {\n    if (!stepwiseEnabled()) return;"
-    ));
+    assert!(script.contains("function requestBridgeStepwise(key, userText, assistantText, options = {})"));
+    assert!(script.contains("if (!stepwiseEnabled()) return;"));
 }
 
 #[test]
@@ -853,7 +852,46 @@ fn stepwise_exposes_manual_refresh_without_refreshing_busy_chats() {
     assert!(script.contains("state.bridgeStatus === \"pending\" || chatBusy()"));
     assert!(script.contains("setScanStatus(\"manual-refresh-busy\""));
     assert!(script.contains("state.bridgeCache.delete(bridgeKey)"));
-    assert!(script.contains("requestBridgeStepwise(bridgeKey, userText, assistantText)"));
+    assert!(script.contains(
+        "requestBridgeStepwise(bridgeKey, userText, assistantText, { userInitiated: true })"
+    ));
+}
+
+#[test]
+fn stepwise_runtime_pins_the_latest_turn_across_virtualized_history() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("const CONVERSATION_TURN_SELECTOR"));
+    assert!(script.contains("function latestConversationTurnByKey(turns)"));
+    assert!(script.contains("state.latestTurnAnchor = latestTurn"));
+    assert!(script.contains("turn.turnKey === state.latestTurnAnchor?.turnKey"));
+    assert!(script.contains("function assistantMessageId(message)"));
+    assert!(!script.contains("window.addEventListener(\"scroll\", scheduleScan"));
+}
+
+#[test]
+fn stepwise_runtime_rejects_stale_settings_and_generation_results() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("let settingsRequestId = 0"));
+    assert!(script.contains("let settingsSyncEpoch = 0"));
+    assert!(script.contains("requestId !== settingsRequestId"));
+    assert!(script.contains("requestEpoch !== settingsSyncEpoch"));
+    assert!(script.contains("const requestContext = contextSnapshot()"));
+    assert!(script.contains("const requestCurrent = () => stepwiseEnabled()"));
+    assert!(script.contains("contextMatches(requestContext)"));
+    assert!(script.contains("state.bridgePendingRequestId === requestId"));
+}
+
+#[test]
+fn stepwise_runtime_keeps_auto_and_manual_generation_distinct() {
+    let script = assets::stepwise_script();
+
+    assert!(script.contains("function stepwiseGenerationMode(settings = state.settings)"));
+    assert!(script.contains("stepwiseGenerationMode() === \"manual\""));
+    assert!(script.contains("options.userInitiated !== true"));
+    assert!(script.contains("state.bridgeStatus = \"manual-ready\""));
+    assert!(script.contains("state.bridgeCache.has(key)"));
 }
 
 #[test]

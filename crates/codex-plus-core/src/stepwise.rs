@@ -9,6 +9,8 @@ use serde_json::{Value, json};
 use crate::settings::BackendSettings;
 
 const MAX_PROMPT_LENGTH: usize = 420;
+const MAX_LABEL_LENGTH: usize = 36;
+const MAX_SUMMARY_LENGTH: usize = 72;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +61,8 @@ pub struct StepwiseRequest {
 pub struct StepwiseItem {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
     pub prompt: String,
 }
 
@@ -489,22 +493,21 @@ pub fn build_messages(request: &StepwiseRequest, settings: &BackendSettings) -> 
         &request.last_assistant_message,
         limit.saturating_mul(60) / 100,
     );
-    let language_input = if last_user_message.trim().is_empty() {
-        last_assistant_message.clone()
-    } else {
-        last_user_message.clone()
-    };
     let system_content = [
         "You generate concise Codex Stepwise actions.",
         "Return strict JSON only, no markdown.",
-        "Schema: {\"items\":[{\"prompt\":\"...\",\"label\":\"optional short label\"}]}",
+        "Schema: {\"items\":[{\"label\":\"short action name\",\"summary\":\"one concise preview sentence\",\"prompt\":\"complete user message\"}]}",
         &format!(
             "Generate 1 to {} items when the assistant result is non-empty.",
             settings.codex_app_stepwise_max_items
         ),
         "Every prompt must be directly sendable by the user.",
+        "The first item must be the single most recommended next step for the user.",
+        "Order remaining items by expected usefulness: unresolved intent, verification, then optional exploration.",
+        "Each item must represent a meaningfully different direction; do not return duplicates, paraphrases, or near-duplicates.",
+        "Keep labels compact and summaries concise; prompts may contain the detail needed to be directly sent.",
         "Use the latest user intent and assistant result. Avoid generic filler.",
-        "Language policy: write Stepwise prompts in the dominant natural language of languageInput.",
+        "Language policy: infer the dominant natural language from lastUserMessage, falling back to lastAssistantMessage.",
         "Ignore technical terms, file names, commands, APIs, and product names when detecting language; keep them in their original language when natural.",
         "Return {\"items\":[]} only when both the user intent and assistant result are empty or unusable.",
     ]
@@ -519,7 +522,6 @@ pub fn build_messages(request: &StepwiseRequest, settings: &BackendSettings) -> 
             "content": json!({
                 "lastUserMessage": last_user_message,
                 "lastAssistantMessage": last_assistant_message,
-                "languageInput": language_input,
                 "threadTitle": short_text(&request.thread_title, 240),
                 "pageUrl": short_text(&request.page_url, 240),
                 "maxItems": settings.codex_app_stepwise_max_items,
@@ -548,8 +550,12 @@ pub fn clamp_items(value: Value, max_items: u8) -> Vec<StepwiseItem> {
         let label = first_string_field(raw, &["label", "title", "name"])
             .map(normalize_spaces)
             .unwrap_or_default();
+        let summary = first_string_field(raw, &["summary", "description", "preview"])
+            .map(normalize_spaces)
+            .unwrap_or_default();
         items.push(StepwiseItem {
-            label: short_text(&label, 36),
+            label: short_text(&label, MAX_LABEL_LENGTH),
+            summary: short_text(&summary, MAX_SUMMARY_LENGTH),
             prompt: short_text(&prompt, MAX_PROMPT_LENGTH),
         });
         if items.len() >= max_items {
@@ -713,7 +719,6 @@ fn normalize_spaces(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -747,7 +752,7 @@ mod tests {
     fn clamp_items_dedupes_and_limits() {
         let items = clamp_items(
             json!([
-                {"label": "继续", "prompt": "继续排查"},
+                {"label": "继续", "summary": "检查剩余问题", "prompt": "继续排查"},
                 {"label": "重复", "prompt": "继续排查"},
                 {"prompt": "补测试"},
                 "更新文档"
@@ -757,6 +762,7 @@ mod tests {
 
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].label, "继续");
+        assert_eq!(items[0].summary, "检查剩余问题");
         assert_eq!(items[0].prompt, "继续排查");
         assert_eq!(items[1].prompt, "补测试");
     }
@@ -816,10 +822,12 @@ mod tests {
         let system = messages[0].get("content").and_then(Value::as_str).unwrap();
         let user = messages[1].get("content").and_then(Value::as_str).unwrap();
 
+        assert!(system.contains("first item must be the single most recommended next step"));
+        assert!(system.contains("do not return duplicates"));
         assert!(system.contains("dominant natural language"));
         assert!(system.contains("Generate 1 to 4 items when the assistant result is non-empty."));
         assert!(user.contains("directSend"));
-        assert!(user.contains("languageInput"));
+        assert!(!user.contains("languageInput"));
     }
 
     #[test]
