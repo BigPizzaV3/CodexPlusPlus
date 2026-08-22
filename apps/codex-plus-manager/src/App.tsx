@@ -448,6 +448,15 @@ type LocalSessionsResult = CommandResult<{
   totalCount: number;
 }>;
 
+type SessionImportResult = CommandResult<{
+  sessionId: string;
+  title: string;
+}>;
+
+type PendingSessionShareResult = CommandResult<{
+  url: string | null;
+}>;
+
 type ZedRemoteProject = {
   id: string;
   label: string;
@@ -989,6 +998,7 @@ export function App() {
   const [ccsProviders, setCcsProviders] = useState<CcsProvidersResult | null>(null);
   const [pendingProviderImport, setPendingProviderImport] = useState<ProviderImportRequest | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
+  const [sessionShareUrl, setSessionShareUrl] = useState("");
   const [zedRemoteProjects, setZedRemoteProjects] = useState<ZedRemoteProjectsResult | null>(null);
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
   const [logs, setLogs] = useState<LogsResult | null>(null);
@@ -1287,6 +1297,51 @@ export function App() {
       if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("会话管理"), result, { silentSuccess: true });
     }
     return result;
+  };
+
+  const importLocalSession = async () => {
+    let selected: string | string[] | null;
+    try {
+      selected = await open({
+        title: t("导入 Codex 会话"),
+        multiple: false,
+        directory: false,
+        filters: [{ name: t("会话文件"), extensions: ["jsonl", "json", "txt"] }],
+      });
+    } catch (error) {
+      showNotice(t("会话导入"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
+      return;
+    }
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path) return;
+    const result = await run(() => call<SessionImportResult>("import_local_session", { path }));
+    if (!result) return;
+    showResultNotice(t("会话导入"), result);
+    if (isSuccessStatus(result.status)) await refreshLocalSessions(true, 0);
+  };
+
+  const refreshPendingSessionShare = async (silent = true) => {
+    const result = await run(() => call<PendingSessionShareResult>("load_pending_session_share"));
+    if (result?.url) setSessionShareUrl(result.url);
+    if (result && (!silent || !isSuccessStatus(result.status))) {
+      showResultNotice(t("会话导入"), result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const importSessionUrl = async (value = sessionShareUrl) => {
+    const url = value.trim();
+    if (!url) {
+      showNotice(t("会话导入"), t("请粘贴 Codex++ 分享链接。"), "failed");
+      return;
+    }
+    const result = await run(() => call<SessionImportResult>("import_session_url", { url }));
+    if (!result) return;
+    showResultNotice(t("会话导入"), result);
+    if (isSuccessStatus(result.status)) {
+      setSessionShareUrl("");
+      await refreshLocalSessions(true, 0);
+    }
   };
 
   const refreshZedRemoteProjects = async (silent = false) => {
@@ -2724,6 +2779,7 @@ export function App() {
       await refreshEnvConflicts(true);
       await refreshProviderSyncTargets(true);
       await refreshPendingProviderImport(true);
+      await refreshPendingSessionShare(true);
       await refreshPendingDreamSkinCommunity();
       await refreshRemotePluginMarketplace(true);
     })();
@@ -2743,6 +2799,7 @@ export function App() {
   useEffect(() => {
     const timer = window.setInterval(() => {
       void refreshPendingProviderImport(true);
+      void refreshPendingSessionShare(true);
       void refreshPendingDreamSkinCommunity();
     }, 1200);
     return () => window.clearInterval(timer);
@@ -3023,6 +3080,10 @@ export function App() {
       setUserScriptEnabled,
       deleteUserScript,
       refreshLocalSessions,
+      importLocalSession,
+      importSessionUrl,
+      sessionShareUrl,
+      setSessionShareUrl,
       deleteLocalSession,
       deleteLocalSessions,
       refreshZedRemoteProjects,
@@ -3064,7 +3125,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
+    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
   );
   const hasUpdate = update?.updateAvailable === true;
 
@@ -3413,6 +3474,10 @@ type Actions = {
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
   deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
+  importLocalSession: () => Promise<void>;
+  importSessionUrl: (url?: string) => Promise<void>;
+  sessionShareUrl: string;
+  setSessionShareUrl: (url: string) => void;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
   refreshZedRemoteProjects: () => Promise<ZedRemoteProjectsResult | null>;
@@ -5819,6 +5884,10 @@ function SessionsScreen({
                 <RefreshCw className="h-4 w-4" />
                 {t("刷新会话")}
               </Button>
+              <Button onClick={() => void actions.importLocalSession()} variant="outline">
+                <PackageOpen className="h-4 w-4" />
+                {t("导入文件")}
+              </Button>
               <Button disabled={providerSyncProgress.active} onClick={() => void actions.syncProvidersNow()} variant="outline">
                 <Wrench className="h-4 w-4" />
                 {providerSyncProgress.active ? t("正在修复…") : t("修复历史会话")}
@@ -5826,6 +5895,18 @@ function SessionsScreen({
               <Button onClick={() => void actions.saveSettings()}>
                 <Save className="h-4 w-4" />
                 {t("保存设置")}
+              </Button>
+            </div>
+            <div className="session-share-import">
+              <Input
+                aria-label={t("会话分享链接")}
+                onChange={(event) => actions.setSessionShareUrl(event.currentTarget.value)}
+                placeholder={t("粘贴 Codex++ 会话分享链接")}
+                value={actions.sessionShareUrl}
+              />
+              <Button disabled={!actions.sessionShareUrl.trim()} onClick={() => void actions.importSessionUrl()} variant="outline">
+                <Download className="h-4 w-4" />
+                {t("导入链接")}
               </Button>
             </div>
           </div>

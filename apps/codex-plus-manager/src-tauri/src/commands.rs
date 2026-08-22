@@ -201,6 +201,19 @@ pub struct LocalSessionsPayload {
     pub total_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionImportPayload {
+    pub session_id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingSessionSharePayload {
+    pub url: Option<String>,
+}
+
 const DEFAULT_LOCAL_SESSIONS_PAGE_SIZE: usize = 50;
 const MAX_LOCAL_SESSIONS_PAGE_SIZE: usize = 100;
 
@@ -2289,6 +2302,89 @@ pub fn list_local_sessions(
             &format!("读取部分本地会话失败：{}", errors.join("; ")),
             payload,
         )
+    }
+}
+
+#[tauri::command]
+pub fn import_local_session(path: String) -> CommandResult<SessionImportPayload> {
+    let source_path = PathBuf::from(path.trim());
+    if source_path.as_os_str().is_empty() {
+        return failed(
+            "请选择要导入的会话文件。",
+            SessionImportPayload {
+                session_id: String::new(),
+                title: String::new(),
+            },
+        );
+    }
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    match codex_plus_core::session_share::import_rollout_file(&home, &source_path) {
+        Ok(result) => ok(
+            "会话已导入 Codex++。请刷新会话列表；如果仍未显示，请重启 Codex。",
+            SessionImportPayload {
+                session_id: result
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                title: result
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("导入的会话")
+                    .to_string(),
+            },
+        ),
+        Err(error) => failed(
+            &format!("导入会话失败：{error}"),
+            SessionImportPayload {
+                session_id: String::new(),
+                title: String::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn load_pending_session_share() -> CommandResult<PendingSessionSharePayload> {
+    match codex_plus_core::session_share::load_pending_session_share() {
+        Ok(url) => ok(
+            "已读取待导入会话链接。",
+            PendingSessionSharePayload { url },
+        ),
+        Err(error) => failed(
+            &format!("读取待导入会话链接失败：{error}"),
+            PendingSessionSharePayload { url: None },
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn import_session_url(url: String) -> CommandResult<SessionImportPayload> {
+    let empty = || SessionImportPayload {
+        session_id: String::new(),
+        title: String::new(),
+    };
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    match codex_plus_core::session_share::import_shared_session_url(&home, &url).await {
+        Ok(result) => {
+            let _ = codex_plus_core::session_share::clear_pending_session_share();
+            ok(
+                "会话已导入 Codex++。请刷新会话列表；如果仍未显示，请重启 Codex。",
+                SessionImportPayload {
+                    session_id: result
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    title: result
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or("导入的会话")
+                        .to_string(),
+                },
+            )
+        }
+        Err(error) => failed(&format!("导入分享会话失败：{error}"), empty()),
     }
 }
 

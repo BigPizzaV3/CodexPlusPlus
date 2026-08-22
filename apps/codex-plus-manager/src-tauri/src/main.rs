@@ -6,6 +6,10 @@ fn main() {
             if codex_plus_manager_lib::handle_dream_skin_url(&arg) {
                 codex_plus_manager_lib::focus_existing_manager_window();
             }
+        } else if arg.starts_with("codexplusplus://session") {
+            if codex_plus_manager_lib::handle_session_share_url(&arg) {
+                codex_plus_manager_lib::focus_existing_manager_window();
+            }
         } else if arg.starts_with("codexplusplus://") {
             match codex_plus_core::provider_import::save_pending_provider_import_from_url(&arg) {
                 Ok(request) => {

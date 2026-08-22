@@ -154,25 +154,15 @@ function rolloutToMarkdown(content, title) {
 
 async function importSharedSession() {
   if (!sharedSession) return;
-  const payload = { type: "codexpp-import-session", session: sharedSession };
-  if (window.opener && !window.opener.closed) {
-    window.opener.postMessage(payload, "*");
-    const viewNotice = document.querySelector("[data-view-notice]");
-    viewNotice.textContent = "已发送到 Codex++，正在创建新的导入会话。";
-    viewNotice.dataset.type = "success";
-    return;
-  }
   try {
-    const text = sharedSession.kind === "codex-rollout"
-      ? rolloutToMarkdown(sharedSession.content, sharedSession.title)
-      : sessionToMarkdown(sharedSession);
-    await navigator.clipboard.writeText(text);
     const viewNotice = document.querySelector("[data-view-notice]");
-    viewNotice.textContent = "当前页面不是从 Codex++ 打开的，完整会话内容已复制。请在 Codex++ 新对话中粘贴。";
+    viewNotice.textContent = "正在打开 Codex++ 管理工具，请在管理工具中确认导入。";
     viewNotice.dataset.type = "success";
+    const protocolUrl = `codexplusplus://session?url=${encodeURIComponent(location.href)}`;
+    window.location.assign(protocolUrl);
   } catch {
     const viewNotice = document.querySelector("[data-view-notice]");
-    viewNotice.textContent = "无法连接到 Codex++，请直接复制页面中的完整会话内容。";
+    viewNotice.textContent = "无法打开 Codex++ 管理工具，请复制当前链接到管理工具导入。";
     viewNotice.dataset.type = "error";
   }
 }

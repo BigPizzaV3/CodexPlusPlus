@@ -407,7 +407,7 @@
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "16";
+  const codexDeleteStyleVersion = "17";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -639,12 +639,12 @@
         position: fixed;
         z-index: 2147483201;
         min-width: 104px;
-        border: 1px solid rgba(255,255,255,.1);
-        border-radius: 10px;
-        background: #242628;
-        color: #f4f4f5;
-        box-shadow: 0 14px 40px rgba(0,0,0,.28);
-        padding: 5px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: var(--border-radius-lg, 8px);
+        background: var(--codex-plus-bg-elevated);
+        color: var(--codex-plus-text);
+        box-shadow: var(--ui-menu-shadow, var(--shadow-300, 0 8px 24px rgba(0,0,0,.16)));
+        padding: 4px;
       }
       .${moreMenuClass}[hidden] { display: none !important; }
       .${moreMenuClass}.codex-session-more-menu-open-up {
@@ -653,20 +653,22 @@
       .codex-session-more-menu-item {
         width: 100%;
         border: 0;
-        border-radius: 7px;
+        border-radius: var(--border-radius-sm, 6px);
         background: transparent;
         color: inherit;
         cursor: default;
         display: flex;
         align-items: center;
         gap: 8px;
-        font: 13px/18px system-ui, sans-serif;
+        font: inherit;
+        font-size: 13px;
+        line-height: 18px;
         padding: 6px 8px;
         text-align: left;
       }
       .codex-session-more-menu-item:hover,
       .codex-session-more-menu-item:focus-visible {
-        background: #363839;
+        background: var(--codex-plus-bg-hover);
         outline: none;
       }
       .codex-session-more-menu-icon {
@@ -698,31 +700,33 @@
         min-width: 0;
       }
       .codex-archive-row-button {
-        border: 1px solid #ef4444;
-        border-radius: 7px;
-        background: #f3f4f6;
-        color: #374151;
-        font: 12px system-ui, sans-serif;
+        border: 1px solid var(--color-token-border-light, var(--token-border, rgba(0,0,0,.12)));
+        border-radius: var(--border-radius-sm, 6px);
+        background: var(--color-token-bg-secondary, var(--token-bg-fog, transparent));
+        color: var(--color-token-text-secondary, var(--token-text-secondary, inherit));
+        font: inherit;
+        font-size: 12px;
         line-height: 16px;
         padding: 3px 8px;
         cursor: pointer;
       }
       .codex-archive-row-button.${buttonClass} {
-        border-color: #ef4444;
-        background: #fee2e2;
-        color: #991b1b;
+        border-color: var(--color-border-danger, #dc2626);
+        background: var(--color-background-danger-soft, rgba(220,38,38,.1));
+        color: var(--color-text-danger, #dc2626);
       }
       .codex-archive-row-button.${exportButtonClass} {
-        border-color: #93c5fd;
-        background: #dbeafe;
-        color: #1d4ed8;
+        border-color: var(--color-token-border-light, var(--token-border, rgba(0,0,0,.12)));
+        background: var(--color-token-bg-secondary, var(--token-bg-fog, transparent));
+        color: var(--color-token-text-primary, var(--token-text-primary, inherit));
       }
       .${zedRemoteButtonClass} {
-        border: 1px solid #10a37f;
-        border-radius: 7px;
-        background: #d1fae5;
-        color: #065f46;
-        font: 12px system-ui, sans-serif;
+        border: 1px solid var(--color-token-border-light, var(--token-border, rgba(0,0,0,.12)));
+        border-radius: var(--border-radius-sm, 6px);
+        background: var(--color-token-bg-secondary, var(--token-bg-fog, transparent));
+        color: var(--color-token-text-primary, var(--token-text-primary, inherit));
+        font: inherit;
+        font-size: 12px;
         line-height: 16px;
         margin-left: 6px;
         padding: 2px 7px;
@@ -730,7 +734,7 @@
       }
       .${zedRemoteButtonClass}:hover,
       .${zedRemoteButtonClass}:focus-visible {
-        background: #a7f3d0;
+        background: var(--color-token-interactive-bg-secondary-hover, var(--token-list-hover-background, rgba(0,0,0,.06)));
         outline: none;
       }
       .${zedRemoteOpenInMenuItemClass} {
@@ -746,15 +750,13 @@
         -webkit-app-region: no-drag;
         margin-left: 2px;
         z-index: 2147483001;
-        min-height: 32px;
-        border: 1px solid var(--token-border, rgba(255,255,255,.16));
-        border-radius: 8px;
-        background: var(--token-bg-fog, rgba(40,40,40,.92));
-        color: var(--token-text-secondary, #d1d5db);
-        font: 13px/18px system-ui, sans-serif;
-        padding: 6px 10px;
+        min-height: var(--height-button-composer, 32px);
+        border-radius: var(--border-radius-lg, 8px);
+        font: inherit;
+        font-size: 13px;
+        line-height: 18px;
         cursor: pointer;
-        box-shadow: 0 4px 14px rgba(0,0,0,.16);
+        box-shadow: none;
       }
       .${sessionShareButtonClass}:hover,
       .${sessionShareButtonClass}:focus-visible {
@@ -780,13 +782,15 @@
         bottom: 58px;
         z-index: 2147483000;
         max-width: min(420px, calc(100vw - 36px));
-        border-radius: 8px;
-        background: #111827;
-        color: #ffffff;
-        font: 13px system-ui, sans-serif;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: var(--border-radius-lg, 8px);
+        background: var(--codex-plus-bg-elevated);
+        color: var(--codex-plus-text);
+        font: inherit;
+        font-size: 13px;
         line-height: 18px;
         padding: 10px 12px;
-        box-shadow: 0 8px 30px rgba(0,0,0,.25);
+        box-shadow: var(--ui-menu-shadow, var(--shadow-300, 0 8px 24px rgba(0,0,0,.16)));
         pointer-events: none;
       }
       [data-codex-delete-row="true"]:hover .${actionGroupClass} {
@@ -813,23 +817,26 @@
         position: fixed;
         z-index: 2147483201;
         max-width: min(220px, calc(100vw - 32px));
-        border: 1px solid rgba(255,255,255,.1);
-        border-radius: 12px;
-        background: #242628;
-        color: #f4f4f5;
-        font: 14px/20px system-ui, sans-serif;
-        padding: 9px 12px;
-        box-shadow: 0 14px 40px rgba(0,0,0,.28);
+        border: 1px solid var(--codex-plus-border);
+        border-radius: var(--border-radius-md, 6px);
+        background: var(--color-token-bg-tooltip, var(--codex-plus-bg-elevated));
+        color: var(--codex-plus-text);
+        font: inherit;
+        font-size: 12px;
+        line-height: 16px;
+        padding: 6px 8px;
+        box-shadow: var(--tooltip-box-shadow, var(--shadow-200, 0 4px 12px rgba(0,0,0,.14)));
         pointer-events: none;
         white-space: nowrap;
       }
       [data-codex-plus-usage-alert-hidden="true"] { display: none !important; }
       .codex-archive-delete-all {
-        border: 1px solid #ef4444;
-        border-radius: 7px;
-        background: #fee2e2;
-        color: #991b1b;
-        font: 12px system-ui, sans-serif;
+        border: 1px solid var(--color-border-danger, #dc2626);
+        border-radius: var(--border-radius-sm, 6px);
+        background: var(--color-background-danger-soft, rgba(220,38,38,.1));
+        color: var(--color-text-danger, #dc2626);
+        font: inherit;
+        font-size: 12px;
         line-height: 16px;
         padding: 3px 8px;
         cursor: pointer;
@@ -847,11 +854,13 @@
         bottom: 18px;
         z-index: 2147483000;
         padding: 10px 12px;
-        border-radius: 8px;
-        background: #111827;
-        color: white;
-        font: 13px system-ui, sans-serif;
-        box-shadow: 0 8px 30px rgba(0,0,0,.25);
+        border: 1px solid var(--codex-plus-border);
+        border-radius: var(--border-radius-lg, 8px);
+        background: var(--codex-plus-bg-elevated);
+        color: var(--codex-plus-text);
+        font: inherit;
+        font-size: 13px;
+        box-shadow: var(--ui-menu-shadow, var(--shadow-300, 0 8px 24px rgba(0,0,0,.16)));
         pointer-events: none;
       }
       .codex-delete-toast button { margin-left: 10px; pointer-events: auto; }
@@ -862,20 +871,22 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        background: rgba(15,23,42,.28);
+        background: var(--modal-backdrop-dim-shadow, rgba(0,0,0,.32));
+        backdrop-filter: blur(1px);
       }
       .codex-delete-confirm-content {
         width: min(420px, calc(100vw - 48px));
-        border: 1px solid rgba(15,23,42,.12);
-        border-radius: 12px;
-        background: #ffffff;
-        color: #111827;
-        font: 14px system-ui, sans-serif;
-        box-shadow: 0 24px 80px rgba(15,23,42,.22);
-        padding: 18px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: var(--border-radius-xl, 12px);
+        background: var(--codex-plus-bg-elevated);
+        color: var(--codex-plus-text);
+        font: inherit;
+        font-size: 14px;
+        box-shadow: var(--shadow-400, 0 16px 48px rgba(0,0,0,.2));
+        padding: 20px;
       }
       .codex-delete-confirm-title { font-size: 16px; font-weight: 650; }
-      .codex-delete-confirm-message { margin-top: 8px; color: #4b5563; line-height: 1.45; }
+      .codex-delete-confirm-message { margin-top: 8px; color: var(--codex-plus-text-secondary); line-height: 1.45; }
       .codex-delete-confirm-actions {
         display: flex;
         justify-content: flex-end;
@@ -883,78 +894,25 @@
         margin-top: 18px;
       }
       .codex-delete-confirm-actions button {
-        border: 1px solid #d1d5db;
-        border-radius: 7px;
-        padding: 6px 12px;
-        background: #ffffff;
-        color: #111827;
-        font: 13px system-ui, sans-serif;
+        min-height: 32px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: var(--border-radius-lg, 8px);
+        padding: 5px 12px;
+        background: var(--codex-plus-bg-secondary);
+        color: var(--codex-plus-text);
+        font: inherit;
+        font-size: 13px;
         cursor: pointer;
       }
+      .codex-delete-confirm-actions button:hover,
+      .codex-delete-confirm-actions button:focus-visible {
+        background: var(--codex-plus-bg-hover);
+        outline: none;
+      }
       .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
-        border-color: #ef4444;
-        background: #dc2626;
-        color: #ffffff;
-      }
-      /* Dark theme overrides for delete-confirm dialogs.
-         Triggered either by Codex applying a "dark" class / data-theme="dark"
-         on its document root, or by the OS-level prefers-color-scheme hint.
-         Palette matches the existing Codex++ dark modal (.codex-plus-modal-content). */
-      html.dark .codex-delete-confirm-overlay,
-      html[data-theme="dark"] .codex-delete-confirm-overlay,
-      :root[data-theme="dark"] .codex-delete-confirm-overlay {
-        background: rgba(0,0,0,.55);
-      }
-      html.dark .codex-delete-confirm-content,
-      html[data-theme="dark"] .codex-delete-confirm-content,
-      :root[data-theme="dark"] .codex-delete-confirm-content {
-        border-color: rgba(255,255,255,.12);
-        background: #2b2b2b;
-        color: #f3f4f6;
-        box-shadow: 0 24px 80px rgba(0,0,0,.55);
-      }
-      html.dark .codex-delete-confirm-message,
-      html[data-theme="dark"] .codex-delete-confirm-message,
-      :root[data-theme="dark"] .codex-delete-confirm-message {
-        color: #d1d5db;
-      }
-      html.dark .codex-delete-confirm-actions button,
-      html[data-theme="dark"] .codex-delete-confirm-actions button,
-      :root[data-theme="dark"] .codex-delete-confirm-actions button {
-        border-color: rgba(255,255,255,.18);
-        background: #3f3f46;
-        color: #f3f4f6;
-      }
-      html.dark .codex-delete-confirm-actions [data-codex-delete-confirm="true"],
-      html[data-theme="dark"] .codex-delete-confirm-actions [data-codex-delete-confirm="true"],
-      :root[data-theme="dark"] .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
-        border-color: #ef4444;
-        background: #dc2626;
-        color: #ffffff;
-      }
-      @media (prefers-color-scheme: dark) {
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-overlay {
-          background: rgba(0,0,0,.55);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-content {
-          border-color: rgba(255,255,255,.12);
-          background: #2b2b2b;
-          color: #f3f4f6;
-          box-shadow: 0 24px 80px rgba(0,0,0,.55);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-message {
-          color: #d1d5db;
-        }
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-actions button {
-          border-color: rgba(255,255,255,.18);
-          background: #3f3f46;
-          color: #f3f4f6;
-        }
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
-          border-color: #ef4444;
-          background: #dc2626;
-          color: #ffffff;
-        }
+        border-color: var(--color-border-danger, #dc2626);
+        background: var(--color-background-danger-solid, #dc2626);
+        color: var(--color-text-danger-solid, #fff);
       }
       .codex-plus-modal-overlay {
         position: fixed;
@@ -963,7 +921,8 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        background: rgba(0,0,0,.45);
+        background: var(--modal-backdrop-dim-shadow, rgba(0,0,0,.32));
+        backdrop-filter: blur(1px);
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
@@ -973,12 +932,13 @@
         display: flex;
         flex-direction: column;
         overflow: hidden;
-        border: 1px solid rgba(255,255,255,.12);
-        border-radius: 18px;
-        background: #2b2b2b;
-        color: #f3f4f6;
-        font: 14px system-ui, sans-serif;
-        box-shadow: 0 24px 80px rgba(0,0,0,.45);
+        border: 1px solid var(--codex-plus-border);
+        border-radius: var(--border-radius-xl, 12px);
+        background: var(--codex-plus-bg-primary);
+        color: var(--codex-plus-text);
+        font: inherit;
+        font-size: 14px;
+        box-shadow: var(--shadow-400, 0 16px 48px rgba(0,0,0,.2));
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
@@ -990,11 +950,11 @@
         flex: 0 0 auto;
         -webkit-app-region: no-drag;
       }
-      .codex-plus-modal-title { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 650; }
-      .codex-plus-backend-indicator { width: 9px; height: 9px; border-radius: 999px; background: #a1a1aa; display: inline-block; }
-      .codex-plus-backend-indicator[data-status="ok"] { background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,.75); }
-      .codex-plus-backend-indicator[data-status="failed"] { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,.75); }
-      .codex-plus-backend-indicator[data-status="checking"] { background: #fbbf24; }
+      .codex-plus-modal-title { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 600; }
+      .codex-plus-backend-indicator { width: 8px; height: 8px; border-radius: 999px; background: var(--codex-plus-text-tertiary); display: inline-block; }
+      .codex-plus-backend-indicator[data-status="ok"] { background: var(--codex-plus-success); }
+      .codex-plus-backend-indicator[data-status="failed"] { background: var(--codex-plus-danger); }
+      .codex-plus-backend-indicator[data-status="checking"] { background: var(--codex-plus-warning); }
       #${codexPlusSidebarNavId} {
         position: relative;
         flex: 0 0 auto;
@@ -1252,6 +1212,178 @@
       .codex-plus-ad-highlights span { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(255,255,255,.08); color: #f3f4f6; font-size: 12px; padding: 4px 8px; }
       .codex-plus-ad-link { display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; background: #2563eb; color: #ffffff; font-size: 13px; font-weight: 650; text-decoration: none; padding: 8px 12px; }
       .codex-plus-ad-empty { border: 1px dashed rgba(255,255,255,.16); border-radius: 12px; color: #9ca3af; font-size: 13px; padding: 12px; text-align: center; }
+      /* Keep injected surfaces on Codex's own semantic palette in both themes. */
+      :root, :where(.${moreMenuClass}, .${actionTooltipClass}, .${zedRemoteToastClass}, .codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}) {
+        --codex-plus-bg-primary: var(--color-token-bg-primary, var(--token-bg-primary, #fff));
+        --codex-plus-bg-secondary: var(--color-token-bg-secondary, var(--token-bg-secondary, #f7f7f7));
+        --codex-plus-bg-elevated: var(--color-token-dropdown-background, var(--color-token-bg-elevated-secondary, var(--codex-plus-bg-primary)));
+        --codex-plus-bg-hover: var(--color-token-interactive-bg-secondary-hover, var(--token-list-hover-background, rgba(0,0,0,.06)));
+        --codex-plus-bg-selected: var(--color-token-interactive-bg-secondary-selected, var(--codex-plus-bg-hover));
+        --codex-plus-text: var(--color-token-text-primary, var(--token-text-primary, #171717));
+        --codex-plus-text-secondary: var(--color-token-text-secondary, var(--token-text-secondary, #5d5d5d));
+        --codex-plus-text-tertiary: var(--color-token-text-tertiary, var(--token-text-tertiary, #8a8a8a));
+        --codex-plus-border: var(--color-token-border-light, var(--color-token-border, var(--token-border, rgba(0,0,0,.12))));
+        --codex-plus-border-subtle: var(--color-token-border-subtle, var(--codex-plus-border));
+        --codex-plus-focus: var(--color-token-focus-border, var(--color-border-focus, currentColor));
+        --codex-plus-danger: var(--color-text-danger, var(--color-token-text-error, #dc2626));
+        --codex-plus-danger-bg: var(--color-background-danger-soft, rgba(220,38,38,.1));
+        --codex-plus-success: var(--color-text-success, #15803d);
+        --codex-plus-warning: var(--color-text-warning, #a16207);
+        color: var(--codex-plus-text);
+        font-family: inherit;
+      }
+      .${moreMenuClass} {
+        border-color: var(--codex-plus-border);
+        border-radius: var(--border-radius-lg, 8px);
+        background: var(--codex-plus-bg-elevated);
+        color: var(--codex-plus-text);
+        box-shadow: var(--ui-menu-shadow, var(--shadow-300, 0 8px 24px rgba(0,0,0,.16)));
+      }
+      .codex-session-more-menu-item { border-radius: var(--border-radius-sm, 6px); font-family: inherit; }
+      .codex-session-more-menu-item:hover,
+      .codex-session-more-menu-item:focus-visible { background: var(--codex-plus-bg-hover); }
+      .${actionButtonClass} {
+        width: var(--h-token-button-composer-sm, 28px);
+        height: var(--h-token-button-composer-sm, 28px);
+        border-radius: var(--border-radius-lg, 8px);
+        color: var(--codex-session-action-color, var(--codex-plus-text-tertiary));
+        font-family: inherit;
+      }
+      .${actionButtonClass}:hover,
+      .${actionButtonClass}:focus-visible {
+        background: var(--codex-session-action-hover-background, var(--codex-plus-bg-hover));
+        color: var(--codex-session-action-hover-color, var(--codex-plus-text));
+      }
+      .${sessionShareButtonClass}:hover,
+      .${sessionShareButtonClass}:focus-visible {
+        background: var(--codex-plus-bg-hover);
+        color: var(--codex-plus-text);
+      }
+      .${actionTooltipClass} {
+        border-color: var(--codex-plus-border);
+        border-radius: var(--border-radius-md, 6px);
+        background: var(--color-token-bg-tooltip, var(--codex-plus-bg-elevated));
+        color: var(--codex-plus-text);
+        font-family: inherit;
+        font-size: 12px;
+        line-height: 16px;
+        padding: 6px 8px;
+        box-shadow: var(--tooltip-box-shadow, var(--shadow-200, 0 4px 12px rgba(0,0,0,.14)));
+      }
+      .codex-delete-confirm-overlay,
+      .codex-plus-modal-overlay { background: var(--color-background-surface-under, rgba(0,0,0,.32)); backdrop-filter: blur(1px); }
+      .codex-delete-confirm-content,
+      .codex-plus-modal-content {
+        border-color: var(--codex-plus-border);
+        border-radius: var(--border-radius-xl, 12px);
+        background: var(--codex-plus-bg-primary);
+        color: var(--codex-plus-text);
+        font-family: inherit;
+        box-shadow: var(--shadow-400, 0 16px 48px rgba(0,0,0,.2));
+      }
+      .codex-delete-confirm-message,
+      .codex-plus-row-description,
+      .codex-plus-about,
+      .codex-plus-service-tier-thread-label,
+      .codex-plus-backend-label,
+      .codex-plus-form-message,
+      .codex-plus-user-script-dirs,
+      .codex-plus-user-script-meta,
+      .codex-plus-sponsor-text { color: var(--codex-plus-text-secondary); }
+      .codex-delete-confirm-actions button,
+      .codex-plus-action-button,
+      .codex-plus-issue-button,
+      .codex-plus-service-tier-button,
+      .codex-plus-user-script-reload {
+        min-height: 32px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: var(--border-radius-lg, 8px);
+        background: var(--codex-plus-bg-secondary);
+        color: var(--codex-plus-text);
+        font: inherit;
+        font-size: 13px;
+        line-height: 18px;
+        padding: 5px 10px;
+      }
+      .codex-delete-confirm-actions button:hover,
+      .codex-delete-confirm-actions button:focus-visible,
+      .codex-plus-action-button:hover,
+      .codex-plus-action-button:focus-visible,
+      .codex-plus-issue-button:hover,
+      .codex-plus-issue-button:focus-visible,
+      .codex-plus-service-tier-button:hover,
+      .codex-plus-service-tier-button:focus-visible,
+      .codex-plus-user-script-reload:hover,
+      .codex-plus-user-script-reload:focus-visible { background: var(--codex-plus-bg-hover); outline: none; }
+      .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
+        border-color: var(--color-border-danger, #dc2626);
+        background: var(--color-background-danger-solid, #dc2626);
+        color: var(--color-text-danger-solid, #fff);
+      }
+      .codex-plus-modal-close { border-color: var(--codex-plus-border); color: var(--codex-plus-text-secondary); border-radius: var(--border-radius-lg, 8px); }
+      .codex-plus-modal-close:hover,
+      .codex-plus-modal-close:focus-visible { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); outline: none; }
+      .codex-plus-modal-body { scrollbar-color: var(--codex-plus-text-tertiary) transparent; }
+      .codex-plus-modal-body::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--codex-plus-text-tertiary) 45%, transparent); background-clip: padding-box; }
+      .codex-plus-modal-body::-webkit-scrollbar-thumb:hover { background: var(--codex-plus-text-tertiary); background-clip: padding-box; }
+      .codex-plus-row { border-top-color: var(--codex-plus-border-subtle); }
+      .codex-plus-toggle { background: var(--color-background-secondary-solid, var(--codex-plus-text-tertiary)); }
+      .codex-plus-toggle span { background: var(--color-token-bg-primary, #fff); box-shadow: var(--switch-thumb-shadow, 0 1px 2px rgba(0,0,0,.16)); }
+      .codex-plus-toggle[data-enabled="true"] { background: var(--color-background-primary-solid, var(--color-background-success-solid, #10a37f)); }
+      .codex-plus-toggle[data-relay-unneeded="true"] { background: var(--color-background-primary-soft, var(--codex-plus-bg-hover)); color: var(--codex-plus-success); }
+      .codex-plus-width-input,
+      .codex-plus-form-field input {
+        border: 1px solid var(--codex-plus-border);
+        border-radius: var(--border-radius-lg, 8px);
+        background: var(--codex-plus-bg-secondary);
+        color: var(--codex-plus-text);
+        font-family: inherit;
+      }
+      .codex-plus-width-input:focus,
+      .codex-plus-form-field input:focus { border-color: var(--codex-plus-focus); outline: 2px solid color-mix(in srgb, var(--codex-plus-focus) 25%, transparent); outline-offset: 0; }
+      .codex-plus-service-tier-button[data-active="true"],
+      .codex-plus-tab-button[data-active="true"] {
+        border-color: var(--color-border-primary, var(--codex-plus-focus));
+        background: var(--color-background-primary-soft, var(--codex-plus-bg-selected));
+        color: var(--color-text-primary, var(--codex-plus-text));
+      }
+      .codex-plus-tabs { gap: 4px; }
+      .codex-plus-tab-button { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 13px; padding: 6px 10px; }
+      .codex-plus-tab-button:hover,
+      .codex-plus-tab-button:focus-visible { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); outline: none; }
+      .codex-plus-user-script-item { border-color: var(--codex-plus-border-subtle); border-radius: var(--border-radius-lg, 8px); background: var(--codex-plus-bg-secondary); }
+      #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status,
+      .codex-plus-backend-indicator { box-shadow: none; }
+      #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="ok"],
+      .codex-plus-backend-indicator[data-status="ok"] { background: var(--codex-plus-success); }
+      #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="failed"],
+      .codex-plus-backend-indicator[data-status="failed"] { background: var(--codex-plus-danger); }
+      #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="checking"],
+      .codex-plus-backend-indicator[data-status="checking"] { background: var(--codex-plus-warning); }
+      .${codexServiceTierBadgeClass} {
+        height: 24px;
+        border-color: var(--codex-plus-border);
+        border-radius: var(--border-radius-lg, 8px);
+        background: var(--codex-plus-bg-secondary);
+        color: var(--codex-plus-text-secondary);
+        font-family: inherit;
+      }
+      .${codexServiceTierBadgeClass}:hover { border-color: var(--codex-plus-focus); background: var(--codex-plus-bg-hover); }
+      .${codexServiceTierBadgeClass}[data-tier="fast"] { border-color: var(--color-border-primary, var(--codex-plus-focus)); background: var(--color-background-primary-soft, var(--codex-plus-bg-selected)); color: var(--codex-plus-text); }
+      .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: var(--color-border-danger, var(--codex-plus-danger)); background: var(--codex-plus-danger-bg); color: var(--codex-plus-danger); }
+      .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: var(--color-border-warning, var(--codex-plus-border)); background: var(--color-background-warning-soft, var(--codex-plus-bg-hover)); color: var(--codex-plus-warning); }
+      .codex-plus-ad-card { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); background: var(--codex-plus-bg-secondary); box-shadow: none; }
+      .codex-plus-ad-image { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); background: var(--codex-plus-bg-primary); }
+      .codex-plus-ad-title,
+      .codex-plus-ad-section-title { color: var(--codex-plus-text); }
+      .codex-plus-ad-description { color: var(--codex-plus-text-secondary); }
+      .codex-plus-ad-highlights span { border-color: var(--codex-plus-border); border-radius: var(--border-radius-sm, 6px); background: var(--codex-plus-bg-hover); color: var(--codex-plus-text-secondary); }
+      .codex-plus-ad-link { border-radius: var(--border-radius-lg, 8px); background: var(--color-background-primary-solid, #10a37f); color: var(--color-text-on-accent, #fff); }
+      .codex-plus-ad-link:hover { background: var(--color-background-primary-solid-hover, var(--color-background-primary-solid, #10a37f)); }
+      .codex-plus-ad-empty { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); color: var(--codex-plus-text-tertiary); }
+      .codex-plus-form-message[data-status="ok"], .codex-plus-service-tier-status[data-status="ok"], .codex-plus-backend-label[data-status="ok"] { color: var(--codex-plus-success); }
+      .codex-plus-form-message[data-status="failed"], .codex-plus-service-tier-status[data-status="failed"], .codex-plus-backend-label[data-status="failed"], .codex-plus-user-script-error { color: var(--codex-plus-danger); }
+      .codex-plus-form-message[data-status="loading"], .codex-plus-service-tier-status[data-status="unsupported"], .codex-plus-user-script-warning, .codex-plus-model-compat-warning { color: var(--codex-plus-warning); }
     `;
     document.documentElement.appendChild(style);
   }

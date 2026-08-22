@@ -6344,6 +6344,22 @@ select {
   flex: 0 0 auto;
 }
 
+.session-share-import {
+  display: flex;
+  grid-column: 1 / -1;
+  gap: 8px;
+  align-items: center;
+}
+
+.session-share-import .input {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.session-share-import .button {
+  flex: 0 0 auto;
+}
+
 .session-repair-progress {
   margin-top: 12px;
 }
@@ -6397,6 +6413,10 @@ select {
   }
 
   .session-repair-actions {
+    grid-column: auto;
+  }
+
+  .session-share-import {
     grid-column: auto;
   }
 
