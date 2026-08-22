@@ -123,6 +123,16 @@ describe("model-windows helpers", () => {
     );
   });
 
+  it("modelWindowRowsFromProfile 不因 null map 崩溃", () => {
+    assert.deepStrictEqual(
+      modelWindowRowsFromProfile("a\nb", "null", "{}", "null"),
+      [
+        { model: "a", window: "", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "b", window: "", autoCompact: "", imageHandling: "send-as-is" },
+      ],
+    );
+  });
+
   it("serializeModelWindowRows 从行控件生成 modelList、modelWindows 和 modelVlm", () => {
     assert.deepStrictEqual(
       serializeModelWindowRows([

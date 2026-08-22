@@ -42,6 +42,11 @@ export type ModelWindowRowsValidationIssue = {
   model: string;
 };
 
+function asStringMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, string>;
+}
+
 export function isValidModelWindow(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return true;
@@ -101,13 +106,13 @@ export function modelWindowRowsFromProfile(
 ): ModelWindowRow[] {
   let map: Record<string, string> = {};
   try {
-    map = JSON.parse(modelWindows || "{}") as Record<string, string>;
+    map = asStringMap(JSON.parse(modelWindows || "{}"));
   } catch {
     map = {};
   }
   let autoCompactMap: Record<string, string> = {};
   try {
-    autoCompactMap = JSON.parse(modelAutoCompact || "{}") as Record<string, string>;
+    autoCompactMap = asStringMap(JSON.parse(modelAutoCompact || "{}"));
   } catch {
     autoCompactMap = {};
   }
