@@ -305,6 +305,59 @@ base_url = "https://mixed.example/v1"
         serde_json::from_str::<serde_json::Value>(&stored_other.auth_contents).unwrap(),
         serde_json::from_str::<serde_json::Value>(&other_account.auth_contents).unwrap()
     );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(home.join("auth.json")).unwrap()
+        )
+        .unwrap(),
+        expected_auth
+    );
+}
+
+#[test]
+fn switch_to_different_official_account_keeps_target_auth() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(home.join("config.toml"), "").unwrap();
+    std::fs::write(
+        home.join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"account_id":"account-a","access_token":"live-a"}}"#,
+    )
+    .unwrap();
+    let account_a = official_profile(
+        "a",
+        r#"{"auth_mode":"chatgpt","tokens":{"account_id":"account-a","access_token":"old-a"}}"#,
+    );
+    let account_b = official_profile(
+        "b",
+        r#"{"auth_mode":"chatgpt","tokens":{"account_id":"account-b","access_token":"stored-b"}}"#,
+    );
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    store
+        .save(&BackendSettings {
+            active_relay_id: "a".to_string(),
+            relay_profiles: vec![account_a.clone(), account_b.clone()],
+            ..BackendSettings::default()
+        })
+        .unwrap();
+
+    switch_relay_profile_in_home(
+        &store,
+        &home,
+        BackendSettings {
+            active_relay_id: "b".to_string(),
+            relay_profiles: vec![account_a, account_b],
+            ..BackendSettings::default()
+        },
+        "a",
+    )
+    .unwrap();
+
+    let live: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(live["tokens"]["account_id"], "account-b");
+    assert_eq!(live["tokens"]["access_token"], "stored-b");
 }
 
 #[test]

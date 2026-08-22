@@ -725,8 +725,17 @@ pub fn clear_relay_config_to_home_with_auth(
     auth_contents: Option<&str>,
 ) -> anyhow::Result<RelayApplyResult> {
     std::fs::create_dir_all(home)?;
-    let auth_bytes = match auth_contents {
-        Some(contents) if !contents.trim().is_empty() => Some(contents.as_bytes().to_vec()),
+    let resolved_auth = match auth_contents {
+        Some(contents)
+            if !contents.trim().is_empty() && auth_contents_looks_like_chatgpt_auth(contents) =>
+        {
+            Some(official_profile_auth_for_switch(home, contents)?)
+        }
+        Some(contents) if !contents.trim().is_empty() => Some(contents.to_string()),
+        _ => None,
+    };
+    let auth_bytes = match resolved_auth.as_deref() {
+        Some(contents) => Some(contents.as_bytes().to_vec()),
         _ => pure_api_auth_json_removed(home)?,
     };
     let config_path = home.join("config.toml");
@@ -2353,12 +2362,28 @@ fn sync_profile_mode_from_backfilled_live(profile: &mut RelayProfile) {
 }
 
 fn official_profile_auth_for_switch(home: &Path, auth_contents: &str) -> anyhow::Result<String> {
-    let source = if auth_contents.trim().is_empty() {
-        read_optional_text(&home.join("auth.json"))?
-    } else {
-        auth_contents.to_string()
+    let profile_auth = remove_openai_api_key_from_auth_contents(auth_contents)?;
+    let live_auth =
+        remove_openai_api_key_from_auth_contents(&read_optional_text(&home.join("auth.json"))?)?;
+    if profile_auth.trim().is_empty() {
+        return Ok(live_auth);
+    }
+    if !auth_contents_looks_like_chatgpt_auth(&profile_auth)
+        || !auth_contents_looks_like_chatgpt_auth(&live_auth)
+    {
+        return Ok(profile_auth);
+    }
+    let Some(profile_identity) = auth_contents_chatgpt_identity(&profile_auth) else {
+        return Ok(profile_auth);
     };
-    remove_openai_api_key_from_auth_contents(&source)
+    let Some(live_identity) = auth_contents_chatgpt_identity(&live_auth) else {
+        return Ok(profile_auth);
+    };
+    if profile_identity.can_refresh_from(&live_identity) {
+        Ok(live_auth)
+    } else {
+        Ok(profile_auth)
+    }
 }
 
 fn codex_auth_api_key(auth_contents: &str) -> Option<String> {

@@ -3481,7 +3481,7 @@ fn apply_official_mix_profile_clears_live_auth_api_key_and_keeps_login() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
         temp.path().join("auth.json"),
-        r#"{"OPENAI_API_KEY":"sk-pure-api","auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#,
+        r#"{"OPENAI_API_KEY":"sk-pure-api","auth_mode":"chatgpt","tokens":{"account_id":"account-a","access_token":"live-official"}}"#,
     )
     .unwrap();
     let profile = RelayProfile {
@@ -3500,7 +3500,7 @@ base_url = "https://relay.example/v1"
 experimental_bearer_token = "sk-official-mix"
 "#
         .to_string(),
-        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"official"}}"#
+        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"account_id":"account-a","access_token":"stale-official"}}"#
             .to_string(),
         ..RelayProfile::default()
     };
@@ -3511,7 +3511,7 @@ experimental_bearer_token = "sk-official-mix"
     let auth: serde_json::Value = serde_json::from_str(&auth).unwrap();
     assert!(auth.get("OPENAI_API_KEY").is_none());
     assert_eq!(auth["auth_mode"], "chatgpt");
-    assert_eq!(auth["tokens"]["access_token"], "official");
+    assert_eq!(auth["tokens"]["access_token"], "live-official");
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(config.contains(r#"experimental_bearer_token = "sk-official-mix""#));

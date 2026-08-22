@@ -5881,6 +5881,34 @@ mod tests {
     }
 
     #[test]
+    fn active_official_sync_preserves_newer_live_auth_for_same_account() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("config.toml"), "").unwrap();
+        std::fs::write(
+            temp.path().join("auth.json"),
+            r#"{"auth_mode":"chatgpt","tokens":{"account_id":"account-a","access_token":"live-new"}}"#,
+        )
+        .unwrap();
+        let settings = BackendSettings {
+            active_relay_id: "official".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "official".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::Official,
+                auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"account_id":"account-a","access_token":"stored-old"}}"#.to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        sync_active_relay_to_home(&settings, temp.path()).unwrap();
+
+        let auth: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
+                .unwrap();
+        assert_eq!(auth["tokens"]["access_token"], "live-new");
+    }
+
+    #[test]
     fn active_aggregate_sync_writes_local_proxy() {
         let temp = tempfile::tempdir().unwrap();
         let settings = BackendSettings {
