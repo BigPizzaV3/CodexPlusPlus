@@ -90,6 +90,24 @@ fn injection_script_includes_stepwise_runtime_when_enabled() {
 }
 
 #[test]
+fn floating_panel_visual_layer_is_opt_in_and_host_adaptive() {
+    let disabled = assets::injection_script_with_settings(57321, &BackendSettings::default());
+    assert!(!disabled.contains("__codexFloatingPanelVisual"));
+
+    let enabled = assets::injection_script_with_settings(
+        57321,
+        &BackendSettings {
+            codex_app_stepwise_enabled: true,
+            ..Default::default()
+        },
+    );
+    assert!(enabled.contains("__codexFloatingPanelVisual"));
+    assert!(enabled.contains("cfp-noise-filter"));
+    assert!(enabled.contains("prefers-reduced-motion"));
+    assert!(enabled.contains("box-shadow: none"));
+}
+
+#[test]
 fn injection_script_includes_visual_layer_only_with_stepwise() {
     let disabled = assets::injection_script_with_settings(57321, &BackendSettings::default());
     assert!(!disabled.contains("__codexFloatingPanelVisual"));

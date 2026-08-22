@@ -3,6 +3,7 @@
 
   const API_KEY = "__codexFloatingPanelVisual";
   const PANEL_KEY = "__codexFloatingPanel";
+  const MATERIAL_KEY = "codex-floating-panel-material-v3";
   const ROOT_ATTR = "data-codex-floating-panel-root";
   const STYLE_ID = "codex-floating-panel-visual-style";
   const FILTER_ID = "codex-floating-panel-noise-filter";
@@ -11,9 +12,33 @@
   let observer = null;
   let themeObserver = null;
   let destroyed = false;
+  let applyFrame = 0;
 
   function root() {
     return document.querySelector(`[${ROOT_ATTR}="true"]`);
+  }
+
+  function normalizeMaterial(value) {
+    return MATERIALS.includes(value) ? value : "frosted";
+  }
+
+  function material() {
+    return normalizeMaterial(localStorage.getItem(MATERIAL_KEY));
+  }
+
+  function setMaterial(value) {
+    const next = normalizeMaterial(value);
+    try {
+      localStorage.setItem(MATERIAL_KEY, next);
+    } catch {}
+    apply();
+    return next;
+  }
+
+  function cycle() {
+    const current = material();
+    const next = MATERIALS[(MATERIALS.indexOf(current) + 1) % MATERIALS.length];
+    return setMaterial(next);
   }
 
   function hostTypography() {
@@ -59,21 +84,21 @@
         --cfp-material-blur: 24px;
         --cfp-material-saturation: 1.08;
         --cfp-material-noise: 0;
-        --cfp-elevation: 0 10px 28px rgb(0 0 0 / 12%);
         font-family: var(--cfp-font-family);
         font-size: var(--cfp-font-size);
         font-weight: var(--cfp-font-weight);
       }
-      [${ROOT_ATTR}="true"] .cfp-capsule,
-      [${ROOT_ATTR}="true"] .cfp-panel {
+      [${ROOT_ATTR}="true"] .cfp-shell {
         background-color: color-mix(in srgb, var(--cfp-bg) calc(var(--cfp-material-opacity) * 100%), transparent);
         background-image: linear-gradient(135deg, var(--cfp-material-tint), transparent 62%);
-        box-shadow: var(--cfp-elevation);
+        border-color: color-mix(in srgb, var(--cfp-border) 84%, var(--cfp-material-tint));
+        box-shadow: none;
         -webkit-backdrop-filter: blur(var(--cfp-material-blur)) saturate(var(--cfp-material-saturation));
         backdrop-filter: blur(var(--cfp-material-blur)) saturate(var(--cfp-material-saturation));
+        isolation: isolate;
+        overflow: hidden;
       }
-      [${ROOT_ATTR}="true"] .cfp-panel::before,
-      [${ROOT_ATTR}="true"] .cfp-capsule::before {
+      [${ROOT_ATTR}="true"] .cfp-shell::before {
         background: rgba(255,255,255,var(--cfp-material-noise));
         content: "";
         inset: 0;
@@ -82,18 +107,14 @@
         position: absolute;
         filter: url(#cfp-noise-filter);
       }
-      [${ROOT_ATTR}="true"] .cfp-panel { isolation: isolate; }
-      [${ROOT_ATTR}="true"] .cfp-capsule { isolation: isolate; overflow: hidden; }
-      [${ROOT_ATTR}="true"] .cfp-panel > *,
-      [${ROOT_ATTR}="true"] .cfp-capsule > * { position: relative; z-index: 1; }
+      [${ROOT_ATTR}="true"] .cfp-shell > * { position: relative; z-index: 1; }
       [${ROOT_ATTR}="true"][data-material="frosted"] { --cfp-material-tint: rgba(255,255,255,.18); --cfp-material-opacity: .88; --cfp-material-blur: 20px; --cfp-material-noise: .06; }
       [${ROOT_ATTR}="true"][data-material="clear"] { --cfp-material-tint: rgba(255,255,255,.08); --cfp-material-opacity: .34; --cfp-material-blur: 10px; --cfp-material-saturation: 1.2; --cfp-material-noise: .04; }
       [${ROOT_ATTR}="true"][data-material="liquid"] { --cfp-material-tint: rgba(111,169,255,.2); --cfp-material-opacity: .54; --cfp-material-blur: 16px; --cfp-material-saturation: 1.25; --cfp-material-noise: .09; }
       [${ROOT_ATTR}="true"][data-material="crystal"] { --cfp-material-tint: rgba(206,229,255,.24); --cfp-material-opacity: .62; --cfp-material-blur: 12px; --cfp-material-saturation: 1.3; --cfp-material-noise: .08; }
       [${ROOT_ATTR}="true"][data-material="matte"] { --cfp-material-tint: rgba(80,87,101,.12); --cfp-material-opacity: .82; --cfp-material-blur: 4px; --cfp-material-saturation: .92; --cfp-material-noise: .025; }
-      [${ROOT_ATTR}="true"][data-theme="dark"] { --cfp-elevation: 0 12px 32px rgb(0 0 0 / 38%); }
-      [${ROOT_ATTR}="true"] .cfp-capsule[data-pending="true"] .cfp-glyph,
-      [${ROOT_ATTR}="true"] .cfp-capsule[data-pending="true"] .cfp-capsule-label {
+      [${ROOT_ATTR}="true"] .cfp-status-face[data-pending="true"],
+      [${ROOT_ATTR}="true"] .cfp-status-face[data-pending="true"] ~ .cfp-capsule-copy .cfp-capsule-label {
         background: linear-gradient(90deg, currentColor 35%, var(--cfp-accent) 50%, currentColor 65%);
         background-clip: text;
         background-size: 220% 100%;
@@ -103,8 +124,8 @@
       }
       @keyframes cfp-shimmer { from { background-position: 180% 0; } to { background-position: -20% 0; } }
       @media (prefers-reduced-motion: reduce) {
-        [${ROOT_ATTR}="true"] .cfp-capsule[data-pending="true"] .cfp-glyph,
-        [${ROOT_ATTR}="true"] .cfp-capsule[data-pending="true"] .cfp-capsule-label { animation: none; color: var(--cfp-muted); }
+        [${ROOT_ATTR}="true"] .cfp-status-face[data-pending="true"],
+        [${ROOT_ATTR}="true"] .cfp-status-face[data-pending="true"] ~ .cfp-capsule-copy .cfp-capsule-label { animation: none; color: var(--cfp-muted); }
       }
     `;
     document.documentElement.appendChild(style);
@@ -114,19 +135,30 @@
     if (destroyed) return;
     const panelRoot = root();
     if (!panelRoot) return;
+    panelRoot.dataset.material = material();
     const typography = hostTypography();
     if (typography) {
       panelRoot.style.setProperty("--cfp-font-family", typography.family);
       panelRoot.style.setProperty("--cfp-font-size", typography.size);
       panelRoot.style.setProperty("--cfp-font-weight", typography.weight);
     }
-    const pending = panelRoot.querySelector(".cfp-capsule-label")?.textContent?.includes("正在");
-    panelRoot.querySelector(".cfp-capsule")?.setAttribute("data-pending", String(Boolean(pending)));
-    panelRoot.dataset.visualLayer = "true";
+    const pending = String(Boolean(panelRoot.querySelector(".cfp-capsule-label")?.textContent?.includes("正在")));
+    const statusFace = panelRoot.querySelector(".cfp-status-face");
+    if (statusFace?.dataset.pending !== pending) statusFace?.setAttribute("data-pending", pending);
+    if (panelRoot.dataset.visualLayer !== "true") panelRoot.dataset.visualLayer = "true";
+  }
+
+  function scheduleApply() {
+    if (applyFrame || destroyed) return;
+    applyFrame = window.requestAnimationFrame(() => {
+      applyFrame = 0;
+      apply();
+    });
   }
 
   function destroy() {
     destroyed = true;
+    if (applyFrame) window.cancelAnimationFrame(applyFrame);
     observer?.disconnect();
     themeObserver?.disconnect();
     document.getElementById(STYLE_ID)?.remove();
@@ -139,13 +171,13 @@
     installFilters();
     installStyle();
     apply();
-    observer = new MutationObserver(apply);
+    observer = new MutationObserver(scheduleApply);
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-    themeObserver = new MutationObserver(apply);
+    themeObserver = new MutationObserver(scheduleApply);
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style"] });
   }
 
-  window[API_KEY] = { version: "1.0.0", instanceId, destroy, apply };
+  window[API_KEY] = { version: "2.0.0", instanceId, destroy, apply, current: () => ({ material: material() }), cycle, setMaterial };
   if (document.body) start();
   else document.addEventListener("DOMContentLoaded", start, { once: true });
 })();

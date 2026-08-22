@@ -411,11 +411,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let fast_startup = fast_startup_config(settings);
     let hide_official_usage_alert = hide_official_usage_alert_config(settings);
     let stepwise_runtime = if settings.codex_app_stepwise_enabled {
-        format!(
-            "{}\n{}",
-            stepwise_script(),
-            floating_panel_visual_script()
-        )
+        format!("{}\n{}", stepwise_script(), floating_panel_visual_script())
     } else {
         String::new()
     };
