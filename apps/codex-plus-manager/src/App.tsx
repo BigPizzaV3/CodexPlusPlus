@@ -1,0 +1,10393 @@
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Bell,
+  CheckCircle2,
+  ChevronDown,
+  Camera,
+  CircleArrowUp,
+  Copy,
+  Download,
+  Edit3,
+  Eye,
+  GripVertical,
+  Info,
+  ImagePlus,
+  Github,
+  ExternalLink,
+  Hammer,
+  KeyRound,
+  Languages,
+  LayoutGrid,
+  LayoutDashboard,
+  List,
+  Palette,
+  Play,
+  MessageCircle,
+  MoreHorizontal,
+  PackageOpen,
+  FileCode2,
+  Moon,
+  Network,
+  Power,
+  PowerOff,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Rocket,
+  ScanLine,
+  Save,
+  Search,
+  Settings,
+  ShieldCheck,
+  ShieldAlert,
+  Star,
+  Store,
+  Stethoscope,
+  Sun,
+  TestTube,
+  Trash2,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
+import { ProviderPresetSelector } from "@/components/ProviderPresetSelector";
+import type { PresetPatch } from "@/components/ProviderPresetSelector";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+
+import { Badge as UiBadge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { codexGoalsFeatureState, setCodexGoalsFeatureInConfig } from "./goals-config";
+import { isGitHubRepositoryHomepage } from "./github-repository";
+import {
+  findRelayModelRouteIssue,
+  modelRouteSaveRequiresRestart,
+  normalizeRelayModelRoutes,
+  PROTOCOL_PROXY_BASE_URL,
+  type RelayModelRoute,
+} from "./model-routes";
+import {
+  mergeModelWindowRows,
+  modelWindowRowsFromProfile,
+  serializeModelWindowRows,
+  type ImageHandling,
+  type ModelWindowRow,
+} from "./model-windows";
+import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
+import { resolveProviderSyncCompletion } from "./provider-sync-flow";
+import { resolveLaunchStatus } from "./launch-status";
+import {
+  defaultDreamSkinTheme,
+  defaultDreamSkinColors,
+  isDreamSkinDraftDirty,
+  normalizeDreamSkinTheme,
+  type DreamSkinCheck,
+  type DreamSkinColors,
+  type DreamSkinCommunityResult,
+  type DreamSkinCommunityTheme,
+  type DreamSkinImageResult,
+  type DreamSkinMarketResult,
+  type DreamSkinMarketTheme,
+  type DreamSkinRuntimeResult,
+  type DreamSkinThemeActivationResult,
+  type DreamSkinThemeConfig,
+  type DreamSkinThemeDraft,
+  type DreamSkinThemeDraftResult,
+  type DreamSkinThemeLibrary,
+  type DreamSkinThemeLibraryResult,
+  type DreamSkinThemeSummary,
+  type DreamSkinVerificationResult,
+} from "./dream-skin";
+import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
+
+const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
+const dreamSkinWindowsPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/windows/dream-reference.jpg", import.meta.url).href;
+const dreamSkinMacPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/macos/portal-hero.png", import.meta.url).href;
+const dreamSkinCompanionDataUrlLimit = 240_000;
+const dreamSkinCompanionMimeTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+
+type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
+
+type CommandResult<T> = T & {
+  status: Status;
+  message: string;
+};
+
+type PendingDreamSkinCommunityResult = CommandResult<{ versionId: string }>;
+
+type PendingDreamSkinRestart = {
+  currentThemeKey: string | null;
+  currentThemeName: string;
+  pendingThemeKey: string;
+  pendingThemeName: string;
+};
+
+type PathState = {
+  status: string;
+  path: string | null;
+};
+
+type LaunchStatus = {
+  status: string;
+  message: string;
+  started_at_ms: number;
+  debug_port: number | null;
+  helper_port: number | null;
+  codex_app: string | null;
+};
+
+type OverviewResult = CommandResult<{
+  codex_app: PathState;
+  codex_version: string | null;
+  silent_shortcut: PathState;
+  management_shortcut: PathState;
+  latest_launch: LaunchStatus | null;
+  current_version: string;
+  update_status: string;
+  settings_path: string;
+  logs_path: string;
+}>;
+
+type LaunchCommandResult = CommandResult<{
+  launchStartedAtMs?: number;
+}>;
+
+type PluginMarketplaceRepairResult = CommandResult<{
+  codexHome: string;
+  marketplaceRoot?: string | null;
+  initialized: boolean;
+  configured: boolean;
+  needsRepair: boolean;
+}>;
+
+type PluginMarketplaceStatusResult = CommandResult<{
+  codexHome: string;
+  marketplaceRoot?: string | null;
+  configRegistered: boolean;
+  needsRepair: boolean;
+}>;
+
+type RemotePluginMarketplaceResult = CommandResult<{
+  codexHome: string;
+  marketplaceRoot?: string | null;
+  configRegistered: boolean;
+  needsRepair: boolean;
+  pluginCount: number;
+  skillCount: number;
+}>;
+
+type BackendSettings = {
+  codexAppPath: string;
+  codexExtraArgs: string[];
+  providerSyncEnabled: boolean;
+  providerSyncSavedProviders: string[];
+  providerSyncManualProviders: string[];
+  providerSyncLastSelectedProvider: string;
+  relayProfilesEnabled: boolean;
+  enhancementsEnabled: boolean;
+  codexAppPluginMarketplaceUnlock: boolean;
+  codexAppModelWhitelistUnlock: boolean;
+  codexAppSessionDelete: boolean;
+  codexAppMarkdownExport: boolean;
+  codexAppPasteFix: boolean;
+  codexAppForceChineseLocale: boolean;
+  codexAppFastStartup: boolean;
+  codexAppThreadIdBadge: boolean;
+  codexAppConversationView: boolean;
+  codexAppThreadScrollRestore: boolean;
+  codexAppZedRemoteOpen: boolean;
+  zedRemoteOpenStrategy: ZedOpenStrategy;
+  zedRemoteProjectRegistryEnabled: boolean;
+  zedRemoteSyncToZedSettings: boolean;
+  codexAppUpstreamWorktreeCreate: boolean;
+  codexAppNativeMenuPlacement: boolean;
+  codexAppNativeMenuLocalization: boolean;
+  codexAppServiceTierControls: boolean;
+  codexAppPetRealMouseLook: boolean;
+  codexAppStepwiseEnabled: boolean;
+  codexAppStepwiseDirectSend: boolean;
+  codexAppStepwiseBaseUrl: string;
+  codexAppStepwiseApiKey: string;
+  codexAppStepwiseApiKeyEnv: string;
+  codexAppStepwiseModel: string;
+  codexAppStepwiseMaxItems: number;
+  codexAppStepwiseMaxInputChars: number;
+  codexAppStepwiseMaxOutputTokens: number;
+  codexAppStepwiseTimeoutMs: number;
+  codexAppImageOverlayEnabled: boolean;
+  codexAppImageOverlayPath: string;
+  codexAppImageOverlayOpacity: number;
+  codexAppImageOverlayFitMode: ImageOverlayFitMode;
+  codexAppDreamSkinEnabled: boolean;
+  codexAppDreamSkinPaused: boolean;
+  codexAppDreamSkinTheme: string;
+  codexAppDreamSkinThemeConfig: DreamSkinThemeConfig;
+  codexAppDreamSkinImagePath: string;
+  codexGoalsEnabled: boolean;
+  weixinConnectEnabled: boolean;
+  weixinConnectBaseUrl: string;
+  weixinConnectToken: string;
+  weixinConnectAccountId: string;
+  weixinConnectAllowFrom: string;
+  weixinConnectRouteTag: string;
+  weixinConnectWorkDir: string;
+  weixinConnectModel: string;
+  weixinConnectSandbox: "read-only" | "workspace-write" | "danger-full-access";
+  weixinConnectCodexPath: string;
+  launchMode: LaunchMode;
+  relayBaseUrl: string;
+  relayApiKey: string;
+  relayProfiles: RelayProfile[];
+  aggregateRelayProfiles: AggregateRelayProfile[];
+  activeAggregateRelayId: string;
+  relayCommonConfigContents: string;
+  relayContextConfigContents: string;
+  activeRelayId: string;
+  relayTestModel: string;
+};
+
+type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
+type LaunchMode = "patch" | "relay";
+type ImageOverlayFitMode = "fill" | "fit" | "stretch" | "tile" | "center";
+
+export type RelayProfile = {
+  id: string;
+  name: string;
+  model: string;
+  baseUrl: string;
+  upstreamBaseUrl: string;
+  apiKey: string;
+  protocol: RelayProtocol;
+  relayMode: RelayMode;
+  officialMixApiKey: boolean;
+  hideOfficialUsageAlert: boolean;
+  testModel: string;
+  configContents: string;
+  authContents: string;
+  useCommonConfig: boolean;
+  contextSelection: RelayContextSelection;
+  contextSelectionInitialized: boolean;
+  contextWindow: string;
+  autoCompactLimit: string;
+  modelList: string;
+  modelWindows: string;
+  modelVlm: string;
+  vlmApiKey: string;
+  vlmModel: string;
+  vlmBaseUrl: string;
+  userAgent: string;
+  sub2apiEnabled: boolean;
+  sub2apiMultiplier: string;
+  modelRoutes?: RelayModelRoute[];
+  aggregate?: RelayAggregateConfig | null;
+};
+
+type RelayAggregateStrategy = "failover" | "conversationRoundRobin" | "requestRoundRobin" | "weightedRoundRobin";
+type RelayAggregateMember = {
+  profileId: string;
+  weight: number;
+};
+type RelayAggregateConfig = {
+  strategy: RelayAggregateStrategy;
+  members: RelayAggregateMember[];
+};
+type AggregateRelayMember = {
+  relayId: string;
+  weight: number;
+};
+type AggregateRelayProfile = {
+  id: string;
+  name: string;
+  strategy: RelayAggregateStrategy;
+  members: AggregateRelayMember[];
+};
+
+type RelayContextSelection = {
+  mcpServers: string[];
+  skills: string[];
+  plugins: string[];
+};
+
+type ContextKind = "mcp" | "skill" | "plugin";
+
+type CodexContextEntry = {
+  id: string;
+  kind: ContextKind;
+  title: string;
+  summary: string;
+  tomlBody: string;
+  enabled: boolean;
+};
+
+type CodexContextEntries = {
+  mcpServers: CodexContextEntry[];
+  skills: CodexContextEntry[];
+  plugins: CodexContextEntry[];
+};
+
+type RelayProtocol = "responses" | "chatCompletions";
+type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
+const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
+const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
+
+const emptyContextSelection = (): RelayContextSelection => ({
+  mcpServers: [],
+  skills: [],
+  plugins: [],
+});
+
+type UserScriptInventory = {
+  enabled?: boolean;
+  scripts?: Array<{
+    key: string;
+    name: string;
+    source: string;
+    enabled: boolean;
+    status: string;
+    error: string;
+    market_id?: string;
+    version?: string;
+    installed?: boolean;
+    source_url?: string;
+    homepage?: string;
+  }>;
+};
+
+type SettingsResult = CommandResult<{
+  settings: BackendSettings;
+  settings_path: string;
+  user_scripts: UserScriptInventory;
+}>;
+
+type WeixinConnectStatusResult = CommandResult<{
+  state: string;
+  message: string;
+  accountId: string;
+  hasToken: boolean;
+  lastPeerId: string;
+  lastMessageAtMs: number;
+  processedMessages: number;
+}>;
+
+type WeixinQrResult = CommandResult<{
+  qrStatus: string;
+  qrContent: string;
+  qrSvg: string;
+  accountId: string;
+  linkedUserId: string;
+  hasToken: boolean;
+}>;
+
+type DesktopCodexCliResult = CommandResult<{
+  path: string | null;
+}>;
+
+type RelayResult = CommandResult<{
+  authenticated: boolean;
+  authSource: string;
+  accountLabel: string | null;
+  configPath: string;
+  configured: boolean;
+  requiresOpenaiAuth: boolean;
+  hasBearerToken: boolean;
+  backupPath: string | null;
+}>;
+
+type RelayPayload = Omit<RelayResult, "status" | "message">;
+
+type RelayFilesResult = CommandResult<{
+  configPath: string;
+  authPath: string;
+  configContents: string;
+  authContents: string;
+}>;
+
+type LocalSession = {
+  id: string;
+  title: string;
+  cwd: string;
+  modelProvider: string;
+  archived: boolean;
+  updatedAtMs: number | null;
+  rolloutPath: string;
+  dbPath: string;
+};
+
+type LocalSessionsResult = CommandResult<{
+  dbPath: string;
+  dbPaths: string[];
+  sessions: LocalSession[];
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}>;
+
+type ZedRemoteProject = {
+  id: string;
+  label: string;
+  hostId: string;
+  ssh: {
+    user: string;
+    host: string;
+    port: number | null;
+  };
+  path: string;
+  url: string;
+  source: "currentThread" | "codexRemoteProject" | "threadWorkspaceHint" | "sqliteThreadCwd" | "recent" | string;
+  lastOpenedAtMs: number | null;
+  isCurrent: boolean;
+};
+
+type ZedRemoteProjectsResult = CommandResult<{
+  projects: ZedRemoteProject[];
+}>;
+
+type ZedRemoteOpenResult = CommandResult<{
+  url: string;
+  strategy: ZedOpenStrategy;
+}>;
+
+type DeleteLocalSessionResult = CommandResult<{
+  status: string;
+  session_id: string;
+  message: string;
+  undo_token: string | null;
+  backup_path: string | null;
+}>;
+
+type ContextEntriesResult = CommandResult<{
+  settings: BackendSettings;
+  entries: CodexContextEntries;
+}>;
+
+type LiveContextEntriesResult = CommandResult<{
+  entries: CodexContextEntries;
+}>;
+
+type ExtractRelayCommonConfigResult = CommandResult<{
+  commonConfigContents: string;
+  profileConfigContents: string;
+}>;
+
+type RelaySwitchResult = CommandResult<{
+  settings: BackendSettings;
+  settingsPath: string;
+  user_scripts: unknown;
+  relay: RelayPayload;
+}>;
+
+type SettingsBackfillResult = CommandResult<{
+  settings: BackendSettings;
+}>;
+
+type RelayProfileTestResult = CommandResult<{
+  httpStatus: number;
+  endpoint: string;
+  responsePreview: string;
+}>;
+
+type StepwiseTestResult = CommandResult<{
+  itemCount: number;
+  error: string;
+}>;
+
+type RelayProfileModelsResult = CommandResult<{
+  models: string[];
+  endpoint: string;
+}>;
+
+type Sub2ApiBillingResult = CommandResult<{
+  endpoint: string;
+  groupRateMultiplier: number;
+  userRateMultiplier?: number | null;
+  resolvedRateMultiplier: number;
+  peakRateEnabled: boolean;
+  peakRateMultiplier?: number | null;
+  appliedPeakMultiplier?: number | null;
+  effectiveRateMultiplier: number;
+  observedAt: string;
+}>;
+
+type ProviderDoctorCheck = {
+  id: string;
+  title: string;
+  status: Status;
+  detail: string;
+};
+
+type ProviderDoctorResult = CommandResult<{
+  profileName: string;
+  model: string;
+  summary: string;
+  recommendation: string;
+  checks: ProviderDoctorCheck[];
+}>;
+
+type CcsProviderImport = {
+  sourceId: string;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  protocol: RelayProtocol;
+  configContents: string;
+  authContents: string;
+};
+
+type CcsProvidersResult = CommandResult<{
+  dbPath: string;
+  providers: CcsProviderImport[];
+}>;
+
+type ProviderImportRequest = {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  wireApi: string;
+  relayMode: string;
+  configContents: string;
+  authContents: string;
+};
+
+type PendingProviderImportResult = CommandResult<{
+  pending: ProviderImportRequest | null;
+}>;
+
+type EnvConflict = {
+  name: string;
+  source: "process" | "user" | string;
+  valuePresent: boolean;
+};
+
+type EnvConflictsResult = CommandResult<{
+  conflicts: EnvConflict[];
+}>;
+
+type RelayEnvironmentResult = CommandResult<{
+  clashVergeTun: {
+    enabled: boolean;
+    configPath: string | null;
+  };
+  proxyEnvironment: {
+    variables: Array<{
+      name: string;
+      source: "process" | "user" | "system" | string;
+    }>;
+  };
+  codexEnvFile: {
+    exists: boolean;
+    path: string;
+  };
+}>;
+
+type RemoveEnvConflictsResult = CommandResult<{
+  removed: Array<{
+    name: string;
+    removedProcess: boolean;
+    removedUser: boolean;
+  }>;
+  backupPath: string | null;
+  remaining: EnvConflict[];
+}>;
+
+type ProviderSyncPayload = {
+  syncStatus?: string;
+  syncMessage?: string;
+  targetProvider?: string;
+  changedSessionFiles?: number;
+  skippedLockedRolloutFiles?: string[];
+  sqliteRowsUpdated?: number;
+  sqliteProviderRowsUpdated?: number;
+  sqliteUserEventRowsUpdated?: number;
+  sqliteCwdRowsUpdated?: number;
+  sqliteCatalogRowsInserted?: number;
+  sqliteCatalogRowsRemoved?: number;
+  updatedWorkspaceRoots?: number;
+  prunedSessionIndexEntries?: number;
+  encryptedContentWarning?: string | null;
+  backupDir?: string | null;
+};
+
+type SessionIndexCleanupCandidate = {
+  id: string;
+  threadName: string;
+  updatedAt: string;
+};
+
+type SessionIndexCleanupPreviewPayload = {
+  snapshotSha256: string;
+  candidates: SessionIndexCleanupCandidate[];
+};
+
+type SessionIndexCleanupApplyPayload = {
+  prunedEntries?: number;
+  backupDir?: string | null;
+};
+
+type ProviderSyncTargetSource = "config" | "rollout" | "sqlite" | "manual";
+
+type ProviderSyncTargetOption = {
+  id: string;
+  sources: ProviderSyncTargetSource[];
+  isCurrentProvider: boolean;
+  isManual: boolean;
+  isSaved: boolean;
+};
+
+type ProviderSyncTargetsPayload = {
+  currentProvider: string;
+  targets: ProviderSyncTargetOption[];
+};
+
+type ProviderSyncTargetsResult = CommandResult<ProviderSyncTargetsPayload>;
+
+type ProviderSyncProgress = {
+  active: boolean;
+  percent: number;
+  message: string;
+  result: CommandResult<ProviderSyncPayload> | null;
+};
+
+type TaskProgress = {
+  active: boolean;
+  percent: number;
+  message: string;
+};
+
+type LogsResult = CommandResult<{
+  path: string;
+  text: string;
+  lines: number;
+  truncated: boolean;
+  fileSize: number;
+}>;
+
+type DiagnosticsResult = CommandResult<{
+  report: string;
+}>;
+
+type WatcherResult = CommandResult<{
+  enabled: boolean;
+  disabled_flag: string;
+}>;
+
+type InstallResult = CommandResult<{
+  silent_shortcut: { installed: boolean; path: string | null };
+  management_shortcut: { installed: boolean; path: string | null };
+}>;
+
+type UpdateResult = CommandResult<{
+  currentVersion: string;
+  latestVersion?: string | null;
+  releaseSummary?: string;
+  assetName?: string | null;
+  assetUrl?: string | null;
+  updateAvailable?: boolean;
+  installedPath?: string;
+  progress?: number;
+}>;
+
+type AdItem = {
+  id?: string;
+  type: "sponsor" | "normal" | string;
+  title: string;
+  description: string;
+  url: string;
+  image?: string;
+  highlights?: string[];
+  expires_at?: string;
+};
+
+type AdsResult = CommandResult<{
+  version: number;
+  ads: AdItem[];
+}>;
+
+type ScriptMarketItem = {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  author: string;
+  tags: string[];
+  homepage: string;
+  script_url: string;
+  sha256: string;
+  installed: boolean;
+  installedVersion: string;
+  updateAvailable: boolean;
+};
+
+type ScriptMarketResult = CommandResult<{
+  market: {
+    status: string;
+    message: string;
+    indexUrl: string;
+    updatedAt: string;
+    scripts: ScriptMarketItem[];
+  };
+  user_scripts: UserScriptInventory;
+}>;
+
+function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>): string {
+  const changed = result.changedSessionFiles ?? 0;
+  const rows = result.sqliteRowsUpdated ?? 0;
+  const insertedCatalogRows = result.sqliteCatalogRowsInserted ?? 0;
+  const removedCatalogRows = result.sqliteCatalogRowsRemoved ?? 0;
+  const pruned = result.prunedSessionIndexEntries ?? 0;
+  const target = result.targetProvider || t("当前 provider");
+  const skipped = result.skippedLockedRolloutFiles?.length ?? 0;
+  const prunedText = pruned ? tf("，清理 {0} 条失效任务索引", [pruned]) : "";
+  const skippedText = skipped ? tf("，跳过 {0} 个占用文件", [skipped]) : "";
+  const catalogText = insertedCatalogRows ? tf("，补齐 {0} 条侧边栏索引", [insertedCatalogRows]) : "";
+  const catalogCleanupText = removedCatalogRows
+    ? tf("，清理 {0} 条误列的子任务侧边栏索引", [removedCatalogRows])
+    : "";
+  return tf("已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引{3}{4}{5}{6}。", [
+    target,
+    changed,
+    rows,
+    catalogText,
+    catalogCleanupText,
+    prunedText,
+    skippedText,
+  ]);
+}
+
+const providerSyncSourceLabels: Record<ProviderSyncTargetSource, string> = {
+  config: t("配置"),
+  rollout: t("会话"),
+  sqlite: t("索引"),
+  manual: t("手动"),
+};
+
+function providerSyncTargetLabel(target: ProviderSyncTargetOption): string {
+  const labels = target.sources.map((source) => providerSyncSourceLabels[source]).filter(Boolean);
+  const current = target.isCurrentProvider ? [t("当前")] : [];
+  return [...labels, ...current].join(" / ") || t("发现");
+}
+
+function syncMarketInstalledState(current: ScriptMarketResult | null, userScripts: UserScriptInventory): ScriptMarketResult | null {
+  if (!current) return current;
+  const installed = new Map(
+    (userScripts.scripts ?? [])
+      .filter((script) => script.market_id)
+      .map((script) => [script.market_id || "", script.version || ""]),
+  );
+  return {
+    ...current,
+    user_scripts: userScripts,
+    market: {
+      ...current.market,
+      scripts: current.market.scripts.map((script) => {
+        const installedVersion = installed.get(script.id) || "";
+        return {
+          ...script,
+          installed: Boolean(installedVersion),
+          installedVersion,
+          updateAvailable: Boolean(installedVersion) && installedVersion !== script.version,
+        };
+      }),
+    },
+  };
+}
+
+type StartupResult = CommandResult<{
+  showUpdate: boolean;
+}>;
+
+type Route = "overview" | "relay" | "relayEnvironment" | "sessions" | "context" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
+type Theme = "dark" | "light";
+
+const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
+  { id: "overview", label: t("概览"), icon: LayoutDashboard },
+  { id: "relay", label: t("供应商配置"), icon: KeyRound },
+  { id: "sessions", label: t("会话管理"), icon: MessageCircle },
+  { id: "context", label: t("工具与插件"), icon: Network },
+  { id: "weixin", label: t("微信连接"), icon: ScanLine },
+  { id: "enhance", label: t("Codex增强"), icon: Hammer },
+  { id: "dreamSkin", label: t("皮肤管理"), icon: Palette },
+  { id: "zedRemote", label: t("Zed 远程项目"), icon: ExternalLink },
+  { id: "userScripts", label: t("脚本市场"), icon: FileCode2 },
+  { id: "recommendations", label: t("推荐内容"), icon: ExternalLink },
+  { id: "maintenance", label: t("安装维护"), icon: Wrench },
+  { id: "about", label: t("关于"), icon: Info },
+  { id: "settings", label: t("设置"), icon: Settings },
+  { id: "relayEnvironment", label: t("中转站环境配置检测"), icon: ShieldCheck },
+];
+
+const navigationSections: Array<{ label: string; routes: Route[]; placement?: "bottom" }> = [
+  {
+    label: t("工作区"),
+    routes: ["overview", "relay", "sessions", "context"],
+  },
+  {
+    label: t("扩展"),
+    routes: ["weixin", "enhance", "dreamSkin", "zedRemote", "userScripts"],
+  },
+  {
+    label: t("系统"),
+    routes: ["recommendations", "maintenance", "about", "settings"],
+    placement: "bottom",
+  },
+];
+
+const defaultSettings: BackendSettings = {
+  codexAppPath: "",
+  codexExtraArgs: [],
+  providerSyncEnabled: false,
+  providerSyncSavedProviders: [],
+  providerSyncManualProviders: [],
+  providerSyncLastSelectedProvider: "",
+  relayProfilesEnabled: true,
+  enhancementsEnabled: true,
+  codexAppPluginMarketplaceUnlock: true,
+  codexAppModelWhitelistUnlock: true,
+  codexAppSessionDelete: true,
+  codexAppMarkdownExport: true,
+  codexAppPasteFix: false,
+  codexAppForceChineseLocale: true,
+  codexAppFastStartup: false,
+  codexAppThreadIdBadge: false,
+  codexAppConversationView: false,
+  codexAppThreadScrollRestore: true,
+  codexAppZedRemoteOpen: true,
+  zedRemoteOpenStrategy: "addToFocusedWorkspace",
+  zedRemoteProjectRegistryEnabled: true,
+  zedRemoteSyncToZedSettings: false,
+  codexAppUpstreamWorktreeCreate: true,
+  codexAppNativeMenuPlacement: true,
+  codexAppNativeMenuLocalization: true,
+  codexAppServiceTierControls: false,
+  codexAppPetRealMouseLook: false,
+  codexAppStepwiseEnabled: false,
+  codexAppStepwiseDirectSend: false,
+  codexAppStepwiseBaseUrl: "",
+  codexAppStepwiseApiKey: "",
+  codexAppStepwiseApiKeyEnv: "CODEX_STEPWISE_API_KEY",
+  codexAppStepwiseModel: "",
+  codexAppStepwiseMaxItems: 6,
+  codexAppStepwiseMaxInputChars: 6000,
+  codexAppStepwiseMaxOutputTokens: 500,
+  codexAppStepwiseTimeoutMs: 8000,
+  codexAppImageOverlayEnabled: false,
+  codexAppImageOverlayPath: "",
+  codexAppImageOverlayOpacity: 35,
+  codexAppImageOverlayFitMode: "fit",
+  codexAppDreamSkinEnabled: false,
+  codexAppDreamSkinPaused: false,
+  codexAppDreamSkinTheme: "pink",
+  codexAppDreamSkinThemeConfig: defaultDreamSkinTheme(),
+  codexAppDreamSkinImagePath: "",
+  codexGoalsEnabled: false,
+  weixinConnectEnabled: false,
+  weixinConnectBaseUrl: "https://ilinkai.weixin.qq.com",
+  weixinConnectToken: "",
+  weixinConnectAccountId: "",
+  weixinConnectAllowFrom: "",
+  weixinConnectRouteTag: "",
+  weixinConnectWorkDir: "",
+  weixinConnectModel: "",
+  weixinConnectSandbox: "read-only",
+  weixinConnectCodexPath: "",
+  launchMode: "patch",
+  relayBaseUrl: "",
+  relayApiKey: "",
+  relayProfiles: [
+    {
+      id: "default",
+      name: t("默认中转"),
+      model: "",
+      baseUrl: "",
+      upstreamBaseUrl: "",
+      apiKey: "",
+      protocol: "responses",
+      relayMode: "official",
+      officialMixApiKey: false,
+      hideOfficialUsageAlert: false,
+      testModel: "",
+      configContents: "",
+      authContents: "",
+      useCommonConfig: true,
+      contextSelection: emptyContextSelection(),
+      contextSelectionInitialized: true,
+      contextWindow: "",
+      autoCompactLimit: "",
+      modelList: "",
+      modelWindows: "",
+      modelVlm: "",
+      vlmApiKey: "",
+      vlmModel: "",
+      vlmBaseUrl: "",
+      userAgent: "",
+      sub2apiEnabled: false,
+      sub2apiMultiplier: "",
+    },
+  ],
+  relayCommonConfigContents: "",
+  relayContextConfigContents: "",
+  activeRelayId: "default",
+  aggregateRelayProfiles: [],
+  activeAggregateRelayId: "",
+  relayTestModel: "gpt-5.4-mini",
+};
+
+export function App() {
+  const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
+  const [route, setRoute] = useState<Route>(() => loadInitialRoute());
+  const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    message: string;
+    confirmText: string;
+    cancelText: string;
+    resolve: (confirmed: boolean) => void;
+  } | null>(null);
+  const [sessionIndexCleanupDialog, setSessionIndexCleanupDialog] = useState<{
+    candidates: SessionIndexCleanupCandidate[];
+    resolve: (selectedIds: string[] | null) => void;
+  } | null>(null);
+  const [overview, setOverview] = useState<OverviewResult | null>(null);
+  const [settings, setSettings] = useState<SettingsResult | null>(null);
+  const [weixinStatus, setWeixinStatus] = useState<WeixinConnectStatusResult | null>(null);
+  const [weixinQr, setWeixinQr] = useState<WeixinQrResult | null>(null);
+  const [relay, setRelay] = useState<RelayResult | null>(null);
+  const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
+  const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
+  const [relayEnvironment, setRelayEnvironment] = useState<RelayEnvironmentResult | null>(null);
+  const [ccsProviders, setCcsProviders] = useState<CcsProvidersResult | null>(null);
+  const [pendingProviderImport, setPendingProviderImport] = useState<ProviderImportRequest | null>(null);
+  const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
+  const [zedRemoteProjects, setZedRemoteProjects] = useState<ZedRemoteProjectsResult | null>(null);
+  const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
+  const [logs, setLogs] = useState<LogsResult | null>(null);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
+  const [watcher, setWatcher] = useState<WatcherResult | null>(null);
+  const [dreamSkinStatus, setDreamSkinStatus] = useState<DreamSkinRuntimeResult | null>(null);
+  const [dreamSkinVerification, setDreamSkinVerification] = useState<DreamSkinVerificationResult | null>(null);
+  const [dreamSkinLibrary, setDreamSkinLibrary] = useState<DreamSkinThemeLibrary | null>(null);
+  const [dreamSkinMarket, setDreamSkinMarket] = useState<DreamSkinMarketResult | null>(null);
+  const [dreamSkinCommunity, setDreamSkinCommunity] = useState<DreamSkinCommunityResult | null>(null);
+  const [pendingDreamSkinCommunity, setPendingDreamSkinCommunity] = useState("");
+  const [selectedDreamSkinTheme, setSelectedDreamSkinTheme] = useState("builtin");
+  const [savedDreamSkinThemeDraft, setSavedDreamSkinThemeDraft] = useState<DreamSkinThemeDraft | null>(null);
+  const [dreamSkinThemeDraft, setDreamSkinThemeDraft] = useState<DreamSkinThemeDraft | null>(null);
+  const [pendingDreamSkinRestart, setPendingDreamSkinRestart] = useState<PendingDreamSkinRestart | null>(null);
+  const [dreamSkinUnsavedDialog, setDreamSkinUnsavedDialog] = useState(false);
+  const dreamSkinPendingActionRef = useRef<(() => void) | null>(null);
+  const [update, setUpdate] = useState<UpdateResult | null>(null);
+  const [updateInstallProgress, setUpdateInstallProgress] = useState<TaskProgress>({
+    active: false,
+    percent: 0,
+    message: t("尚未运行安装包更新。"),
+  });
+  const [ads, setAds] = useState<AdsResult | null>(null);
+  const [scriptMarket, setScriptMarket] = useState<ScriptMarketResult | null>(null);
+  const [launchForm, setLaunchForm] = useState({
+    appPath: "",
+    debugPort: "9229",
+    helperPort: "57321",
+  });
+  const prevLaunchStatusRef = useRef<string | null>(null);
+  const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
+  const [providerSyncProgress, setProviderSyncProgress] = useState<ProviderSyncProgress>({
+    active: false,
+    percent: 0,
+    message: t("尚未运行历史会话修复。"),
+    result: null,
+  });
+  const [pluginMarketplaceProgress, setPluginMarketplaceProgress] = useState<TaskProgress>({
+    active: false,
+    percent: 0,
+    message: t("尚未运行插件市场修复。"),
+  });
+  const [remotePluginMarketplace, setRemotePluginMarketplace] = useState<RemotePluginMarketplaceResult | null>(null);
+  const [remotePluginMarketplaceProgress, setRemotePluginMarketplaceProgress] = useState<TaskProgress>({
+    active: false,
+    percent: 0,
+    message: t("尚未检查官方远端插件缓存。"),
+  });
+  const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
+  const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
+  const [removeOwnedData, setRemoveOwnedData] = useState(false);
+  const [relaySwitching, setRelaySwitching] = useState(false);
+  const dreamSkinDraftDirty = Boolean(
+    savedDreamSkinThemeDraft
+      && dreamSkinThemeDraft
+      && isDreamSkinDraftDirty(savedDreamSkinThemeDraft, dreamSkinThemeDraft),
+  );
+  const settingsDirty = useMemo(
+    () => Boolean(settings && !backendSettingsEqual(settingsForm, settings.settings)),
+    [settings, settingsForm],
+  );
+
+  const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
+
+  const logDiagnostic = (event: string, detail: Record<string, unknown> = {}) => {
+    void invoke("write_diagnostic_event", { event, detail }).catch(() => {});
+  };
+
+  const run = async <T,>(task: () => Promise<T>): Promise<T | null> => {
+    try {
+      return await task();
+    } catch (error) {
+      showNotice(t("调用失败"), stringifyError(error), "failed");
+      return null;
+    }
+  };
+
+  const refreshOverview = async (silent = false) => {
+    const result = await run(() => call<OverviewResult>("load_overview"));
+    if (result) {
+      // 崩溃检测：进程从运行状态变为停止/失败 → 弹出通知
+      const prev = prevLaunchStatusRef.current;
+      const current = result.latest_launch?.status;
+      if (prev && prev === "running" && current && (current === "stopped" || current === "failed" || current === "crashed")) {
+        showNotice(t("Codex 意外停止"), tf("进程状态：{0}。是否要重新启动？", [current]), "failed");
+      }
+      prevLaunchStatusRef.current = current ?? null;
+      setOverview(result);
+      if (!silent) showResultNotice(t("概览已检查"), result, { silentSuccess: true });
+    }
+  };
+
+  const refreshSettings = async (silent = false) => {
+    const result = await run(() => call<SettingsResult>("load_settings"));
+    if (result) {
+      setSettings(result);
+      const normalized = normalizeSettings(result.settings);
+      setSettingsForm(normalized);
+      setLaunchForm((current) => ({
+        ...current,
+        appPath: current.appPath || result.settings.codexAppPath || "",
+      }));
+      if (!silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
+      return normalized;
+    }
+    return null;
+  };
+
+  const refreshWeixinStatus = async (silent = false) => {
+    const result = await run(() => call<WeixinConnectStatusResult>("weixin_connect_status"));
+    if (result) {
+      setWeixinStatus(result);
+      if (!silent) showResultNotice(t("微信连接"), result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const dreamSkinRequest = (screenshotPath?: string) => ({
+    request: {
+      debugPort: overview?.latest_launch?.debug_port ?? parsePort(launchForm.debugPort, 9229),
+      helperPort: overview?.latest_launch?.helper_port ?? parsePort(launchForm.helperPort, 57321),
+      screenshotPath: screenshotPath || null,
+    },
+  });
+
+  const refreshDreamSkinStatus = async (silent = false) => {
+    const result = await run(() => call<DreamSkinRuntimeResult>("dream_skin_status", dreamSkinRequest()));
+    if (result) {
+      setDreamSkinStatus(result);
+      if (!silent || !isSuccessStatus(result.status)) {
+        showResultNotice(t("Dream Skin 状态"), result, { silentSuccess: true });
+      }
+    }
+    return result;
+  };
+
+  const refreshScriptMarket = async (silent = false) => {
+    const result = await run(() => call<ScriptMarketResult>("refresh_script_market"));
+    if (result) {
+      setScriptMarket(result);
+      setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("脚本市场"), result, { silentSuccess: true });
+    }
+  };
+
+  const refreshUserScriptInventory = async () => {
+    const result = await run(() => call<SettingsResult>("refresh_user_script_inventory"));
+    if (result) {
+      setSettings(result);
+      setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
+    }
+    return result;
+  };
+
+  const installMarketScript = async (id: string) => {
+    const result = await run(() => call<ScriptMarketResult>("install_market_script", { id }));
+    if (result) {
+      setScriptMarket(result);
+      setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
+      showResultNotice(t("脚本市场"), result);
+    }
+  };
+
+  const setUserScriptEnabled = async (key: string, enabled: boolean) => {
+    const result = await run(() => call<SettingsResult>("set_user_script_enabled", { key, enabled }));
+    if (result) {
+      setSettings(result);
+      setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
+      showResultNotice(t("本地脚本"), result);
+      await refreshUserScriptInventory();
+    }
+  };
+
+  const deleteUserScript = async (key: string) => {
+    const script = settings?.user_scripts?.scripts?.find((item) => item.key === key);
+    const name = script?.name || key;
+    if (!window.confirm(tf("删除脚本“{0}”？此操作会移除本地脚本文件。", [name]))) return;
+    const result = await run(() => call<SettingsResult>("delete_user_script", { key }));
+    if (result) {
+      setSettings(result);
+      setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
+      showResultNotice(t("本地脚本"), result);
+      await refreshUserScriptInventory();
+    }
+  };
+
+  const refreshRelay = async (silent = false) => {
+    const result = await run(() => call<RelayResult>("relay_status"));
+    if (result) {
+      setRelay(result);
+      if (!silent) showResultNotice(t("登录状态"), result, { silentSuccess: true });
+    }
+  };
+
+  const refreshRelayFiles = async (silent = false) => {
+    const result = await run(() => call<RelayFilesResult>("read_relay_files"));
+    if (result) {
+      setRelayFiles(result);
+      if (!silent) showResultNotice(t("配置文件"), result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const refreshEnvConflicts = async (silent = false) => {
+    const result = await run(() => call<EnvConflictsResult>("check_env_conflicts"));
+    if (result) {
+      setEnvConflicts(result);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("环境变量检测"), result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const refreshRelayEnvironment = async (silent = false) => {
+    const result = await run(() => call<RelayEnvironmentResult>("check_relay_environment"));
+    if (result) {
+      setRelayEnvironment(result);
+      if (!silent) showResultNotice(t("中转站环境配置检测"), result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const removeEnvConflicts = async (names: string[]) => {
+    const uniqueNames = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
+    if (!uniqueNames.length) return;
+    if (!window.confirm(tf("删除这些环境变量？\n\n{0}\n\n删除前会写入备份。", [uniqueNames.join("\n")]))) return;
+    const result = await run(() => call<RemoveEnvConflictsResult>("remove_env_conflicts", { request: { names: uniqueNames } }));
+    if (result) {
+      setEnvConflicts({
+        status: result.status,
+        message: result.message,
+        conflicts: result.remaining,
+      });
+      showNotice(t("环境变量清理"), result.message, result.status);
+    }
+  };
+
+  const refreshCcsProviders = async (silent = false) => {
+    const result = await run(() => call<CcsProvidersResult>("load_ccs_providers"));
+    if (result) {
+      setCcsProviders(result);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("cc-switch 导入"), result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const importCcsProviders = async () => {
+    const result = await run(() => call<SettingsResult>("import_ccs_providers"));
+    if (result) {
+      setSettings(result);
+      setSettingsForm(normalizeSettings(result.settings));
+      showResultNotice(t("cc-switch 导入"), result);
+      await refreshCcsProviders(true);
+    }
+  };
+
+  const refreshPendingProviderImport = async (silent = true) => {
+    const result = await run(() => call<PendingProviderImportResult>("load_pending_provider_import"));
+    if (result) {
+      setPendingProviderImport(result.pending);
+      if (!silent && !isSuccessStatus(result.status)) showResultNotice(t("Codex++ 导入"), result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const confirmPendingProviderImport = async () => {
+    const result = await run(() => call<SettingsResult>("confirm_pending_provider_import"));
+    if (result) {
+      setPendingProviderImport(null);
+      setSettings(result);
+      setSettingsForm(normalizeSettings(result.settings));
+      showResultNotice(t("Codex++ 导入"), result);
+      await refreshCcsProviders(true);
+    }
+  };
+
+  const dismissPendingProviderImport = async () => {
+    const result = await run(() => call<PendingProviderImportResult>("dismiss_pending_provider_import"));
+    if (result) {
+      setPendingProviderImport(null);
+      showResultNotice(t("Codex++ 导入"), result, { silentSuccess: true });
+    }
+  };
+
+  const refreshLocalSessions = async (silent = false, offset = 0): Promise<LocalSessionsResult | null> => {
+    const result = await run(() =>
+      call<LocalSessionsResult>("list_local_sessions", {
+        request: { offset, limit: 50 },
+      }),
+    );
+    if (result) {
+      if (!result.sessions.length && result.offset > 0) {
+        return refreshLocalSessions(silent, Math.max(0, result.offset - result.limit));
+      }
+      setLocalSessions(result);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("会话管理"), result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const refreshZedRemoteProjects = async (silent = false) => {
+    const result = await run(() => call<ZedRemoteProjectsResult>("list_zed_remote_projects"));
+    if (result) {
+      setZedRemoteProjects(result);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("Zed 远程项目"), result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const openZedRemoteProject = async (
+    project: ZedRemoteProject,
+    strategy: ZedOpenStrategy = settingsForm.zedRemoteOpenStrategy || "addToFocusedWorkspace",
+  ) => {
+    const result = await run(() =>
+      call<ZedRemoteOpenResult>("open_zed_remote", {
+        payload: {
+          ssh: project.ssh,
+          hostId: project.hostId,
+          path: project.path,
+          strategy,
+          remember: settingsForm.zedRemoteProjectRegistryEnabled !== false,
+        },
+      }),
+    );
+    if (result) {
+      showResultNotice(t("Zed 远程打开"), result);
+      await refreshZedRemoteProjects(true);
+    }
+  };
+
+  const forgetZedRemoteProject = async (project: ZedRemoteProject) => {
+    const result = await run(() => call<ZedRemoteProjectsResult>("forget_zed_remote_project", { id: project.id }));
+    if (result) {
+      setZedRemoteProjects(result);
+      showResultNotice(t("Zed 远程项目"), result);
+    }
+  };
+
+  const requestDeleteLocalSession = (session: LocalSession) =>
+    call<DeleteLocalSessionResult>("delete_local_session", {
+      request: { sessionId: session.id, title: session.title, dbPath: session.dbPath },
+    });
+
+  const confirmSessionDelete = (title: string, message: string) =>
+    new Promise<boolean>((resolve) => {
+      setConfirmDialog({
+        title,
+        message,
+        confirmText: t("确认删除"),
+        cancelText: t("取消"),
+        resolve,
+      });
+    });
+
+  const setDreamSkinDraftSelection = (
+    key: string,
+    draft: DreamSkinThemeDraft,
+  ) => {
+    setSelectedDreamSkinTheme(key);
+    setSavedDreamSkinThemeDraft(draft);
+    setDreamSkinThemeDraft(draft);
+  };
+
+  const refreshDreamSkinLibrary = async (silent = false) => {
+    const result = await run(() => call<DreamSkinThemeLibraryResult>("list_dream_skin_themes"));
+    if (!result) return null;
+    const library: DreamSkinThemeLibrary = {
+      themes: result.themes,
+      activeDraft: result.activeDraft,
+    };
+    setDreamSkinLibrary(library);
+    const active = library.themes.find((item) => item.active) ?? library.themes[0];
+    if (active) {
+      const draft = active.builtin
+        ? { config: defaultDreamSkinTheme(), imagePath: "", builtin: true }
+        : library.activeDraft;
+      setDreamSkinDraftSelection(active.key, draft);
+    }
+    if (!silent && !isSuccessStatus(result.status)) {
+      showResultNotice(t("主题库"), result);
+    }
+    return library;
+  };
+
+  const refreshDreamSkinMarket = async (silent = false) => {
+    const result = await run(() => call<DreamSkinMarketResult>("refresh_dream_skin_market"));
+    if (result) {
+      setDreamSkinMarket(result);
+      if (!silent || !isSuccessStatus(result.status)) {
+        showResultNotice(t("主题市场"), result, { silentSuccess: true });
+      }
+    }
+    return result;
+  };
+
+  const refreshDreamSkinCommunity = async (silent = false) => {
+    const result = await run(() => call<DreamSkinCommunityResult>("refresh_dream_skin_community"));
+    if (result) {
+      setDreamSkinCommunity(result);
+      if (!silent || !isSuccessStatus(result.status)) {
+        showResultNotice(t("DreamSkin 社区"), result, { silentSuccess: true });
+      }
+    }
+    return result;
+  };
+
+  const installDreamSkinCommunityTheme = async (theme: DreamSkinCommunityTheme) => {
+    const result = await run(() => call<DreamSkinCommunityResult>(
+      "install_dream_skin_community_theme",
+      { id: theme.id },
+    ));
+    if (!result) return false;
+    setDreamSkinCommunity(result);
+    showResultNotice(t("DreamSkin 社区"), result);
+    if (!isSuccessStatus(result.status)) return false;
+    await refreshDreamSkinLibrary(true);
+    const draft = await loadDreamSkinThemeDraft(theme.themeId);
+    if (draft) setDreamSkinDraftSelection(`stored:${theme.themeId}`, draft);
+    return true;
+  };
+
+  const refreshPendingDreamSkinCommunity = async () => {
+    const result = await run(() => call<PendingDreamSkinCommunityResult>("load_pending_dream_skin_community"));
+    if (result) setPendingDreamSkinCommunity(result.versionId);
+    return result;
+  };
+
+  const confirmPendingDreamSkinCommunity = async () => {
+    const result = await run(() => call<DreamSkinCommunityResult>("confirm_pending_dream_skin_community"));
+    if (!result) return;
+    setDreamSkinCommunity(result);
+    showResultNotice(t("DreamSkin 社区"), result);
+    if (!isSuccessStatus(result.status)) return;
+    setPendingDreamSkinCommunity("");
+    setRoute("dreamSkin");
+    await refreshDreamSkinLibrary(true);
+    if (result.installedThemeId) {
+      const draft = await loadDreamSkinThemeDraft(result.installedThemeId);
+      if (draft) {
+        setDreamSkinDraftSelection(`stored:${result.installedThemeId}`, draft);
+        await activateDreamSkinDraft(draft);
+      }
+    }
+  };
+
+  const dismissPendingDreamSkinCommunity = async () => {
+    const result = await run(() => call<PendingDreamSkinCommunityResult>("dismiss_pending_dream_skin_community"));
+    if (!result) return;
+    if (isSuccessStatus(result.status)) setPendingDreamSkinCommunity("");
+    else showResultNotice(t("DreamSkin 社区"), result);
+  };
+
+  const importDreamSkinThemePackage = async () => {
+    let selected: string | string[] | null;
+    try {
+      selected = await open({
+        title: t("导入 DreamSkin 主题包"),
+        multiple: false,
+        directory: false,
+        filters: [{ name: "DreamSkin ZIP", extensions: ["zip"] }],
+      });
+    } catch (error) {
+      showNotice(t("主题库"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
+      return;
+    }
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path) return;
+    const previousIds = new Set(dreamSkinLibrary?.themes.map((item) => item.id) ?? []);
+    const result = await run(() => call<DreamSkinThemeLibraryResult>(
+      "import_dream_skin_theme_package",
+      { path },
+    ));
+    if (!result) return;
+    showResultNotice(t("主题库"), result);
+    if (!isSuccessStatus(result.status)) return;
+    const library = { themes: result.themes, activeDraft: result.activeDraft };
+    setDreamSkinLibrary(library);
+    const imported = result.themes.find((item) => item.kind === "stored" && !previousIds.has(item.id));
+    if (imported) {
+      const draft = await loadDreamSkinThemeDraft(imported.id);
+      if (draft) setDreamSkinDraftSelection(imported.key, draft);
+    }
+    await refreshDreamSkinCommunity(true);
+  };
+
+  const installDreamSkinMarketTheme = async (theme: DreamSkinMarketTheme) => {
+    const result = await run(() => call<DreamSkinMarketResult>("install_dream_skin_market_theme", { id: theme.id }));
+    if (!result) return false;
+    setDreamSkinMarket(result);
+    showResultNotice(t("主题市场"), result);
+    if (!isSuccessStatus(result.status)) return false;
+    await refreshDreamSkinLibrary(true);
+    const draft = await loadDreamSkinThemeDraft(theme.id);
+    if (draft) setDreamSkinDraftSelection(`stored:${theme.id}`, draft);
+    return true;
+  };
+
+  const runAfterDreamSkinDraftGuard = (action: () => void) => {
+    if (!dreamSkinDraftDirty) {
+      action();
+      return;
+    }
+    dreamSkinPendingActionRef.current = action;
+    setDreamSkinUnsavedDialog(true);
+  };
+
+  const loadDreamSkinThemeDraft = async (id: string) => {
+    const result = await run(() => call<DreamSkinThemeDraftResult>("load_dream_skin_theme", { id }));
+    if (!result || !isSuccessStatus(result.status)) {
+      if (result) showResultNotice(t("主题库"), result);
+      return null;
+    }
+    return {
+      config: result.config,
+      imagePath: result.imagePath,
+      builtin: result.builtin,
+    } satisfies DreamSkinThemeDraft;
+  };
+
+  const selectDreamSkinTheme = (item: DreamSkinThemeSummary) => {
+    if (item.key === selectedDreamSkinTheme) return;
+    runAfterDreamSkinDraftGuard(() => {
+      void (async () => {
+        if (item.builtin) {
+          setDreamSkinDraftSelection(item.key, {
+            config: defaultDreamSkinTheme(),
+            imagePath: "",
+            builtin: true,
+          });
+          return;
+        }
+        if (item.active && dreamSkinLibrary) {
+          setDreamSkinDraftSelection(item.key, dreamSkinLibrary.activeDraft);
+          return;
+        }
+        const draft = await loadDreamSkinThemeDraft(item.id);
+        if (draft) setDreamSkinDraftSelection(item.key, draft);
+      })();
+    });
+  };
+
+  const saveDreamSkinThemeDraft = async (): Promise<DreamSkinThemeDraft | null> => {
+    if (!dreamSkinThemeDraft) return null;
+    const selected = dreamSkinLibrary?.themes.find((item) => item.key === selectedDreamSkinTheme);
+    const saveAsNew = dreamSkinThemeDraft.builtin || selected?.kind === "activeUnsaved";
+    const draft: DreamSkinThemeDraft = saveAsNew
+      ? {
+          ...dreamSkinThemeDraft,
+          config: {
+            ...dreamSkinThemeDraft.config,
+            id: dreamSkinThemeDraft.builtin
+              ? `theme-${Date.now()}`
+              : dreamSkinThemeDraft.config.id,
+            name: dreamSkinThemeDraft.config.name === "Dream Skin"
+              ? t("Dream Skin 副本")
+              : dreamSkinThemeDraft.config.name,
+          },
+          builtin: false,
+        }
+      : dreamSkinThemeDraft;
+    const result = await run(() => call<DreamSkinThemeLibraryResult>("save_dream_skin_theme", { draft }));
+    if (!result || !isSuccessStatus(result.status)) {
+      if (result) showResultNotice(t("主题库"), result);
+      return null;
+    }
+    const stored = await loadDreamSkinThemeDraft(draft.config.id);
+    if (!stored) return null;
+    setDreamSkinLibrary({ themes: result.themes, activeDraft: result.activeDraft });
+    setDreamSkinDraftSelection(`stored:${draft.config.id}`, stored);
+    return stored;
+  };
+
+  const createDreamSkinTheme = async () => {
+    let selected: unknown;
+    try {
+      selected = await open({
+        directory: false,
+        multiple: false,
+        title: t("选择皮肤图片"),
+        filters: [{
+          name: t("图片"),
+          extensions: isWindowsPlatform
+            ? ["png", "jpg", "jpeg", "webp", "gif", "bmp"]
+            : ["png", "jpg", "jpeg", "heic", "tif", "tiff", "webp"],
+        }],
+      });
+    } catch (error) {
+      showNotice(t("主题库"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
+      return;
+    }
+    if (typeof selected !== "string" || !selected.trim()) return;
+    const result = await run(() => call<DreamSkinThemeDraftResult>("create_dream_skin_theme", { path: selected.trim() }));
+    if (!result || !isSuccessStatus(result.status)) {
+      if (result) showResultNotice(t("主题库"), result);
+      return;
+    }
+    const draft: DreamSkinThemeDraft = {
+      config: result.config,
+      imagePath: result.imagePath,
+      builtin: result.builtin,
+    };
+    await refreshDreamSkinLibrary(true);
+    setDreamSkinDraftSelection(`stored:${draft.config.id}`, draft);
+  };
+
+  const chooseDreamSkinDraftImage = async () => {
+    let selected: unknown;
+    try {
+      selected = await open({
+        directory: false,
+        multiple: false,
+        title: t("选择皮肤图片"),
+        filters: [{
+          name: t("图片"),
+          extensions: isWindowsPlatform
+            ? ["png", "jpg", "jpeg", "webp", "gif", "bmp"]
+            : ["png", "jpg", "jpeg", "heic", "tif", "tiff", "webp"],
+        }],
+      });
+    } catch (error) {
+      showNotice(t("主题库"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
+      return;
+    }
+    if (typeof selected === "string" && selected.trim()) {
+      setDreamSkinThemeDraft((current) => current ? { ...current, imagePath: selected.trim() } : current);
+    }
+  };
+
+  const activateDreamSkinDraft = async (initialDraft: DreamSkinThemeDraft) => {
+    const currentTheme = pendingDreamSkinRestart
+      ? {
+          key: pendingDreamSkinRestart.currentThemeKey,
+          name: pendingDreamSkinRestart.currentThemeName,
+        }
+      : dreamSkinLibrary?.themes.find((item) => item.active) ?? null;
+    let draft = initialDraft;
+    if (draft.builtin && dreamSkinDraftDirty) {
+      const stored = await saveDreamSkinThemeDraft();
+      if (!stored) return false;
+      draft = stored;
+    }
+    const saved = await persistDreamSkinSettings({
+      ...settingsForm,
+      codexAppDreamSkinEnabled: true,
+      codexAppDreamSkinPaused: false,
+    });
+    if (!saved) return false;
+    const ports = dreamSkinRequest().request;
+    const result = await run(() => call<DreamSkinThemeActivationResult>("activate_dream_skin_theme", {
+      request: {
+        draft,
+        debugPort: ports.debugPort,
+        helperPort: ports.helperPort,
+      },
+    }));
+    if (!result || !isSuccessStatus(result.status)) {
+      if (result) showResultNotice(t("主题库"), result);
+      return false;
+    }
+    setDreamSkinLibrary(result.library);
+    setDreamSkinStatus({ ...result.runtime, status: result.status, message: result.message });
+    const active = result.library.themes.find((item) => item.active);
+    if (active) setDreamSkinDraftSelection(active.key, result.library.activeDraft);
+    await refreshSettings(true);
+    if (result.savedForNextLaunch) {
+      setPendingDreamSkinRestart({
+        currentThemeKey: currentTheme?.key ?? null,
+        currentThemeName: currentTheme?.name ?? t("当前皮肤"),
+        pendingThemeKey: active?.key ?? selectedDreamSkinTheme,
+        pendingThemeName: active?.name ?? draft.config.name,
+      });
+      showNotice(t("主题库"), t("主题已保存并设为待应用，不会自动重启 Codex。"), "not_checked");
+    } else {
+      setPendingDreamSkinRestart(null);
+    }
+    return true;
+  };
+
+  const activateDreamSkinTheme = async () => {
+    if (!dreamSkinThemeDraft) return;
+    await activateDreamSkinDraft(dreamSkinThemeDraft);
+  };
+
+  const renameDreamSkinTheme = async (item: DreamSkinThemeSummary) => {
+    const name = window.prompt(t("输入新的主题名称"), item.name)?.trim();
+    if (!name || name === item.name) return;
+    const result = await run(() => call<DreamSkinThemeLibraryResult>("rename_dream_skin_theme", { id: item.id, name }));
+    if (!result || !isSuccessStatus(result.status)) {
+      if (result) showResultNotice(t("主题库"), result);
+      return;
+    }
+    setDreamSkinLibrary({ themes: result.themes, activeDraft: result.activeDraft });
+    if (selectedDreamSkinTheme === item.key) {
+      setDreamSkinThemeDraft((current) => current
+        ? { ...current, config: { ...current.config, name } }
+        : current);
+      setSavedDreamSkinThemeDraft((current) => current
+        ? { ...current, config: { ...current.config, name } }
+        : current);
+    }
+  };
+
+  const deleteDreamSkinTheme = async (item: DreamSkinThemeSummary) => {
+    const confirmed = await confirmSessionDelete(
+      t("删除主题"),
+      tf("删除主题“{0}”？此操作无法撤销。", [item.name]),
+    );
+    if (!confirmed) return;
+    const result = await run(() => call<DreamSkinThemeLibraryResult>("delete_dream_skin_theme", { id: item.id }));
+    if (!result || !isSuccessStatus(result.status)) {
+      if (result) showResultNotice(t("主题库"), result);
+      return;
+    }
+    setDreamSkinLibrary({ themes: result.themes, activeDraft: result.activeDraft });
+    const active = result.themes.find((candidate) => candidate.active) ?? result.themes[0];
+    if (active) {
+      const draft = active.builtin
+        ? { config: defaultDreamSkinTheme(), imagePath: "", builtin: true }
+        : result.activeDraft;
+      setDreamSkinDraftSelection(active.key, draft);
+    }
+  };
+
+  const selectSessionIndexCleanupCandidates = (candidates: SessionIndexCleanupCandidate[]) =>
+    new Promise<string[] | null>((resolve) => {
+      setSessionIndexCleanupDialog({
+        candidates,
+        resolve,
+      });
+    });
+
+  const deleteLocalSession = async (session: LocalSession) => {
+    const title = session.title || session.id;
+    const confirmed = await confirmSessionDelete(t("删除会话"), tf("删除会话“{0}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。", [title]));
+    if (!confirmed) return;
+    const result = await run(() => requestDeleteLocalSession(session));
+    if (result) {
+      showResultNotice(t("会话删除"), result);
+      await refreshLocalSessions(true, localSessions?.offset ?? 0);
+    }
+  };
+
+  const deleteLocalSessions = async (sessions: LocalSession[]) => {
+    const uniqueSessions = Array.from(new Map(sessions.map((session) => [session.id, session])).values());
+    if (!uniqueSessions.length) {
+      showNotice(t("批量删除会话"), t("请先选择要删除的会话。"), "failed");
+      return;
+    }
+    const preview = uniqueSessions
+      .slice(0, 6)
+      .map((session) => `- ${truncateSessionDeletePreview(session.title || session.id)}`)
+      .join("\n");
+    const extraCount = uniqueSessions.length > 6 ? tf("\n...以及另外 {0} 个会话", [uniqueSessions.length - 6]) : "";
+    const confirmed = await confirmSessionDelete(
+      t("批量删除会话"),
+      tf("删除选中的 {0} 个会话？此操作会删除本地数据库记录和 rollout 文件，并为每个会话创建备份。\n\n{1}{2}", [uniqueSessions.length, preview, extraCount]),
+    );
+    if (!confirmed) return;
+
+    let succeeded = 0;
+    const failed: string[] = [];
+    for (const session of uniqueSessions) {
+      const result = await run(() => requestDeleteLocalSession(session));
+      if (result && isSuccessStatus(result.status)) {
+        succeeded += 1;
+      } else {
+        failed.push(session.title || session.id);
+      }
+    }
+
+    if (failed.length) {
+      showNotice(
+        t("批量删除会话"),
+        tf("已删除 {0} 个，失败 {1} 个：{2}", [succeeded, failed.length, failed.slice(0, 3).map(truncateSessionDeletePreview).join(t("、"))]),
+        succeeded ? "ok" : "failed",
+      );
+    } else {
+      showNotice(t("批量删除会话"), tf("已删除 {0} 个会话。", [succeeded]), "ok");
+    }
+    await refreshLocalSessions(true, localSessions?.offset ?? 0);
+  };
+
+  const refreshLiveContextEntries = async (silent = false) => {
+    const result = await run(() => call<LiveContextEntriesResult>("read_live_context_entries"));
+    if (result) {
+      setLiveContextEntries(result.entries);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const syncLiveContextEntries = async (next: BackendSettings, silent = false) => {
+    const result = await run(() => call<LiveContextEntriesResult>("sync_live_context_entries", { request: { settings: next } }));
+    if (result) {
+      setLiveContextEntries(result.entries);
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  const refreshLogs = async (silent = false) => {
+    const result = await run(() => call<LogsResult>("read_latest_logs", { request: { lines: 240 } }));
+    if (result) {
+      setLogs(result);
+      if (!silent) showResultNotice(t("日志已刷新"), result, { silentSuccess: true });
+    }
+  };
+
+  const clearLogs = async () => {
+    const result = await run(() => call<LogsResult>("clear_logs"));
+    if (result) {
+      setLogs(result);
+      showResultNotice(t("日志清理"), result, { silentSuccess: false });
+    }
+  };
+
+  const refreshDiagnostics = async (silent = false) => {
+    const result = await run(() => call<DiagnosticsResult>("copy_diagnostics"));
+    if (result) {
+      setDiagnostics(result);
+      if (!silent) showResultNotice(t("诊断已生成"), result, { silentSuccess: true });
+    }
+  };
+
+  const refreshWatcher = async (silent = false) => {
+    const result = await run(() => call<WatcherResult>("load_watcher_state"));
+    if (result) {
+      setWatcher(result);
+      if (!silent) showResultNotice(t("Watcher 状态"), result, { silentSuccess: true });
+    }
+  };
+
+  const navigate = async (next: Route, skipDreamSkinDraftGuard = false) => {
+    if (!skipDreamSkinDraftGuard && route === "dreamSkin" && next !== "dreamSkin" && dreamSkinDraftDirty) {
+      runAfterDreamSkinDraftGuard(() => void navigate(next, true));
+      return;
+    }
+    setRoute(next);
+    if (next === "overview") await refreshOverview(true);
+    if (next === "relay") {
+      await refreshSettings(true);
+      await refreshWeixinStatus(true);
+      await refreshRelay(true);
+      await refreshRelayFiles(true);
+      await refreshEnvConflicts(true);
+      await refreshCcsProviders(true);
+    }
+    if (next === "relayEnvironment") await refreshRelayEnvironment(true);
+    if (next === "sessions") {
+      await refreshSettings(true);
+      await refreshLocalSessions(true);
+      await refreshProviderSyncTargets(true);
+    }
+    if (next === "zedRemote") {
+      await refreshSettings(true);
+      await refreshZedRemoteProjects(true);
+    }
+    if (next === "context") {
+      await refreshSettings(true);
+      await refreshRelayFiles(true);
+      await refreshLiveContextEntries(true);
+    }
+    if (next === "weixin") {
+      await refreshSettings(true);
+      await refreshWeixinStatus(true);
+      await refreshLocalSessions(true);
+    }
+    if (next === "dreamSkin") {
+      await refreshSettings(true);
+      await refreshOverview(true);
+      await refreshDreamSkinStatus(true);
+      await refreshDreamSkinLibrary(true);
+      await refreshDreamSkinMarket(true);
+      await refreshDreamSkinCommunity(true);
+    }
+    if (next === "settings") await refreshSettings(true);
+    if (next === "userScripts") {
+      await refreshSettings(true);
+      await refreshScriptMarket(true);
+      await refreshUserScriptInventory();
+    }
+    if (next === "recommendations") await refreshAds(true);
+    if (next === "about") {
+      await refreshOverview(true);
+      await refreshLogs(true);
+      await refreshDiagnostics(true);
+    }
+    if (next === "maintenance") {
+      await refreshOverview(true);
+      await refreshWatcher(true);
+    }
+  };
+
+  const launch = async () => {
+    const result = await launchCommand("launch_codex_plus");
+    if (!result) return;
+    if (!isSuccessStatus(result.status)) {
+      showNotice(t("启动任务"), result.message, result.status);
+      return;
+    }
+    showNotice(t("启动任务"), t("正在等待 Codex 启动结果…"), "accepted");
+    const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
+    showLaunchCompletionNotice(t("启动任务"), completion);
+  };
+
+  const restart = async (syncActiveRelay = false) => {
+    const result = await launchCommand("restart_codex_plus", syncActiveRelay);
+    if (!result) return false;
+    if (!isSuccessStatus(result.status)) {
+      showNotice(t("重启 Codex++"), result.message, result.status);
+      return false;
+    }
+    showNotice(t("重启 Codex++"), t("正在等待 Codex 重新启动…"), "accepted");
+    const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
+    showLaunchCompletionNotice(t("重启 Codex++"), completion);
+    const succeeded = Boolean(
+      completion
+      && resolveLaunchStatus(completion.latest_launch, result.launchStartedAtMs ?? 0) === "success",
+    );
+    if (succeeded) setPendingDreamSkinRestart(null);
+    return succeeded;
+  };
+
+  const launchCommand = async (command: "launch_codex_plus" | "restart_codex_plus", syncActiveRelay = false) => {
+    const result = await run(() =>
+      call<LaunchCommandResult>(command, {
+        request: {
+          appPath: launchForm.appPath,
+          debugPort: numberOrDefault(launchForm.debugPort, 9229),
+          helperPort: numberOrDefault(launchForm.helperPort, 57321),
+          syncActiveRelay,
+        },
+      }),
+    );
+    return result;
+  };
+
+  const waitForLaunchCompletion = async (requestStartedAtMs?: number) => {
+    if (!requestStartedAtMs) {
+      await refreshOverview(true);
+      return null;
+    }
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const result = await run(() => call<OverviewResult>("load_overview"));
+      if (result) {
+        setOverview(result);
+        const resolution = resolveLaunchStatus(result.latest_launch, requestStartedAtMs);
+        if (resolution === "success" || resolution === "failed") return result;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 400));
+    }
+    await refreshOverview(true);
+    return null;
+  };
+
+  const showLaunchCompletionNotice = (title: string, result: OverviewResult | null) => {
+    const status = result?.latest_launch;
+    if (!status) {
+      showNotice(title, t("启动仍在后台进行，可在概览的“最近启动”中查看状态。"), "accepted");
+      return;
+    }
+    if (["failed", "crashed", "stopped"].includes(status.status)) {
+      showNotice(title, status.message || t("Codex 启动失败。"), "failed");
+      return;
+    }
+    const message = status.status === "running_degraded"
+      ? t("Codex 已启动，增强功能仍在等待页面连接。")
+      : t("Codex 已成功启动。");
+    showNotice(title, message, "ok");
+  };
+
+  const repairPluginMarketplace = async () => {
+    if (pluginMarketplaceProgress.active) return;
+    setPluginMarketplaceProgress({ active: true, percent: 8, message: t("正在检查本地插件市场…") });
+    const progressTimer = window.setInterval(() => {
+      setPluginMarketplaceProgress((current) => {
+        if (!current.active) return current;
+        const nextPercent = Math.min(92, current.percent + 9);
+        const message =
+          nextPercent < 28
+            ? t("正在连接 openai/plugins…")
+            : nextPercent < 62
+              ? t("正在下载插件市场快照…")
+              : nextPercent < 84
+                ? t("正在解压并校验插件文件…")
+                : t("正在写入 Codex 配置…");
+        return { ...current, percent: nextPercent, message };
+      });
+    }, 500);
+    try {
+      const result = await run(() => call<PluginMarketplaceRepairResult>("repair_plugin_marketplace"));
+      if (result) {
+        setPluginMarketplaceProgress({
+          active: false,
+          percent: 100,
+          message: result.message,
+        });
+        showNotice(t("插件市场修复"), result.message, result.status);
+      } else {
+        setPluginMarketplaceProgress({
+          active: false,
+          percent: 100,
+          message: t("插件市场修复失败，请查看错误提示后重试。"),
+        });
+      }
+    } finally {
+      window.clearInterval(progressTimer);
+    }
+  };
+
+  const refreshRemotePluginMarketplace = async (silent = false) => {
+    const result = await run(() => call<RemotePluginMarketplaceResult>("remote_plugin_marketplace_status"));
+    if (result) {
+      setRemotePluginMarketplace(result);
+      if (!silent) {
+        setRemotePluginMarketplaceProgress({
+          active: false,
+          percent: 100,
+          message: result.message,
+        });
+      }
+      if (!silent) showNotice(t("官方远端插件缓存"), result.message, result.status);
+    }
+    return result;
+  };
+
+  const repairRemotePluginMarketplace = async () => {
+    if (remotePluginMarketplaceProgress.active) return;
+    setRemotePluginMarketplaceProgress({
+      active: true,
+      percent: 18,
+      message: t("正在检查内置官方远端插件缓存…"),
+    });
+    const progressTimer = window.setInterval(() => {
+      setRemotePluginMarketplaceProgress((current) => {
+        if (!current.active) return current;
+        const nextPercent = Math.min(92, current.percent + 18);
+        const message =
+          nextPercent < 50
+            ? t("正在释放内置远端插件快照…")
+            : nextPercent < 78
+              ? t("正在注册官方远端插件市场…")
+              : t("正在刷新官方远端插件缓存状态…");
+        return { ...current, percent: nextPercent, message };
+      });
+    }, 450);
+    try {
+      const result = await run(() => call<RemotePluginMarketplaceResult>("repair_remote_plugin_marketplace"));
+      if (result) {
+        setRemotePluginMarketplace(result);
+        setRemotePluginMarketplaceProgress({
+          active: false,
+          percent: 100,
+          message: result.message,
+        });
+        showNotice(t("官方远端插件缓存"), result.message, result.status);
+      } else {
+        setRemotePluginMarketplaceProgress({
+          active: false,
+          percent: 100,
+          message: t("官方远端插件缓存修复失败，请查看错误提示后重试。"),
+        });
+      }
+    } finally {
+      window.clearInterval(progressTimer);
+    }
+  };
+
+  const installEntrypoints = async () => {
+    const result = await run(() => call<InstallResult>("install_entrypoints"));
+    if (result) {
+      showNotice(t("入口安装"), result.message, result.status);
+      await refreshOverview(true);
+    }
+  };
+
+  const uninstallEntrypoints = async () => {
+    const result = await run(() =>
+      call<InstallResult>("uninstall_entrypoints", {
+        options: { removeOwnedData },
+      }),
+    );
+    if (result) {
+      showNotice(t("入口卸载"), result.message, result.status);
+      await refreshOverview(true);
+    }
+  };
+
+  const repairShortcuts = async () => {
+    const result = await run(() => call<InstallResult>("repair_shortcuts"));
+    if (result) {
+      showNotice(t("快捷方式修复"), result.message, result.status);
+      await refreshOverview(true);
+    }
+  };
+
+  const watcherAction = async (command: string) => {
+    const result = await run(() => call<WatcherResult>(command));
+    if (result) {
+      setWatcher(result);
+      showNotice(t("Watcher 操作"), result.message, result.status);
+    }
+  };
+
+  const checkUpdate = async (silent = false) => {
+    const result = await run(() => call<UpdateResult>("check_update"));
+    if (result) {
+      setUpdate(result);
+      if (!silent || result.updateAvailable) {
+        showNotice(t("GitHub Release 检查"), result.message, result.status);
+      }
+    }
+  };
+
+  const performUpdate = async () => {
+    if (updateInstallProgress.active) return;
+    const release =
+      update?.latestVersion && update.assetName && update.assetUrl
+        ? {
+            version: update.latestVersion,
+            url: "",
+            body: update.releaseSummary ?? "",
+            asset_name: update.assetName,
+            asset_url: update.assetUrl,
+          }
+        : null;
+    setUpdateInstallProgress({
+      active: true,
+      percent: 8,
+      message: t("正在准备安装包下载…"),
+    });
+    const startedAt = Date.now();
+    const progressTimer = window.setInterval(() => {
+      setUpdateInstallProgress((current) => {
+        if (!current.active) return current;
+        const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+        const nextPercent =
+          elapsedSeconds < 3
+            ? Math.min(24, current.percent + 4)
+            : elapsedSeconds < 15
+              ? Math.min(68, current.percent + 3)
+              : elapsedSeconds < 45
+                ? Math.min(86, current.percent + 1)
+                : Math.min(99, current.percent + 0.2);
+        const message =
+          elapsedSeconds < 3
+            ? t("正在获取 GitHub Release 信息…")
+            : elapsedSeconds < 15
+              ? t("正在下载安装包…")
+              : elapsedSeconds < 45
+                ? t("正在写入安装包…")
+                : t("下载或启动耗时较长，请保持窗口打开；完成或失败后会自动更新状态。");
+        return { ...current, percent: nextPercent, message };
+      });
+    }, 500);
+    try {
+      const result = await run(() => call<UpdateResult>("perform_update", { release }));
+      if (result) {
+        setUpdate(result);
+        setUpdateInstallProgress({
+          active: false,
+          percent: result.progress ?? 100,
+          message: result.message,
+        });
+        showNotice(t("更新安装"), result.message, result.status);
+      } else {
+        setUpdateInstallProgress({
+          active: false,
+          percent: 100,
+          message: t("安装包更新失败，请查看错误提示后重试。"),
+        });
+      }
+    } finally {
+      window.clearInterval(progressTimer);
+    }
+  };
+
+  const saveSettings = async () => {
+    const next = normalizeSettings(settingsForm);
+    const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
+    if (result) {
+      setSettings(result);
+      setSettingsForm(normalizeSettings(result.settings));
+      showNotice(t("设置保存"), result.message, result.status);
+    }
+  };
+
+  const saveSettingsValue = async (next: BackendSettings, silent = true) => {
+    const normalized = normalizeSettings(next);
+    const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
+    if (result && isSuccessStatus(result.status)) {
+      const saved = normalizeSettings(result.settings);
+      setSettings(result);
+      setSettingsForm(saved);
+      if (!silent) showNotice(t("设置保存"), result.message, result.status);
+      return saved;
+    }
+    if (result) showNotice(t("设置保存"), result.message, result.status);
+    await refreshSettings(true);
+    return null;
+  };
+
+  const beginWeixinQrLogin = async () => {
+    const result = await run(() => call<WeixinQrResult>("weixin_connect_qr_start", {
+      baseUrl: settingsForm.weixinConnectBaseUrl,
+      routeTag: settingsForm.weixinConnectRouteTag,
+    }));
+    if (!result) return;
+    setWeixinQr(result);
+    showResultNotice(t("微信扫码登录"), result, { silentSuccess: true });
+  };
+
+  const startWeixinConnect = async () => {
+    const saved = await saveSettingsValue(settingsForm, true);
+    if (!saved) return;
+    const result = await run(() => call<WeixinConnectStatusResult>("weixin_connect_start"));
+    if (!result) return;
+    setWeixinStatus(result);
+    showResultNotice(t("微信连接"), result);
+    await refreshSettings(true);
+  };
+
+  const stopWeixinConnect = async () => {
+    const result = await run(() => call<WeixinConnectStatusResult>("weixin_connect_stop"));
+    if (!result) return;
+    setWeixinStatus(result);
+    showResultNotice(t("微信连接"), result);
+    await refreshSettings(true);
+  };
+
+  const chooseWeixinPath = async (kind: "workDir" | "codexPath") => {
+    try {
+      const selected = await open({
+        directory: kind === "workDir",
+        multiple: false,
+        title: kind === "workDir" ? t("选择微信连接工作目录") : t("选择 Codex CLI"),
+      });
+      if (typeof selected !== "string" || !selected.trim()) return;
+      setSettingsForm((current) => ({
+        ...current,
+        [kind === "workDir" ? "weixinConnectWorkDir" : "weixinConnectCodexPath"]: selected.trim(),
+      }));
+    } catch (error) {
+      showNotice(t("微信连接"), stringifyError(error), "failed");
+    }
+  };
+
+  const useDesktopCodexCli = async () => {
+    const result = await run(() => call<DesktopCodexCliResult>("find_desktop_codex_cli"));
+    if (!result) return;
+    const path = result.path?.trim();
+    if (isSuccessStatus(result.status) && path) {
+      setSettingsForm((current) => ({
+        ...current,
+        weixinConnectCodexPath: path,
+      }));
+    }
+    showResultNotice(t("Codex CLI 路径"), result);
+  };
+
+  const resetSettings = async () => {
+    const result = await run(() => call<SettingsResult>("reset_settings"));
+    if (result) {
+      setSettings(result);
+      setSettingsForm(normalizeSettings(result.settings));
+      showNotice(t("设置重置"), result.message, result.status);
+    }
+  };
+
+  const resetImageOverlaySettings = async () => {
+    const result = await run(() => call<SettingsResult>("reset_image_overlay_settings"));
+    if (result) {
+      setSettings(result);
+      setSettingsForm(normalizeSettings(result.settings));
+      showNotice(t("图片覆盖层"), result.message, result.status);
+    }
+  };
+
+  const refreshAds = async (silent = false) => {
+    const result = await run(() => call<AdsResult>("load_ads"));
+    if (result) {
+      setAds(result);
+      if (!silent) showResultNotice(t("推荐内容"), result, { silentSuccess: true });
+    }
+  };
+
+  const refreshProviderSyncTargets = async (silent = false) => {
+    const result = await run(() => call<ProviderSyncTargetsResult>("load_provider_sync_targets"));
+    if (result) {
+      setProviderSyncTargets(result);
+      const targets = result.targets ?? [];
+      const saved = settingsForm.providerSyncLastSelectedProvider;
+      const preferred =
+        targets.find((target) => target.id === saved)?.id ||
+        targets.find((target) => target.isCurrentProvider)?.id ||
+        targets[0]?.id ||
+        "openai";
+      setSelectedProviderSyncTarget((current) => (targets.some((target) => target.id === current) ? current : preferred));
+      if (!silent && !isSuccessStatus(result.status)) showNotice(t("Provider 同步目标"), result.message, result.status);
+    }
+    return result;
+  };
+
+  const syncProvidersNow = async () => {
+    if (providerSyncProgress.active) return;
+    setProviderSyncProgress({
+      active: true,
+      percent: 12,
+      message: selectedProviderSyncTarget ? tf("正在同步到 {0}…", [selectedProviderSyncTarget]) : t("正在扫描历史会话与索引…"),
+      result: null,
+    });
+    const progressTimer = window.setInterval(() => {
+      setProviderSyncProgress((current) => {
+        if (!current.active) return current;
+        return {
+          ...current,
+          percent: Math.min(88, current.percent + 8),
+          message: current.percent < 40 ? t("正在检查会话 provider 标记…") : t("正在写入修复与备份…"),
+        };
+      });
+    }, 350);
+    try {
+      const targetProvider = selectedProviderSyncTarget || undefined;
+      const result = await run(() =>
+        call<CommandResult<ProviderSyncPayload>>("sync_providers_now", { targetProvider }),
+      );
+      if (result) {
+        const syncSucceeded = isSuccessStatus(result.status) && result.syncStatus === "synced";
+        let finalResult =
+          isSuccessStatus(result.status) && !syncSucceeded
+            ? {
+                ...result,
+                status: "failed",
+                message: result.syncMessage || t("历史会话修复失败，请查看错误提示后重试。"),
+              }
+            : result;
+        let cleanupFailure: { status: Status; message: string } | null = null;
+        if (syncSucceeded) {
+          const preview = await run(() =>
+            call<CommandResult<SessionIndexCleanupPreviewPayload>>("preview_session_index_cleanup"),
+          );
+          if (!preview) {
+            cleanupFailure = {
+              status: "failed",
+              message: t("幽灵任务索引处理失败，请查看错误提示后重试。"),
+            };
+          } else if (isSuccessStatus(preview.status) && preview.candidates.length > 0) {
+            const selectedIds = await selectSessionIndexCleanupCandidates(preview.candidates);
+            if (selectedIds?.length) {
+              const cleanup = await run(() =>
+                call<CommandResult<SessionIndexCleanupApplyPayload>>("apply_session_index_cleanup", {
+                  snapshotSha256: preview.snapshotSha256,
+                  threadIds: selectedIds,
+                }),
+              );
+              if (cleanup && isSuccessStatus(cleanup.status)) {
+                finalResult = {
+                  ...result,
+                  prunedSessionIndexEntries: cleanup.prunedEntries ?? 0,
+                };
+              } else {
+                cleanupFailure = cleanup ?? {
+                  status: "failed",
+                  message: t("幽灵任务索引处理失败，请查看错误提示后重试。"),
+                };
+              }
+            }
+          } else if (!isSuccessStatus(preview.status)) {
+            cleanupFailure = preview;
+          }
+        }
+        const completion = resolveProviderSyncCompletion(finalResult, cleanupFailure);
+        setProviderSyncProgress({
+          active: false,
+          percent: 100,
+          message:
+            completion.progressMessage ??
+            (isSuccessStatus(completion.result.status)
+              ? providerSyncProgressMessage(completion.result)
+              : completion.result.message),
+          result: completion.result,
+        });
+        if (targetProvider && syncSucceeded) {
+          const next = {
+            ...settingsForm,
+            providerSyncLastSelectedProvider: targetProvider,
+            providerSyncSavedProviders: Array.from(
+              new Set([...(settingsForm.providerSyncSavedProviders ?? []), targetProvider]),
+            ).sort(),
+          };
+          setSettingsForm(next);
+        }
+        await refreshProviderSyncTargets(true);
+        const noticeTitle =
+          completion.noticeKind === "cleanup" ? t("清理幽灵任务索引") : t("历史会话修复");
+        showNotice(
+          noticeTitle,
+          completion.result.message,
+          completion.result.status,
+        );
+      } else {
+        setProviderSyncProgress({
+          active: false,
+          percent: 100,
+          message: t("历史会话修复失败，请查看错误提示后重试。"),
+          result: null,
+        });
+      }
+    } finally {
+      window.clearInterval(progressTimer);
+    }
+  };
+
+  const applyRelayInjection = async (silent = false) => {
+    const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
+    if (settingsResult) {
+      setSettings(settingsResult);
+      setSettingsForm(normalizeSettings(settingsResult.settings));
+      if (!isSuccessStatus(settingsResult.status)) {
+        showNotice(t("设置保存"), settingsResult.message, settingsResult.status);
+        return false;
+      }
+    } else {
+      return false;
+    }
+    const result = await run(() => call<RelayResult>("apply_relay_injection"));
+    if (result) {
+      setRelay(result);
+      await refreshRelayFiles(true);
+      if (!silent || !isSuccessStatus(result.status)) showNotice(t("官方混入 API Key"), result.message, result.status);
+    }
+    return !!result && isSuccessStatus(result.status) && result.configured;
+  };
+
+  const saveLaunchMode = async (launchMode: LaunchMode, silent = false, baseSettings: BackendSettings = settingsForm) => {
+    const next = { ...baseSettings, launchMode };
+    setSettingsForm(next);
+    const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
+    if (result) {
+      setSettings(result);
+      setSettingsForm(normalizeSettings(result.settings));
+      if (!silent) showNotice(t("Codex增强模式"), result.message, result.status);
+    }
+    return result;
+  };
+
+  const applyPureApiInjection = async (silent = false) => {
+    const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
+    if (settingsResult) {
+      setSettings(settingsResult);
+      setSettingsForm(normalizeSettings(settingsResult.settings));
+      if (!isSuccessStatus(settingsResult.status)) {
+        showNotice(t("设置保存"), settingsResult.message, settingsResult.status);
+        return false;
+      }
+    } else {
+      return false;
+    }
+    const result = await run(() => call<RelayResult>("apply_pure_api_injection"));
+    if (result) {
+      setRelay(result);
+      await refreshRelayFiles(true);
+      if (!silent || !isSuccessStatus(result.status)) showNotice(t("纯 API 模式"), result.message, result.status);
+    }
+    return !!result && isSuccessStatus(result.status) && result.configured;
+  };
+
+  const clearRelayInjection = async (silent = false) => {
+    const result = await run(() => call<RelayResult>("clear_relay_injection"));
+    if (result) {
+      setRelay(result);
+      await refreshRelayFiles(true);
+      if (!silent || !isSuccessStatus(result.status)) showNotice(t("官方登录模式"), result.message, result.status);
+    }
+    return !!result && isSuccessStatus(result.status) && !result.configured;
+  };
+
+  const saveRelayFile = async (kind: "config" | "auth", contents: string, silent = false) => {
+    const result = await run(() => call<RelayFilesResult>("save_relay_file", { request: { kind, contents } }));
+    if (result) {
+      setRelayFiles(result);
+      if (!silent || !isSuccessStatus(result.status)) {
+        showNotice(kind === "config" ? "config.toml" : "auth.json", result.message, result.status);
+      }
+      await refreshRelay(true);
+    }
+  };
+
+  const upsertContextEntry = async (next: BackendSettings, kind: ContextKind, id: string, tomlBody: string) => {
+    const result = await run(() =>
+      call<ContextEntriesResult>("upsert_context_entry", {
+        request: { settings: next, kind, id, tomlBody },
+      }),
+    );
+    if (!result) return null;
+    let normalized = normalizeSettings(result.settings);
+    const saveResult = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
+    if (saveResult) {
+      setSettings(saveResult);
+      normalized = normalizeSettings(saveResult.settings);
+    }
+    setSettingsForm(normalized);
+    if (!isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result);
+    return normalized;
+  };
+
+  const deleteContextEntry = async (next: BackendSettings, kind: ContextKind, id: string) => {
+    const result = await run(() =>
+      call<ContextEntriesResult>("delete_context_entry", {
+        request: { settings: next, kind, id },
+      }),
+    );
+    if (!result) return null;
+    let normalized = normalizeSettings(result.settings);
+    const saveResult = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
+    if (saveResult) {
+      setSettings(saveResult);
+      normalized = normalizeSettings(saveResult.settings);
+    }
+    setSettingsForm(normalized);
+    if (!isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result);
+    return normalized;
+  };
+
+  const extractRelayCommonConfig = async (configContents: string) => {
+    const result = await run(() =>
+      call<ExtractRelayCommonConfigResult>("extract_relay_common_config", {
+        request: { configContents },
+      }),
+    );
+    if (result) showResultNotice(t("通用配置文件"), result);
+    return result && isSuccessStatus(result.status) ? result : null;
+  };
+
+  const testRelayProfile = async (profile: RelayProfile) => {
+    const result = await run(() => call<RelayProfileTestResult>("test_relay_profile", { profile }));
+    if (result) showNotice(t("供应商测试"), result.message, result.status);
+  };
+
+  const diagnoseRelayProfile = async (profile: RelayProfile) => {
+    const result = await run(() => call<ProviderDoctorResult>("diagnose_relay_profile", { profile }));
+    if (result) showNotice("Provider Doctor", result.message, result.status);
+    return result ?? null;
+  };
+
+  const testStepwiseSettings = async (settings: BackendSettings) => {
+    const result = await run(() => call<StepwiseTestResult>("test_stepwise_settings", { settings }));
+    if (result) showNotice("Stepwise 测试", result.message, result.status);
+  };
+
+  const fetchRelayProfileModels = async (profile: RelayProfile) => {
+    const result = await run(() => call<RelayProfileModelsResult>("fetch_relay_profile_models", { profile }));
+    if (result) showNotice(t("模型列表"), result.message, result.status);
+    return result && isSuccessStatus(result.status) ? result.models : null;
+  };
+
+  const fetchSub2ApiBilling = async (profile: RelayProfile) => {
+    const result = await run(() => call<Sub2ApiBillingResult>("fetch_sub2api_billing", { profile }));
+    if (result) showNotice("Sub2API", result.message, result.status);
+    return result && isSuccessStatus(result.status) ? result : null;
+  };
+
+  const switchOfficialMode = async () => {
+    const switched = await clearRelayInjection(true);
+    if (!switched) return;
+    const result = await saveLaunchMode("relay", true);
+    if (result) showNotice(t("官方登录模式"), t("已切回官方登录；Codex增强已设为兼容增强。"), result.status);
+  };
+
+  const switchPureApiMode = async () => {
+    const switched = await applyPureApiInjection(true);
+    if (!switched) return;
+    const result = await saveLaunchMode("patch", true);
+    if (result) showNotice(t("纯 API 模式"), t("已切换到纯 API；Codex增强已设为完整增强。"), result.status);
+  };
+
+  const switchRelayProfile = async (next: BackendSettings, previousActiveRelayId = settingsForm.activeRelayId) => {
+    if (relaySwitching) {
+      showNotice(t("供应商切换中"), t("上一次切换还没有完成，请稍后再试。"), "failed");
+      return;
+    }
+    let switchSettings = normalizeSettings(next);
+    if (!switchSettings.relayProfilesEnabled) {
+      showNotice(t("供应商配置已关闭"), t("当前不会写入 Codex config.toml / auth.json。打开供应商配置总开关后再切换。"), "failed");
+      return;
+    }
+    const targetBeforeSnapshot = activeRelayProfile(switchSettings);
+    logDiagnostic("switchRelayProfile.start", {
+      currentRelayId: settingsForm.activeRelayId,
+      targetRelayId: switchSettings.activeRelayId,
+      targetRelayName: targetBeforeSnapshot.name,
+      targetRelayMode: targetBeforeSnapshot.relayMode,
+    });
+    const selectedBeforeSave = activeRelayProfile(switchSettings);
+    const validationError = relayProfileSwitchValidation(selectedBeforeSave, switchSettings);
+    if (validationError) {
+      logDiagnostic("switchRelayProfile.validation_failed", {
+        targetRelayId: selectedBeforeSave.id,
+        targetRelayName: selectedBeforeSave.name,
+        error: validationError,
+      });
+      showNotice(t("供应商配置可能不正确"), validationError, "failed");
+      return;
+    }
+    switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
+    const selectedAfterSave = activeRelayProfile(switchSettings);
+    const command = relayProfileSwitchCommand(selectedAfterSave);
+
+    logDiagnostic("switchRelayProfile.apply_start", {
+      targetRelayId: selectedAfterSave.id,
+      targetRelayName: selectedAfterSave.name,
+      previousActiveRelayId,
+      command,
+    });
+    setRelaySwitching(true);
+    try {
+      const result = await run(() =>
+        call<RelaySwitchResult>("switch_relay_profile", {
+          request: { settings: switchSettings, previousActiveRelayId },
+        }),
+      );
+      if (!result) {
+        logDiagnostic("switchRelayProfile.apply_no_result", {
+          targetRelayId: selectedAfterSave.id,
+        });
+        return;
+      }
+      const selectedSettings = normalizeSettings(result.settings);
+      setSettings({
+        status: result.status,
+        message: result.message,
+        settings: selectedSettings,
+        settings_path: result.settingsPath,
+        user_scripts: result.user_scripts as UserScriptInventory,
+      });
+      setSettingsForm(selectedSettings);
+      setRelay({
+        status: result.status,
+        message: result.message,
+        ...result.relay,
+      });
+      await refreshRelayFiles(true);
+      if (!isSuccessStatus(result.status)) {
+        logDiagnostic("switchRelayProfile.apply_failed", {
+          targetRelayId: selectedAfterSave.id,
+          status: result.status,
+          message: result.message,
+          activeRelayId: selectedSettings.activeRelayId,
+        });
+        showNotice(t("供应商切换"), result.message, result.status);
+        return;
+      }
+      const currentSelected = activeRelayProfile(selectedSettings);
+      logDiagnostic("switchRelayProfile.ok", {
+        targetRelayId: currentSelected.id,
+        launchMode: selectedSettings.launchMode,
+        status: result.status,
+      });
+    } finally {
+      setRelaySwitching(false);
+    }
+  };
+
+  const snapshotActiveRelayFilesBeforeSwitch = async (
+    next: BackendSettings,
+    previousActiveRelayId: string,
+  ): Promise<BackendSettings> => {
+    if (!shouldBackfillRelayProfileBeforeSwitch(previousActiveRelayId, next.activeRelayId)) return next;
+    const profileId = previousActiveRelayId.trim();
+    const result = await run(() =>
+      call<SettingsBackfillResult>("backfill_relay_profile_from_live", {
+        request: { settings: next, profileId },
+      }),
+    );
+    if (!result) return next;
+    const normalized = normalizeSettings(result.settings);
+    if (!isSuccessStatus(result.status)) {
+      showNotice(t("供应商切换"), result.message, result.status);
+      return next;
+    }
+    return normalized;
+  };
+
+  const copyText = async (text: string, message: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (error) {
+      showNotice(t("复制失败"), stringifyError(error), "failed");
+    }
+  };
+
+  const openExternalUrl = async (url: string) => {
+    const result = await run(() => call<CommandResult<Record<string, unknown>>>("open_external_url", { url }));
+    if (result) {
+      showResultNotice(t("打开链接"), result, { silentSuccess: true });
+    }
+  };
+
+  const showNotice = (title: string, message: string, status?: Status) => {
+    setNotice({ title, message: t(message), status });
+  };
+
+  const exitManagerApp = async () => {
+    await call<void>("manager_exit_app");
+  };
+
+  const hideManagerToTray = async () => {
+    await call<void>("manager_hide_to_tray");
+  };
+
+  const showResultNotice = (
+    title: string,
+    result: Pick<CommandResult<unknown>, "message" | "status">,
+    options: { silentSuccess?: boolean } = {},
+  ) => {
+    if (options.silentSuccess && isSuccessStatus(result.status)) return;
+    showNotice(title, result.message, result.status);
+  };
+
+  useEffect(() => {
+    void (async () => {
+      const startup = await run(() => call<StartupResult>("startup_options"));
+      if (startup?.showUpdate) {
+        setRoute("about");
+        void checkUpdate(false);
+      } else {
+        void checkUpdate(true);
+      }
+      await refreshOverview(true);
+      await refreshSettings(true);
+      await refreshRelay(true);
+      await refreshEnvConflicts(true);
+      await refreshProviderSyncTargets(true);
+      await refreshPendingProviderImport(true);
+      await refreshPendingDreamSkinCommunity();
+      await refreshRemotePluginMarketplace(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (getLanguage() === "en") {
+      void invoke("update_tray_labels", {
+        showLabel: "Show window",
+        applySkinLabel: "Apply Dream Skin",
+        quitLabel: "Quit",
+        windowTitle: "Codex++ Manager",
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void refreshPendingProviderImport(true);
+      void refreshPendingDreamSkinCommunity();
+    }, 1200);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!weixinQr || !["", "wait", "scaned"].includes(weixinQr.qrStatus)) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const result = await call<WeixinQrResult>("weixin_connect_qr_status");
+        if (cancelled) return;
+        setWeixinQr(result);
+        if (result.qrStatus === "confirmed") {
+          await refreshSettings(true);
+          await refreshWeixinStatus(true);
+          showNotice(t("微信扫码登录"), result.message, result.status);
+          return;
+        }
+        if (!isSuccessStatus(result.status) || result.qrStatus === "expired") {
+          showResultNotice(t("微信扫码登录"), result);
+          return;
+        }
+        timer = window.setTimeout(poll, 1_000);
+      } catch (error) {
+        if (!cancelled) showNotice(t("微信扫码登录"), stringifyError(error), "failed");
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [weixinQr?.qrStatus, weixinQr?.qrContent]);
+
+  useEffect(() => {
+    if (route !== "weixin") return;
+    const timer = window.setInterval(() => void refreshWeixinStatus(true), 2_000);
+    return () => window.clearInterval(timer);
+  }, [route]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", theme === "dark");
+    document.documentElement.classList.toggle("light", theme === "light");
+    window.localStorage.setItem("codex-plus-theme", theme);
+  }, [theme]);
+
+  const saveCodexAppPath = async (appPath: string) => {
+    const next = { ...settingsForm, codexAppPath: appPath };
+    const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
+    if (result) {
+      setSettings(result);
+      const normalized = normalizeSettings(result.settings);
+      setSettingsForm(normalized);
+      setLaunchForm((current) => ({ ...current, appPath: normalized.codexAppPath }));
+      await refreshOverview(true);
+    }
+    return result;
+  };
+
+  const persistDreamSkinSettings = async (next: BackendSettings) => {
+    const normalized = normalizeSettings(next);
+    const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
+    if (!result) return null;
+    setSettings(result);
+    setSettingsForm(normalizeSettings(result.settings));
+    if (!isSuccessStatus(result.status)) {
+      showNotice(t("皮肤管理"), result.message, result.status);
+      return null;
+    }
+    return result;
+  };
+
+  const restoreDreamSkin = async () => {
+    const currentTheme = pendingDreamSkinRestart
+      ? {
+          key: pendingDreamSkinRestart.currentThemeKey,
+          name: pendingDreamSkinRestart.currentThemeName,
+        }
+      : dreamSkinLibrary?.themes.find((item) => item.active) ?? null;
+    const result = await run(() => call<DreamSkinRuntimeResult>("restore_dream_skin", dreamSkinRequest()));
+    if (!result) return;
+    setDreamSkinStatus(result);
+    await refreshSettings(true);
+    showResultNotice(t("皮肤管理"), result);
+    if (isSuccessStatus(result.status)) {
+      setPendingDreamSkinRestart({
+        currentThemeKey: currentTheme?.key ?? null,
+        currentThemeName: currentTheme?.name ?? t("当前皮肤"),
+        pendingThemeKey: "codex-original-appearance",
+        pendingThemeName: t("Codex 原始外观"),
+      });
+    }
+  };
+
+  const verifyDreamSkin = async (withScreenshot: boolean) => {
+    let screenshotPath: string | undefined;
+    if (withScreenshot) {
+      try {
+        const selected = await saveDialog({
+          title: t("保存 Dream Skin 截图"),
+          defaultPath: "codex-dream-skin-verification.png",
+          filters: [{ name: "PNG", extensions: ["png"] }],
+        });
+        if (!selected) return;
+        screenshotPath = selected;
+      } catch (error) {
+        showNotice(t("保存截图"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
+        return;
+      }
+    }
+    const result = await run(() =>
+      call<DreamSkinVerificationResult>("verify_dream_skin", dreamSkinRequest(screenshotPath)),
+    );
+    if (!result) return;
+    setDreamSkinVerification(result);
+    showResultNotice(withScreenshot ? t("保存截图") : t("实机验证"), result);
+    await refreshDreamSkinStatus(true);
+  };
+
+  const actions = useMemo(
+    () => ({
+      refreshCurrent: () => navigate(route),
+      launch,
+      restart,
+      repairPluginMarketplace,
+      refreshRemotePluginMarketplace,
+      repairRemotePluginMarketplace,
+      installEntrypoints,
+      uninstallEntrypoints,
+      repairShortcuts,
+      checkUpdate,
+      performUpdate,
+      saveSettings,
+      saveSettingsValue,
+      refreshSettings,
+      resetSettings,
+      resetImageOverlaySettings,
+      chooseCodexAppPath: async (mode: "folder" | "file") => {
+        let selected: unknown;
+        try {
+          selected = await open(
+            mode === "folder"
+              ? { directory: true, multiple: false, title: t("选择 Codex 应用目录") }
+              : {
+                  directory: false,
+                  multiple: false,
+                  title: t("选择 Codex.exe 或 Codex.app"),
+                  filters: [{ name: t("Codex 应用"), extensions: ["exe", "app"] }],
+                },
+          );
+        } catch (error) {
+          // Surface plugin failures (e.g. missing capability permission) so the
+          // buttons no longer appear unresponsive — see #345.
+          const message = error instanceof Error ? error.message : String(error);
+          showNotice(t("Codex 应用路径"), tf("打开选择器失败：{0}", [message]), "failed");
+          return;
+        }
+        if (typeof selected === "string" && selected.trim()) {
+          const result = await saveCodexAppPath(selected.trim());
+          if (result) {
+            showNotice(t("Codex 应用路径"), t("应用路径已保存，之后启动会自动复用。"), result.status);
+          }
+        }
+      },
+      clearCodexAppPath: async () => {
+        const next = { ...settingsForm, codexAppPath: "" };
+        const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
+        if (result) {
+          setSettings(result);
+          setSettingsForm(normalizeSettings(result.settings));
+          setLaunchForm((current) => ({ ...current, appPath: "" }));
+          showNotice(t("Codex 应用路径"), t("已清除保存路径，后续启动会回到自动探测。"), result.status);
+          await refreshOverview(true);
+        }
+      },
+      chooseImageOverlayPath: async () => {
+        let selected: unknown;
+        try {
+          selected = await open({
+            directory: false,
+            multiple: false,
+            title: t("选择覆盖图片"),
+            filters: [{ name: t("图片"), extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"] }],
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          showNotice(t("图片覆盖层"), tf("打开选择器失败：{0}", [message]), "failed");
+          return;
+        }
+        if (typeof selected === "string" && selected.trim()) {
+          setSettingsForm((current) => ({
+            ...current,
+            codexAppImageOverlayEnabled: true,
+            codexAppImageOverlayPath: selected.trim(),
+          }));
+        }
+      },
+      chooseDreamSkinImagePath: chooseDreamSkinDraftImage,
+      resetDreamSkinImage: async () => runAfterDreamSkinDraftGuard(() => {
+        setDreamSkinThemeDraft((current) => current ? { ...current, imagePath: "" } : current);
+      }),
+      resetDreamSkinTheme: async () => runAfterDreamSkinDraftGuard(() => {
+        setDreamSkinThemeDraft((current) => {
+          if (!current) return current;
+          if (isWindowsPlatform) {
+            const config = { ...current.config };
+            delete config.colors;
+            delete config.palette;
+            return { ...current, config };
+          }
+          const defaults = defaultDreamSkinTheme();
+          return {
+            ...current,
+            config: current.builtin
+              ? defaults
+              : { ...defaults, id: current.config.id, name: current.config.name },
+            imagePath: "",
+          };
+        });
+      }),
+      refreshDreamSkinLibrary,
+      refreshDreamSkinMarket,
+      refreshDreamSkinCommunity,
+      installDreamSkinMarketTheme,
+      installDreamSkinCommunityTheme,
+      importDreamSkinThemePackage,
+      createDreamSkinTheme: async () => runAfterDreamSkinDraftGuard(() => void createDreamSkinTheme()),
+      saveDreamSkinTheme: saveDreamSkinThemeDraft,
+      selectDreamSkinTheme,
+      renameDreamSkinTheme,
+      deleteDreamSkinTheme: async (item: DreamSkinThemeSummary) => {
+        if (item.key === selectedDreamSkinTheme && dreamSkinDraftDirty) {
+          runAfterDreamSkinDraftGuard(() => void deleteDreamSkinTheme(item));
+          return;
+        }
+        await deleteDreamSkinTheme(item);
+      },
+      activateDreamSkinTheme,
+      refreshDreamSkinStatus,
+      restoreDreamSkin,
+      verifyDreamSkin: () => verifyDreamSkin(false),
+      saveDreamSkinScreenshot: () => verifyDreamSkin(true),
+      saveManualCodexAppPath: async () => {
+        const appPath = launchForm.appPath.trim();
+        if (!appPath) {
+          showNotice(t("Codex 应用路径"), t("请先填写或选择应用路径。"), "failed");
+          return;
+        }
+        const result = await saveCodexAppPath(appPath);
+        if (result) {
+          showNotice(t("Codex 应用路径"), t("应用路径已保存，之后启动会自动复用。"), result.status);
+        }
+      },
+      syncProvidersNow,
+      refreshProviderSyncTargets,
+      setProviderSyncTarget: (provider: string) => {
+        setSelectedProviderSyncTarget(provider);
+        setSettingsForm((current) => ({ ...current, providerSyncLastSelectedProvider: provider }));
+      },
+      setLaunchMode: async (launchMode: LaunchMode) => {
+        await saveLaunchMode(launchMode);
+      },
+      refreshRelay,
+      refreshRelayFiles,
+      refreshEnvConflicts,
+      refreshRelayEnvironment,
+      removeEnvConflicts,
+      refreshCcsProviders,
+      importCcsProviders,
+      refreshLiveContextEntries,
+      syncLiveContextEntries,
+      refreshAds,
+      refreshScriptMarket,
+      refreshUserScriptInventory,
+      installMarketScript,
+      setUserScriptEnabled,
+      deleteUserScript,
+      refreshLocalSessions,
+      deleteLocalSession,
+      deleteLocalSessions,
+      refreshZedRemoteProjects,
+      openZedRemoteProject,
+      forgetZedRemoteProject,
+      openExternalUrl,
+      applyRelayInjection,
+      applyPureApiInjection,
+      clearRelayInjection,
+      saveRelayFile,
+      upsertContextEntry,
+      deleteContextEntry,
+      extractRelayCommonConfig,
+      testRelayProfile,
+      diagnoseRelayProfile,
+      testStepwiseSettings,
+      fetchRelayProfileModels,
+      fetchSub2ApiBilling,
+      switchRelayProfile,
+      relaySwitching,
+      switchOfficialMode,
+      switchPureApiMode,
+      refreshLogs,
+      clearLogs,
+      refreshDiagnostics,
+      showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
+      copyLogs: () => copyText(logs?.text ?? "", t("日志已复制。")),
+      copyDiagnostics: () => copyText(diagnostics?.report ?? "", t("诊断报告已复制。")),
+      goLogs: () => navigate("about"),
+      checkHealth: async () => {
+        await refreshOverview(true);
+        await refreshRelay(true);
+        await refreshWatcher(true);
+        showNotice(t("检查完成"), t("已刷新 Codex 应用、入口和 Watcher 状态。"), "ok");
+      },
+      installWatcher: () => watcherAction("install_watcher"),
+      uninstallWatcher: () => watcherAction("uninstall_watcher"),
+      enableWatcher: () => watcherAction("enable_watcher"),
+      disableWatcher: () => watcherAction("disable_watcher"),
+      toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
+    }),
+    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
+  );
+  const hasUpdate = update?.updateAvailable === true;
+
+  return (
+    <div className={`shell ${theme}`}>
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-copy">
+            <div className="brand-title-row">
+              <div className="brand-title">Codex++</div>
+              {hasUpdate ? (
+                <button
+                  className="update-dot"
+                  onClick={() => {
+                    setRoute("about");
+                    void checkUpdate(false);
+                  }}
+                  title={tf("发现新版本 {0}", [update?.latestVersion ?? ""])}
+                  type="button"
+                >
+                  <CircleArrowUp className="h-4 w-4" aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+            <div className="brand-subtitle">{t("管理控制台")}</div>
+          </div>
+        </div>
+        <nav className="nav" aria-label={t("主导航")}>
+          {navigationSections.map((section) => (
+<div className={`nav-section ${section.placement === "bottom" ? "nav-section-bottom" : ""}`} key={section.label}>
+              <div className="nav-section-label">{section.label}</div>
+              {section.routes.map((routeId) => {
+                const item = routes.find((candidate) => candidate.id === routeId);
+                if (!item) return null;
+                const Icon = item.icon;
+                return (
+                  <button
+className={`nav-item ${route === item.id ? "active" : ""}`}
+                    key={item.id}
+                    onClick={() => void navigate(item.id)}
+                    title={item.label}
+                    type="button"
+                  >
+                    <span className="nav-icon">
+                      <Icon className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                    <span className="nav-label">{item.label}</span>
+                    {item.badge ? <span className="nav-badge">{item.badge}</span> : null}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+      </aside>
+      <main className="workspace">
+        <header className="topbar" key={`topbar-${route}`}>
+          <div>
+            <h1>{routeTitle(route)}</h1>
+            <p>{routeSubtitle(route)}</p>
+          </div>
+          <div className="topbar-actions">
+            <Button
+              onClick={() => toggleLanguage()}
+              size="icon"
+              title={getLanguage() === "en" ? t("切换到中文") : t("切换到英文")}
+              variant="outline"
+            >
+              <Languages className="h-4 w-4" />
+            </Button>
+            <Button
+              onClick={actions.toggleTheme}
+              size="icon"
+              title={theme === "dark" ? t("切换到浅色") : t("切换到深色")}
+              variant="outline"
+            >
+              {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </Button>
+            <Button onClick={() => void actions.restart()} title={t("重启 Codex++")} variant="outline">
+              <Rocket className="h-4 w-4" />
+              {t("重启 Codex++")}
+            </Button>
+            <Button onClick={() => void actions.refreshCurrent()} size="icon" title={t("刷新当前页面")} variant="outline">
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+          </div>
+        </header>
+        <section className="screen" key={route}>
+          {route === "overview" ? (
+            <OverviewScreen
+              overview={overview}
+              pluginMarketplaceProgress={pluginMarketplaceProgress}
+              actions={actions}
+            />
+          ) : null}
+          {route === "relay" ? (
+            <RelayScreen
+              settings={settings}
+              relayFiles={relayFiles}
+              envConflicts={envConflicts}
+              ccsProviders={ccsProviders}
+              form={settingsForm}
+              actions={actions}
+            />
+          ) : null}
+          {route === "relayEnvironment" ? (
+            <RelayEnvironmentScreen result={relayEnvironment} actions={actions} />
+          ) : null}
+          {route === "sessions" ? (
+            <SessionsScreen
+              settings={settings}
+              form={settingsForm}
+              sessions={localSessions}
+              providerSyncProgress={providerSyncProgress}
+              providerSyncTargets={providerSyncTargets}
+              selectedProviderSyncTarget={selectedProviderSyncTarget}
+              onFormChange={setSettingsForm}
+              actions={actions}
+            />
+          ) : null}
+          {route === "context" ? (
+            <ContextScreen
+              form={settingsForm}
+              liveEntries={liveContextEntries}
+              relayFiles={relayFiles}
+              onFormChange={setSettingsForm}
+              actions={actions}
+            />
+          ) : null}
+          {route === "weixin" ? (
+            <WeixinConnectScreen
+              form={settingsForm}
+              status={weixinStatus}
+              qr={weixinQr}
+              sessions={localSessions?.sessions ?? []}
+              onFormChange={setSettingsForm}
+              onSave={() => void saveSettings()}
+              onQrLogin={() => void beginWeixinQrLogin()}
+              onStart={() => void startWeixinConnect()}
+              onStop={() => void stopWeixinConnect()}
+              onChooseWorkDir={() => void chooseWeixinPath("workDir")}
+              onChooseCodexPath={() => void chooseWeixinPath("codexPath")}
+              onUseDesktopCodexCli={() => void useDesktopCodexCli()}
+              onOpenQr={(url) => void openExternalUrl(url)}
+              onCopyQr={(url) => void copyText(url, t("微信登录链接已复制。"))}
+            />
+          ) : null}
+          {route === "enhance" ? (
+            <EnhanceScreen
+              dirty={settingsDirty}
+              form={settingsForm}
+              pluginMarketplaceProgress={pluginMarketplaceProgress}
+              remotePluginMarketplace={remotePluginMarketplace}
+              remotePluginMarketplaceProgress={remotePluginMarketplaceProgress}
+              onFormChange={setSettingsForm}
+              actions={actions}
+            />
+          ) : null}
+          {route === "dreamSkin" ? (
+            <DreamSkinScreen
+              form={settingsForm}
+              library={dreamSkinLibrary}
+              market={dreamSkinMarket}
+              community={dreamSkinCommunity}
+              draft={dreamSkinThemeDraft}
+              dirty={dreamSkinDraftDirty}
+              pendingRestart={pendingDreamSkinRestart}
+              selectedTheme={selectedDreamSkinTheme}
+              status={dreamSkinStatus}
+              verification={dreamSkinVerification}
+              onFormChange={setSettingsForm}
+              onDraftChange={setDreamSkinThemeDraft}
+              actions={actions}
+            />
+          ) : null}
+          {route === "zedRemote" ? (
+            <ZedRemoteScreen projects={zedRemoteProjects} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
+          ) : null}
+          {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
+          {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
+          {route === "maintenance" ? (
+            <MaintenanceScreen
+              overview={overview}
+              watcher={watcher}
+              settings={settings}
+              launchForm={launchForm}
+              onLaunchFormChange={setLaunchForm}
+              removeOwnedData={removeOwnedData}
+              onRemoveOwnedDataChange={setRemoveOwnedData}
+              actions={actions}
+            />
+          ) : null}
+          {route === "about" ? (
+            <AboutScreen
+              overview={overview}
+              update={update}
+              updateInstallProgress={updateInstallProgress}
+              logs={logs}
+              diagnostics={diagnostics}
+              actions={actions}
+            />
+          ) : null}
+          {route === "settings" ? (
+            <SettingsScreen
+              dirty={settingsDirty}
+              settings={settings}
+              theme={theme}
+              form={settingsForm}
+              onFormChange={setSettingsForm}
+              actions={actions}
+            />
+          ) : null}
+        </section>
+      </main>
+      {notice ? (
+        <NoticeDialog
+          key={`${notice.title}-${notice.message}-${notice.status ?? ""}`}
+          notice={notice}
+          onClose={() => setNotice(null)}
+        />
+      ) : null}
+      {confirmDialog ? (
+        <ConfirmDialog
+          confirm={confirmDialog}
+          onCancel={() => {
+            confirmDialog.resolve(false);
+            setConfirmDialog(null);
+          }}
+          onConfirm={() => {
+            confirmDialog.resolve(true);
+            setConfirmDialog(null);
+          }}
+        />
+      ) : null}
+      {sessionIndexCleanupDialog ? (
+        <SessionIndexCleanupDialog
+          request={sessionIndexCleanupDialog}
+          onCancel={() => {
+            sessionIndexCleanupDialog.resolve(null);
+            setSessionIndexCleanupDialog(null);
+          }}
+          onConfirm={(selectedIds) => {
+            sessionIndexCleanupDialog.resolve(selectedIds);
+            setSessionIndexCleanupDialog(null);
+          }}
+        />
+      ) : null}
+      {dreamSkinUnsavedDialog ? (
+        <DreamSkinUnsavedDialog
+          onCancel={() => {
+            dreamSkinPendingActionRef.current = null;
+            setDreamSkinUnsavedDialog(false);
+          }}
+          onDiscard={() => {
+            const pending = dreamSkinPendingActionRef.current;
+            dreamSkinPendingActionRef.current = null;
+            setDreamSkinThemeDraft(savedDreamSkinThemeDraft);
+            setDreamSkinUnsavedDialog(false);
+            pending?.();
+          }}
+          onSave={() => void (async () => {
+            const saved = await saveDreamSkinThemeDraft();
+            if (!saved) return;
+            const pending = dreamSkinPendingActionRef.current;
+            dreamSkinPendingActionRef.current = null;
+            setDreamSkinUnsavedDialog(false);
+            pending?.();
+          })()}
+        />
+      ) : null}
+      {pendingProviderImport ? (
+        <PendingProviderImportDialog
+          request={pendingProviderImport}
+          onConfirm={() => void confirmPendingProviderImport()}
+          onDismiss={() => void dismissPendingProviderImport()}
+        />
+      ) : null}
+      {pendingDreamSkinCommunity ? (
+        <DreamSkinCommunityLinkDialog
+          versionId={pendingDreamSkinCommunity}
+          onConfirm={() => void confirmPendingDreamSkinCommunity()}
+          onDismiss={() => void dismissPendingDreamSkinCommunity()}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+type Actions = {
+  refreshCurrent: () => Promise<void>;
+  launch: () => Promise<void>;
+  restart: (syncActiveRelay?: boolean) => Promise<boolean>;
+  repairPluginMarketplace: () => Promise<void>;
+  refreshRemotePluginMarketplace: (silent?: boolean) => Promise<RemotePluginMarketplaceResult | null>;
+  repairRemotePluginMarketplace: () => Promise<void>;
+  installEntrypoints: () => Promise<void>;
+  uninstallEntrypoints: () => Promise<void>;
+  repairShortcuts: () => Promise<void>;
+  checkUpdate: () => Promise<void>;
+  performUpdate: () => Promise<void>;
+  saveSettings: () => Promise<void>;
+  saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<BackendSettings | null>;
+  refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
+  resetSettings: () => Promise<void>;
+  resetImageOverlaySettings: () => Promise<void>;
+  chooseCodexAppPath: (mode: "folder" | "file") => Promise<void>;
+  clearCodexAppPath: () => Promise<void>;
+  chooseImageOverlayPath: () => Promise<void>;
+  chooseDreamSkinImagePath: () => Promise<void>;
+  resetDreamSkinImage: () => Promise<void>;
+  resetDreamSkinTheme: () => Promise<void>;
+  refreshDreamSkinLibrary: (silent?: boolean) => Promise<DreamSkinThemeLibrary | null>;
+  refreshDreamSkinMarket: (silent?: boolean) => Promise<DreamSkinMarketResult | null>;
+  installDreamSkinMarketTheme: (theme: DreamSkinMarketTheme) => Promise<boolean>;
+  refreshDreamSkinCommunity: (silent?: boolean) => Promise<DreamSkinCommunityResult | null>;
+  installDreamSkinCommunityTheme: (theme: DreamSkinCommunityTheme) => Promise<boolean>;
+  importDreamSkinThemePackage: () => Promise<void>;
+  createDreamSkinTheme: () => Promise<void>;
+  saveDreamSkinTheme: () => Promise<DreamSkinThemeDraft | null>;
+  selectDreamSkinTheme: (item: DreamSkinThemeSummary) => void;
+  renameDreamSkinTheme: (item: DreamSkinThemeSummary) => Promise<void>;
+  deleteDreamSkinTheme: (item: DreamSkinThemeSummary) => Promise<void>;
+  activateDreamSkinTheme: () => Promise<void>;
+  refreshDreamSkinStatus: (silent?: boolean) => Promise<DreamSkinRuntimeResult | null>;
+  restoreDreamSkin: () => Promise<void>;
+  verifyDreamSkin: () => Promise<void>;
+  saveDreamSkinScreenshot: () => Promise<void>;
+  saveManualCodexAppPath: () => Promise<void>;
+  syncProvidersNow: () => Promise<void>;
+  refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
+  setProviderSyncTarget: (provider: string) => void;
+  setLaunchMode: (launchMode: LaunchMode) => Promise<void>;
+  refreshRelay: () => Promise<void>;
+  refreshRelayFiles: () => Promise<RelayFilesResult | null>;
+  refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
+  refreshRelayEnvironment: (silent?: boolean) => Promise<RelayEnvironmentResult | null>;
+  removeEnvConflicts: (names: string[]) => Promise<void>;
+  refreshCcsProviders: (silent?: boolean) => Promise<CcsProvidersResult | null>;
+  importCcsProviders: () => Promise<void>;
+  refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
+  syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
+  refreshAds: () => Promise<void>;
+  refreshScriptMarket: () => Promise<void>;
+  refreshUserScriptInventory: () => Promise<SettingsResult | null>;
+  installMarketScript: (id: string) => Promise<void>;
+  setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
+  deleteUserScript: (key: string) => Promise<void>;
+  refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
+  deleteLocalSession: (session: LocalSession) => Promise<void>;
+  deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
+  refreshZedRemoteProjects: () => Promise<ZedRemoteProjectsResult | null>;
+  openZedRemoteProject: (project: ZedRemoteProject, strategy?: ZedOpenStrategy) => Promise<void>;
+  forgetZedRemoteProject: (project: ZedRemoteProject) => Promise<void>;
+  openExternalUrl: (url: string) => Promise<void>;
+  applyRelayInjection: () => Promise<boolean>;
+  applyPureApiInjection: () => Promise<boolean>;
+  clearRelayInjection: () => Promise<boolean>;
+  saveRelayFile: (kind: "config" | "auth", contents: string, silent?: boolean) => Promise<void>;
+  upsertContextEntry: (
+    settings: BackendSettings,
+    kind: ContextKind,
+    id: string,
+    tomlBody: string,
+  ) => Promise<BackendSettings | null>;
+  deleteContextEntry: (settings: BackendSettings, kind: ContextKind, id: string) => Promise<BackendSettings | null>;
+  extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
+  testRelayProfile: (profile: RelayProfile) => Promise<void>;
+  diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
+  testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
+  fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
+  fetchSub2ApiBilling: (profile: RelayProfile) => Promise<Sub2ApiBillingResult | null>;
+  switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
+  relaySwitching: boolean;
+  switchOfficialMode: () => Promise<void>;
+  switchPureApiMode: () => Promise<void>;
+  refreshLogs: () => Promise<void>;
+  clearLogs: () => Promise<void>;
+  refreshDiagnostics: () => Promise<void>;
+  showMessage: (title: string, message: string, status?: Status) => Promise<void>;
+  copyLogs: () => Promise<void>;
+  copyDiagnostics: () => Promise<void>;
+  goLogs: () => Promise<void>;
+  installWatcher: () => Promise<void>;
+  uninstallWatcher: () => Promise<void>;
+  enableWatcher: () => Promise<void>;
+  disableWatcher: () => Promise<void>;
+  toggleTheme: () => void;
+  checkHealth: () => Promise<void>;
+};
+
+function SearchablePathPicker({
+  value,
+  options,
+  placeholder,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  placeholder: string;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const filteredOptions = useMemo(() => {
+    const query = value.trim().toLowerCase();
+    return options.filter((option) => !query || option.toLowerCase().includes(query)).slice(0, 30);
+  }, [options, value]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [open]);
+
+  return (
+    <div className="weixin-search-picker" ref={rootRef}>
+      <div className="weixin-search-input-wrap">
+        <Search className="weixin-search-input-icon h-4 w-4" />
+        <Input
+          aria-expanded={open}
+          aria-label={placeholder}
+          className="h-10"
+          onChange={(event) => {
+            onChange(event.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setOpen(false);
+          }}
+          placeholder={placeholder}
+          value={value}
+        />
+        <ChevronDown className={`weixin-search-input-chevron h-4 w-4${open ? " is-open" : ""}`} />
+      </div>
+      {open ? (
+        <div className="weixin-search-menu" role="listbox">
+          {filteredOptions.length ? filteredOptions.map((option) => (
+            <button
+              className="weixin-search-option"
+              key={option}
+              onClick={() => {
+                onChange(option);
+                setOpen(false);
+              }}
+              type="button"
+            >
+              <span>{option}</span>
+            </button>
+          )) : (
+            <div className="weixin-search-empty">{t("没有匹配的已有目录，可继续直接输入。")}</div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SearchableSessionPicker({
+  sessions,
+  selectedId,
+  onSelect,
+}: {
+  sessions: LocalSession[];
+  selectedId: string;
+  onSelect: (session: LocalSession | null) => void;
+}) {
+  const selected = sessions.find((session) => session.id === selectedId) ?? null;
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const filteredSessions = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return sessions
+      .filter((session) => !normalized || [session.title, session.cwd, session.id, session.modelProvider].some((value) => value.toLowerCase().includes(normalized)))
+      .slice(0, 30);
+  }, [query, sessions]);
+
+  useEffect(() => {
+    if (selected) setQuery(selected.title || selected.id);
+  }, [selected]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [open]);
+
+  return (
+    <div className="weixin-search-picker" ref={rootRef}>
+      <div className="weixin-search-input-wrap">
+        <Search className="weixin-search-input-icon h-4 w-4" />
+        <Input
+          aria-expanded={open}
+          aria-label={t("已有会话")}
+          className="h-10"
+          onChange={(event) => {
+            setQuery(event.target.value);
+            if (selectedId) onSelect(null);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setOpen(false);
+          }}
+          placeholder={sessions.length ? t("搜索已有会话") : t("暂无可用的本地会话")}
+          value={query}
+        />
+        <ChevronDown className={`weixin-search-input-chevron h-4 w-4${open ? " is-open" : ""}`} />
+      </div>
+      {open ? (
+        <div className="weixin-search-menu weixin-session-menu" role="listbox">
+          {filteredSessions.length ? filteredSessions.map((session) => (
+            <button
+              aria-selected={session.id === selectedId}
+              className="weixin-search-option weixin-session-option"
+              key={session.id}
+              onClick={() => {
+                onSelect(session);
+                setQuery(session.title || session.id);
+                setOpen(false);
+              }}
+              type="button"
+            >
+              <strong>{session.title || t("未命名会话")}</strong>
+              <span>{session.cwd || t("未记录项目路径")}</span>
+              <small>{formatTime(session.updatedAtMs ?? 0)} · {session.modelProvider || t("provider 未记录")}</small>
+            </button>
+          )) : (
+            <div className="weixin-search-empty">{t("没有匹配的本地会话。")}</div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function WeixinConnectScreen({
+  form,
+  status,
+  qr,
+  sessions,
+  onFormChange,
+  onSave,
+  onQrLogin,
+  onStart,
+  onStop,
+  onChooseWorkDir,
+  onChooseCodexPath,
+  onUseDesktopCodexCli,
+  onOpenQr,
+  onCopyQr,
+}: {
+  form: BackendSettings;
+  status: WeixinConnectStatusResult | null;
+  qr: WeixinQrResult | null;
+  sessions: LocalSession[];
+  onFormChange: (value: BackendSettings) => void;
+  onSave: () => void;
+  onQrLogin: () => void;
+  onStart: () => void;
+  onStop: () => void;
+  onChooseWorkDir: () => void;
+  onChooseCodexPath: () => void;
+  onUseDesktopCodexCli: () => void;
+  onOpenQr: (url: string) => void;
+  onCopyQr: (url: string) => void;
+}) {
+  const [selectedSessionId, setSelectedSessionId] = useState("");
+  const workDirOptions = useMemo(
+    () => Array.from(new Set(sessions.map((session) => session.cwd.trim()).filter(Boolean))).sort(),
+    [sessions],
+  );
+  const runtimeState = status?.state ?? "stopped";
+  const running = ["starting", "running", "retrying"].includes(runtimeState);
+  const stopping = runtimeState === "stopping";
+  const statusLabel = {
+    starting: t("正在启动"),
+    running: t("运行中"),
+    retrying: t("正在重试"),
+    stopping: t("正在停止"),
+    error: t("异常"),
+    stopped: t("已停止"),
+  }[runtimeState] ?? runtimeState;
+
+  return (
+    <div className="weixin-connect-page">
+      <Panel className={`weixin-status-panel is-${runtimeState}`}>
+        <CardContent className="weixin-status-content">
+          <div className="weixin-connect-head">
+            <div className="weixin-status-primary">
+              <div className="weixin-status-icon" aria-hidden="true">
+                <MessageCircle className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="section-heading-row">
+                  <h2>{t("个人微信连接")}</h2>
+                  <UiBadge variant={runtimeState === "running" ? "default" : runtimeState === "error" ? "outline" : "secondary"}>
+                    {statusLabel}
+                  </UiBadge>
+                </div>
+                <p className="muted">{status?.message ?? t("微信连接未启动。")}</p>
+              </div>
+            </div>
+            <div className="toolbar weixin-connect-actions">
+              <Button onClick={onSave} variant="outline">
+                <Save className="h-4 w-4" />
+                {t("保存")}
+              </Button>
+              <Button onClick={onQrLogin} variant="outline">
+                <ScanLine className="h-4 w-4" />
+                {form.weixinConnectToken ? t("重新登录") : t("扫码登录")}
+              </Button>
+              {running || stopping ? (
+                <Button disabled={stopping} onClick={onStop} variant="outline">
+                  <PowerOff className="h-4 w-4" />
+                  {stopping ? t("正在停止") : t("停止")}
+                </Button>
+              ) : (
+                <Button disabled={!form.weixinConnectToken} onClick={onStart}>
+                  <Play className="h-4 w-4" />
+                  {t("启动")}
+                </Button>
+              )}
+            </div>
+          </div>
+          <div className="weixin-runtime-meta">
+            <div>
+              <span>{t("账号")}</span>
+              <code title={status?.accountId || form.weixinConnectAccountId || t("未登录")}>
+                {status?.accountId || form.weixinConnectAccountId || t("未登录")}
+              </code>
+            </div>
+            <div>
+              <span>{t("已处理消息")}</span>
+              <strong>{status?.processedMessages ?? 0}</strong>
+            </div>
+            <div>
+              <span>{t("最近联系人")}</span>
+              <code title={status?.lastPeerId || t("暂无")}>{status?.lastPeerId || t("暂无")}</code>
+            </div>
+          </div>
+        </CardContent>
+      </Panel>
+
+      {qr?.qrContent ? (
+        <Panel>
+          <CardHeader>
+            <CardTitle>{qr.qrStatus === "scaned" ? t("已扫码，请在手机上确认") : t("微信扫码登录")}</CardTitle>
+            <CardDescription>{t("在手机微信中打开登录链接，或复制到可生成二维码的设备完成确认。")}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {qr.qrSvg ? (
+              <div className="weixin-qr-image" dangerouslySetInnerHTML={{ __html: qr.qrSvg }} />
+            ) : null}
+            <div className="weixin-qr-content">{qr.qrContent}</div>
+            <div className="toolbar">
+              <Button onClick={() => onOpenQr(qr.qrContent)}>
+                <ExternalLink className="h-4 w-4" />
+                {t("打开登录链接")}
+              </Button>
+              <Button onClick={() => onCopyQr(qr.qrContent)} variant="outline">
+                <Copy className="h-4 w-4" />
+                {t("复制链接")}
+              </Button>
+            </div>
+          </CardContent>
+        </Panel>
+      ) : null}
+
+      <Panel className="weixin-settings-panel">
+        <CardHeader className="weixin-settings-head">
+          <div>
+            <CardTitle>{t("连接设置")}</CardTitle>
+            <CardDescription>{t("每个微信联系人会映射到独立的 Codex 会话。")}</CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent className="weixin-connect-form">
+          <section className="weixin-form-section">
+            <div className="weixin-form-section-title">
+              <KeyRound className="h-4 w-4" />
+              <strong>{t("账号")}</strong>
+            </div>
+            <div className="weixin-form-fields">
+              <label className="field">
+                <span>{t("iLink API 地址")}</span>
+                <Input
+                  className="h-10"
+                  onChange={(event) => onFormChange({ ...form, weixinConnectBaseUrl: event.target.value })}
+                  value={form.weixinConnectBaseUrl}
+                />
+              </label>
+              <label className="field">
+                <span>{t("登录凭据")}</span>
+                <Input
+                  autoComplete="off"
+                  className="h-10"
+                  onChange={(event) => onFormChange({ ...form, weixinConnectToken: event.target.value })}
+                  placeholder={t("扫码后自动保存，也可粘贴已有 Bearer token")}
+                  type="password"
+                  value={form.weixinConnectToken}
+                />
+              </label>
+              <label className="field">
+                <span>{t("允许的微信用户 ID")}</span>
+                <Input
+                  className="h-10"
+                  onChange={(event) => onFormChange({ ...form, weixinConnectAllowFrom: event.target.value })}
+                  placeholder="user@im.wechat"
+                  value={form.weixinConnectAllowFrom}
+                />
+              </label>
+              <label className="field">
+                <span>{t("账号标识")}</span>
+                <Input
+                  className="h-10"
+                  onChange={(event) => onFormChange({ ...form, weixinConnectAccountId: event.target.value })}
+                  placeholder={t("扫码后自动填写")}
+                  value={form.weixinConnectAccountId}
+                />
+              </label>
+              <label className="field">
+                <span>{t("SKRouteTag")}</span>
+                <Input
+                  className="h-10"
+                  onChange={(event) => onFormChange({ ...form, weixinConnectRouteTag: event.target.value })}
+                  placeholder={t("仅在网关要求时填写")}
+                  value={form.weixinConnectRouteTag}
+                />
+              </label>
+            </div>
+          </section>
+
+          <section className="weixin-form-section">
+            <div className="weixin-form-section-title">
+              <MessageCircle className="h-4 w-4" />
+              <strong>{t("会话管理")}</strong>
+            </div>
+            <div className="weixin-form-fields">
+              <label className="field">
+                <span>{t("工作目录")}</span>
+                <div className="weixin-path-row">
+                  <SearchablePathPicker
+                    onChange={(value) => {
+                      setSelectedSessionId("");
+                      onFormChange({ ...form, weixinConnectWorkDir: value });
+                    }}
+                    options={workDirOptions}
+                    placeholder={t("搜索或输入工作目录")}
+                    value={form.weixinConnectWorkDir}
+                  />
+                  <Button onClick={onChooseWorkDir} size="icon" title={t("选择工作目录")} type="button" variant="outline">
+                    <ExternalLink className="h-4 w-4" />
+                  </Button>
+                </div>
+              </label>
+              <label className="field">
+                <span>{t("已有会话")}</span>
+                <SearchableSessionPicker
+                  onSelect={(session) => {
+                    setSelectedSessionId(session?.id ?? "");
+                    if (session?.cwd) onFormChange({ ...form, weixinConnectWorkDir: session.cwd });
+                  }}
+                  selectedId={selectedSessionId}
+                  sessions={sessions}
+                />
+                <small className="weixin-field-hint">{t("选择后自动带入该会话的工作目录，微信联系人仍保持独立会话。")}</small>
+              </label>
+              <label className="field">
+                <span>{t("模型")}</span>
+                <Input
+                  className="h-10"
+                  onChange={(event) => onFormChange({ ...form, weixinConnectModel: event.target.value })}
+                  placeholder={t("留空时使用 Codex 当前默认模型")}
+                  value={form.weixinConnectModel}
+                />
+              </label>
+              <label className="field">
+                <span>{t("沙箱权限")}</span>
+                <select
+                  className="field-select"
+                  onChange={(event) => onFormChange({
+                    ...form,
+                    weixinConnectSandbox: event.target.value as BackendSettings["weixinConnectSandbox"],
+                  })}
+                  value={form.weixinConnectSandbox}
+                >
+                  <option value="read-only">{t("只读")}</option>
+                  <option value="workspace-write">{t("允许修改工作目录")}</option>
+                  <option value="danger-full-access">{t("完全访问")}</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section className="weixin-form-section">
+            <div className="weixin-form-section-title">
+              <Settings className="h-4 w-4" />
+              <strong>Codex CLI</strong>
+            </div>
+            <div className="weixin-form-fields">
+              <label className="field">
+                <span>{t("Codex CLI 路径")}</span>
+                <div className="weixin-path-row weixin-cli-path-row">
+                  <Input
+                    className="h-10"
+                    onChange={(event) => onFormChange({ ...form, weixinConnectCodexPath: event.target.value })}
+                    placeholder={t("留空时从 PATH 查找 codex")}
+                    value={form.weixinConnectCodexPath}
+                  />
+                  <Button
+                    className="weixin-bundled-cli-button"
+                    onClick={onUseDesktopCodexCli}
+                    size="sm"
+                    title={t("使用桌面版内置 CLI")}
+                    type="button"
+                    variant="secondary"
+                  >
+                    <PackageOpen className="h-4 w-4" />
+                    {t("使用桌面版内置 CLI")}
+                  </Button>
+                  <Button onClick={onChooseCodexPath} size="icon" title={t("选择 Codex CLI")} type="button" variant="outline">
+                    <ExternalLink className="h-4 w-4" />
+                  </Button>
+                </div>
+              </label>
+            </div>
+          </section>
+        </CardContent>
+      </Panel>
+    </div>
+  );
+}
+
+function OverviewScreen({
+  overview,
+  pluginMarketplaceProgress,
+  actions,
+}: {
+  overview: OverviewResult | null;
+  pluginMarketplaceProgress: TaskProgress;
+  actions: Actions;
+}) {
+  const health = healthItems(overview);
+  return (
+    <>
+      <Panel className="jojocode-overview">
+        <CardContent>
+          <div className="jojocode-overview-layout">
+            <div className="jojocode-overview-main">
+              <div className="jojocode-overview-mark">
+                <Network className="h-5 w-5" />
+              </div>
+              <div>
+                <span className="eyebrow">{t("项目赞助商")}</span>
+                <h2>JOJO Code</h2>
+                <p>
+                  {t("JOJO Code 提供稳定、价格合理的 API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。")}
+                </p>
+              </div>
+            </div>
+            <div className="jojocode-overview-side">
+              <div className="jojocode-model-tags">
+                <span>GPT-5.6 全系列</span>
+                <span>Fable 5</span>
+                <span>Sonnet 5</span>
+                <span>GPT-5.5</span>
+                <span>GPT-5.4</span>
+                <span>Opus 4.8</span>
+                <span>Opus 4.7</span>
+                <span>gpt-image-2</span>
+              </div>
+              <Button onClick={() => void actions.openExternalUrl("https://jojocode.com/")}>
+                <ExternalLink className="h-4 w-4" />
+                {t("打开 JOJO Code")}
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("健康检查")} detail={t("概览只展示关键问题，具体配置在对应页面处理")} />
+        <CardContent>
+          <div className="health-grid">
+            <div className={`health-item ${overview?.codex_version ? "ok" : "needs-fix"}`}>
+              {overview?.codex_version ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
+              <div>
+                <strong>{t("Codex 版本")}</strong>
+                <span>{overview?.codex_version ?? t("未检测到 Codex 应用版本。")}</span>
+              </div>
+              <Badge status={overview?.codex_version ? "ok" : "not_checked"} />
+            </div>
+            {health.map((item) => (
+              <div className={`health-item ${item.ok ? "ok" : "needs-fix"}`} key={item.title}>
+                {item.ok ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
+                <div>
+                  <strong>{item.title}</strong>
+                  <span>{item.detail}</span>
+                </div>
+                <Badge status={item.status} />
+              </div>
+            ))}
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.checkHealth()}>
+              <RefreshCw className="h-4 w-4" />
+              {t("检查")}
+            </Button>
+            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>
+              <Wrench className="h-4 w-4" />
+              {t("修复入口")}
+            </Button>
+            <Button disabled={pluginMarketplaceProgress.active} variant="secondary" onClick={() => void actions.repairPluginMarketplace()}>
+              {pluginMarketplaceProgress.active ? t("正在修复…") : t("修复插件市场")}
+            </Button>
+          </Toolbar>
+          <TaskProgressBox progress={pluginMarketplaceProgress} title={t("插件市场修复进度")} />
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("最近启动")} detail={overview?.logs_path ?? t("暂无状态文件")} />
+        <CardContent>
+          <LatestLaunch status={overview?.latest_launch ?? null} />
+          <Toolbar>
+            <Button onClick={() => void actions.launch()}>
+              <Rocket className="h-4 w-4" />
+              {t("启动 Codex++")}
+            </Button>
+            <Button variant="secondary" onClick={() => void actions.goLogs()}>
+              {t("打开关于")}
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+    </>
+  );
+}
+
+function RelayEnvironmentScreen({ result, actions }: { result: RelayEnvironmentResult | null; actions: Actions }) {
+  const proxyVariables = result?.proxyEnvironment.variables ?? [];
+  const proxyVariableLabels = proxyVariables.map((item) => {
+    const source = item.source === "user" ? t("用户环境") : item.source === "system" ? t("系统环境") : t("进程环境");
+    return tf("{0}（{1}）", [item.name, source]);
+  });
+  const checks = [
+    {
+      id: "clash-verge-tun",
+      title: t("Clash Verge Rev TUN 模式"),
+      passed: result ? !result.clashVergeTun.enabled : false,
+      detail: result
+        ? result.clashVergeTun.enabled
+          ? tf("检测到 TUN 模式已开启，请在 Clash Verge Rev 中关闭。配置：{0}", [result.clashVergeTun.configPath || t("未记录路径")])
+          : result.clashVergeTun.configPath
+            ? tf("TUN 模式已关闭。配置：{0}", [result.clashVergeTun.configPath])
+            : t("未发现 Clash Verge Rev 配置，按未开启处理。")
+        : t("等待检测。"),
+    },
+    {
+      id: "proxy-environment",
+      title: t("系统代理环境变量"),
+      passed: result ? proxyVariables.length === 0 : false,
+      detail: result
+        ? proxyVariables.length
+          ? tf("检测到代理环境变量：{0}。请清理后重新启动 Codex++。", [proxyVariableLabels.join(t("、"))])
+          : t("未检测到 HTTP_PROXY、HTTPS_PROXY、ALL_PROXY、NO_PROXY 或 FTP_PROXY。")
+        : t("等待检测。"),
+    },
+    {
+      id: "codex-dotenv",
+      title: t("Codex .env 文件"),
+      passed: result ? !result.codexEnvFile.exists : false,
+      detail: result
+        ? result.codexEnvFile.exists
+          ? tf("检测到可能干扰供应商配置的 .env 文件：{0}", [result.codexEnvFile.path])
+          : tf("未发现 .env 文件：{0}", [result.codexEnvFile.path])
+        : t("等待检测。"),
+    },
+  ];
+  const allPassed = Boolean(result) && checks.every((check) => check.passed);
+
+  return (
+    <Panel>
+      <CardHead
+        title={t("中转站环境配置检测")}
+        detail={result ? (allPassed ? t("三项检测全部通过") : t("检测到需要处理的环境问题")) : t("正在读取本机环境")}
+      />
+      <CardContent>
+        <div className="relay-environment-checks">
+          {checks.map((check) => (
+            <div className={`relay-environment-check ${result ? (check.passed ? "ok" : "failed") : "pending"}`} key={check.id}>
+              <div className="relay-environment-check-icon">
+                {result ? (check.passed ? <CheckCircle2 className="h-5 w-5" /> : <ShieldAlert className="h-5 w-5" />) : <RefreshCw className="h-5 w-5" />}
+              </div>
+              <div className="relay-environment-check-copy">
+                <strong>{check.title}</strong>
+                <span>{check.detail}</span>
+              </div>
+              <Badge status={result ? (check.passed ? "ok" : "failed") : "not_checked"} />
+            </div>
+          ))}
+        </div>
+        <Toolbar>
+          <Button onClick={() => void actions.refreshRelayEnvironment()}>
+            <RefreshCw className="h-4 w-4" />
+            {t("重新检测")}
+          </Button>
+        </Toolbar>
+      </CardContent>
+    </Panel>
+  );
+}
+
+function RelayScreen({
+  settings: _settings,
+  relayFiles,
+  envConflicts,
+  ccsProviders,
+  form,
+  actions,
+}: {
+  settings: SettingsResult | null;
+  relayFiles: RelayFilesResult | null;
+  envConflicts: EnvConflictsResult | null;
+  ccsProviders: CcsProvidersResult | null;
+  form: BackendSettings;
+  actions: Actions;
+}) {
+  const normalized = normalizeSettings(form);
+  const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
+  const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
+  const [thirdPartyImportOpen, setThirdPartyImportOpen] = useState(false);
+  const detailProfile = newProfileDraft || (detailProfileId
+    ? normalized.relayProfiles.find((profile) => profile.id === detailProfileId) || null
+    : null);
+  const isNewProfile = !!newProfileDraft;
+  const saveRelaySettings = async (next: BackendSettings) => {
+    return actions.saveSettingsValue(next, true);
+  };
+  const createNewAggregateProfile = () => {
+    const draft = createAggregateRelayProfile(normalized);
+    setDetailProfileId(null);
+    setNewProfileDraft(draft);
+    if (!normalizeAggregateConfig(draft.aggregate, aggregateMemberCandidates(normalized, draft.id)).members.length) {
+      void actions.showMessage(
+        t("添加聚合供应商"),
+        t("已打开聚合供应商详情；请先添加或完善至少 1 个普通 API 供应商的 Base URL / Key，再勾选为成员。"),
+        "failed",
+      );
+    }
+  };
+  const editRelayProfile = async (profileId: string) => {
+    setNewProfileDraft(null);
+    setDetailProfileId(
+      normalized.relayProfiles.some((item) => item.id === profileId) ? profileId : null,
+    );
+  };
+  useEffect(() => {
+    if (!newProfileDraft && detailProfileId && !normalized.relayProfiles.some((profile) => profile.id === detailProfileId)) {
+      setDetailProfileId(null);
+    }
+  }, [detailProfileId, newProfileDraft, normalized.relayProfiles]);
+  useEffect(() => {
+    if (!newProfileDraft && detailProfileId === normalized.activeRelayId) {
+      void actions.refreshRelayFiles();
+    }
+  }, [detailProfileId, newProfileDraft, normalized.activeRelayId]);
+  const openThirdPartyImport = () => {
+    setThirdPartyImportOpen((open) => !open);
+    if (!ccsProviders) void actions.refreshCcsProviders(true);
+  };
+
+  if (detailProfile) {
+    return (
+      <RelayProfileDetail
+        profile={detailProfile}
+        relayFiles={!isNewProfile && detailProfile.id === normalized.activeRelayId ? relayFiles : null}
+        form={normalized}
+        isNew={isNewProfile}
+        onBack={() => {
+          setNewProfileDraft(null);
+          setDetailProfileId(null);
+        }}
+        onFormChange={saveRelaySettings}
+        onSaved={() => {
+          setNewProfileDraft(null);
+          setDetailProfileId(null);
+        }}
+        actions={actions}
+      />
+    );
+  }
+
+  return (
+    <>
+      <Panel>
+        <CardHead title={t("供应商列表")} detail={tf("{0} 个供应商配置；可拖动排序，点编辑进入详情", [normalized.relayProfiles.length])} />
+        <CardContent>
+          <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
+          <label className="switch-row relay-master-switch">
+            <input
+              checked={normalized.relayProfilesEnabled}
+              onChange={(event) => {
+                const next = { ...normalized, relayProfilesEnabled: event.currentTarget.checked };
+                void saveRelaySettings(next);
+              }}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("启用供应商配置切换")}</strong>
+              <small>{t("关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
+          <div className="relay-add-row">
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setNewProfileDraft(createRelayProfile(normalized));
+                setDetailProfileId(null);
+              }}
+            >
+              <Plus className="h-4 w-4" />
+              {t("添加供应商")}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={createNewAggregateProfile}
+            >
+              <Plus className="h-4 w-4" />
+              {t("添加聚合供应商")}
+            </Button>
+            <div className="third-party-import">
+              <Button
+                onClick={openThirdPartyImport}
+                variant="secondary"
+              >
+                <Download className="h-4 w-4" />
+                {t("从第三方导入")}
+              </Button>
+              {thirdPartyImportOpen ? (
+                <div className="third-party-import-menu">
+                  <button
+                    disabled={!ccsProviders?.providers.length}
+                    onClick={() => {
+                      setThirdPartyImportOpen(false);
+                      void actions.importCcsProviders();
+                    }}
+                    type="button"
+                  >
+                    <strong>ccswitch</strong>
+                    <span>{ccsProviderSummary(ccsProviders)}</span>
+                  </button>
+                  <button
+                    onClick={() => void actions.refreshCcsProviders()}
+                    type="button"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    {t("刷新列表")}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+          <RelayProfileList
+            form={normalized}
+            onEdit={(profileId) => void editRelayProfile(profileId)}
+            onFormChange={saveRelaySettings}
+            disabled={!normalized.relayProfilesEnabled || actions.relaySwitching}
+            actions={actions}
+          />
+        </CardContent>
+      </Panel>
+    </>
+  );
+}
+
+function EnvConflictNotice({
+  envConflicts,
+  actions,
+}: {
+  envConflicts: EnvConflictsResult | null;
+  actions: Actions;
+}) {
+  const conflicts = envConflicts?.conflicts ?? [];
+  if (!conflicts.length) return null;
+  const names = Array.from(new Set(conflicts.map((conflict) => conflict.name))).sort();
+  return (
+    <div className="env-conflict-notice">
+      <div className="env-conflict-icon">
+        <ShieldAlert className="h-4 w-4" />
+      </div>
+      <div className="env-conflict-body">
+        <strong>{t("检测到 OPENAI 环境变量")}</strong>
+        <p>{t("这些变量可能覆盖当前供应商写入的 config.toml / auth.json；CODEX_HOME 不会被清理。")}</p>
+        <div className="env-conflict-tags">
+          {conflicts.map((conflict) => (
+            <span key={`${conflict.source}-${conflict.name}`}>
+              {conflict.name}
+              <small>{envConflictSourceLabel(conflict.source)}</small>
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="env-conflict-actions">
+        <Button onClick={() => void actions.removeEnvConflicts(names)} size="sm">
+          <Trash2 className="h-4 w-4" />
+          {t("删除")}
+        </Button>
+        <Button onClick={() => void actions.refreshEnvConflicts(false)} size="sm" variant="secondary">
+          <RefreshCw className="h-4 w-4" />
+          {t("检测")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function envConflictSourceLabel(source: string): string {
+  if (source === "process") return t("当前进程");
+  if (source === "user") return t("用户环境");
+  return source || t("环境变量");
+}
+
+function EnhanceScreen({
+  dirty,
+  form,
+  pluginMarketplaceProgress,
+  remotePluginMarketplace,
+  remotePluginMarketplaceProgress,
+  onFormChange,
+  actions,
+}: {
+  dirty: boolean;
+  form: BackendSettings;
+  pluginMarketplaceProgress: TaskProgress;
+  remotePluginMarketplace: RemotePluginMarketplaceResult | null;
+  remotePluginMarketplaceProgress: TaskProgress;
+  onFormChange: (value: BackendSettings) => void;
+  actions: Actions;
+}) {
+  const setEnhanceFlag = (key: keyof BackendSettings, value: boolean) => onFormChange({ ...form, [key]: value });
+  const setPersistedEnhanceFlag = (key: keyof BackendSettings, value: boolean) => {
+    const next = { ...form, [key]: value };
+    onFormChange(next);
+    void actions.saveSettingsValue(next, true);
+  };
+  const masterEnabled = form.enhancementsEnabled;
+  const patchMode = form.launchMode === "patch";
+  const remoteMarketplaceStatus = remotePluginMarketplace?.marketplaceRoot
+    ? remotePluginMarketplace.configRegistered
+      ? t("已注册")
+      : t("已缓存未注册")
+    : t("未发现缓存");
+  const remoteMarketplaceSummary = remotePluginMarketplace?.marketplaceRoot
+    ? tf("已缓存 {0} 个插件 / {1} 个技能。", [
+        String(remotePluginMarketplace.pluginCount),
+        String(remotePluginMarketplace.skillCount),
+      ])
+    : t("未发现本地缓存；点击按钮会从 Codex++ 内置快照释放并注册，无需官方账号预缓存。");
+  return (
+    <>
+      <Panel className="enhance-panel">
+        <CardHead title={t("Codex增强")} detail={t("会话删除、导出和用户脚本等界面能力")} />
+        <CardContent className="enhance-content">
+          <div className="enhance-control-deck">
+            <section className="enhance-control-section">
+              <div className="enhance-control-heading">
+                <strong>{t("基础设置")}</strong>
+              </div>
+              <div className="enhance-control-list">
+                <label className="switch-row compact">
+                  <input
+                    checked={form.enhancementsEnabled}
+                    onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
+                    type="checkbox"
+                  />
+                  <span>
+                    <strong>{t("启用 Codex增强")}</strong>
+                    <small>{t("关闭后会停用删除、导出、插件相关和菜单位置增强。")}</small>
+                  </span>
+                  <ToggleVisual />
+                </label>
+              </div>
+            </section>
+            <section className="enhance-control-section enhance-mode-section">
+              <div className="enhance-control-heading">
+                <strong>{t("Codex增强模式")}</strong>
+              </div>
+              <ModeSelector launchMode={form.launchMode} actions={actions} />
+              {form.launchMode === "relay" ? (
+                <div className="hint-line enhance-mode-hint">
+                  <ShieldCheck className="h-4 w-4" />
+                  <span>{t("当前为兼容增强模式，插件市场解锁不会启用；其他页面功能仍可用。")}</span>
+                </div>
+              ) : null}
+            </section>
+          </div>
+          <div className="enhance-feature-groups">
+            <FeatureGroup title={t("插件与模型")} detail={t("管理插件市场、模型列表和服务档位相关增强。")}>
+              <FeatureToggle title={t("插件市场解锁")} detail={t("API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。")} checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
+              <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
+              <FeatureToggle title={t("Fast 按钮")} detail={t("显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。")} checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
+              <div className="feature-action-row">
+                <div>
+                  <strong>{t("官方远端插件缓存")}</strong>
+                  <small>{t("使用 Codex++ 内置快照补齐远端插件，API 模式也可显示和安装 Product Design 插件。")}</small>
+                  <small>{remoteMarketplaceSummary}</small>
+                </div>
+                <Badge status={remotePluginMarketplace?.configRegistered ? "ok" : "not_checked"} />
+                <Button
+                  disabled={remotePluginMarketplaceProgress.active}
+                  onClick={() => void actions.repairRemotePluginMarketplace()}
+                  variant="secondary"
+                >
+                  {remotePluginMarketplaceProgress.active ? t("正在处理…") : t("释放并注册内置缓存")}
+                </Button>
+                <Button
+                  disabled={remotePluginMarketplaceProgress.active}
+                  onClick={() => void actions.refreshRemotePluginMarketplace()}
+                  variant="outline"
+                >
+                  {t("刷新")}
+                </Button>
+                <span className="feature-action-status">{remoteMarketplaceStatus}</span>
+              </div>
+            </FeatureGroup>
+            <FeatureGroup title={t("对话与输入")} detail={t("调整会话管理、输入行为和对话阅读体验。")}>
+              <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示删除按钮，并支持撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
+              <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
+              <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
+              <FeatureToggle title={t("会话 ID 标识")} detail={t("在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。")} checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
+              <FeatureToggle title={t("对话居中宽度")} detail={t("把主对话和输入框限制到固定最大宽度，适合大屏阅读。")} checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
+              <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
+            </FeatureGroup>
+            <FeatureGroup title="Stepwise" detail={t("基于当前对话生成下一步建议，使用独立 API 配置。")}>
+              <FeatureToggle title="Stepwise" detail={t("在 Codex 页面显示可拖动的后续建议浮层；建议由单独配置的 Stepwise API 生成。启停后需重启 Codex++ 生效。")} checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseEnabled", value)} />
+              <FeatureToggle title={t("Stepwise 直接发送")} detail={t("点击建议后自动发送；关闭时只填入输入框。")} checked={form.codexAppStepwiseDirectSend} disabled={!masterEnabled || !form.codexAppStepwiseEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseDirectSend", value)} />
+            </FeatureGroup>
+            <FeatureGroup title={t("界面与启动")} detail={t("控制语言、启动速度和 Codex 原生界面调整。")}>
+              {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
+              <FeatureToggle title={t("强制中文界面")} detail={t("强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。")} checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />
+              <FeatureToggle title={t("快速启动")} detail={t("默认关闭；无 VPN 时可开启，让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。")} checked={form.codexAppFastStartup} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppFastStartup", value)} />
+              <FeatureToggle title={t("原生菜单栏位置")} detail={t("把 Codex++ 菜单插入 Codex 顶部原生菜单栏。")} checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
+              <FeatureToggle title={t("原生菜单汉化")} detail={t("启动时通过本地主进程调试端口汉化 Codex 原生菜单；不修改安装包。需重启 Codex 才生效。")} checked={form.codexAppNativeMenuLocalization} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuLocalization", value)} />
+            </FeatureGroup>
+            <FeatureGroup title={t("远程项目")} detail={t("连接 Zed Remote 和 upstream worktree 辅助能力。")}>
+              <FeatureToggle title="Zed Remote open" detail={t("远程 SSH 文件引用可直接用 Zed Remote Development 打开。")} checked={form.codexAppZedRemoteOpen} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppZedRemoteOpen", value)} />
+              <FeatureToggle title={t("Zed 项目记录")} detail={t("维护 Codex++ 自己的远程项目最近列表。")} checked={form.zedRemoteProjectRegistryEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteProjectRegistryEnabled", value)} />
+              <FeatureToggle title={t("同步 Zed settings")} detail={t("高级选项，默认关闭；当前实现不主动改写 Zed settings。")} checked={form.zedRemoteSyncToZedSettings} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteSyncToZedSettings", value)} />
+              <FeatureToggle title="Upstream worktree" detail={t("从最新 upstream 分支创建 Git worktree。")} checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
+              <div className="feature-select-row">
+                <Field label={t("Zed 默认打开策略")}>
+                  <AppSelect
+                    disabled={!masterEnabled}
+                    onChange={(value) => onFormChange({ ...form, zedRemoteOpenStrategy: value })}
+                    options={[
+                      { value: "addToFocusedWorkspace", label: t("加入当前工作区") },
+                      { value: "reuseWindow", label: t("复用窗口") },
+                      { value: "newWindow", label: t("新窗口") },
+                      { value: "default", label: t("Zed 默认行为") },
+                    ]}
+                    value={form.zedRemoteOpenStrategy}
+                  />
+                </Field>
+              </div>
+            </FeatureGroup>
+          </div>
+          <div className="enhance-utility-row">
+            <div>
+              <Wrench className="h-4 w-4" />
+              <span>{t("新机器没有本地插件市场时，可从 openai/plugins 初始化到当前 CODEX_HOME。")}</span>
+            </div>
+            <Button disabled={pluginMarketplaceProgress.active} variant="secondary" onClick={() => void actions.repairPluginMarketplace()}>
+              {pluginMarketplaceProgress.active ? t("正在修复…") : t("修复插件市场")}
+            </Button>
+          </div>
+          <TaskProgressBox progress={pluginMarketplaceProgress} title={t("插件市场修复进度")} />
+          <TaskProgressBox progress={remotePluginMarketplaceProgress} title={t("官方远端插件缓存进度")} />
+          <div className="hint-line enhance-footer-hint">
+            <Info className="h-4 w-4" />
+            <span>{t("如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁。")}</span>
+          </div>
+          {dirty ? (
+            <div className="enhance-save-bar">
+              <span>{t("Codex增强")}</span>
+              <Button onClick={() => void actions.saveSettings()}>
+                <Save className="h-4 w-4" />
+                {t("保存增强设置")}
+              </Button>
+            </div>
+          ) : null}
+        </CardContent>
+      </Panel>
+    </>
+  );
+}
+
+function DreamSkinScreen({
+  form,
+  library,
+  market,
+  community,
+  draft,
+  dirty,
+  pendingRestart,
+  selectedTheme,
+  status,
+  verification,
+  onFormChange,
+  onDraftChange,
+  actions,
+}: {
+  form: BackendSettings;
+  library: DreamSkinThemeLibrary | null;
+  market: DreamSkinMarketResult | null;
+  community: DreamSkinCommunityResult | null;
+  draft: DreamSkinThemeDraft | null;
+  dirty: boolean;
+  pendingRestart: PendingDreamSkinRestart | null;
+  selectedTheme: string;
+  status: DreamSkinRuntimeResult | null;
+  verification: DreamSkinVerificationResult | null;
+  onFormChange: (value: BackendSettings) => void;
+  onDraftChange: (value: DreamSkinThemeDraft | null) => void;
+  actions: Actions;
+}) {
+  const [themeView, setThemeView] = useState<"market" | "community" | "local">("community");
+  const companionInputRef = useRef<HTMLInputElement>(null);
+  const [companionError, setCompanionError] = useState("");
+  const masterEnabled = form.enhancementsEnabled;
+  const theme = draft?.config ?? defaultDreamSkinTheme();
+  const themeColors = theme.colors ?? defaultDreamSkinColors();
+  const customImagePath = draft?.imagePath.trim() ?? "";
+  const previewUrl = customImagePath
+    ? convertFileSrc(customImagePath)
+    : isWindowsPlatform
+      ? dreamSkinWindowsPreviewUrl
+      : dreamSkinMacPreviewUrl;
+  const selectedItem = library?.themes.find((item) => item.key === selectedTheme) ?? null;
+  const savedThemeSelected = selectedItem?.kind === "stored";
+  const updateTheme = (next: DreamSkinThemeConfig) => {
+    if (draft) onDraftChange({ ...draft, config: next });
+  };
+  const updateThemeText = (
+    key: "id" | "name" | "brandSubtitle" | "tagline" | "projectPrefix" | "projectLabel" | "statusText" | "quote",
+    value: string,
+  ) => updateTheme({ ...theme, [key]: value });
+  const updateThemeColor = (key: keyof DreamSkinColors, value: string) => {
+    updateTheme({ ...theme, colors: { ...themeColors, [key]: value } });
+  };
+  const themeAppearance = theme.appearance === "light" || theme.appearance === "dark"
+    ? theme.appearance
+    : "auto";
+  const windowsAccent = typeof theme.palette?.accent === "string" ? theme.palette.accent : "";
+  const updateWindowsAccent = (value: string) => {
+    const palette = { ...(theme.palette ?? {}) };
+    if (value.trim()) palette.accent = value;
+    else delete palette.accent;
+    const next: DreamSkinThemeConfig = { ...theme, palette };
+    if (!Object.keys(palette).length) delete next.palette;
+    updateTheme(next);
+  };
+  const companion = theme.companion;
+  const companionDataUrl = typeof companion?.dataUrl === "string" ? companion.dataUrl : "";
+  const companionEnabled = Boolean(companionDataUrl) && companion?.enabled !== false;
+  const updateCompanion = (patch: Partial<NonNullable<DreamSkinThemeConfig["companion"]>>) => {
+    const nextCompanion = {
+      dataUrl: companionDataUrl,
+      enabled: companion?.enabled ?? true,
+      width: companion?.width ?? 96,
+      side: companion?.side ?? "right",
+      offsetX: companion?.offsetX ?? 0,
+      offsetY: companion?.offsetY ?? 4,
+      ...patch,
+    };
+    updateTheme({ ...theme, companion: nextCompanion });
+  };
+  const clearCompanion = () => {
+    const next = { ...theme };
+    delete next.companion;
+    setCompanionError("");
+    updateTheme(next);
+  };
+  const chooseCompanion = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    if (!dreamSkinCompanionMimeTypes.has(file.type)) {
+      setCompanionError(t("仅支持 PNG、JPEG、WebP 或 GIF 图片"));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : "";
+      if (!dataUrl || dataUrl.length > dreamSkinCompanionDataUrlLimit) {
+        setCompanionError(t("图片过大，请选择 180 KB 以内的图片"));
+        return;
+      }
+      setCompanionError("");
+      updateCompanion({ dataUrl });
+    };
+    reader.onerror = () => setCompanionError(t("读取图片失败，请重新选择"));
+    reader.readAsDataURL(file);
+  };
+  const stateLabel = dreamSkinStateLabel(status?.state ?? "not_running");
+  const runtimeChecks = status?.checks ?? [];
+  const verificationChecks = verification?.checks ?? [];
+
+  return (
+    <>
+      <Panel className="dream-skin-panel dream-skin-attribution-panel">
+        <CardContent className="dream-skin-attribution-content">
+          <p className="dream-skin-attribution-line">
+            {t("项目来源：Fei-Away/Codex-Dream-Skin · 原作者 Fei-Away · MIT License · 第三方图片需自行确认授权")}
+          </p>
+        </CardContent>
+      </Panel>
+
+      <Panel className="dream-skin-panel">
+        <CardHead title={t("运行状态")} detail={t("配置保存在 Codex++，实时操作通过本机回环 CDP 执行")} />
+        <CardContent>
+          <div className="dream-skin-runtime-grid">
+            <label className="switch-row compact">
+              <input
+                checked={form.codexAppDreamSkinEnabled}
+                disabled={!masterEnabled}
+                onChange={(event) => onFormChange({
+                  ...form,
+                  codexAppDreamSkinEnabled: event.currentTarget.checked,
+                  codexAppDreamSkinPaused: false,
+                })}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("启用 Codex 皮肤")}</strong>
+                <small>{t("应用会保存当前图片与主题配置；恢复原始外观不会删除主题。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+            <div className={`dream-skin-runtime-state is-${status?.state ?? "not_running"}`}>
+              {dreamSkinCheckIcon(status?.state === "pass" ? "pass" : status?.state === "fail" ? "fail" : "warning")}
+              <span>
+                <small>{t("当前状态")}</small>
+                <strong>{stateLabel}</strong>
+              </span>
+              <Badge status={status?.liveApplied ? "ok" : status?.paused ? "disabled" : "not_checked"} />
+            </div>
+          </div>
+          {!masterEnabled ? (
+            <div className="hint-line">
+              <Info className="h-4 w-4" />
+              <span>{t("请先在 Codex增强 页面开启总开关。")}</span>
+            </div>
+          ) : null}
+          <Toolbar>
+            <Button disabled={!masterEnabled || !draft} onClick={() => void actions.activateDreamSkinTheme()} title={t("保存并应用主题；需要重启时只会标记为待应用")}>
+              <Play className="h-4 w-4" />
+              {t("应用皮肤")}
+            </Button>
+            <Button variant="outline" onClick={() => void actions.restoreDreamSkin()}>
+              <RotateCcw className="h-4 w-4" />
+              {t("恢复 Codex 外观")}
+            </Button>
+            <Button size="icon" title={t("刷新状态")} variant="outline" onClick={() => void actions.refreshDreamSkinStatus()}>
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+          </Toolbar>
+          {pendingRestart ? (
+            <div className="dream-skin-pending-state" role="status">
+              <Rocket className="h-5 w-5" aria-hidden="true" />
+              <div>
+                <strong>{t("待应用主题")}：{pendingRestart.pendingThemeName}</strong>
+                <small>
+                  {t("当前运行")}：{pendingRestart.currentThemeName}。{t("配置已保存，可以继续浏览和编辑，稍后重启即可生效。")}
+                </small>
+              </div>
+              <Button onClick={() => void actions.restart()}>
+                <Rocket className="h-4 w-4" />
+                {t("重启并应用")}
+              </Button>
+            </div>
+          ) : null}
+        </CardContent>
+      </Panel>
+
+      <Panel className="dream-skin-panel">
+        <CardHead title={t("图片与主题")} detail={t("自定义图片会被导入 Codex++ 托管目录；主题字段与目标项目 theme.json 对齐")} />
+        <CardContent>
+          <div aria-label={t("主题视图")} className="dream-skin-view-tabs" role="tablist">
+            <button
+              aria-selected={themeView === "community"}
+              className={themeView === "community" ? "is-active" : ""}
+              onClick={() => setThemeView("community")}
+              role="tab"
+              type="button"
+            >
+              <Github className="h-4 w-4" />
+              {t("DreamSkin 社区")}
+              <span>{community?.items.length ?? 0}</span>
+            </button>
+            <button
+              aria-selected={themeView === "market"}
+              className={themeView === "market" ? "is-active" : ""}
+              onClick={() => setThemeView("market")}
+              role="tab"
+              type="button"
+            >
+              <Store className="h-4 w-4" />
+              {t("主题市场")}
+              <span>{market?.themes.length ?? 0}</span>
+            </button>
+            <button
+              aria-selected={themeView === "local"}
+              className={themeView === "local" ? "is-active" : ""}
+              onClick={() => setThemeView("local")}
+              role="tab"
+              type="button"
+            >
+              <Palette className="h-4 w-4" />
+              {t("我的主题")}
+              <span>{library?.themes.length ?? 0}</span>
+            </button>
+          </div>
+
+          {themeView === "community" ? (
+            <DreamSkinCommunitySection
+              community={community}
+              actions={actions}
+              onInstalled={() => setThemeView("local")}
+            />
+          ) : themeView === "market" ? (
+            <section className="dream-skin-market">
+              <div className="dream-skin-library-head">
+                <div>
+                  <strong>{t("社区主题")}</strong>
+                  <small>
+                    {market?.updatedAt
+                      ? tf("清单更新于 {0}，安装后会保存到“我的主题”。", [market.updatedAt])
+                      : t("从 CodexPlusPlus-Themes 仓库加载可安装主题。")}
+                  </small>
+                </div>
+                <Toolbar>
+                  <Button onClick={() => void actions.refreshDreamSkinMarket()} variant="secondary">
+                    <RefreshCw className="h-4 w-4" />
+                    {t("刷新市场")}
+                  </Button>
+                  <Button onClick={() => void actions.openExternalUrl(market?.repositoryUrl || "https://github.com/BigPizzaV3/CodexPlusPlus-Themes")} variant="outline">
+                    <Github className="h-4 w-4" />
+                    {t("投稿主题")}
+                  </Button>
+                </Toolbar>
+              </div>
+              {market?.cached || market?.warning ? (
+                <div className="dream-skin-market-warning">
+                  <Info className="h-4 w-4" />
+                  <span>{market.warning || t("远程仓库暂不可用，当前显示本地缓存。")}</span>
+                </div>
+              ) : null}
+              {market?.themes.length ? (
+                <div className="dream-skin-market-grid">
+                  {market.themes.map((item) => (
+                    <DreamSkinMarketCard
+                      actions={actions}
+                      key={item.id}
+                      onInstalled={() => setThemeView("local")}
+                      theme={item}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="empty">
+                  {market?.status === "failed" ? market.message : t("正在加载主题市场…")}
+                </div>
+              )}
+            </section>
+          ) : (
+            <>
+          <section className="dream-skin-theme-library">
+            <div className="dream-skin-library-head">
+              <div>
+                <strong>{t("我的主题")}</strong>
+                <small>
+                  {pendingRestart
+                    ? t("选择其他卡片可继续调整待应用主题；当前界面不会自动重启。")
+                    : t("选择卡片只会载入草稿；需要完整切换时会保存为待应用主题。")}
+                </small>
+              </div>
+              <Toolbar>
+                <Button variant="outline" onClick={() => void actions.importDreamSkinThemePackage()}>
+                  <PackageOpen className="h-4 w-4" />
+                  {t("导入主题包")}
+                </Button>
+                <Button
+                  disabled={!masterEnabled || !draft}
+                  onClick={() => void actions.activateDreamSkinTheme()}
+                  title={t("保存主题；需要重启时不会打断当前操作")}
+                >
+                  <Play className="h-4 w-4" />
+                  {pendingRestart ? t("更新待应用") : t("应用主题")}
+                </Button>
+              </Toolbar>
+            </div>
+            <div className="dream-skin-theme-list">
+              {(library?.themes ?? []).map((item) => {
+                const cardPreview = item.previewPath
+                  ? convertFileSrc(item.previewPath)
+                  : isWindowsPlatform
+                    ? dreamSkinWindowsPreviewUrl
+                    : dreamSkinMacPreviewUrl;
+                const cardDirty = item.key === selectedTheme && dirty;
+                const currentRunning = pendingRestart
+                  ? pendingRestart.currentThemeKey === item.key
+                  : item.active;
+                const pendingApplication = pendingRestart?.pendingThemeKey === item.key;
+                return (
+                  <article
+                    className={`dream-skin-theme-card${item.key === selectedTheme ? " is-selected" : ""}${currentRunning ? " is-current" : ""}${pendingApplication ? " is-pending" : ""}`}
+                    key={item.key}
+                  >
+                    <button
+                      className="dream-skin-theme-select"
+                      onClick={() => actions.selectDreamSkinTheme(item)}
+                      type="button"
+                    >
+                      <span className="dream-skin-theme-image">
+                        <img alt={item.name} loading="lazy" src={cardPreview} />
+                        {currentRunning || pendingApplication ? (
+                          <span className="dream-skin-theme-badges">
+                            {currentRunning ? <b>{t("当前运行")}</b> : null}
+                            {pendingApplication ? <b className="is-pending">{t("待应用")}</b> : null}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="dream-skin-theme-copy">
+                        <strong title={item.name}>{item.name}</strong>
+                        <small>
+                          {item.builtin
+                            ? t("内置主题")
+                            : item.kind === "activeUnsaved"
+                              ? t("当前未保存主题")
+                              : t("用户主题")}
+                        </small>
+                      </span>
+                      {item.modified || cardDirty ? <em>{t("已修改")}</em> : null}
+                    </button>
+                    {item.kind === "stored" ? (
+                      <details className="dream-skin-theme-menu">
+                        <summary title={t("主题操作")}><MoreHorizontal className="h-4 w-4" /></summary>
+                        <div>
+                          <button onClick={() => void actions.renameDreamSkinTheme(item)} type="button">
+                            <Edit3 className="h-4 w-4" />
+                            {t("重命名")}
+                          </button>
+                          <button disabled={item.active || currentRunning} onClick={() => void actions.deleteDreamSkinTheme(item)} type="button">
+                            <Trash2 className="h-4 w-4" />
+                            {t("删除")}
+                          </button>
+                        </div>
+                      </details>
+                    ) : null}
+                  </article>
+                );
+              })}
+            </div>
+            {!library ? <p className="empty">{t("正在加载主题库…")}</p> : null}
+          </section>
+
+          <details className="dream-skin-customizer">
+            <summary>
+              <span className="dream-skin-customizer-title">
+                <Settings className="h-4 w-4" />
+                <span>
+                  <strong>{t("自定义主题")}</strong>
+                  <small>{t("图片、文字和配色等高级编辑项")}</small>
+                </span>
+              </span>
+              <em className={dirty ? "is-dirty" : ""}>{dirty ? t("有未保存修改") : t("按需展开")}</em>
+            </summary>
+            <div className="dream-skin-customizer-content">
+              <div className="dream-skin-customizer-actions">
+                <Button variant="secondary" onClick={() => void actions.createDreamSkinTheme()}>
+                  <ImagePlus className="h-4 w-4" />
+                  {t("从图片创建")}
+                </Button>
+              </div>
+
+              <div className="dream-skin-platform-note">
+                <Info className="h-4 w-4" />
+                <span>
+                  {isWindowsPlatform
+                    ? t("Windows 使用亮暗模式、图片取色和可选强调色；完整色板仅在 macOS 生效。")
+                    : t("macOS 会应用主题中的图片、文字和颜色配置。")}
+                </span>
+              </div>
+
+              <div className="dream-skin-companion-controls">
+                <div className="dream-skin-companion-heading">
+                  <div>
+                    <strong>{t("输入框旁照片")}</strong>
+                    <small>{t("为主题选择一张显示在 Codex 输入框旁的自定义照片")}</small>
+                  </div>
+                  {companionDataUrl ? (
+                    <img alt={t("输入框旁照片预览")} src={companionDataUrl} />
+                  ) : null}
+                </div>
+                <input
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  className="sr-only"
+                  onChange={chooseCompanion}
+                  ref={companionInputRef}
+                  type="file"
+                />
+                <Toolbar>
+                  <Button onClick={() => companionInputRef.current?.click()} type="button" variant="secondary">
+                    <Camera className="h-4 w-4" />
+                    {companionDataUrl ? t("更换照片") : t("选择照片")}
+                  </Button>
+                  <Button disabled={!companionDataUrl} onClick={clearCompanion} type="button" variant="outline">
+                    <Trash2 className="h-4 w-4" />
+                    {t("清除照片")}
+                  </Button>
+                </Toolbar>
+                {companionError ? <small className="dream-skin-companion-error">{companionError}</small> : null}
+                <div className="dream-skin-companion-fields">
+                  <label className="switch-row compact">
+                    <input
+                      checked={companionEnabled}
+                      disabled={!companionDataUrl}
+                      onChange={(event) => updateCompanion({ enabled: event.currentTarget.checked })}
+                      type="checkbox"
+                    />
+                    <span>
+                      <strong>{t("显示在输入框旁")}</strong>
+                      <small>{t("应用主题后显示在输入框的左侧或右侧")}</small>
+                    </span>
+                    <ToggleVisual />
+                  </label>
+                  <Field label={t("照片宽度") }>
+                    <Input
+                      disabled={!companionDataUrl}
+                      inputMode="numeric"
+                      max={160}
+                      min={48}
+                      type="number"
+                      value={companion?.width ?? 96}
+                      onChange={(event) => updateCompanion({ width: Math.max(48, Math.min(160, Number(event.currentTarget.value) || 96)) })}
+                    />
+                  </Field>
+                  <Field label={t("显示位置") }>
+                    <AppSelect
+                      disabled={!companionDataUrl}
+                      value={companion?.side ?? "right"}
+                      onChange={(value) => updateCompanion({ side: value })}
+                      options={[
+                        { value: "auto", label: t("自动") },
+                        { value: "left", label: t("左侧") },
+                        { value: "right", label: t("右侧") },
+                      ]}
+                    />
+                  </Field>
+                  <Field label={t("水平偏移") }>
+                    <Input
+                      disabled={!companionDataUrl}
+                      inputMode="numeric"
+                      max={48}
+                      min={-48}
+                      type="number"
+                      value={companion?.offsetX ?? 0}
+                      onChange={(event) => updateCompanion({ offsetX: Math.max(-48, Math.min(48, Number(event.currentTarget.value) || 0)) })}
+                    />
+                  </Field>
+                  <Field label={t("垂直偏移") }>
+                    <Input
+                      disabled={!companionDataUrl}
+                      inputMode="numeric"
+                      max={160}
+                      min={-160}
+                      type="number"
+                      value={companion?.offsetY ?? 4}
+                      onChange={(event) => updateCompanion({ offsetY: Math.max(-160, Math.min(160, Number(event.currentTarget.value) || 0)) })}
+                    />
+                  </Field>
+                </div>
+              </div>
+
+              <div className="dream-skin-editor-layout">
+                <div className="dream-skin-media-editor">
+                  <div
+                    className="dream-skin-preview"
+                    style={isWindowsPlatform ? undefined : { backgroundColor: themeColors.background }}
+                  >
+                    <img alt={t("Dream Skin 图片预览")} src={previewUrl} />
+                    <span style={isWindowsPlatform ? undefined : { backgroundColor: themeColors.panel, color: themeColors.text }}>
+                      <strong>{theme.name}</strong>
+                      <small style={isWindowsPlatform ? undefined : { color: themeColors.muted }}>{customImagePath ? t("自定义托管图片") : t("目标项目默认图片")}</small>
+                    </span>
+                  </div>
+                  <Field label={t("托管图片路径")}>
+                    <Input
+                      readOnly
+                      placeholder={t("使用目标项目默认图片")}
+                      value={draft?.imagePath ?? ""}
+                    />
+                  </Field>
+                  <Toolbar>
+                    <Button variant="secondary" onClick={() => void actions.chooseDreamSkinImagePath()}>
+                      <Camera className="h-4 w-4" />
+                      {t("导入图片")}
+                    </Button>
+                    <Button
+                      disabled={!customImagePath}
+                      variant="outline"
+                      onClick={() => void actions.resetDreamSkinImage()}
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                      {t("恢复默认图片")}
+                    </Button>
+                  </Toolbar>
+                </div>
+
+                <div className="dream-skin-theme-fields">
+                  <div className="dream-skin-text-grid">
+                    <Field label={t("主题 ID")}><Input readOnly={draft?.builtin || savedThemeSelected} value={theme.id} onChange={(event) => updateThemeText("id", event.currentTarget.value)} /></Field>
+                    <Field label={t("主题名称")}><Input value={theme.name} onChange={(event) => updateThemeText("name", event.currentTarget.value)} /></Field>
+                    <Field label={t("品牌副标题")}><Input value={theme.brandSubtitle} onChange={(event) => updateThemeText("brandSubtitle", event.currentTarget.value)} /></Field>
+                    <Field label={t("主题标语")}><Input value={theme.tagline} onChange={(event) => updateThemeText("tagline", event.currentTarget.value)} /></Field>
+                    <Field label={t("项目前缀")}><Input value={theme.projectPrefix} onChange={(event) => updateThemeText("projectPrefix", event.currentTarget.value)} /></Field>
+                    <Field label={t("项目按钮文字")}><Input value={theme.projectLabel} onChange={(event) => updateThemeText("projectLabel", event.currentTarget.value)} /></Field>
+                    <Field label={t("状态文字")}><Input value={theme.statusText} onChange={(event) => updateThemeText("statusText", event.currentTarget.value)} /></Field>
+                    <Field label={t("引用文字")}><Input value={theme.quote} onChange={(event) => updateThemeText("quote", event.currentTarget.value)} /></Field>
+                  </div>
+                  {isWindowsPlatform ? (
+                    <div className="dream-skin-windows-theme-controls">
+                      <Field label={t("外观模式")}>
+                        <div aria-label={t("外观模式")} className="segmented dream-skin-appearance-options" role="group">
+                          {([
+                            ["auto", t("自动")],
+                            ["light", t("亮色")],
+                            ["dark", t("暗色")],
+                          ] as const).map(([value, label]) => (
+                            <button
+                              aria-pressed={themeAppearance === value}
+                              className={themeAppearance === value ? "active" : ""}
+                              key={value}
+                              onClick={() => updateTheme({ ...theme, appearance: value })}
+                              type="button"
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </Field>
+                      <div className="dream-skin-windows-accent">
+                        <DreamSkinColorField
+                          label={t("强调色")}
+                          value={windowsAccent}
+                          onChange={updateWindowsAccent}
+                        />
+                        <Button
+                          disabled={!windowsAccent.trim()}
+                          onClick={() => updateWindowsAccent("")}
+                          size="sm"
+                          variant="outline"
+                        >
+                          <RotateCcw className="h-4 w-4" />
+                          {t("跟随图片配色")}
+                        </Button>
+                      </div>
+                      <small className="dream-skin-windows-theme-note">
+                        {t("亮暗模式直接控制 Codex 外观；强调色留空时自动从主题图片提取。")}
+                      </small>
+                    </div>
+                  ) : (
+                    <div className="dream-skin-colors">
+                      {dreamSkinColorFields().map(([key, label]) => (
+                        <DreamSkinColorField
+                          key={key}
+                          label={label}
+                          value={String(themeColors[key])}
+                          onChange={(value) => updateThemeColor(key, value)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <Toolbar>
+                <Button disabled={!draft} onClick={() => void actions.saveDreamSkinTheme()}>
+                  <Save className="h-4 w-4" />
+                  {draft?.builtin || selectedItem?.kind === "activeUnsaved" ? t("保存为新主题") : t("保存主题")}
+                </Button>
+                <Button variant="outline" onClick={() => void actions.resetDreamSkinTheme()}>
+                  <RotateCcw className="h-4 w-4" />
+                  {isWindowsPlatform ? t("恢复 Codex 默认配色") : t("恢复 Dream Skin 默认主题")}
+                </Button>
+              </Toolbar>
+            </div>
+          </details>
+            </>
+          )}
+        </CardContent>
+      </Panel>
+
+      <Panel className="dream-skin-panel">
+        <CardHead title={t("诊断与验证")} detail={t("检查官方应用身份、CDP renderer、目标样式和页面布局")} />
+        <CardContent>
+          <div className="dream-skin-diagnostics-grid">
+            <DreamSkinCheckList title={t("运行诊断")} checks={runtimeChecks} emptyText={t("刷新状态后显示运行诊断。")}/>
+            <DreamSkinCheckList title={t("最近实机验证")} checks={verificationChecks} emptyText={t("运行实机验证后显示页面检查结果。")}/>
+          </div>
+          {verification ? (
+            <div className="dream-skin-verification-meta">
+              <span><small>{t("注入版本")}</small><code>{verification.version || t("未检测到")}</code></span>
+              <span><small>{t("截图路径")}</small><code>{verification.screenshotPath || t("未保存截图")}</code></span>
+            </div>
+          ) : null}
+          <Toolbar>
+            <Button variant="secondary" onClick={() => void actions.refreshDreamSkinStatus()}>
+              <RefreshCw className="h-4 w-4" />
+              {t("刷新诊断")}
+            </Button>
+            <Button onClick={() => void actions.verifyDreamSkin()}>
+              <ShieldCheck className="h-4 w-4" />
+              {t("实机验证")}
+            </Button>
+            <Button variant="outline" onClick={() => void actions.saveDreamSkinScreenshot()}>
+              <Camera className="h-4 w-4" />
+              {t("保存截图")}
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+    </>
+  );
+}
+
+function DreamSkinColorField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <Field className="dream-skin-color-field" label={label}>
+      <span className="dream-skin-color-control">
+        <input
+          aria-label={label}
+          type="color"
+          value={dreamSkinPickerColor(value)}
+          onChange={(event) => onChange(event.currentTarget.value.toUpperCase())}
+        />
+        <Input value={value} onChange={(event) => onChange(event.currentTarget.value)} />
+      </span>
+    </Field>
+  );
+}
+
+function DreamSkinMarketCard({
+  theme,
+  actions,
+  onInstalled,
+}: {
+  theme: DreamSkinMarketTheme;
+  actions: Actions;
+  onInstalled: () => void;
+}) {
+  const status = theme.updateAvailable
+    ? t("可更新")
+    : theme.installed
+      ? theme.installedVersion
+        ? tf("已安装 {0}", [theme.installedVersion])
+        : t("已安装")
+      : t("未安装");
+  return (
+    <article className="dream-skin-market-card">
+      <div className="dream-skin-market-preview">
+        <img
+          alt={theme.name}
+          loading="lazy"
+          onError={(event) => {
+            event.currentTarget.onerror = null;
+            event.currentTarget.src = isWindowsPlatform ? dreamSkinWindowsPreviewUrl : dreamSkinMacPreviewUrl;
+          }}
+          src={theme.previewUrl}
+        />
+        <UiBadge variant={theme.updateAvailable ? "default" : theme.installed ? "secondary" : "outline"}>{status}</UiBadge>
+      </div>
+      <div className="dream-skin-market-copy">
+        <div className="dream-skin-market-title">
+          <strong title={theme.name}>{theme.name}</strong>
+          <span>v{theme.version}</span>
+        </div>
+        <small>{tf("作者：{0} · {1}", [theme.author, theme.license])}</small>
+        <p>{theme.description || t("暂无主题说明。")}</p>
+        <div className="dream-skin-market-tags">
+          {theme.tags.map((tag) => <span key={tag}>{tag}</span>)}
+        </div>
+      </div>
+      <div className="dream-skin-market-actions">
+        <Button
+          onClick={async () => {
+            if (await actions.installDreamSkinMarketTheme(theme)) onInstalled();
+          }}
+          size="sm"
+        >
+          <Download className="h-4 w-4" />
+          {theme.updateAvailable ? t("更新") : theme.installed ? t("重新安装") : t("安装")}
+        </Button>
+        <Button onClick={() => void actions.openExternalUrl(theme.sourceUrl)} size="sm" variant="outline">
+          <ExternalLink className="h-4 w-4" />
+          {t("来源")}
+        </Button>
+      </div>
+    </article>
+  );
+}
+
+function DreamSkinCommunitySection({
+  community,
+  actions,
+  onInstalled,
+}: {
+  community: DreamSkinCommunityResult | null;
+  actions: Actions;
+  onInstalled: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<"latest" | "popular" | "name">("latest");
+  const items = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    const filtered = (community?.items ?? []).filter((item) => {
+      if (!normalized) return true;
+      return [item.name, item.authorDisplayName, item.themeId, item.license]
+        .some((value) => value.toLowerCase().includes(normalized));
+    });
+    return [...filtered].sort((left, right) => {
+      if (sort === "popular") return right.downloadCount - left.downloadCount;
+      if (sort === "name") return left.name.localeCompare(right.name, "zh-CN");
+      return right.reviewedAt.localeCompare(left.reviewedAt);
+    });
+  }, [community?.items, query, sort]);
+
+  return (
+    <section className="dream-skin-community">
+      <div className="dream-skin-library-head">
+        <div>
+          <strong>{t("DreamSkin 社区主题")}</strong>
+          <small>
+            {community?.total
+              ? tf("来自 DreamSkin.cc 的已审核主题，共 {0} 套；安装前仍会在本机再次校验。", [String(community.total)])
+              : t("从 DreamSkin.cc 加载已审核主题包。")}
+          </small>
+        </div>
+        <Toolbar>
+          <Button onClick={() => void actions.refreshDreamSkinCommunity()} variant="secondary">
+            <RefreshCw className="h-4 w-4" />
+            {t("刷新社区")}
+          </Button>
+          <Button onClick={() => void actions.openExternalUrl("https://dreamskin.cc/gallery")} variant="outline">
+            <ExternalLink className="h-4 w-4" />
+            {t("在线主题库")}
+          </Button>
+          <Button onClick={() => void actions.openExternalUrl("https://dreamskin.cc/studio")} variant="outline">
+            <Palette className="h-4 w-4" />
+            {t("在线 Studio")}
+          </Button>
+        </Toolbar>
+      </div>
+      {community?.warning ? (
+        <div className="dream-skin-market-warning">
+          <Info className="h-4 w-4" />
+          <span>{community.warning}</span>
+        </div>
+      ) : null}
+      <div className="dream-skin-community-controls">
+        <Input
+          aria-label={t("搜索社区主题")}
+          onChange={(event) => setQuery(event.currentTarget.value)}
+          placeholder={t("搜索主题名称、作者或许可证")}
+          value={query}
+        />
+        <AppSelect
+          onChange={(value) => setSort(value as typeof sort)}
+          options={[
+            { value: "latest", label: t("最新审核") },
+            { value: "popular", label: t("下载最多") },
+            { value: "name", label: t("名称排序") },
+          ]}
+          title={t("社区主题排序")}
+          value={sort}
+        />
+      </div>
+      {items.length ? (
+        <div className="dream-skin-community-grid">
+          {items.map((item) => (
+            <DreamSkinCommunityCard
+              actions={actions}
+              key={item.id}
+              onInstalled={onInstalled}
+              theme={item}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="empty">
+          {!community
+            ? t("正在加载 DreamSkin 社区…")
+            : community.status === "failed"
+              ? community.message
+              : query.trim()
+                ? t("没有匹配的社区主题。")
+                : t("DreamSkin 社区暂时没有可用主题。")}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DreamSkinCommunityCard({
+  theme,
+  actions,
+  onInstalled,
+}: {
+  theme: DreamSkinCommunityTheme;
+  actions: Actions;
+  onInstalled: () => void;
+}) {
+  const status = theme.updateAvailable
+    ? t("可更新")
+    : theme.installed
+      ? tf("已安装 {0}", [theme.installedVersion])
+      : t("未安装");
+  const packageSize = theme.packageBytes >= 1024 * 1024
+    ? `${(theme.packageBytes / 1024 / 1024).toFixed(1)} MiB`
+    : `${Math.ceil(theme.packageBytes / 1024)} KiB`;
+  return (
+    <article className="dream-skin-community-card">
+      <div className="dream-skin-community-preview">
+        <img
+          alt={theme.name}
+          loading="lazy"
+          onError={(event) => {
+            event.currentTarget.onerror = null;
+            event.currentTarget.src = isWindowsPlatform ? dreamSkinWindowsPreviewUrl : dreamSkinMacPreviewUrl;
+          }}
+          src={theme.previewUrl}
+        />
+        <UiBadge variant={theme.updateAvailable ? "default" : theme.installed ? "secondary" : "outline"}>{status}</UiBadge>
+      </div>
+      <div className="dream-skin-community-copy">
+        <div className="dream-skin-market-title">
+          <strong title={theme.name}>{theme.name}</strong>
+          <span>v{theme.version}</span>
+        </div>
+        <small>{tf("作者：{0} · {1} · {2} 次下载", [theme.authorDisplayName, theme.license, String(theme.downloadCount)])}</small>
+        <small>{tf("主题包：{0}", [packageSize])}</small>
+      </div>
+      <div className="dream-skin-community-actions">
+        <Button
+          disabled={!theme.applyCompatible}
+          onClick={async () => {
+            if (await actions.installDreamSkinCommunityTheme(theme)) onInstalled();
+          }}
+          size="sm"
+          title={theme.applyCompatible ? t("下载、校验并安装主题包") : t("此主题仅支持在线预览或下载")}
+        >
+          <Download className="h-4 w-4" />
+          {theme.updateAvailable ? t("更新") : theme.installed ? t("重新安装") : t("安装")}
+        </Button>
+        <Button onClick={() => void actions.openExternalUrl(`https://dreamskin.cc/preview?themeVersion=${encodeURIComponent(theme.id)}`)} size="sm" variant="outline">
+          <Eye className="h-4 w-4" />
+          {t("预览")}
+        </Button>
+      </div>
+    </article>
+  );
+}
+
+function DreamSkinCheckList({ title, checks, emptyText }: { title: string; checks: DreamSkinCheck[]; emptyText: string }) {
+  return (
+    <section className="dream-skin-check-section">
+      <strong>{title}</strong>
+      <div className="dream-skin-check-list">
+        {checks.length ? checks.map((check) => (
+          <div className={`dream-skin-check is-${check.level}`} key={`${title}-${check.id}`}>
+            {dreamSkinCheckIcon(check.level)}
+            <span>
+              <strong>{check.label}</strong>
+              <small>{check.message}</small>
+            </span>
+            <b>{dreamSkinCheckLevelLabel(check.level)}</b>
+          </div>
+        )) : <p className="empty">{emptyText}</p>}
+      </div>
+    </section>
+  );
+}
+
+function dreamSkinColorFields(): Array<[keyof DreamSkinColors, string]> {
+  return [
+    ["background", t("背景色")],
+    ["panel", t("面板色")],
+    ["panelAlt", t("次级面板色")],
+    ["accent", t("强调色")],
+    ["accentAlt", t("次级强调色")],
+    ["secondary", t("辅助色")],
+    ["highlight", t("高亮色")],
+    ["text", t("文字色")],
+    ["muted", t("弱化文字色")],
+    ["line", t("边线色")],
+  ];
+}
+
+function dreamSkinPickerColor(value: string): string {
+  const color = value.trim();
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(color);
+  if (hex) {
+    const digits = hex[1];
+    return digits.length === 3
+      ? `#${digits.split("").map((part) => `${part}${part}`).join("")}`
+      : `#${digits.slice(0, 6)}`;
+  }
+  const rgb = /^rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)/i.exec(color);
+  if (!rgb) return "#808080";
+  const channel = (raw: string) => Math.max(0, Math.min(255, Math.round(Number(raw)))).toString(16).padStart(2, "0");
+  return `#${channel(rgb[1])}${channel(rgb[2])}${channel(rgb[3])}`;
+}
+
+function dreamSkinCheckIcon(level: "pass" | "warning" | "fail") {
+  if (level === "pass") return <CheckCircle2 aria-hidden="true" className="h-4 w-4" />;
+  if (level === "fail") return <ShieldAlert aria-hidden="true" className="h-4 w-4" />;
+  return <Info aria-hidden="true" className="h-4 w-4" />;
+}
+
+function dreamSkinCheckLevelLabel(level: "pass" | "warning" | "fail"): string {
+  if (level === "pass") return t("通过");
+  if (level === "fail") return t("失败");
+  return t("警告");
+}
+
+function dreamSkinStateLabel(state: "pass" | "warning" | "fail" | "not_running"): string {
+  if (state === "pass") return t("已应用并通过检查");
+  if (state === "warning") return t("需要处理");
+  if (state === "fail") return t("验证失败");
+  return t("Codex 未运行或不可连接");
+}
+
+function ZedRemoteScreen({
+  projects,
+  form,
+  onFormChange,
+  actions,
+}: {
+  projects: ZedRemoteProjectsResult | null;
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
+  actions: Actions;
+}) {
+  const allProjects = projects?.projects ?? [];
+  const currentProjects = allProjects.filter((project) => project.isCurrent);
+  const currentIds = new Set(currentProjects.map((project) => project.id));
+  const recentProjects = allProjects.filter((project) => !currentIds.has(project.id) && (project.source === "recent" || project.lastOpenedAtMs));
+  const recentIds = new Set(recentProjects.map((project) => project.id));
+  const discoveredProjects = allProjects.filter((project) => !currentIds.has(project.id) && !recentIds.has(project.id));
+  const copyUrl = async (project: ZedRemoteProject) => {
+    try {
+      await navigator.clipboard.writeText(project.url);
+      await actions.showMessage("Zed Remote URL", t("ssh:// URL 已复制。"), "ok");
+    } catch (error) {
+      await actions.showMessage(t("复制失败"), stringifyError(error), "failed");
+    }
+  };
+  return (
+    <>
+      <Panel>
+        <CardHead title={t("Zed 远程项目")} detail={tf("{0} 个 Codex++ 可识别项目，默认策略：{1}", [allProjects.length, zedStrategyLabel(form.zedRemoteOpenStrategy)])} />
+        <CardContent>
+          <div className="metric-list">
+            <Metric label="Current" value={String(currentProjects.length)} />
+            <Metric label="Recent" value={String(recentProjects.length)} />
+            <Metric label="Discovered" value={String(discoveredProjects.length)} />
+          </div>
+          <div className="zed-remote-settings">
+            <Field label={t("默认打开策略")}>
+              <AppSelect
+                onChange={(value) => onFormChange({ ...form, zedRemoteOpenStrategy: value })}
+                options={[
+                  { value: "addToFocusedWorkspace", label: t("加入当前工作区") },
+                  { value: "reuseWindow", label: t("复用窗口") },
+                  { value: "newWindow", label: t("新窗口") },
+                  { value: "default", label: t("Zed 默认行为") },
+                ]}
+                value={form.zedRemoteOpenStrategy}
+              />
+            </Field>
+            <label className="switch-row compact">
+              <input
+                checked={form.zedRemoteProjectRegistryEnabled}
+                onChange={(event) => onFormChange({ ...form, zedRemoteProjectRegistryEnabled: event.currentTarget.checked })}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("记录最近打开")}</strong>
+                <small>{t("保存到 Codex++ state，不改写 Zed settings。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.refreshZedRemoteProjects()}>
+              <RefreshCw className="h-4 w-4" />
+              {t("刷新项目")}
+            </Button>
+            <Button variant="secondary" onClick={() => void actions.saveSettingsValue(form, false)}>
+              <Save className="h-4 w-4" />
+              {t("保存策略")}
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <ZedRemoteProjectSection title="Current" projects={currentProjects} actions={actions} onCopyUrl={copyUrl} />
+      <ZedRemoteProjectSection title="Recent" projects={recentProjects} actions={actions} onCopyUrl={copyUrl} />
+      <ZedRemoteProjectSection title="Discovered from Codex" projects={discoveredProjects} actions={actions} onCopyUrl={copyUrl} />
+    </>
+  );
+}
+
+function ZedRemoteProjectSection({
+  title,
+  projects,
+  actions,
+  onCopyUrl,
+}: {
+  title: string;
+  projects: ZedRemoteProject[];
+  actions: Actions;
+  onCopyUrl: (project: ZedRemoteProject) => Promise<void>;
+}) {
+  return (
+    <Panel>
+      <CardHead title={title} detail={tf("{0} 个项目", [projects.length])} />
+      <CardContent>
+        {projects.length ? (
+          <div className="zed-remote-project-list">
+            {projects.map((project) => (
+              <div className="zed-remote-project-row" key={project.id}>
+                <div className="zed-remote-project-main">
+                  <div>
+                    <strong>{project.label}</strong>
+                    <span>{zedRemoteHostLabel(project)}</span>
+                  </div>
+                  <code>{project.path}</code>
+                  <small>
+                    {zedRemoteSourceLabel(project.source)}
+                    {project.lastOpenedAtMs ? ` · ${formatTime(project.lastOpenedAtMs)}` : ""}
+                  </small>
+                </div>
+                <div className="zed-remote-project-actions">
+                  <Button onClick={() => void actions.openZedRemoteProject(project, "addToFocusedWorkspace")} size="sm">
+                    <ExternalLink className="h-4 w-4" />
+                    {t("加入当前工作区")}
+                  </Button>
+                  <Button onClick={() => void actions.openZedRemoteProject(project, "reuseWindow")} size="sm" variant="outline">
+                    {t("复用窗口")}
+                  </Button>
+                  <Button onClick={() => void actions.openZedRemoteProject(project, "newWindow")} size="sm" variant="outline">
+                    {t("新窗口")}
+                  </Button>
+                  <Button onClick={() => void onCopyUrl(project)} size="icon" title={t("复制 ssh:// URL")} variant="ghost">
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                  {project.source === "recent" ? (
+                    <Button onClick={() => void actions.forgetZedRemoteProject(project)} size="icon" title={t("移除最近记录")} variant="ghost">
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty">{t("暂无项目。")}</div>
+        )}
+      </CardContent>
+    </Panel>
+  );
+}
+
+function UserScriptsScreen({ settings, market, actions }: { settings: SettingsResult | null; market: ScriptMarketResult | null; actions: Actions }) {
+  const inventory = settings?.user_scripts;
+  const scripts = inventory?.scripts ?? [];
+  const marketScripts = market?.market.scripts ?? [];
+  const [marketSearch, setMarketSearch] = useState("");
+  const [marketView, setMarketView] = useState<"grid" | "list">("grid");
+  const filteredMarketScripts = useMemo(() => {
+    const query = marketSearch.trim().toLocaleLowerCase();
+    if (!query) return marketScripts;
+    return marketScripts.filter((script) => {
+      const haystack = [
+        script.name,
+        script.author,
+        script.description,
+        script.version,
+        script.homepage,
+        ...script.tags,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLocaleLowerCase();
+      return haystack.includes(query);
+    });
+  }, [marketSearch, marketScripts]);
+  const installedCount = marketScripts.filter((script) => script.installed).length;
+  return (
+    <>
+      <Panel>
+        <CardHead title={t("脚本市场")} detail={tf("{0} 个市场脚本，已安装 {1} 个，本地整体 {2}", [marketScripts.length, installedCount, inventory?.enabled === false ? t("关闭") : t("开启")])} />
+        <CardContent>
+          <div className="metric-list">
+            <Metric label={t("市场状态")} value={market?.market.message ?? t("尚未刷新")} />
+            <Metric label={t("远程脚本")} value={tf("{0} 个", [marketScripts.length])} />
+            <Metric label={t("已安装")} value={tf("{0} 个", [installedCount])} />
+            <Metric label={t("本地整体")} value={inventory?.enabled === false ? t("关闭") : t("开启")} />
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.refreshScriptMarket()}>
+              <RefreshCw className="h-4 w-4" />
+              {t("刷新市场")}
+            </Button>
+            <Button onClick={() => void actions.openExternalUrl(SCRIPT_MARKET_REPOSITORY_URL)} variant="secondary">
+              <ExternalLink className="h-4 w-4" />
+              {t("投稿")}
+            </Button>
+            <Button onClick={() => void actions.refreshCurrent()} variant="secondary">
+              <RefreshCw className="h-4 w-4" />
+              {t("刷新本地")}
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead
+          title={t("市场脚本")}
+          detail={
+            market?.market.updatedAt
+              ? tf("清单更新时间：{0}，当前显示 {1} / {2}", [market.market.updatedAt, filteredMarketScripts.length, marketScripts.length])
+              : t("从 GitHub 静态清单加载")
+          }
+        />
+        <CardContent>
+          <div className="script-market-toolbar">
+            <div className="script-market-search">
+              <Search className="h-4 w-4" />
+              <Input
+                aria-label={t("搜索市场脚本")}
+                onChange={(event) => setMarketSearch(event.currentTarget.value)}
+                placeholder={t("搜索名称、作者、描述或标签")}
+                value={marketSearch}
+              />
+            </div>
+            <div className="script-market-view-toggle" role="group" aria-label={t("脚本市场排版")}>
+              <Button
+                aria-pressed={marketView === "grid"}
+                onClick={() => setMarketView("grid")}
+                size="sm"
+                variant={marketView === "grid" ? "secondary" : "ghost"}
+              >
+                <LayoutGrid className="h-4 w-4" />
+                {t("板块")}
+              </Button>
+              <Button
+                aria-pressed={marketView === "list"}
+                onClick={() => setMarketView("list")}
+                size="sm"
+                variant={marketView === "list" ? "secondary" : "ghost"}
+              >
+                <List className="h-4 w-4" />
+                {t("列表")}
+              </Button>
+            </div>
+          </div>
+          {marketScripts.length ? (
+            filteredMarketScripts.length ? (
+              <div className={marketView === "list" ? "script-market-list" : "script-market-grid"}>
+                {filteredMarketScripts.map((script) => (
+                  <MarketScriptCard key={script.id} script={script} actions={actions} view={marketView} />
+                ))}
+              </div>
+            ) : (
+              <div className="empty">{t("没有匹配的市场脚本。")}</div>
+            )
+          ) : (
+            <div className="empty">{market?.status === "failed" ? market.message : t("点击刷新市场加载远程脚本。")}</div>
+          )}
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("本地脚本")} detail={t("内置、手动和市场安装脚本；可在这里启停或删除用户脚本")} />
+        <CardContent>
+          <div className="table">
+            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} actions={actions} />) : <div className="empty">{t("未发现用户脚本。")}</div>}
+          </div>
+        </CardContent>
+      </Panel>
+    </>
+  );
+}
+
+function SessionsScreen({
+  settings,
+  form,
+  sessions,
+  providerSyncProgress,
+  providerSyncTargets,
+  selectedProviderSyncTarget,
+  onFormChange,
+  actions,
+}: {
+  settings: SettingsResult | null;
+  form: BackendSettings;
+  sessions: LocalSessionsResult | null;
+  providerSyncProgress: ProviderSyncProgress;
+  providerSyncTargets: ProviderSyncTargetsResult | null;
+  selectedProviderSyncTarget: string;
+  onFormChange: (value: BackendSettings) => void;
+  actions: Actions;
+}) {
+  const items = sessions?.sessions ?? [];
+  const pageOffset = sessions?.offset ?? 0;
+  const pageSize = sessions?.limit ?? 50;
+  const currentPage = Math.floor(pageOffset / pageSize) + 1;
+  const hasPreviousPage = pageOffset > 0;
+  const hasNextPage = sessions?.hasMore === true;
+  const activeCount = items.filter((item) => !item.archived).length;
+  const archivedCount = items.length - activeCount;
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
+  const selectedCount = selectedSessions.length;
+  const allSelected = items.length > 0 && selectedCount === items.length;
+
+  useEffect(() => {
+    const itemIds = new Set(items.map((session) => session.id));
+    setSelectedSessionIds((current) => {
+      const next = new Set(Array.from(current).filter((id) => itemIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [items]);
+
+  const toggleSessionSelection = (sessionId: string, checked: boolean) => {
+    setSelectedSessionIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(sessionId);
+      } else {
+        next.delete(sessionId);
+      }
+      return next;
+    });
+  };
+
+  const selectAllSessions = () => {
+    setSelectionMode(true);
+    setSelectedSessionIds(new Set(items.map((session) => session.id)));
+  };
+
+  const clearSelectedSessions = () => setSelectedSessionIds(new Set());
+
+  const deleteSelectedSessions = async () => {
+    if (!selectionMode) {
+      setSelectionMode(true);
+      return;
+    }
+    setBulkDeleting(true);
+    try {
+      await actions.deleteLocalSessions(selectedSessions);
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  return (
+    <>
+      <Panel className="sessions-overview-panel">
+        <CardHead title={t("会话管理")} detail={t("读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件")} />
+        <CardContent className="sessions-overview-content">
+          <div className="session-summary-bar">
+            <div>
+              <span>{t("当前页会话")}</span>
+              <strong>{tf("{0} 个", [items.length])}</strong>
+            </div>
+            <div>
+              <span>{t("当前页未归档")}</span>
+              <strong>{tf("{0} 个", [activeCount])}</strong>
+            </div>
+            <div>
+              <span>{t("当前页已归档")}</span>
+              <strong>{tf("{0} 个", [archivedCount])}</strong>
+            </div>
+            <div className="session-summary-path">
+              <span>{t("数据库")}</span>
+              <code>{sessions?.dbPath ?? "~/.codex/sqlite/*.db"}</code>
+            </div>
+          </div>
+
+          <div className="session-repair-tools">
+            <Field className="session-sync-target" label={t("同步目标")}>
+              <AppSelect
+                disabled={providerSyncProgress.active || !(providerSyncTargets?.targets ?? []).length}
+                value={selectedProviderSyncTarget}
+                onChange={(value) => actions.setProviderSyncTarget(value)}
+                options={
+                  (providerSyncTargets?.targets ?? []).length
+                    ? (providerSyncTargets?.targets ?? []).map((target) => ({
+                        value: target.id,
+                        label: `${target.id}${t("（")}${providerSyncTargetLabel(target)}${t("）")}`,
+                      }))
+                    : [{ value: "", label: t("当前配置 provider"), disabled: true }]
+                }
+              />
+            </Field>
+
+            <label className="switch-row compact session-auto-repair">
+              <input
+                checked={form.providerSyncEnabled}
+                onChange={(event) => onFormChange({ ...form, providerSyncEnabled: event.currentTarget.checked })}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("启动前自动修复历史会话")}</strong>
+                <small>{t("启动 Codex 前整理旧对话的归属标记。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+
+            <div className="session-repair-actions">
+              <Button onClick={() => void actions.refreshLocalSessions()} variant="outline">
+                <RefreshCw className="h-4 w-4" />
+                {t("刷新会话")}
+              </Button>
+              <Button disabled={providerSyncProgress.active} onClick={() => void actions.syncProvidersNow()} variant="outline">
+                <Wrench className="h-4 w-4" />
+                {providerSyncProgress.active ? t("正在修复…") : t("修复历史会话")}
+              </Button>
+              <Button onClick={() => void actions.saveSettings()}>
+                <Save className="h-4 w-4" />
+                {t("保存设置")}
+              </Button>
+            </div>
+          </div>
+
+          {providerSyncProgress.active || providerSyncProgress.percent > 0 ? (
+            <div className="provider-sync-progress session-repair-progress" data-active={providerSyncProgress.active}>
+              <div className="provider-sync-progress-head">
+                <strong>{providerSyncProgress.active ? t("正在修复历史会话") : t("历史会话修复进度")}</strong>
+                <span>{providerSyncProgress.percent}%</span>
+              </div>
+              <div
+                aria-valuemax={100}
+                aria-valuemin={0}
+                aria-valuenow={providerSyncProgress.percent}
+                className="provider-sync-progress-bar"
+                role="progressbar"
+              >
+                <div className="provider-sync-progress-fill" style={{ width: `${providerSyncProgress.percent}%` }} />
+              </div>
+              <small>{providerSyncProgress.message}</small>
+            </div>
+          ) : null}
+
+          <div className="hint-line session-delete-hint">
+            <Info className="h-4 w-4" />
+            <span>{t("删除会创建本地备份；如果 Codex App 正在使用该会话，建议先关闭对应会话窗口再操作。")}</span>
+          </div>
+        </CardContent>
+      </Panel>
+      <Panel className="sessions-list-panel">
+        <CardHead
+          title={t("本地会话")}
+          detail={sessions ? tf("第 {0} 页，每页最多 {1} 条，按更新时间倒序显示", [currentPage, pageSize]) : t("点击刷新会话读取本地数据库")}
+        />
+        <CardContent className="session-list-content">
+          {items.length ? (
+            <>
+              <div className="session-list-toolbar">
+                <span className="session-selection-summary">{t("已选择")} {selectedCount} / {items.length} {t("个会话")}</span>
+                <div className="session-selection-actions">
+                  <Button disabled={allSelected || bulkDeleting} onClick={selectAllSessions} size="sm" variant="outline">
+                    {t("全选当前列表")}
+                  </Button>
+                  <Button disabled={!selectedCount || bulkDeleting} onClick={clearSelectedSessions} size="sm" variant="outline">
+                    {t("清空选择")}
+                  </Button>
+                  <Button disabled={(selectionMode && !selectedCount) || bulkDeleting} onClick={() => void deleteSelectedSessions()} size="sm" variant="outline">
+                    {selectionMode ? <Trash2 className="h-4 w-4" /> : null}
+                    {selectionMode ? (bulkDeleting ? t("正在删除…") : t("删除已选")) : t("多选")}
+                  </Button>
+                </div>
+              </div>
+              <div className="session-list">
+                {items.map((session) => {
+                  const selected = selectedSessionIds.has(session.id);
+                  return (
+                    <div className="session-row" data-selection-mode={selectionMode} data-selected={selected} key={session.id}>
+                      {selectionMode ? (
+                        <label className="session-select" title={t("选择会话")}>
+                          <input
+                            aria-label={tf("选择会话 {0}", [session.title || session.id])}
+                            checked={selected}
+                            onChange={(event) => toggleSessionSelection(session.id, event.currentTarget.checked)}
+                            type="checkbox"
+                          />
+                        </label>
+                      ) : null}
+                      <div className="session-main">
+                        <strong>{session.title || t("未命名会话")}</strong>
+                        <span>{session.id}</span>
+                        <small>{session.cwd || t("未记录项目路径")}</small>
+                      </div>
+                      <div className="session-meta">
+                        <Badge status={session.archived ? "archived" : "ok"} />
+                        <span>{session.modelProvider || t("provider 未记录")}</span>
+                        <span>{formatTime(session.updatedAtMs ?? 0)}</span>
+                      </div>
+                      <Button className="session-delete-button" variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
+                        <Trash2 className="h-4 w-4" />
+                        {t("删除")}
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="session-pagination">
+                <Button
+                  aria-label={t("上一页")}
+                  disabled={!hasPreviousPage || bulkDeleting}
+                  onClick={() => void actions.refreshLocalSessions(true, Math.max(0, pageOffset - pageSize))}
+                  size="icon"
+                  title={t("上一页")}
+                  variant="outline"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </Button>
+                <span>{tf("第 {0} 页", [currentPage])}</span>
+                <Button
+                  aria-label={t("下一页")}
+                  disabled={!hasNextPage || bulkDeleting}
+                  onClick={() => void actions.refreshLocalSessions(true, pageOffset + pageSize)}
+                  size="icon"
+                  title={t("下一页")}
+                  variant="outline"
+                >
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="empty">{t("未读取到本地会话，或当前 SQLite 会话库不存在。")}</div>
+          )}
+        </CardContent>
+      </Panel>
+    </>
+  );
+}
+
+function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
+  const items = (ads?.ads ?? []).filter((ad) => !isExpiredAd(ad));
+  const sponsors = items.filter((ad) => ad.type === "sponsor");
+  const normal = items.filter((ad) => ad.type === "normal");
+  return (
+    <>
+      <Panel>
+        <CardHead title={t("推荐内容")} detail={t("与 Codex 内插件菜单使用同一个远端广告源")} />
+        <CardContent>
+          <div className="recommend-hero">
+            <div>
+              <strong>{ads ? tf("已加载 {0} 条推荐", [items.length]) : t("尚未加载推荐内容")}</strong>
+              <span>{t("内容来自 BigPizzaV3/Ad-List，分为赞助商推荐和普通推荐。")}</span>
+            </div>
+            <Button onClick={() => void actions.refreshAds()}>
+              <RefreshCw className="h-4 w-4" />
+              {t("刷新推荐")}
+            </Button>
+          </div>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("赞助商推荐")} detail={tf("{0} 条", [sponsors.length])} />
+        <CardContent>
+          <AdGrid actions={actions} ads={sponsors} empty={t("暂无赞助商推荐。")} />
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("普通推荐")} detail={tf("{0} 条", [normal.length])} />
+        <CardContent>
+          <AdGrid actions={actions} ads={normal} empty={t("暂无普通推荐。")} />
+        </CardContent>
+      </Panel>
+    </>
+  );
+}
+
+function MaintenanceScreen({
+  overview,
+  watcher,
+  settings,
+  launchForm,
+  onLaunchFormChange,
+  removeOwnedData,
+  onRemoveOwnedDataChange,
+  actions,
+}: {
+  overview: OverviewResult | null;
+  watcher: WatcherResult | null;
+  settings: SettingsResult | null;
+  launchForm: { appPath: string; debugPort: string; helperPort: string };
+  onLaunchFormChange: (next: { appPath: string; debugPort: string; helperPort: string }) => void;
+  removeOwnedData: boolean;
+  onRemoveOwnedDataChange: (value: boolean) => void;
+  actions: Actions;
+}) {
+  const savedCodexAppPath = settings?.settings.codexAppPath ?? "";
+  return (
+    <>
+      <Panel>
+        <CardHead title={t("检查与修复")} detail={t("检查入口、Codex 应用和 Watcher 状态")} />
+        <CardContent>
+          <div className="status-table">
+            <StatusRow title={t("Codex 应用")} status={overview?.codex_app.status} path={overview?.codex_app.path} />
+            <StatusRow title={t("静默启动入口")} status={overview?.silent_shortcut.status} path={overview?.silent_shortcut.path} />
+            <StatusRow title={t("管理控制台入口")} status={overview?.management_shortcut.status} path={overview?.management_shortcut.path} />
+            <StatusRow title={t("Watcher 自动接管")} status={watcher?.enabled ? "ok" : "disabled"} path={watcher?.disabled_flag} />
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.checkHealth()}>{t("检查")}</Button>
+            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>{t("修复快捷方式")}</Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("入口管理")} detail={t("快捷方式写入系统实际桌面位置，不使用写死桌面路径")} />
+        <CardContent>
+          <label className="check-row">
+            <input checked={removeOwnedData} onChange={(event) => onRemoveOwnedDataChange(event.currentTarget.checked)} type="checkbox" />
+            <span>{t("卸载时移除 Codex++ 托管数据")}</span>
+          </label>
+          <Toolbar>
+            <Button onClick={() => void actions.installEntrypoints()}>{t("安装入口")}</Button>
+            <Button variant="secondary" onClick={() => void actions.uninstallEntrypoints()}>{t("卸载入口")}</Button>
+            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>{t("修复入口")}</Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("自动接管")} detail={t("Watcher 用于保持 Codex++ 接管状态")} />
+        <CardContent>
+          <Toolbar>
+            <Button variant="secondary" onClick={() => void actions.installWatcher()}>{t("安装 watcher")}</Button>
+            <Button variant="secondary" onClick={() => void actions.uninstallWatcher()}>{t("移除 watcher")}</Button>
+            <Button variant="secondary" onClick={() => void actions.enableWatcher()}>{t("启用")}</Button>
+            <Button variant="secondary" onClick={() => void actions.disableWatcher()}>{t("禁用")}</Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("Codex 应用路径")} detail={t("免安装版或解包版只需要选择一次，之后静默启动会自动复用")} />
+        <CardContent>
+          <div className="status-table">
+            <StatusRow title={t("保存路径")} status={savedCodexAppPath ? "ok" : "not_checked"} path={savedCodexAppPath || null} />
+            <StatusRow title={t("当前识别")} status={overview?.codex_app.status} path={overview?.codex_app.path} />
+          </div>
+          <Field label={t("保存的应用路径")}>
+            <Input
+              value={settings?.settings.codexAppPath ?? ""}
+              placeholder={t("选择 Codex.exe、Codex.app、app 目录或解包目录")}
+              readOnly
+            />
+          </Field>
+          <Toolbar>
+            <Button onClick={() => void actions.chooseCodexAppPath("folder")}>{t("选择应用目录")}</Button>
+            <Button variant="secondary" onClick={() => void actions.chooseCodexAppPath("file")}>{t("选择 Codex.exe")}</Button>
+            <Button variant="secondary" onClick={() => void actions.clearCodexAppPath()}>{t("清除保存路径")}</Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("手动启动")} detail={t("应用路径留空时使用已保存路径；没有保存路径时使用自动探测")} />
+        <CardContent>
+          <Field label={t("应用路径覆盖")}>
+            <Input
+              value={launchForm.appPath}
+              onChange={(event) => onLaunchFormChange({ ...launchForm, appPath: event.currentTarget.value })}
+              placeholder={savedCodexAppPath || t("例如 C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app")}
+            />
+          </Field>
+          <div className="form-row">
+            <Field label={t("Debug 端口")}>
+              <Input
+                value={launchForm.debugPort}
+                onChange={(event) => onLaunchFormChange({ ...launchForm, debugPort: event.currentTarget.value })}
+              />
+            </Field>
+            <Field label={t("Helper 端口")}>
+              <Input
+                value={launchForm.helperPort}
+                onChange={(event) => onLaunchFormChange({ ...launchForm, helperPort: event.currentTarget.value })}
+              />
+            </Field>
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.launch()}>{t("启动 Codex++")}</Button>
+            <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
+              {t("保存为默认路径")}
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+    </>
+  );
+}
+
+function AboutScreen({
+  overview,
+  update,
+  updateInstallProgress,
+  logs,
+  diagnostics,
+  actions,
+}: {
+  overview: OverviewResult | null;
+  update: UpdateResult | null;
+  updateInstallProgress: TaskProgress;
+  logs: LogsResult | null;
+  diagnostics: DiagnosticsResult | null;
+  actions: Actions;
+}) {
+  return (
+    <>
+      <Panel>
+        <CardHead title={t("关于 Codex++")} detail={t("本地 Codex 增强、管理工具和安装包维护")} />
+        <CardContent>
+          <div className="metric-list">
+            <Metric label={t("Codex++ 版本")} value={overview?.current_version ?? update?.currentVersion ?? "-"} />
+            <Metric label={t("Codex 版本")} value={overview?.codex_version ?? t("未检测到")} />
+            <Metric label={t("项目地址")} value="github.com/BigPizzaV3/CodexPlusPlus" />
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus")} variant="secondary">
+              <ExternalLink className="h-4 w-4" />
+              {t("打开项目主页")}
+            </Button>
+            <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus/issues")} variant="secondary">
+              <ExternalLink className="h-4 w-4" />
+              {t("反馈问题")}
+            </Button>
+            <Button onClick={() => void actions.openExternalUrl("https://discord.gg/y96kX7A76v")} variant="secondary">
+              <MessageCircle className="h-4 w-4" />
+              Discord
+            </Button>
+            <Button onClick={() => void actions.openExternalUrl("https://t.me/CodexPlusPlus")} variant="secondary">
+              <MessageCircle className="h-4 w-4" />
+              Telegram
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("GitHub Release 更新")} detail={tf("当前版本 {0}", [overview?.current_version ?? update?.currentVersion ?? "-"])} />
+        <CardContent>
+          <div className="metric-list">
+            <Metric label={t("状态")} value={update?.status ?? "not_checked"} />
+            <Metric label={t("最新版本")} value={update?.latestVersion ?? t("未检查")} />
+            <Metric label={t("资源")} value={update?.assetName ?? "-"} />
+            <Metric label={t("进度")} value={`${update?.progress ?? 0}%`} />
+          </div>
+          <Textarea className="log-view" readOnly value={update?.releaseSummary || update?.message || t("尚未检查 GitHub Release；更新会下载并启动安装包。")} />
+          <TaskProgressBox completedTitle={t("上次更新结果")} progress={updateInstallProgress} title={t("安装包更新进度")} />
+          <Toolbar>
+            <Button onClick={() => void actions.checkUpdate()}>{t("检查更新")}</Button>
+            <Button disabled={updateInstallProgress.active} variant="secondary" onClick={() => void actions.performUpdate()}>
+              {updateInstallProgress.active ? t("正在下载安装包…") : t("下载并运行安装包")}
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <LogsPanel logs={logs} actions={actions} />
+      <DiagnosticsPanel diagnostics={diagnostics} actions={actions} />
+    </>
+  );
+}
+
+function SettingsScreen({
+  dirty,
+  settings,
+  theme,
+  form,
+  onFormChange,
+  actions,
+}: {
+  dirty: boolean;
+  settings: SettingsResult | null;
+  theme: Theme;
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
+  actions: Actions;
+}) {
+  return (
+    <div className="settings-page">
+      <Panel>
+        <CardHead title={t("基础设置")} detail={settings?.settings_path ?? ""} />
+        <CardContent className="settings-content">
+          <div className="theme-row">
+            <div>
+              <strong>{t("界面主题")}</strong>
+              <span>{t("当前为")}{theme === "dark" ? t("深色") : t("浅色")}{t("模式。")}</span>
+            </div>
+            <Button variant="secondary" onClick={actions.toggleTheme}>{t("切换主题")}</Button>
+          </div>
+          <Field label={t("供应商测试模型")}>
+            <Input
+              value={form.relayTestModel}
+              onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
+              placeholder={t("例如 gpt-5.4-mini")}
+            />
+          </Field>
+          <div className="settings-block stepwise-settings-block">
+            <div className="section-title">Stepwise</div>
+            <div className="stepwise-settings-section">{t("连接")}</div>
+            <div className="form-row">
+              <Field label="Base URL">
+                <Input
+                  value={form.codexAppStepwiseBaseUrl}
+                  onChange={(event) => onFormChange({ ...form, codexAppStepwiseBaseUrl: event.currentTarget.value })}
+                  placeholder="https://api.example.com/v1"
+                />
+              </Field>
+              <Field label="Model">
+                <Input
+                  value={form.codexAppStepwiseModel}
+                  onChange={(event) => onFormChange({ ...form, codexAppStepwiseModel: event.currentTarget.value })}
+                  placeholder={t("例如 gpt-5.4-mini")}
+                />
+              </Field>
+            </div>
+            <Field label="API Key">
+              <Input
+                type="password"
+                value={form.codexAppStepwiseApiKey}
+                onChange={(event) => onFormChange({ ...form, codexAppStepwiseApiKey: event.currentTarget.value })}
+              />
+            </Field>
+            <details className="stepwise-advanced">
+              <summary>{t("高级参数")}</summary>
+              <div className="form-row">
+                <Field label={t("API Key 环境变量")}>
+                  <Input
+                    value={form.codexAppStepwiseApiKeyEnv}
+                    onChange={(event) => onFormChange({ ...form, codexAppStepwiseApiKeyEnv: event.currentTarget.value })}
+                  />
+                </Field>
+                <Field label={t("最多建议数")}>
+                  <Input
+                    max={6}
+                    min={0}
+                    type="number"
+                    value={form.codexAppStepwiseMaxItems}
+                    onChange={(event) =>
+                      onFormChange({ ...form, codexAppStepwiseMaxItems: clampNumber(Number(event.currentTarget.value), 0, 6) })
+                    }
+                  />
+                </Field>
+              </div>
+              <div className="form-row">
+                <Field label={t("超时毫秒")}>
+                  <Input
+                    min={1000}
+                    type="number"
+                    value={form.codexAppStepwiseTimeoutMs}
+                    onChange={(event) =>
+                      onFormChange({ ...form, codexAppStepwiseTimeoutMs: clampNumber(Number(event.currentTarget.value), 1000, 60000) })
+                    }
+                  />
+                </Field>
+                <Field label={t("最大输入字符")}>
+                  <Input
+                    min={1000}
+                    type="number"
+                    value={form.codexAppStepwiseMaxInputChars}
+                    onChange={(event) =>
+                      onFormChange({ ...form, codexAppStepwiseMaxInputChars: clampNumber(Number(event.currentTarget.value), 1000, 24000) })
+                    }
+                  />
+                </Field>
+              </div>
+              <Field label={t("最大输出 tokens")}>
+                <Input
+                  min={100}
+                  type="number"
+                  value={form.codexAppStepwiseMaxOutputTokens}
+                  onChange={(event) =>
+                    onFormChange({ ...form, codexAppStepwiseMaxOutputTokens: clampNumber(Number(event.currentTarget.value), 100, 4000) })
+                  }
+                />
+              </Field>
+            </details>
+            <div className="toolbar stepwise-settings-actions">
+              <Button variant="secondary" onClick={() => void actions.testStepwiseSettings(form)}>{t("测试连接")}</Button>
+            </div>
+          </div>
+          <div className="settings-block">
+            <label className="check-row">
+              <input
+                checked={form.codexAppImageOverlayEnabled}
+                onChange={(event) =>
+                  onFormChange({ ...form, codexAppImageOverlayEnabled: event.currentTarget.checked })
+                }
+                type="checkbox"
+              />
+              <span>{t("启用 Codex 图片覆盖层")}</span>
+            </label>
+            <div className="form-row">
+              <Field label={t("覆盖图片")}>
+                <Input
+                  value={form.codexAppImageOverlayPath}
+                  onChange={(event) => onFormChange({ ...form, codexAppImageOverlayPath: event.currentTarget.value })}
+                  placeholder={t("选择 png / jpg / webp / gif / bmp")}
+                />
+              </Field>
+              <Toolbar>
+                <Button variant="secondary" onClick={() => void actions.chooseImageOverlayPath()}>
+                  {t("选择图片")}
+                </Button>
+              </Toolbar>
+            </div>
+            <Field label={tf("透明度 {0}%", [form.codexAppImageOverlayOpacity])}>
+              <Input
+                min={1}
+                max={100}
+                type="range"
+                value={form.codexAppImageOverlayOpacity}
+                onChange={(event) =>
+                  onFormChange({
+                    ...form,
+                    codexAppImageOverlayOpacity: clampNumber(Number(event.currentTarget.value), 1, 100),
+                  })
+                }
+              />
+            </Field>
+            <Field label={t("背景适配方式")}>
+              <AppSelect
+                value={form.codexAppImageOverlayFitMode}
+                onChange={(value) =>
+                  onFormChange({
+                    ...form,
+                    codexAppImageOverlayFitMode: value,
+                  })
+                }
+                options={[
+                  { value: "fill", label: t("填充") },
+                  { value: "fit", label: t("适应") },
+                  { value: "stretch", label: t("拉伸") },
+                  { value: "tile", label: t("平铺") },
+                  { value: "center", label: t("居中") },
+                ]}
+              />
+            </Field>
+          </div>
+          <Toolbar>
+            <Button variant="secondary" onClick={() => void actions.resetImageOverlaySettings()}>
+              {t("重置背景")}
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("Codex 启动参数")} detail={t("启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。")} />
+        <CardContent className="settings-content">
+          <Field label={t("额外参数")}>
+            <Textarea
+              className="launch-args-input"
+              placeholder="--force_high_performance_gpu"
+              spellCheck={false}
+              value={codexExtraArgsToInput(form.codexExtraArgs)}
+              onChange={(event) =>
+                onFormChange({
+                  ...form,
+                  codexExtraArgs: inputToCodexExtraArgs(event.currentTarget.value),
+                })
+              }
+            />
+          </Field>
+          <p className="field-hint">{t("每行一个参数，例如 --force_high_performance_gpu。不需要填写 open 或 --args。")}</p>
+        </CardContent>
+      </Panel>
+      {dirty ? (
+        <div className="settings-save-bar">
+          <span>{t("设置有修改时，保存后才会写入本地配置。")}</span>
+          <Button onClick={() => void actions.saveSettings()}>
+            <Save className="h-4 w-4" />
+            {t("保存设置")}
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Actions }) {
+  const lines = splitLogLines(logs?.text ?? "");
+  const logDetail = logs
+    ? logs.truncated
+      ? tf("日志大小 {0}，仅显示末尾 {1} 行", [formatBytes(logs.fileSize), logs.lines])
+      : tf("日志大小 {0}", [formatBytes(logs.fileSize)])
+    : "";
+  return (
+    <Panel>
+      <CardHead title={t("最近日志")} detail={logs?.path ?? ""} />
+      <CardContent>
+        {logDetail ? <p className="field-hint">{logDetail}</p> : null}
+        <div className="log-lines">
+          {lines.length ? (
+            lines.map((line, index) => (
+              <div className="log-line" key={`${index}-${line.slice(0, 12)}`}>
+                <span>{index + 1}</span>
+                <code>{line || " "}</code>
+              </div>
+            ))
+          ) : (
+            <div className="empty">{t("暂无日志。")}</div>
+          )}
+        </div>
+        <Toolbar>
+          <Button onClick={() => void actions.refreshLogs()}>{t("刷新")}</Button>
+          <Button variant="secondary" onClick={() => void actions.clearLogs()}>
+            {t("清理日志")}
+          </Button>
+          <Button variant="secondary" onClick={() => void actions.copyLogs()}>
+            {t("复制")}
+          </Button>
+        </Toolbar>
+      </CardContent>
+    </Panel>
+  );
+}
+
+function DiagnosticsPanel({ diagnostics, actions }: { diagnostics: DiagnosticsResult | null; actions: Actions }) {
+  return (
+    <Panel>
+      <CardHead title={t("诊断报告")} detail={t("包含版本、路径、设置和平台信息")} />
+      <CardContent>
+        <Textarea className="log-view tall" readOnly value={diagnostics?.report ?? t("尚未生成诊断报告。")} />
+        <Toolbar>
+          <Button onClick={() => void actions.refreshDiagnostics()}>{t("重新生成")}</Button>
+          <Button variant="secondary" onClick={() => void actions.copyDiagnostics()}>
+            {t("复制报告")}
+          </Button>
+        </Toolbar>
+      </CardContent>
+    </Panel>
+  );
+}
+
+function RelayProfileList({
+  form,
+  onFormChange,
+  onEdit,
+  disabled = false,
+  actions,
+}: {
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
+  onEdit: (id: string) => void;
+  disabled?: boolean;
+  actions: Actions;
+}) {
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const next = reorderRelayProfiles(form, String(active.id), String(over.id));
+    if (next !== form) onFormChange(next);
+  };
+  return (
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <SortableContext items={form.relayProfiles.map((profile) => profile.id)} strategy={verticalListSortingStrategy}>
+        <div className="relay-profile-list">
+          {form.relayProfiles.map((profile, index) => (
+            <SortableRelayProfileCard
+              actions={actions}
+              form={form}
+              index={index}
+              key={profile.id}
+              onEdit={onEdit}
+              onFormChange={onFormChange}
+              disabled={disabled}
+              profile={profile}
+            />
+          ))}
+        </div>
+      </SortableContext>
+    </DndContext>
+  );
+}
+
+function SortableRelayProfileCard({
+  form,
+  profile,
+  index,
+  onFormChange,
+  onEdit,
+  disabled = false,
+  actions,
+}: {
+  form: BackendSettings;
+  profile: RelayProfile;
+  index: number;
+  onFormChange: (value: BackendSettings) => void;
+  onEdit: (id: string) => void;
+  disabled?: boolean;
+  actions: Actions;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: profile.id });
+  const active = profile.id === form.activeRelayId;
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div
+      className={`relay-profile-card ${active ? "active" : ""} ${isDragging ? "dragging" : ""}`}
+      data-relay-profile-id={profile.id}
+      key={profile.id}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") onEdit(profile.id);
+      }}
+      ref={setNodeRef}
+      style={style}
+      tabIndex={0}
+    >
+      <button
+        aria-label={t("拖动排序")}
+        className="relay-drag"
+        title={t("拖动排序")}
+        type="button"
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical className="h-4 w-4" />
+      </button>
+      <span className="relay-index" title={profile.name || t("未命名供应商")}>
+        {providerInitial(profile.name)}
+      </span>
+      <span className="relay-summary">
+        <strong>{profile.name || t("未命名供应商")}</strong>
+        <small>{relayModeLabel(profile.relayMode)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
+        {profile.sub2apiEnabled ? (
+          <small className="relay-sub2api-rate">{relaySub2ApiMultiplierLabel(profile)}</small>
+        ) : null}
+      </span>
+      <span className="relay-card-actions">
+        <Button
+          className={`relay-use-button ${active ? "active" : ""}`}
+          disabled={disabled}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (disabled) return;
+            const previousActiveRelayId = form.activeRelayId;
+            const next = syncLegacyRelayFields({ ...form, activeRelayId: profile.id });
+            void actions.switchRelayProfile(next, previousActiveRelayId);
+          }}
+          size="sm"
+          title={disabled ? t("供应商切换不可用") : active ? t("当前正在使用") : t("设为当前")}
+          variant={active ? "secondary" : "outline"}
+        >
+          <CheckCircle2 className="h-4 w-4" />
+          {active ? t("使用中") : t("使用")}
+        </Button>
+        <span className="relay-card-extra">
+          <Button
+            disabled={isAggregateRelayProfile(profile)}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (isAggregateRelayProfile(profile)) return;
+              void actions.testRelayProfile(profile);
+            }}
+            size="icon"
+            title={isAggregateRelayProfile(profile) ? t("聚合供应商会在真实对话中轮转成员，请测试成员供应商") : t("发送 hi 测试")}
+            variant="ghost"
+          >
+            <TestTube className="h-4 w-4" />
+          </Button>
+          <Button
+            onClick={(event) => {
+              event.stopPropagation();
+              onEdit(profile.id);
+            }}
+            size="icon"
+            title={t("编辑")}
+            variant="ghost"
+          >
+            <Edit3 className="h-4 w-4" />
+          </Button>
+          <Button
+            onClick={(event) => {
+              event.stopPropagation();
+              onFormChange(duplicateRelayProfile(form, profile.id));
+            }}
+            size="icon"
+            title={t("复制")}
+            variant="ghost"
+          >
+            <Copy className="h-4 w-4" />
+          </Button>
+          <Button
+            disabled={form.relayProfiles.length <= 1}
+            onClick={(event) => {
+              event.stopPropagation();
+              onFormChange(removeRelayProfile(form, profile.id));
+            }}
+            size="icon"
+            title={t("删除供应商")}
+            variant="ghost"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </span>
+      </span>
+    </div>
+  );
+}
+
+function MarketScriptCard({ script, actions, view = "grid" }: { script: ScriptMarketItem; actions: Actions; view?: "grid" | "list" }) {
+  const status = script.updateAvailable ? t("可更新") : script.installed ? tf("已安装 {0}", [script.installedVersion]) : t("未安装");
+  const isGitHubHomepage = script.homepage ? isGitHubRepositoryHomepage(script.homepage) : false;
+  const githubSupportLabel = isGitHubHomepage ? tf("在 GitHub 上支持作者：{0}", [script.name]) : undefined;
+  return (
+    <div className="script-market-card" data-view={view}>
+      <div className="script-market-title">
+        <div>
+          <strong>{script.name}</strong>
+          <span>{script.author || t("未知作者")}</span>
+        </div>
+        <UiBadge variant={script.updateAvailable ? "default" : script.installed ? "secondary" : "outline"}>{status}</UiBadge>
+      </div>
+      <p className="script-market-description">{script.description || t("暂无描述。")}</p>
+      <div className="script-market-tags">
+        <span className="script-market-tag">v{script.version}</span>
+        {script.tags.map((tag) => (
+          <span className="script-market-tag" key={tag}>{tag}</span>
+        ))}
+      </div>
+      <div className="script-market-actions">
+        <Button onClick={() => void actions.installMarketScript(script.id)} size="sm">
+          <Download className="h-4 w-4" />
+          {script.updateAvailable ? t("更新") : script.installed ? t("重新安装") : t("安装")}
+        </Button>
+        {script.homepage ? (
+          <Button
+            aria-label={githubSupportLabel}
+            onClick={() => void actions.openExternalUrl(script.homepage)}
+            size="sm"
+            title={githubSupportLabel}
+            variant="secondary"
+          >
+            {isGitHubHomepage ? (
+              <>
+                <Star className="h-4 w-4" />
+                Star
+                <ExternalLink className="h-3 w-3" />
+              </>
+            ) : (
+              <>
+                <ExternalLink className="h-4 w-4" />
+                {t("主页")}
+              </>
+            )}
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function RelayProfileDetail({
+  profile,
+  relayFiles,
+  form,
+  isNew = false,
+  onBack,
+  onFormChange,
+  onSaved,
+  actions,
+}: {
+  profile: RelayProfile;
+  relayFiles: RelayFilesResult | null;
+  form: BackendSettings;
+  isNew?: boolean;
+  onBack: () => void;
+  onFormChange: (value: BackendSettings) => Promise<BackendSettings | null>;
+  onSaved?: () => void;
+  actions: Actions;
+}) {
+  const [draft, setDraft] = useState<RelayProfile>(profile);
+  const [modelWindowRows, setModelWindowRows] = useState<ModelWindowRow[]>(
+    modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || "", profile.modelVlm),
+  );
+  const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
+  const [doctorOpen, setDoctorOpen] = useState(false);
+  const [doctorRunning, setDoctorRunning] = useState(false);
+  const isActive = !isNew && profile.id === form.activeRelayId;
+  const profileHadModelRoutes = normalizeRelayModelRoutes(profile.modelRoutes).some(
+    (route) => Boolean(route.model.trim() && route.targetRelayId.trim()),
+  );
+  const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
+  useEffect(() => {
+    const useLiveFiles = isActive && profileUsesLiveFiles && relayFiles;
+    const liveDraft = isAggregateRelayProfile(profile)
+      ? normalizeAggregateRelayProfile(profile, form)
+      : deriveRelayProfileFromFiles(
+          useLiveFiles
+            ? {
+              ...profile,
+              configContents: relayFiles.configContents,
+              authContents: relayAuthForLiveDraft(profile, relayFiles.authContents),
+            }
+            : profile,
+        );
+    const storedApiKey = useLiveFiles ? profile.apiKey.trim() : "";
+    const nextDraft = useLiveFiles && !isAggregateRelayProfile(liveDraft)
+      ? applyRelayProfilePatchToFiles(liveDraft, { apiKey: storedApiKey })
+      : liveDraft;
+    setDraft(nextDraft);
+    setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm));
+  }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
+  const validationSettings = relaySettingsWithDraft(form, profile.id, draft, isNew);
+  const validationError = isAggregateRelayProfile(draft)
+    ? aggregateRelayProfileValidation(draft)
+    : relayModelRoutesSettingsValidation(validationSettings);
+  const draftWithModelRows = () => {
+    const serializedRows = serializeModelWindowRows(modelWindowRows);
+    return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows, modelVlm: serializedRows.modelVlm };
+  };
+  const saveDraft = async () => {
+    if (validationError) return;
+    const draftWithWindows = draftWithModelRows();
+    const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
+    const next = normalizeSettings(isNew
+      ? addRelayProfile(form, normalizedDraft)
+      : updateRelayProfile(form, profile.id, normalizedDraft));
+    const settingsValidationError = relayModelRoutesSettingsValidation(next);
+    if (settingsValidationError) return;
+    const activeLiveBaseUrl = codexBaseUrlFromConfig(
+      relayFiles?.configContents ?? profile.configContents,
+    );
+    const requiresRestart = isActive && modelRouteSaveRequiresRestart(
+      normalizeSettings(form),
+      next,
+      activeLiveBaseUrl,
+    );
+    if (requiresRestart && !window.confirm(t("首次启用单模型路由需要启动本地协议代理。保存后将立即重启 Codex，使路由安全生效。是否继续？"))) {
+      return;
+    }
+    const savedSettings = await onFormChange(next);
+    if (!savedSettings) return;
+    if (requiresRestart) {
+      const restarted = await actions.restart(true);
+      if (!restarted) return;
+      onSaved?.();
+      return;
+    }
+    const savedProfile = savedSettings.relayProfiles.find((candidate) => candidate.id === normalizedDraft.id)
+      ?? normalizedDraft;
+    if (
+      isActive
+      && savedSettings.relayProfilesEnabled
+      && (relayProfileUsesLiveFiles(savedProfile) || profileHadModelRoutes)
+    ) {
+      await actions.switchRelayProfile(savedSettings, savedSettings.activeRelayId);
+    }
+    onSaved?.();
+  };
+  const switchDraft = () => {
+    if (isNew || !form.relayProfilesEnabled || validationError) return;
+    const draftWithWindows = draftWithModelRows();
+    const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
+    const previousActiveRelayId = form.activeRelayId;
+    const next = syncLegacyRelayFields({
+      ...form,
+      relayProfiles: form.relayProfiles.map((item) => (item.id === profile.id ? normalizedDraft : item)),
+      activeRelayId: profile.id,
+    });
+    void actions.switchRelayProfile(next, previousActiveRelayId);
+  };
+  const runProviderDoctor = async () => {
+    setDoctorOpen(true);
+    setDoctorRunning(true);
+    setDoctorResult(null);
+    const draftWithWindows = draftWithModelRows();
+    const result = await actions.diagnoseRelayProfile(deriveRelayProfileFromFiles(draftWithWindows));
+    setDoctorResult(result);
+    setDoctorRunning(false);
+  };
+  const aggregateProfile = isAggregateRelayProfile(draft);
+  const showDoctor = !aggregateProfile && (draft.relayMode !== "official" || draft.officialMixApiKey);
+  const detailStatus = aggregateProfile
+    ? isNew
+      ? t("选择已有供应商作为成员，保存后写入 settings payload")
+      : t("聚合配置只引用已有供应商，不复制 Key 和配置文件")
+    : relayProfileEditorStatus(draft, form, isNew);
+  return (
+    <div className="relay-detail-page" key={profile.id}>
+      <div className="relay-detail-sticky">
+        <div className="relay-editor-heading">
+          <Button aria-label={t("返回列表")} onClick={onBack} size="icon" title={t("返回列表")} type="button" variant="ghost">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <div className="relay-editor-heading-copy">
+            <strong>{draft.name || (aggregateProfile ? t("未命名聚合供应商") : t("未命名供应商"))}</strong>
+            <span>{detailStatus}</span>
+          </div>
+        </div>
+        <div className="relay-editor-actions">
+          {showDoctor ? (
+            <Button disabled={doctorRunning} onClick={() => void runProviderDoctor()} type="button" variant="secondary">
+              <Stethoscope className="h-4 w-4" />
+              {doctorRunning ? t("诊断中") : t("诊断供应商")}
+            </Button>
+          ) : null}
+          {aggregateProfile ? (
+            <UiBadge variant="secondary">{t("聚合")}</UiBadge>
+          ) : isNew ? null : (
+            <Button
+              disabled={!form.relayProfilesEnabled || actions.relaySwitching}
+              onClick={switchDraft}
+              title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : undefined}
+              variant={draft.id === form.activeRelayId ? "secondary" : "default"}
+            >
+              {actions.relaySwitching ? t("切换中") : draft.id === form.activeRelayId ? t("使用中") : t("设为当前")}
+            </Button>
+          )}
+          <Button disabled={!!validationError} onClick={() => void saveDraft()} title={validationError || t("保存")} type="button">
+            <Save className="h-4 w-4" />
+            {t("保存")}
+          </Button>
+        </div>
+      </div>
+      <RelayProfileEditor
+        profile={draft}
+        form={form}
+        isNew={isNew}
+        onProfileChange={setDraft}
+        actions={actions}
+        modelWindowRows={modelWindowRows}
+        setModelWindowRows={setModelWindowRows}
+      />
+      {isAggregateRelayProfile(draft) ? null : (
+      <RelayFileEditors
+        contextProfile={profile}
+        profile={draft}
+        form={form}
+        isActive={isActive}
+        profileId={profile.id}
+        onFormChange={onFormChange}
+        onProfileChange={setDraft}
+        actions={actions}
+      />
+      )}
+      {doctorOpen ? (
+        <ProviderDoctorModal
+          result={doctorResult}
+          running={doctorRunning}
+          onClose={() => {
+            if (!doctorRunning) setDoctorOpen(false);
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function ContextScreen({
+  form,
+  liveEntries,
+  relayFiles,
+  onFormChange,
+  actions,
+}: {
+  form: BackendSettings;
+  liveEntries: CodexContextEntries | null;
+  relayFiles: RelayFilesResult | null;
+  onFormChange: (value: BackendSettings) => void;
+  actions: Actions;
+}) {
+  return (
+    <Panel fill>
+      <CardHead title={t("Codex 工具与插件")} detail={t("独立管理 Codex 的 MCP、Skills、Plugins；切换任意供应商都会带上。")} />
+      <CardContent>
+        <RelayContextManager
+          form={normalizeSettings(form)}
+          liveEntries={liveEntries}
+          relayFiles={relayFiles}
+          onFormChange={onFormChange}
+          actions={actions}
+        />
+      </CardContent>
+    </Panel>
+  );
+}
+
+function RelayProfileEditor({
+  profile,
+  form,
+  isNew = false,
+  onProfileChange,
+  actions,
+  modelWindowRows,
+  setModelWindowRows,
+}: {
+  profile: RelayProfile;
+  form: BackendSettings;
+  isNew?: boolean;
+  onProfileChange: (value: RelayProfile) => void;
+  actions: Actions;
+  modelWindowRows: ModelWindowRow[];
+  setModelWindowRows: (value: ModelWindowRow[]) => void;
+}) {
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  // VLM/Strip 对 Chat Completions 与 Responses 协议均可用(注入块类型已按协议适配)。
+  const vlmUnsupportedProtocol = false;
+  if (isAggregateRelayProfile(profile)) {
+    return (
+      <AggregateRelayProfileEditor
+        profile={profile}
+        form={form}
+        onProfileChange={onProfileChange}
+      />
+    );
+  }
+
+  const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
+  // 纯官方登录仍需展示模型目录与单模型路由；仅 Base URL / Key / 上游协议保持隐藏。
+  const showModelFields = profile.relayMode === "official" || showApiFields;
+  const goalsFeatureState = codexGoalsFeatureState(
+    profile.configContents,
+    form.relayCommonConfigContents,
+    profile.useCommonConfig,
+  );
+  const sub2apiBaseUrl = profile.upstreamBaseUrl.trim() || profile.baseUrl.trim();
+  const canFetchSub2ApiRate = profile.sub2apiEnabled && Boolean(sub2apiBaseUrl && profile.apiKey.trim());
+  const updateDraft = (patch: Partial<RelayProfile>) => {
+    onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
+  };
+  const modelRoutes = normalizeRelayModelRoutes(profile.modelRoutes);
+  const modelRouteTargets = form.relayProfiles.filter(
+    (candidate) =>
+      candidate.id !== profile.id
+      && !isAggregateRelayProfile(candidate)
+      && !(candidate.relayMode === "official" && !candidate.officialMixApiKey),
+  );
+  const updateModelRoute = (index: number, patch: Partial<RelayModelRoute>) => {
+    updateDraft({
+      modelRoutes: modelRoutes.map((route, routeIndex) => (routeIndex === index ? { ...route, ...patch } : route)),
+    });
+  };
+  const updateModelWindowRow = (index: number, patch: Partial<ModelWindowRow>) => {
+    setModelWindowRows(
+      modelWindowRows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)),
+    );
+  };
+  const removeModelWindowRow = (index: number) => {
+    const nextRows = modelWindowRows.filter((_, rowIndex) => rowIndex !== index);
+    setModelWindowRows(nextRows.length ? nextRows : [{ model: "", window: "", imageHandling: "" }]);
+  };
+  const addModelWindowRows = (rows: ModelWindowRow[]) => {
+    setModelWindowRows(mergeModelWindowRows(modelWindowRows, rows));
+  };
+  const fetchSub2ApiRate = async () => {
+    const result = await actions.fetchSub2ApiBilling(deriveRelayProfileFromFiles(profile));
+    if (!result) return;
+    updateDraft({
+      sub2apiEnabled: true,
+      sub2apiMultiplier: formatMultiplierValue(result.effectiveRateMultiplier),
+    });
+  };
+  return (
+    <div className="relay-profile-editor">
+      {isNew ? (
+        <ProviderPresetSelector
+          onSelect={(patch: PresetPatch) => {
+            updateDraft(patch as unknown as Partial<RelayProfile>);
+          }}
+        />
+      ) : null}
+      <div className="relay-fields">
+        <Field className="relay-field-name" label={t("名称")}>
+          <Input
+            value={profile.name}
+            onChange={(event) => updateDraft({ name: event.currentTarget.value })}
+          />
+        </Field>
+        <Field className="relay-field-mode" label={t("接入模式")}>
+          <AppSelect
+            value={profile.relayMode}
+            onChange={(relayMode) => {
+              updateDraft(relayMode === "official" ? { relayMode, officialMixApiKey: false } : { relayMode });
+            }}
+            options={[
+              { value: "official", label: t("官方登录") },
+              { value: "pureApi", label: t("纯 API") },
+            ]}
+          />
+        </Field>
+        <Field className="relay-field-config-model" label={t("配置模型")}>
+          <Input
+            value={profile.model}
+            onChange={(event) => updateDraft({ model: event.currentTarget.value })}
+            placeholder={t("例如 deepseek-v4-pro")}
+          />
+          <p className="field-hint">
+            {t("默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。")}
+          </p>
+        </Field>
+        <Field className="relay-field-goals" label={t("Codex 目标")}>
+          <label className="inline-check">
+            <input
+              checked={goalsFeatureState.enabled}
+              onChange={(event) =>
+                updateDraft({
+                  configContents: setCodexGoalsFeatureInConfig(profile.configContents, event.currentTarget.checked),
+                })
+              }
+              type="checkbox"
+            />
+            <span>{t("启用目标功能")}</span>
+          </label>
+          {goalsFeatureState.inherited ? (
+            <p className="field-hint">{t("当前继承公共配置；修改后将为该供应商保存独立设置。")}</p>
+          ) : null}
+        </Field>
+        {profile.relayMode === "official" ? (
+          <Field className="relay-field-official-usage-alert" label={t("官方登录")}>
+            <label className="inline-check">
+              <input
+                checked={profile.hideOfficialUsageAlert}
+                onChange={(event) => updateDraft({ hideOfficialUsageAlert: event.currentTarget.checked })}
+                type="checkbox"
+              />
+              <span>{t("关闭官方低额度提示")}</span>
+            </label>
+            <p className="field-hint">
+              {t("关闭后仍可从 Codex 左下角账户菜单查看官方剩余额度。")}
+            </p>
+          </Field>
+        ) : null}
+        <div className="relay-advanced-toggle">
+          <Button
+            aria-expanded={showAdvanced}
+            onClick={() => setShowAdvanced((current) => !current)}
+            size="sm"
+            type="button"
+            variant="secondary"
+          >
+            <Settings className="h-4 w-4" />
+            {t("更多选项")}
+          </Button>
+        </div>
+        {showAdvanced ? (
+          <div className="relay-advanced-fields">
+            <Field className="relay-field-test-model" label={t("测试模型")}>
+              <Input
+                value={profile.testModel}
+                onChange={(event) => updateDraft({ testModel: event.currentTarget.value })}
+                placeholder={tf("留空使用默认：{0}", [form.relayTestModel || defaultSettings.relayTestModel])}
+              />
+            </Field>
+            <Field className="relay-field-context-window" label={t("上下文大小")}>
+              <Input
+                inputMode="numeric"
+                value={profile.contextWindow}
+                onChange={(event) => updateDraft({ contextWindow: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                placeholder={t("留空不改写，例如 200000")}
+              />
+            </Field>
+            <Field className="relay-field-auto-compact" label={t("压缩上下文大小")}>
+              <Input
+                inputMode="numeric"
+                value={profile.autoCompactLimit}
+                onChange={(event) => updateDraft({ autoCompactLimit: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                placeholder={t("留空不改写，例如 160000")}
+              />
+            </Field>
+          </div>
+        ) : null}
+        {profile.relayMode === "official" ? (
+          <Field className="relay-field-official-key" label="API Key">
+            <label className="inline-check">
+              <input
+                checked={profile.officialMixApiKey}
+                onChange={(event) => updateDraft({ officialMixApiKey: event.currentTarget.checked })}
+                type="checkbox"
+              />
+              <span>{t("混入 API KEY")}</span>
+            </label>
+          </Field>
+        ) : null}
+        {showApiFields ? (
+          <div className="relay-api-fields">
+            <Field className="relay-field-base-url" label="Base URL">
+              <Input
+                value={profile.baseUrl}
+                onChange={(event) => updateDraft({ baseUrl: event.currentTarget.value })}
+                placeholder={t("填写中转服务 Base URL")}
+              />
+            </Field>
+            <Field className="relay-field-key" label="Key">
+              <Input
+                type="password"
+                value={profile.apiKey}
+                onChange={(event) => updateDraft({ apiKey: event.currentTarget.value })}
+                placeholder={t("输入中转服务的 API Key")}
+              />
+            </Field>
+            <Field className="relay-field-protocol" label={t("上游协议")}>
+              <div className="protocol-options">
+                <button
+                  className={`protocol-option ${profile.protocol === "responses" ? "active" : ""}`}
+                  onClick={() => updateDraft({ protocol: "responses" })}
+                  type="button"
+                >
+                  Responses API
+                </button>
+                <button
+                  className={`protocol-option ${profile.protocol === "chatCompletions" ? "active" : ""}`}
+                  onClick={() => updateDraft({ protocol: "chatCompletions" })}
+                  type="button"
+                >
+                  Chat Completions
+                </button>
+              </div>
+            </Field>
+            <Field className="relay-field-sub2api" label="Sub2API">
+              <div className="sub2api-field">
+                <label className="inline-check">
+                  <input
+                    checked={profile.sub2apiEnabled}
+                    onChange={(event) => {
+                      const checked = event.currentTarget.checked;
+                      updateDraft({
+                        sub2apiEnabled: checked,
+                        sub2apiMultiplier: checked ? profile.sub2apiMultiplier || "" : "",
+                      });
+                      if (checked && sub2apiBaseUrl && profile.apiKey.trim()) {
+                        void fetchSub2ApiRate();
+                      }
+                    }}
+                    type="checkbox"
+                  />
+                  <span>{t("尝试从sub2api获取倍率显示")}</span>
+                </label>
+                <Button
+                  disabled={!canFetchSub2ApiRate}
+                  onClick={() => void fetchSub2ApiRate()}
+                  size="sm"
+                  type="button"
+                  variant="secondary"
+                >
+                  <Download className="h-4 w-4" />
+                  {t("获取倍率")}
+                </Button>
+              </div>
+              <p className="field-hint">
+                {profile.sub2apiEnabled
+                  ? profile.sub2apiMultiplier.trim()
+                    ? tf("当前缓存倍率：{0}x", [profile.sub2apiMultiplier.trim()])
+                    : t("保存前可先尝试从 /v1/sub2api/billing 获取上游倍率。")
+                  : t("非 Sub2API 供应商不会请求或显示倍率。")}
+              </p>
+            </Field>
+          </div>
+        ) : null}
+        {showModelFields ? (
+          <section className="relay-config-section relay-field-model-list">
+            <div className="relay-config-section-head">
+              <div>
+                <strong>{t("模型列表")}</strong>
+                <span>
+                  {t("每行一个模型；上下文窗口可填")} <code>1M</code>{t("、")}<code>200K</code> {t("或")} <code>1000000</code>{t("，留空表示使用 Codex 默认长度。")}
+                </span>
+              </div>
+              <div className="relay-model-list-tools">
+                <Button
+                  onClick={() => setModelWindowRows([...modelWindowRows, { model: "", window: "", imageHandling: "" }])}
+                  size="sm"
+                  type="button"
+                  variant="secondary"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t("添加模型")}
+                </Button>
+                <Button
+                  disabled={!showApiFields}
+                  onClick={async () => {
+                    const serializedRows = serializeModelWindowRows(modelWindowRows);
+                    const models = await actions.fetchRelayProfileModels({
+                      ...profile,
+                      modelList: serializedRows.modelList,
+                      modelWindows: serializedRows.modelWindows,
+                    });
+                    if (models?.length) {
+                      addModelWindowRows(models.map((model) => ({ model, window: "", imageHandling: "" })));
+                    }
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="secondary"
+                >
+                  <Download className="h-4 w-4" />
+                  {t("从上游获取")}
+                </Button>
+                <Button
+                  disabled={!modelWindowRows.some((row) => row.model.trim())}
+                  onClick={() => setModelWindowRows([{ model: "", window: "", imageHandling: "send-as-is" }])}
+                  size="sm"
+                  title={t("清空模型")}
+                  type="button"
+                  variant="outline"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {t("清空模型")}
+                </Button>
+              </div>
+            </div>
+            <div className="relay-model-row-editor">
+              <div className="relay-model-row relay-model-row-head">
+                <span>{t("模型名称")}</span>
+                <span>{t("上下文窗口")}</span>
+                <span>{t("图片处理方式")}</span>
+              </div>
+              {modelWindowRows.map((row, index) => (
+                <div className="relay-model-row" key={index}>
+                  <Input
+                    value={row.model}
+                    onChange={(event) => updateModelWindowRow(index, { model: event.currentTarget.value })}
+                    placeholder="deepseek/deepseek-v4-flash"
+                  />
+                  <Input
+                    value={row.window}
+                    onChange={(event) => updateModelWindowRow(index, { window: event.currentTarget.value })}
+                    placeholder="1M"
+                  />
+                  <AppSelect
+                    className="text-xs"
+                    value={row.imageHandling}
+                    disabled={vlmUnsupportedProtocol}
+                    onChange={(value) => updateModelWindowRow(index, { imageHandling: value })}
+                    options={[
+                      { value: "", label: t("纯文本模型请配置此项"), disabled: true },
+                      { value: "send-as-is", label: t("原样发送图片"), title: t("多模态模型直接接收图片,不经过任何处理") },
+                      { value: "strip", label: t("移除图片"), title: t("删掉图片只发文字,避免纯文本模型报错(模型看不到图)") },
+                      { value: "vlm", label: t("视觉辅助分析"), title: t("图片先由视觉辅助模型(Qwen)转成文字描述,纯文本模型也能\"看图\"") },
+                    ]}
+                    title={vlmUnsupportedProtocol ? t("VLM 仅支持 Chat Completions 协议和聚合模式") : t("多模态模型（支持图片输入的模型）请保持 send-as-is。")}
+                  />
+                  <Button
+                    aria-label={t("删除模型")}
+                    onClick={() => removeModelWindowRow(index)}
+                    size="icon"
+                    title={t("删除模型")}
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+        {showModelFields ? (
+          <section className="relay-config-section relay-field-model-routes">
+            <div className="relay-config-section-head">
+              <div>
+                <strong>{t("单模型路由")}</strong>
+                <span>{t("仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标可使用 Responses API 或 Chat Completions，且需要从 Codex++ 启动。")}</span>
+              </div>
+              <div className="relay-model-list-tools">
+                <Button
+                  disabled={modelRouteTargets.length === 0}
+                  onClick={() => updateDraft({ modelRoutes: [...modelRoutes, { model: "", targetRelayId: "", targetModel: "" }] })}
+                  size="sm"
+                  title={modelRouteTargets.length === 0 ? t("请先创建一个可用的 API 目标供应商") : t("添加模型路由")}
+                  type="button"
+                  variant="secondary"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t("添加模型路由")}
+                </Button>
+              </div>
+            </div>
+            <div className="relay-model-route-editor">
+              {modelRoutes.length ? (
+                <div className="relay-model-route-row relay-model-route-head">
+                  <span>{t("匹配模型")}</span>
+                  <span>{t("目标供应商")}</span>
+                  <span>{t("目标模型（可选）")}</span>
+                </div>
+              ) : null}
+              {modelRoutes.map((route, index) => (
+                <div className="relay-model-route-row" key={`model-route-${index}`}>
+                  <Input
+                    value={route.model}
+                    onChange={(event) => updateModelRoute(index, { model: event.currentTarget.value })}
+                    placeholder={t("例：gpt-5.6-luna")}
+                  />
+                  <AppSelect
+                    value={route.targetRelayId}
+                    onChange={(targetRelayId) => updateModelRoute(index, { targetRelayId })}
+                    options={[
+                      { value: "", label: t("目标供应商"), disabled: true },
+                      ...modelRouteTargets.map((candidate) => ({ value: candidate.id, label: candidate.name || candidate.id })),
+                    ]}
+                  />
+                  <Input
+                    value={route.targetModel}
+                    onChange={(event) => updateModelRoute(index, { targetModel: event.currentTarget.value })}
+                    placeholder={t("留空保持原模型名")}
+                  />
+                  <Button
+                    aria-label={t("删除模型路由")}
+                    onClick={() => updateDraft({ modelRoutes: modelRoutes.filter((_, routeIndex) => routeIndex !== index) })}
+                    size="icon"
+                    title={t("删除模型路由")}
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+        {showApiFields && modelWindowRows.some((row) => row.imageHandling === "vlm") ? (
+          <div className="relay-vlm-section">
+            <div className="relay-vlm-section-header">{t("Vision Analysis Provider")}</div>
+            <Field className="relay-field-vlm-api-key" label={t("VLM API Key")}>
+              <Input
+                type="password"
+                value={profile.vlmApiKey}
+                onChange={(event) => updateDraft({ vlmApiKey: event.currentTarget.value })}
+                placeholder="sk-..."
+              />
+            </Field>
+            <Field className="relay-field-vlm-model" label={t("VLM Model")}>
+              <Input
+                value={profile.vlmModel}
+                onChange={(event) => updateDraft({ vlmModel: event.currentTarget.value })}
+                placeholder="qwen-vl-plus"
+              />
+            </Field>
+            <Field className="relay-field-vlm-base-url" label={t("VLM Base URL")}>
+              <Input
+                value={profile.vlmBaseUrl}
+                onChange={(event) => updateDraft({ vlmBaseUrl: event.currentTarget.value })}
+                placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+              />
+            </Field>
+            <p className="field-hint">
+              {t("若开启 VLM analysis，请确认 VLM 配置项完整且服务可用。")}
+              <br />
+              {t("仅在 Chat Completion 和聚合模式生效。")}
+            </p>
+            {modelWindowRows.some((row) => row.imageHandling === "vlm") && (!profile.vlmApiKey || !profile.vlmModel || !profile.vlmBaseUrl) ? (
+              <p className="field-hint warn">{t("VLM 配置不完整：API Key、Model 和 Base URL 为必填项，否则 VLM 不会生效。")}</p>
+            ) : null}
+          </div>
+        ) : null}
+        {showApiFields ? (
+          <Field className="relay-field-user-agent" label="User-Agent">
+            <Input
+              value={profile.userAgent}
+              onChange={(event) => updateDraft({ userAgent: event.currentTarget.value })}
+              placeholder={t("留空使用默认值")}
+            />
+          </Field>
+        ) : null}
+      </div>
+      {showApiFields && profile.protocol === "chatCompletions" ? (
+        <div className="hint-line relay-protocol-hint">
+          <MessageCircle className="h-4 w-4" />
+          <span>{t("此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 Codex++ 启动 Codex。")}</span>
+        </div>
+      ) : null}
+      <div className="hint-line relay-protocol-hint">
+        <ShieldCheck className="h-4 w-4" />
+        <span>{relayProfileModeHelp(profile)}</span>
+      </div>
+    </div>
+  );
+}
+
+function AggregateRelayProfileEditor({
+  profile,
+  form,
+  onProfileChange,
+}: {
+  profile: RelayProfile;
+  form: BackendSettings;
+  onProfileChange: (value: RelayProfile) => void;
+}) {
+  const candidates = aggregateMemberCandidates(form, profile.id);
+  const aggregate = normalizeAggregateConfig(profile.aggregate, candidates);
+  const memberIds = new Set(aggregate.members.map((member) => member.profileId));
+  const updateAggregate = (nextAggregate: RelayAggregateConfig) => {
+    onProfileChange(normalizeAggregateRelayProfile({ ...profile, aggregate: nextAggregate }, form));
+  };
+  const toggleMember = (profileId: string, checked: boolean) => {
+    const members = checked
+      ? [...aggregate.members, { profileId, weight: 1 }]
+      : aggregate.members.filter((member) => member.profileId !== profileId);
+    updateAggregate({ ...aggregate, members });
+  };
+  const updateWeight = (profileId: string, weight: number) => {
+    updateAggregate({
+      ...aggregate,
+      members: aggregate.members.map((member) =>
+        member.profileId === profileId ? { ...member, weight: clampAggregateWeight(weight) } : member,
+      ),
+    });
+  };
+  const totalWeight = aggregate.members.reduce((total, member) => total + clampAggregateWeight(member.weight), 0);
+
+  return (
+    <div className="relay-profile-editor aggregate-editor">
+      <div className="relay-fields aggregate-fields">
+        <Field className="relay-field-name" label={t("名称")}>
+          <Input
+            value={profile.name}
+            onChange={(event) => onProfileChange({ ...profile, name: event.currentTarget.value })}
+            placeholder={t("例如 主力聚合池")}
+          />
+        </Field>
+        <Field className="relay-field-test-model" label={t("测试模型")}>
+          <Input
+            value={profile.testModel}
+            onChange={(event) => onProfileChange({ ...profile, testModel: event.currentTarget.value })}
+            placeholder={tf("留空使用默认：{0}", [form.relayTestModel || defaultSettings.relayTestModel])}
+          />
+        </Field>
+        <Field className="aggregate-strategy-field" label={t("聚合策略")}>
+          <AppSelect
+            value={aggregate.strategy}
+            onChange={(value) => updateAggregate({ ...aggregate, strategy: value })}
+            options={aggregateStrategyOptions.map((option) => ({ value: option.value, label: option.label }))}
+          />
+        </Field>
+      </div>
+      <div className="aggregate-strategy-grid">
+        {aggregateStrategyOptions.map((option) => (
+          <button
+            className={`mode-option aggregate-strategy-option ${aggregate.strategy === option.value ? "active" : ""}`}
+            key={option.value}
+            onClick={() => updateAggregate({ ...aggregate, strategy: option.value })}
+            type="button"
+          >
+            <strong>{option.label}</strong>
+            <span>{option.description}</span>
+          </button>
+        ))}
+      </div>
+      <div className="aggregate-members">
+        <div className="aggregate-members-head">
+          <div>
+            <strong>{t("成员供应商")}</strong>
+            <span>{t("只能勾选已填写 Base URL / Key 的 API 供应商，聚合供应商不会作为成员。")}</span>
+          </div>
+          <UiBadge variant="outline">{aggregate.members.length} / {candidates.length}</UiBadge>
+        </div>
+        {candidates.length ? (
+          <div className="aggregate-member-list">
+            {candidates.map((candidate) => {
+              const member = aggregate.members.find((item) => item.profileId === candidate.id);
+              const checked = memberIds.has(candidate.id);
+              return (
+                <label className={`aggregate-member-row ${checked ? "selected" : ""}`} key={candidate.id}>
+                  <input
+                    checked={checked}
+                    onChange={(event) => toggleMember(candidate.id, event.currentTarget.checked)}
+                    type="checkbox"
+                  />
+                  <span className="aggregate-member-summary">
+                    <strong>{candidate.name || t("未命名供应商")}</strong>
+                    <small>{relayModeLabel(candidate.relayMode)} · {relayProtocolLabel(candidate.protocol)} · {relayProfileConfigBrief(candidate)}</small>
+                  </span>
+                  <span className="aggregate-weight-box">
+                    <span>{t("权重")}</span>
+                    <Input
+                      disabled={!checked}
+                      min={1}
+                      onChange={(event) => updateWeight(candidate.id, Number.parseInt(event.currentTarget.value, 10))}
+                      type="number"
+                      value={String(member?.weight ?? 1)}
+                    />
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="empty">{t("先添加至少 1 个已填写 Base URL / Key 的 API 供应商，再创建聚合供应商。")}</div>
+        )}
+      </div>
+      <div className="relay-grid compact aggregate-preview">
+        <Metric label={t("策略")} value={aggregateStrategyLabel(aggregate.strategy)} />
+        <Metric label={t("成员数量")} value={tf("{0} 个", [aggregate.members.length])} />
+        <Metric label={t("总权重")} value={`${totalWeight}`} />
+        <Metric label={t("序列化字段")} value="aggregate.strategy / aggregate.members" />
+      </div>
+      <div className="hint-line relay-protocol-hint">
+        <ShieldCheck className="h-4 w-4" />
+        <span>{aggregateStrategyHelp(aggregate.strategy)}</span>
+      </div>
+    </div>
+  );
+}
+
+function RelayContextManager({
+  form,
+  liveEntries,
+  relayFiles,
+  onFormChange,
+  actions,
+}: {
+  form: BackendSettings;
+  liveEntries: CodexContextEntries | null;
+  relayFiles: RelayFilesResult | null;
+  onFormChange: (value: BackendSettings) => void;
+  actions: Actions;
+}) {
+  const entries = contextEntriesWithLiveEntries(form, liveEntries);
+  const [activeKind, setActiveKind] = useState<ContextKind>("mcp");
+  const [editor, setEditor] = useState<{ kind: ContextKind; entry?: CodexContextEntry } | null>(null);
+  const visibleEntries = contextEntriesByKind(entries, activeKind);
+  const label = contextKindLabel(activeKind);
+
+  const syncContextEntries = async (next: BackendSettings) => {
+    const syncResult = await actions.syncLiveContextEntries(next, true);
+    if (!syncResult || !isSuccessStatus(syncResult.status)) return false;
+    await actions.refreshRelayFiles();
+    return true;
+  };
+
+  const saveEntry = async (kind: ContextKind, id: string, tomlBody: string) => {
+    const next = await actions.upsertContextEntry(form, kind, id, tomlBody);
+    if (!next) return;
+    onFormChange(next);
+    if (!(await syncContextEntries(next))) return;
+    setEditor(null);
+  };
+
+  const toggleContextEntryEnabled = async (entry: CodexContextEntry) => {
+    const nextBody = setContextEntryEnabled(entry.tomlBody, !entry.enabled);
+    const next = await actions.upsertContextEntry(form, entry.kind, entry.id, nextBody);
+    if (!next) return;
+    onFormChange(next);
+    await syncContextEntries(next);
+  };
+
+  const deleteEntry = async (entry: CodexContextEntry) => {
+    const next = await actions.deleteContextEntry(form, entry.kind, entry.id);
+    if (!next) return;
+    onFormChange(next);
+    await syncContextEntries(next);
+  };
+
+  return (
+    <div className="relay-context-panel">
+      <div className="relay-context-head">
+        <div>
+          <strong>{t("Codex 工具与插件")}</strong>
+          <span>{t("MCP、Skills、Plugins 作为全局配置独立管理，切换任意供应商都会合并。")}</span>
+        </div>
+        <div className="relay-context-head-actions">
+          <Button onClick={() => setEditor({ kind: activeKind })} size="sm" variant="secondary">
+            <Plus className="h-4 w-4" />
+            {t("新增")}{label}
+          </Button>
+        </div>
+      </div>
+      <div className="segmented">
+        {contextKindOptions.map((option) => (
+          <button
+            className={activeKind === option.kind ? "active" : ""}
+            key={option.kind}
+            onClick={() => setActiveKind(option.kind)}
+            type="button"
+          >
+            <span>{option.label}</span>
+            <small>{contextEntriesByKind(entries, option.kind).length}</small>
+          </button>
+        ))}
+      </div>
+      <div className="relay-context-summary">
+        {t("当前共有")} {visibleEntries.length} {t("个")}{label}{t("；这些条目独立于供应商保存，会写入所有供应商切换后的 config.toml。")}
+      </div>
+      <div className="relay-context-list">
+        {visibleEntries.length ? (
+          visibleEntries.map((entry) => (
+            <div className="relay-context-row" key={`${entry.kind}-${entry.id}`}>
+              <strong className="context-title">{entry.title || entry.id}</strong>
+              <div className="relay-context-actions">
+                <button
+                  aria-checked={entry.enabled}
+                  aria-label={`contextEnabledSwitch-${entry.kind}-${entry.id}`}
+                  className={`context-enabled-switch ${entry.enabled ? "active" : ""}`}
+                  onClick={() => void toggleContextEntryEnabled(entry)}
+                  role="switch"
+                  title={entry.enabled ? t("禁用此扩展项") : t("启用此扩展项")}
+                  type="button"
+                >
+                  <span className="context-switch-track" aria-hidden="true">
+                    <span className="context-switch-thumb" />
+                  </span>
+                </button>
+                <Button onClick={() => setEditor({ kind: entry.kind, entry })} size="icon" title={t("编辑扩展项")} variant="ghost">
+                  <Edit3 className="h-4 w-4" />
+                </Button>
+                <Button
+                  className="relay-context-delete"
+                  onClick={() => void deleteEntry(entry)}
+                  size="icon"
+                  title={t("删除扩展项")}
+                  variant="ghost"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="empty">{t("暂无")}{label}{t("，可以从通用配置文件或这里新增。")}</div>
+        )}
+      </div>
+      {editor ? (
+        <ContextEntryEditor
+          entry={editor.entry}
+          kind={editor.kind}
+          onCancel={() => setEditor(null)}
+          onSave={(kind, id, tomlBody) => void saveEntry(kind, id, tomlBody)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function ContextEntryEditor({
+  kind,
+  entry,
+  onCancel,
+  onSave,
+}: {
+  kind: ContextKind;
+  entry?: CodexContextEntry;
+  onCancel: () => void;
+  onSave: (kind: ContextKind, id: string, tomlBody: string) => void;
+}) {
+  const [draftKind, setDraftKind] = useState<ContextKind>(entry?.kind ?? kind);
+  const [id, setId] = useState(entry?.id ?? "");
+  const [tomlBody, setTomlBody] = useState(entry?.tomlBody ?? "");
+  const canSave = id.trim().length > 0;
+
+  return (
+    <div className="context-editor">
+      <div className="context-editor-fields">
+        <Field label={t("类型")}>
+          <AppSelect
+            disabled={!!entry}
+            value={draftKind}
+            onChange={(value) => setDraftKind(value)}
+            options={contextKindOptions.map((option) => ({ value: option.kind, label: option.label }))}
+          />
+        </Field>
+        <Field label="ID">
+          <Input
+            disabled={!!entry}
+            value={id}
+            onChange={(event) => setId(event.currentTarget.value.trim())}
+            placeholder={t("例如 context7")}
+          />
+        </Field>
+      </div>
+      <Field label={t("TOML 配置体")}>
+        <Textarea
+          className="context-editor-textarea"
+          value={tomlBody}
+          onChange={(event) => setTomlBody(event.currentTarget.value)}
+          placeholder={t("只填写表头下面的内容，例如：\ncommand = \"npx\"\nargs = [\"-y\", \"@upstash/context7-mcp\"]")}
+          spellCheck={false}
+        />
+      </Field>
+      <Toolbar>
+        <Button disabled={!canSave} onClick={() => onSave(draftKind, id.trim(), tomlBody)} size="sm">
+          <Save className="h-4 w-4" />
+          {t("保存扩展项")}
+        </Button>
+        <Button onClick={onCancel} size="sm" variant="secondary">{t("取消")}</Button>
+      </Toolbar>
+    </div>
+  );
+}
+
+function SyncedTextarea({
+  value,
+  onValueChange,
+  className,
+}: {
+  value: string;
+  onValueChange: (value: string) => void;
+  className?: string;
+}) {
+  const [localValue, setLocalValue] = useState(value);
+  const isFocusedRef = useRef(false);
+  const latestExternalValueRef = useRef(value);
+
+  useEffect(() => {
+    latestExternalValueRef.current = value;
+    if (!isFocusedRef.current) {
+      setLocalValue(value);
+    }
+  }, [value]);
+
+  return (
+    <Textarea
+      className={className}
+      value={localValue}
+      onBlur={() => {
+        isFocusedRef.current = false;
+        setLocalValue(latestExternalValueRef.current);
+      }}
+      onChange={(event) => {
+        const next = event.currentTarget.value;
+        setLocalValue(next);
+        onValueChange(next);
+      }}
+      onFocus={() => {
+        isFocusedRef.current = true;
+      }}
+      spellCheck={false}
+    />
+  );
+}
+
+function RelayFileEditors({
+  contextProfile,
+  profile,
+  form,
+  isActive,
+  profileId,
+  onFormChange,
+  onProfileChange,
+  actions,
+}: {
+  contextProfile: RelayProfile;
+  profile: RelayProfile;
+  form: BackendSettings;
+  isActive: boolean;
+  profileId: string;
+  onFormChange: (value: BackendSettings) => void;
+  onProfileChange: (value: RelayProfile) => void;
+  actions: Actions;
+}) {
+  const configPreview = effectiveRelayConfigPreview(profile, form, contextProfile);
+  const entries = contextEntriesForProfile(form, contextProfile);
+  return (
+    <div className="relay-file-grid">
+      <div className="relay-file-panel">
+        <div className="relay-file-head">
+          <div>
+            <strong>{t("config.toml 预览")}</strong>
+            <span>{isActive ? t("当前供应商切换后会写入的预览；上下文开关变化会立即反映") : t("切换到此供应商时会写入的预览；上下文开关变化会立即反映")}</span>
+          </div>
+        </div>
+        <SyncedTextarea
+          className="relay-file-textarea"
+          value={configPreview}
+          onValueChange={(value) => {
+            const withoutCommon = stripCommonConfigTextFallback(
+              value,
+              relayCombinedCommonConfig(form),
+            );
+            const configContents = stripContextEntriesFromConfig(withoutCommon, entries);
+            onProfileChange(deriveRelayProfileFromFiles({
+              ...profile,
+              configContents,
+            }));
+          }}
+        />
+      </div>
+      <div className="relay-file-panel">
+        <div className="relay-file-head">
+          <div>
+            <strong>{t("通用配置文件")}</strong>
+            <span>{t("只保留非 MCP、Skills、Plugins 的跨供应商配置；工具与插件在独立页面管理。")}</span>
+          </div>
+          <Button
+            onClick={async () => {
+              const extracted = await actions.extractRelayCommonConfig(profile.configContents || "");
+              if (!extracted) return;
+              const split = splitContextConfigText(extracted.commonConfigContents || "");
+              if (!split.common.trim() && !split.context.trim()) {
+                await actions.showMessage(t("通用配置文件"), t("当前供应商 config.toml 里没有可提取的通用配置。"), "failed");
+                return;
+              }
+              const promotedProfile = {
+                ...profile,
+                configContents: extracted.profileConfigContents,
+              };
+              const next = syncLegacyRelayFields({
+                ...form,
+                relayCommonConfigContents: split.common,
+                relayContextConfigContents: joinTomlSectionsRootFirst([form.relayContextConfigContents || "", split.context]),
+                relayProfiles: form.relayProfiles.map((item) => (item.id === profileId ? promotedProfile : item)),
+              });
+              onFormChange(next);
+              onProfileChange(promotedProfile);
+              await actions.saveSettingsValue(next, false);
+            }}
+            size="sm"
+            type="button"
+            variant="secondary"
+          >
+            <Download className="h-4 w-4" />
+            {t("提取当前供应商配置")}
+          </Button>
+        </div>
+        <SyncedTextarea
+          className="relay-file-textarea"
+          value={form.relayCommonConfigContents}
+          onValueChange={(value) => onFormChange({ ...form, relayCommonConfigContents: value })}
+        />
+      </div>
+      <div className="relay-file-panel">
+        <div className="relay-file-head">
+          <div>
+            <strong>auth.json</strong>
+            <span>{isActive
+              ? profile.relayMode === "pureApi"
+                ? t("当前使用中：保留此供应商的 auth 存档，避免 Codex 登录密钥覆盖供应商密钥")
+                : t("当前使用中：打开时从 ~/.codex/auth.json 回填，保存后会作为此供应商 auth 存档")
+              : t("切换到此供应商时会写入 ~/.codex/auth.json")}</span>
+          </div>
+        </div>
+        <SyncedTextarea
+          className="relay-file-textarea"
+          value={profile.authContents}
+          onValueChange={(value) => onProfileChange(deriveRelayProfileFromFiles({ ...profile, authContents: value }))}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ProviderDoctorModal({
+  result,
+  running,
+  onClose,
+}: {
+  result: ProviderDoctorResult | null;
+  running: boolean;
+  onClose: () => void;
+}) {
+  const steps = providerDoctorSteps(result, running);
+  const doneCount = steps.filter((step) => step.state === "ok" || step.state === "warning" || step.state === "failed").length;
+  const progress = Math.round((doneCount / steps.length) * 100);
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card provider-doctor-modal">
+        <div className="modal-head">
+          <div>
+            <h2>Provider Doctor</h2>
+            <p>{running ? t("正在诊断供应商，请稍候。") : result?.summary ?? t("诊断已完成。")}</p>
+          </div>
+          <UiBadge variant={result && !isSuccessStatus(result.status) ? "outline" : "secondary"}>
+            {running ? t("诊断中") : result && !isSuccessStatus(result.status) ? t("异常") : t("完成")}
+          </UiBadge>
+        </div>
+        <div className="provider-doctor-progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} role="progressbar">
+          <div style={{ width: `${progress}%` }} />
+        </div>
+        <div className="provider-doctor-step-list">
+          {steps.map((step) => (
+            <div className={`provider-doctor-step ${step.state}`} key={step.id}>
+              <span className="provider-doctor-step-icon">
+                {step.state === "running" ? (
+                  <RefreshCw className="h-4 w-4" />
+                ) : step.state === "ok" ? (
+                  <CheckCircle2 className="h-4 w-4" />
+                ) : step.state === "warning" ? (
+                  <ShieldAlert className="h-4 w-4" />
+                ) : step.state === "failed" ? (
+                  <Info className="h-4 w-4" />
+                ) : (
+                  <span />
+                )}
+              </span>
+              <div>
+                <strong>{step.title}</strong>
+                <small>{step.detail}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+        {result?.recommendation ? <p className="provider-doctor-recommendation">{result.recommendation}</p> : null}
+        <div className="modal-actions">
+          <Button disabled={running} onClick={onClose} variant="secondary">
+            {running ? t("诊断中") : t("关闭")}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type ProviderDoctorStepState = "pending" | "running" | "ok" | "warning" | "failed";
+
+function providerDoctorSteps(
+  result: ProviderDoctorResult | null,
+  running: boolean,
+): Array<{ id: string; title: string; detail: string; state: ProviderDoctorStepState }> {
+  const base = [
+    { id: "config", title: t("配置完整性"), pending: t("等待检查 Base URL / API Key。") },
+    { id: "models", title: t("模型列表"), pending: t("等待检查 /v1/models。") },
+    { id: "request", title: t("真实请求"), pending: t("等待发送一次测试请求。") },
+    { id: "recommendation", title: t("处理建议"), pending: t("等待生成建议。") },
+  ];
+  if (!result) {
+    return base.map((step, index) => ({
+      id: step.id,
+      title: step.title,
+      detail: index === 0 && running ? t("正在检查配置完整性…") : step.pending,
+      state: index === 0 && running ? "running" : "pending",
+    }));
+  }
+  const checks = new Map(result.checks.map((check) => [check.id, check]));
+  return base.map((step) => {
+    if (step.id === "recommendation") {
+      return {
+        id: step.id,
+        title: step.title,
+        detail: result.recommendation || step.pending,
+        state: result.status === "failed" ? "warning" : "ok",
+      };
+    }
+    const check = checks.get(step.id);
+    if (!check) {
+      return {
+        id: step.id,
+        title: step.title,
+        detail: step.id === "models" || step.id === "request" ? t("该步骤未执行。") : step.pending,
+        state: "pending",
+      };
+    }
+    return {
+      id: step.id,
+      title: check.title || step.title,
+      detail: check.detail,
+      state: check.status === "ok" ? "ok" : check.status === "warning" ? "warning" : "failed",
+    };
+  });
+}
+
+function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions: Actions }) {
+  return (
+    <div className="mode-grid">
+      <button
+        className={`mode-option ${launchMode === "relay" ? "active" : ""}`}
+        onClick={() => void actions.setLaunchMode("relay")}
+        type="button"
+      >
+        <strong>{t("兼容增强")}</strong>
+        <span>{t("适合官方登录或官方混入 API Key；保留会话删除、导出和用户脚本，关闭插件市场相关增强。")}</span>
+      </button>
+      <button
+        className={`mode-option ${launchMode === "patch" ? "active" : ""}`}
+        onClick={() => void actions.setLaunchMode("patch")}
+        type="button"
+      >
+        <strong>{t("完整增强")}</strong>
+        <span>{t("适合纯 API；启用插件市场、会话删除导出等全部页面能力。")}</span>
+      </button>
+    </div>
+  );
+}
+
+function FeatureItem({ title, detail, enabled }: { title: string; detail: string; enabled: boolean }) {
+  return (
+    <div className="feature-item">
+      <div>
+        <strong>{title}</strong>
+        <span>{detail}</span>
+      </div>
+      <Badge status={enabled ? "ok" : "disabled"} />
+    </div>
+  );
+}
+
+function FeatureGroup({ title, detail, children }: { title: string; detail: string; children: ReactNode }) {
+  return (
+    <section className="feature-group">
+      <div className="feature-group-head">
+        <strong>{title}</strong>
+        <small>{detail}</small>
+      </div>
+      <div className="feature-switch-grid">{children}</div>
+    </section>
+  );
+}
+
+function FeatureToggle({
+  title,
+  detail,
+  checked,
+  disabled = false,
+  onChange,
+}: {
+  title: string;
+  detail: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <label className={`feature-toggle ${disabled ? "disabled" : ""}`}>
+      <input
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+        type="checkbox"
+      />
+      <span>
+        <strong>{title}</strong>
+        <small>{detail}</small>
+      </span>
+      <ToggleVisual />
+    </label>
+  );
+}
+
+function ToggleVisual() {
+  return (
+    <span aria-hidden="true" className="toggle-switch-visual">
+      <span className="toggle-switch-thumb" />
+    </span>
+  );
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
+}
+
+function GuideList({ items }: { items: string[] }) {
+  return (
+    <div className="guide-list">
+      {items.map((item, index) => (
+        <div className="guide-step" key={item}>
+          <span>{index + 1}</span>
+          <p>{item}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DreamSkinUnsavedDialog({
+  onSave,
+  onDiscard,
+  onCancel,
+}: {
+  onSave: () => void;
+  onDiscard: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card">
+        <div className="modal-head">
+          <div>
+            <h2>{t("主题有未保存修改")}</h2>
+            <p className="modal-message">{t("保存修改后继续，或放弃修改。")}</p>
+          </div>
+          <button className="toast-close" onClick={onCancel} type="button">×</button>
+        </div>
+        <Toolbar>
+          <Button onClick={onSave}>
+            <Save className="h-4 w-4" />
+            {t("保存并继续")}
+          </Button>
+          <Button onClick={onDiscard} variant="secondary">{t("放弃修改")}</Button>
+          <Button onClick={onCancel} variant="outline">{t("取消")}</Button>
+        </Toolbar>
+      </div>
+    </div>
+  );
+}
+
+function NoticeDialog({
+  notice,
+  onClose,
+}: {
+  notice: { title: string; message: string; status?: Status };
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const timer = window.setTimeout(onClose, 4200);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  return (
+    <div className="toast-wrap" role="status" aria-live="polite">
+      <div className={`toast-card ${notice.status === "failed" ? "failed" : ""}`}>
+        <div className="toast-progress" />
+        <div className="toast-icon">
+          {notice.status === "failed" ? <Bell className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
+        </div>
+        <div className="toast-body">
+          <h2>{notice.title}</h2>
+          <p>{notice.message}</p>
+        </div>
+        <button className="toast-close" onClick={onClose} type="button">×</button>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  confirm,
+  onConfirm,
+  onCancel,
+}: {
+  confirm: { title: string; message: string; confirmText: string; cancelText: string };
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card confirm-modal">
+        <div className="modal-head">
+          <div>
+            <h2>{confirm.title}</h2>
+          </div>
+          <button className="toast-close" onClick={onCancel} type="button">×</button>
+        </div>
+        <div className="confirm-modal-body">
+          <p className="modal-message">{confirm.message}</p>
+        </div>
+        <Toolbar className="confirm-modal-actions">
+          <Button onClick={onConfirm}>
+            <Trash2 className="h-4 w-4" />
+            {confirm.confirmText}
+          </Button>
+          <Button onClick={onCancel} variant="secondary">{confirm.cancelText}</Button>
+        </Toolbar>
+      </div>
+    </div>
+  );
+}
+
+function SessionIndexCleanupDialog({
+  request,
+  onConfirm,
+  onCancel,
+}: {
+  request: { candidates: SessionIndexCleanupCandidate[] };
+  onConfirm: (selectedIds: string[]) => void;
+  onCancel: () => void;
+}) {
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const allSelected = request.candidates.length > 0 && selectedIds.size === request.candidates.length;
+  const toggleCandidate = (id: string, selected: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (selected) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card session-index-cleanup-modal">
+        <div className="modal-head">
+          <div>
+            <h2>{t("清理幽灵任务索引")}</h2>
+            <p className="modal-message">
+              {tf("发现 {0} 条仅存在于 session_index.jsonl、未在本地数据库或 rollout 中找到来源的候选记录。它们也可能是云端或尚未落盘的任务，请逐项核对。任务标题仅用于预览，实际按 thread ID 与数据来源判断。清理前请先完全退出 Codex App / ChatGPT。", [request.candidates.length])}
+            </p>
+          </div>
+          <button className="toast-close" onClick={onCancel} type="button">×</button>
+        </div>
+        <label className="session-index-cleanup-select-all">
+          <input
+            checked={allSelected}
+            onChange={(event) => {
+              setSelectedIds(event.target.checked ? new Set(request.candidates.map((candidate) => candidate.id)) : new Set());
+            }}
+            type="checkbox"
+          />
+          <span>{t("选择全部候选记录")}</span>
+        </label>
+        <div className="session-index-cleanup-list">
+          {request.candidates.map((candidate) => (
+            <label className="session-index-cleanup-item" key={candidate.id}>
+              <input
+                checked={selectedIds.has(candidate.id)}
+                onChange={(event) => toggleCandidate(candidate.id, event.target.checked)}
+                type="checkbox"
+              />
+              <span>
+                <strong>{candidate.threadName || t("未命名任务")}</strong>
+                <code>{candidate.id}</code>
+                <small>{candidate.updatedAt}</small>
+              </span>
+            </label>
+          ))}
+        </div>
+        <Toolbar>
+          <Button disabled={selectedIds.size === 0} onClick={() => onConfirm(Array.from(selectedIds))}>
+            <Trash2 className="h-4 w-4" />
+            {tf("确认清理 {0} 条", [selectedIds.size])}
+          </Button>
+          <Button onClick={onCancel} variant="secondary">{t("取消")}</Button>
+        </Toolbar>
+      </div>
+    </div>
+  );
+}
+
+function PendingProviderImportDialog({
+  request,
+  onConfirm,
+  onDismiss,
+}: {
+  request: ProviderImportRequest;
+  onConfirm: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card provider-import-modal">
+        <div className="modal-head">
+          <div>
+            <h2>{t("导入 Codex++ 供应商")}</h2>
+            <p>{t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++ 管理工具。")}</p>
+          </div>
+          <button className="toast-close" onClick={onDismiss} type="button">×</button>
+        </div>
+        <div className="metric-list">
+          <Metric label={t("名称")} value={request.name || t("未命名供应商")} />
+          <Metric label="Base URL" value={request.baseUrl || t("未填写")} />
+          <Metric label={t("协议")} value={providerImportWireApiLabel(request.wireApi)} />
+          <Metric label={t("模式")} value={providerImportRelayModeLabel(request.relayMode)} />
+          <Metric label="API Key" value={maskSecret(request.apiKey)} />
+        </div>
+        <div className="hint-line" role="note">
+          {t("安全提示：网页链接中的自定义 config.toml 和 auth.json 不会执行；管理工具只会使用上方字段生成受管配置。")}
+        </div>
+        <Toolbar>
+          <Button onClick={onConfirm}>
+            <Download className="h-4 w-4" />
+            {t("确认导入")}
+          </Button>
+          <Button onClick={onDismiss} variant="secondary">{t("取消")}</Button>
+        </Toolbar>
+      </div>
+    </div>
+  );
+}
+
+function DreamSkinCommunityLinkDialog({
+  versionId,
+  onConfirm,
+  onDismiss,
+}: {
+  versionId: string;
+  onConfirm: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal-card provider-import-modal">
+        <div className="modal-head">
+          <div>
+            <h2>{t("从 DreamSkin.cc 安装主题")}</h2>
+            <p>{t("检测到网页一键换肤请求。确认后会从固定社区 API 下载，并在本机重新校验大小、SHA-256、ZIP 清单与 Safe CSS。")}</p>
+          </div>
+          <button className="toast-close" onClick={onDismiss} type="button">×</button>
+        </div>
+        <div className="metric-list">
+          <Metric label={t("主题版本 ID")} value={versionId} />
+          <Metric label={t("来源")} value="api.dreamskin.cc" />
+        </div>
+        <div className="hint-line" role="note">
+          {t("链接不能携带任意下载地址、文件路径或命令；安装后主题会进入“我的主题”，不会自动重启 Codex。")}
+        </div>
+        <Toolbar>
+          <Button onClick={onConfirm}>
+            <Download className="h-4 w-4" />
+            {t("下载并安装")}
+          </Button>
+          <Button onClick={onDismiss} variant="secondary">{t("取消")}</Button>
+        </Toolbar>
+      </div>
+    </div>
+  );
+}
+
+function TaskProgressBox({ progress, title, completedTitle = t("上次修复结果") }: { progress: TaskProgress; title: string; completedTitle?: string }) {
+  if (!progress.active && progress.percent <= 0) return null;
+  return (
+    <div className="provider-sync-progress task-progress" data-active={progress.active}>
+      <div className="provider-sync-progress-head">
+        <strong>{progress.active ? title : completedTitle}</strong>
+        <span>{progress.percent}%</span>
+      </div>
+      <div
+        aria-valuemax={100}
+        aria-valuemin={0}
+        aria-valuenow={progress.percent}
+        className="provider-sync-progress-bar"
+        role="progressbar"
+      >
+        <div className="provider-sync-progress-fill" style={{ width: `${progress.percent}%` }} />
+      </div>
+      <small>{progress.message}</small>
+    </div>
+  );
+}
+
+function Panel({ children, fill = false, className = "" }: { children: React.ReactNode; fill?: boolean; className?: string }) {
+  return (
+    <Card className={`panel ${fill ? "fill" : ""} ${className}`}>
+      {children}
+    </Card>
+  );
+}
+
+function CardHead({ title, detail }: { title: string; detail: string }) {
+  return (
+    <CardHeader className="panel-head">
+      <CardTitle>{title}</CardTitle>
+      <CardDescription>{detail}</CardDescription>
+    </CardHeader>
+  );
+}
+
+function Toolbar({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <div className={`toolbar ${className}`.trim()}>{children}</div>;
+}
+
+function Field({ label, children, className = "" }: { label: string; children: React.ReactNode; className?: string }) {
+  return (
+    <Label className={`field ${className}`}>
+      <span>{label}</span>
+      {children}
+    </Label>
+  );
+}
+
+type AppSelectOption<T extends string> = {
+  value: T;
+  label: ReactNode;
+  disabled?: boolean;
+  title?: string;
+};
+
+function AppSelect<T extends string>({
+  value,
+  options,
+  onChange,
+  disabled = false,
+  className = "",
+  title = "",
+}: {
+  value: T;
+  options: AppSelectOption<T>[];
+  onChange: (value: T) => void;
+  disabled?: boolean;
+  className?: string;
+  title?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = options.find((option) => option.value === value) || options[0];
+  const selectOption = (option: AppSelectOption<T>) => {
+    if (option.disabled) return;
+    onChange(option.value);
+    setOpen(false);
+  };
+  return (
+    <div
+      className={`app-select ${open ? "open" : ""} ${disabled ? "disabled" : ""} ${className}`.trim()}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
+      <button
+        aria-expanded={open}
+        className="app-select-trigger"
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+        title={title}
+        type="button"
+      >
+        <span>{selected?.label ?? value}</span>
+        <ChevronDown className="h-4 w-4" />
+      </button>
+      {open && !disabled ? (
+        <div className="app-select-menu" role="listbox">
+          {options.map((option) => (
+            <button
+              aria-selected={option.value === value}
+              className={`app-select-option ${option.value === value ? "selected" : ""}`}
+              disabled={option.disabled}
+              key={option.value}
+              onClick={() => selectOption(option)}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                selectOption(option);
+              }}
+              title={option.title}
+              type="button"
+            >
+              {option.value === value ? <CheckCircle2 className="h-4 w-4" /> : <span className="app-select-option-spacer" />}
+              <span>{option.label}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function StatusRow({ title, status = "unknown", path }: { title: string; status?: string; path?: string | null }) {
+  return (
+    <div className="status-row">
+      <span>{title}</span>
+      <Badge status={status} />
+      <code>{path || t("未记录路径")}</code>
+    </div>
+  );
+}
+
+function Badge({ status }: { status: string }) {
+  return <UiBadge className={statusClass(status)} variant="secondary">{statusLabel(status)}</UiBadge>;
+}
+
+function LatestLaunch({ status }: { status: LaunchStatus | null }) {
+  if (!status) return <div className="empty">{t("暂无启动状态。")}</div>;
+  return (
+    <div className="metric-list">
+      <Metric label={t("状态")} value={status.status} />
+      <Metric label={t("消息")} value={status.message} />
+      <Metric label="Debug" value={String(status.debug_port ?? "-")} />
+      <Metric label="Helper" value={String(status.helper_port ?? "-")} />
+      <Metric label={t("时间")} value={formatTime(status.started_at_ms)} />
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function ScriptRow({ script, actions }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; actions: Actions }) {
+  const source = script.market_id ? tf("市场 · {0}", [script.version || t("未知版本")]) : script.source === "builtin" ? t("内置") : t("用户");
+  const canDelete = script.source === "user";
+  return (
+    <div className="table-row">
+      <span>{script.name}</span>
+      <span>{source}</span>
+      <span>{script.enabled ? t("启用") : t("关闭")}</span>
+      <span>{script.status}</span>
+      <div className="script-row-actions">
+        <Button onClick={() => void actions.setUserScriptEnabled(script.key, !script.enabled)} size="sm" variant="secondary">
+          {script.enabled ? <PowerOff className="h-4 w-4" /> : <Power className="h-4 w-4" />}
+          {script.enabled ? t("禁用") : t("启用")}
+        </Button>
+        {canDelete ? (
+          <Button onClick={() => void actions.deleteUserScript(script.key)} size="sm" variant="outline">
+            <Trash2 className="h-4 w-4" />
+            {t("删除")}
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions: Actions }) {
+  if (!ads.length) return <div className="empty">{empty}</div>;
+  return (
+    <div className="ad-grid">
+      {ads.map((ad) => (
+        <button className="ad-card" key={ad.id || `${ad.type}-${ad.title}`} onClick={() => void actions.openExternalUrl(ad.url)} type="button">
+          {ad.image ? <img alt="" className="ad-image" src={ad.image} /> : null}
+          <div className="ad-content">
+            <strong>{formatAdTitle(ad.title)}</strong>
+            <p>{ad.description}</p>
+          </div>
+          {ad.highlights?.length ? (
+            <div className="ad-tags">
+              {ad.highlights.map((item) => (
+                <span key={item}>{item}</span>
+              ))}
+            </div>
+          ) : null}
+          <span className="ad-link">
+            {t("打开")}
+            <ExternalLink className="h-4 w-4" />
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function formatAdTitle(title: string) {
+  return title.split(/[｜|]/, 1)[0].trim() || title;
+}
+
+function isExpiredAd(ad: AdItem) {
+  if (!ad.expires_at) return false;
+  const expiresAt = Date.parse(ad.expires_at);
+  return Number.isFinite(expiresAt) && expiresAt < Date.now();
+}
+
+function routeTitle(route: Route) {
+  return routes.find((item) => item.id === route)?.label ?? t("概览");
+}
+
+function routeSubtitle(route: Route) {
+  const subtitles: Record<Route, string> = {
+    overview: t("检查问题、启动与快速修复"),
+    relay: t("管理 API 供应商、协议、Key 与配置文件"),
+    relayEnvironment: t("排查可能干扰中转站配置的本机环境"),
+    sessions: t("查看、删除和修复 Codex 本地会话"),
+    context: t("独立管理 MCP、Skills、Plugins"),
+    weixin: t("通过个人微信连接本机 Codex 会话"),
+    enhance: t("会话删除、导出和脚本能力"),
+    dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
+    zedRemote: t("管理 Codex SSH 项目并加入 Zed workspace"),
+    userScripts: t("内置和用户自定义脚本清单"),
+    recommendations: t("赞助商推荐与普通推荐"),
+    maintenance: t("入口安装、修复、Watcher 与手动启动"),
+    about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
+    settings: t("主题和启动参数"),
+  };
+  return subtitles[route];
+}
+
+const contextKindOptions: Array<{ kind: ContextKind; label: string; tableName: string }> = [
+  { kind: "mcp", label: "MCP", tableName: "mcp_servers" },
+  { kind: "skill", label: "Skills", tableName: "skills" },
+  { kind: "plugin", label: t("插件"), tableName: "plugins" },
+];
+
+function contextKindLabel(kind: ContextKind) {
+  return contextKindOptions.find((option) => option.kind === kind)?.label ?? t("扩展项");
+}
+
+function contextEntriesFromSettings(settings: BackendSettings): CodexContextEntries {
+  const commonConfig = normalizeDuplicateTomlTables(settings.relayContextConfigContents || "");
+  return {
+    mcpServers: parseContextEntries(commonConfig, "mcp", "mcp_servers"),
+    skills: parseContextEntries(commonConfig, "skill", "skills"),
+    plugins: parseContextEntries(commonConfig, "plugin", "plugins"),
+  };
+}
+
+function contextEntriesWithLiveEntries(settings: BackendSettings, liveEntries: CodexContextEntries | null): CodexContextEntries {
+  const commonEntries = contextEntriesFromSettings(settings);
+  if (!liveEntries) return commonEntries;
+  const liveByKind: Record<ContextKind, Map<string, CodexContextEntry>> = {
+    mcp: new Map(liveEntries.mcpServers.map((entry) => [entry.id, entry])),
+    skill: new Map(liveEntries.skills.map((entry) => [entry.id, entry])),
+    plugin: new Map(liveEntries.plugins.map((entry) => [entry.id, entry])),
+  };
+  return {
+    mcpServers: mergeLiveContextEntries(commonEntries.mcpServers, liveByKind.mcp),
+    skills: mergeLiveContextEntries(commonEntries.skills, liveByKind.skill),
+    plugins: mergeLiveContextEntries(commonEntries.plugins, liveByKind.plugin),
+  };
+}
+
+function mergeLiveContextEntries(entries: CodexContextEntry[], liveEntries: Map<string, CodexContextEntry>): CodexContextEntry[] {
+  const uniqueEntries = dedupeContextEntryList(entries);
+  const merged = uniqueEntries.map((entry) => {
+    const live = liveEntries.get(entry.id);
+    return withLiveEntryState(entry, live);
+  });
+  const knownIds = new Set(uniqueEntries.map((entry) => entry.id));
+  for (const liveEntry of liveEntries.values()) {
+    if (!knownIds.has(liveEntry.id)) merged.push(liveEntry);
+  }
+  return merged;
+}
+
+function withLiveEntryState(entry: CodexContextEntry, live?: CodexContextEntry): CodexContextEntry {
+  return live ? { ...entry, enabled: live.enabled } : { ...entry, enabled: false };
+}
+
+function contextEntriesForProfile(settings: BackendSettings, profile: RelayProfile): CodexContextEntries {
+  return filterContextEntriesBySelection(contextEntriesFromSettings(settings), profile.contextSelection);
+}
+
+function contextEntriesFromConfig(configContents: string): CodexContextEntries {
+  return {
+    mcpServers: parseContextEntries(configContents, "mcp", "mcp_servers"),
+    skills: parseContextEntries(configContents, "skill", "skills"),
+    plugins: parseContextEntries(configContents, "plugin", "plugins"),
+  };
+}
+
+function mergeContextEntries(primary: CodexContextEntries, secondary: CodexContextEntries): CodexContextEntries {
+  return {
+    mcpServers: mergeContextEntryList(primary.mcpServers, secondary.mcpServers),
+    skills: mergeContextEntryList(primary.skills, secondary.skills),
+    plugins: mergeContextEntryList(primary.plugins, secondary.plugins),
+  };
+}
+
+function mergeContextEntryList(primary: CodexContextEntry[], secondary: CodexContextEntry[]): CodexContextEntry[] {
+  return dedupeContextEntryList([...primary, ...secondary]);
+}
+
+function dedupeContextEntryList(entries: CodexContextEntry[]): CodexContextEntry[] {
+  const byId = new Map<string, CodexContextEntry>();
+  for (const entry of entries) {
+    byId.set(entry.id, entry);
+  }
+  return Array.from(byId.values());
+}
+
+function parseContextEntries(commonConfig: string, kind: ContextKind, tableName: string): CodexContextEntry[] {
+  const anyHeaderPattern = /^\s*\[[^\]]+\]\s*$/;
+  const entries = new Map<string, CodexContextEntry>();
+  let currentId: string | null = null;
+  let body: string[] = [];
+
+  const flush = () => {
+    if (!currentId) return;
+    const tomlBody = ensureTrailingNewline(body.join("\n").trimEnd());
+    entries.set(currentId, {
+      id: currentId,
+      kind,
+      title: currentId,
+      summary: contextEntrySummary(tomlBody),
+      tomlBody,
+      enabled: contextEntryEnabled(tomlBody),
+    });
+  };
+
+  for (const line of commonConfig.split(/\r?\n/)) {
+    const path = tomlTablePathFromLine(line);
+    if (path?.[0] === tableName && path.length >= 2) {
+      const id = path[1];
+      if (currentId === id && path.length > 2) {
+        body.push(`[${path.slice(2).map(tomlKey).join(".")}]`);
+        continue;
+      }
+      flush();
+      currentId = id;
+      body = [];
+      continue;
+    }
+    if (currentId && anyHeaderPattern.test(line)) {
+      flush();
+      currentId = null;
+      body = [];
+      continue;
+    }
+    if (currentId) body.push(line);
+  }
+  flush();
+
+  return Array.from(entries.values());
+}
+
+function tomlTablePathFromLine(line: string): string[] | null {
+  const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+  if (!match) return null;
+  return parseTomlDottedPath(match[1].trim());
+}
+
+function parseTomlDottedPath(path: string): string[] | null {
+  const parts: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  let escaping = false;
+
+  for (const char of path) {
+    if (quote) {
+      if (quote === '"' && escaping) {
+        current += char;
+        escaping = false;
+      } else if (quote === '"' && char === "\\") {
+        escaping = true;
+      } else if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === ".") {
+      if (!current.trim()) return null;
+      parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  if (quote || escaping || !current.trim()) return null;
+  parts.push(current.trim());
+  return parts;
+}
+
+function contextEntrySummary(tomlBody: string) {
+  return tomlBody
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith("#") && !/^enabled\s*=/.test(line))
+    ?.slice(0, 96) ?? "";
+}
+
+function contextEntryEnabled(tomlBody: string) {
+  return !tomlBody.split(/\r?\n/).some((line) => /^\s*enabled\s*=\s*false\s*(#.*)?$/i.test(line));
+}
+
+function setContextEntryEnabled(tomlBody: string, enabled: boolean) {
+  const lines = tomlBody.trimEnd().split(/\r?\n/);
+  const nextValue = `enabled = ${enabled ? "true" : "false"}`;
+  let replaced = false;
+  const next = lines.map((line) => {
+    if (/^\s*enabled\s*=/.test(line)) {
+      replaced = true;
+      return nextValue;
+    }
+    return line;
+  });
+  if (!replaced) next.unshift(nextValue);
+  return ensureTrailingNewline(next.join("\n").trimEnd());
+}
+
+function ensureTrailingNewline(value: string) {
+  return value.trim() ? `${value}\n` : "";
+}
+
+function unquoteTomlKey(key: string) {
+  if (key.length >= 2 && ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'")))) {
+    return key.slice(1, -1);
+  }
+  return key;
+}
+
+function contextEntriesByKind(entries: CodexContextEntries, kind: ContextKind): CodexContextEntry[] {
+  if (kind === "mcp") return dedupeContextEntryList(entries.mcpServers);
+  if (kind === "skill") return dedupeContextEntryList(entries.skills);
+  return dedupeContextEntryList(entries.plugins);
+}
+
+function filterContextEntriesBySelection(entries: CodexContextEntries, selection: RelayContextSelection): CodexContextEntries {
+  const selected = {
+    mcp: new Set(selection.mcpServers.map((id) => id.trim()).filter(Boolean)),
+    skill: new Set(selection.skills.map((id) => id.trim()).filter(Boolean)),
+    plugin: new Set(selection.plugins.map((id) => id.trim()).filter(Boolean)),
+  };
+  return {
+    mcpServers: entries.mcpServers.filter((entry) => selected.mcp.has(entry.id)),
+    skills: entries.skills.filter((entry) => selected.skill.has(entry.id)),
+    plugins: entries.plugins.filter((entry) => selected.plugin.has(entry.id)),
+  };
+}
+
+function effectiveRelayConfigPreview(profile: RelayProfile, settings: BackendSettings, contextProfile = profile): string {
+  const entries = contextEntriesForProfile(settings, contextProfile);
+  const isolatedConfig = stripContextEntriesFromConfig(profile.configContents, entries);
+  const configWithLimits = applyContextLimitPreview(isolatedConfig, profile);
+  const profileAndCommon = mergeFeaturesTableForPreview(configWithLimits, settings.relayCommonConfigContents || "");
+  return joinTomlSectionsRootFirst([profileAndCommon, selectedContextConfigToml(entries)]);
+}
+
+function mergeFeaturesTableForPreview(profileConfig: string, commonConfig: string): string {
+  const profile = splitFeaturesTable(profileConfig);
+  const common = splitFeaturesTable(commonConfig);
+  if (!profile.body && !common.body) return joinTomlSectionsRootFirst([profileConfig, commonConfig]);
+
+  const profileKeys = new Set(tomlAssignmentKeys(profile.body));
+  const commonBody = common.body
+    .split(/\r?\n/)
+    .filter((line) => {
+      const key = tomlAssignmentKey(line);
+      return !key || !profileKeys.has(key);
+    })
+    .join("\n");
+  const mergedFeatures = ["[features]", commonBody, profile.body]
+    .filter((part) => part.trim())
+    .join("\n");
+  return joinTomlSectionsRootFirst([
+    profile.without,
+    common.without,
+    mergedFeatures,
+  ]);
+}
+
+function splitFeaturesTable(contents: string): { without: string; body: string } {
+  const lines = contents.trim().split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === "[features]");
+  if (start < 0) return { without: contents, body: "" };
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^\s*\[[^\]]+\]\s*$/.test(lines[index])) {
+      end = index;
+      break;
+    }
+  }
+  return {
+    without: [...lines.slice(0, start), ...lines.slice(end)].join("\n"),
+    body: lines.slice(start + 1, end).join("\n"),
+  };
+}
+
+function tomlAssignmentKey(line: string): string | undefined {
+  return /^\s*([A-Za-z0-9_-]+)\s*=/.exec(line)?.[1];
+}
+
+function tomlAssignmentKeys(contents: string): string[] {
+  return contents.split(/\r?\n/).map(tomlAssignmentKey).filter((key): key is string => Boolean(key));
+}
+
+function selectedContextConfigToml(entries: CodexContextEntries): string {
+  const sections: string[] = [];
+  for (const option of contextKindOptions) {
+    for (const entry of dedupeContextEntryList(contextEntriesByKind(entries, option.kind))) {
+      if (!entry.enabled) continue;
+      sections.push(contextEntryToTomlSection(option.tableName, entry));
+    }
+  }
+  return ensureTrailingNewline(sections.join("\n\n"));
+}
+
+function allContextConfigToml(entries: CodexContextEntries): string {
+  const sections: string[] = [];
+  for (const option of contextKindOptions) {
+    for (const entry of dedupeContextEntryList(contextEntriesByKind(entries, option.kind))) {
+      sections.push(contextEntryToTomlSection(option.tableName, entry));
+    }
+  }
+  return ensureTrailingNewline(sections.join("\n\n"));
+}
+
+function contextEntryToTomlSection(tableName: string, entry: CodexContextEntry): string {
+  const parentHeader = `[${tableName}.${tomlKey(entry.id)}]`;
+  const body = entry.tomlBody
+    .trimEnd()
+    .split(/\r?\n/)
+    .map((line) => relativeContextSubtableToAbsolute(line, tableName, entry.id))
+    .join("\n");
+  return `${parentHeader}\n${body}`;
+}
+
+function relativeContextSubtableToAbsolute(line: string, tableName: string, id: string): string {
+  const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+  if (!match) return line;
+  const subtable = match[1].trim();
+  if (!subtable || subtable.includes(".")) return line;
+  return `[${tableName}.${tomlKey(id)}.${tomlKey(subtable)}]`;
+}
+
+function syncLiveConfigContextState(liveConfigContents: string, settings: BackendSettings): string {
+  const entries = contextEntriesFromSettings(settings);
+  const withoutManaged = stripContextEntriesFromConfig(liveConfigContents, entries);
+  return joinTomlSectionsRootFirst([withoutManaged, selectedContextConfigToml(entries)]);
+}
+
+function relayCombinedCommonConfig(settings: BackendSettings): string {
+  return joinTomlSectionsRootFirst([settings.relayCommonConfigContents || "", settings.relayContextConfigContents || ""]);
+}
+
+function splitContextConfigText(configContents: string): { common: string; context: string } {
+  const entries = contextEntriesFromConfig(configContents);
+  return {
+    common: stripContextEntriesFromConfig(configContents, entries),
+    context: allContextConfigToml(entries),
+  };
+}
+
+function stripContextEntriesFromConfig(configContents: string, entries: CodexContextEntries): string {
+  const knownIds: Record<ContextKind, Set<string>> = {
+    mcp: new Set(entries.mcpServers.map((entry) => entry.id)),
+    skill: new Set(entries.skills.map((entry) => entry.id)),
+    plugin: new Set(entries.plugins.map((entry) => entry.id)),
+  };
+  const lines = configContents.split(/\r?\n/);
+  const kept: string[] = [];
+  let skipping = false;
+
+  for (const line of lines) {
+    const contextHeader = contextHeaderFromLine(line);
+    if (contextHeader) {
+      skipping = knownIds[contextHeader.kind].has(contextHeader.id);
+    } else if (/^\s*\[[^\]]+\]\s*$/.test(line)) {
+      skipping = false;
+    }
+    if (!skipping) kept.push(line);
+  }
+
+  return ensureTrailingNewline(kept.join("\n").trimEnd());
+}
+
+function stripCommonConfigTextFallback(configContents: string, commonConfig: string): string {
+  const anchors = commonConfigAnchors(commonConfig);
+  if (!anchors.rootKeys.size && !anchors.tableHeaders.size) return ensureTrailingNewline(configContents.trimEnd());
+
+  const kept: string[] = [];
+  let skippingTable = false;
+
+  for (const line of configContents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (/^\[[^\]]+\]$/.test(trimmed)) {
+      skippingTable = anchors.tableHeaders.has(trimmed);
+      if (skippingTable) continue;
+    }
+    if (skippingTable) continue;
+    const key = tomlRootKeyFromLine(trimmed);
+    if (key && anchors.rootKeys.has(key)) continue;
+    kept.push(line);
+  }
+
+  return ensureTrailingNewline(kept.join("\n").trimEnd());
+}
+
+function commonConfigAnchors(commonConfig: string): { rootKeys: Set<string>; tableHeaders: Set<string> } {
+  const rootKeys = new Set<string>();
+  const tableHeaders = new Set<string>();
+  let inRoot = true;
+
+  for (const line of commonConfig.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (/^\[[^\]]+\]$/.test(trimmed)) {
+      inRoot = false;
+      tableHeaders.add(trimmed);
+      continue;
+    }
+    if (inRoot) {
+      const key = tomlRootKeyFromLine(trimmed);
+      if (key) rootKeys.add(key);
+    }
+  }
+
+  return { rootKeys, tableHeaders };
+}
+
+function tomlRootKeyFromLine(line: string): string | null {
+  if (!line || line.startsWith("#")) return null;
+  const index = line.indexOf("=");
+  if (index < 0) return null;
+  const key = line.slice(0, index).trim();
+  return key || null;
+}
+
+function contextHeaderFromLine(line: string): { kind: ContextKind; id: string } | null {
+  const path = tomlTablePathFromLine(line);
+  if (!path || path.length !== 2) return null;
+  const option = contextKindOptions.find((item) => item.tableName === path[0]);
+  return option ? { kind: option.kind, id: path[1] } : null;
+}
+
+function applyContextLimitPreview(configContents: string, profile: RelayProfile): string {
+  const replacements: Array<[string, string]> = [
+    ["model_context_window", profile.contextWindow],
+    ["model_auto_compact_token_limit", profile.autoCompactLimit],
+  ];
+  let lines = configContents.split(/\r?\n/);
+
+  for (const [key, value] of replacements) {
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    let replaced = false;
+    lines = lines.map((line) => {
+      if (!replaced && new RegExp(`^\\s*${key}\\s*=`).test(line)) {
+        replaced = true;
+        return `${key} = ${trimmed}`;
+      }
+      return line;
+    });
+    if (!replaced) {
+      const firstTable = lines.findIndex((line) => /^\s*\[[^\]]+\]\s*$/.test(line));
+      const insertAt = firstTable >= 0 ? firstTable : lines.length;
+      lines.splice(insertAt, 0, `${key} = ${trimmed}`);
+    }
+  }
+
+  return ensureTrailingNewline(lines.join("\n").trimEnd());
+}
+
+function removeRootTomlKey(contents: string, key: string): string {
+  const lines: string[] = [];
+  let inRoot = true;
+  for (const line of contents.split(/\r?\n/)) {
+    if (/^\s*\[[^\]]+\]\s*$/.test(line)) inRoot = false;
+    if (inRoot && new RegExp(`^\\s*${key}\\s*=`).test(line)) continue;
+    lines.push(line);
+  }
+  return ensureTrailingNewline(lines.join("\n").trimEnd());
+}
+
+function joinTomlSections(sections: string[]): string {
+  return ensureTrailingNewline(
+    sections
+      .map((section) => section.trim())
+      .filter(Boolean)
+      .join("\n\n"),
+  );
+}
+
+function joinTomlSectionsRootFirst(sections: string[]): string {
+  const rootParts: string[] = [];
+  const tableParts: string[] = [];
+
+  for (const section of sections) {
+    const { root, tables } = splitTomlRootAndTables(section);
+    if (root.trim()) rootParts.push(root.trim());
+    if (tables.trim()) tableParts.push(tables.trim());
+  }
+
+  return normalizeDuplicateTomlTables(joinTomlSections([...dedupeTomlRootLines(rootParts), ...tableParts]));
+}
+
+function normalizeDuplicateTomlTables(contents: string): string {
+  const seenHeaders = new Set<string>();
+  const kept: string[] = [];
+  let skipping = false;
+
+  for (const line of contents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (/^\[[^\]]+\]$/.test(trimmed)) {
+      skipping = seenHeaders.has(trimmed);
+      seenHeaders.add(trimmed);
+      if (skipping) continue;
+    }
+    if (!skipping) kept.push(line);
+  }
+
+  return ensureTrailingNewline(kept.join("\n").trimEnd());
+}
+
+function dedupeTomlRootLines(rootParts: string[]): string[] {
+  const rootLines = rootParts
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd());
+  const rootSeen = new Set<string>();
+  const kept: string[] = [];
+
+  for (let index = rootLines.length - 1; index >= 0; index -= 1) {
+    const line = rootLines[index];
+    const key = tomlRootKeyFromLine(line.trim());
+    if (key) {
+      if (rootSeen.has(key)) continue;
+      rootSeen.add(key);
+    }
+    kept.push(line);
+  }
+
+  const normalized = kept.reverse().join("\n").trim();
+  return normalized ? [normalized] : [];
+}
+
+function splitTomlRootAndTables(section: string): { root: string; tables: string } {
+  const lines = section.trim().split(/\r?\n/);
+  const firstTable = lines.findIndex((line) => /^\s*\[[^\]]+\]\s*$/.test(line));
+  if (firstTable < 0) return { root: lines.join("\n"), tables: "" };
+  return {
+    root: lines.slice(0, firstTable).join("\n"),
+    tables: lines.slice(firstTable).join("\n"),
+  };
+}
+
+function tomlKey(key: string): string {
+  return /^[A-Za-z0-9_-]+$/.test(key) ? key : `"${tomlString(key)}"`;
+}
+
+function contextSelectionIds(selection: RelayContextSelection, kind: ContextKind): string[] {
+  if (kind === "mcp") return selection.mcpServers;
+  if (kind === "skill") return selection.skills;
+  return selection.plugins;
+}
+
+function setContextSelectionId(selection: RelayContextSelection, kind: ContextKind, id: string, checked: boolean): RelayContextSelection {
+  const next = {
+    mcpServers: [...selection.mcpServers],
+    skills: [...selection.skills],
+    plugins: [...selection.plugins],
+  };
+  const list = contextSelectionIds(next, kind);
+  const normalizedId = id.trim();
+  const exists = list.includes(normalizedId);
+  if (checked && normalizedId && !exists) list.push(normalizedId);
+  if (!checked && exists) list.splice(list.indexOf(normalizedId), 1);
+  return next;
+}
+
+function removeContextSelectionFromSettings(settings: BackendSettings, kind: ContextKind, id: string): BackendSettings {
+  return {
+    ...settings,
+    relayProfiles: settings.relayProfiles.map((profile) => ({
+      ...profile,
+      contextSelection: setContextSelectionId(profile.contextSelection, kind, id, false),
+    })),
+  };
+}
+
+function contextSelectionForAllEntries(settings: BackendSettings): RelayContextSelection {
+  const entries = contextEntriesFromSettings(settings);
+  return {
+    mcpServers: entries.mcpServers.map((entry) => entry.id),
+    skills: entries.skills.map((entry) => entry.id),
+    plugins: entries.plugins.map((entry) => entry.id),
+  };
+}
+
+function relayProfileEditorStatus(profile: RelayProfile, form: BackendSettings, isNew: boolean) {
+  if (isNew) return t("新建供应商需要先保存到列表");
+  if (!form.relayProfilesEnabled) return t("供应商配置总开关已关闭；当前只保存配置，不写入 Codex live 文件");
+  return profile.id === form.activeRelayId ? t("当前正在使用") : t("编辑后保存列表，再切换模式时会使用新配置");
+}
+
+function providerInitial(name: string) {
+  const trimmed = (name || t("供应商")).trim();
+  return Array.from(trimmed)[0]?.toUpperCase() || t("供");
+}
+
+function statusLabel(status: string) {
+  const labels: Record<string, string> = {
+    found: t("已找到"),
+    missing: t("缺失"),
+    installed: t("已安装"),
+    ok: t("正常"),
+    running: t("运行中"),
+    running_degraded: t("运行中（增强等待中）"),
+    starting: t("启动中"),
+    failed: t("失败"),
+    archived: t("已归档"),
+    accepted: t("已受理"),
+    not_checked: t("未检查"),
+    not_implemented: t("未实现"),
+    disabled: t("已禁用"),
+    unknown: t("未知"),
+  };
+  return labels[status] ?? status;
+}
+
+function statusClass(status: string) {
+  if (["found", "installed", "ok", "running", "running_degraded"].includes(status)) return "good";
+  if (["failed", "missing"].includes(status)) return "bad";
+  return "warn";
+}
+
+function isSuccessStatus(status?: Status) {
+  return status === "ok" || status === "accepted";
+}
+
+function truncateSessionDeletePreview(value: string) {
+  const normalized = value.trim();
+  return normalized.length > 20 ? `${normalized.slice(0, 20)}...` : normalized;
+}
+
+function healthItems(overview: OverviewResult | null) {
+  return [
+    {
+      title: t("Codex 应用"),
+      status: overview?.codex_app.status ?? "not_checked",
+      ok: overview?.codex_app.status === "found",
+      detail: overview?.codex_app.path || t("尚未检查 Codex 应用路径。"),
+    },
+    {
+      title: t("静默启动入口"),
+      status: overview?.silent_shortcut.status ?? "not_checked",
+      ok: overview?.silent_shortcut.status === "installed",
+      detail: overview?.silent_shortcut.path || t("缺少 Codex++ 静默启动快捷方式时可在安装维护页修复。"),
+    },
+    {
+      title: t("管理工具入口"),
+      status: overview?.management_shortcut.status ?? "not_checked",
+      ok: overview?.management_shortcut.status === "installed",
+      detail: overview?.management_shortcut.path || t("缺少管理工具快捷方式时可在安装维护页修复。"),
+    },
+  ];
+}
+
+function normalizeSettings(settings: BackendSettings): BackendSettings {
+  const backendAggregates = new Map(
+    (settings.aggregateRelayProfiles ?? []).map((aggregate) => [aggregate.id, aggregate] as const),
+  );
+  const splitCommon = splitContextConfigText(settings.relayCommonConfigContents || "");
+  const relayCommonConfigContents = splitCommon.common;
+  const relayContextConfigContents = joinTomlSectionsRootFirst([
+    settings.relayContextConfigContents || "",
+    splitCommon.context,
+  ]);
+  const defaultContextSelection = contextSelectionForAllEntries({
+    ...settings,
+    relayCommonConfigContents,
+    relayContextConfigContents,
+  });
+  const profiles =
+    settings.relayProfiles?.length
+      ? settings.relayProfiles.map((profile) =>
+          normalizeRelayProfile(hydrateAggregateRelayProfile(profile, backendAggregates.get(profile.id)), defaultContextSelection),
+        )
+      : [
+          {
+            id: settings.activeRelayId || "default",
+            name: t("默认中转"),
+            model: "",
+            baseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
+            upstreamBaseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
+            apiKey: settings.relayApiKey || "",
+            protocol: "responses" as RelayProtocol,
+            relayMode: "official" as RelayMode,
+            officialMixApiKey: false,
+            hideOfficialUsageAlert: false,
+            testModel: "",
+            configContents: "",
+            authContents: "",
+            useCommonConfig: true,
+            contextSelection: defaultContextSelection,
+            contextSelectionInitialized: true,
+            contextWindow: "",
+            autoCompactLimit: "",
+            modelList: "",
+            modelWindows: "",
+            modelVlm: "",
+            vlmApiKey: "",
+            vlmModel: "",
+            vlmBaseUrl: "",
+            userAgent: "",
+            sub2apiEnabled: false,
+            sub2apiMultiplier: "",
+          },
+        ];
+  const activeRelayId = profiles.some((profile) => profile.id === settings.activeRelayId)
+    ? settings.activeRelayId
+    : profiles[0]?.id || "default";
+  return syncLegacyRelayFields({
+    ...defaultSettings,
+    ...settings,
+    relayProfilesEnabled: settings.relayProfilesEnabled !== false,
+    codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
+    codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),
+    codexAppDreamSkinPaused: settings.codexAppDreamSkinPaused === true,
+    codexAppDreamSkinThemeConfig: normalizeDreamSkinTheme(settings.codexAppDreamSkinThemeConfig),
+    codexAppDreamSkinImagePath: (settings.codexAppDreamSkinImagePath || "").trim(),
+    codexAppStepwiseMaxItems: clampNumber(settings.codexAppStepwiseMaxItems ?? 6, 0, 6),
+    codexAppStepwiseMaxInputChars: clampNumber(settings.codexAppStepwiseMaxInputChars || 6000, 1000, 24000),
+    codexAppStepwiseMaxOutputTokens: clampNumber(settings.codexAppStepwiseMaxOutputTokens || 500, 100, 4000),
+    codexAppStepwiseTimeoutMs: clampNumber(settings.codexAppStepwiseTimeoutMs || 8000, 1000, 60000),
+    relayCommonConfigContents,
+    relayContextConfigContents,
+    relayProfiles: profiles,
+    activeRelayId,
+  });
+}
+
+function backendSettingsEqual(left: BackendSettings, right: BackendSettings): boolean {
+  return JSON.stringify(normalizeSettings(left)) === JSON.stringify(normalizeSettings(right));
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function parsePort(value: string, fallback: number): number {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535 ? parsed : fallback;
+}
+
+function normalizeImageOverlayFitMode(value: string | undefined): ImageOverlayFitMode {
+  return value === "fill" || value === "fit" || value === "stretch" || value === "tile" || value === "center"
+    ? value
+    : "fit";
+}
+
+function codexExtraArgsToInput(args: string[] | undefined) {
+  return (args ?? []).join("\n");
+}
+
+function inputToCodexExtraArgs(value: string) {
+  return value === "" ? [] : value.split(/\r?\n/);
+}
+
+function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = emptyContextSelection()): RelayProfile {
+  const legacyMixedApi = profile.relayMode === "mixedApi";
+  if (profile.relayMode === "aggregate" || profile.aggregate) {
+    return normalizeAggregateRelayProfile(
+      {
+        ...profile,
+        model: profile.model || "",
+        baseUrl: "",
+        upstreamBaseUrl: "",
+        apiKey: "",
+        protocol: "responses",
+        relayMode: "aggregate",
+        officialMixApiKey: false,
+        hideOfficialUsageAlert: false,
+        testModel: profile.testModel || "",
+        configContents: "",
+        authContents: "",
+        useCommonConfig: profile.useCommonConfig !== false,
+        contextSelection: profile.contextSelectionInitialized
+          ? normalizeContextSelection(profile.contextSelection)
+          : normalizeContextSelection(undefined, defaultContextSelection),
+        contextSelectionInitialized: true,
+        contextWindow: "",
+        autoCompactLimit: "",
+        modelList: "",
+        modelWindows: "",
+        modelRoutes: [],
+        sub2apiEnabled: false,
+        sub2apiMultiplier: "",
+      },
+      null,
+    );
+  }
+  const relayMode = normalizeRelayMode(profile.relayMode);
+  const officialMixApiKey = profile.officialMixApiKey === true || legacyMixedApi;
+  let normalized: RelayProfile = {
+    ...profile,
+    model: profile.model || "",
+    baseUrl: profile.baseUrl || defaultSettings.relayBaseUrl,
+    upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl || "",
+    apiKey: profile.apiKey || "",
+    protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
+    relayMode,
+    officialMixApiKey,
+    hideOfficialUsageAlert: profile.hideOfficialUsageAlert === true,
+    testModel: profile.testModel || "",
+    configContents:
+      relayMode === "official"
+      && !officialMixApiKey
+      && normalizeRelayModelRoutes(profile.modelRoutes).length === 0
+        ? ""
+        : profile.configContents || "",
+    authContents: relayMode === "official" && !officialMixApiKey ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "",
+    useCommonConfig: profile.useCommonConfig !== false,
+    contextSelection: profile.contextSelectionInitialized
+      ? normalizeContextSelection(profile.contextSelection)
+      : normalizeContextSelection(undefined, defaultContextSelection),
+    contextSelectionInitialized: true,
+    contextWindow: profile.contextWindow || "",
+    autoCompactLimit: profile.autoCompactLimit || "",
+    modelList: profile.modelList || "",
+    modelWindows: profile.modelWindows || "",
+    modelRoutes: normalizeRelayModelRoutes(profile.modelRoutes),
+    userAgent: profile.userAgent || "",
+    sub2apiEnabled: profile.sub2apiEnabled === true,
+    sub2apiMultiplier: profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
+    aggregate: null,
+  };
+  return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
+}
+
+function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: AggregateRelayProfile | undefined): RelayProfile {
+  if (!aggregate) return profile;
+  return {
+    ...profile,
+    name: profile.name || aggregate.name,
+    relayMode: "aggregate",
+    aggregate: {
+      strategy: aggregate.strategy,
+      members: aggregate.members.map((member) => ({
+        profileId: member.relayId,
+        weight: clampAggregateWeight(member.weight),
+      })),
+    },
+  };
+}
+
+function activeRelayProfile(settings: BackendSettings): RelayProfile {
+  return (
+    settings.relayProfiles.find((profile) => profile.id === settings.activeRelayId) ||
+    settings.relayProfiles[0] ||
+    defaultSettings.relayProfiles[0]
+  );
+}
+
+function relayProtocolLabel(protocol: RelayProtocol): string {
+  return protocol === "chatCompletions" ? t("Chat Completions 转 Responses") : "Responses API";
+}
+
+function ccsProviderSummary(result: CcsProvidersResult | null): string {
+  if (!result) return t("读取 ~/.cc-switch/cc-switch.db");
+  if (!isSuccessStatus(result.status)) return result.message || t("读取 cc-switch 供应商失败。");
+  const count = result.providers.length;
+  return count ? tf("发现 {0} 个 Codex 供应商", [count]) : t("未发现可导入供应商");
+}
+
+function normalizeRelayMode(mode: RelayMode | undefined): RelayMode {
+  if (mode === "aggregate") return mode;
+  if (mode === "pureApi") return mode;
+  return "official";
+}
+
+function normalizeContextSelection(
+  selection?: Partial<RelayContextSelection>,
+  fallback: RelayContextSelection = emptyContextSelection(),
+): RelayContextSelection {
+  if (!selection) {
+    return {
+      mcpServers: [...fallback.mcpServers],
+      skills: [...fallback.skills],
+      plugins: [...fallback.plugins],
+    };
+  }
+  return {
+    mcpServers: Array.isArray(selection?.mcpServers) ? selection.mcpServers.map(String) : [],
+    skills: Array.isArray(selection?.skills) ? selection.skills.map(String) : [],
+    plugins: Array.isArray(selection?.plugins) ? selection.plugins.map(String) : [],
+  };
+}
+
+function relayModeLabel(mode: RelayMode): string {
+  if (mode === "aggregate") return t("聚合供应商");
+  if (mode === "pureApi") return t("纯 API");
+  return t("官方登录");
+}
+
+function providerImportWireApiLabel(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "chat" || normalized === "chat_completions" || normalized === "chat-completions") {
+    return "Chat Completions";
+  }
+  return "Responses";
+}
+
+function providerImportRelayModeLabel(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "official") return t("官方登录");
+  if (normalized === "mixedapi" || normalized === "mixed-api" || normalized === "mixed_api") return t("混入 API");
+  if (normalized === "aggregate") return t("聚合供应商");
+  return t("纯 API");
+}
+
+function maskSecret(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return t("未填写");
+  if (trimmed.length <= 10) return `${trimmed.slice(0, 2)}…${trimmed.slice(-2)}`;
+  return `${trimmed.slice(0, 6)}…${trimmed.slice(-4)}`;
+}
+
+function relayProfileConfigBrief(profile: RelayProfile): string {
+  if (isAggregateRelayProfile(profile)) {
+    const aggregate = normalizeAggregateConfig(profile.aggregate, []);
+    return tf("{0} · {1} 个成员", [aggregateStrategyLabel(aggregate.strategy), aggregate.members.length]);
+  }
+  if (profile.relayMode === "official") return profile.officialMixApiKey ? t("混入 API Key") : t("不写 API 文件");
+  return profile.baseUrl || t("未填写 URL");
+}
+
+function relaySub2ApiMultiplierLabel(profile: RelayProfile): string {
+  const multiplier = profile.sub2apiMultiplier.trim();
+  return multiplier ? tf("Sub2API 倍率 {0}x", [multiplier]) : t("Sub2API 倍率未获取");
+}
+
+function formatMultiplierValue(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "";
+  let text = value.toFixed(4);
+  while (text.includes(".") && text.endsWith("0")) text = text.slice(0, -1);
+  return text.endsWith(".") ? text.slice(0, -1) : text;
+}
+
+function relayProfileModeHelp(profile: RelayProfile): string {
+  if (isAggregateRelayProfile(profile)) {
+    return t("聚合供应商只保存成员和策略配置，成员来自已有 API 供应商；切为当前后会通过本地协议代理轮转请求。");
+  }
+  if (profile.relayMode === "official") {
+    if (profile.officialMixApiKey) {
+      return t("此供应商会保留官方登录模式，并把请求混入当前 API Key；Codex增强仍使用兼容模式。");
+    }
+    return t("此供应商会切回官方登录模式，使用 ChatGPT 官方账号，不写入 API Key。");
+  }
+  if (profile.relayMode === "pureApi") {
+    return t("此供应商会同时写入 config.toml 和 auth.json；API Key 也会注入到 provider bearer token。");
+  }
+  return t("此供应商会保留官方登录模式，并把请求混入当前 API Key；Codex增强仍使用兼容模式。");
+}
+
+function relayProfileReadinessText(profile: RelayProfile, relay: RelayResult | null): string {
+  if (isAggregateRelayProfile(profile)) {
+    const aggregate = normalizeAggregateConfig(profile.aggregate, []);
+    return tf("聚合供应商已配置为{0}，包含 {1} 个成员；真实对话会走本地代理轮转。", [aggregateStrategyLabel(aggregate.strategy), aggregate.members.length]);
+  }
+  if (profile.relayMode === "official") {
+    if (profile.officialMixApiKey) {
+      const hasApiFields = profile.baseUrl.trim() && profile.apiKey.trim();
+      if (!relay?.authenticated && !hasApiFields) return t("当前未登录官方账号，也未配置混入 API 的 Base URL / Key。");
+      if (!relay?.authenticated) return t("当前未登录官方账号；官方登录混入 API Key 需要先登录官方账号。");
+      if (!hasApiFields) return t("当前还没有填写混入 API 的 Base URL / Key。");
+      return tf("官方登录已就绪：{0}，会混入当前 API Key。", [relay.accountLabel || t("已登录")]);
+    }
+    return relay?.authenticated
+      ? tf("官方账号已登录：{0}。", [relay.accountLabel || relay.authSource || t("已检测")])
+      : t("当前未登录官方账号；切到官方登录模式后仍需要先在 Codex/ChatGPT 登录。");
+  }
+  const hasFiles = profile.configContents.trim() && profile.authContents.trim();
+  if (!hasFiles) return t("当前供应商还没有完整 config.toml / API Key 存档。");
+  if (relay && !relay.configured) return t("纯 API 配置未完整写入：请检查此供应商是否有 OPENAI_API_KEY，且 config.toml 是否包含 model_provider / provider / base_url。");
+  return t("纯 API 就绪：会同时写入 config.toml 和 auth.json。");
+}
+
+function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injection" | "apply_relay_injection" | "apply_pure_api_injection" {
+  if (isAggregateRelayProfile(profile)) return "apply_relay_injection";
+  if (profile.relayMode === "pureApi") return "apply_pure_api_injection";
+  if (
+    profile.relayMode === "official"
+    && !profile.officialMixApiKey
+    && normalizeRelayModelRoutes(profile.modelRoutes).length === 0
+  ) return "clear_relay_injection";
+  if (profile.configContents.trim()) return "apply_relay_injection";
+  if (normalizeRelayModelRoutes(profile.modelRoutes).length > 0) return "apply_relay_injection";
+  return profile.officialMixApiKey ? "apply_relay_injection" : "clear_relay_injection";
+}
+function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
+  if (isAggregateRelayProfile(profile)) {
+    return { ...profile, configContents: "", authContents: "", aggregate: normalizeAggregateConfig(profile.aggregate, []) };
+  }
+  if (profile.relayMode === "official") {
+    return {
+      ...profile,
+      configContents: profile.officialMixApiKey
+        ? buildRelayConfigToml(profile, { includeBearerToken: true, requiresOpenAiAuth: true })
+        : "",
+      authContents: profile.authContents || "",
+    };
+  }
+  return {
+    ...profile,
+    configContents: buildRelayConfigToml(profile, { includeBearerToken: false, requiresOpenAiAuth: false }),
+    authContents: buildRelayAuthJson(profile),
+  };
+}
+
+function buildRelayConfigToml(
+  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">,
+  options: { includeBearerToken: boolean; requiresOpenAiAuth?: boolean },
+): string {
+  const baseUrl = profile.protocol === "chatCompletions" || normalizeRelayModelRoutes(profile.modelRoutes).length > 0 ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
+  const apiKey = profile.apiKey.trim();
+  const rootLines = [
+    profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
+    'model_provider = "custom"',
+    "",
+  ].filter((line): line is string => line !== null);
+  return [
+    ...rootLines,
+    "[model_providers.custom]",
+    'name = "custom"',
+    'wire_api = "responses"',
+    options.requiresOpenAiAuth ? "requires_openai_auth = true" : null,
+    `base_url = "${tomlString(baseUrl)}"`,
+    options.includeBearerToken && apiKey ? `experimental_bearer_token = "${tomlString(apiKey)}"` : null,
+    "",
+  ].filter((line): line is string => line !== null).join("\n");
+}
+
+function buildRelayAuthJson(profile: Pick<RelayProfile, "apiKey">): string {
+  return `${JSON.stringify({ OPENAI_API_KEY: profile.apiKey.trim() }, null, 2)}\n`;
+}
+
+function buildOfficialRelayAuthJson(contents: string): string {
+  const trimmed = contents.trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "";
+    delete parsed.OPENAI_API_KEY;
+    return `${JSON.stringify(parsed, null, 2)}\n`;
+  } catch {
+    return "";
+  }
+}
+
+function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
+  if (isAggregateRelayProfile(profile)) {
+    return normalizeAggregateRelayProfile(profile, null);
+  }
+  const configContents = profile.configContents || "";
+  const authContents = profile.relayMode === "official" ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "";
+  const configBaseUrl = codexBaseUrlFromConfig(configContents);
+  const chatUpstreamBaseUrl = rootTomlStringValue(configContents, CHAT_UPSTREAM_BASE_URL_KEY);
+  const isProxyConfig = configBaseUrl === PROTOCOL_PROXY_BASE_URL;
+  const upstreamBaseUrl = profile.upstreamBaseUrl || chatUpstreamBaseUrl || (configBaseUrl && !isProxyConfig ? configBaseUrl : profile.baseUrl || "");
+  const configApiKey = codexExperimentalBearerTokenFromConfig(configContents);
+  const configModel = codexModelFromConfig(configContents);
+  // 如果用户输入了带后缀的模型名，优先保留在界面的「配置模型」字段中；
+  // config.toml 里实际写的是剥离后缀的 slug（由 applyRelayProfilePatchToFiles 处理）。
+  const model = /\[.+\]$/.test(profile.model.trim()) ? profile.model.trim() : configModel;
+  return {
+    ...profile,
+    model,
+    baseUrl: upstreamBaseUrl,
+    upstreamBaseUrl,
+    apiKey: profile.relayMode === "official"
+      ? configApiKey || profile.apiKey || ""
+      : codexApiKeyFromAuth(authContents) || configApiKey || "",
+    contextWindow: codexTopLevelIntFromConfig(configContents, "model_context_window"),
+    autoCompactLimit: codexTopLevelIntFromConfig(configContents, "model_auto_compact_token_limit"),
+    configContents,
+    authContents,
+  };
+}
+
+function applyRelayProfilePatchToFiles(
+  profile: RelayProfile,
+  patch: Partial<RelayProfile>,
+  options: { allowGenerateFiles?: boolean } = {},
+): RelayProfile {
+  let next: RelayProfile = { ...profile, ...patch };
+  if (isAggregateRelayProfile(next)) {
+    return normalizeAggregateRelayProfile(next, null);
+  }
+  const shouldHaveFiles =
+    next.relayMode !== "official" || next.officialMixApiKey || next.configContents.trim() || next.authContents.trim();
+  const needsAuthFile = next.relayMode === "pureApi";
+  if (options.allowGenerateFiles && shouldHaveFiles && (!next.configContents.trim() || (needsAuthFile && !next.authContents.trim()))) {
+    next = withGeneratedRelayFiles(next);
+  }
+
+  if ("model" in patch) {
+    // 模型后缀（如 [1M]）仅供 CodexPlusPlus 内部使用，写入 config.toml 前需剥离，
+    // 否则 codex 会按带后缀的字符串去匹配 catalog slug，导致窗口回退到默认值。
+    const { slug } = parseModelSuffix(patch.model || "");
+    next.configContents = setRootTomlStringKey(next.configContents, "model", slug);
+  }
+  if ("apiKey" in patch) {
+    if (next.relayMode === "pureApi") {
+      next.authContents = setAuthOpenAiApiKey(next.authContents, patch.apiKey || "");
+      next.configContents = removeCodexExperimentalBearerToken(next.configContents);
+    } else {
+      next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "");
+    }
+  }
+  if ("baseUrl" in patch) {
+    next.upstreamBaseUrl = patch.baseUrl || "";
+  }
+  if ("upstreamBaseUrl" in patch) {
+    next.baseUrl = patch.upstreamBaseUrl || "";
+  }
+  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch) {
+    const baseUrlForConfig = next.protocol === "chatCompletions" || normalizeRelayModelRoutes(next.modelRoutes).length > 0
+      ? PROTOCOL_PROXY_BASE_URL
+      : next.upstreamBaseUrl || next.baseUrl;
+    next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
+      requiresOpenAiAuth: next.relayMode !== "pureApi",
+    });
+    next.configContents = removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
+  }
+  if ("contextWindow" in patch) {
+    next.configContents = setRootTomlIntKey(next.configContents, "model_context_window", patch.contextWindow || "");
+  }
+  if ("autoCompactLimit" in patch) {
+    next.configContents = setRootTomlIntKey(
+      next.configContents,
+      "model_auto_compact_token_limit",
+      patch.autoCompactLimit || "",
+    );
+  }
+  if ("relayMode" in patch || "officialMixApiKey" in patch) {
+    if (
+      next.relayMode === "official"
+      && !next.officialMixApiKey
+      && normalizeRelayModelRoutes(next.modelRoutes).length === 0
+    ) {
+      next.configContents = "";
+      next.authContents = buildOfficialRelayAuthJson(next.authContents);
+    } else if (options.allowGenerateFiles && (!next.configContents.trim() || (next.relayMode === "pureApi" && !next.authContents.trim()))) {
+      next = withGeneratedRelayFiles(next);
+    }
+  }
+  return deriveRelayProfileFromFiles(next);
+}
+
+function codexModelFromConfig(contents: string): string {
+  for (const line of contents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (trimmed.startsWith("[")) break;
+    const match = /^model\s*=\s*(["'])(.*)\1\s*$/.exec(trimmed);
+    if (match) return match[2].replace(/\\(["'\\])/g, "$1");
+  }
+  return "";
+}
+
+/// 解析模型后缀语法，如 deepseek-v4-flash[1M] -> { slug: "deepseek-v4-flash", window: 1000000 }
+/// 非法或没有后缀时返回原串作为 slug。
+function parseModelSuffix(raw: string): { slug: string; window?: number } {
+  const trimmed = raw.trim();
+  const match = /^(.*?)\[(\d+(?:[KkMm])?)\]$/.exec(trimmed);
+  if (!match) return { slug: trimmed };
+  const inner = match[2];
+  const numPart = inner.replace(/[KkMm]$/, "");
+  const multiplier = inner.endsWith("K") || inner.endsWith("k") ? 1_000
+    : inner.endsWith("M") || inner.endsWith("m") ? 1_000_000
+    : 1;
+  const window = Number.parseInt(numPart, 10) * multiplier;
+  if (!Number.isFinite(window) || window <= 0) return { slug: trimmed };
+  return { slug: match[1].trim(), window };
+}
+
+function codexBaseUrlFromConfig(contents: string): string {
+  return codexProviderStringFromConfig(contents, "base_url");
+}
+
+function codexExperimentalBearerTokenFromConfig(contents: string): string {
+  return codexProviderStringFromConfig(contents, "experimental_bearer_token");
+}
+
+function codexProviderStringFromConfig(contents: string, key: string): string {
+  const provider = rootTomlStringValue(contents, "model_provider");
+  const targetSection = provider ? `model_providers.${provider}` : "";
+  const lines = contents.split(/\r?\n/);
+  let currentSection = "";
+  const matches: string[] = [];
+
+  for (const line of lines) {
+    const section = tomlSectionName(line);
+    if (section !== null) {
+      currentSection = section;
+      continue;
+    }
+    const value = tomlStringAssignmentValue(line, key);
+    if (value === null) continue;
+    if (targetSection && currentSection === targetSection) return value;
+    if (!currentSection || !currentSection.startsWith("model_providers.")) matches.push(value);
+  }
+
+  return matches.length === 1 ? matches[0] : "";
+}
+
+function codexApiKeyFromAuth(contents: string): string {
+  try {
+    const parsed = JSON.parse(contents || "{}") as { OPENAI_API_KEY?: unknown };
+    return typeof parsed.OPENAI_API_KEY === "string" ? parsed.OPENAI_API_KEY : "";
+  } catch {
+    return "";
+  }
+}
+
+function codexTopLevelIntFromConfig(contents: string, key: string): string {
+  const topLevel = splitTomlRootAndTables(contents).root;
+  const pattern = new RegExp(`^\\s*${key}\\s*=\\s*(\\d+)\\s*(?:#.*)?$`);
+  for (const line of topLevel.split(/\r?\n/)) {
+    const match = pattern.exec(line);
+    if (match) return match[1];
+  }
+  return "";
+}
+
+function rootTomlStringValue(contents: string, key: string): string {
+  const topLevel = splitTomlRootAndTables(contents).root;
+  for (const line of topLevel.split(/\r?\n/)) {
+    const value = tomlStringAssignmentValue(line, key);
+    if (value !== null) return value;
+  }
+  return "";
+}
+
+function tomlSectionName(line: string): string | null {
+  const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+  return match ? match[1].trim() : null;
+}
+
+function tomlStringAssignmentValue(line: string, key: string): string | null {
+  const match = new RegExp(`^\\s*${key}\\s*=\\s*([\"'])(.*)\\1\\s*(?:#.*)?$`).exec(line.trim());
+  if (!match) return null;
+  return match[2].replace(/\\(["'\\])/g, "$1");
+}
+
+function setAuthOpenAiApiKey(contents: string, apiKey: string): string {
+  let parsed: Record<string, unknown> = {};
+  try {
+    const value = JSON.parse(contents || "{}");
+    if (value && typeof value === "object" && !Array.isArray(value)) parsed = value as Record<string, unknown>;
+  } catch {
+    parsed = {};
+  }
+  parsed.OPENAI_API_KEY = apiKey.trim();
+  return `${JSON.stringify(parsed, null, 2)}\n`;
+}
+
+function setRootTomlStringKey(contents: string, key: string, value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return removeRootTomlKey(contents, key);
+  return setRootTomlLine(contents, key, `${key} = "${tomlString(trimmed)}"`);
+}
+
+function setRootTomlIntKey(contents: string, key: string, value: string): string {
+  const trimmed = value.replace(/[^\d]/g, "");
+  if (!trimmed) return removeRootTomlKey(contents, key);
+  return setRootTomlLine(contents, key, `${key} = ${trimmed}`);
+}
+
+function setRootTomlLine(contents: string, key: string, lineText: string): string {
+  const lines = contents.split(/\r?\n/);
+  const firstTable = lines.findIndex((line) => /^\s*\[[^\]]+\]\s*$/.test(line));
+  const rootEnd = firstTable >= 0 ? firstTable : lines.length;
+  for (let index = 0; index < rootEnd; index += 1) {
+    if (new RegExp(`^\\s*${key}\\s*=`).test(lines[index])) {
+      lines[index] = lineText;
+      return ensureTrailingNewline(lines.join("\n").trimEnd());
+    }
+  }
+  const insertAt = key === "model" ? 0 : rootEnd;
+  lines.splice(insertAt, 0, lineText);
+  return ensureTrailingNewline(lines.join("\n").trimEnd());
+}
+
+function codexRequiresOpenAiAuthFromConfig(contents: string): boolean {
+  const provider = rootTomlStringValue(contents, "model_provider");
+  const targetSection = provider ? `model_providers.${provider}` : "";
+  const lines = contents.split(/\r?\n/);
+  let currentSection = "";
+  let sawProviderSection = false;
+
+  for (const line of lines) {
+    const section = tomlSectionName(line);
+    if (section !== null) {
+      currentSection = section;
+      if (section.startsWith("model_providers.")) sawProviderSection = true;
+      continue;
+    }
+    const match = /^\s*requires_openai_auth\s*=\s*(true|false)\s*(?:#.*)?$/i.exec(line);
+    if (!match || !currentSection.startsWith("model_providers.")) continue;
+    if (targetSection) {
+      if (currentSection === targetSection) return match[1].toLowerCase() === "true";
+      continue;
+    }
+    if (match[1].toLowerCase() === "true") return true;
+  }
+
+  return !sawProviderSection && /^\s*requires_openai_auth\s*=\s*true\s*(?:#.*)?$/im.test(contents);
+}
+
+function setCodexProviderStringKey(
+  contents: string,
+  key: string,
+  value: string,
+  options: { requiresOpenAiAuth?: boolean } = {},
+): string {
+  const provider = rootTomlStringValue(contents, "model_provider") || "custom";
+  let next = contents;
+  if (!rootTomlStringValue(next, "model_provider")) {
+    next = setRootTomlStringKey(next, "model_provider", provider);
+  }
+  next = ensureCodexProviderDefaults(next, provider, { requiresOpenAiAuth: options.requiresOpenAiAuth !== false });
+  return setTomlSectionStringKey(next, `model_providers.${provider}`, key, value);
+}
+
+function setCodexExperimentalBearerToken(contents: string, apiKey: string): string {
+  const trimmed = apiKey.trim();
+  return trimmed
+    ? setCodexProviderStringKey(contents, "experimental_bearer_token", trimmed)
+    : removeCodexExperimentalBearerToken(contents);
+}
+
+function removeCodexExperimentalBearerToken(contents: string): string {
+  const provider = rootTomlStringValue(contents, "model_provider") || "custom";
+  return removeTomlSectionKey(contents, `model_providers.${provider}`, "experimental_bearer_token");
+}
+
+function ensureCodexProviderDefaults(
+  contents: string,
+  provider: string,
+  options: { requiresOpenAiAuth?: boolean } = {},
+): string {
+  let next = contents;
+  const section = `model_providers.${provider}`;
+  next = setTomlSectionStringKey(next, section, "name", provider);
+  next = setTomlSectionStringKey(next, section, "wire_api", "responses");
+  return options.requiresOpenAiAuth === false ? next : setTomlSectionBoolKey(next, section, "requires_openai_auth", true);
+}
+
+function setTomlSectionBoolKey(contents: string, sectionName: string, key: string, value: boolean): string {
+  return setTomlSectionRawKey(contents, sectionName, key, value ? "true" : "false");
+}
+
+function setTomlSectionStringKey(contents: string, sectionName: string, key: string, value: string): string {
+  return setTomlSectionRawKey(contents, sectionName, key, `"${tomlString(value.trim())}"`);
+}
+
+function setTomlSectionRawKey(contents: string, sectionName: string, key: string, value: string): string {
+  const lines = contents.split(/\r?\n/);
+  let sectionStart = -1;
+  let sectionEnd = lines.length;
+  for (let index = 0; index < lines.length; index += 1) {
+    const section = tomlSectionName(lines[index]);
+    if (section === null) continue;
+    if (sectionStart >= 0) {
+      sectionEnd = index;
+      break;
+    }
+    if (section === sectionName) sectionStart = index;
+  }
+  if (sectionStart < 0) {
+    const prefix = ensureTrailingNewline(lines.join("\n").trimEnd()).trimEnd();
+    return joinTomlSections([prefix, `[${sectionName}]\n${key} = ${value}`]);
+  }
+  const replacement = `${key} = ${value}`;
+  for (let index = sectionStart + 1; index < sectionEnd; index += 1) {
+    if (new RegExp(`^\\s*${key}\\s*=`).test(lines[index])) {
+      lines[index] = replacement;
+      return ensureTrailingNewline(lines.join("\n").trimEnd());
+    }
+  }
+  let insertAt = sectionEnd;
+  while (insertAt > sectionStart + 1 && lines[insertAt - 1].trim() === "") insertAt -= 1;
+  lines.splice(insertAt, 0, replacement);
+  return ensureTrailingNewline(lines.join("\n").trimEnd());
+}
+
+function removeTomlSectionKey(contents: string, sectionName: string, key: string): string {
+  const lines = contents.split(/\r?\n/);
+  let sectionStart = -1;
+  let sectionEnd = lines.length;
+  for (let index = 0; index < lines.length; index += 1) {
+    const section = tomlSectionName(lines[index]);
+    if (section === null) continue;
+    if (sectionStart >= 0) {
+      sectionEnd = index;
+      break;
+    }
+    if (section === sectionName) sectionStart = index;
+  }
+  if (sectionStart < 0) return contents;
+  const next = lines.filter((line, index) => {
+    if (index <= sectionStart || index >= sectionEnd) return true;
+    return !new RegExp(`^\\s*${key}\\s*=`).test(line);
+  });
+  return ensureTrailingNewline(next.join("\n").trimEnd());
+}
+
+function relayProfileSwitchValidation(profile: RelayProfile, settings: BackendSettings | null = null): string | null {
+  if (isAggregateRelayProfile(profile)) {
+    return aggregateRelayProfileValidation(profile);
+  }
+  const modelRouteError = relayModelRoutesValidation(profile, settings);
+  if (modelRouteError) return modelRouteError;
+  if (profile.relayMode === "official" && !profile.officialMixApiKey) return null;
+  if (!profile.configContents.trim()) {
+    return tf("供应商「{0}」缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。请先在该供应商详情里保存 config.toml。", [profile.name || profile.id]);
+  }
+  if (profile.relayMode !== "official" || !authJsonHasOpenAiApiKey(profile.authContents)) return null;
+  return t("官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。");
+}
+
+function relayModelRoutesValidation(profile: RelayProfile, settings: BackendSettings | null): string | null {
+  const issue = findRelayModelRouteIssue([profile], settings?.relayProfiles ?? [profile]);
+  return relayModelRouteIssueMessage(issue);
+}
+
+function relayModelRoutesSettingsValidation(settings: BackendSettings): string | null {
+  return relayModelRouteIssueMessage(
+    findRelayModelRouteIssue(settings.relayProfiles, settings.relayProfiles),
+  );
+}
+
+function relayModelRouteIssueMessage(issue: ReturnType<typeof findRelayModelRouteIssue>): string | null {
+  if (!issue) return null;
+  switch (issue.kind) {
+    case "incomplete":
+      return t("单模型路由需要填写模型名称和目标供应商。");
+    case "duplicate":
+      return tf("模型「{0}」存在重复路由。", [issue.model]);
+    case "self":
+      return tf("模型「{0}」不能路由到当前供应商自身。", [issue.model]);
+    case "missingTarget":
+      return tf("模型「{0}」的目标供应商不存在。", [issue.model]);
+    case "aggregateTarget":
+      return tf("模型「{0}」不能路由到聚合供应商。", [issue.model]);
+    case "targetProtocol":
+      return tf("模型「{0}」的目标供应商必须使用 Responses API。", [issue.model]);
+    case "targetCredentials":
+      return tf("模型「{0}」的目标供应商缺少 Base URL 或 Key。", [issue.model]);
+  }
+}
+
+function relaySettingsWithDraft(
+  settings: BackendSettings,
+  profileId: string,
+  draft: RelayProfile,
+  isNew: boolean,
+): BackendSettings {
+  const normalizedDraft = isAggregateRelayProfile(draft)
+    ? normalizeAggregateRelayProfile(draft, settings)
+    : deriveRelayProfileFromFiles(draft);
+  return isNew
+    ? addRelayProfile(settings, normalizedDraft)
+    : updateRelayProfile(settings, profileId, normalizedDraft);
+}
+
+function relayProfileUsesLiveFiles(profile: RelayProfile): boolean {
+  return profile.relayMode !== "official"
+    || profile.officialMixApiKey
+    || normalizeRelayModelRoutes(profile.modelRoutes).length > 0;
+}
+function authJsonHasOpenAiApiKey(contents: string): boolean {
+  const trimmed = contents.trim();
+  if (!trimmed) return false;
+  try {
+    const value = JSON.parse(trimmed);
+    return !!value && typeof value === "object" && typeof value.OPENAI_API_KEY === "string" && value.OPENAI_API_KEY.trim().length > 0;
+  } catch {
+    return /"OPENAI_API_KEY"\s*:/.test(trimmed);
+  }
+}
+
+function tomlString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function syncLegacyRelayFields(settings: BackendSettings): BackendSettings {
+  const relayProfiles = settings.relayProfiles.map((profile) =>
+    isAggregateRelayProfile(profile) ? normalizeAggregateRelayProfile(profile, { ...settings, relayProfiles: settings.relayProfiles }) : deriveRelayProfileFromFiles(profile),
+  );
+  const active = activeRelayProfile({ ...settings, relayProfiles });
+  const aggregateRelayProfiles = normalizeAggregateProfilesFromRelayProfiles(relayProfiles);
+  const activeAggregateRelayId = isAggregateRelayProfile(active) ? active.id : "";
+  return {
+    ...settings,
+    relayProfiles,
+    activeRelayId: active.id,
+    relayBaseUrl: isAggregateRelayProfile(active) ? PROTOCOL_PROXY_BASE_URL : active.baseUrl,
+    relayApiKey: active.apiKey,
+    aggregateRelayProfiles,
+    activeAggregateRelayId,
+  };
+}
+
+function normalizeAggregateProfilesFromRelayProfiles(profiles: RelayProfile[]): AggregateRelayProfile[] {
+  const candidates = profiles.filter((profile) => !isAggregateRelayProfile(profile));
+  return profiles.filter(isAggregateRelayProfile).map((profile) => {
+    const aggregate = normalizeAggregateConfig(profile.aggregate, candidates);
+    return {
+      id: profile.id,
+      name: profile.name || t("聚合供应商"),
+      strategy: aggregate.strategy,
+      members: aggregate.members.map((member) => ({
+        relayId: member.profileId,
+        weight: clampAggregateWeight(member.weight),
+      })),
+    };
+  });
+}
+function updateRelayProfile(settings: BackendSettings, id: string, patch: Partial<RelayProfile>): BackendSettings {
+  if (patch.relayMode === "aggregate" || patch.aggregate) {
+    return syncLegacyRelayFields({
+      ...settings,
+      relayProfiles: settings.relayProfiles.map((profile) =>
+        profile.id === id ? normalizeAggregateRelayProfile({ ...profile, ...patch }, settings) : profile,
+      ),
+    });
+  }
+  return syncLegacyRelayFields({
+    ...settings,
+    relayProfiles: settings.relayProfiles.map((profile) => {
+      if (profile.id !== id) return profile;
+      return deriveRelayProfileFromFiles({ ...profile, ...patch });
+    }),
+  });
+}
+
+function createRelayProfile(settings: BackendSettings): RelayProfile {
+  const id = `relay-${Date.now().toString(36)}`;
+  const contextSelection = contextSelectionForAllEntries(settings);
+  const next = {
+    id,
+    name: tf("供应商 {0}", [settings.relayProfiles.length + 1]),
+    model: "",
+    baseUrl: defaultSettings.relayBaseUrl,
+    upstreamBaseUrl: defaultSettings.relayBaseUrl,
+    apiKey: "",
+    protocol: "responses" as RelayProtocol,
+    relayMode: "official" as RelayMode,
+    officialMixApiKey: false,
+    hideOfficialUsageAlert: false,
+    testModel: "",
+    configContents: "",
+    authContents: "",
+    useCommonConfig: true,
+    contextSelection,
+    contextSelectionInitialized: true,
+    contextWindow: "",
+    autoCompactLimit: "",
+    modelList: "",
+    modelWindows: "",
+    modelVlm: "",
+    vlmApiKey: "",
+    vlmModel: "",
+    vlmBaseUrl: "",
+    userAgent: "",
+    sub2apiEnabled: false,
+    sub2apiMultiplier: "",
+    modelRoutes: [],
+  };
+  return withGeneratedRelayFiles(next);
+}
+
+function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
+  const id = `aggregate-${Date.now().toString(36)}`;
+  const contextSelection = contextSelectionForAllEntries(settings);
+  const candidates = aggregateMemberCandidates(settings, id);
+  return normalizeAggregateRelayProfile(
+    {
+      id,
+      name: tf("聚合供应商 {0}", [settings.relayProfiles.filter(isAggregateRelayProfile).length + 1]),
+      model: "",
+      baseUrl: "",
+      upstreamBaseUrl: "",
+      apiKey: "",
+      protocol: "responses",
+      relayMode: "aggregate",
+      officialMixApiKey: false,
+      hideOfficialUsageAlert: false,
+      testModel: "",
+      configContents: "",
+      authContents: "",
+      useCommonConfig: true,
+      contextSelection,
+      contextSelectionInitialized: true,
+      contextWindow: "",
+      autoCompactLimit: "",
+      modelList: "",
+      modelWindows: "",
+      modelVlm: "",
+      vlmApiKey: "",
+      vlmModel: "",
+      vlmBaseUrl: "",
+      userAgent: "",
+      sub2apiEnabled: false,
+      sub2apiMultiplier: "",
+      modelRoutes: [],
+      aggregate: {
+        strategy: "failover",
+        members: candidates.slice(0, 1).map((profile) => ({ profileId: profile.id, weight: 1 })),
+      },
+    },
+    settings,
+  );
+}
+
+function addRelayProfile(settings: BackendSettings, profile: RelayProfile): BackendSettings {
+  const nextWithFiles = isAggregateRelayProfile(profile)
+    ? normalizeAggregateRelayProfile(profile, settings)
+    : deriveRelayProfileFromFiles(
+        profile.configContents.trim() || profile.authContents.trim() ? profile : withGeneratedRelayFiles(profile),
+      );
+  const activeId = settings.relayProfiles.some((item) => item.id === settings.activeRelayId)
+    ? settings.activeRelayId
+    : activeRelayProfile(settings).id;
+  return syncLegacyRelayFields({
+    ...settings,
+    relayProfiles: [...settings.relayProfiles, nextWithFiles],
+    activeRelayId: activeId,
+  });
+}
+
+function duplicateRelayProfile(settings: BackendSettings, id: string): BackendSettings {
+  const sourceIndex = settings.relayProfiles.findIndex((profile) => profile.id === id);
+  const source = settings.relayProfiles[sourceIndex] || activeRelayProfile(settings);
+  const nextId = `relay-${Date.now().toString(36)}`;
+  const next = {
+    ...source,
+    id: nextId,
+    name: tf("{0} 副本", [source.name || t("未命名供应商")]),
+  };
+  const normalizedNext = isAggregateRelayProfile(next) ? normalizeAggregateRelayProfile(next, settings) : next;
+  const relayProfiles = [...settings.relayProfiles];
+  relayProfiles.splice(sourceIndex >= 0 ? sourceIndex + 1 : relayProfiles.length, 0, normalizedNext);
+  return syncLegacyRelayFields({
+    ...settings,
+    relayProfiles,
+  });
+}
+
+function reorderRelayProfiles(settings: BackendSettings, sourceId: string, targetId: string): BackendSettings {
+  if (sourceId === targetId) return settings;
+  const sourceIndex = settings.relayProfiles.findIndex((profile) => profile.id === sourceId);
+  const targetIndex = settings.relayProfiles.findIndex((profile) => profile.id === targetId);
+  if (sourceIndex < 0 || targetIndex < 0) return settings;
+  const relayProfiles = [...settings.relayProfiles];
+  const [moved] = relayProfiles.splice(sourceIndex, 1);
+  relayProfiles.splice(targetIndex, 0, moved);
+  return syncLegacyRelayFields({
+    ...settings,
+    relayProfiles,
+  });
+}
+
+function removeRelayProfile(settings: BackendSettings, id: string): BackendSettings {
+  const profiles = settings.relayProfiles.filter((profile) => profile.id !== id);
+  const scrubbedProfiles = profiles.map((profile) =>
+    isAggregateRelayProfile(profile)
+      ? normalizeAggregateRelayProfile(
+          {
+            ...profile,
+            aggregate: {
+              ...normalizeAggregateConfig(profile.aggregate, []),
+              members: normalizeAggregateConfig(profile.aggregate, []).members.filter((member) => member.profileId !== id),
+            },
+          },
+          { ...settings, relayProfiles: profiles },
+        )
+      : {
+          ...profile,
+          modelRoutes: normalizeRelayModelRoutes(profile.modelRoutes).filter((route) => route.targetRelayId !== id),
+        },
+  );
+  return syncLegacyRelayFields({
+    ...settings,
+    relayProfiles: scrubbedProfiles.length ? scrubbedProfiles : defaultSettings.relayProfiles,
+    activeRelayId: settings.activeRelayId === id ? scrubbedProfiles[0]?.id || "default" : settings.activeRelayId,
+  });
+}
+
+const aggregateStrategyOptions: Array<{ value: RelayAggregateStrategy; label: string; description: string }> = [
+  {
+    value: "failover",
+    label: t("失败切换"),
+    description: t("按成员顺序请求，失败后切到下一个供应商。"),
+  },
+  {
+    value: "conversationRoundRobin",
+    label: t("按对话轮转"),
+    description: t("同一对话保持一个成员，不同对话依次分配。"),
+  },
+  {
+    value: "requestRoundRobin",
+    label: t("按请求轮转"),
+    description: t("每次请求按成员顺序切换，适合均匀摊请求量。"),
+  },
+  {
+    value: "weightedRoundRobin",
+    label: t("权重轮转"),
+    description: t("按成员权重分配请求，权重越高承担越多。"),
+  },
+];
+
+function isAggregateRelayProfile(profile: Pick<RelayProfile, "relayMode" | "aggregate">): boolean {
+  return profile.relayMode === "aggregate" || !!profile.aggregate;
+}
+
+function normalizeAggregateRelayProfile(profile: RelayProfile, settings: BackendSettings | null): RelayProfile {
+  const candidates = settings ? aggregateMemberCandidates(settings, profile.id) : [];
+  const aggregate = normalizeAggregateConfig(profile.aggregate, candidates);
+  return {
+    ...profile,
+    baseUrl: "",
+    upstreamBaseUrl: "",
+    apiKey: "",
+    protocol: "responses",
+    relayMode: "aggregate",
+    officialMixApiKey: false,
+    hideOfficialUsageAlert: false,
+    configContents: "",
+    authContents: "",
+    sub2apiEnabled: false,
+    sub2apiMultiplier: "",
+    aggregate,
+  };
+}
+
+function normalizeAggregateConfig(
+  aggregate: RelayAggregateConfig | null | undefined,
+  candidates: RelayProfile[],
+): RelayAggregateConfig {
+  const candidateIds = new Set(candidates.map((profile) => profile.id));
+  const seen = new Set<string>();
+  const strategy: RelayAggregateStrategy =
+    aggregate?.strategy && aggregateStrategyOptions.some((option) => option.value === aggregate.strategy)
+      ? aggregate.strategy
+      : "failover";
+  const members = (aggregate?.members ?? [])
+    .filter((member) => member.profileId && !seen.has(member.profileId))
+    .filter((member) => !candidateIds.size || candidateIds.has(member.profileId))
+    .map((member) => {
+      seen.add(member.profileId);
+      return { profileId: member.profileId, weight: clampAggregateWeight(member.weight) };
+    });
+  return { strategy, members };
+}
+
+function aggregateMemberCandidates(settings: BackendSettings, aggregateId: string): RelayProfile[] {
+  return settings.relayProfiles.filter(
+    (profile) => profile.id !== aggregateId && !isAggregateRelayProfile(profile) && isApiRelayProfile(profile),
+  );
+}
+
+function isApiRelayProfile(profile: RelayProfile): boolean {
+  return Boolean(profile.baseUrl.trim() && profile.apiKey.trim());
+}
+
+function clampAggregateWeight(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(999, Math.round(value)));
+}
+
+function aggregateStrategyLabel(strategy: RelayAggregateStrategy): string {
+  return aggregateStrategyOptions.find((option) => option.value === strategy)?.label ?? t("失败切换");
+}
+
+function aggregateStrategyHelp(strategy: RelayAggregateStrategy): string {
+  if (strategy === "failover") return t("失败切换会保留成员顺序，优先使用第一个可用供应商。");
+  if (strategy === "conversationRoundRobin") return t("按对话轮转会让同一对话尽量保持固定成员，降低上下文漂移。");
+  if (strategy === "requestRoundRobin") return t("按请求轮转会逐请求切换成员，适合供应商能力接近的场景。");
+  return t("权重轮转会读取每个成员的权重值，权重越高的成员获得更多请求。");
+}
+
+function aggregateRelayProfileValidation(profile: RelayProfile): string | null {
+  const aggregate = normalizeAggregateConfig(profile.aggregate, []);
+  return aggregate.members.length >= 1 ? null : t("聚合供应商至少需要勾选 1 个已填写 Base URL / Key 的 API 供应商。");
+}
+
+function numberOrDefault(value: string, fallback: number) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function splitLogLines(text: string) {
+  return text.trimEnd().split(/\r?\n/).filter((line, index, lines) => line.length > 0 || index < lines.length - 1);
+}
+
+function zedStrategyLabel(strategy: ZedOpenStrategy) {
+  if (strategy === "reuseWindow") return t("复用窗口");
+  if (strategy === "newWindow") return t("新窗口");
+  if (strategy === "default") return t("Zed 默认行为");
+  return t("加入当前工作区");
+}
+
+function zedRemoteHostLabel(project: ZedRemoteProject) {
+  const user = project.ssh.user ? `${project.ssh.user}@` : "";
+  const port = project.ssh.port ? `:${project.ssh.port}` : "";
+  return `${user}${project.ssh.host}${port}`;
+}
+
+function zedRemoteSourceLabel(source: string) {
+  if (source === "currentThread") return t("当前会话");
+  if (source === "codexRemoteProject") return "Codex remote project";
+  if (source === "threadWorkspaceHint") return "Thread workspace hint";
+  if (source === "sqliteThreadCwd") return "SQLite cwd";
+  if (source === "recent") return t("最近打开");
+  return source || t("未知来源");
+}
+
+function formatTime(value: number) {
+  if (!value) return "-";
+  return new Date(value).toLocaleString("zh-CN");
+}
+
+function formatDuration(startedAtMs: number): string {
+  if (!startedAtMs) return "-";
+  const elapsed = Date.now() - startedAtMs;
+  if (elapsed < 0) return formatTime(startedAtMs);
+  const mins = Math.floor(elapsed / 60000);
+  if (mins < 1) return t("刚刚启动");
+  if (mins < 60) return tf("已运行 {0} 分钟", [mins]);
+  const hours = Math.floor(mins / 60);
+  const remainMins = mins % 60;
+  return tf("已运行 {0} 小时 {1} 分钟", [hours, remainMins]);
+}
+
+function stringifyError(error: unknown) {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+function loadInitialTheme(): Theme {
+  if (typeof window === "undefined") return "dark";
+  return window.localStorage.getItem("codex-plus-theme") === "light" ? "light" : "dark";
+}
+
+function loadInitialRoute(): Route {
+  if (typeof window === "undefined") return "overview";
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("showUpdate") === "1" || window.location.hash === "#about") {
+    return "about";
+  }
+  return "overview";
+}

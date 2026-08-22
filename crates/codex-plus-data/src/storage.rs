@@ -1,0 +1,1175 @@
+use crate::BackupStore;
+use codex_plus_core::models::{DeleteResult, DeleteStatus, SessionRef};
+use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, ToSql};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
+use std::collections::HashSet;
+use std::fs;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+
+pub fn delete_local_from_paths(
+    db_paths: impl IntoIterator<Item = PathBuf>,
+    backup_store: BackupStore,
+    session: &SessionRef,
+) -> DeleteResult {
+    let mut result = failed(
+        &session.session_id,
+        "Thread not found in local storage".to_string(),
+    );
+    let mut deleted_count = 0usize;
+    let mut backup_tokens = Vec::new();
+    for db_path in db_paths {
+        let adapter = SQLiteStorageAdapter::new(db_path, backup_store.clone());
+        let candidate_result = adapter.delete_local(session);
+        if matches!(candidate_result.status, DeleteStatus::LocalDeleted) {
+            deleted_count += 1;
+            if let Some(token) = candidate_result.undo_token.as_ref() {
+                backup_tokens.push(token.clone());
+            }
+            result = candidate_result;
+        } else if deleted_count == 0 {
+            result = candidate_result;
+        }
+    }
+    if deleted_count > 1 {
+        result.message = format!("已从 {deleted_count} 个本地存储删除");
+        result.undo_token = Some(json!(backup_tokens).to_string());
+        result.backup_path = None;
+    }
+    result
+}
+
+#[derive(Debug, Clone)]
+pub struct SQLiteStorageAdapter {
+    db_path: PathBuf,
+    backup_store: BackupStore,
+    allowed_db_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchemaKind {
+    GenericSessions,
+    CodexThreads,
+    CodexAutomationRuns,
+}
+
+fn sqlite_limit(limit: usize) -> i64 {
+    i64::try_from(limit).unwrap_or(i64::MAX)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSession {
+    pub id: String,
+    pub title: String,
+    pub cwd: String,
+    pub model_provider: String,
+    pub archived: bool,
+    pub updated_at_ms: Option<i64>,
+    pub rollout_path: String,
+    pub db_path: String,
+}
+
+#[derive(Debug, Clone)]
+struct OwnedSqlValue(SqlValue);
+
+impl ToSql for OwnedSqlValue {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(ToSqlOutput::Owned(self.0.clone()))
+    }
+}
+
+impl SQLiteStorageAdapter {
+    pub fn new(db_path: impl Into<PathBuf>, backup_store: BackupStore) -> Self {
+        let db_path = db_path.into();
+        Self {
+            allowed_db_paths: vec![db_path.clone()],
+            db_path,
+            backup_store,
+        }
+    }
+
+    pub fn with_allowed_db_paths(mut self, db_paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        for db_path in db_paths {
+            if !self.allowed_db_paths.contains(&db_path) {
+                self.allowed_db_paths.push(db_path);
+            }
+        }
+        self
+    }
+
+    pub fn delete_local(&self, session: &SessionRef) -> DeleteResult {
+        if !self.db_path.exists() {
+            return failed(
+                &session.session_id,
+                format!("Database not found: {}", self.db_path.to_string_lossy()),
+            );
+        }
+        let result = (|| -> anyhow::Result<DeleteResult> {
+            let mut db = Connection::open(&self.db_path)?;
+            match schema_kind(&db)? {
+                Some(SchemaKind::GenericSessions) => self.delete_generic_session(&mut db, session),
+                Some(SchemaKind::CodexThreads) => self.delete_codex_thread(&mut db, session),
+                Some(SchemaKind::CodexAutomationRuns) => {
+                    self.delete_codex_automation_run(&mut db, session)
+                }
+                None => Ok(failed(
+                    &session.session_id,
+                    "Unsupported local storage schema".to_string(),
+                )),
+            }
+        })();
+        result.unwrap_or_else(|err| failed(&session.session_id, err.to_string()))
+    }
+
+    pub fn list_local_sessions(&self) -> anyhow::Result<Vec<LocalSession>> {
+        self.list_local_sessions_limited(usize::MAX)
+    }
+
+    pub fn list_local_sessions_limited(&self, limit: usize) -> anyhow::Result<Vec<LocalSession>> {
+        if !self.db_path.exists() {
+            return Ok(Vec::new());
+        }
+        let db = Connection::open(&self.db_path)?;
+        match schema_kind(&db)? {
+            Some(SchemaKind::CodexThreads) => self.list_codex_threads(&db, limit),
+            Some(SchemaKind::CodexAutomationRuns) => self.list_codex_automation_runs(&db, limit),
+            _ => anyhow::bail!("Unsupported local storage schema"),
+        }
+    }
+
+    fn list_codex_threads(
+        &self,
+        db: &Connection,
+        limit: usize,
+    ) -> anyhow::Result<Vec<LocalSession>> {
+        let columns = table_columns(&db, "threads")?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let title = optional_column_expression(&columns, "title", "''");
+        let cwd = optional_column_expression(&columns, "cwd", "''");
+        let model_provider = optional_column_expression(&columns, "model_provider", "''");
+        let archived = optional_column_expression(&columns, "archived", "0");
+        let updated_at_ms = if columns.contains("updated_at_ms") {
+            "updated_at_ms"
+        } else if columns.contains("updated_at") {
+            "updated_at * 1000"
+        } else if columns.contains("created_at_ms") {
+            "created_at_ms"
+        } else {
+            "NULL"
+        };
+        let rollout_path = optional_column_expression(&columns, "rollout_path", "''");
+        let mut subagent_filters = Vec::new();
+        if has_table(db, "thread_spawn_edges")?
+            && table_columns(db, "thread_spawn_edges")?
+                .iter()
+                .any(|column| column == "child_thread_id")
+        {
+            subagent_filters.push(
+                "NOT EXISTS (SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = threads.id)",
+            );
+        }
+        if has_table(db, "agent_job_items")?
+            && table_columns(db, "agent_job_items")?
+                .iter()
+                .any(|column| column == "assigned_thread_id")
+        {
+            subagent_filters.push(
+                "NOT EXISTS (SELECT 1 FROM agent_job_items j WHERE j.assigned_thread_id = threads.id)",
+            );
+        }
+        let child_thread_filter = if subagent_filters.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", subagent_filters.join(" AND "))
+        };
+        let sql = format!(
+            "SELECT id, {title}, {cwd}, {model_provider}, {archived}, {updated_at_ms}, {rollout_path}
+             FROM threads
+             {child_thread_filter}
+             ORDER BY COALESCE({updated_at_ms}, 0) DESC, id DESC
+             LIMIT ?1"
+        );
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map([sqlite_limit(limit)], |row| {
+            Ok(LocalSession {
+                id: row.get(0)?,
+                title: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                cwd: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                model_provider: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                archived: row.get::<_, Option<i64>>(4)?.unwrap_or_default() != 0,
+                updated_at_ms: row.get(5)?,
+                rollout_path: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                db_path: self.db_path.to_string_lossy().to_string(),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    fn list_codex_automation_runs(
+        &self,
+        db: &Connection,
+        limit: usize,
+    ) -> anyhow::Result<Vec<LocalSession>> {
+        let columns = table_columns(db, "automation_runs")?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let title = optional_column_expression(&columns, "thread_title", "''");
+        let cwd = optional_column_expression(&columns, "source_cwd", "''");
+        let status = optional_column_expression(&columns, "status", "''");
+        let updated_at = optional_column_expression(&columns, "updated_at", "NULL");
+        let created_at = optional_column_expression(&columns, "created_at", "NULL");
+        let sql = format!(
+            "SELECT thread_id, {title}, {cwd}, {status}, {updated_at}, {created_at}
+             FROM automation_runs
+             WHERE COALESCE(thread_id, '') <> ''
+             ORDER BY COALESCE({updated_at}, {created_at}, 0) DESC, thread_id DESC
+             LIMIT ?1"
+        );
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map([sqlite_limit(limit)], |row| {
+            let updated_at_ms = row
+                .get::<_, Option<i64>>(4)?
+                .or(row.get::<_, Option<i64>>(5)?);
+            Ok(LocalSession {
+                id: row.get(0)?,
+                title: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                cwd: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                model_provider: String::new(),
+                archived: row
+                    .get::<_, Option<String>>(3)?
+                    .map(|status| status.eq_ignore_ascii_case("archived"))
+                    .unwrap_or(false),
+                updated_at_ms,
+                rollout_path: String::new(),
+                db_path: self.db_path.to_string_lossy().to_string(),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn undo(&self, token: &str) -> DeleteResult {
+        let result = (|| -> anyhow::Result<DeleteResult> {
+            let backups = undo_backups(&self.backup_store, token)?;
+            let session_id = backups[0]["session_id"].as_str().unwrap_or("").to_string();
+            restore_backups(&backups, &self.db_path, &self.allowed_db_paths)?;
+            Ok(DeleteResult {
+                status: DeleteStatus::Undone,
+                session_id,
+                message: "Local session restored from backup".to_string(),
+                undo_token: Some(token.to_string()),
+                backup_path: None,
+            })
+        })();
+        result.unwrap_or_else(|err| failed_with_undo("", err.to_string(), token, None))
+    }
+
+    pub fn find_archived_thread_by_title(&self, title: &str) -> Option<SessionRef> {
+        let db = Connection::open(&self.db_path).ok()?;
+        if schema_kind(&db).ok().flatten() != Some(SchemaKind::CodexThreads)
+            || !has_columns(&db, "threads", &["archived"]).ok()?
+        {
+            return None;
+        }
+        let mut stmt = db
+            .prepare(
+                "SELECT id, title FROM threads
+                 WHERE archived = 1 AND (title = ?1 OR title LIKE ?2 OR ?1 LIKE '%' || title || '%')
+                 ORDER BY archived_at DESC LIMIT 1",
+            )
+            .ok()?;
+        let mut rows = stmt.query((title, format!("%{title}%"))).ok()?;
+        let row = rows.next().ok().flatten()?;
+        let id: String = row.get(0).ok()?;
+        let row_title: Option<String> = row.get(1).ok()?;
+        SessionRef::new(id, row_title.unwrap_or_else(|| title.to_string())).ok()
+    }
+
+    pub fn codex_thread_usage_history(&self, session: &SessionRef) -> serde_json::Value {
+        if !self.db_path.exists() {
+            return json!({
+                "status": "failed",
+                "session_id": session.session_id,
+                "message": format!("Database not found: {}", self.db_path.to_string_lossy()),
+                "history": []
+            });
+        }
+        let result = (|| -> anyhow::Result<Value> {
+            let db = Connection::open(&self.db_path)?;
+            if schema_kind(&db)? != Some(SchemaKind::CodexThreads)
+                || !has_columns(&db, "threads", &["rollout_path"])?
+            {
+                return Ok(json!({
+                    "status": "failed",
+                    "session_id": session.session_id,
+                    "message": "Unsupported local storage schema",
+                    "history": []
+                }));
+            }
+            let thread_id = normalize_codex_thread_id(&session.session_id);
+            let rollout_path: Option<String> = db
+                .query_row(
+                    "SELECT rollout_path FROM threads WHERE id = ?1",
+                    [&thread_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(rollout_path) = rollout_path.filter(|path| !path.trim().is_empty()) else {
+                return Ok(json!({
+                    "status": "failed",
+                    "session_id": thread_id,
+                    "message": "Thread rollout path is empty",
+                    "history": []
+                }));
+            };
+            let rollout = PathBuf::from(&rollout_path);
+            if !rollout.is_file() {
+                return Ok(json!({
+                    "status": "failed",
+                    "session_id": thread_id,
+                    "message": format!("rollout file not found: {rollout_path}"),
+                    "history": []
+                }));
+            }
+            let history = read_rollout_usage_history(&rollout, &thread_id)?;
+            Ok(json!({
+                "status": "ok",
+                "session_id": thread_id,
+                "rollout_path": rollout_path,
+                "history": history,
+            }))
+        })();
+        result.unwrap_or_else(|err| {
+            json!({
+                "status": "failed",
+                "session_id": session.session_id,
+                "message": err.to_string(),
+                "history": []
+            })
+        })
+    }
+
+    fn delete_generic_session(
+        &self,
+        db: &mut Connection,
+        session: &SessionRef,
+    ) -> anyhow::Result<DeleteResult> {
+        let sessions = select_dicts(
+            db,
+            "SELECT * FROM sessions WHERE id = ?1",
+            &[&session.session_id],
+        )?;
+        if sessions.is_empty() {
+            return Ok(failed(
+                &session.session_id,
+                "Session not found in local storage".to_string(),
+            ));
+        }
+        let messages = if has_table(db, "messages")? {
+            select_dicts(
+                db,
+                "SELECT * FROM messages WHERE session_id = ?1",
+                &[&session.session_id],
+            )?
+        } else {
+            Vec::new()
+        };
+        let token = self.backup_store.write_backup(
+            &session.session_id,
+            &self.db_path,
+            json!({"sessions": sessions, "messages": messages}),
+        )?;
+        let backup_path = self.backup_store.path_for(&token);
+        let delete_result = (|| -> anyhow::Result<()> {
+            let tx = db.transaction()?;
+            if has_table(&tx, "messages")? {
+                tx.execute(
+                    "DELETE FROM messages WHERE session_id = ?1",
+                    [&session.session_id],
+                )?;
+            }
+            tx.execute("DELETE FROM sessions WHERE id = ?1", [&session.session_id])?;
+            tx.commit()?;
+            Ok(())
+        })();
+        if let Err(err) = delete_result {
+            return Ok(failed_with_undo(
+                &session.session_id,
+                err.to_string(),
+                &token,
+                Some(&backup_path),
+            ));
+        }
+        Ok(local_deleted(&session.session_id, &token, &backup_path))
+    }
+
+    fn delete_codex_thread(
+        &self,
+        db: &mut Connection,
+        session: &SessionRef,
+    ) -> anyhow::Result<DeleteResult> {
+        let thread_id = normalize_codex_thread_id(&session.session_id);
+        let thread_rows = select_dicts(db, "SELECT * FROM threads WHERE id = ?1", &[&thread_id])?;
+        if thread_rows.is_empty() {
+            return Ok(failed(
+                &session.session_id,
+                "Thread not found in local storage".to_string(),
+            ));
+        }
+        let mut tables = Map::new();
+        tables.insert("threads".to_string(), Value::Array(thread_rows));
+        backup_related_rows(
+            db,
+            &mut tables,
+            "thread_dynamic_tools",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
+        backup_related_rows(
+            db,
+            &mut tables,
+            "thread_goals",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
+        backup_related_rows(
+            db,
+            &mut tables,
+            "thread_spawn_edges",
+            "parent_thread_id = ?1 OR child_thread_id = ?1",
+            &[&thread_id],
+        )?;
+        backup_related_rows(
+            db,
+            &mut tables,
+            "stage1_outputs",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
+        backup_related_rows(
+            db,
+            &mut tables,
+            "agent_job_items",
+            "assigned_thread_id = ?1",
+            &[&thread_id],
+        )?;
+        let file_backups = rollout_file_backups(tables.get("threads").and_then(Value::as_array));
+        if !file_backups.is_empty() {
+            tables.insert("__files".to_string(), Value::Array(file_backups.clone()));
+        }
+        let token =
+            self.backup_store
+                .write_backup(&thread_id, &self.db_path, Value::Object(tables))?;
+        let backup_path = self.backup_store.path_for(&token);
+        let delete_result = (|| -> anyhow::Result<()> {
+            let tx = db.transaction()?;
+            delete_related_rows(&tx, "thread_dynamic_tools", "thread_id = ?1", &[&thread_id])?;
+            delete_related_rows(&tx, "thread_goals", "thread_id = ?1", &[&thread_id])?;
+            delete_related_rows(
+                &tx,
+                "thread_spawn_edges",
+                "parent_thread_id = ?1 OR child_thread_id = ?1",
+                &[&thread_id],
+            )?;
+            delete_related_rows(&tx, "stage1_outputs", "thread_id = ?1", &[&thread_id])?;
+            if has_table(&tx, "agent_job_items")?
+                && has_columns(&tx, "agent_job_items", &["assigned_thread_id"])?
+            {
+                tx.execute(
+                    "UPDATE agent_job_items SET assigned_thread_id = NULL WHERE assigned_thread_id = ?1",
+                    [&thread_id],
+                )?;
+            }
+            tx.execute("DELETE FROM threads WHERE id = ?1", [&thread_id])?;
+            tx.commit()?;
+            Ok(())
+        })();
+        if let Err(err) = delete_result {
+            return Ok(failed_with_undo(
+                &thread_id,
+                err.to_string(),
+                &token,
+                Some(&backup_path),
+            ));
+        }
+        let mut file_errors = Vec::new();
+        for file in file_backups {
+            if let Some(path) = file.get("path").and_then(Value::as_str) {
+                if let Err(err) = fs::remove_file(path) {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        file_errors.push(format!("{path}: {err}"));
+                    }
+                }
+            }
+        }
+        if !file_errors.is_empty() {
+            return Ok(DeleteResult {
+                status: DeleteStatus::Failed,
+                session_id: thread_id,
+                message: format!(
+                    "本地数据库已删除，但文件删除失败：{}",
+                    file_errors.join("; ")
+                ),
+                undo_token: Some(token.clone()),
+                backup_path: Some(backup_path.to_string_lossy().to_string()),
+            });
+        }
+        Ok(local_deleted(&thread_id, &token, &backup_path))
+    }
+
+    fn delete_codex_automation_run(
+        &self,
+        db: &mut Connection,
+        session: &SessionRef,
+    ) -> anyhow::Result<DeleteResult> {
+        let thread_id = normalize_codex_thread_id(&session.session_id);
+        let mut tables = Map::new();
+        backup_related_rows(
+            db,
+            &mut tables,
+            "automation_runs",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
+        backup_related_rows(
+            db,
+            &mut tables,
+            "inbox_items",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
+        if tables.values().all(|rows| {
+            rows.as_array()
+                .map(|items| items.is_empty())
+                .unwrap_or(true)
+        }) {
+            return Ok(failed(
+                &session.session_id,
+                "Thread not found in local storage".to_string(),
+            ));
+        }
+        let token =
+            self.backup_store
+                .write_backup(&thread_id, &self.db_path, Value::Object(tables))?;
+        let backup_path = self.backup_store.path_for(&token);
+        let delete_result = (|| -> anyhow::Result<()> {
+            let tx = db.transaction()?;
+            delete_related_rows(&tx, "automation_runs", "thread_id = ?1", &[&thread_id])?;
+            delete_related_rows(&tx, "inbox_items", "thread_id = ?1", &[&thread_id])?;
+            tx.commit()?;
+            Ok(())
+        })();
+        if let Err(err) = delete_result {
+            return Ok(failed_with_undo(
+                &thread_id,
+                err.to_string(),
+                &token,
+                Some(&backup_path),
+            ));
+        }
+        Ok(local_deleted(&thread_id, &token, &backup_path))
+    }
+}
+
+fn optional_column_expression<'a>(
+    columns: &HashSet<String>,
+    column: &'a str,
+    fallback: &'a str,
+) -> &'a str {
+    if columns.contains(column) {
+        column
+    } else {
+        fallback
+    }
+}
+
+fn failed(session_id: &str, message: String) -> DeleteResult {
+    DeleteResult {
+        status: DeleteStatus::Failed,
+        session_id: session_id.to_string(),
+        message,
+        undo_token: None,
+        backup_path: None,
+    }
+}
+
+fn local_deleted(session_id: &str, token: &str, backup_path: &Path) -> DeleteResult {
+    DeleteResult {
+        status: DeleteStatus::LocalDeleted,
+        session_id: session_id.to_string(),
+        message: "已从本地存储删除".to_string(),
+        undo_token: Some(token.to_string()),
+        backup_path: Some(backup_path.to_string_lossy().to_string()),
+    }
+}
+
+fn read_rollout_usage_history(rollout_path: &Path, thread_id: &str) -> anyhow::Result<Vec<Value>> {
+    let file = File::open(rollout_path)?;
+    let reader = BufReader::new(file);
+    let mut current_turn_id = String::new();
+    let mut history = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        match value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
+            "turn_context" => {
+                current_turn_id = value
+                    .get("payload")
+                    .and_then(|payload| payload.get("turn_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+            }
+            "event_msg" => {
+                let payload = match value.get("payload") {
+                    Some(payload)
+                        if payload.get("type").and_then(Value::as_str) == Some("token_count") =>
+                    {
+                        payload
+                    }
+                    _ => continue,
+                };
+                let info = match payload.get("info") {
+                    Some(info) => info,
+                    None => continue,
+                };
+                let last = info.get("last_token_usage");
+                let total = info.get("total_token_usage");
+                let model_context_window = info
+                    .get("model_context_window")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let input_tokens = last
+                    .and_then(|usage| usage.get("input_tokens"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let output_tokens = last
+                    .and_then(|usage| usage.get("output_tokens"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let total_tokens = last
+                    .and_then(|usage| usage.get("total_tokens"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or_else(|| {
+                        total
+                            .and_then(|usage| usage.get("total_tokens"))
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0)
+                    });
+                let cached_tokens = last
+                    .and_then(|usage| usage.get("cached_input_tokens"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let context_used = total
+                    .and_then(|usage| usage.get("total_tokens"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(total_tokens);
+                if input_tokens <= 0 && output_tokens <= 0 && total_tokens <= 0 && context_used <= 0
+                {
+                    continue;
+                }
+                history.push(json!({
+                    "source": "rollout-history",
+                    "conversation_id": format!("local:{thread_id}"),
+                    "turn_id": current_turn_id,
+                    "observed_at": value.get("timestamp").and_then(Value::as_str).unwrap_or_default(),
+                    "usage": {
+                        "inputTokens": input_tokens,
+                        "outputTokens": output_tokens,
+                        "totalTokens": total_tokens,
+                        "cachedTokens": cached_tokens,
+                        "cacheReadTokens": 0,
+                        "cacheCreationTokens": 0,
+                        "contextUsed": context_used,
+                        "contextLimit": model_context_window,
+                        "hasBreakdown": input_tokens > 0 || output_tokens > 0 || cached_tokens > 0,
+                    }
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(history)
+}
+
+fn failed_with_undo(
+    session_id: &str,
+    message: String,
+    token: &str,
+    backup_path: Option<&Path>,
+) -> DeleteResult {
+    DeleteResult {
+        status: DeleteStatus::Failed,
+        session_id: session_id.to_string(),
+        message,
+        undo_token: Some(token.to_string()),
+        backup_path: backup_path.map(|path| path.to_string_lossy().to_string()),
+    }
+}
+
+fn normalize_codex_thread_id(session_id: &str) -> String {
+    session_id
+        .strip_prefix("local:")
+        .unwrap_or(session_id)
+        .to_string()
+}
+
+fn undo_backups(backup_store: &BackupStore, token: &str) -> anyhow::Result<Vec<Value>> {
+    let tokens =
+        serde_json::from_str::<Vec<String>>(token).unwrap_or_else(|_| vec![token.to_string()]);
+    if tokens.is_empty() {
+        anyhow::bail!("empty undo token");
+    }
+    tokens
+        .into_iter()
+        .map(|token| backup_store.read_backup(&token))
+        .collect()
+}
+
+fn restore_backups(
+    backups: &[Value],
+    fallback_db_path: &Path,
+    allowed_db_paths: &[PathBuf],
+) -> anyhow::Result<()> {
+    for backup in backups {
+        let Some(tables) = backup["tables"].as_object() else {
+            continue;
+        };
+        let source_db = backup_source_db(backup, fallback_db_path, allowed_db_paths)?;
+        let db = Connection::open_with_flags(&source_db, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        validate_restore_tables(tables)?;
+        detect_restore_conflicts(&db, tables)?;
+        detect_file_restore_conflicts(tables)?;
+        preflight_restore_rows(&db, tables)?;
+    }
+
+    for backup in backups {
+        let Some(tables) = backup["tables"].as_object() else {
+            continue;
+        };
+        let source_db = backup_source_db(backup, fallback_db_path, allowed_db_paths)?;
+        let mut db = Connection::open_with_flags(&source_db, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let tx = db.transaction()?;
+        restore_rows(&tx, tables)?;
+        tx.commit()?;
+        if let Some(files) = tables.get("__files").and_then(Value::as_array) {
+            for file in files {
+                let Some(path) = file.get("path").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(content) = file.get("content_b64").and_then(Value::as_str) else {
+                    continue;
+                };
+                let bytes =
+                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, content)?;
+                if let Some(parent) = Path::new(path).parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(path, bytes)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn preflight_restore_rows(db: &Connection, tables: &Map<String, Value>) -> anyhow::Result<()> {
+    db.execute_batch("SAVEPOINT codex_plus_restore_preflight")?;
+    let restore_result = restore_rows(db, tables);
+    let rollback_result = db.execute_batch(
+        "ROLLBACK TO codex_plus_restore_preflight; RELEASE codex_plus_restore_preflight",
+    );
+    restore_result?;
+    rollback_result?;
+    Ok(())
+}
+
+fn restore_rows(db: &Connection, tables: &Map<String, Value>) -> anyhow::Result<()> {
+    for (table, rows) in tables {
+        if table.starts_with("__") {
+            continue;
+        }
+        let Some(rows) = rows.as_array() else {
+            continue;
+        };
+        for row in rows {
+            if let Some(row) = row.as_object() {
+                if table == "agent_job_items" && update_existing_agent_job_item(db, row)? {
+                    continue;
+                }
+                insert_row(db, table, row)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn backup_source_db(
+    backup: &Value,
+    fallback_db_path: &Path,
+    allowed_db_paths: &[PathBuf],
+) -> anyhow::Result<PathBuf> {
+    let source_db = backup["source_db"]
+        .as_str()
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| fallback_db_path.to_path_buf());
+    if !source_db.is_file() {
+        anyhow::bail!(
+            "Backup source database not found: {}",
+            source_db.to_string_lossy()
+        );
+    }
+    let source_db = fs::canonicalize(source_db)?;
+    let allowed = allowed_db_paths
+        .iter()
+        .filter_map(|path| fs::canonicalize(path).ok())
+        .any(|path| path == source_db);
+    if !allowed {
+        anyhow::bail!("Backup source database is not an allowed local storage path");
+    }
+    Ok(source_db)
+}
+
+fn schema_kind(db: &Connection) -> anyhow::Result<Option<SchemaKind>> {
+    if has_table(db, "sessions")? && has_columns(db, "sessions", &["id", "title"])? {
+        if has_table(db, "messages")? && !has_columns(db, "messages", &["session_id"])? {
+            return Ok(None);
+        }
+        return Ok(Some(SchemaKind::GenericSessions));
+    }
+    if has_table(db, "threads")? && has_columns(db, "threads", &["id", "title", "rollout_path"])? {
+        return Ok(Some(SchemaKind::CodexThreads));
+    }
+    if has_table(db, "automation_runs")? && has_columns(db, "automation_runs", &["thread_id"])? {
+        return Ok(Some(SchemaKind::CodexAutomationRuns));
+    }
+    Ok(None)
+}
+
+fn has_table(db: &Connection, table: &str) -> anyhow::Result<bool> {
+    Ok(db
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |_| Ok(()),
+        )
+        .is_ok())
+}
+
+fn has_columns(db: &Connection, table: &str, columns: &[&str]) -> anyhow::Result<bool> {
+    let existing: HashSet<String> = table_columns(db, table)?.into_iter().collect();
+    Ok(columns.iter().all(|column| existing.contains(*column)))
+}
+
+fn table_columns(db: &Connection, table: &str) -> anyhow::Result<Vec<String>> {
+    let mut stmt = db.prepare(&format!(
+        "PRAGMA table_info(\"{}\")",
+        table.replace('"', "\"\"")
+    ))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn select_dicts(db: &Connection, sql: &str, params: &[&dyn ToSql]) -> anyhow::Result<Vec<Value>> {
+    let mut stmt = db.prepare(sql)?;
+    let columns: Vec<String> = stmt
+        .column_names()
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    let rows = stmt.query_map(params, |row| {
+        let mut data = Map::new();
+        for (index, column) in columns.iter().enumerate() {
+            data.insert(column.clone(), sql_value_to_json(row.get_ref(index)?));
+        }
+        Ok(Value::Object(data))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn validate_restore_tables(tables: &Map<String, Value>) -> anyhow::Result<()> {
+    let allowed = [
+        "sessions",
+        "messages",
+        "threads",
+        "thread_dynamic_tools",
+        "thread_goals",
+        "thread_spawn_edges",
+        "stage1_outputs",
+        "agent_job_items",
+        "automation_runs",
+        "inbox_items",
+        "__files",
+    ];
+    for table in tables.keys() {
+        if !allowed.contains(&table.as_str()) {
+            anyhow::bail!("unknown restore table: {table}");
+        }
+    }
+    Ok(())
+}
+
+fn detect_restore_conflicts(db: &Connection, tables: &Map<String, Value>) -> anyhow::Result<()> {
+    for (table, rows) in tables {
+        if table.starts_with("__") {
+            continue;
+        }
+        let Some(rows) = rows.as_array() else {
+            continue;
+        };
+        for row in rows {
+            let Some(row) = row.as_object() else {
+                continue;
+            };
+            if restore_row_conflicts(db, table, row)? {
+                anyhow::bail!("restore conflict: {table} row already exists");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn restore_row_conflicts(
+    db: &Connection,
+    table: &str,
+    row: &Map<String, Value>,
+) -> anyhow::Result<bool> {
+    let key_columns = restore_conflict_key_columns(table, row);
+    if key_columns.is_empty() || !has_table(db, table)? {
+        return Ok(false);
+    }
+    let where_clause = key_columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| format!("\"{}\" = ?{}", column.replace('"', "\"\""), index + 1))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let values = key_columns
+        .iter()
+        .map(|column| OwnedSqlValue(json_to_sql_value(&row[*column])))
+        .collect::<Vec<_>>();
+    let refs = values
+        .iter()
+        .map(|value| value as &dyn ToSql)
+        .collect::<Vec<_>>();
+    Ok(db
+        .query_row(
+            &format!("SELECT 1 FROM \"{table}\" WHERE {where_clause} LIMIT 1"),
+            refs.as_slice(),
+            |_| Ok(()),
+        )
+        .is_ok())
+}
+
+fn restore_conflict_key_columns<'a>(table: &str, row: &'a Map<String, Value>) -> Vec<&'a String> {
+    let wanted: &[&str] = match table {
+        "sessions" | "threads" => &["id"],
+        "messages" => &["id"],
+        "automation_runs" | "inbox_items" => &["thread_id"],
+        "thread_dynamic_tools" => &["thread_id", "tool_name"],
+        "thread_goals" => &["thread_id", "goal"],
+        "thread_spawn_edges" => &["parent_thread_id", "child_thread_id"],
+        "stage1_outputs" => &["thread_id"],
+        _ => &[],
+    };
+    let keys = wanted
+        .iter()
+        .filter_map(|column| row.get_key_value(*column).map(|(key, _)| key))
+        .collect::<Vec<_>>();
+    if table == "messages" && keys.is_empty() {
+        row.get_key_value("session_id")
+            .map(|(key, _)| vec![key])
+            .unwrap_or_default()
+    } else {
+        keys
+    }
+}
+
+fn detect_file_restore_conflicts(tables: &Map<String, Value>) -> anyhow::Result<()> {
+    let Some(files) = tables.get("__files").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    let allowed_paths = allowed_backup_file_paths(tables);
+    for file in files {
+        if let Some(path) = file.get("path").and_then(Value::as_str) {
+            if !allowed_paths.contains(path) {
+                anyhow::bail!("unexpected backup file path: {path}");
+            }
+            if Path::new(path).exists() {
+                anyhow::bail!("restore conflict: file already exists: {path}");
+            }
+            if let Some(content) = file.get("content_b64").and_then(Value::as_str) {
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, content)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn allowed_backup_file_paths(tables: &Map<String, Value>) -> HashSet<String> {
+    tables
+        .get("threads")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row.get("rollout_path").and_then(Value::as_str))
+        .filter(|path| !path.trim().is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn insert_row(db: &Connection, table: &str, row: &Map<String, Value>) -> anyhow::Result<()> {
+    let columns: Vec<&String> = row.keys().collect();
+    if columns.is_empty() {
+        return Ok(());
+    }
+    let quoted = columns
+        .iter()
+        .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let marks = (0..columns.len())
+        .map(|index| format!("?{}", index + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values = columns
+        .iter()
+        .map(|column| OwnedSqlValue(json_to_sql_value(&row[*column])))
+        .collect::<Vec<_>>();
+    let refs = values
+        .iter()
+        .map(|value| value as &dyn ToSql)
+        .collect::<Vec<_>>();
+    db.execute(
+        &format!("INSERT INTO \"{table}\" ({quoted}) VALUES ({marks})"),
+        refs.as_slice(),
+    )?;
+    Ok(())
+}
+
+fn update_existing_agent_job_item(
+    db: &Connection,
+    row: &Map<String, Value>,
+) -> anyhow::Result<bool> {
+    let Some(id) = row.get("id") else {
+        return Ok(false);
+    };
+    if !row.contains_key("assigned_thread_id") || !has_table(db, "agent_job_items")? {
+        return Ok(false);
+    }
+    let id_value = OwnedSqlValue(json_to_sql_value(id));
+    let current_assignment = db.query_row(
+        "SELECT assigned_thread_id FROM agent_job_items WHERE id = ?1 LIMIT 1",
+        [&id_value as &dyn ToSql],
+        |row| row.get::<_, Option<String>>(0),
+    );
+    let current_assignment = match current_assignment {
+        Ok(value) => value,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(false),
+        Err(err) => return Err(err.into()),
+    };
+    if current_assignment.is_some() {
+        anyhow::bail!("restore conflict: agent_job_items row already assigned");
+    }
+    let assigned = OwnedSqlValue(json_to_sql_value(&row["assigned_thread_id"]));
+    db.execute(
+        "UPDATE agent_job_items SET assigned_thread_id = ?1 WHERE id = ?2 AND assigned_thread_id IS NULL",
+        [&assigned as &dyn ToSql, &id_value as &dyn ToSql],
+    )?;
+    Ok(true)
+}
+
+fn backup_related_rows(
+    db: &Connection,
+    tables: &mut Map<String, Value>,
+    table: &str,
+    where_clause: &str,
+    params: &[&dyn ToSql],
+) -> anyhow::Result<()> {
+    if has_table(db, table)? {
+        let rows = select_dicts(
+            db,
+            &format!("SELECT * FROM \"{table}\" WHERE {where_clause}"),
+            params,
+        )?;
+        tables.insert(table.to_string(), Value::Array(rows));
+    }
+    Ok(())
+}
+
+fn delete_related_rows(
+    db: &Connection,
+    table: &str,
+    where_clause: &str,
+    params: &[&dyn ToSql],
+) -> anyhow::Result<()> {
+    if has_table(db, table)? {
+        db.execute(
+            &format!("DELETE FROM \"{table}\" WHERE {where_clause}"),
+            params,
+        )?;
+    }
+    Ok(())
+}
+
+fn rollout_file_backups(thread_rows: Option<&Vec<Value>>) -> Vec<Value> {
+    thread_rows
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row.get("rollout_path").and_then(Value::as_str))
+        .filter_map(|path| {
+            let bytes = fs::read(path).ok()?;
+            Some(json!({
+                "path": path,
+                "content_b64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
+            }))
+        })
+        .collect()
+}
+
+fn sql_value_to_json(value: ValueRef<'_>) -> Value {
+    match value {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(value) => json!(value),
+        ValueRef::Real(value) => json!(value),
+        ValueRef::Text(value) => json!(String::from_utf8_lossy(value).to_string()),
+        ValueRef::Blob(value) => json!(base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            value
+        )),
+    }
+}
+
+fn json_to_sql_value(value: &Value) -> SqlValue {
+    match value {
+        Value::Null => SqlValue::Null,
+        Value::Bool(value) => SqlValue::Integer(i64::from(*value)),
+        Value::Number(number) => {
+            if let Some(value) = number.as_i64() {
+                SqlValue::Integer(value)
+            } else if let Some(value) = number.as_f64() {
+                SqlValue::Real(value)
+            } else {
+                SqlValue::Text(number.to_string())
+            }
+        }
+        Value::String(value) => SqlValue::Text(value.clone()),
+        other => SqlValue::Text(other.to_string()),
+    }
+}
