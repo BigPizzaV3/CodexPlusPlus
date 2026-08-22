@@ -827,8 +827,16 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
+type ManagerNavigationIntent = {
+  page: "settings";
+  section?: "stepwise";
+};
+
 type Route = "overview" | "relay" | "relayEnvironment" | "sessions" | "context" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
+
+const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
+const SETTINGS_STEPWISE_SECTION_ID = "settings-stepwise";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
   { id: "overview", label: t("概览"), icon: LayoutDashboard },
@@ -966,6 +974,7 @@ const defaultSettings: BackendSettings = {
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
+  const [pendingSettingsSection, setPendingSettingsSection] = useState<ManagerNavigationIntent["section"] | null>(null);
   const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     title: string;
@@ -2700,6 +2709,22 @@ export function App() {
     await call<void>("manager_hide_to_tray");
   };
 
+  const consumePendingManagerNavigation = async (): Promise<boolean> => {
+    try {
+      const navigation = await invoke<ManagerNavigationIntent | null>("consume_pending_manager_navigation");
+      if (!navigation) return false;
+      if (navigation.page === "settings") {
+        setPendingSettingsSection(navigation.section ?? null);
+        setRoute("settings");
+        await refreshSettings(true);
+        return true;
+      }
+    } catch (error) {
+      logDiagnostic("manager.navigation_failed", { error: stringifyError(error) });
+    }
+    return false;
+  };
+
   const showResultNotice = (
     title: string,
     result: Pick<CommandResult<unknown>, "message" | "status">,
@@ -2712,14 +2737,15 @@ export function App() {
   useEffect(() => {
     void (async () => {
       const startup = await run(() => call<StartupResult>("startup_options"));
-      if (startup?.showUpdate) {
+      const handledNavigation = await consumePendingManagerNavigation();
+      if (!handledNavigation && startup?.showUpdate) {
         setRoute("about");
         void checkUpdate(false);
       } else {
         void checkUpdate(true);
       }
       await refreshOverview(true);
-      await refreshSettings(true);
+      if (!handledNavigation) await refreshSettings(true);
       await refreshRelay(true);
       await refreshEnvConflicts(true);
       await refreshProviderSyncTargets(true);
@@ -2728,6 +2754,39 @@ export function App() {
       await refreshRemotePluginMarketplace(true);
     })();
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let stopListening: (() => void) | undefined;
+    void listen(MANAGER_NAVIGATION_EVENT, () => {
+      if (!disposed) void consumePendingManagerNavigation();
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else stopListening = unlisten;
+    });
+    return () => {
+      disposed = true;
+      stopListening?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (route !== "settings" || pendingSettingsSection !== "stepwise") return;
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        document.getElementById(SETTINGS_STEPWISE_SECTION_ID)?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+        setPendingSettingsSection(null);
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [pendingSettingsSection, route]);
 
   useEffect(() => {
     if (getLanguage() === "en") {
@@ -6204,7 +6263,7 @@ function SettingsScreen({
               placeholder={t("例如 gpt-5.4-mini")}
             />
           </Field>
-          <div className="settings-block stepwise-settings-block">
+          <div className="settings-block stepwise-settings-block" id={SETTINGS_STEPWISE_SECTION_ID}>
             <div className="section-title">Stepwise</div>
             <div className="stepwise-settings-section">{t("连接")}</div>
             <div className="form-row">
