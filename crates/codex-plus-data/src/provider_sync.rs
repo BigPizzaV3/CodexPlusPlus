@@ -1042,7 +1042,7 @@ fn collect_session_changes(
             .thread_id
             .as_ref()
             .is_some_and(|thread_id| explicit_user_thread_ids.contains(thread_id));
-        if !is_explicit_user && rollout_session_meta_marks_non_root_agent(&text) {
+        if rollout_session_meta_marks_non_root_agent(&text) {
             if let Some(thread_id) = &rewrite.thread_id {
                 collected.subagent_thread_ids.insert(thread_id.clone());
             }
@@ -2211,11 +2211,13 @@ fn sqlite_provider_sync_thread_kinds(
             })?;
             for row in rows {
                 let (thread_id, source, thread_source) = row?;
-                if thread_source_is_user(thread_source.as_deref()) {
-                    kinds.explicit_user_thread_ids.insert(thread_id);
-                } else if thread_source_marks_non_root(thread_source.as_deref())
-                    || source_marks_non_root_agent(&source)
+                if source_structured_marks_non_root_agent(&source)
+                    || thread_source_marks_non_root(thread_source.as_deref())
                 {
+                    kinds.subagent_thread_ids.insert(thread_id);
+                } else if thread_source_is_user(thread_source.as_deref()) {
+                    kinds.explicit_user_thread_ids.insert(thread_id);
+                } else if source_marks_non_root_agent(&source) {
                     kinds.subagent_thread_ids.insert(thread_id);
                 }
             }
@@ -2963,12 +2965,19 @@ fn collect_catalog_marked_non_root_thread_ids(
         })?;
         for row in rows {
             let (thread_id, source_kind, thread_source) = row?;
+            if source_structured_marks_non_root_agent(&source_kind)
+                || thread_source_marks_non_root(thread_source.as_deref())
+            {
+                thread_ids_by_path
+                    .entry(path.clone())
+                    .or_default()
+                    .insert(thread_id);
+                continue;
+            }
             if thread_source_is_user(thread_source.as_deref()) {
                 continue;
             }
-            if thread_source_marks_non_root(thread_source.as_deref())
-                || source_marks_non_root_agent(&source_kind)
-                || spawned_child_ids.contains(&thread_id)
+            if source_marks_non_root_agent(&source_kind) || spawned_child_ids.contains(&thread_id)
             {
                 thread_ids_by_path
                     .entry(path.clone())
@@ -2984,12 +2993,16 @@ fn is_catalog_non_root_agent(
     thread: &CatalogRepairThread,
     spawned_child_ids: &HashSet<String>,
 ) -> bool {
-    // The explicit user marker is authoritative over legacy source and spawn-edge fallbacks.
+    if source_structured_marks_non_root_agent(&thread.source_kind)
+        || thread_source_marks_non_root(thread.thread_source.as_deref())
+    {
+        return true;
+    }
+    // The explicit user marker is authoritative over legacy text and spawn-edge fallbacks.
     if thread_source_is_user(thread.thread_source.as_deref()) {
         return false;
     }
-    thread_source_marks_non_root(thread.thread_source.as_deref())
-        || source_marks_non_root_agent(&thread.source_kind)
+    source_marks_non_root_agent(&thread.source_kind)
         || spawned_child_ids.contains(&thread.id)
 }
 
@@ -3011,7 +3024,11 @@ fn source_marks_non_root_agent(source: &str) -> bool {
     if source_text_marks_non_root_agent(source) {
         return true;
     }
-    serde_json::from_str::<Value>(source)
+    source_structured_marks_non_root_agent(source)
+}
+
+fn source_structured_marks_non_root_agent(source: &str) -> bool {
+    serde_json::from_str::<Value>(source.trim())
         .is_ok_and(|source| source_value_marks_non_root_agent(&source))
 }
 
