@@ -870,7 +870,7 @@ const navigationSections: Array<{ label: string; routes: Route[]; placement?: "b
 const defaultSettings: BackendSettings = {
   codexAppPath: "",
   codexExtraArgs: [],
-  providerSyncEnabled: false,
+  providerSyncEnabled: true,
   providerSyncSavedProviders: [],
   providerSyncManualProviders: [],
   providerSyncLastSelectedProvider: "",

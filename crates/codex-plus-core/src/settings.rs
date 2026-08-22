@@ -379,7 +379,7 @@ pub struct BackendSettings {
     pub codex_app_path: String,
     #[serde(rename = "codexExtraArgs", default)]
     pub codex_extra_args: Vec<String>,
-    #[serde(rename = "providerSyncEnabled", default)]
+    #[serde(rename = "providerSyncEnabled", default = "default_provider_sync_enabled")]
     pub provider_sync_enabled: bool,
     #[serde(rename = "providerSyncSavedProviders", default)]
     pub provider_sync_saved_providers: Vec<String>,
@@ -560,7 +560,7 @@ impl Default for BackendSettings {
         Self {
             codex_app_path: String::new(),
             codex_extra_args: Vec::new(),
-            provider_sync_enabled: false,
+            provider_sync_enabled: true,
             provider_sync_saved_providers: Vec::new(),
             provider_sync_manual_providers: Vec::new(),
             provider_sync_last_selected_provider: String::new(),
@@ -628,6 +628,10 @@ impl Default for BackendSettings {
             relay_test_model: default_relay_test_model(),
         }
     }
+}
+
+fn default_provider_sync_enabled() -> bool {
+    true
 }
 
 impl BackendSettings {
@@ -1785,7 +1789,7 @@ mod tests {
     #[test]
     fn settings_default_matches_expected_behavior() {
         let settings = BackendSettings::default();
-        assert!(!settings.provider_sync_enabled);
+        assert!(settings.provider_sync_enabled);
         assert!(settings.relay_profiles_enabled);
         assert!(settings.enhancements_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
