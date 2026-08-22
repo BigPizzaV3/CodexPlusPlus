@@ -394,6 +394,43 @@ async fn stepwise_routes_use_settings_service() {
 }
 
 #[tokio::test]
+async fn answer_outline_parse_is_opt_in_and_returns_ordered_items() {
+    let ctx = test_context();
+
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/answer-outline/parse",
+            json!({"text": "# 不应解析"}),
+        )
+        .await,
+        json!({"status": "ok", "disabled": true, "items": []})
+    );
+
+    let result = handle_bridge_request(
+        ctx,
+        "/answer-outline/parse",
+        json!({
+            "enabled": true,
+            "text": "# 结论\n\n1. 方案\n\n## 验证"
+        }),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["disabled"], false);
+    assert_eq!(
+        result["items"]
+            .as_array()
+            .expect("outline items should be an array")
+            .iter()
+            .map(|item| item["title"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["结论", "方案", "验证"]
+    );
+}
+
+#[tokio::test]
 async fn unknown_bridge_path_preserves_empty_session_id_shape() {
     let result = handle_bridge_request(
         test_context(),

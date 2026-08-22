@@ -227,6 +227,7 @@ pub async fn handle_bridge_request(
         "/stepwise/test" => {
             stepwise_test_value(ctx.settings.get_settings().await, payload.clone()).await
         }
+        "/answer-outline/parse" => answer_outline_value(payload.clone()),
         "/delete" => result_value(ctx.data.delete(session_from_payload(&payload)).await),
         "/undo" => {
             let undo_token = payload
@@ -293,6 +294,32 @@ pub async fn handle_bridge_request(
         }),
     );
     response
+}
+
+fn answer_outline_value(payload: Value) -> anyhow::Result<Value> {
+    if payload.get("enabled").and_then(Value::as_bool) != Some(true) {
+        return Ok(json!({
+            "status": "ok",
+            "disabled": true,
+            "items": []
+        }));
+    }
+
+    let text = payload
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let max_items = payload
+        .get("maxItems")
+        .and_then(Value::as_u64)
+        .unwrap_or(24)
+        .min(24) as usize;
+
+    Ok(json!({
+        "status": "ok",
+        "disabled": false,
+        "items": crate::answer_outline::extract(text, max_items)
+    }))
 }
 
 #[derive(Default)]
