@@ -46,6 +46,7 @@ const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
     include_bytes!("../../../assets/inject/upstream/dream-skin/macos/portal-hero.png");
 const PET_REAL_MOUSE_SCRIPT: &str = include_str!("../../../assets/inject/pet-real-mouse-inject.js");
 const STEPWISE_SCRIPT: &str = include_str!("../../../assets/inject/stepwise-inject.js");
+const ANSWER_OUTLINE_SCRIPT: &str = include_str!("../../../assets/inject/answer-outline-inject.js");
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
 const DREAM_SKIN_RENDERER_REVISION: &str = "20-modern-main-surface";
 
@@ -270,6 +271,10 @@ pub fn stepwise_script() -> &'static str {
     STEPWISE_SCRIPT
 }
 
+pub fn answer_outline_script() -> &'static str {
+    ANSWER_OUTLINE_SCRIPT
+}
+
 pub fn pet_real_mouse_script() -> &'static str {
     PET_REAL_MOUSE_SCRIPT
 }
@@ -409,8 +414,13 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     } else {
         ""
     };
+    let answer_outline_runtime = if answer_outline_enabled(settings) {
+        answer_outline_script()
+    } else {
+        ""
+    };
     format!(
-        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = {};\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_FAST_STARTUP__ = {};\nwindow.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = {};\n{}\n{}\n{}",
+        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = {};\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_FAST_STARTUP__ = {};\nwindow.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = {};\n{}\n{}\n{}\n{}",
         serde_json::to_string(&helper_url).expect("helper URL should serialize"),
         serde_json::to_string(crate::version::VERSION).expect("version should serialize"),
         serde_json::to_string(DIAGNOSTIC_BUILD_ID).expect("build id should serialize"),
@@ -431,8 +441,20 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
             .expect("usage alert config should serialize"),
         renderer_script(),
         stepwise_runtime,
+        answer_outline_runtime,
         dream_skin_target_runtime,
     )
+}
+
+fn answer_outline_enabled(settings: &BackendSettings) -> bool {
+    serde_json::to_value(settings)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("codexAppAnswerOutlineEnabled")
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 pub fn dream_skin_live_update_probe_script() -> String {

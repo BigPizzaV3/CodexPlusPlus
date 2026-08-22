@@ -90,6 +90,23 @@ fn injection_script_includes_stepwise_runtime_when_enabled() {
 }
 
 #[test]
+fn answer_outline_engine_is_invisible_and_owns_navigation_data() {
+    let script = assets::answer_outline_script();
+
+    assert!(script.contains("const API_KEY = \"__codexAnswerOutline\";"));
+    assert!(script.contains("data-content-search-turn-key"));
+    assert!(script.contains("function latestAnswer()"));
+    assert!(script.contains("function collect(root)"));
+    assert!(script.contains("/answer-outline/parse"));
+    assert!(script.contains("function jumpTo(id)"));
+    assert!(script.contains("function jumpToAnchor(anchor)"));
+    assert!(script.contains("function targetScrollTop(element, container, align = \"start\")"));
+    assert!(script.contains("settleScroll(item.element, container, \"start\")"));
+    assert!(script.contains("listeners: new Set()"));
+    assert!(!script.contains("document.createElement(\"button\")"));
+}
+
+#[test]
 fn pet_real_mouse_settings_are_gated_to_windows_in_injected_ui() {
     let script = assets::injection_script(57321);
 
