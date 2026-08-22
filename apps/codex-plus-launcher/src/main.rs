@@ -416,6 +416,7 @@ impl LaunchHooks for LauncherHooks {
                             updated_workspace_roots: 0,
                             skipped_locked_rollout_files: Vec::new(),
                             encrypted_content_warning: None,
+                            repair_audit: codex_plus_data::ProviderSyncAudit::default(),
                         },
                         completion_error,
                     ));
@@ -446,6 +447,7 @@ impl LaunchHooks for LauncherHooks {
                             updated_workspace_roots: 0,
                             skipped_locked_rollout_files: Vec::new(),
                             encrypted_content_warning: None,
+                            repair_audit: codex_plus_data::ProviderSyncAudit::default(),
                         },
                         None,
                     ));
