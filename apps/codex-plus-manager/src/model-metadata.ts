@@ -1,4 +1,4 @@
-import { normalizeAutoCompactPercent } from "./auto-compact.ts";
+import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactPercent } from "./auto-compact.ts";
 
 export type ModelMetadata = Record<string, unknown>;
 export type ModelMetadataMap = Record<string, ModelMetadata>;
@@ -16,13 +16,9 @@ export type ModelMetadataImportResult =
   | { ok: true; value: ImportedModelMetadata }
   | { ok: false; error: string };
 
-const MANAGED_MODEL_METADATA_FIELDS = new Set([
-  "max_context_window",
-  "effective_context_window_percent",
-  "priority",
-  "visibility",
-  "supported_in_api",
-]);
+// 只有 slug 和两个由界面专门编辑的数值字段不进入 metadata map。
+// 其余字段属于供应商模型事实，导入时保留并在 catalog 中优先于生成默认值。
+const MANAGED_MODEL_METADATA_FIELDS = new Set<string>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -221,6 +217,19 @@ function documentCandidates(root: unknown): ModelMetadata[] | null {
   return null;
 }
 
+// 强制管理字段顺序，避免保存后 context_window 跑到压缩字段之后。
+function reorderManagedModelFields(model: ModelMetadata): void {
+  const ordered: ModelMetadata = {};
+  for (const key of ["slug", "context_window", "auto_compact_token_limit"]) {
+    if (Object.hasOwn(model, key)) ordered[key] = model[key];
+  }
+  for (const [key, value] of Object.entries(model)) {
+    if (!Object.hasOwn(ordered, key)) ordered[key] = value;
+  }
+  for (const key of Object.keys(model)) delete model[key];
+  Object.assign(model, ordered);
+}
+
 export function synchronizeModelMetadataDocumentContextWindow(
   source: string,
   targetSlug: string,
@@ -240,7 +249,11 @@ export function synchronizeModelMetadataDocumentContextWindow(
   const tokens = contextWindowToTokens(trimmed);
   if (trimmed && !tokens) return null;
   if (tokens) matches[0].context_window = tokens;
-  else delete matches[0].context_window;
+  else if (Object.hasOwn(matches[0], "context_window")) {
+    // 保留供应商字段位置；null 表示界面清空，重新填写时不会把键移到末尾。
+    matches[0].context_window = null;
+  }
+  reorderManagedModelFields(matches[0]);
   return JSON.stringify(root, null, 2);
 }
 
@@ -264,7 +277,11 @@ export function synchronizeModelMetadataDocumentLimits(
   if (matches.length !== 1) return null;
   const compactTokenLimit = autoCompactPercentToTokenLimit(contextWindow, autoCompactPercent);
   if (compactTokenLimit) matches[0].auto_compact_token_limit = compactTokenLimit;
-  else delete matches[0].auto_compact_token_limit;
+  else if (Object.hasOwn(matches[0], "auto_compact_token_limit")) {
+    // 保留供应商 JSON 的字段位置，清空只写 null；再次输入时不会把字段移到末尾。
+    matches[0].auto_compact_token_limit = null;
+  }
+  reorderManagedModelFields(matches[0]);
   return JSON.stringify(root, null, 2);
 }
 
@@ -353,7 +370,7 @@ export function parseModelMetadataDocument(source: string, targetSlug: string): 
 
   const model = matches[0];
   let contextWindow: string | null = null;
-  if (Object.hasOwn(model, "context_window")) {
+  if (Object.hasOwn(model, "context_window") && model.context_window !== null) {
     contextWindow = positiveIntegerString(model.context_window);
     if (!contextWindow) return { ok: false, error: "context_window 必须是正整数。" };
   }

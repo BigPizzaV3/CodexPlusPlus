@@ -81,7 +81,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { codexGoalsFeatureState, setCodexGoalsFeatureInConfig } from "./goals-config";
 import { isGitHubRepositoryHomepage } from "./github-repository";
-import { normalizeAutoCompactPercent } from "./auto-compact";
+import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
 import {
   clearModelMetadataForSlug,
   parseModelMetadataDocument,
@@ -7037,6 +7037,7 @@ function RelayProfileEditor({
     originalAutoCompact: string;
   } | null>(null);
   const [metadataImportDocument, setMetadataImportDocument] = useState("");
+  const [metadataImportOriginalDocument, setMetadataImportOriginalDocument] = useState("");
   const [metadataImportError, setMetadataImportError] = useState("");
   const [metadataImportPreview, setMetadataImportPreview] = useState<ImportedModelMetadata | null>(null);
   const modelSlugOriginsRef = useRef(modelWindowRows.map((row) => row.model.trim()));
@@ -7122,6 +7123,7 @@ function RelayProfileEditor({
   const closeModelMetadataImport = () => {
     setMetadataImportTarget(null);
     setMetadataImportDocument("");
+    setMetadataImportOriginalDocument("");
     setMetadataImportError("");
     setMetadataImportPreview(null);
   };
@@ -7152,6 +7154,7 @@ function RelayProfileEditor({
       originalAutoCompact: modelWindowRows[index]?.autoCompact ?? "",
     });
     setMetadataImportDocument(existingDocument);
+    setMetadataImportOriginalDocument(existingDocument);
     setMetadataImportError("");
     setMetadataImportPreview(existingPreview?.ok ? existingPreview.value : null);
   };
@@ -7164,7 +7167,9 @@ function RelayProfileEditor({
     ));
     updateModelWindowRow(metadataImportTarget.index, {
       window: metadataImportPreview.contextWindow ?? metadataImportTarget.originalWindow,
-      autoCompact: metadataImportPreview.autoCompactPercent ?? metadataImportTarget.originalAutoCompact,
+      // 空值表示明确清除该模型的自动压缩覆盖，不应恢复导入前的旧值。
+      // 模型行只展示整数百分比；预览阶段的高精度值不直接写回输入框。
+      autoCompact: metadataImportPreview.autoCompactPercent ?? DEFAULT_AUTO_COMPACT_PERCENT,
     });
     closeModelMetadataImport();
   };
@@ -7509,7 +7514,8 @@ function RelayProfileEditor({
                         onChange={(event) => {
                           const window = event.currentTarget.value;
                           updateModelWindowRow(index, { window });
-                          if (!importing) return;
+                          // 导入面板尚未粘贴 JSON 时，只编辑模型行；不要把空文档同步失败显示成错误。
+                          if (!importing || !metadataImportDocument.trim() || !metadataImportPreview) return;
                           const synchronized = synchronizeModelMetadataDocumentLimitsPreview(
                             metadataImportDocument,
                             slug,
@@ -7532,9 +7538,13 @@ function RelayProfileEditor({
                       <Input
                         value={row.autoCompact}
                         onChange={(event) => {
-                          const autoCompact = event.currentTarget.value;
+                          const autoCompact = normalizeAutoCompactEditing(
+                            event.currentTarget.value,
+                            row.autoCompact,
+                          );
                           updateModelWindowRow(index, { autoCompact });
-                          if (!importing) return;
+                          // 导入面板尚未粘贴 JSON 时，只编辑模型行；不要把空文档同步失败显示成错误。
+                          if (!importing || !metadataImportDocument.trim() || !metadataImportPreview) return;
                           const synchronized = synchronizeModelMetadataDocumentLimitsPreview(
                             metadataImportDocument,
                             slug,
@@ -7552,7 +7562,8 @@ function RelayProfileEditor({
                         }}
                         onBlur={(event) => {
                           const normalized = normalizeAutoCompactPercent(event.currentTarget.value);
-                          if (normalized !== row.autoCompact) updateModelWindowRow(index, { autoCompact: normalized });
+                          const effective = normalized || DEFAULT_AUTO_COMPACT_PERCENT;
+                          if (effective !== row.autoCompact) updateModelWindowRow(index, { autoCompact: effective });
                         }}
                         placeholder="90%"
                       />
@@ -7609,19 +7620,18 @@ function RelayProfileEditor({
                             }
                             setMetadataImportPreview(parsed.value);
                           }}
-                          placeholder={t("粘贴 models.json 内容")}
+                          placeholder={t("需要补充供应商模型信息时填写；不填则使用 Codex++ 默认配置（自动压缩 90%、图片原样发送）。从供应商的 models.json 或 model.json 复制，支持多个模型。")}
                           rows={7}
                         />
                         {metadataImportError ? <div className="relay-model-metadata-import-error" role="alert">{metadataImportError}</div> : null}
                         {metadataImportPreview?.ignoredFields.length ? (
                           <div className="relay-model-metadata-import-warning" role="status">
-                            {tf("以下字段由 Codex++ 管理，未导入：{0}", [metadataImportPreview.ignoredFields.join(", ")])}
+                            {tf("以下字段由 Codex++ 计算或维护，导入不会覆盖：{0}", [metadataImportPreview.ignoredFields.join(", ")])}
                           </div>
                         ) : null}
                         <div className="relay-model-metadata-import-actions">
                           <div className="relay-model-import-copy">
                             <strong>{slug}</strong>
-                            <span>{t("导入对应模型的 model.json 字段。支持多模型文件，自动匹配同名模型。")}</span>
                           </div>
                           <div className="relay-model-metadata-import-flow">
                             <Button onClick={cancelModelMetadataImport} size="sm" type="button" variant="ghost">{t("取消")}</Button>
@@ -7639,7 +7649,11 @@ function RelayProfileEditor({
                               </Button>
                             ) : null}
                             <Button disabled={!metadataImportPreview} onClick={applyModelMetadataImport} size="sm" type="button">
-                              {t("替换此模型配置")}
+                              {t(
+                                metadataImportDocument.trim() === metadataImportOriginalDocument.trim()
+                                  ? "保存此模型"
+                                  : "更新此模型配置",
+                              )}
                             </Button>
                           </div>
                         </div>

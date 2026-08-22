@@ -5274,7 +5274,7 @@ fn apply_model_metadata_overrides_catalog_and_protects_managed_fields() {
                 "display_name": "Imported model",
                 "description": "Imported description",
                 "context_window": 1,
-                "max_context_window": 2,
+                "max_context_window": 1_000_000,
                 "auto_compact_token_limit": 3,
                 "effective_context_window_percent": 4,
                 "priority": 5,
@@ -5319,11 +5319,11 @@ experimental_bearer_token = "sk-new"
     assert_eq!(model["supports_search_tool"], true);
     assert_eq!(model["vendor_extension"]["source"], "models.json");
     assert_eq!(model["context_window"], 200_000);
-    assert_eq!(model["max_context_window"], 200_000);
+    assert_eq!(model["max_context_window"], 1_000_000);
     assert_eq!(model["auto_compact_token_limit"], serde_json::Value::Null);
-    assert_eq!(model["effective_context_window_percent"], 100);
-    assert_eq!(model["priority"], 1000);
-    assert_eq!(model["visibility"], "list");
-    assert_eq!(model["supported_in_api"], true);
-    assert_eq!(model["use_responses_lite"], false);
+    assert_eq!(model["effective_context_window_percent"], 4);
+    assert_eq!(model["priority"], 5);
+    assert_eq!(model["visibility"], "hidden");
+    assert_eq!(model["supported_in_api"], false);
+    assert_eq!(model["use_responses_lite"], true);
 }

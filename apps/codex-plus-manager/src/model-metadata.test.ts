@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { isValidAutoCompactPercent, normalizeAutoCompactPercent } from "./auto-compact.ts";
+import { isValidAutoCompactPercent, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact.ts";
 import {
   clearModelMetadataForSlug,
   parseModelMetadataDocument,
@@ -15,7 +15,14 @@ import {
 } from "./model-metadata.ts";
 
 describe("model metadata helpers", () => {
-  it("解析单模型并保护专用字段", () => {
+  it("自动压缩编辑把数字保持在百分号前并允许清空", () => {
+    assert.strictEqual(normalizeAutoCompactEditing("90%5", "90%"), "905%");
+    assert.strictEqual(normalizeAutoCompactEditing("9%", "90%"), "9");
+    assert.strictEqual(normalizeAutoCompactEditing("90", "90%"), "90");
+    assert.strictEqual(normalizeAutoCompactEditing("", "90%"), "");
+  });
+
+  it("解析单模型并保留供应商字段", () => {
     const result = parseModelMetadataDocument(JSON.stringify({
       slug: "model-a",
       context_window: 1_000_000,
@@ -30,10 +37,12 @@ describe("model metadata helpers", () => {
     assert.strictEqual(result.value.contextWindow, "1000000");
     assert.strictEqual(result.value.autoCompactPercent, "80%");
     assert.deepStrictEqual(result.value.metadata, {
+      max_context_window: 1_000_000,
+      priority: 2,
       truncation_policy: { mode: "tokens", limit: 10000 },
       vendor_extension: ["kept"],
     });
-    assert.deepStrictEqual(result.value.ignoredFields, ["max_context_window", "priority"]);
+    assert.deepStrictEqual(result.value.ignoredFields, []);
   });
 
   it("支持 export/module 包装但不会执行 JavaScript", () => {
@@ -64,7 +73,7 @@ describe("model metadata helpers", () => {
       { supports_search_tool: true, priority: 2 },
     );
     assert.deepStrictEqual(JSON.parse(replaced), {
-      "model-a": { supports_search_tool: true },
+      "model-a": { supports_search_tool: true, priority: 2 },
       other: { keep: true },
     });
     assert.strictEqual(clearModelMetadataForSlug(replaced, "model-a"), '{"other":{"keep":true}}');
@@ -95,14 +104,48 @@ describe("model metadata helpers", () => {
     assert.strictEqual(JSON.parse(rounded ?? "null").auto_compact_token_limit, 2);
   });
 
-  it("空比例保持 Codex 默认行为并移除专用阈值", () => {
+  it("空比例保持 Codex 默认行为并保留字段位置", () => {
     const document = synchronizeModelMetadataDocumentLimits(
       '{"slug":"model-a","context_window":100,"auto_compact_token_limit":90}',
       "model-a",
       "200",
       "",
     );
-    assert.deepStrictEqual(JSON.parse(document ?? "null"), { slug: "model-a", context_window: 200 });
+    assert.deepStrictEqual(JSON.parse(document ?? "null"), {
+      slug: "model-a",
+      context_window: 200,
+      auto_compact_token_limit: null,
+    });
+  });
+
+  it("自动压缩清空后重新输入不改变 JSON 字段顺序", () => {
+    const source = '{"slug":"model-a","context_window":100,"auto_compact_token_limit":90,"vendor":true}';
+    const cleared = synchronizeModelMetadataDocumentLimits(source, "model-a", "100", "");
+    assert.ok(cleared);
+    const refilled = synchronizeModelMetadataDocumentLimits(cleared!, "model-a", "100", "80%");
+    assert.ok(refilled);
+    assert.deepStrictEqual(Object.keys(JSON.parse(refilled!)), [
+      "slug",
+      "context_window",
+      "auto_compact_token_limit",
+      "vendor",
+    ]);
+    assert.strictEqual(JSON.parse(refilled!).auto_compact_token_limit, 80);
+  });
+
+  it("压缩百分比保存再打开时始终把 context_window 放在前面", () => {
+    const source = '{"slug":"model-a","vendor":true,"auto_compact_token_limit":90,"context_window":100}';
+    const saved = synchronizeModelMetadataDocumentLimits(source, "model-a", "200", "80%");
+    assert.ok(saved);
+    assert.deepStrictEqual(Object.keys(JSON.parse(saved!)), [
+      "slug",
+      "context_window",
+      "auto_compact_token_limit",
+      "vendor",
+    ]);
+    const reopened = parseModelMetadataDocument(saved!, "model-a");
+    assert.strictEqual(reopened.ok, true);
+    if (reopened.ok) assert.strictEqual(reopened.value.contextWindow, "200");
   });
 
   it("预览在修改窗口后保留显式高精度比例", () => {
@@ -118,13 +161,22 @@ describe("model metadata helpers", () => {
     assert.strictEqual(JSON.parse(synchronized?.document ?? "null").auto_compact_token_limit, 674635);
   });
 
-  it("窗口清空时删除 context_window", () => {
+  it("窗口清空时保留 context_window 字段位置", () => {
     const document = synchronizeModelMetadataDocumentContextWindow(
       '{"slug":"model-a","context_window":100,"priority":1}',
       "model-a",
       "",
     );
-    assert.deepStrictEqual(JSON.parse(document ?? "null"), { slug: "model-a", priority: 1 });
+    assert.deepStrictEqual(JSON.parse(document ?? "null"), { slug: "model-a", context_window: null, priority: 1 });
+  });
+
+  it("context_window 为 null 时按未设置处理", () => {
+    const result = parseModelMetadataDocument(
+      '{"slug":"model-a","context_window":null,"vendor":true}',
+      "model-a",
+    );
+    assert.strictEqual(result.ok, true);
+    if (result.ok) assert.strictEqual(result.value.contextWindow, null);
   });
 
   it("前端比例校验与 Rust 语法一致", () => {

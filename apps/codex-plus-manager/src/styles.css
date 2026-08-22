@@ -4957,6 +4957,7 @@ input[type="range"]:disabled {
   color: hsl(var(--muted-foreground));
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .relay-model-row input {

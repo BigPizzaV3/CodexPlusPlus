@@ -91,9 +91,9 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       modelWindowRowsFromProfile("a\nb\nc", '{"a":"1M","c":"200K"}'),
       [
-        { model: "a", window: "1M", autoCompact: "", imageHandling: "send-as-is" },
-        { model: "b", window: "", autoCompact: "", imageHandling: "send-as-is" },
-        { model: "c", window: "200K", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "a", window: "1M", autoCompact: "90%", imageHandling: "send-as-is" },
+        { model: "b", window: "", autoCompact: "90%", imageHandling: "send-as-is" },
+        { model: "c", window: "200K", autoCompact: "90%", imageHandling: "send-as-is" },
       ],
     );
   });
@@ -102,9 +102,9 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       modelWindowRowsFromProfile("a\nb\nc", '{}', '{"a":"vlm","b":"strip"}'),
       [
-        { model: "a", window: "", autoCompact: "", imageHandling: "vlm" },
-        { model: "b", window: "", autoCompact: "", imageHandling: "strip" },
-        { model: "c", window: "", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "a", window: "", autoCompact: "90%", imageHandling: "vlm" },
+        { model: "b", window: "", autoCompact: "90%", imageHandling: "strip" },
+        { model: "c", window: "", autoCompact: "90%", imageHandling: "send-as-is" },
       ],
     );
   });
@@ -118,7 +118,7 @@ describe("model-windows helpers", () => {
         '{"a":90,"b":"80%"}',
       ),
       [
-        { model: "a", window: "", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "a", window: "", autoCompact: "90%", imageHandling: "send-as-is" },
         { model: "b", window: "512K", autoCompact: "80%", imageHandling: "strip" },
       ],
     );
@@ -128,8 +128,8 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       modelWindowRowsFromProfile("a\nb", "null", "{}", "null"),
       [
-        { model: "a", window: "", autoCompact: "", imageHandling: "send-as-is" },
-        { model: "b", window: "", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "a", window: "", autoCompact: "90%", imageHandling: "send-as-is" },
+        { model: "b", window: "", autoCompact: "90%", imageHandling: "send-as-is" },
       ],
     );
   });
@@ -145,7 +145,7 @@ describe("model-windows helpers", () => {
         modelList: "a\nb",
         modelWindows: '{"a":"1M"}',
         modelVlm: '{"a":"vlm"}',
-        modelAutoCompact: "{}",
+        modelAutoCompact: '{"a":"90%","b":"90%"}',
       },
     );
   });

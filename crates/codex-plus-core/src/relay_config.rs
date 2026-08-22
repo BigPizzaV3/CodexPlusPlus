@@ -1996,8 +1996,7 @@ fn apply_model_catalog_to_config(
         custom_responses.then_some(false),
         official_deepseek_responses,
     );
-    let catalog_json =
-        apply_model_metadata_overrides(&catalog_json, &model_metadata, custom_responses)?;
+    let catalog_json = apply_model_metadata_overrides(&catalog_json, &model_metadata)?;
     crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
     let mut doc = parse_toml_document(&config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
@@ -2072,7 +2071,6 @@ fn model_metadata_has_entries(
 fn apply_model_metadata_overrides(
     catalog_json: &str,
     override_map: &serde_json::Map<String, Value>,
-    protect_responses_lite: bool,
 ) -> anyhow::Result<String> {
     if override_map.is_empty() {
         return Ok(catalog_json.to_string());
@@ -2093,18 +2091,7 @@ fn apply_model_metadata_overrides(
             continue;
         };
         for (key, value) in user_override {
-            if matches!(
-                key.as_str(),
-                "slug"
-                    | "context_window"
-                    | "max_context_window"
-                    | "auto_compact_token_limit"
-                    | "effective_context_window_percent"
-                    | "priority"
-                    | "visibility"
-                    | "supported_in_api"
-            ) || protect_responses_lite && key == "use_responses_lite"
-            {
+            if matches!(key.as_str(), "slug" | "context_window" | "auto_compact_token_limit") {
                 continue;
             }
             model_object.insert(key.clone(), value.clone());
