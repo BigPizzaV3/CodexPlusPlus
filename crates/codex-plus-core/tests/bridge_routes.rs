@@ -362,6 +362,14 @@ async fn stepwise_routes_use_settings_service() {
 
     let public_settings = handle_bridge_request(ctx.clone(), "/stepwise/settings", json!({})).await;
     assert_eq!(public_settings["settings"]["enabled"], json!(false));
+    assert_eq!(
+        public_settings["settings"]["answerOutlineEnabled"],
+        json!(false)
+    );
+    assert_eq!(
+        public_settings["settings"]["generationMode"],
+        json!("auto")
+    );
     assert_eq!(public_settings["settings"]["directSend"], json!(true));
     assert_eq!(
         public_settings["settings"]["model"],
@@ -460,15 +468,29 @@ async fn runtime_routes_keep_user_script_inventory_shape() {
 
 #[tokio::test]
 async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
-    let ctx = test_context();
+    let runtime = Arc::new(FakeRuntime::default());
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::default()),
+        runtime.clone(),
+        Arc::new(FakeData::default()),
+    );
 
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/devtools/open", json!({})).await,
         json!({"status": "ok", "opened": true})
     );
     assert_eq!(
-        handle_bridge_request(ctx.clone(), "/manager/open", json!({})).await,
+        handle_bridge_request(
+            ctx.clone(),
+            "/manager/open",
+            json!({"page": "settings", "section": "stepwise"}),
+        )
+        .await,
         json!({"status": "ok", "opened": "manager"})
+    );
+    assert_eq!(
+        *runtime.manager_payload.lock().unwrap(),
+        json!({"page": "settings", "section": "stepwise"})
     );
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/manager/open-transient", json!({})).await,
@@ -1204,6 +1226,7 @@ impl BridgeSettingsService for FakeSettings {
 struct FakeRuntime {
     enabled: Mutex<bool>,
     script_enabled: Mutex<bool>,
+    manager_payload: Mutex<Value>,
 }
 
 impl Default for FakeRuntime {
@@ -1211,6 +1234,7 @@ impl Default for FakeRuntime {
         Self {
             enabled: Mutex::new(true),
             script_enabled: Mutex::new(true),
+            manager_payload: Mutex::new(json!({})),
         }
     }
 }
@@ -1246,11 +1270,13 @@ impl BridgeRuntimeService for FakeRuntime {
         Ok(json!({"status": "ok", "opened": true}))
     }
 
-    async fn open_manager(&self) -> anyhow::Result<Value> {
+    async fn open_manager(&self, payload: Value) -> anyhow::Result<Value> {
+        *self.manager_payload.lock().unwrap() = payload;
         Ok(json!({"status": "ok", "opened": "manager"}))
     }
 
-    async fn open_transient_manager(&self) -> anyhow::Result<Value> {
+    async fn open_transient_manager(&self, payload: Value) -> anyhow::Result<Value> {
+        *self.manager_payload.lock().unwrap() = payload;
         Ok(json!({"status": "ok", "opened": "manager-transient"}))
     }
 

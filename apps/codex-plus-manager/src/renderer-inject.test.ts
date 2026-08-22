@@ -197,6 +197,22 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /codexPlusIsNodeTestHarness/);
   });
 
+  it("keeps the floating-panel feature flags opt-in", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /stepwise: false, answerOutline: false/);
+    assert.match(renderer, /answerOutline: "codexAppAnswerOutlineEnabled"/);
+    assert.match(renderer, /data-codex-plus-setting="answerOutline"/);
+  });
+
+  it("syncs the outline toggle through the existing Stepwise panel bridge", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /answerOutlineEnabled = codexPlusSettings\(\)\.answerOutline/);
+    assert.match(renderer, /answerOutlineEnabled: !!answerOutlineEnabled/);
+    assert.match(renderer, /key === "answerOutline"/);
+  });
+
   it("initializes renderer styles without unresolved template identifiers", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 

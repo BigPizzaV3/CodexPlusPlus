@@ -66,6 +66,8 @@ pub struct StepwiseItem {
 #[serde(rename_all = "camelCase")]
 pub struct StepwisePublicSettings {
     pub enabled: bool,
+    pub answer_outline_enabled: bool,
+    pub generation_mode: String,
     pub direct_send: bool,
     pub base_url_configured: bool,
     pub api_key_configured: bool,
@@ -82,6 +84,8 @@ pub struct StepwisePublicSettings {
 pub fn public_settings(settings: &BackendSettings) -> StepwisePublicSettings {
     StepwisePublicSettings {
         enabled: settings.codex_app_stepwise_enabled,
+        answer_outline_enabled: settings.codex_app_answer_outline_enabled,
+        generation_mode: settings.codex_app_stepwise_generation_mode.clone(),
         direct_send: settings.codex_app_stepwise_direct_send,
         base_url_configured: !settings.codex_app_stepwise_base_url.trim().is_empty(),
         api_key_configured: !stepwise_api_key(settings).is_empty(),
@@ -107,6 +111,19 @@ pub fn settings_with_payload(mut settings: BackendSettings, payload: &Value) -> 
         .and_then(Value::as_bool)
     {
         settings.codex_app_stepwise_enabled = value;
+    }
+    if let Some(value) = raw_settings
+        .get("codexAppAnswerOutlineEnabled")
+        .and_then(Value::as_bool)
+    {
+        settings.codex_app_answer_outline_enabled = value;
+    }
+    if let Some(value) = raw_settings
+        .get("codexAppStepwiseGenerationMode")
+        .and_then(Value::as_str)
+    {
+        settings.codex_app_stepwise_generation_mode =
+            crate::settings::normalize_stepwise_generation_mode(value);
     }
     if let Some(value) = raw_settings
         .get("codexAppStepwiseDirectSend")
@@ -829,6 +846,8 @@ mod tests {
             &json!({
                 "settings": {
                     "codexAppStepwiseEnabled": true,
+                    "codexAppAnswerOutlineEnabled": true,
+                    "codexAppStepwiseGenerationMode": " manual ",
                     "codexAppStepwiseDirectSend": true,
                     "codexAppStepwiseBaseUrl": "https://api.example.test/v1/",
                     "codexAppStepwiseApiKey": " sk-test ",
@@ -844,6 +863,8 @@ mod tests {
         );
 
         assert!(settings.codex_app_stepwise_enabled);
+        assert!(settings.codex_app_answer_outline_enabled);
+        assert_eq!(settings.codex_app_stepwise_generation_mode, "manual");
         assert!(settings.codex_app_stepwise_direct_send);
         assert_eq!(
             settings.codex_app_stepwise_base_url,
