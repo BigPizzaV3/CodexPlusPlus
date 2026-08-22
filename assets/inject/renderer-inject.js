@@ -465,9 +465,9 @@
   const codexThreadServiceTierKey = "codexThreadServiceTierOverrides";
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
-  const codexServiceTierRequestOverrideVersion = "8";
-  const codexAppServerModelRequestPatchVersion = "5";
-  const codexRemoteSessionRecoveryVersion = "4";
+  const codexServiceTierRequestOverrideVersion = "9";
+  const codexAppServerModelRequestPatchVersion = "6";
+  const codexRemoteSessionRecoveryVersion = "5";
   const codexPluginMarketplaceUnlockVersion = "15";
   const codexThreadScrollMaxEntries = 120;
   const codexThreadScrollSaveThrottleMs = 120;
@@ -3018,21 +3018,47 @@
     return nextParams;
   }
 
-  function codexRemoteSessionProviderNormalizationEnabled() {
-    if (!codexPlusBackendSettings.relayProfilesEnabled) return false;
+  function codexRemoteSessionActiveProfile() {
+    if (!codexPlusBackendSettings.relayProfilesEnabled) return null;
     const profiles = Array.isArray(codexPlusBackendSettings.relayProfiles)
       ? codexPlusBackendSettings.relayProfiles
       : [];
     const activeId = String(codexPlusBackendSettings.activeRelayId || "");
-    const profile = profiles.find((item) => String(item?.id || "") === activeId);
+    return profiles.find((item) => String(item?.id || "") === activeId) || null;
+  }
+
+  function codexRemoteSessionProviderPatchEnabled() {
+    const profile = codexRemoteSessionActiveProfile();
     if (!profile) return false;
     const relayMode = String(profile.relayMode || "");
-    return relayMode === "official" && !!profile.officialMixApiKey;
+    return relayMode === "pureApi"
+      || (relayMode === "official" && !!profile.officialMixApiKey);
+  }
+
+  function codexRemoteSessionProviderNormalizationEnabled() {
+    if (!codexRemoteSessionProviderPatchEnabled()) return false;
+    const profile = codexRemoteSessionActiveProfile();
+    if (String(profile?.relayMode || "") !== "official") return false;
+    const sessionProvider = String(
+      codexPlusBackendSettings.activeRelaySessionProvider || "custom"
+    ).trim().toLowerCase();
+    return sessionProvider !== "openai";
+  }
+
+  function codexRemoteSessionProviderOverrideEnabled() {
+    const profile = codexRemoteSessionActiveProfile();
+    if (!profile) return false;
+    const relayMode = String(profile.relayMode || "");
+    if (relayMode === "pureApi") return true;
+    return codexRemoteSessionProviderNormalizationEnabled();
   }
 
   function codexRemoteSessionTargetProvider() {
+    const profile = codexRemoteSessionActiveProfile();
+    if (String(profile?.relayMode || "") === "pureApi") return "custom";
     return String(
-      codexModelCatalog?.codex_model_provider
+      codexPlusBackendSettings.activeRelayCodexProvider
+      || codexModelCatalog?.codex_model_provider
       || codexModelCatalog?.codexModelProvider
       || codexModelCatalog?.model_provider
       || codexModelCatalog?.modelProvider
@@ -3040,20 +3066,30 @@
     ).trim();
   }
 
-  function codexRemoteSessionThreadStartMethod(method) {
+  function codexRemoteSessionProviderRequestMethod(method) {
     return [
       "thread/start",
+      "thread/resume",
       "start-conversation",
       "start-thread-for-host",
       "thread-prewarm-start",
       "prewarm-thread-start-for-host",
+      "turn/start",
     ].includes(String(method || ""));
   }
 
   function applyCodexRemoteSessionProviderOverride(method, params) {
-    if (!codexRemoteSessionThreadStartMethod(method)) return params;
-    if (!codexRemoteSessionProviderNormalizationEnabled()) return params;
+    const requestMethod = String(method || "");
+    if (!codexRemoteSessionProviderRequestMethod(requestMethod)) return params;
+    if (!codexRemoteSessionProviderOverrideEnabled()) return params;
     if (!params || typeof params !== "object" || Array.isArray(params)) return params;
+    const profile = codexRemoteSessionActiveProfile();
+    const pureApi = String(profile?.relayMode || "") === "pureApi";
+    const isExtendedPureApiRequest = requestMethod === "thread/resume" || requestMethod === "turn/start";
+    if (isExtendedPureApiRequest && !pureApi) return params;
+    const hasModelProvider = Object.prototype.hasOwnProperty.call(params, "modelProvider")
+      || Object.prototype.hasOwnProperty.call(params, "model_provider");
+    if (requestMethod === "turn/start" && !hasModelProvider) return params;
     const targetProvider = codexRemoteSessionTargetProvider();
     if (!targetProvider || targetProvider === "openai") return params;
     const requestedProvider = String(params.modelProvider || params.model_provider || "").trim();
@@ -3066,7 +3102,7 @@
     const nextParams = { ...params, modelProvider: targetProvider };
     delete nextParams.model_provider;
     sendCodexPlusDiagnostic("remote_session_provider_override_applied", {
-      method,
+      method: requestMethod,
       from: requestedProvider || "(missing)",
       to: targetProvider,
     });
@@ -3408,7 +3444,7 @@
     void patch();
   }
 
-  async function loadBackendSettings() {
+  async function loadBackendSettingsState() {
     const seq = codexPlusBackendSettingsSeq;
     try {
       const settings = await postJson("/settings/get", {});
@@ -3420,15 +3456,19 @@
       }
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
-      if (codexRemoteSessionProviderNormalizationEnabled()) {
-        void loadCodexModelCatalog();
-      }
-      refreshCodexPlusBackendToggles();
       return true;
     } catch (_) {
-      refreshCodexPlusBackendToggles();
       return false;
     }
+  }
+
+  async function loadBackendSettings() {
+    const loaded = await loadBackendSettingsState();
+    if (loaded && codexRemoteSessionProviderOverrideEnabled()) {
+      void loadCodexModelCatalog();
+    }
+    refreshCodexPlusBackendToggles();
+    return loaded;
   }
 
   function loadBackendSettingsForStartup(attempt = 0) {
@@ -4398,33 +4438,42 @@
     return restored === "openai-bundled" || restored === "openai-curated" || restored === "openai-primary-runtime" || restored === "openai-api-curated" || restored === "openai-curated-remote";
   }
 
-  function isCodexPluginBuildFlavorFilter(callback, sample) {
-    if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
+  const codexPluginFilterSourceCache = new WeakMap();
+
+  function codexPluginFilterCallbackSource(callback) {
+    if (codexPluginFilterSourceCache.has(callback)) {
+      return codexPluginFilterSourceCache.get(callback);
+    }
     let source = "";
     try {
       source = Function.prototype.toString.call(callback);
     } catch {
-      return false;
     }
+    codexPluginFilterSourceCache.set(callback, source);
+    return source;
+  }
+
+  function isCodexPluginBuildFlavorFilter(callback, sample, filtered = null) {
+    if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
+    if (!sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName))) return false;
+    const source = codexPluginFilterCallbackSource(callback);
+    if (!source) return false;
     const isKnownFilterSource = source.includes("!u(e.marketplaceName)||e.marketplaceName===r")
       || source.includes("!ne(e.marketplaceName)||e.marketplaceName===n")
       || source.includes("!Eu(e.marketplaceName)||e.marketplaceName===n");
     if (!isKnownFilterSource) return false;
-    if (!sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName))) return false;
-    return sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName) && !callback(plugin));
+    return sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName)
+      && (Array.isArray(filtered) ? !filtered.includes(plugin) : !callback(plugin)));
   }
 
-  function isCodexPluginMarketplaceHiddenFilter(callback, sample) {
+  function isCodexPluginMarketplaceHiddenFilter(callback, sample, filtered = null) {
     if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
-    let source = "";
-    try {
-      source = Function.prototype.toString.call(callback);
-    } catch {
-      return false;
-    }
-    if (!source.includes("!t.includes(e.name)")) return false;
     if (!sample.some((marketplace) => codexPluginOfficialMarketplaceName(marketplace?.name))) return false;
-    return sample.some((marketplace) => codexPluginOfficialMarketplaceName(marketplace?.name) && !callback(marketplace));
+    const source = codexPluginFilterCallbackSource(callback);
+    if (!source) return false;
+    if (!source.includes("!t.includes(e.name)")) return false;
+    return sample.some((marketplace) => codexPluginOfficialMarketplaceName(marketplace?.name)
+      && (Array.isArray(filtered) ? !filtered.includes(marketplace) : !callback(marketplace)));
   }
 
   function installPluginBuildFlavorFilterPatch() {
@@ -4444,15 +4493,17 @@
       return;
     }
     const patchedFilter = function codexPluginBuildFlavorFilterPatch(callback, thisArg) {
-      if (isCodexPluginBuildFlavorFilter(callback, this)) {
+      const filtered = originalFilter.call(this, callback, thisArg);
+      if (filtered.length === this.length) return filtered;
+      if (isCodexPluginBuildFlavorFilter(callback, this, filtered)) {
         sendCodexPlusDiagnostic("plugin_build_flavor_filter_bypassed", { pluginCount: this.length });
         return Array.from(this);
       }
-      if (isCodexPluginMarketplaceHiddenFilter(callback, this)) {
+      if (isCodexPluginMarketplaceHiddenFilter(callback, this, filtered)) {
         sendCodexPlusDiagnostic("plugin_marketplace_hidden_filter_bypassed", { marketplaceCount: this.length });
         return Array.from(this);
       }
-      return originalFilter.call(this, callback, thisArg);
+      return filtered;
     };
     patchedFilter.__codexPluginBuildFlavorPatched = codexPluginMarketplaceUnlockVersion;
     Array.prototype.filter = patchedFilter;
@@ -4771,6 +4822,8 @@
       localFallback: localPluginMarketplaceFallbackResult,
       remoteOnlyFallback: remoteOnlyPluginMarketplaceFallbackResult,
       requestProfile: pluginMarketplaceRequestProfile,
+      isBuildFlavorFilter: isCodexPluginBuildFlavorFilter,
+      isHiddenMarketplaceFilter: isCodexPluginMarketplaceHiddenFilter,
       setCodexAppVersion: (version) => {
         codexPlusBackendSettings.codexAppVersion = String(version || "");
       },
@@ -6038,6 +6091,8 @@
         codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
         codexPlusBackendSettingsLoaded = true;
       },
+      providerPatchEnabled: () => codexRemoteSessionProviderPatchEnabled(),
+      providerNormalizationEnabled: () => codexRemoteSessionProviderNormalizationEnabled(),
       setServiceTierState: (state = {}) => {
         codexServiceTierState = { ...codexServiceTierState, ...state };
       },
@@ -6466,12 +6521,23 @@
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
     client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
-      if (codexRemoteSessionThreadStartMethod(requestMethod)
-          && codexRemoteSessionProviderNormalizationEnabled()
+      let providerRefreshFailed = false;
+      if (codexRemoteSessionProviderRequestMethod(requestMethod)
+          && codexRemoteSessionProviderPatchEnabled()
+          && window.__codexSessionDeleteBridge) {
+        const settingsLoaded = await loadBackendSettingsState();
+        providerRefreshFailed = !settingsLoaded;
+        if (providerRefreshFailed) {
+          sendCodexPlusDiagnostic("remote_session_provider_refresh_failed", {});
+        }
+      } else if (codexRemoteSessionProviderRequestMethod(requestMethod)
+          && codexRemoteSessionProviderOverrideEnabled()
           && !codexRemoteSessionTargetProvider()) {
         await loadCodexModelCatalog();
       }
-      const nextParams = applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const nextParams = providerRefreshFailed
+        ? params
+        : applyCodexRemoteSessionProviderOverride(requestMethod, params);
       const result = await originalSendRequest(method, nextParams, options);
       if (!codexPlusModelUnlockEnabled()) return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
@@ -6488,7 +6554,7 @@
   let appServerModelRequestPatchRetryTimer = 0;
 
   function scheduleAppServerModelRequestPatchRetry() {
-    if (!codexRemoteSessionProviderNormalizationEnabled()) return;
+    if (!codexRemoteSessionProviderPatchEnabled()) return;
     if (appServerModelRequestPatchRetryTimer) return;
     appServerModelRequestPatchRetryTimer = window.setTimeout(() => {
       appServerModelRequestPatchRetryTimer = 0;
@@ -6510,7 +6576,7 @@
     if (appServerModelRequestPatchMissCount === 1) {
       sendCodexPlusDiagnostic(event, detail);
     }
-    if (codexRemoteSessionProviderNormalizationEnabled()) {
+    if (codexRemoteSessionProviderPatchEnabled()) {
       scheduleAppServerModelRequestPatchRetry();
       return;
     }
@@ -6575,7 +6641,7 @@
 
   function ensureCodexModelWhitelistInstalls() {
     if (codexPlusModelUnlockEnabled()
-        || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderNormalizationEnabled())) {
+        || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())) {
       installAppServerModelRequestPatch();
     }
     if (!codexPlusModelUnlockEnabled()) return;

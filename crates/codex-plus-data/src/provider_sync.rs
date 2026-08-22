@@ -49,6 +49,17 @@ pub struct ProviderSyncResult {
     pub sqlite_catalog_rows_removed: usize,
     pub updated_workspace_roots: usize,
     pub encrypted_content_warning: Option<String>,
+    #[serde(default)]
+    pub repair_audit: ProviderSyncAudit,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSyncAudit {
+    pub catalog_only_sessions: usize,
+    pub catalog_only_with_current_rollout: usize,
+    pub catalog_only_with_backup_database: usize,
+    pub catalog_only_without_recovery_source: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -614,6 +625,21 @@ pub fn run_provider_sync_with_target(
     let sync_result = (|| -> anyhow::Result<ProviderSyncResult> {
         let sqlite_paths = provider_sync_db_paths(&home);
         let thread_kinds = sqlite_provider_sync_thread_kinds(&sqlite_paths)?;
+        let repair_audit = match audit_provider_sync_state(&home, &sqlite_paths) {
+            Ok(audit) => audit,
+            Err(error) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "provider_sync.repair_audit_failed",
+                    json!({
+                        "error": error.to_string(),
+                        "backup_root": home
+                            .join("backups_state/provider-sync")
+                            .to_string_lossy(),
+                    }),
+                );
+                ProviderSyncAudit::default()
+            }
+        };
         let collected = collect_session_changes(
             &home,
             &target_provider,
@@ -670,6 +696,9 @@ pub fn run_provider_sync_with_target(
             );
             synced.skipped_locked_rollout_files = collected.skipped_locked_rollout_files;
             synced.encrypted_content_warning = encrypted_content_warning;
+            synced.repair_audit = repair_audit;
+            synced.message =
+                provider_sync_message_with_audit(&synced.message, &synced.repair_audit);
             return Ok(synced);
         }
         let backup_dir = create_backup(&home, &target_provider, &rewrite_changes)?;
@@ -720,6 +749,8 @@ pub fn run_provider_sync_with_target(
         synced.sqlite_catalog_rows_removed = sqlite_updates.catalog_remove_rows;
         synced.updated_workspace_roots = updated_workspace_roots;
         synced.encrypted_content_warning = encrypted_content_warning;
+        synced.repair_audit = repair_audit;
+        synced.message = provider_sync_message_with_audit(&synced.message, &synced.repair_audit);
         Ok(synced)
     })();
     let _ = release_lock(&lock_dir);
@@ -758,7 +789,21 @@ fn result(
         sqlite_catalog_rows_removed: 0,
         updated_workspace_roots: 0,
         encrypted_content_warning: None,
+        repair_audit: ProviderSyncAudit::default(),
     }
+}
+
+fn provider_sync_message_with_audit(message: &str, audit: &ProviderSyncAudit) -> String {
+    if audit.catalog_only_sessions == 0 {
+        return message.to_string();
+    }
+    format!(
+        "{message}；审计发现 {} 条仅存在于本地会话目录的记录，其中 {} 条仍有当前 rollout、{} 条只能在历史数据库备份中找到，{} 条没有可用恢复来源；未自动重建缺失的 canonical 会话。",
+        audit.catalog_only_sessions,
+        audit.catalog_only_with_current_rollout,
+        audit.catalog_only_with_backup_database,
+        audit.catalog_only_without_recovery_source,
+    )
 }
 
 fn provider_sync_db_paths(home: &Path) -> Vec<PathBuf> {
@@ -769,6 +814,98 @@ fn provider_sync_db_paths(home: &Path) -> Vec<PathBuf> {
         }
     }
     paths
+}
+
+fn audit_provider_sync_state(
+    home: &Path,
+    sqlite_paths: &[PathBuf],
+) -> anyhow::Result<ProviderSyncAudit> {
+    let mut canonical_thread_ids = HashSet::new();
+    let mut catalog_thread_ids = HashSet::new();
+    for path in sqlite_paths {
+        canonical_thread_ids.extend(sqlite_table_ids(path, "threads", "id")?);
+        catalog_thread_ids.extend(sqlite_user_thread_ids(path)?);
+    }
+
+    let catalog_only = catalog_thread_ids
+        .difference(&canonical_thread_ids)
+        .cloned()
+        .collect::<HashSet<_>>();
+    if catalog_only.is_empty() {
+        return Ok(ProviderSyncAudit::default());
+    }
+
+    let current_rollout_ids = rollout_files(home)?
+        .into_iter()
+        .filter_map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(rollout_thread_id_from_filename)
+        })
+        .collect::<HashSet<_>>();
+    let backup_database_ids = backup_database_thread_ids(home)?;
+    let with_current_rollout = catalog_only
+        .iter()
+        .filter(|thread_id| current_rollout_ids.contains(*thread_id))
+        .count();
+    let with_backup_database = catalog_only
+        .iter()
+        .filter(|thread_id| {
+            !current_rollout_ids.contains(*thread_id) && backup_database_ids.contains(*thread_id)
+        })
+        .count();
+
+    Ok(ProviderSyncAudit {
+        catalog_only_sessions: catalog_only.len(),
+        catalog_only_with_current_rollout: with_current_rollout,
+        catalog_only_with_backup_database: with_backup_database,
+        catalog_only_without_recovery_source: catalog_only
+            .iter()
+            .filter(|thread_id| {
+                !current_rollout_ids.contains(*thread_id)
+                    && !backup_database_ids.contains(*thread_id)
+            })
+            .count(),
+    })
+}
+
+fn backup_database_thread_ids(home: &Path) -> anyhow::Result<HashSet<String>> {
+    let root = home.join("backups_state/provider-sync");
+    let mut ids = HashSet::new();
+    if !root.exists() {
+        return Ok(ids);
+    }
+    let mut files = Vec::new();
+    collect_files_recursive(&root, &mut files)?;
+    for path in files {
+        if !matches!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("sqlite" | "db")
+        ) {
+            continue;
+        }
+        if let Ok(thread_ids) = sqlite_table_ids(&path, "threads", "id") {
+            ids.extend(thread_ids);
+        }
+    }
+    Ok(ids)
+}
+
+fn collect_files_recursive(root: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_files_recursive(&path, files)?;
+        } else if file_type.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(())
 }
 
 pub fn load_provider_sync_targets(codex_home: Option<&Path>) -> ProviderSyncTargetList {
@@ -1042,7 +1179,7 @@ fn collect_session_changes(
             .thread_id
             .as_ref()
             .is_some_and(|thread_id| explicit_user_thread_ids.contains(thread_id));
-        if !is_explicit_user && rollout_session_meta_marks_non_root_agent(&text) {
+        if rollout_session_meta_marks_non_root_agent(&text) {
             if let Some(thread_id) = &rewrite.thread_id {
                 collected.subagent_thread_ids.insert(thread_id.clone());
             }
@@ -1509,6 +1646,53 @@ fn sqlite_thread_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
             stmt.query_map([], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<HashSet<_>>>()?,
         );
+    }
+    Ok(ids)
+}
+
+fn sqlite_table_ids(path: &Path, table: &str, column: &str) -> anyhow::Result<HashSet<String>> {
+    if !path.exists() {
+        return Ok(HashSet::new());
+    }
+    let db = Connection::open(path)?;
+    if !table_columns(&db, table)?.contains(column) {
+        return Ok(HashSet::new());
+    }
+    let sql = format!("SELECT DISTINCT {column} FROM {table} WHERE COALESCE({column}, '') <> ''");
+    Ok(db
+        .prepare(&sql)?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?)
+}
+
+fn sqlite_user_thread_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
+    if !path.exists() {
+        return Ok(HashSet::new());
+    }
+    let db = Connection::open(path)?;
+    let columns = table_columns(&db, "local_thread_catalog")?;
+    if !columns.contains("thread_id") {
+        return Ok(HashSet::new());
+    }
+    let source_kind = text_expr(&columns, "source_kind", "''");
+    let thread_source = text_expr(&columns, "thread_source", "NULL");
+    let sql = format!(
+        "SELECT thread_id, {source_kind}, {thread_source} FROM local_thread_catalog WHERE COALESCE(thread_id, '') <> ''"
+    );
+    let mut ids = HashSet::new();
+    for row in db.prepare(&sql)?.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1).unwrap_or_default(),
+            row.get::<_, Option<String>>(2).unwrap_or(None),
+        ))
+    })? {
+        let (thread_id, source_kind, thread_source) = row?;
+        if !thread_source_marks_non_root(thread_source.as_deref())
+            && !source_marks_non_root_agent(&source_kind)
+        {
+            ids.insert(thread_id);
+        }
     }
     Ok(ids)
 }
@@ -2211,11 +2395,13 @@ fn sqlite_provider_sync_thread_kinds(
             })?;
             for row in rows {
                 let (thread_id, source, thread_source) = row?;
-                if thread_source_is_user(thread_source.as_deref()) {
-                    kinds.explicit_user_thread_ids.insert(thread_id);
-                } else if thread_source_marks_non_root(thread_source.as_deref())
-                    || source_marks_non_root_agent(&source)
+                if source_structured_marks_non_root_agent(&source)
+                    || thread_source_marks_non_root(thread_source.as_deref())
                 {
+                    kinds.subagent_thread_ids.insert(thread_id);
+                } else if thread_source_is_user(thread_source.as_deref()) {
+                    kinds.explicit_user_thread_ids.insert(thread_id);
+                } else if source_marks_non_root_agent(&source) {
                     kinds.subagent_thread_ids.insert(thread_id);
                 }
             }
@@ -2963,12 +3149,19 @@ fn collect_catalog_marked_non_root_thread_ids(
         })?;
         for row in rows {
             let (thread_id, source_kind, thread_source) = row?;
+            if source_structured_marks_non_root_agent(&source_kind)
+                || thread_source_marks_non_root(thread_source.as_deref())
+            {
+                thread_ids_by_path
+                    .entry(path.clone())
+                    .or_default()
+                    .insert(thread_id);
+                continue;
+            }
             if thread_source_is_user(thread_source.as_deref()) {
                 continue;
             }
-            if thread_source_marks_non_root(thread_source.as_deref())
-                || source_marks_non_root_agent(&source_kind)
-                || spawned_child_ids.contains(&thread_id)
+            if source_marks_non_root_agent(&source_kind) || spawned_child_ids.contains(&thread_id)
             {
                 thread_ids_by_path
                     .entry(path.clone())
@@ -2984,12 +3177,16 @@ fn is_catalog_non_root_agent(
     thread: &CatalogRepairThread,
     spawned_child_ids: &HashSet<String>,
 ) -> bool {
-    // The explicit user marker is authoritative over legacy source and spawn-edge fallbacks.
+    if source_structured_marks_non_root_agent(&thread.source_kind)
+        || thread_source_marks_non_root(thread.thread_source.as_deref())
+    {
+        return true;
+    }
+    // The explicit user marker is authoritative over legacy text and spawn-edge fallbacks.
     if thread_source_is_user(thread.thread_source.as_deref()) {
         return false;
     }
-    thread_source_marks_non_root(thread.thread_source.as_deref())
-        || source_marks_non_root_agent(&thread.source_kind)
+    source_marks_non_root_agent(&thread.source_kind)
         || spawned_child_ids.contains(&thread.id)
 }
 
@@ -3011,7 +3208,11 @@ fn source_marks_non_root_agent(source: &str) -> bool {
     if source_text_marks_non_root_agent(source) {
         return true;
     }
-    serde_json::from_str::<Value>(source)
+    source_structured_marks_non_root_agent(source)
+}
+
+fn source_structured_marks_non_root_agent(source: &str) -> bool {
+    serde_json::from_str::<Value>(source.trim())
         .is_ok_and(|source| source_value_marks_non_root_agent(&source))
 }
 

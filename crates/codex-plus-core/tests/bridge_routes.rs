@@ -169,9 +169,52 @@ async fn settings_get_includes_runtime_codex_app_version() {
     let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
 
     assert_eq!(result["codexAppVersion"], json!("26.601.21317"));
+    assert_eq!(result["activeRelaySessionProvider"], json!("custom"));
     assert_eq!(result["codexAppPluginMarketplaceUnlock"], json!(true));
     assert_eq!(result.get("codexAppForcePluginInstall"), None);
     assert_eq!(result["codexAppThreadIdBadge"], json!(false));
+}
+
+#[tokio::test]
+async fn settings_get_exposes_active_openai_session_provider() {
+    let settings = BackendSettings {
+        relay_profiles: vec![codex_plus_core::settings::RelayProfile {
+            config_contents: "model_provider = \"openai\"\n".to_string(),
+            ..codex_plus_core::settings::RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
+
+    assert_eq!(result["activeRelaySessionProvider"], json!("openai"));
+    assert_eq!(result["activeRelayCodexProvider"], json!("openai"));
+}
+
+#[tokio::test]
+async fn settings_get_preserves_arbitrary_custom_provider_id() {
+    let settings = BackendSettings {
+        relay_profiles: vec![codex_plus_core::settings::RelayProfile {
+            config_contents: "model_provider = \"ccswitch\"\n".to_string(),
+            ..codex_plus_core::settings::RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
+
+    assert_eq!(result["activeRelaySessionProvider"], json!("custom"));
+    assert_eq!(result["activeRelayCodexProvider"], json!("ccswitch"));
 }
 
 #[tokio::test]
@@ -327,6 +370,7 @@ async fn stepwise_routes_use_settings_service() {
         json!({
             "status": "ok",
             "disabled": true,
+            "protocol": "chat_completions",
             "items": []
         })
     );
@@ -335,6 +379,7 @@ async fn stepwise_routes_use_settings_service() {
         json!({
             "status": "ok",
             "disabled": true,
+            "protocol": "chat_completions",
             "items": []
         })
     );
@@ -1412,7 +1457,6 @@ impl BridgeDataService for FakeData {
             title,
         }))
     }
-
 }
 
 #[derive(Clone)]

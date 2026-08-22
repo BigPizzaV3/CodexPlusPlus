@@ -1,12 +1,12 @@
 use anyhow::Context;
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol};
+use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol, RelaySessionProvider};
 
 const RELAY_PROVIDER: &str = "custom";
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
@@ -206,10 +206,31 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
     let config_path = home.join("config.toml");
     let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
     let auth_contents = std::fs::read_to_string(home.join("auth.json")).unwrap_or_default();
+    let has_auth_api_key = codex_auth_api_key(&auth_contents).is_some();
     let root_provider = root_key_string(&contents, "model_provider");
-    let provider = root_provider
-        .as_ref()
-        .and_then(|provider| table_values(&contents, &format!("model_providers.{provider}")));
+    let provider = root_provider.as_ref().and_then(|provider| {
+        let active = table_values(&contents, &format!("model_providers.{provider}"));
+        if provider != "openai" {
+            return active;
+        }
+
+        if active
+            .as_ref()
+            .is_some_and(|values| provider_values_are_configured(values, has_auth_api_key))
+        {
+            return active;
+        }
+
+        let uses_managed_openai_identity = root_key_string(&contents, OPENAI_BASE_URL_KEY)
+            .is_some_and(|value| value.trim() == managed_openai_base_url());
+        if !uses_managed_openai_identity {
+            return active;
+        }
+
+        table_values(&contents, &format!("model_providers.{RELAY_PROVIDER}"))
+            .filter(|values| provider_values_are_configured(values, has_auth_api_key))
+            .or(active)
+    });
     let requires_openai_auth = provider
         .as_ref()
         .and_then(|values| values.get("requires_openai_auth"))
@@ -228,12 +249,25 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
         .unwrap_or(false);
     RelayConfigStatus {
         configured: root_provider.is_some()
-            && (has_bearer_token || codex_auth_api_key(&auth_contents).is_some())
+            && (has_bearer_token || has_auth_api_key)
             && has_base_url,
         requires_openai_auth,
         has_bearer_token,
         config_path: config_path.to_string_lossy().to_string(),
     }
+}
+
+fn provider_values_are_configured(
+    values: &HashMap<String, String>,
+    has_auth_api_key: bool,
+) -> bool {
+    let has_base_url = values
+        .get("base_url")
+        .is_some_and(|value| !unquote_toml_string(value).trim().is_empty());
+    let has_bearer_token = values
+        .get("experimental_bearer_token")
+        .is_some_and(|value| !unquote_toml_string(value).trim().is_empty());
+    has_base_url && (has_bearer_token || has_auth_api_key)
 }
 
 pub fn responses_proxy_configured_in_home(home: &Path) -> bool {
@@ -271,6 +305,24 @@ pub fn apply_relay_config_to_home_with_protocol(
     protocol: RelayProtocol,
     proxy_port: u16,
 ) -> anyhow::Result<RelayApplyResult> {
+    apply_relay_config_to_home_with_session_provider(
+        home,
+        base_url,
+        bearer_token,
+        protocol,
+        proxy_port,
+        RelaySessionProvider::Custom,
+    )
+}
+
+pub fn apply_relay_config_to_home_with_session_provider(
+    home: &Path,
+    base_url: &str,
+    bearer_token: &str,
+    protocol: RelayProtocol,
+    proxy_port: u16,
+    session_provider: RelaySessionProvider,
+) -> anyhow::Result<RelayApplyResult> {
     let base_url = base_url.trim();
     if base_url.is_empty() {
         anyhow::bail!("中转 Base URL 不能为空");
@@ -279,8 +331,17 @@ pub fn apply_relay_config_to_home_with_protocol(
     if bearer_token.is_empty() {
         anyhow::bail!("中转 Key 不能为空");
     }
+    if session_provider == RelaySessionProvider::Openai && protocol != RelayProtocol::Responses {
+        anyhow::bail!("OpenAI 会话身份仅支持 Responses API");
+    }
     let codex_base_url = codex_base_url_for_protocol(base_url, protocol, proxy_port);
-    let updated = upsert_model_provider_config("", &codex_base_url, bearer_token, true)?;
+    let updated = upsert_model_provider_config_with_session_provider(
+        "",
+        &codex_base_url,
+        bearer_token,
+        true,
+        session_provider,
+    )?;
     let auth_contents = serde_json::to_string_pretty(&json!({
         "OPENAI_API_KEY": bearer_token
     }))?;
@@ -462,6 +523,24 @@ pub fn apply_pure_api_config_to_home_with_protocol(
     protocol: RelayProtocol,
     proxy_port: u16,
 ) -> anyhow::Result<RelayApplyResult> {
+    apply_pure_api_config_to_home_with_session_provider(
+        home,
+        base_url,
+        bearer_token,
+        protocol,
+        proxy_port,
+        RelaySessionProvider::Custom,
+    )
+}
+
+pub fn apply_pure_api_config_to_home_with_session_provider(
+    home: &Path,
+    base_url: &str,
+    bearer_token: &str,
+    protocol: RelayProtocol,
+    proxy_port: u16,
+    session_provider: RelaySessionProvider,
+) -> anyhow::Result<RelayApplyResult> {
     let base_url = base_url.trim();
     if base_url.is_empty() {
         anyhow::bail!("中转 Base URL 不能为空");
@@ -470,8 +549,17 @@ pub fn apply_pure_api_config_to_home_with_protocol(
     if bearer_token.is_empty() {
         anyhow::bail!("中转 Key 不能为空");
     }
+    if session_provider == RelaySessionProvider::Openai && protocol != RelayProtocol::Responses {
+        anyhow::bail!("OpenAI 会话身份仅支持 Responses API");
+    }
     let codex_base_url = codex_base_url_for_protocol(base_url, protocol, proxy_port);
-    let updated = upsert_model_provider_config("", &codex_base_url, bearer_token, false)?;
+    let updated = upsert_model_provider_config_with_session_provider(
+        "",
+        &codex_base_url,
+        bearer_token,
+        false,
+        session_provider,
+    )?;
     let auth_contents = serde_json::to_string_pretty(&json!({
         "OPENAI_API_KEY": bearer_token
     }))?;
@@ -607,6 +695,19 @@ fn update_remote_control_openai_base_url(doc: &mut DocumentMut, enabled: bool) {
     } else if current.as_deref() == Some(managed.as_str()) {
         doc.as_table_mut().remove(OPENAI_BASE_URL_KEY);
     }
+}
+
+fn active_session_provider_id(doc: &DocumentMut) -> String {
+    active_provider_id(doc).unwrap_or_else(|| RELAY_PROVIDER.to_string())
+}
+
+pub fn relay_session_provider_from_config(contents: &str) -> RelaySessionProvider {
+    parse_toml_document(contents)
+        .ok()
+        .and_then(|doc| active_provider_id(&doc))
+        .filter(|provider| provider == "openai")
+        .map(|_| RelaySessionProvider::Openai)
+        .unwrap_or_default()
 }
 
 fn remove_managed_remote_control_openai_base_url(contents: &str) -> anyhow::Result<String> {
@@ -2174,7 +2275,12 @@ fn set_experimental_bearer_token_in_config(
     api_key: &str,
 ) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(config_contents)?;
-    let provider_id = active_or_default_provider_id(&doc);
+    let session_provider_id = active_provider_id(&doc);
+    let provider_id = if session_provider_id.as_deref() == Some("openai") {
+        RELAY_PROVIDER.to_string()
+    } else {
+        active_or_default_provider_id(&doc)
+    };
     let provider = ensure_provider_table(&mut doc, &provider_id)?;
     if api_key.trim().is_empty() {
         provider.remove("experimental_bearer_token");
@@ -2307,12 +2413,33 @@ pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
 
 fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(&profile.config_contents)?;
+    let session_provider_id = active_session_provider_id(&doc);
+    let uses_openai_provider = session_provider_id == "openai";
+    if uses_openai_provider && profile.protocol != RelayProtocol::Responses {
+        anyhow::bail!("OpenAI 会话身份仅支持 Responses API");
+    }
     update_remote_control_openai_base_url(
         &mut doc,
-        profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key,
+        uses_openai_provider
+            || (profile.relay_mode == crate::settings::RelayMode::Official
+                && profile.official_mix_api_key),
     );
+    // `openai` is the Remote session identity, while the actual relay
+    // transport remains in `model_providers.custom`.
     let provider_id = active_or_default_provider_id(&doc);
-    set_provider_id(&mut doc, &provider_id);
+    let transport_provider_id = if uses_openai_provider {
+        RELAY_PROVIDER.to_string()
+    } else {
+        provider_id.clone()
+    };
+    set_provider_id(
+        &mut doc,
+        if uses_openai_provider {
+            "openai"
+        } else {
+            &provider_id
+        },
+    );
 
     let mut model = relay_profile_model(profile);
     // 若用户未填写默认模型，但 model_list 有内容，则取第一条作为默认 model，
@@ -2337,20 +2464,20 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     let base_url = relay_profile_base_url(profile);
     let api_key = relay_profile_api_key(profile);
     doc.as_table_mut().remove(CHAT_UPSTREAM_BASE_URL_KEY);
-    retain_only_provider_table(&mut doc, &provider_id);
+    retain_only_provider_table(&mut doc, &transport_provider_id);
     for legacy_provider in LEGACY_RELAY_PROVIDERS {
-        if provider_id != *legacy_provider {
+        if transport_provider_id != *legacy_provider {
             remove_provider_table(&mut doc, legacy_provider);
         }
     }
-    let provider = ensure_provider_table(&mut doc, &provider_id)?;
+    let provider = ensure_provider_table(&mut doc, &transport_provider_id)?;
     if provider
         .get("name")
         .and_then(Item::as_str)
         .map(str::trim)
         .is_none_or(str::is_empty)
     {
-        provider["name"] = toml_edit::value(provider_id.as_str());
+        provider["name"] = toml_edit::value(transport_provider_id.as_str());
     }
     if provider
         .get("wire_api")
@@ -2561,20 +2688,30 @@ fn provider_string_from_config(config_contents: &str, key: &str) -> Option<Strin
 fn experimental_bearer_token_from_config(config_contents: &str) -> anyhow::Result<Option<String>> {
     let doc = parse_toml_document(config_contents)?;
     if let Some(provider_id) = active_provider_id(&doc) {
-        if let Some(token) = doc
-            .get("model_providers")
-            .and_then(Item::as_table)
-            .and_then(|providers| providers.get(&provider_id))
-            .and_then(Item::as_table)
-            .and_then(|provider| provider.get("experimental_bearer_token"))
-            .and_then(Item::as_str)
-            .map(str::trim)
-            .filter(|token| !token.is_empty())
-        {
-            return Ok(Some(token.to_string()));
+        if let Some(token) = provider_token_from_table(&doc, &provider_id) {
+            return Ok(Some(token));
+        }
+        // OpenAI is the session identity, while Codex++ keeps relay
+        // credentials in the custom transport table.
+        if provider_id == "openai" {
+            if let Some(token) = provider_token_from_table(&doc, RELAY_PROVIDER) {
+                return Ok(Some(token));
+            }
         }
     }
     Ok(None)
+}
+
+fn provider_token_from_table(doc: &DocumentMut, provider_id: &str) -> Option<String> {
+    doc.get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(Item::as_table)
+        .and_then(|provider| provider.get("experimental_bearer_token"))
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(ToString::to_string)
 }
 
 fn remove_experimental_bearer_token_from_config(config_contents: &str) -> anyhow::Result<String> {
@@ -2945,15 +3082,31 @@ fn root_key_value<'a>(contents: &'a str, key: &str) -> Option<&'a str> {
     None
 }
 
-fn upsert_model_provider_config(
+fn upsert_model_provider_config_with_session_provider(
     contents: &str,
     base_url: &str,
     bearer_token: &str,
     requires_openai_auth: bool,
+    session_provider: RelaySessionProvider,
 ) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(contents)?;
-    let provider_id = active_or_default_provider_id(&doc);
-    set_provider_id(&mut doc, &provider_id);
+    let provider_id = if session_provider == RelaySessionProvider::Openai {
+        RELAY_PROVIDER.to_string()
+    } else {
+        active_or_default_provider_id(&doc)
+    };
+    set_provider_id(
+        &mut doc,
+        if session_provider == RelaySessionProvider::Openai {
+            session_provider.as_str()
+        } else {
+            &provider_id
+        },
+    );
+    update_remote_control_openai_base_url(
+        &mut doc,
+        session_provider == RelaySessionProvider::Openai,
+    );
     for legacy_provider in LEGACY_RELAY_PROVIDERS {
         remove_provider_table(&mut doc, legacy_provider);
     }

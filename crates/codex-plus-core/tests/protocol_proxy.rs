@@ -13,7 +13,7 @@ use codex_plus_core::protocol_proxy::{
 };
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
-    RelayMode, RelayModelRoute, RelayProfile, RelayProtocol,
+    RelayMode, RelayModelRoute, RelayProfile, RelayProtocol, RelaySessionProvider,
 };
 use serde_json::json;
 use std::io::{Read, Write};
@@ -1965,6 +1965,7 @@ fn aggregate_proxy_settings(
         aggregate_relay_profiles: vec![AggregateRelayProfile {
             id: aggregate_id,
             name: "aggregate".to_string(),
+            session_provider: RelaySessionProvider::Custom,
             strategy: AggregateRelayStrategy::RequestRoundRobin,
             members: vec![
                 AggregateRelayMember {

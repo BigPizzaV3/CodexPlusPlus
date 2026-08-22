@@ -521,6 +521,7 @@ fn provider_sync_preserves_marked_subagents_and_explicit_user_priority() {
     let rollout_child = home.join("sessions/2026/rollout-source-child.jsonl");
     let marked_rollout = home.join("sessions/2026/rollout-marked-child.jsonl");
     let explicit_user_rollout = home.join("sessions/2026/rollout-explicit-user.jsonl");
+    let guardian_user_rollout = home.join("sessions/2026/rollout-guardian-user.jsonl");
     write_rollout(
         &structured_rollout,
         "openai",
@@ -539,11 +540,17 @@ fn provider_sync_preserves_marked_subagents_and_explicit_user_priority() {
         "marked-child",
         "C:/marked-new",
     );
-    write_subagent_rollout(
+    write_rollout(
         &explicit_user_rollout,
         "openai",
         "explicit-user",
         "C:/user-new",
+    );
+    write_subagent_rollout(
+        &guardian_user_rollout,
+        "openai",
+        "guardian-user",
+        "C:/guardian-new",
     );
 
     let state = home.join("state_5.sqlite");
@@ -569,6 +576,12 @@ fn provider_sync_preserves_marked_subagents_and_explicit_user_priority() {
         (
             "explicit-user",
             "C:/user-old",
+            "subagent_review",
+            Some("user"),
+        ),
+        (
+            "guardian-user",
+            "C:/guardian-old",
             structured_source.as_str(),
             Some("user"),
         ),
@@ -600,6 +613,7 @@ fn provider_sync_preserves_marked_subagents_and_explicit_user_priority() {
         (&rollout_child, "openai"),
         (&marked_rollout, "openai"),
         (&explicit_user_rollout, "apigather"),
+        (&guardian_user_rollout, "openai"),
     ] {
         let first: serde_json::Value = serde_json::from_str(
             fs::read_to_string(path).unwrap().lines().next().unwrap(),
@@ -617,6 +631,7 @@ fn provider_sync_preserves_marked_subagents_and_explicit_user_priority() {
         ("rollout-child", ("openai", 0_i64, "C:/rollout-old")),
         ("marked-child", ("openai", 0_i64, "C:/marked-old")),
         ("explicit-user", ("apigather", 1_i64, "C:/user-new")),
+        ("guardian-user", ("openai", 0_i64, "C:/guardian-old")),
     ] {
         let actual: (String, i64, String) = db
             .query_row(
@@ -866,6 +881,119 @@ fn provider_sync_repairs_missing_local_thread_catalog_rows_from_threads() {
 }
 
 #[test]
+fn provider_sync_audits_catalog_only_sessions_without_claiming_recovery() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+
+    let state_db = home.join("state_5.sqlite");
+    create_state_db_with_providers(&state_db, &[("canonical", "openai", 0)]);
+    let current_rollout_id = "01a01579-4a5d-77e3-89c0-751d38ad21f8";
+    write_rollout(
+        &home.join("sessions/2026/08/18").join(format!(
+            "rollout-2026-08-18T23-24-25-{current_rollout_id}.jsonl"
+        )),
+        "custom",
+        current_rollout_id,
+        "C:/workspace",
+    );
+
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(
+        &catalog_db,
+        &[
+            (current_rollout_id, "custom"),
+            ("backup-only", "custom"),
+            ("no-source", "custom"),
+            ("agent-only", "custom"),
+        ],
+    );
+    Connection::open(&catalog_db)
+        .unwrap()
+        .execute(
+            "UPDATE local_thread_catalog SET thread_source = 'subagent' WHERE thread_id = 'agent-only'",
+            [],
+        )
+        .unwrap();
+
+    let backup_db = home.join("backups_state/provider-sync/20260818233010/db/state_5.sqlite");
+    fs::create_dir_all(backup_db.parent().unwrap()).unwrap();
+    create_state_db_with_providers(&backup_db, &[("backup-only", "custom", 0)]);
+    fs::write(
+        home.join("backups_state/provider-sync/20260818233010/db/broken.sqlite"),
+        b"not a sqlite database",
+    )
+    .unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.repair_audit.catalog_only_sessions, 3);
+    assert_eq!(result.repair_audit.catalog_only_with_current_rollout, 1);
+    assert_eq!(result.repair_audit.catalog_only_with_backup_database, 1);
+    assert_eq!(result.repair_audit.catalog_only_without_recovery_source, 1);
+    assert!(result.message.contains("未自动重建缺失的 canonical 会话"));
+}
+
+#[test]
+fn provider_sync_continues_when_repair_audit_backup_root_is_not_directory() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    create_state_db_with_providers(&home.join("state_5.sqlite"), &[]);
+    create_local_thread_catalog_db(
+        &sqlite_dir.join("codex-dev.db"),
+        &[("catalog-only", "apigather")],
+    );
+
+    let backup_root = home.join("backups_state/provider-sync");
+    fs::create_dir_all(backup_root.parent().unwrap()).unwrap();
+    fs::write(&backup_root, b"unreadable backup root").unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(
+        result.status,
+        ProviderSyncStatus::Synced,
+        "{}",
+        result.message
+    );
+    assert_eq!(result.sqlite_rows_updated, 0);
+    assert_eq!(result.repair_audit.catalog_only_sessions, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn provider_sync_repair_audit_skips_cyclic_backup_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    create_state_db_with_providers(&home.join("state_5.sqlite"), &[]);
+    create_local_thread_catalog_db(
+        &sqlite_dir.join("codex-dev.db"),
+        &[("catalog-only", "apigather")],
+    );
+
+    let backup_root = home.join("backups_state/provider-sync");
+    let cycle = backup_root.join("cycle");
+    fs::create_dir_all(&backup_root).unwrap();
+    symlink(&backup_root, &cycle).unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.sqlite_rows_updated, 0);
+}
+
+#[test]
 fn provider_sync_catalogs_user_threads_but_skips_subagents() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
@@ -888,9 +1016,15 @@ fn provider_sync_catalogs_user_threads_but_skips_subagents() {
         ("user-one", "vscode", "user", 200000_i64),
         (
             "explicit-user",
-            r#"{"sub_agent":{"other":"review"}}"#,
+            "subagent_review",
             "user",
             205000_i64,
+        ),
+        (
+            "guardian-user",
+            r#"{"subagent":{"other":"guardian"}}"#,
+            "user",
+            207000_i64,
         ),
         ("marked-child", "vscode", "subagent", 210000_i64),
         (

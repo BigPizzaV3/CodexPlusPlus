@@ -284,6 +284,7 @@ export type RelayProfile = {
   apiKey: string;
   protocol: RelayProtocol;
   relayMode: RelayMode;
+  sessionProvider?: RelaySessionProvider;
   officialMixApiKey: boolean;
   hideOfficialUsageAlert: boolean;
   testModel: string;
@@ -323,6 +324,7 @@ type AggregateRelayMember = {
 type AggregateRelayProfile = {
   id: string;
   name: string;
+  sessionProvider?: RelaySessionProvider;
   strategy: RelayAggregateStrategy;
   members: AggregateRelayMember[];
 };
@@ -352,6 +354,7 @@ type CodexContextEntries = {
 
 type RelayProtocol = "responses" | "chatCompletions";
 type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
+type RelaySessionProvider = "custom" | "openai";
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
 const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
 
@@ -629,6 +632,12 @@ type ProviderSyncPayload = {
   updatedWorkspaceRoots?: number;
   prunedSessionIndexEntries?: number;
   encryptedContentWarning?: string | null;
+  repairAudit?: {
+    catalogOnlySessions: number;
+    catalogOnlyWithCurrentRollout: number;
+    catalogOnlyWithBackupDatabase: number;
+    catalogOnlyWithoutRecoverySource: number;
+  };
   backupDir?: string | null;
 };
 
@@ -6758,9 +6767,10 @@ function RelayProfileDetail({
     setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm));
   }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
   const validationSettings = relaySettingsWithDraft(form, profile.id, draft, isNew);
-  const validationError = isAggregateRelayProfile(draft)
-    ? aggregateRelayProfileValidation(draft)
-    : relayModelRoutesSettingsValidation(validationSettings);
+  const validationError = relaySessionProviderValidation(draft)
+    ?? (isAggregateRelayProfile(draft)
+      ? aggregateRelayProfileValidation(draft)
+      : relayModelRoutesSettingsValidation(validationSettings));
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
     return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows, modelVlm: serializedRows.modelVlm };
@@ -6772,7 +6782,7 @@ function RelayProfileDetail({
     const next = normalizeSettings(isNew
       ? addRelayProfile(form, normalizedDraft)
       : updateRelayProfile(form, profile.id, normalizedDraft));
-    const settingsValidationError = relayModelRoutesSettingsValidation(next);
+    const settingsValidationError = relaySettingsValidation(next);
     if (settingsValidationError) return;
     const activeLiveBaseUrl = codexBaseUrlFromConfig(
       relayFiles?.configContents ?? profile.configContents,
@@ -6959,6 +6969,8 @@ function RelayProfileEditor({
   }
 
   const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
+  const sessionProvider = relaySessionProvider(profile);
+  const canUseOpenAiSessionProvider = profile.relayMode !== "official" || profile.officialMixApiKey;
   const goalsFeatureState = codexGoalsFeatureState(
     profile.configContents,
     form.relayCommonConfigContents,
@@ -7153,6 +7165,27 @@ function RelayProfileEditor({
                   Chat Completions
                 </button>
               </div>
+            </Field>
+            <Field className="relay-field-session-provider" label={t("Codex 会话身份")}>
+              <AppSelect
+                value={sessionProvider}
+                onChange={(value) => updateDraft({ sessionProvider: value })}
+                options={[
+                  { value: "custom", label: t("Custom（默认）") },
+                  {
+                    value: "openai",
+                    label: t("OpenAI（兼容 ChatGPT Remote）"),
+                    disabled: !canUseOpenAiSessionProvider || profile.protocol !== "responses",
+                  },
+                ]}
+              />
+              <p className="field-hint">
+                {profile.protocol !== "responses"
+                  ? t("OpenAI 会话身份需要 Responses API；Chat Completions 不支持远程压缩。")
+                  : canUseOpenAiSessionProvider
+                    ? t("选择 OpenAI 后，Codex Remote 会把当前会话识别为 ChatGPT 会话；中转仍使用 custom 表。")
+                    : t("官方登录未混入 API 时不写入会话 provider")}
+              </p>
             </Field>
             <Field className="relay-field-sub2api" label="Sub2API">
               <div className="sub2api-field">
@@ -7426,6 +7459,7 @@ function AggregateRelayProfileEditor({
   const candidates = aggregateMemberCandidates(form, profile.id);
   const aggregate = normalizeAggregateConfig(profile.aggregate, candidates);
   const memberIds = new Set(aggregate.members.map((member) => member.profileId));
+  const sessionProvider = normalizeRelaySessionProvider(profile.sessionProvider);
   const updateAggregate = (nextAggregate: RelayAggregateConfig) => {
     onProfileChange(normalizeAggregateRelayProfile({ ...profile, aggregate: nextAggregate }, form));
   };
@@ -7468,6 +7502,19 @@ function AggregateRelayProfileEditor({
             onChange={(value) => updateAggregate({ ...aggregate, strategy: value })}
             options={aggregateStrategyOptions.map((option) => ({ value: option.value, label: option.label }))}
           />
+        </Field>
+        <Field className="relay-field-session-provider" label={t("Codex 会话身份")}>
+          <AppSelect
+            value={sessionProvider}
+            onChange={(value) => onProfileChange(normalizeAggregateRelayProfile({ ...profile, sessionProvider: value }, form))}
+            options={[
+              { value: "custom", label: t("Custom（默认）") },
+              { value: "openai", label: t("OpenAI（兼容 ChatGPT Remote）") },
+            ]}
+          />
+          <p className="field-hint">
+            {t("聚合请求仍由本地 Responses 代理轮转成员；OpenAI 身份用于让 ChatGPT Remote 识别会话。")}
+          </p>
         </Field>
       </div>
       <div className="aggregate-strategy-grid">
@@ -9269,6 +9316,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             apiKey: settings.relayApiKey || "",
             protocol: "responses" as RelayProtocol,
             relayMode: "official" as RelayMode,
+            sessionProvider: "custom" as RelaySessionProvider,
             officialMixApiKey: false,
             hideOfficialUsageAlert: false,
             testModel: "",
@@ -9353,6 +9401,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         apiKey: "",
         protocol: "responses",
         relayMode: "aggregate",
+        sessionProvider: normalizeRelaySessionProvider(profile.sessionProvider),
         officialMixApiKey: false,
         hideOfficialUsageAlert: false,
         testModel: profile.testModel || "",
@@ -9384,6 +9433,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     apiKey: profile.apiKey || "",
     protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
     relayMode,
+    sessionProvider: relaySessionProvider(profile),
     officialMixApiKey,
     hideOfficialUsageAlert: profile.hideOfficialUsageAlert === true,
     testModel: profile.testModel || "",
@@ -9413,6 +9463,7 @@ function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: Aggregat
     ...profile,
     name: profile.name || aggregate.name,
     relayMode: "aggregate",
+    sessionProvider: normalizeRelaySessionProvider(aggregate.sessionProvider),
     aggregate: {
       strategy: aggregate.strategy,
       members: aggregate.members.map((member) => ({
@@ -9446,6 +9497,19 @@ function normalizeRelayMode(mode: RelayMode | undefined): RelayMode {
   if (mode === "aggregate") return mode;
   if (mode === "pureApi") return mode;
   return "official";
+}
+
+function normalizeRelaySessionProvider(value: string | undefined): RelaySessionProvider {
+  return value === "openai" ? "openai" : "custom";
+}
+
+function relaySessionProviderFromConfig(contents: string): RelaySessionProvider {
+  return normalizeRelaySessionProvider(rootTomlStringValue(contents, "model_provider"));
+}
+
+function relaySessionProvider(profile: Pick<RelayProfile, "configContents" | "sessionProvider">): RelaySessionProvider {
+  const fromConfig = relaySessionProviderFromConfig(profile.configContents);
+  return fromConfig === "openai" || profile.sessionProvider === "openai" ? "openai" : "custom";
 }
 
 function normalizeContextSelection(
@@ -9584,14 +9648,16 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
 }
 
 function buildRelayConfigToml(
-  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">,
+  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider">,
   options: { includeBearerToken: boolean; requiresOpenAiAuth?: boolean },
 ): string {
   const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
+  const sessionProvider = normalizeRelaySessionProvider(profile.sessionProvider);
   const rootLines = [
     profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
-    'model_provider = "custom"',
+    `model_provider = "${sessionProvider}"`,
+    sessionProvider === "openai" ? `openai_base_url = "${PROTOCOL_PROXY_BASE_URL}"` : null,
     "",
   ].filter((line): line is string => line !== null);
   return [
@@ -9641,6 +9707,7 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
   return {
     ...profile,
     model,
+    sessionProvider: relaySessionProviderFromConfig(configContents),
     baseUrl: upstreamBaseUrl,
     upstreamBaseUrl,
     apiKey: profile.relayMode === "official"
@@ -9667,6 +9734,13 @@ function applyRelayProfilePatchToFiles(
   const needsAuthFile = next.relayMode === "pureApi";
   if (options.allowGenerateFiles && shouldHaveFiles && (!next.configContents.trim() || (needsAuthFile && !next.authContents.trim()))) {
     next = withGeneratedRelayFiles(next);
+  }
+
+  if ("sessionProvider" in patch) {
+    const sessionProvider = normalizeRelaySessionProvider(patch.sessionProvider);
+    next.sessionProvider = sessionProvider;
+    next.configContents = setRootTomlStringKey(next.configContents, "model_provider", sessionProvider);
+    next.configContents = setManagedOpenAiBaseUrl(next.configContents, sessionProvider === "openai");
   }
 
   if ("model" in patch) {
@@ -9760,6 +9834,7 @@ function codexProviderStringFromConfig(contents: string, key: string): string {
   const lines = contents.split(/\r?\n/);
   let currentSection = "";
   const matches: string[] = [];
+  const providerMatches: string[] = [];
 
   for (const line of lines) {
     const section = tomlSectionName(line);
@@ -9770,10 +9845,12 @@ function codexProviderStringFromConfig(contents: string, key: string): string {
     const value = tomlStringAssignmentValue(line, key);
     if (value === null) continue;
     if (targetSection && currentSection === targetSection) return value;
-    if (!currentSection || !currentSection.startsWith("model_providers.")) matches.push(value);
+    if (currentSection.startsWith("model_providers.")) providerMatches.push(value);
+    else matches.push(value);
   }
 
-  return matches.length === 1 ? matches[0] : "";
+  if (matches.length === 1) return matches[0];
+  return providerMatches.length === 1 ? providerMatches[0] : "";
 }
 
 function codexApiKeyFromAuth(contents: string): string {
@@ -9833,6 +9910,16 @@ function setRootTomlStringKey(contents: string, key: string, value: string): str
   return setRootTomlLine(contents, key, `${key} = "${tomlString(trimmed)}"`);
 }
 
+function setManagedOpenAiBaseUrl(contents: string, enabled: boolean): string {
+  const current = rootTomlStringValue(contents, "openai_base_url");
+  if (enabled) {
+    return !current || current === PROTOCOL_PROXY_BASE_URL
+      ? setRootTomlStringKey(contents, "openai_base_url", PROTOCOL_PROXY_BASE_URL)
+      : contents;
+  }
+  return current === PROTOCOL_PROXY_BASE_URL ? removeRootTomlKey(contents, "openai_base_url") : contents;
+}
+
 function setRootTomlIntKey(contents: string, key: string, value: string): string {
   const trimmed = value.replace(/[^\d]/g, "");
   if (!trimmed) return removeRootTomlKey(contents, key);
@@ -9886,10 +9973,11 @@ function setCodexProviderStringKey(
   value: string,
   options: { requiresOpenAiAuth?: boolean } = {},
 ): string {
-  const provider = rootTomlStringValue(contents, "model_provider") || "custom";
+  const sessionProvider = rootTomlStringValue(contents, "model_provider") || "custom";
+  const provider = sessionProvider === "openai" ? "custom" : sessionProvider;
   let next = contents;
   if (!rootTomlStringValue(next, "model_provider")) {
-    next = setRootTomlStringKey(next, "model_provider", provider);
+    next = setRootTomlStringKey(next, "model_provider", sessionProvider);
   }
   next = ensureCodexProviderDefaults(next, provider, { requiresOpenAiAuth: options.requiresOpenAiAuth !== false });
   return setTomlSectionStringKey(next, `model_providers.${provider}`, key, value);
@@ -9903,7 +9991,8 @@ function setCodexExperimentalBearerToken(contents: string, apiKey: string): stri
 }
 
 function removeCodexExperimentalBearerToken(contents: string): string {
-  const provider = rootTomlStringValue(contents, "model_provider") || "custom";
+  const sessionProvider = rootTomlStringValue(contents, "model_provider") || "custom";
+  const provider = sessionProvider === "openai" ? "custom" : sessionProvider;
   return removeTomlSectionKey(contents, `model_providers.${provider}`, "experimental_bearer_token");
 }
 
@@ -9979,6 +10068,8 @@ function removeTomlSectionKey(contents: string, sectionName: string, key: string
 }
 
 function relayProfileSwitchValidation(profile: RelayProfile, settings: BackendSettings | null = null): string | null {
+  const sessionProviderError = relaySessionProviderValidation(profile);
+  if (sessionProviderError) return sessionProviderError;
   if (isAggregateRelayProfile(profile)) {
     return aggregateRelayProfileValidation(profile);
   }
@@ -10001,6 +10092,21 @@ function relayModelRoutesSettingsValidation(settings: BackendSettings): string |
   return relayModelRouteIssueMessage(
     findRelayModelRouteIssue(settings.relayProfiles, settings.relayProfiles),
   );
+}
+
+function relaySettingsValidation(settings: BackendSettings): string | null {
+  for (const profile of settings.relayProfiles) {
+    const sessionProviderError = relaySessionProviderValidation(profile);
+    if (sessionProviderError) return sessionProviderError;
+  }
+  return relayModelRoutesSettingsValidation(settings);
+}
+
+function relaySessionProviderValidation(profile: RelayProfile): string | null {
+  if (relaySessionProvider(profile) === "openai" && profile.protocol !== "responses") {
+    return t("OpenAI 会话身份仅支持 Responses API；Chat Completions 不支持 ChatGPT Remote 的远程压缩。请切换协议或改回 Custom。");
+  }
+  return null;
 }
 
 function relayModelRouteIssueMessage(issue: ReturnType<typeof findRelayModelRouteIssue>): string | null {
@@ -10081,6 +10187,7 @@ function normalizeAggregateProfilesFromRelayProfiles(profiles: RelayProfile[]): 
     return {
       id: profile.id,
       name: profile.name || t("聚合供应商"),
+      sessionProvider: normalizeRelaySessionProvider(profile.sessionProvider),
       strategy: aggregate.strategy,
       members: aggregate.members.map((member) => ({
         relayId: member.profileId,
@@ -10119,6 +10226,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     apiKey: "",
     protocol: "responses" as RelayProtocol,
     relayMode: "official" as RelayMode,
+    sessionProvider: "custom" as RelaySessionProvider,
     officialMixApiKey: false,
     hideOfficialUsageAlert: false,
     testModel: "",
@@ -10157,6 +10265,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       apiKey: "",
       protocol: "responses",
       relayMode: "aggregate",
+      sessionProvider: "custom",
       officialMixApiKey: false,
       hideOfficialUsageAlert: false,
       testModel: "",
@@ -10297,6 +10406,7 @@ function normalizeAggregateRelayProfile(profile: RelayProfile, settings: Backend
     apiKey: "",
     protocol: "responses",
     relayMode: "aggregate",
+    sessionProvider: normalizeRelaySessionProvider(profile.sessionProvider),
     officialMixApiKey: false,
     hideOfficialUsageAlert: false,
     configContents: "",
