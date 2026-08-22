@@ -62,6 +62,33 @@ enum SchemaKind {
     CodexAutomationRuns,
 }
 
+fn codex_thread_filter(db: &Connection) -> anyhow::Result<String> {
+    let mut subagent_filters = Vec::new();
+    if has_table(db, "thread_spawn_edges")?
+        && table_columns(db, "thread_spawn_edges")?
+            .iter()
+            .any(|column| column == "child_thread_id")
+    {
+        subagent_filters.push(
+            "NOT EXISTS (SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = threads.id)",
+        );
+    }
+    if has_table(db, "agent_job_items")?
+        && table_columns(db, "agent_job_items")?
+            .iter()
+            .any(|column| column == "assigned_thread_id")
+    {
+        subagent_filters.push(
+            "NOT EXISTS (SELECT 1 FROM agent_job_items j WHERE j.assigned_thread_id = threads.id)",
+        );
+    }
+    Ok(if subagent_filters.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", subagent_filters.join(" AND "))
+    })
+}
+
 fn sqlite_limit(limit: usize) -> i64 {
     i64::try_from(limit).unwrap_or(i64::MAX)
 }
@@ -153,6 +180,26 @@ impl SQLiteStorageAdapter {
         }
     }
 
+    pub fn list_local_session_ids(&self) -> anyhow::Result<Vec<String>> {
+        if !self.db_path.exists() {
+            return Ok(Vec::new());
+        }
+        let db = Connection::open(&self.db_path)?;
+        let (table, id_column, filter) = match schema_kind(&db)? {
+            Some(SchemaKind::CodexThreads) => ("threads", "id", codex_thread_filter(&db)?),
+            Some(SchemaKind::CodexAutomationRuns) => (
+                "automation_runs",
+                "thread_id",
+                "WHERE COALESCE(thread_id, '') <> ''".to_string(),
+            ),
+            _ => anyhow::bail!("Unsupported local storage schema"),
+        };
+        let sql = format!("SELECT {id_column} FROM {table} {filter} ORDER BY {id_column}");
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     fn list_codex_threads(
         &self,
         db: &Connection,
@@ -175,30 +222,7 @@ impl SQLiteStorageAdapter {
             "NULL"
         };
         let rollout_path = optional_column_expression(&columns, "rollout_path", "''");
-        let mut subagent_filters = Vec::new();
-        if has_table(db, "thread_spawn_edges")?
-            && table_columns(db, "thread_spawn_edges")?
-                .iter()
-                .any(|column| column == "child_thread_id")
-        {
-            subagent_filters.push(
-                "NOT EXISTS (SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = threads.id)",
-            );
-        }
-        if has_table(db, "agent_job_items")?
-            && table_columns(db, "agent_job_items")?
-                .iter()
-                .any(|column| column == "assigned_thread_id")
-        {
-            subagent_filters.push(
-                "NOT EXISTS (SELECT 1 FROM agent_job_items j WHERE j.assigned_thread_id = threads.id)",
-            );
-        }
-        let child_thread_filter = if subagent_filters.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", subagent_filters.join(" AND "))
-        };
+        let child_thread_filter = codex_thread_filter(db)?;
         let sql = format!(
             "SELECT id, {title}, {cwd}, {model_provider}, {archived}, {updated_at_ms}, {rollout_path}
              FROM threads

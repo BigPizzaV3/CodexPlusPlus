@@ -198,6 +198,7 @@ pub struct LocalSessionsPayload {
     pub offset: usize,
     pub limit: usize,
     pub has_more: bool,
+    pub total_count: usize,
 }
 
 const DEFAULT_LOCAL_SESSIONS_PAGE_SIZE: usize = 50;
@@ -2229,9 +2230,18 @@ pub fn list_local_sessions(
     let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
     let mut sessions = Vec::new();
+    let mut session_ids = std::collections::HashSet::new();
     let mut errors = Vec::new();
     for db_path in &db_paths {
         let adapter = local_session_adapter(db_path);
+        match adapter.list_local_session_ids() {
+            Ok(ids) => session_ids.extend(ids),
+            Err(error) if db_path.exists() => {
+                errors.push(format!("{}: {error}", db_path.to_string_lossy()));
+                continue;
+            }
+            Err(_) => continue,
+        }
         match adapter.list_local_sessions_limited(fetch_limit) {
             Ok(mut items) => sessions.append(&mut items),
             Err(error) if db_path.exists() => {
@@ -2263,6 +2273,7 @@ pub fn list_local_sessions(
         offset,
         limit,
         has_more,
+        total_count: session_ids.len(),
     };
     let page = offset / limit + 1;
     if errors.is_empty() {
@@ -6146,6 +6157,7 @@ mod tests {
 
         assert_eq!(result.status, "ok");
         assert_eq!(result.payload.sessions.len(), 1);
+        assert_eq!(result.payload.total_count, 1);
         assert_eq!(result.payload.sessions[0].id, "t1");
         assert_eq!(result.payload.sessions[0].title, "Legacy Copy");
         assert_eq!(
@@ -6170,6 +6182,7 @@ mod tests {
         assert_eq!(first_page.payload.sessions[0].id, "t2");
         assert_eq!(first_page.payload.sessions[1].id, "t1");
         assert!(first_page.payload.has_more);
+        assert_eq!(first_page.payload.total_count, 3);
 
         let second_page = list_local_sessions(Some(ListLocalSessionsRequest {
             offset: 2,
@@ -6180,6 +6193,7 @@ mod tests {
         assert_eq!(second_page.payload.sessions.len(), 1);
         assert_eq!(second_page.payload.sessions[0].id, "t3");
         assert!(!second_page.payload.has_more);
+        assert_eq!(second_page.payload.total_count, 3);
     }
 
     #[test]

@@ -88,6 +88,14 @@ async fn bridge_routes_cover_all_current_paths() {
             "/thread-usage-history",
             json!({"session_id": "s1", "title": "First"}),
         ),
+        (
+            "/session/export",
+            json!({"session_id": "s1", "title": "First"}),
+        ),
+        (
+            "/session/import",
+            json!({"kind": "codex-rollout", "session_id": "s1", "content": "{}"}),
+        ),
         ("/archived-thread", json!({"title": "Archived"})),
     ];
 

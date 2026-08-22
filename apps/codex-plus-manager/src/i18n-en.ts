@@ -522,6 +522,7 @@ export const EN_PLAIN: Record<string, string> = {
     "Forces the Codex app's built-in zh-CN language pack to avoid falling back to English when Statsig/VPN is unreachable. Requires restarting Codex to fully apply.",
   "当前": "Current",
   "当前页会话": "Sessions on this page",
+  "会话总数": "Total sessions",
   "当前页未归档": "Active on this page",
   "当前页已归档": "Archived on this page",
   "当前 provider": "current provider",

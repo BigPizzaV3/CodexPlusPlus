@@ -6264,7 +6264,7 @@ select {
 
 .session-summary-bar {
   display: grid;
-  grid-template-columns: repeat(3, minmax(112px, 0.46fr)) minmax(260px, 1.62fr);
+  grid-template-columns: repeat(4, minmax(100px, 0.42fr)) minmax(240px, 1.6fr);
   overflow: hidden;
   border-top: 1px solid hsl(var(--border));
   border-bottom: 1px solid hsl(var(--border));
@@ -6376,7 +6376,7 @@ select {
 
 @media (max-width: 860px) {
   .session-summary-bar {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .session-summary-path {
@@ -6384,8 +6384,12 @@ select {
     border-top: 1px solid hsl(var(--border));
   }
 
-  .session-summary-bar > div:nth-child(3) {
+  .session-summary-bar > div:nth-child(even) {
     border-right: 0;
+  }
+
+  .session-summary-bar > div:nth-child(n + 3) {
+    border-top: 1px solid hsl(var(--border));
   }
 
   .session-repair-tools {

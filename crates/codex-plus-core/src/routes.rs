@@ -90,6 +90,9 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn backend_status(&self) -> anyhow::Result<Value>;
     async fn codex_model_catalog(&self) -> anyhow::Result<Value>;
     async fn ads(&self) -> anyhow::Result<Value>;
+    async fn create_share(&self, payload: Value) -> anyhow::Result<Value> {
+        crate::share::create_share(payload).await
+    }
     async fn zed_remote_status(&self) -> anyhow::Result<Value>;
     async fn resolve_zed_remote_host(&self, payload: Value) -> anyhow::Result<Value>;
     async fn fallback_zed_remote_request(&self, payload: Value) -> anyhow::Result<Value>;
@@ -115,6 +118,12 @@ pub trait BridgeDataService: Send + Sync {
     ) -> anyhow::Result<Option<SessionRef>>;
     async fn recover_remote_control_session(&self, _thread_id: String) -> anyhow::Result<Value> {
         anyhow::bail!("Remote Control session recovery is unavailable")
+    }
+    async fn export_session_file(&self, _session: SessionRef) -> anyhow::Result<Value> {
+        anyhow::bail!("Session file export is unavailable")
+    }
+    async fn import_session_file(&self, _payload: Value) -> anyhow::Result<Value> {
+        anyhow::bail!("Session file import is unavailable")
     }
 }
 
@@ -183,6 +192,7 @@ pub async fn handle_bridge_request(
         "/diagnostics/log" => diagnostic_log_value(payload.clone()),
         "/llm-proxy" => llm_proxy_value(payload.clone()).await,
         "/ads" => ctx.runtime.ads().await,
+        "/share/create" => ctx.runtime.create_share(payload.clone()).await,
         "/zed-remote/status" => ctx.runtime.zed_remote_status().await,
         "/zed-remote/resolve-host" => ctx.runtime.resolve_zed_remote_host(payload.clone()).await,
         "/zed-remote/fallback-request" => {
@@ -253,6 +263,11 @@ pub async fn handle_bridge_request(
                 .to_string();
             ctx.data.recover_remote_control_session(thread_id).await
         }
+        "/session/export" => ctx
+            .data
+            .export_session_file(session_from_payload(&payload))
+            .await,
+        "/session/import" => ctx.data.import_session_file(payload.clone()).await,
         _ => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "bridge.unknown_path",

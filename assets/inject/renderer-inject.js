@@ -393,6 +393,11 @@
   const sessionCopyMenuItemClass = "codex-session-copy-menu-item";
   const sessionCopyMenuItemVersion = "1";
   const sessionCopyMenuActivationTimeoutMs = 12000;
+  const sessionShareButtonClass = "codex-session-share-button";
+  const sessionShareButtonVersion = "1";
+  const codexPlusShareBaseUrl = "https://share.codexpp.cc";
+  const codexPlusShareFallbackBaseUrl = "https://codexpp-share.pages.dev";
+  const codexPlusShareMaxCharacters = 900000;
   const sessionAutoRenameTimeoutMs = 20000;
   const zedRemoteToastClass = "codex-zed-remote-toast";
   const upstreamWorktreeDialogClass = "codex-upstream-worktree-dialog";
@@ -405,6 +410,8 @@
   const codexDeleteStyleVersion = "16";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
+  const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
+  const codexPlusPageClass = "codex-plus-page-overlay";
   const codexDeleteVersion = "7";
   const codexExportVersion = "1";
   const codexActionGroupVersion = "6";
@@ -574,15 +581,12 @@
     sidebarThread: "[data-app-action-sidebar-thread-id]",
     threadTitle: "[data-thread-title]",
     appHeader: '[class*="ApplicationMenuTopBar"], .app-header-tint',
-    nativeMenuBar: "[class*=\"ms-auto\"][class*=\"flex\"][class*=\"items-center\"]",
-    headerContextMenuSurface: '[data-testid="app-shell-header-context-menu-surface"]',
     archiveNav: 'button[aria-label="已归档对话"], button[aria-label="Archived conversations"]',
     disabledInstallButton: 'button:disabled, button[aria-disabled="true"], [role="button"][aria-disabled="true"], button[data-disabled], [role="button"][data-disabled], button.cursor-not-allowed, [role="button"].cursor-not-allowed, button.pointer-events-none, [role="button"].pointer-events-none',
     pluginNavButton: 'nav[role="navigation"] button.h-token-nav-row.w-full',
     pluginSvgPath: 'svg path[d^="M7.94562 14.0277"]',
   };
   const headerContextButtonClass = "border-token-border user-select-none no-drag cursor-interaction flex items-center gap-1 border whitespace-nowrap focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 rounded-lg border-token-border text-token-button-tertiary-foreground bg-token-bg-fog enabled:hover:bg-token-list-hover-background data-[state=open]:bg-token-list-hover-background border h-token-button-composer px-2 py-0 text-base leading-[18px]";
-  const headerIconTextButtonClass = "border-token-border no-drag cursor-interaction flex items-center gap-1 border whitespace-nowrap select-none focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 rounded-lg text-token-text-tertiary enabled:hover:bg-token-list-hover-background data-[state=open]:bg-token-list-hover-background border-transparent h-token-button-composer px-2 py-0 text-base leading-[18px]";
 
   function installStyle() {
     const existingStyle = document.getElementById(styleId);
@@ -734,6 +738,33 @@
       }
       .${sessionCopyMenuItemClass} {
         cursor: pointer;
+      }
+      .${sessionShareButtonClass} {
+        position: static;
+        flex: 0 0 auto;
+        pointer-events: auto;
+        -webkit-app-region: no-drag;
+        margin-left: 2px;
+        z-index: 2147483001;
+        min-height: 32px;
+        border: 1px solid var(--token-border, rgba(255,255,255,.16));
+        border-radius: 8px;
+        background: var(--token-bg-fog, rgba(40,40,40,.92));
+        color: var(--token-text-secondary, #d1d5db);
+        font: 13px/18px system-ui, sans-serif;
+        padding: 6px 10px;
+        cursor: pointer;
+        box-shadow: 0 4px 14px rgba(0,0,0,.16);
+      }
+      .${sessionShareButtonClass}:hover,
+      .${sessionShareButtonClass}:focus-visible {
+        background: var(--token-list-hover-background, rgba(70,70,70,.96));
+        color: var(--token-text-default, #fff);
+        outline: none;
+      }
+      .${sessionShareButtonClass}[aria-busy="true"] {
+        cursor: wait;
+        opacity: .65;
       }
       .codex-zed-open-in-menu-icon {
         width: 18px;
@@ -925,46 +956,6 @@
           color: #ffffff;
         }
       }
-      #${codexPlusMenuId}.${codexPlusMenuFloatingClass} {
-        position: fixed;
-        top: var(--codex-plus-menu-top, 0);
-        right: var(--codex-plus-menu-right, 140px);
-        left: auto;
-        z-index: 2147483645;
-        height: var(--codex-plus-menu-height, 30px);
-        color: #d1d5db;
-        font: 13px system-ui, sans-serif;
-        text-align: right;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        pointer-events: auto;
-        -webkit-app-region: no-drag;
-      }
-      #${codexPlusMenuId} {
-        display: inline-flex;
-        align-items: center;
-        height: 100%;
-        flex: 0 0 auto;
-        pointer-events: auto;
-        -webkit-app-region: no-drag;
-      }
-      .codex-plus-trigger {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 4px;
-        border: 0;
-        background: transparent;
-        color: inherit;
-        font: inherit;
-        height: 100%;
-        line-height: 1;
-        padding: 0 8px;
-        cursor: pointer;
-        pointer-events: auto;
-        -webkit-app-region: no-drag;
-      }
       .codex-plus-modal-overlay {
         position: fixed;
         inset: 0;
@@ -1004,6 +995,80 @@
       .codex-plus-backend-indicator[data-status="ok"] { background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,.75); }
       .codex-plus-backend-indicator[data-status="failed"] { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,.75); }
       .codex-plus-backend-indicator[data-status="checking"] { background: #fbbf24; }
+      #${codexPlusSidebarNavId} {
+        position: relative;
+        flex: 0 0 auto;
+      }
+      #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-icon {
+        width: 20px;
+        height: 20px;
+        flex: 0 0 20px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-icon svg {
+        width: 19px;
+        height: 19px;
+        display: block;
+      }
+      #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status {
+        width: 7px;
+        height: 7px;
+        margin-left: auto;
+        border-radius: 999px;
+        background: #a1a1aa;
+        opacity: .9;
+      }
+      #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="ok"] {
+        background: #34d399;
+        box-shadow: 0 0 7px rgba(52,211,153,.7);
+      }
+      #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="failed"] { background: #ef4444; }
+      #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="checking"] { background: #fbbf24; }
+      #${codexPlusSidebarNavId} button[data-active="true"] {
+        background: var(--token-list-hover-background, rgba(255,255,255,.08));
+        color: var(--token-text-primary, inherit);
+      }
+      .${codexPlusPageClass} {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483644;
+        display: block;
+        background: var(--token-bg-primary, #212121);
+        pointer-events: auto;
+        -webkit-app-region: no-drag;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content {
+        width: auto;
+        height: 100%;
+        max-height: none;
+        border: 0;
+        border-radius: 0;
+        background: var(--token-bg-primary, #212121);
+        box-shadow: none;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-header {
+        width: min(960px, 100%);
+        margin: 0 auto;
+        padding: 24px 32px 12px;
+      }
+      .${codexPlusPageClass} .codex-plus-tabs {
+        width: min(960px, 100%);
+        margin-inline: auto;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-body {
+        width: min(960px, 100%);
+        margin: 0 auto;
+        padding: 4px 32px 32px;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-close {
+        min-width: 56px;
+        padding: 5px 12px;
+        border: 1px solid rgba(255,255,255,.14);
+        border-radius: 8px;
+        font-size: 13px;
+      }
       .codex-plus-modal-close {
         border: 0;
         background: transparent;
@@ -3512,29 +3577,6 @@
   let codexPlusBackendStatus = { status: "checking", message: "正在检查后端…" };
   let codexPlusBackendCheckSeq = 0;
 
-  function setCodexPlusTriggerLabel(trigger) {
-    if (!trigger) return;
-    let label = trigger.querySelector("[data-codex-plus-trigger-label]");
-    if (!label) {
-      label = document.createElement("span");
-      label.dataset.codexPlusTriggerLabel = "true";
-      trigger.appendChild(label);
-    }
-    label.textContent = `Codex++ ${codexPlusVersion}`;
-  }
-
-  function ensureCodexPlusTriggerIndicator(trigger) {
-    if (!trigger) return null;
-    let indicator = trigger.querySelector("[data-codex-backend-indicator]");
-    if (!indicator) {
-      indicator = document.createElement("span");
-      indicator.className = "codex-plus-backend-indicator";
-      indicator.dataset.codexBackendIndicator = "true";
-      trigger.prepend(indicator);
-    }
-    return indicator;
-  }
-
   function renderBackendStatus() {
     const status = codexPlusBackendStatus.status || "failed";
     if (codexPlusBackendStatus.version) {
@@ -3542,7 +3584,6 @@
       document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
         node.textContent = `Codex++ ${codexPlusVersion}`;
       });
-      document.querySelectorAll(`#${codexPlusMenuId} button`).forEach(setCodexPlusTriggerLabel);
     }
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
@@ -3553,6 +3594,11 @@
       indicator.dataset.status = status;
       indicator.title = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "未连接";
     });
+    const sidebarStatus = document.querySelector(`#${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status`);
+    if (sidebarStatus) {
+      sidebarStatus.dataset.status = status;
+      sidebarStatus.title = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "未连接";
+    }
     refreshCodexServiceTierControls();
   }
 
@@ -3756,16 +3802,35 @@
     if (tab === "userScripts") loadUserScripts();
   }
 
-  function openCodexPlusModal() {
+  function setCodexPlusSidebarNavActive(active) {
+    const nav = document.getElementById(codexPlusSidebarNavId);
+    const button = nav?.querySelector("button");
+    if (!button) return;
+    button.dataset.active = String(active);
+    button.setAttribute("aria-current", active ? "page" : "false");
+  }
+
+  function positionCodexPlusPage(overlay) {
+    if (!overlay?.classList?.contains(codexPlusPageClass)) return;
+    const sidebar = document.querySelector("aside.app-shell-left-panel");
+    const rect = sidebar?.getBoundingClientRect?.();
+    const left = rect && rect.width > 0 ? Math.max(0, rect.right) : 0;
+    overlay.style.left = `${left}px`;
+    overlay.style.top = "0px";
+  }
+
+  function openCodexPlusModal(options = {}) {
+    const pageMode = options.page === true;
     document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
-    document.querySelectorAll('[data-codex-plus-dialog="true"]').forEach((node) => node.remove());
+    document.querySelectorAll(`.${codexPlusPageClass}, [data-codex-plus-dialog="true"]`).forEach((node) => node.remove());
     const overlay = document.createElement("div");
-    overlay.className = "codex-plus-modal-overlay";
+    overlay.className = pageMode ? codexPlusPageClass : "codex-plus-modal-overlay";
+    overlay.dataset.codexPlusPage = String(pageMode);
     overlay.innerHTML = `
       <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="Codex++">
         <div class="codex-plus-modal-header">
           <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span data-codex-plus-version="true">Codex++ ${codexPlusVersion}</span></div>
-          <button type="button" class="codex-plus-modal-close" aria-label="关闭">×</button>
+          <button type="button" class="codex-plus-modal-close" aria-label="${pageMode ? "返回" : "关闭"}">${pageMode ? "返回" : "×"}</button>
         </div>
         <div class="codex-plus-tabs" role="tablist" aria-label="Codex++">
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">主页</button>
@@ -3869,10 +3934,6 @@
               <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">原生菜单栏位置</div><div class="codex-plus-row-description">把 Codex++ 菜单插入顶部原生菜单栏；默认关闭以避免页面重渲染冲突。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="nativeMenuPlacement"><span></span></button>
-            </div>
-            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户脚本报错。</div></div>
               <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
             </div>
@@ -3938,8 +3999,9 @@
     }, true);
     overlay.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      if (event.target === overlay || target?.closest(".codex-plus-modal-close")) {
+      if ((!pageMode && event.target === overlay) || target?.closest(".codex-plus-modal-close")) {
         overlay.remove();
+        if (pageMode) setCodexPlusSidebarNavActive(false);
         return;
       }
       const tabButton = target?.closest("[data-codex-plus-tab]");
@@ -4034,6 +4096,14 @@
       }
     }, true);
     document.body.appendChild(overlay);
+    if (pageMode) {
+      setCodexPlusSidebarNavActive(true);
+      positionCodexPlusPage(overlay);
+      if (!window.__codexPlusPageResizeHandler) {
+        window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(document.querySelector(`.${codexPlusPageClass}`));
+        window.addEventListener("resize", window.__codexPlusPageResizeHandler);
+      }
+    }
     if (!codexPlusAdsLoaded) fetchCodexPlusAds();
     selectCodexPlusTab("home");
     renderCodexPlusMenu();
@@ -4043,196 +4113,71 @@
     loadUserScripts();
   }
 
-  function findNativeMenuInsertionPoint() {
-    if (!codexPlusSettings().nativeMenuPlacement) return null;
-    const header = document.querySelector(selectors.appHeader);
-    const isIconOnlyButton = (button) => String(button.className || "").includes("aspect-square");
-    const menuBar = Array.from(header?.querySelectorAll?.(selectors.nativeMenuBar) || [])
-      .find((node) => {
-        const rect = node.getBoundingClientRect();
-        return !node.closest(".invisible") && rect.width > 0 && rect.height > 0;
-      });
-    if (menuBar) {
-      const buttons = Array.from(menuBar.querySelectorAll("button")).filter((button) => !button.closest(`#${codexPlusMenuId}`));
-      if (buttons.length && buttons.every(isIconOnlyButton)) return null;
-      const openLocationButton = buttons.find((button) => /^(打开位置|Open location)$/i.test(button.getAttribute("aria-label") || ""));
-      const openLocationGroup = openLocationButton?.closest?.(".inline-flex.self-start.items-stretch.overflow-hidden.rounded-lg");
-      const openLocationIndex = buttons.indexOf(openLocationButton);
-      const nativeButtonClass = openLocationButton
-        ? buttons[openLocationIndex + 1]?.className || openLocationButton.className || ""
-        : buttons[buttons.length - 1]?.className || "";
-      if (openLocationGroup?.parentElement === menuBar) return { parent: menuBar, before: openLocationGroup, nativeButtonClass };
-      if (openLocationGroup?.parentElement?.parentElement === menuBar) return { parent: menuBar, before: openLocationGroup.parentElement, nativeButtonClass };
-      return { parent: menuBar, before: buttons[buttons.length - 1]?.nextSibling || null, nativeButtonClass: buttons[buttons.length - 1]?.className || "" };
-    }
-    const contextSurface = header?.querySelector(selectors.headerContextMenuSurface);
-    const buttons = Array.from(contextSurface?.querySelectorAll?.("button") || [])
-      .filter((button) => !button.closest(`#${codexPlusMenuId}`) && button.getBoundingClientRect().width > 0 && button.getBoundingClientRect().height > 0);
-    if (buttons.length && buttons.every(isIconOnlyButton)) return null;
-    const nativeButton = buttons.find((button) => !button.parentElement?.classList?.contains("inline-flex")) || buttons[0];
-    const parent = nativeButton?.parentElement;
-    if (!parent) {
-      const emptyButtonGroup = Array.from(contextSurface?.querySelectorAll?.("div") || [])
-        .find((node) => {
-          const className = String(node.className || "");
-          return className.includes("items-center") && className.includes("gap-2");
-        });
-      return emptyButtonGroup ? { parent: emptyButtonGroup, before: emptyButtonGroup.firstChild, nativeButtonClass: headerIconTextButtonClass } : null;
-    }
-    return { parent, before: nativeButton, nativeButtonClass: nativeButton.className || "" };
+  function openCodexPlusPage() {
+    openCodexPlusModal({ page: true });
   }
 
-  function removeDuplicateCodexPlusMenus(keep) {
-    document.querySelectorAll(`#${codexPlusMenuId}, [data-codex-plus-menu="true"]`).forEach((node) => {
-      if (node !== keep) node.remove();
+  function closeCodexPlusPage() {
+    document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
+    setCodexPlusSidebarNavActive(false);
+  }
+
+  function installCodexPlusSidebarNavigation() {
+    document.querySelectorAll(`#${codexPlusMenuId}, [data-codex-plus-menu="true"]`).forEach((node) => node.remove());
+    const navigation = document.querySelector('aside.app-shell-left-panel nav[role="navigation"], nav[role="navigation"]');
+    if (!navigation) return;
+    const navButtons = Array.from(navigation.querySelectorAll("button"));
+    const pluginButton = navButtons.find((button) => {
+      if (button.querySelector(selectors.pluginSvgPath)) return true;
+      const label = (button.getAttribute("aria-label") || button.textContent || "").trim();
+      return /^(插件|Plugins)$/i.test(label);
     });
-    Array.from(document.querySelectorAll("button")).forEach((button) => {
-      if ((button.textContent || "").trim() === `Codex++ ${codexPlusVersion}` && !button.closest(`#${codexPlusMenuId}`)) {
-        button.remove();
+    const insertionButton = pluginButton || navButtons.find((button) => {
+      const label = (button.getAttribute("aria-label") || button.textContent || "").replace(/\s+/g, " ").trim();
+      return /^(已安排|Scheduled|拉取请求|Pull requests|新对话|New chat)$/i.test(label);
+    });
+    if (navigation.dataset.codexPlusSidebarNavigationListener !== "true") {
+      navigation.dataset.codexPlusSidebarNavigationListener = "true";
+      navigation.addEventListener("click", (event) => {
+        const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+        if (target?.closest(`#${codexPlusSidebarNavId}`)) return;
+        if (target?.closest("button, a")) closeCodexPlusPage();
+      }, true);
+    }
+    let wrapper = document.getElementById(codexPlusSidebarNavId);
+    const parent = insertionButton?.parentElement || navigation;
+    if (!wrapper || wrapper.parentElement !== parent) {
+      wrapper?.remove();
+      wrapper = document.createElement("div");
+      wrapper.id = codexPlusSidebarNavId;
+      wrapper.dataset.codexPlusSidebarNav = "true";
+      const button = (insertionButton || document.createElement("button")).cloneNode(true);
+      if (!(button instanceof HTMLElement)) return;
+      if (!button.className) button.className = "h-token-nav-row w-full flex items-center gap-2 px-3 py-2 text-sm";
+      button.type = "button";
+      button.removeAttribute("data-state");
+      button.removeAttribute("aria-current");
+      button.removeAttribute("disabled");
+      button.removeAttribute("aria-disabled");
+      button.setAttribute("aria-label", "Codex++");
+      button.textContent = "";
+      button.innerHTML = `<span class="codex-plus-sidebar-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg></span><span class="truncate">Codex++</span><span class="codex-plus-sidebar-nav-status" data-status="${codexPlusBackendStatus.status || "checking"}" aria-hidden="true"></span>`;
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openCodexPlusPage();
+      }, true);
+      wrapper.appendChild(button);
+      if (insertionButton?.nextSibling) {
+        parent.insertBefore(wrapper, insertionButton.nextSibling);
+      } else {
+        parent.appendChild(wrapper);
       }
-    });
-  }
-
-  function normalizeCodexPlusTriggerClassName(className) {
-    const classes = String(className || "").split(/\s+/).filter(Boolean);
-    const incompatibleNativeGroupClasses = new Set(["gap-0", "rounded-l-none", "border-l-0", "pl-0.5", "pr-1.5"]);
-    const hasIncompatibleNativeGroupClass = classes.some((name) => incompatibleNativeGroupClasses.has(name));
-    const normalized = classes.filter((name) => !incompatibleNativeGroupClasses.has(name));
-    if (hasIncompatibleNativeGroupClass) {
-      ["gap-1", "rounded-lg", "border-l", "px-2"].forEach((name) => {
-        if (!normalized.includes(name)) normalized.push(name);
-      });
     }
-    return normalized.join(" ");
-  }
-
-  function configureCodexPlusTrigger(menu, trigger, nativeButtonClass) {
-    if (!trigger) return;
-    if (nativeButtonClass) trigger.className = normalizeCodexPlusTriggerClassName(nativeButtonClass);
-    if (!trigger.querySelector(".codex-plus-backend-indicator")) {
-      const indicator = document.createElement("span");
-      indicator.className = "codex-plus-backend-indicator";
-      indicator.dataset.codexBackendIndicator = "true";
-      indicator.dataset.status = codexPlusBackendStatus.status || "checking";
-      trigger.prepend(indicator);
-    }
-    if (trigger.dataset.codexPlusTriggerInstalled === "5") return;
-    trigger.dataset.codexPlusTriggerInstalled = "5";
-    trigger.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openCodexPlusModal();
-    }, true);
-  }
-
-  function numericCssValue(value) {
-    const parsed = Number.parseFloat(value || "");
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-
-  function setCssPropIfChanged(menu, prop, value) {
-    if (menu.style.getPropertyValue(prop) !== value) {
-      menu.style.setProperty(prop, value);
-    }
-  }
-
-  function headerTitleRegion(header) {
-    const candidates = Array.from(header?.querySelectorAll?.('[data-state], [class*="truncate"], [class*="text-base"]') || []);
-    return candidates.find((node) => {
-      if (!node?.querySelector?.('[data-state], button')) return false;
-      if (!node.textContent?.trim()) return false;
-      return node.closest?.(".draggable") || node.closest?.('[class*="grid-cols-[minmax(0,1fr)]"]');
-    }) || null;
-  }
-
-  function isHeaderToolbarButton(button, header, rect) {
-    if (!button || button.closest?.(`#${codexPlusMenuId}`)) return false;
-    if (!(rect.width > 0 && rect.height > 0 && rect.left > window.innerWidth / 2)) return false;
-    const buttonCluster = button.closest(".ms-auto.flex.shrink-0.items-center");
-    if (buttonCluster && header?.contains(buttonCluster)) return true;
-    const titleRegion = headerTitleRegion(header);
-    if (titleRegion?.contains?.(button)) return false;
-    return !!button.closest?.('[class*="ms-auto"][class*="shrink-0"][class*="items-center"]');
-  }
-
-  function updateFloatingCodexPlusMenuPosition(menu) {
-    if (!menu?.classList?.contains(codexPlusMenuFloatingClass)) return;
-    const header = document.querySelector(selectors.appHeader);
-    if (!header) return;
-    const toolbarButtons = Array.from(header.querySelectorAll("button"))
-      .map((button) => ({ button, rect: button.getBoundingClientRect() }))
-      .filter(({ button, rect }) => isHeaderToolbarButton(button, header, rect))
-      .sort((left, right) => left.rect.left - right.rect.left);
-    const anchor = toolbarButtons[0];
-    if (anchor) {
-      const measuredGap = toolbarButtons[1] ? toolbarButtons[1].rect.left - toolbarButtons[0].rect.right : 0;
-      const styles = anchor.button.parentElement ? getComputedStyle(anchor.button.parentElement) : null;
-      const gap = Math.max(numericCssValue(styles?.columnGap || styles?.gap), measuredGap, 0);
-      setCssPropIfChanged(menu, "--codex-plus-menu-top", `${anchor.rect.top}px`);
-      setCssPropIfChanged(menu, "--codex-plus-menu-height", `${anchor.rect.height}px`);
-      setCssPropIfChanged(menu, "--codex-plus-menu-right", `${Math.max(0, window.innerWidth - anchor.rect.left + gap)}px`);
-      return;
-    }
-
-    const headerRect = header.getBoundingClientRect();
-    if (headerRect.height) {
-      const isApplicationMenuTopBar = header.matches?.('[class*="ApplicationMenuTopBar"]');
-      setCssPropIfChanged(menu, "--codex-plus-menu-top", `${isApplicationMenuTopBar ? Math.max(4, headerRect.top) : headerRect.top}px`);
-      setCssPropIfChanged(menu, "--codex-plus-menu-height", `${isApplicationMenuTopBar ? 28 : headerRect.height}px`);
-    }
-    menu.style.removeProperty("--codex-plus-menu-right");
-  }
-
-  function installCodexPlusMenu() {
-    const existing = document.getElementById(codexPlusMenuId);
-    removeDuplicateCodexPlusMenus(existing);
-    let insertionPoint = findNativeMenuInsertionPoint();
-    if (existing && existing.dataset.codexPlusMenuVersion !== "6") {
-      existing.remove();
-      insertionPoint = findNativeMenuInsertionPoint();
-    } else if (existing && insertionPoint && existing.parentElement === insertionPoint.parent) {
-      configureCodexPlusTrigger(existing, existing.querySelector("button"), insertionPoint.nativeButtonClass);
-      const safeBefore = insertionPoint.before?.parentElement === insertionPoint.parent ? insertionPoint.before : null;
-      if (existing.nextSibling !== safeBefore) insertionPoint.parent.insertBefore(existing, safeBefore);
-      removeDuplicateCodexPlusMenus(existing);
-      return;
-    } else if (existing && insertionPoint) {
-      configureCodexPlusTrigger(existing, existing.querySelector("button"), insertionPoint.nativeButtonClass);
-      existing.className = "";
-      const safeBefore = insertionPoint.before?.parentElement === insertionPoint.parent ? insertionPoint.before : null;
-      insertionPoint.parent.insertBefore(existing, safeBefore);
-      removeDuplicateCodexPlusMenus(existing);
-      return;
-    } else if (existing) {
-      configureCodexPlusTrigger(existing, existing.querySelector("button"), headerIconTextButtonClass);
-      existing.className = codexPlusMenuFloatingClass;
-      document.documentElement.appendChild(existing);
-      updateFloatingCodexPlusMenuPosition(existing);
-      removeDuplicateCodexPlusMenus(existing);
-      return;
-    }
-    const menu = document.createElement("div");
-    menu.id = codexPlusMenuId;
-    menu.dataset.codexPlusMenu = "true";
-    menu.dataset.codexPlusMenuVersion = "6";
-    const trigger = document.createElement("button");
-    trigger.type = "button";
-    const indicator = ensureCodexPlusTriggerIndicator(trigger);
-    if (indicator) indicator.dataset.status = codexPlusBackendStatus.status || "checking";
-    setCodexPlusTriggerLabel(trigger);
-    const nativeButtonClass = insertionPoint?.nativeButtonClass || headerIconTextButtonClass;
-    configureCodexPlusTrigger(menu, trigger, nativeButtonClass);
-    menu.appendChild(trigger);
-    if (insertionPoint) {
-      menu.className = "";
-      const safeBefore = insertionPoint.before?.parentElement === insertionPoint.parent ? insertionPoint.before : null;
-      insertionPoint.parent.insertBefore(menu, safeBefore);
-    } else {
-      menu.className = codexPlusMenuFloatingClass;
-      document.documentElement.appendChild(menu);
-      updateFloatingCodexPlusMenuPosition(menu);
-    }
-    removeDuplicateCodexPlusMenus(menu);
+    const status = wrapper.querySelector(".codex-plus-sidebar-nav-status");
+    if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
+    const active = !!document.querySelector(`.${codexPlusPageClass}`);
+    setCodexPlusSidebarNavActive(active);
   }
 
   const codexPluginRemoteOnlyMarketplaceKinds = new Set(["created-by-me-remote", "shared-with-me"]);
@@ -6774,6 +6719,293 @@
     setTimeout(() => toast.remove(), 10000);
   }
 
+  function shareBase64Url(bytes) {
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  function shareTextFromElement(element) {
+    const clone = element.cloneNode(true);
+    clone.querySelectorAll?.("button, textarea, input, select, [contenteditable='true'], .codex-delete-toast, .codex-plus-modal-overlay, .codex-plus-page-overlay, .codex-session-share-button").forEach((node) => node.remove());
+    return String(clone.innerText || clone.textContent || "").replace(/\u00a0/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  function sessionShareMarkdown() {
+    const ref = currentSessionRef();
+    if (!ref.session_id) return { ref, markdown: "" };
+    const root = conversationRoot();
+    if (!root) return { ref, markdown: "" };
+    const authored = Array.from(root.querySelectorAll("[data-message-author-role]"));
+    const knownTurns = Array.from(root.querySelectorAll([
+      '[data-testid="conversation-turn"]',
+      '[data-testid*="message"]',
+      '[data-message-content]',
+      'main .prose',
+      '[class*="message-bubble"]',
+      '[class*="MessageBubble"]',
+      '[class*="user-message"]',
+      '[class*="UserMessage"]',
+    ].join(",")));
+    const turns = authored.length ? authored : knownTurns;
+    const seen = new Set();
+    const messages = turns.map((node) => {
+      if (!(node instanceof HTMLElement) || seen.has(node)) return "";
+      if (node.parentElement?.closest?.('[data-message-author-role], [data-testid="conversation-turn"]')) return "";
+      seen.add(node);
+      const text = shareTextFromElement(node);
+      if (!text) return "";
+      const role = String(node.getAttribute("data-message-author-role") || "").toLowerCase();
+      const label = role === "user" ? "用户" : role === "assistant" ? "助手" : "消息";
+      return { role: role === "user" || role === "assistant" ? role : "message", label, text };
+    }).filter(Boolean);
+    const title = String(ref.title || document.querySelector(selectors.threadTitle)?.textContent || "未命名会话").replace(/\s+/g, " ").trim();
+    let content = messages.map((message) => `### ${message.label}\n\n${message.text}`).join("\n\n");
+    if (!content) {
+      const fallback = root.cloneNode(true);
+      fallback.querySelectorAll?.([
+        ".composer-footer", ".composer-surface-chrome", "form", "header", "nav", "aside",
+        "button", "textarea", "input", "select", "[contenteditable='true']",
+        ".codex-delete-toast", ".codex-plus-modal-overlay", ".codex-plus-page-overlay",
+        ".codex-session-share-button",
+      ].join(",")).forEach((node) => node.remove());
+      content = String(fallback.innerText || fallback.textContent || "")
+        .replace(/\u00a0/g, " ")
+        .replace(/[ \t]+\n/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+      if (content) messages.push({ role: "message", label: "会话", text: content });
+    }
+    const markdown = `# ${title || "未命名会话"}\n\n- 会话 ID：\`${ref.session_id}\`\n\n${content}`.slice(0, codexPlusShareMaxCharacters);
+    return {
+      ref,
+      markdown: content ? markdown : "",
+      session: content ? {
+        version: 1,
+        kind: "codex-session",
+        session_id: ref.session_id,
+        title: title || "未命名会话",
+        messages: messages.map(({ role, text }) => ({ role, text })),
+      } : null,
+    };
+  }
+
+  async function encryptSessionShare(value) {
+    const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt"]);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(value));
+    const exportedKey = await crypto.subtle.exportKey("raw", key);
+    return {
+      key: shareBase64Url(new Uint8Array(exportedKey)),
+      encrypted: {
+        v: 1,
+        iv: shareBase64Url(iv),
+        ciphertext: shareBase64Url(new Uint8Array(ciphertext)),
+      },
+    };
+  }
+
+  async function createSessionShare() {
+    const { ref, markdown, session } = sessionShareMarkdown();
+    if (!ref.session_id) {
+      showToast("当前页面还没有可分享的会话", null);
+      return;
+    }
+    if (!markdown || !session) {
+      showToast("当前会话还没有可分享的消息", null);
+      return;
+    }
+    const shareWindow = window.open("about:blank", "_blank");
+    const button = document.querySelector(`.${sessionShareButtonClass}`);
+    if (button) {
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      button.textContent = "正在创建…";
+    }
+    try {
+      let shareDocument = session;
+      const nativeSession = await postJson("/session/export", {
+        session_id: ref.session_id,
+        title: session.title,
+      });
+      if (nativeSession?.status !== "ok" || nativeSession.kind !== "codex-rollout" || typeof nativeSession.content !== "string") {
+        throw new Error(nativeSession?.message || "无法读取完整 Codex 会话文件");
+      }
+      shareDocument = { ...nativeSession, title: session.title };
+      const encrypted = await encryptSessionShare(JSON.stringify(shareDocument));
+      const payload = { ttl: 604800, encrypted: encrypted.encrypted };
+      let result;
+      let baseUrl = codexPlusShareBaseUrl;
+      try {
+        result = await postJson("/share/create", payload);
+        if (result?.id) {
+          baseUrl = codexPlusShareBaseUrl;
+        } else if (result?.status !== "failed") {
+          throw new Error(result?.message || "创建分享失败");
+        }
+      } catch (_) {
+        result = null;
+      }
+      if (!result?.id) {
+        let response;
+        try {
+          response = await fetch(`${baseUrl}/api/shares`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        } catch (_) {
+          baseUrl = codexPlusShareFallbackBaseUrl;
+          response = await fetch(`${baseUrl}/api/shares`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        }
+        result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.id) throw new Error(result.error || `创建分享失败（HTTP ${response.status}）`);
+      }
+      const shareUrl = `${baseUrl}/?s=${encodeURIComponent(result.id)}#k=${encrypted.key}`;
+      try {
+        await navigator.clipboard.writeText(shareUrl);
+      } catch (_) {
+        const input = document.createElement("input");
+        input.value = shareUrl;
+        input.style.position = "fixed";
+        input.style.opacity = "0";
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        input.remove();
+      }
+      showToast("会话分享链接已复制", null);
+      if (shareWindow && !shareWindow.closed) shareWindow.location.href = shareUrl;
+    } catch (error) {
+      if (shareWindow && !shareWindow.closed) shareWindow.close();
+      showToast(error?.message || "创建分享失败，请稍后重试", null);
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+        button.textContent = "分享会话";
+      }
+    }
+  }
+
+  function installSessionShareButton() {
+    const existing = document.querySelectorAll(`.${sessionShareButtonClass}`);
+    const ref = currentSessionRef();
+    if (!ref.session_id) {
+      existing.forEach((button) => button.remove());
+      return;
+    }
+    let button = existing[0];
+    existing.forEach((node) => { if (node !== button) node.remove(); });
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      button.className = `${sessionShareButtonClass} ${headerContextButtonClass}`;
+      button.textContent = "分享会话";
+      button.setAttribute("aria-label", "分享当前会话");
+      button.dataset.codexSessionShareVersion = sessionShareButtonVersion;
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void createSessionShare();
+      }, true);
+    }
+    const nativeShare = Array.from(document.querySelectorAll('header button[aria-label="Share"], header button[aria-label="分享"], header button[aria-label*="Share"], header button[aria-label*="分享"]')).find(visibleElement);
+    const actionGroup = nativeShare?.closest?.(".ms-auto")
+      || document.querySelector("header .ms-auto")
+      || nativeShare?.parentElement?.parentElement?.parentElement;
+    if (actionGroup instanceof HTMLElement) {
+      button.style.position = "static";
+      button.style.pointerEvents = "auto";
+      button.style.webkitAppRegion = "no-drag";
+      if (button.parentElement !== actionGroup || button !== actionGroup.lastElementChild) {
+        actionGroup.appendChild(button);
+      }
+      return;
+    }
+    const header = document.querySelector('[data-testid="app-shell-header-context-menu-surface"]')?.closest?.("header")
+      || document.querySelector("header")
+      || document.querySelector(selectors.appHeader);
+    if (header instanceof HTMLElement) {
+      // 没有明确操作栏时也保持文档流，避免遮挡原生按钮。
+      button.style.position = "static";
+      button.style.pointerEvents = "auto";
+      button.style.webkitAppRegion = "no-drag";
+      button.style.marginLeft = "8px";
+      if (button.parentElement !== header) header.appendChild(button);
+    } else if (!button.isConnected) {
+      document.body.appendChild(button);
+    }
+  }
+
+  function sessionImportMarkdown(session) {
+    const title = String(session?.title || "未命名会话").trim() || "未命名会话";
+    const messages = Array.isArray(session?.messages) ? session.messages : [];
+    const body = messages.map((message) => {
+      const role = message?.role === "user" ? "用户" : message?.role === "assistant" ? "助手" : "消息";
+      const text = String(message?.text || "").trim();
+      return text ? `### ${role}\n\n${text}` : "";
+    }).filter(Boolean).join("\n\n");
+    return `# ${title}\n\n${body}`.trim();
+  }
+
+  function importSharedSessionIntoNewChat(session) {
+    if (session?.kind === "codex-rollout" && typeof session.content === "string") {
+      void postJson("/session/import", session).then((result) => {
+        if (result?.status !== "ok") {
+          showToast(result?.message || "原生会话导入失败", null);
+          return;
+        }
+        void refreshRecentConversationsForHost();
+        showToast("已导入完整 Codex 会话", null);
+      }).catch((error) => showToast(error?.message || "原生会话导入失败", null));
+      return;
+    }
+    const markdown = sessionImportMarkdown(session);
+    if (!markdown) {
+      showToast("分享内容为空，无法导入", null);
+      return;
+    }
+    const newChat = Array.from(document.querySelectorAll("button")).find((button) => {
+      if (!visibleElement(button) || isExtensionUiNode(button)) return false;
+      const text = String(button.textContent || "").replace(/\s+/g, " ").trim();
+      const label = button.getAttribute("aria-label") || "";
+      return /^(新对话|New chat)$/i.test(text) || /^(新对话|New chat)$/i.test(label);
+    });
+    if (newChat instanceof HTMLElement) newChat.click();
+    const deadline = Date.now() + 5000;
+    const fill = () => {
+      const editor = Array.from(document.querySelectorAll("textarea, [contenteditable='true']"))
+        .filter((node) => visibleElement(node))
+        .at(-1);
+      if (!(editor instanceof HTMLElement)) {
+        if (Date.now() < deadline) window.setTimeout(fill, 100);
+        else showToast("无法找到 Codex 输入框，请手动打开新对话后重试", null);
+        return;
+      }
+      editor.focus();
+      if (editor instanceof HTMLTextAreaElement) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+        setter?.call(editor, markdown);
+        editor.dispatchEvent(new Event("input", { bubbles: true }));
+      } else {
+        document.execCommand("insertText", false, markdown);
+        editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: markdown }));
+      }
+      showToast("已导入完整会话内容，请发送以继续", null);
+    };
+    window.setTimeout(fill, newChat ? 350 : 0);
+  }
+
+  function installSessionShareImportListener() {
+    window.removeEventListener("message", window.__codexSessionShareImportHandler);
+    window.__codexSessionShareImportHandler = (event) => {
+      if (!/^(https:\/\/share\.codexpp\.cc|https:\/\/codexpp-share\.pages\.dev)$/.test(event.origin || "") || event.data?.type !== "codexpp-import-session") return;
+      const session = event.data?.session;
+      if (!session || !["codex-session", "codex-rollout"].includes(session.kind)) return;
+      if (session.kind === "codex-session" && !Array.isArray(session.messages)) return;
+      if (session.kind === "codex-rollout" && typeof session.content !== "string") return;
+      importSharedSessionIntoNewChat(session);
+    };
+    window.addEventListener("message", window.__codexSessionShareImportHandler);
+  }
+
   function upstreamWorktreeField(dialog, name) {
     return dialog.querySelector(`[data-codex-upstream-worktree-field="${name}"]`);
   }
@@ -8043,7 +8275,8 @@
 
   function attachButton(row) {
     const settings = codexPlusSettings();
-    if (!settings.sessionDelete && !settings.markdownExport) {
+    const sessionMenuEnabled = codexPlusBackendSettings.enhancementsEnabled !== false;
+    if (!settings.sessionDelete && !settings.markdownExport && !sessionMenuEnabled) {
       removeActionGroups(row);
       row.dataset.codexDeleteRow = "false";
       return;
@@ -8052,7 +8285,7 @@
     const existingDeleteButton = existingGroup?.querySelector(`.${buttonClass}`);
     const existingMoreButton = existingGroup?.querySelector(`.${moreButtonClass}`);
     const existingExportButton = existingGroup?.querySelector(`.${exportButtonClass}`);
-    const needsMoreMenu = settings.markdownExport;
+    const needsMoreMenu = sessionMenuEnabled;
     const hasUnexpectedDelete = !settings.sessionDelete && !!existingDeleteButton;
     const hasUnexpectedMore = !needsMoreMenu && !!existingMoreButton;
     const hasUnexpectedExport = !!existingExportButton;
@@ -8071,7 +8304,7 @@
     const group = document.createElement("div");
     group.className = actionGroupClass;
     group.dataset.codexActionGroupVersion = codexActionGroupVersion;
-    if (settings.markdownExport) {
+    if (needsMoreMenu) {
       const moreButton = document.createElement("button");
       moreButton.type = "button";
       moreButton.className = `${actionButtonClass} ${moreButtonClass}`;
@@ -8088,6 +8321,8 @@
           closeSessionMoreMenus();
           exportMarkdown(ref);
         }));
+      }
+      if (sessionMenuEnabled) {
         const sessionCopyItem = createSessionMoreMenuItem("原地复制会话 - Codex++", "⧉", activateSessionCopyMenuItem);
         sessionCopyItem.dataset.codexSessionCopyMenu = "true";
         sessionCopyItem.dataset.codexSessionCopyVersion = sessionCopyMenuItemVersion;
@@ -8706,7 +8941,8 @@
         "existing-renderer"
       );
     }
-    installCodexPlusMenu();
+    installCodexPlusSidebarNavigation();
+    installSessionShareImportListener();
     localizeCodexMenus();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();
@@ -9284,7 +9520,7 @@
     const text = normalizedElementText(menu);
     const hasRename = /(?:重命名|rename)/i.test(text);
     const hasOtherSessionAction = /(?:置顶|取消置顶|pin|unpin|归档|archive|删除|delete|移动|move)/i.test(text);
-    return hasRename && hasOtherSessionAction;
+    return hasRename || hasOtherSessionAction;
   }
 
   function rememberSessionActionTrigger(event) {
@@ -9383,6 +9619,42 @@
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
   }
 
+  function sessionActionTrigger(row) {
+    const direct = row?.querySelector?.('button[aria-label="聊天操作"], button[aria-label="Chat actions"]');
+    if (direct instanceof HTMLElement && visibleElement(direct)) return direct;
+    if (lastSessionActionTrigger instanceof HTMLElement && lastSessionActionTrigger.isConnected && visibleElement(lastSessionActionTrigger)) {
+      return lastSessionActionTrigger;
+    }
+    const candidates = Array.from(document.querySelectorAll([
+      'button[aria-label="聊天操作"]',
+      'button[aria-label="Chat actions"]',
+      'button[aria-label="会话操作"]',
+      'button[aria-label="Thread actions"]',
+      'button[aria-label="更多"]',
+      'button[aria-label="More"]',
+      'button[aria-label="More options"]',
+      'button[aria-label="更多操作"]',
+      'button[aria-label="More actions"]',
+      'button[aria-label="会话选项"]',
+      'button[aria-label="Conversation options"]',
+      'button[aria-label="Thread options"]',
+      'button[aria-haspopup="menu"]',
+    ].join(","))).filter((button) => {
+      if (!(button instanceof HTMLElement) || !visibleElement(button) || isExtensionUiNode(button)) return false;
+      const header = button.closest?.(selectors.appHeader);
+      return !!header || /聊天操作|Chat actions|会话操作|Thread actions|更多|More|选项|options/i.test(button.getAttribute("aria-label") || "");
+    });
+    if (candidates.length) return candidates.at(-1);
+    const header = document.querySelector(selectors.appHeader);
+    const iconButtons = Array.from(header?.querySelectorAll?.("button") || [])
+      .filter((button) => button instanceof HTMLElement && visibleElement(button) && !isExtensionUiNode(button))
+      .filter((button) => {
+        const text = normalizedElementText(button);
+        return text === "..." || text === "⋯" || text === "···" || button.getAttribute("aria-expanded") != null;
+      });
+    return iconButtons.at(-1) || null;
+  }
+
   async function activateSessionAutoRenameMenuItem(event) {
     if (event?.type === "keydown" && !["Enter", " "].includes(event.key)) return;
     const item = event?.currentTarget;
@@ -9402,7 +9674,7 @@
       return;
     }
 
-    const trigger = row.querySelector('button[aria-label="聊天操作"], button[aria-label="Chat actions"]');
+    const trigger = sessionActionTrigger(row);
     if (!(trigger instanceof HTMLElement)) {
       showToast("找不到 Codex 原生重命名入口", null);
       return;
@@ -9622,6 +9894,7 @@
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     refreshConversationView();
     installCodexServiceTierBadge();
+    installSessionShareButton();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
   }
@@ -9641,7 +9914,7 @@
   }
 
   function isExtensionUiNode(node) {
-    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexServiceTierBadgeClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`);
+    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`);
   }
 
   function scanRelevantSelector() {
@@ -9659,6 +9932,8 @@
       ".composer-footer",
       selectors.appHeader,
       selectors.archiveNav,
+      selectors.pluginNavButton,
+      'aside.app-shell-left-panel nav[role="navigation"]',
       codexMenuLocalizationScopeSelector(),
       ...(pluginPatchDisabledInRelayMode() ? [] : [selectors.disabledInstallButton]),
     ].join(", ");
@@ -9728,7 +10003,6 @@
         if (group) delete group.dataset.codexActionLayoutStable;
       });
       syncActionGroupsLayout();
-      updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));
       runScanStep(refreshConversationView);
     });
   };
