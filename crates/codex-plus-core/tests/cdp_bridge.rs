@@ -79,6 +79,21 @@ fn injection_script_omits_stepwise_runtime_when_disabled() {
 }
 
 #[test]
+fn injection_script_keeps_floating_panel_opt_in_with_stepwise() {
+    let disabled = assets::injection_script_with_settings(57321, &BackendSettings::default());
+    assert!(!disabled.contains("__codexFloatingPanel"));
+
+    let enabled = BackendSettings {
+        codex_app_stepwise_enabled: true,
+        ..Default::default()
+    };
+    let script = assets::injection_script_with_settings(57321, &enabled);
+    assert!(script.contains("__codexStepwisePanel"));
+    assert!(script.contains("__codexFloatingPanel"));
+    assert!(script.contains("data-codex-floating-panel-root"));
+}
+
+#[test]
 fn injection_script_includes_stepwise_runtime_when_enabled() {
     let settings = BackendSettings {
         codex_app_stepwise_enabled: true,
@@ -87,6 +102,21 @@ fn injection_script_includes_stepwise_runtime_when_enabled() {
     let script = assets::injection_script_with_settings(57321, &settings);
 
     assert!(script.contains("const API_KEY = \"__codexStepwisePanel\";"));
+}
+
+#[test]
+fn injection_script_includes_visual_layer_only_with_stepwise() {
+    let disabled = assets::injection_script_with_settings(57321, &BackendSettings::default());
+    assert!(!disabled.contains("__codexFloatingPanelVisual"));
+
+    let enabled = BackendSettings {
+        codex_app_stepwise_enabled: true,
+        ..Default::default()
+    };
+    let script = assets::injection_script_with_settings(57321, &enabled);
+    assert!(script.contains("__codexFloatingPanelVisual"));
+    assert!(script.contains("cfp-noise-filter"));
+    assert!(script.contains("prefers-reduced-motion"));
 }
 
 #[test]
