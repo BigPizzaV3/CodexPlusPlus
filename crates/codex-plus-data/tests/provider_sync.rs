@@ -445,6 +445,42 @@ fn provider_sync_rewrites_all_session_meta_model_providers() {
 }
 
 #[test]
+fn provider_sync_maps_api_provider_history_back_to_official_login() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "\n").unwrap();
+    let rollout = home.join("sessions/2026/rollout-api-history.jsonl");
+    write_rollout(&rollout, "custom", "thread-1", "C:/workspace");
+    create_state_db_with_providers(&home.join("state_5.sqlite"), &[("thread-1", "custom", 0)]);
+
+    let result = run_provider_sync_with_target(Some(&home), Some("openai"));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.target_provider, "openai");
+    assert_eq!(result.changed_session_files, 1);
+    assert_eq!(result.sqlite_provider_rows_updated, 1);
+    let first: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first["payload"]["model_provider"], "openai");
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    let provider: String = db
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'thread-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "openai");
+}
+
+#[test]
 fn provider_sync_ignores_spawned_subagent_threads() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");

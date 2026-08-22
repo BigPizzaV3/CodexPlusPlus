@@ -1677,8 +1677,10 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("未连接"));
     assert!(script.contains("thread/start"));
     assert!(script.contains("thread/resume"));
+    assert!(script.contains("/fork-session"));
+    assert!(script.contains("...(modelProvider ? { modelProvider } : {})"));
+    assert!(script.contains("用当前 API 继续"));
     assert!(script.contains("turn/start"));
-    assert!(script.contains("send-cli-request-for-host"));
     assert!(script.contains("start-conversation"));
     assert!(script.contains("applyCodexServiceTierRequestOverride(\"thread/start\", message)"));
     assert!(script.contains("codex-service-tier-badge"));

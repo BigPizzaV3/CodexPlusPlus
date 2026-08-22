@@ -116,6 +116,15 @@ pub trait BridgeDataService: Send + Sync {
     async fn recover_remote_control_session(&self, _thread_id: String) -> anyhow::Result<Value> {
         anyhow::bail!("Remote Control session recovery is unavailable")
     }
+    async fn fork_session(
+        &self,
+        _thread_id: String,
+        _model: Option<String>,
+        _model_provider: Option<String>,
+        _source_title: Option<String>,
+    ) -> anyhow::Result<Value> {
+        anyhow::bail!("Local session fork is unavailable")
+    }
 }
 
 pub async fn handle_bridge_request(
@@ -234,6 +243,31 @@ pub async fn handle_bridge_request(
         "/thread-usage-history" => {
             ctx.data
                 .thread_usage_history(session_from_payload(&payload))
+                .await
+        }
+        "/fork-session" => {
+            let thread_id = payload
+                .get("threadId")
+                .or_else(|| payload.get("thread_id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let model = payload
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let model_provider = payload
+                .get("modelProvider")
+                .or_else(|| payload.get("model_provider"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let source_title = payload
+                .get("sourceTitle")
+                .or_else(|| payload.get("source_title"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            ctx.data
+                .fork_session(thread_id, model, model_provider, source_title)
                 .await
         }
         "/archived-thread" => {

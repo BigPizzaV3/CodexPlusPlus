@@ -48,9 +48,24 @@ impl CodexAppServer {
         } else {
             config.executable.trim()
         };
-        let mut command = Command::new(executable);
+        let is_windows_script = cfg!(windows)
+            && matches!(
+                std::path::Path::new(executable)
+                    .extension()
+                    .and_then(|value| value.to_str()),
+                Some(extension) if extension.eq_ignore_ascii_case("cmd")
+                    || extension.eq_ignore_ascii_case("bat")
+            );
+        let mut command = if is_windows_script {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/d", "/s", "/c", executable, "app-server"]);
+            command
+        } else {
+            let mut command = Command::new(executable);
+            command.arg("app-server");
+            command
+        };
         command
-            .arg("app-server")
             .current_dir(&config.work_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -105,6 +120,48 @@ impl CodexAppServer {
         let result = self.request(method, params, REQUEST_TIMEOUT).await?;
         extract_thread_id(&result)
             .with_context(|| format!("Codex app-server {method} 未返回 thread id"))
+    }
+
+    pub async fn fork_thread(
+        &mut self,
+        thread_id: &str,
+        model: Option<&str>,
+        model_provider: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let thread_id = thread_id.trim();
+        if thread_id.is_empty() {
+            bail!("缺少要继续的本地会话 ID");
+        }
+        let mut params = json!({
+            "threadId": thread_id,
+            "persistExtendedHistory": true
+        });
+        if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
+            params["model"] = Value::String(model.to_string());
+        }
+        if let Some(provider) = model_provider
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            params["modelProvider"] = Value::String(provider.to_string());
+        }
+        let result = self.request("thread/fork", params, REQUEST_TIMEOUT).await?;
+        extract_thread_id(&result).context("Codex app-server thread/fork 未返回 thread id")
+    }
+
+    pub async fn set_thread_name(&mut self, thread_id: &str, name: &str) -> anyhow::Result<()> {
+        let thread_id = thread_id.trim();
+        let name = name.trim();
+        if thread_id.is_empty() || name.is_empty() {
+            bail!("重命名会话需要有效的会话 ID 和名称");
+        }
+        self.request(
+            "thread/name/set",
+            json!({ "threadId": thread_id, "name": name }),
+            REQUEST_TIMEOUT,
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn run_turn(
