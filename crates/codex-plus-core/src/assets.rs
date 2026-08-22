@@ -46,6 +46,8 @@ const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
     include_bytes!("../../../assets/inject/upstream/dream-skin/macos/portal-hero.png");
 const PET_REAL_MOUSE_SCRIPT: &str = include_str!("../../../assets/inject/pet-real-mouse-inject.js");
 const STEPWISE_SCRIPT: &str = include_str!("../../../assets/inject/stepwise-inject.js");
+const FLOATING_PANEL_VISUAL_SCRIPT: &str =
+    include_str!("../../../assets/inject/floating-panel-visual-inject.js");
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
 const DREAM_SKIN_RENDERER_REVISION: &str = "20-modern-main-surface";
 
@@ -270,6 +272,10 @@ pub fn stepwise_script() -> &'static str {
     STEPWISE_SCRIPT
 }
 
+pub fn floating_panel_visual_script() -> &'static str {
+    FLOATING_PANEL_VISUAL_SCRIPT
+}
+
 pub fn pet_real_mouse_script() -> &'static str {
     PET_REAL_MOUSE_SCRIPT
 }
@@ -405,9 +411,13 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let fast_startup = fast_startup_config(settings);
     let hide_official_usage_alert = hide_official_usage_alert_config(settings);
     let stepwise_runtime = if settings.codex_app_stepwise_enabled {
-        stepwise_script()
+        format!(
+            "{}\n{}",
+            stepwise_script(),
+            floating_panel_visual_script()
+        )
     } else {
-        ""
+        String::new()
     };
     format!(
         "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = {};\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_FAST_STARTUP__ = {};\nwindow.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = {};\n{}\n{}\n{}",

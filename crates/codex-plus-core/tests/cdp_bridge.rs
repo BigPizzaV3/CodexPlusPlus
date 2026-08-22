@@ -90,6 +90,21 @@ fn injection_script_includes_stepwise_runtime_when_enabled() {
 }
 
 #[test]
+fn injection_script_includes_visual_layer_only_with_stepwise() {
+    let disabled = assets::injection_script_with_settings(57321, &BackendSettings::default());
+    assert!(!disabled.contains("__codexFloatingPanelVisual"));
+
+    let enabled = BackendSettings {
+        codex_app_stepwise_enabled: true,
+        ..Default::default()
+    };
+    let script = assets::injection_script_with_settings(57321, &enabled);
+    assert!(script.contains("__codexFloatingPanelVisual"));
+    assert!(script.contains("cfp-noise-filter"));
+    assert!(script.contains("prefers-reduced-motion"));
+}
+
+#[test]
 fn pet_real_mouse_settings_are_gated_to_windows_in_injected_ui() {
     let script = assets::injection_script(57321);
 
