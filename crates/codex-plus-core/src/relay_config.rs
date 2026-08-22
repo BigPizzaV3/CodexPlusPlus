@@ -1953,6 +1953,16 @@ fn apply_model_catalog_to_config(
             || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
             || (official_deepseek_responses && entry.slug.starts_with("deepseek-v4-"))
     }) {
+        // Clear a stale catalog pointer previously generated for this profile when
+        // the user removes all per-model overrides. External catalogs are returned
+        // earlier and remain untouched.
+        if root_key_string(&config_text, "model_catalog_json").as_deref()
+            == Some(catalog_relative.as_str())
+        {
+            let mut doc = parse_toml_document(&config_text)?;
+            doc.remove("model_catalog_json");
+            return Ok(normalize_optional_toml(doc));
+        }
         return Ok(config_text);
     }
     let catalog_path = home.join(&catalog_relative);
@@ -1989,9 +1999,9 @@ fn parse_model_string_map(
     object
         .iter()
         .map(|(key, value)| {
-            let value = value.as_str().ok_or_else(|| {
-                anyhow::anyhow!("{field_name} 的模型 {key} 值必须是字符串")
-            })?;
+            let value = value
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("{field_name} 的模型 {key} 值必须是字符串"))?;
             Ok((key.clone(), value.to_string()))
         })
         .collect()
@@ -2006,9 +2016,7 @@ fn validate_model_windows(model_windows: &HashMap<String, String>) -> anyhow::Re
     Ok(())
 }
 
-fn validate_model_auto_compact(
-    model_auto_compact: &HashMap<String, String>,
-) -> anyhow::Result<()> {
+fn validate_model_auto_compact(model_auto_compact: &HashMap<String, String>) -> anyhow::Result<()> {
     for (slug, value) in model_auto_compact {
         if crate::model_suffix::parse_compact_percent(value).is_none() {
             anyhow::bail!("model_auto_compact 的模型 {slug} 百分比无效：{value}");

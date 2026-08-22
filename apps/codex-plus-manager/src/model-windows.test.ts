@@ -108,6 +108,21 @@ describe("model-windows helpers", () => {
     );
   });
 
+  it("modelWindowRowsFromProfile 忽略损坏 map 中的非字符串值", () => {
+    assert.deepStrictEqual(
+      modelWindowRowsFromProfile(
+        "a\nb",
+        '{"a":1048576,"b":"512K"}',
+        '{"a":true,"b":"strip"}',
+        '{"a":90,"b":"80%"}',
+      ),
+      [
+        { model: "a", window: "", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "b", window: "512K", autoCompact: "80%", imageHandling: "strip" },
+      ],
+    );
+  });
+
   it("serializeModelWindowRows 从行控件生成 modelList、modelWindows 和 modelVlm", () => {
     assert.deepStrictEqual(
       serializeModelWindowRows([

@@ -132,8 +132,10 @@ export function modelWindowRowsFromProfile(
     .filter(Boolean)
     .map((model) => ({
       model,
-      window: map[model] ?? "",
-      autoCompact: normalizeAutoCompactPercent(autoCompactMap[model] ?? ""),
+      window: typeof map[model] === "string" ? map[model] : "",
+      autoCompact: normalizeAutoCompactPercent(
+        typeof autoCompactMap[model] === "string" ? autoCompactMap[model] : "",
+      ),
       imageHandling: vlmMap[model] ?? "send-as-is",
     }));
   return rows.length ? rows : [{ model: "", window: "", autoCompact: "", imageHandling: "send-as-is" }];
