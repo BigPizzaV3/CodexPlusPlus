@@ -10,6 +10,7 @@ const translations = {
   "能力": "Features",
   "界面": "Interface",
   "下载": "Download",
+  "更新日志": "Changelog",
   "常见问题": "FAQ",
   "语言选择": "Language",
   "Codex++ 图标": "Codex++ icon",
@@ -139,6 +140,20 @@ const pageMetadata = {
     ogTitle: "Codex++ - Make Codex work your way",
     ogDescription: "Manage providers, models, sessions, plugins, scripts, themes, and interface enhancements on Windows and macOS.",
   },
+  changelog: {
+    zh: {
+      title: "Codex++ 更新日志",
+      description: "Codex++ 更新日志，查看每个版本的功能、改进与修复。",
+      ogTitle: "Codex++ 更新日志",
+      ogDescription: "查看 Codex++ 每个版本的功能、改进与修复。",
+    },
+    en: {
+      title: "Codex++ Changelog",
+      description: "Codex++ changelog with release features, improvements, and fixes.",
+      ogTitle: "Codex++ Changelog",
+      ogDescription: "Explore the features, improvements, and fixes in every Codex++ release.",
+    },
+  },
 };
 
 const translatedTextNodes = new Map();
@@ -180,7 +195,9 @@ const applyLanguage = (language) => {
     element.setAttribute(attribute, translate(source));
   });
 
-  const metadata = pageMetadata[currentLanguage];
+  const metadata = document.body.classList.contains("changelog-page")
+    ? pageMetadata.changelog[currentLanguage]
+    : pageMetadata[currentLanguage];
   document.title = metadata.title;
   document.querySelector('meta[name="description"]')?.setAttribute("content", metadata.description);
   document.querySelector('meta[property="og:title"]')?.setAttribute("content", metadata.ogTitle);
