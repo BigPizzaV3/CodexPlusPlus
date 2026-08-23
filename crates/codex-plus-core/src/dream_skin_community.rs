@@ -115,7 +115,8 @@ pub async fn fetch_community_catalog() -> anyhow::Result<DreamSkinCommunityCatal
         offset = items.len();
     };
     items.truncate(CATALOG_LIMIT);
-    validate_catalog(&items)?;
+    filter_invalid_catalog_items(&mut items)?;
+    let total = items.len();
     Ok(DreamSkinCommunityCatalog {
         total,
         items,
@@ -258,13 +259,11 @@ fn pending_link_path() -> std::path::PathBuf {
     crate::paths::default_app_state_dir().join(PENDING_LINK_FILE)
 }
 
-fn validate_catalog(items: &[DreamSkinCommunityTheme]) -> anyhow::Result<()> {
+fn filter_invalid_catalog_items(items: &mut Vec<DreamSkinCommunityTheme>) -> anyhow::Result<()> {
     if items.len() > CATALOG_LIMIT {
         bail!("DreamSkin 社区主题数量超过限制");
     }
-    for item in items {
-        validate_community_theme(item)?;
-    }
+    items.retain(|item| validate_community_theme(item).is_ok());
     Ok(())
 }
 
@@ -367,8 +366,9 @@ fn read_cached_catalog(state_dir: &Path) -> anyhow::Result<DreamSkinCommunityCat
     {
         bail!("DreamSkin 社区缓存无效");
     }
-    let catalog: DreamSkinCommunityCatalog = serde_json::from_slice(&std::fs::read(path)?)?;
-    validate_catalog(&catalog.items)?;
+    let mut catalog: DreamSkinCommunityCatalog = serde_json::from_slice(&std::fs::read(path)?)?;
+    filter_invalid_catalog_items(&mut catalog.items)?;
+    catalog.total = catalog.items.len();
     Ok(catalog)
 }
 
@@ -432,7 +432,44 @@ async fn download_limited(
 
 #[cfg(test)]
 mod tests {
-    use super::version_id_from_link;
+    use super::{DreamSkinCommunityTheme, filter_invalid_catalog_items, version_id_from_link};
+
+    fn community_theme(id: &str, name: &str) -> DreamSkinCommunityTheme {
+        DreamSkinCommunityTheme {
+            apply_compatible: true,
+            author_display_name: "DreamSkin Author".to_string(),
+            author_user_id: String::new(),
+            display_meta: serde_json::Value::Null,
+            download_count: 0,
+            id: id.to_string(),
+            license: "MIT".to_string(),
+            name: name.to_string(),
+            package_bytes: 1024,
+            package_sha256: "a".repeat(64),
+            reviewed_at: String::new(),
+            slug: String::new(),
+            submitted_at: String::new(),
+            theme_id: "theme-id".to_string(),
+            version: "1.0.0".to_string(),
+            preview_url: String::new(),
+            installed: false,
+            installed_version: String::new(),
+            update_available: false,
+        }
+    }
+
+    #[test]
+    fn catalog_skips_invalid_theme_without_rejecting_valid_entries() {
+        let mut items = vec![
+            community_theme("ver_1234abcd", "Valid theme"),
+            community_theme("ver_5678efgh", "粉色\u{200b}鲸鱼"),
+        ];
+
+        filter_invalid_catalog_items(&mut items).unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "ver_1234abcd");
+    }
 
     #[test]
     fn community_link_accepts_only_canonical_version_id() {
