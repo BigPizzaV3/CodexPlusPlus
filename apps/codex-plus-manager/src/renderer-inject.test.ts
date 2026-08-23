@@ -703,5 +703,175 @@ describe("relay pureApi provider resolution", () => {
     );
 
     assert.equal(runtime.codexRemoteSessionTargetProvider(), "deepseek");
+class SidebarFixtureNode {
+  children: SidebarFixtureNode[] = [];
+  parentElement: SidebarFixtureNode | null = null;
+  dataset: Record<string, string> = {};
+  private readonly kind: "chat" | "project" | "row" | "list" | "item";
+  private readonly label: string;
+  private readonly id: string;
+  private readonly pinned: boolean;
+  private readonly sortMs: number;
+  threadRow: SidebarFixtureNode | null = null;
+
+  constructor(options: {
+    kind: "chat" | "project" | "row" | "list" | "item";
+    label?: string;
+    id?: string;
+    pinned?: boolean;
+    sortMs?: number;
+  }) {
+    this.kind = options.kind;
+    this.label = options.label ?? "";
+    this.id = options.id ?? "";
+    this.pinned = options.pinned ?? false;
+    this.sortMs = options.sortMs ?? 0;
+    if (options.kind === "row") {
+      this.dataset.codexProjectMoveSortMs = String(this.sortMs);
+      this.dataset.codexAppActionSidebarThreadId = this.id;
+      if (this.pinned) this.dataset.codexAppActionSidebarThreadPinned = "true";
+    }
+  }
+
+  appendChild(child: SidebarFixtureNode) {
+    child.parentElement = this;
+    this.children.push(child);
+    return child;
+  }
+
+  insertBefore(child: SidebarFixtureNode, before: SidebarFixtureNode | null) {
+    const currentIndex = this.children.indexOf(child);
+    if (currentIndex >= 0) this.children.splice(currentIndex, 1);
+    const index = before ? this.children.indexOf(before) : -1;
+    this.children.splice(index >= 0 ? index : this.children.length, 0, child);
+    child.parentElement = this;
+    return child;
+  }
+
+  getAttribute(name: string) {
+    if (name === "data-app-action-sidebar-thread-id") return this.dataset.codexAppActionSidebarThreadId || null;
+    if (name === "data-app-action-sidebar-thread-pinned") return this.dataset.codexAppActionSidebarThreadPinned || null;
+    if (name === "aria-label") return this.label || null;
+    return null;
+  }
+
+  querySelector(selector: string) {
+    if (selector === "[data-app-action-sidebar-thread-id]") return this.threadRow;
+    return null;
+  }
+
+  closest(selector: string) {
+    if (selector === "[role=\"listitem\"]") return this.kind === "item" ? this : this.parentElement;
+    if (selector.includes("data-app-action-sidebar-project-list-id") || selector.includes("data-codex-project-move-injected-list")) {
+      return this.parentElement?.parentElement?.kind === "list" ? this.parentElement.parentElement : this.parentElement?.kind === "list" ? this.parentElement : null;
+    }
+    if (selector === "[role=\"list\"]") {
+      let current: SidebarFixtureNode | null = this;
+      while (current && current.kind !== "list") current = current.parentElement;
+      return current;
+    }
+    if (selector.includes("sidebar-section-heading=\"Chats\"")) {
+      let current: SidebarFixtureNode | null = this;
+      while (current) {
+        if (current.kind === "chat") return current;
+        current = current.parentElement;
+      }
+    }
+    if (selector.includes("[role=\"listitem\"][aria-label]")) {
+      let current: SidebarFixtureNode | null = this;
+      while (current) {
+        if (current.kind === "project") return current;
+        current = current.parentElement;
+      }
+    }
+    return null;
+  }
+}
+
+function sidebarFixtureRow(list: SidebarFixtureNode, options: { id: string; sortMs: number; pinned?: boolean }) {
+  const item = new SidebarFixtureNode({ kind: "item" });
+  const row = new SidebarFixtureNode({ kind: "row", id: options.id, sortMs: options.sortMs, pinned: options.pinned });
+  item.threadRow = row;
+  item.appendChild(row);
+  list.appendChild(item);
+  return row;
+}
+
+describe("renderer sidebar sorting DOM fixture", () => {
+  it("sorts Chats and two project lists independently, including pin and temporary rows after reinjection", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const extract = (name: string, nextName: string) => {
+      const start = renderer.indexOf("  function " + name + "(");
+      const end = renderer.indexOf("\n  function " + nextName + "(", start);
+      assert.ok(start >= 0 && end > start, name + " should be present in renderer");
+      return renderer.slice(start, end);
+    };
+    const source = [
+      extract("threadListForRow", "rowIsUnderTargetProject"),
+      extract("threadRowsNeedCorrection", "orderedThreadRows"),
+      extract("orderedThreadRows", "reorderThreadRows"),
+      extract("reorderThreadRows", "sidebarSortSignature"),
+    ].join("\n");
+    const runtimeSource = "let cachedSessionRowsAt = 0;\n" + source;
+    const create = new Function(
+      "rowPinned",
+      "rowListItem",
+      "sessionRefFromRow",
+      "rowSortMs",
+      "projectMoveSessionKey",
+      "threadRowFromListItem",
+      runtimeSource + "\nreturn { sidebarRowsByList, threadRowsNeedCorrection, reorderThreadRows };",
+    ) as (...args: unknown[]) => {
+      sidebarRowsByList: (rows: SidebarFixtureNode[]) => Map<SidebarFixtureNode, SidebarFixtureNode[]>;
+      threadRowsNeedCorrection: (rows: SidebarFixtureNode[]) => boolean;
+      reorderThreadRows: (list: SidebarFixtureNode, rows: SidebarFixtureNode[]) => void;
+    };
+
+    const chats = new SidebarFixtureNode({ kind: "chat" });
+    const projectA = new SidebarFixtureNode({ kind: "project", label: "Project A" });
+    const projectB = new SidebarFixtureNode({ kind: "project", label: "Project B" });
+    const chatsList = new SidebarFixtureNode({ kind: "list" });
+    const projectAList = new SidebarFixtureNode({ kind: "list" });
+    const projectBList = new SidebarFixtureNode({ kind: "list" });
+    chats.appendChild(chatsList);
+    projectA.appendChild(projectAList);
+    projectB.appendChild(projectBList);
+
+    const chatOld = sidebarFixtureRow(chatsList, { id: "chat-old", sortMs: 100 });
+    const chatPinned = sidebarFixtureRow(chatsList, { id: "chat-pinned", sortMs: 50, pinned: true });
+    const chatTemporary = sidebarFixtureRow(chatsList, { id: "local:client-new-thread:fixture", sortMs: 300 });
+    const aOld = sidebarFixtureRow(projectAList, { id: "project-a-old", sortMs: 100 });
+    const aTemporary = sidebarFixtureRow(projectAList, { id: "local:client-new-thread:project-a", sortMs: 250 });
+    const bPinned = sidebarFixtureRow(projectBList, { id: "project-b-pinned", sortMs: 20, pinned: true });
+    const bNew = sidebarFixtureRow(projectBList, { id: "project-b-new", sortMs: 400 });
+    const rows = [chatOld, chatPinned, chatTemporary, aOld, aTemporary, bPinned, bNew];
+    const api = create(
+      (row: SidebarFixtureNode) => row.getAttribute("data-app-action-sidebar-thread-pinned") === "true",
+      (row: SidebarFixtureNode) => row.closest("[role=\"listitem\"]") || row,
+      (row: SidebarFixtureNode) => ({ session_id: row.getAttribute("data-app-action-sidebar-thread-id") || "", title: "fixture" }),
+      (row: SidebarFixtureNode) => Number(row.dataset.codexProjectMoveSortMs || 0),
+      (value: string) => value.replace(/^local:/, ""),
+      (item: SidebarFixtureNode) => item.threadRow,
+    );
+
+    const reorderAll = () => {
+      api.sidebarRowsByList(rows).forEach((group, list) => {
+        if (api.threadRowsNeedCorrection(group)) api.reorderThreadRows(list, group);
+      });
+    };
+    reorderAll();
+    assert.deepEqual(chatsList.children.map((item) => item.threadRow?.getAttribute("data-app-action-sidebar-thread-id")), ["chat-pinned", "local:client-new-thread:fixture", "chat-old"]);
+    assert.deepEqual(projectAList.children.map((item) => item.threadRow?.getAttribute("data-app-action-sidebar-thread-id")), ["local:client-new-thread:project-a", "project-a-old"]);
+    assert.deepEqual(projectBList.children.map((item) => item.threadRow?.getAttribute("data-app-action-sidebar-thread-id")), ["project-b-pinned", "project-b-new"]);
+
+    chatTemporary.dataset.codexAppActionSidebarThreadId = "chat-persisted";
+    aTemporary.dataset.codexAppActionSidebarThreadId = "project-a-persisted";
+    reorderAll();
+    assert.deepEqual(chatsList.children.map((item) => item.threadRow?.getAttribute("data-app-action-sidebar-thread-id")), ["chat-pinned", "chat-persisted", "chat-old"]);
+    assert.deepEqual(projectAList.children.map((item) => item.threadRow?.getAttribute("data-app-action-sidebar-thread-id")), ["project-a-persisted", "project-a-old"]);
+    assert.deepEqual(projectBList.children.map((item) => item.threadRow?.getAttribute("data-app-action-sidebar-thread-id")), ["project-b-pinned", "project-b-new"]);
+    assert.equal(chatsList.children.every((item) => item.parentElement === chatsList), true);
+    assert.equal(projectAList.children.every((item) => item.parentElement === projectAList), true);
+    assert.equal(projectBList.children.every((item) => item.parentElement === projectBList), true);
   });
 });
