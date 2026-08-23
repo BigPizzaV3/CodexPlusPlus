@@ -6804,6 +6804,7 @@ function RelayProfileDetail({
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
   const isActive = !isNew && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
   useEffect(() => {
@@ -6844,40 +6845,60 @@ function RelayProfileDetail({
       modelVlm: serializedRows.modelVlm,
     };
   };
+  const currentModelState = draftWithModelRows();
+  const persistedModelState = {
+    modelList: profile.modelList || "",
+    modelWindows: profile.modelWindows || "",
+    modelAutoCompact: profile.modelAutoCompact || "",
+    modelMetadata: profile.modelMetadata || "",
+    modelVlm: profile.modelVlm || "",
+  };
+  const hasUnsavedModelChanges = JSON.stringify({
+    modelList: currentModelState.modelList,
+    modelWindows: currentModelState.modelWindows,
+    modelAutoCompact: currentModelState.modelAutoCompact,
+    modelMetadata: currentModelState.modelMetadata,
+    modelVlm: currentModelState.modelVlm,
+  }) !== JSON.stringify(persistedModelState);
   const saveDraft = async () => {
-    if (validationError || modelRowsError) return;
-    const draftWithWindows = draftWithModelRows();
-    const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
-    const next = normalizeSettings(isNew
-      ? addRelayProfile(form, normalizedDraft)
-      : updateRelayProfile(form, profile.id, normalizedDraft));
-    const settingsValidationError = relaySettingsValidation(next);
-    if (settingsValidationError) return;
-    const activeLiveBaseUrl = codexBaseUrlFromConfig(
-      relayFiles?.configContents ?? profile.configContents,
-    );
-    const requiresRestart = isActive && modelRouteSaveRequiresRestart(
-      normalizeSettings(form),
-      next,
-      activeLiveBaseUrl,
-    );
-    if (requiresRestart && !window.confirm(t("首次启用单模型路由需要启动本地协议代理。保存后将立即重启 Codex，使路由安全生效。是否继续？"))) {
-      return;
-    }
-    const savedSettings = await onFormChange(next);
-    if (!savedSettings) return;
-    if (requiresRestart) {
-      const restarted = await actions.restart(true);
-      if (!restarted) return;
+    if (savingDraft || validationError || modelRowsError) return;
+    setSavingDraft(true);
+    try {
+      const draftWithWindows = draftWithModelRows();
+      const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
+      const next = normalizeSettings(isNew
+        ? addRelayProfile(form, normalizedDraft)
+        : updateRelayProfile(form, profile.id, normalizedDraft));
+      const settingsValidationError = relaySettingsValidation(next);
+      if (settingsValidationError) return;
+      const activeLiveBaseUrl = codexBaseUrlFromConfig(
+        relayFiles?.configContents ?? profile.configContents,
+      );
+      const requiresRestart = isActive && modelRouteSaveRequiresRestart(
+        normalizeSettings(form),
+        next,
+        activeLiveBaseUrl,
+      );
+      if (requiresRestart && !window.confirm(t("首次启用单模型路由需要启动本地协议代理。保存后将立即重启 Codex，使路由安全生效。是否继续？"))) {
+        return;
+      }
+      const savedSettings = await onFormChange(next);
+      if (!savedSettings) return;
+      if (requiresRestart) {
+        const restarted = await actions.restart(true);
+        if (!restarted) return;
+        onSaved?.();
+        return;
+      }
+      const savedProfile = savedSettings.relayProfiles.find((candidate) => candidate.id === normalizedDraft.id)
+        ?? normalizedDraft;
+      if (isActive && savedSettings.relayProfilesEnabled && relayProfileUsesLiveFiles(savedProfile)) {
+        await actions.switchRelayProfile(savedSettings, savedSettings.activeRelayId);
+      }
       onSaved?.();
-      return;
+    } finally {
+      setSavingDraft(false);
     }
-    const savedProfile = savedSettings.relayProfiles.find((candidate) => candidate.id === normalizedDraft.id)
-      ?? normalizedDraft;
-    if (isActive && savedSettings.relayProfilesEnabled && relayProfileUsesLiveFiles(savedProfile)) {
-      await actions.switchRelayProfile(savedSettings, savedSettings.activeRelayId);
-    }
-    onSaved?.();
   };
   const switchDraft = () => {
     if (isNew || !form.relayProfilesEnabled || validationError || modelRowsError) return;
@@ -6911,12 +6932,15 @@ function RelayProfileDetail({
     <div className="relay-detail-page" key={profile.id}>
       <div className="relay-detail-sticky">
         <div className="relay-editor-heading">
-          <Button aria-label={t("返回列表")} onClick={onBack} size="icon" title={t("返回列表")} type="button" variant="ghost">
+          <Button aria-label={t("返回列表")} onClick={() => {
+            if (hasUnsavedModelChanges && !window.confirm(t("有未保存的模型修改，确定放弃吗？"))) return;
+            onBack();
+          }} size="icon" title={t("返回列表")} type="button" variant="ghost">
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div className="relay-editor-heading-copy">
             <strong>{draft.name || (aggregateProfile ? t("未命名聚合供应商") : t("未命名供应商"))}</strong>
-            <span>{detailStatus}</span>
+            <span>{hasUnsavedModelChanges ? `${detailStatus} · ${t("有未保存修改")}` : detailStatus}</span>
           </div>
         </div>
         <div className="relay-editor-actions">
@@ -6939,13 +6963,13 @@ function RelayProfileDetail({
             </Button>
           )}
           <Button
-            disabled={!!validationError || !!modelRowsError}
+            disabled={savingDraft || !!validationError || !!modelRowsError}
             onClick={() => void saveDraft()}
             title={validationError || modelRowsError || t("保存")}
             type="button"
           >
             <Save className="h-4 w-4" />
-            {t("保存")}
+            {savingDraft ? t("保存中") : t("保存此模型")}
           </Button>
         </div>
       </div>

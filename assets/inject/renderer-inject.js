@@ -3326,6 +3326,7 @@
       || codexModelCatalog?.codexModelProvider
       || codexModelCatalog?.model_provider
       || codexModelCatalog?.modelProvider
+      || (String(profile?.relayMode || "") === "pureApi" ? "custom" : "")
       || ""
     ).trim();
   }

@@ -150,6 +150,20 @@ describe("model-windows helpers", () => {
     );
   });
 
+  it("删除模型后序列化保存载荷不会保留已删除模型", () => {
+    const rows = [
+      { model: "keep", window: "1M", autoCompact: "90%", imageHandling: "send-as-is" as const },
+      { model: "remove", window: "200K", autoCompact: "80%", imageHandling: "vlm" as const },
+    ];
+    const saved = serializeModelWindowRows(rows.filter((row) => row.model !== "remove"));
+    assert.deepStrictEqual(saved, {
+      modelList: "keep",
+      modelWindows: '{"keep":"1M"}',
+      modelVlm: "{}",
+      modelAutoCompact: '{"keep":"90%"}',
+    });
+  });
+
   it("mergeModelWindowRows 追加上游模型时跳过已有模型并保留窗口和图片处理", () => {
     assert.deepStrictEqual(
       mergeModelWindowRows(

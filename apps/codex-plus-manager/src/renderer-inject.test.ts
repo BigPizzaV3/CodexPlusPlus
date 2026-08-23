@@ -115,6 +115,17 @@ function installRendererStyle(renderer: string) {
 }
 
 describe("renderer injection header compatibility", () => {
+  it("纯 API 会话使用当前真实 provider，不强行改成 custom", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.doesNotMatch(
+      renderer,
+      /if \(String\(profile\?\.relayMode \|\| ""\) === "pureApi"\) return "custom";/,
+    );
+    assert.match(renderer, /codexPlusBackendSettings\.activeRelayCodexProvider/);
+    assert.match(renderer, /codexModelCatalog\?\.codex_model_provider/);
+  });
+
   it("adds the session copy shortcut through the native fork action", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
