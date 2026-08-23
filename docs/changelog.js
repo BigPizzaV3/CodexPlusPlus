@@ -95,8 +95,33 @@ const renderRelease = (release, index) => {
 
 const renderReleaseNav = (releases) => releases.map((release, index) => {
   const tag = escapeHtml(release.tag_name || release.name || `Release ${index + 1}`);
-  return `<a class="${index === 0 ? "is-current" : ""}" href="#${releaseId(release, index)}"><strong>${tag}</strong><span>${escapeHtml(releaseDate(release))}</span></a>`;
+  return `<a class="${index === 0 ? "is-current" : ""}" href="#${releaseId(release, index)}"${index === 0 ? ' aria-current="location"' : ""}><strong>${tag}</strong><span>${escapeHtml(releaseDate(release))}</span></a>`;
 }).join("");
+
+const setupReleaseNavigation = () => {
+  const navigation = document.querySelector("[data-release-nav]");
+  if (!navigation) return;
+
+  const setCurrent = (link) => {
+    navigation.querySelectorAll("a").forEach((item) => {
+      const current = item === link;
+      item.classList.toggle("is-current", current);
+      if (current) item.setAttribute("aria-current", "location");
+      else item.removeAttribute("aria-current");
+    });
+  };
+
+  navigation.addEventListener("click", (event) => {
+    const link = event.target.closest("a");
+    if (link) setCurrent(link);
+  });
+
+  const hash = window.location.hash;
+  if (hash) {
+    const link = navigation.querySelector(`a[href="${CSS.escape(hash)}"]`);
+    if (link) setCurrent(link);
+  }
+};
 
 const showStatus = (message, error = false) => {
   const status = document.querySelector("[data-release-status]");
@@ -123,6 +148,7 @@ const loadChangelog = async () => {
 
     list.innerHTML = releases.map(renderRelease).join("");
     navigation.innerHTML = renderReleaseNav(releases);
+    setupReleaseNavigation();
     showStatus(null);
   } catch (error) {
     showStatus({
