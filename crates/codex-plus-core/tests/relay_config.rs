@@ -3918,7 +3918,7 @@ experimental_bearer_token = "sk-deepseek"
         .iter()
         .find(|model| model["slug"] == "deepseek-v4-pro")
         .unwrap();
-    assert_eq!(pro["supported_in_api"], false);
+    assert_eq!(pro["supported_in_api"], true);
 }
 
 #[test]

@@ -53,7 +53,7 @@ export const PRESETS: ProviderPreset[] = [
     baseUrl: "https://api.deepseek.com/",
     protocol: "responses",
     model: "deepseek-v4-flash",
-    modelList: ["deepseek-v4-flash"],
+    modelList: ["deepseek-v4-flash", "deepseek-v4-pro"],
   },
   {
     id: "zhipu-glm",
