@@ -1366,7 +1366,7 @@ fn injection_script_keeps_session_action_buttons_in_pr_style() {
 
     assert!(script.contains("actionButtonClass = \"codex-session-action-button\""));
     assert!(script.contains("background: transparent;"));
-    assert!(script.contains("background: #363839;"));
+    assert!(script.contains("background: var(--codex-session-action-hover-background, var(--codex-plus-bg-hover));"));
     assert!(script.contains("cursor: default;"));
 }
 

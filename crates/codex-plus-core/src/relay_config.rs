@@ -2503,10 +2503,12 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     {
         provider["wire_api"] = toml_edit::value("responses");
     }
-    if profile.relay_mode == crate::settings::RelayMode::PureApi {
-        provider.remove("requires_openai_auth");
-    } else {
-        // 官方登录（含“官方 + 单模型路由”）必须继续使用 ChatGPT 登录凭据。
+    if profile.relay_mode != crate::settings::RelayMode::PureApi
+        && provider
+            .get("requires_openai_auth")
+            .and_then(Item::as_bool)
+            .is_none()
+    {
         provider["requires_openai_auth"] = toml_edit::value(true);
     }
     let provider_base_url = if profile.has_model_routes() {
