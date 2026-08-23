@@ -1251,16 +1251,73 @@ button {
   padding-bottom: 0;
 }
 
-.lang-en {
-  display: none;
+.changelog-page .lang-zh,
+.changelog-page html[data-language="en"] .lang-zh {
+  display: inline !important;
 }
 
-html[data-language="en"] .lang-zh {
-  display: none;
+.changelog-page .lang-en,
+.changelog-page html[data-language="zh"] .lang-en {
+  display: none !important;
 }
 
-html[data-language="en"] .lang-en {
-  display: inline;
+html[data-language="en"] .changelog-page .lang-zh {
+  display: none !important;
+}
+
+html[data-language="en"] .changelog-page .lang-en {
+  display: inline !important;
+}
+
+.changelog-release-body {
+  overflow-wrap: anywhere;
+}
+
+.changelog-release-body > p,
+.changelog-release-body > ul,
+.changelog-release-body > ol,
+.changelog-release-body > h3 {
+  max-width: 760px;
+}
+
+.changelog-release-body > p {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.changelog-release-body > h3 {
+  margin: 26px 0 12px;
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.changelog-release-body > ul,
+.changelog-release-body > ol {
+  margin: 0 0 18px;
+  padding-left: 22px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.changelog-release-body > ul li,
+.changelog-release-body > ol li {
+  margin: 5px 0;
+}
+
+.changelog-release-body code {
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: var(--blue-soft);
+  color: var(--ink-soft);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.changelog-release-body a {
+  color: var(--blue);
 }
 
 .js [data-reveal] {
