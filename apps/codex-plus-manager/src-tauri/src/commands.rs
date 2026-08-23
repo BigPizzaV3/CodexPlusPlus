@@ -10,7 +10,9 @@ use codex_plus_core::install::SILENT_BINARY;
 use codex_plus_core::models::{DeleteResult, SessionRef};
 use codex_plus_core::relay_environment::RelayEnvironmentReport;
 use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
-use codex_plus_core::settings::{BackendSettings, RelayProfile, SettingsStore};
+use codex_plus_core::settings::{
+    BackendSettings, RelayProfile, RelaySessionProvider, SettingsStore,
+};
 use codex_plus_core::status::{LaunchStatus, StatusStore};
 use codex_plus_core::user_scripts::UserScriptManager;
 use codex_plus_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
@@ -196,6 +198,20 @@ pub struct LocalSessionsPayload {
     pub offset: usize,
     pub limit: usize,
     pub has_more: bool,
+    pub total_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionImportPayload {
+    pub session_id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingSessionSharePayload {
+    pub url: Option<String>,
 }
 
 const DEFAULT_LOCAL_SESSIONS_PAGE_SIZE: usize = 50;
@@ -723,7 +739,10 @@ fn sync_active_relay_to_home(
         if settings.active_aggregate_relay_profile().is_none() {
             anyhow::bail!("当前聚合供应商配置不完整");
         }
-        return codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
+        let aggregate = settings
+            .active_aggregate_relay_profile()
+            .ok_or_else(|| anyhow::anyhow!("当前聚合供应商配置不完整"))?;
+        return codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
             home,
             &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
                 codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
@@ -731,6 +750,7 @@ fn sync_active_relay_to_home(
             "codex-plus-aggregate",
             codex_plus_core::settings::RelayProtocol::Responses,
             codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            aggregate.session_provider,
         );
     }
     if relay.relay_mode == codex_plus_core::settings::RelayMode::Official
@@ -762,12 +782,15 @@ fn sync_active_relay_to_home(
     let base_url = relay.base_url.trim().to_string();
     let protocol = relay.protocol;
     if relay.relay_mode == codex_plus_core::settings::RelayMode::PureApi {
-        return codex_plus_core::relay_config::apply_pure_api_config_to_home_with_protocol(
+        return codex_plus_core::relay_config::apply_pure_api_config_to_home_with_session_provider(
             home,
             &base_url,
             &relay.api_key,
             protocol,
             codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::relay_config::relay_session_provider_from_config(
+                &relay.config_contents,
+            ),
         );
     }
 
@@ -775,12 +798,13 @@ fn sync_active_relay_to_home(
     if !auth.authenticated {
         anyhow::bail!("未检测到 ChatGPT 登录状态，已停止同步 live 配置");
     }
-    codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
+    codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
         home,
         &base_url,
         &relay.api_key,
         protocol,
         codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     )
 }
 
@@ -2221,9 +2245,18 @@ pub fn list_local_sessions(
     let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
     let mut sessions = Vec::new();
+    let mut session_ids = std::collections::HashSet::new();
     let mut errors = Vec::new();
     for db_path in &db_paths {
         let adapter = local_session_adapter(db_path);
+        match adapter.list_local_session_ids() {
+            Ok(ids) => session_ids.extend(ids),
+            Err(error) if db_path.exists() => {
+                errors.push(format!("{}: {error}", db_path.to_string_lossy()));
+                continue;
+            }
+            Err(_) => continue,
+        }
         match adapter.list_local_sessions_limited(fetch_limit) {
             Ok(mut items) => sessions.append(&mut items),
             Err(error) if db_path.exists() => {
@@ -2255,6 +2288,7 @@ pub fn list_local_sessions(
         offset,
         limit,
         has_more,
+        total_count: session_ids.len(),
     };
     let page = offset / limit + 1;
     if errors.is_empty() {
@@ -2270,6 +2304,89 @@ pub fn list_local_sessions(
             &format!("读取部分本地会话失败：{}", errors.join("; ")),
             payload,
         )
+    }
+}
+
+#[tauri::command]
+pub fn import_local_session(path: String) -> CommandResult<SessionImportPayload> {
+    let source_path = PathBuf::from(path.trim());
+    if source_path.as_os_str().is_empty() {
+        return failed(
+            "请选择要导入的会话文件。",
+            SessionImportPayload {
+                session_id: String::new(),
+                title: String::new(),
+            },
+        );
+    }
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    match codex_plus_core::session_share::import_rollout_file(&home, &source_path) {
+        Ok(result) => ok(
+            "会话已导入 Codex++。请刷新会话列表；如果仍未显示，请重启 Codex。",
+            SessionImportPayload {
+                session_id: result
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                title: result
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("导入的会话")
+                    .to_string(),
+            },
+        ),
+        Err(error) => failed(
+            &format!("导入会话失败：{error}"),
+            SessionImportPayload {
+                session_id: String::new(),
+                title: String::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn load_pending_session_share() -> CommandResult<PendingSessionSharePayload> {
+    match codex_plus_core::session_share::load_pending_session_share() {
+        Ok(url) => ok(
+            "已读取待导入会话链接。",
+            PendingSessionSharePayload { url },
+        ),
+        Err(error) => failed(
+            &format!("读取待导入会话链接失败：{error}"),
+            PendingSessionSharePayload { url: None },
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn import_session_url(url: String) -> CommandResult<SessionImportPayload> {
+    let empty = || SessionImportPayload {
+        session_id: String::new(),
+        title: String::new(),
+    };
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    match codex_plus_core::session_share::import_shared_session_url(&home, &url).await {
+        Ok(result) => {
+            let _ = codex_plus_core::session_share::clear_pending_session_share();
+            ok(
+                "会话已导入 Codex++。请刷新会话列表；如果仍未显示，请重启 Codex。",
+                SessionImportPayload {
+                    session_id: result
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    title: result
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or("导入的会话")
+                        .to_string(),
+                },
+            )
+        }
+        Err(error) => failed(&format!("导入分享会话失败：{error}"), empty()),
     }
 }
 
@@ -2365,6 +2482,7 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
         session_id: session_id.to_string(),
         title: request.title,
     };
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     let mut candidate_paths = Vec::new();
     if let Some(path) = request.db_path.as_deref() {
         let path = PathBuf::from(path);
@@ -2372,9 +2490,7 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
             candidate_paths.push(path);
         }
     }
-    for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(
-        &codex_plus_core::codex_sqlite::default_codex_home_dir(),
-    ) {
+    for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home) {
         if !candidate_paths.iter().any(|candidate| candidate == &path) {
             candidate_paths.push(path);
         }
@@ -2397,6 +2513,7 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
             codex_plus_core::paths::default_app_state_dir().join("backups"),
         ),
         &session,
+        Some(&home),
     );
     log_manager_event(
         "manager.delete_local_session.finish",
@@ -2892,10 +3009,19 @@ fn provider_sync_command_result(
 ) -> CommandResult<Value> {
     let succeeded = is_success_sync_status(&sync.status);
     let success_message = format!(
-        "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。",
+        "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。{}",
         sync.changed_session_files,
         sync.sqlite_rows_updated,
-        sync.skipped_locked_rollout_files.len()
+        sync.skipped_locked_rollout_files.len(),
+        if sync.repair_audit.catalog_only_sessions > 0 {
+            format!(
+                " 审计发现 {} 条仅存在于会话目录的记录，其中 {} 条没有可用恢复来源。",
+                sync.repair_audit.catalog_only_sessions,
+                sync.repair_audit.catalog_only_without_recovery_source,
+            )
+        } else {
+            String::new()
+        }
     );
     let failure_message = format!("历史会话修复未执行：{}", sync.message);
     let payload = json!({
@@ -2911,6 +3037,7 @@ fn provider_sync_command_result(
         "sqliteCatalogRowsRemoved": sync.sqlite_catalog_rows_removed,
         "updatedWorkspaceRoots": sync.updated_workspace_roots,
         "encryptedContentWarning": sync.encrypted_content_warning,
+        "repairAudit": sync.repair_audit,
         "backupDir": sync.backup_dir,
         "syncMessage": sync.message,
     });
@@ -4074,6 +4201,9 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
 pub async fn test_stepwise_settings(
     settings: BackendSettings,
 ) -> CommandResult<StepwiseTestPayload> {
+    let configured_protocol = codex_plus_core::settings::normalize_stepwise_protocol(
+        &settings.codex_app_stepwise_protocol,
+    );
     match codex_plus_core::stepwise::test_connection(&settings).await {
         Ok(result) => {
             let error = result
@@ -4086,9 +4216,17 @@ pub async fn test_stepwise_settings(
                 .and_then(Value::as_array)
                 .map(Vec::len)
                 .unwrap_or_default();
+            let protocol = result
+                .get("protocol")
+                .and_then(Value::as_str)
+                .unwrap_or(&configured_protocol)
+                .to_string();
             if error.is_empty() {
                 ok(
-                    &format!("Stepwise 连接正常，测试返回 {item_count} 条建议。"),
+                    &format!(
+                        "Stepwise 连接正常（{}），测试返回 {item_count} 条建议。",
+                        stepwise_protocol_label(&protocol)
+                    ),
                     StepwiseTestPayload { item_count, error },
                 )
             } else {
@@ -4105,6 +4243,16 @@ pub async fn test_stepwise_settings(
                 error: error.to_string(),
             },
         ),
+    }
+}
+
+fn stepwise_protocol_label(protocol: &str) -> &str {
+    match protocol {
+        "chat_completions" => "Chat Completions",
+        "responses" => "Responses",
+        "anthropic_messages" => "Anthropic Messages",
+        "auto" => "自动兼容",
+        _ => protocol,
     }
 }
 
@@ -4422,8 +4570,8 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     prepare_codex_app_state_before_provider_switch(&home, "manager.apply_relay_injection.before");
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
-    if settings.active_aggregate_relay_profile().is_some() {
-        let response = apply_aggregate_relay_injection_to_home(&home);
+    if let Some(aggregate) = settings.active_aggregate_relay_profile() {
+        let response = apply_aggregate_relay_injection_to_home(&home, aggregate.session_provider);
         if response.status == "ok" {
             finish_codex_app_state_after_provider_switch(
                 &home,
@@ -4511,12 +4659,13 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         );
     }
 
-    match codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
+    match codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
         &home,
         &relay.base_url,
         &relay.api_key,
         relay.protocol,
         codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     ) {
         Ok(result) => {
             finish_codex_app_state_after_provider_switch(
@@ -4553,8 +4702,11 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
     }
 }
 
-fn apply_aggregate_relay_injection_to_home(home: &Path) -> CommandResult<RelayPayload> {
-    match codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
+fn apply_aggregate_relay_injection_to_home(
+    home: &Path,
+    session_provider: RelaySessionProvider,
+) -> CommandResult<RelayPayload> {
+    match codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
         home,
         &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
             codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
@@ -4562,6 +4714,7 @@ fn apply_aggregate_relay_injection_to_home(home: &Path) -> CommandResult<RelayPa
         "codex-plus-aggregate",
         codex_plus_core::settings::RelayProtocol::Responses,
         codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        session_provider,
     ) {
         Ok(result) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(home);
@@ -4651,12 +4804,13 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
         };
     }
 
-    match codex_plus_core::relay_config::apply_pure_api_config_to_home_with_protocol(
+    match codex_plus_core::relay_config::apply_pure_api_config_to_home_with_session_provider(
         &home,
         &relay.base_url,
         &relay.api_key,
         relay.protocol,
         codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     ) {
         Ok(result) => {
             finish_codex_app_state_after_provider_switch(
@@ -5427,6 +5581,7 @@ mod tests {
             sqlite_catalog_rows_removed: 0,
             updated_workspace_roots: 0,
             encrypted_content_warning: None,
+            repair_audit: codex_plus_data::ProviderSyncAudit::default(),
         }
     }
 
@@ -5760,7 +5915,10 @@ mod tests {
     fn aggregate_relay_injection_writes_local_proxy_without_chatgpt_auth() {
         let temp = tempfile::tempdir().unwrap();
 
-        let result = apply_aggregate_relay_injection_to_home(temp.path());
+        let result = apply_aggregate_relay_injection_to_home(
+            temp.path(),
+            codex_plus_core::settings::RelaySessionProvider::Custom,
+        );
         let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
 
         assert_eq!(result.status, "ok");
@@ -5873,6 +6031,7 @@ mod tests {
             aggregate_relay_profiles: vec![codex_plus_core::settings::AggregateRelayProfile {
                 id: "aggregate".to_string(),
                 name: "Aggregate".to_string(),
+                session_provider: codex_plus_core::settings::RelaySessionProvider::Custom,
                 strategy: codex_plus_core::settings::AggregateRelayStrategy::Failover,
                 members: Vec::new(),
             }],
@@ -6135,6 +6294,7 @@ mod tests {
 
         assert_eq!(result.status, "ok");
         assert_eq!(result.payload.sessions.len(), 1);
+        assert_eq!(result.payload.total_count, 1);
         assert_eq!(result.payload.sessions[0].id, "t1");
         assert_eq!(result.payload.sessions[0].title, "Legacy Copy");
         assert_eq!(
@@ -6159,6 +6319,7 @@ mod tests {
         assert_eq!(first_page.payload.sessions[0].id, "t2");
         assert_eq!(first_page.payload.sessions[1].id, "t1");
         assert!(first_page.payload.has_more);
+        assert_eq!(first_page.payload.total_count, 3);
 
         let second_page = list_local_sessions(Some(ListLocalSessionsRequest {
             offset: 2,
@@ -6169,6 +6330,7 @@ mod tests {
         assert_eq!(second_page.payload.sessions.len(), 1);
         assert_eq!(second_page.payload.sessions[0].id, "t3");
         assert!(!second_page.payload.has_more);
+        assert_eq!(second_page.payload.total_count, 3);
     }
 
     #[test]

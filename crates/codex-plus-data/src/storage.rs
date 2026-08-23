@@ -14,6 +14,7 @@ pub fn delete_local_from_paths(
     db_paths: impl IntoIterator<Item = PathBuf>,
     backup_store: BackupStore,
     session: &SessionRef,
+    codex_home: Option<&Path>,
 ) -> DeleteResult {
     let mut result = failed(
         &session.session_id,
@@ -22,7 +23,11 @@ pub fn delete_local_from_paths(
     let mut deleted_count = 0usize;
     let mut backup_tokens = Vec::new();
     for db_path in db_paths {
-        let adapter = SQLiteStorageAdapter::new(db_path, backup_store.clone());
+        let adapter = match codex_home {
+            Some(home) => SQLiteStorageAdapter::new(db_path, backup_store.clone())
+                .with_codex_home(home),
+            None => SQLiteStorageAdapter::new(db_path, backup_store.clone()),
+        };
         let candidate_result = adapter.delete_local(session);
         if matches!(candidate_result.status, DeleteStatus::LocalDeleted) {
             deleted_count += 1;
@@ -47,6 +52,7 @@ pub struct SQLiteStorageAdapter {
     db_path: PathBuf,
     backup_store: BackupStore,
     allowed_db_paths: Vec<PathBuf>,
+    codex_home: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +60,33 @@ enum SchemaKind {
     GenericSessions,
     CodexThreads,
     CodexAutomationRuns,
+}
+
+fn codex_thread_filter(db: &Connection) -> anyhow::Result<String> {
+    let mut subagent_filters = Vec::new();
+    if has_table(db, "thread_spawn_edges")?
+        && table_columns(db, "thread_spawn_edges")?
+            .iter()
+            .any(|column| column == "child_thread_id")
+    {
+        subagent_filters.push(
+            "NOT EXISTS (SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = threads.id)",
+        );
+    }
+    if has_table(db, "agent_job_items")?
+        && table_columns(db, "agent_job_items")?
+            .iter()
+            .any(|column| column == "assigned_thread_id")
+    {
+        subagent_filters.push(
+            "NOT EXISTS (SELECT 1 FROM agent_job_items j WHERE j.assigned_thread_id = threads.id)",
+        );
+    }
+    Ok(if subagent_filters.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", subagent_filters.join(" AND "))
+    })
 }
 
 fn sqlite_limit(limit: usize) -> i64 {
@@ -89,6 +122,7 @@ impl SQLiteStorageAdapter {
             allowed_db_paths: vec![db_path.clone()],
             db_path,
             backup_store,
+            codex_home: None,
         }
     }
 
@@ -98,6 +132,11 @@ impl SQLiteStorageAdapter {
                 self.allowed_db_paths.push(db_path);
             }
         }
+        self
+    }
+
+    pub fn with_codex_home(mut self, codex_home: impl Into<PathBuf>) -> Self {
+        self.codex_home = Some(codex_home.into());
         self
     }
 
@@ -141,6 +180,26 @@ impl SQLiteStorageAdapter {
         }
     }
 
+    pub fn list_local_session_ids(&self) -> anyhow::Result<Vec<String>> {
+        if !self.db_path.exists() {
+            return Ok(Vec::new());
+        }
+        let db = Connection::open(&self.db_path)?;
+        let (table, id_column, filter) = match schema_kind(&db)? {
+            Some(SchemaKind::CodexThreads) => ("threads", "id", codex_thread_filter(&db)?),
+            Some(SchemaKind::CodexAutomationRuns) => (
+                "automation_runs",
+                "thread_id",
+                "WHERE COALESCE(thread_id, '') <> ''".to_string(),
+            ),
+            _ => anyhow::bail!("Unsupported local storage schema"),
+        };
+        let sql = format!("SELECT {id_column} FROM {table} {filter} ORDER BY {id_column}");
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     fn list_codex_threads(
         &self,
         db: &Connection,
@@ -163,30 +222,7 @@ impl SQLiteStorageAdapter {
             "NULL"
         };
         let rollout_path = optional_column_expression(&columns, "rollout_path", "''");
-        let mut subagent_filters = Vec::new();
-        if has_table(db, "thread_spawn_edges")?
-            && table_columns(db, "thread_spawn_edges")?
-                .iter()
-                .any(|column| column == "child_thread_id")
-        {
-            subagent_filters.push(
-                "NOT EXISTS (SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = threads.id)",
-            );
-        }
-        if has_table(db, "agent_job_items")?
-            && table_columns(db, "agent_job_items")?
-                .iter()
-                .any(|column| column == "assigned_thread_id")
-        {
-            subagent_filters.push(
-                "NOT EXISTS (SELECT 1 FROM agent_job_items j WHERE j.assigned_thread_id = threads.id)",
-            );
-        }
-        let child_thread_filter = if subagent_filters.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", subagent_filters.join(" AND "))
-        };
+        let child_thread_filter = codex_thread_filter(db)?;
         let sql = format!(
             "SELECT id, {title}, {cwd}, {model_provider}, {archived}, {updated_at_ms}, {rollout_path}
              FROM threads
@@ -256,7 +292,12 @@ impl SQLiteStorageAdapter {
         let result = (|| -> anyhow::Result<DeleteResult> {
             let backups = undo_backups(&self.backup_store, token)?;
             let session_id = backups[0]["session_id"].as_str().unwrap_or("").to_string();
-            restore_backups(&backups, &self.db_path, &self.allowed_db_paths)?;
+            restore_backups(
+                &backups,
+                &self.db_path,
+                &self.allowed_db_paths,
+                self.codex_home.as_deref(),
+            )?;
             Ok(DeleteResult {
                 status: DeleteStatus::Undone,
                 session_id,
@@ -461,6 +502,24 @@ impl SQLiteStorageAdapter {
         if !file_backups.is_empty() {
             tables.insert("__files".to_string(), Value::Array(file_backups.clone()));
         }
+        let session_index_lines = self
+            .codex_home
+            .as_deref()
+            .and_then(|home| {
+                crate::provider_sync::session_index_lines_for_thread(home, &thread_id).ok()
+            })
+            .unwrap_or_default();
+        if !session_index_lines.is_empty() {
+            tables.insert(
+                "__session_index".to_string(),
+                Value::Array(
+                    session_index_lines
+                        .iter()
+                        .map(|line| Value::String(line.clone()))
+                        .collect(),
+                ),
+            );
+        }
         let token =
             self.backup_store
                 .write_backup(&thread_id, &self.db_path, Value::Object(tables))?;
@@ -506,19 +565,32 @@ impl SQLiteStorageAdapter {
                 }
             }
         }
+        let session_index_note = self
+            .codex_home
+            .as_deref()
+            .and_then(|home| {
+                crate::provider_sync::remove_session_index_entry(home, &thread_id)
+                    .err()
+                    .map(|error| format!("session_index.jsonl 清理失败：{error}"))
+            });
         if !file_errors.is_empty() {
+            let mut message = format!("本地数据库已删除，但文件删除失败：{}", file_errors.join("; "));
+            if let Some(note) = session_index_note.as_deref() {
+                message = format!("{message}；{note}");
+            }
             return Ok(DeleteResult {
                 status: DeleteStatus::Failed,
                 session_id: thread_id,
-                message: format!(
-                    "本地数据库已删除，但文件删除失败：{}",
-                    file_errors.join("; ")
-                ),
+                message,
                 undo_token: Some(token.clone()),
                 backup_path: Some(backup_path.to_string_lossy().to_string()),
             });
         }
-        Ok(local_deleted(&thread_id, &token, &backup_path))
+        let mut result = local_deleted(&thread_id, &token, &backup_path);
+        if let Some(note) = session_index_note.as_deref() {
+            result.message = format!("{}；{}", result.message, note);
+        }
+        Ok(result)
     }
 
     fn delete_codex_automation_run(
@@ -746,6 +818,7 @@ fn restore_backups(
     backups: &[Value],
     fallback_db_path: &Path,
     allowed_db_paths: &[PathBuf],
+    codex_home: Option<&Path>,
 ) -> anyhow::Result<()> {
     for backup in backups {
         let Some(tables) = backup["tables"].as_object() else {
@@ -782,6 +855,18 @@ fn restore_backups(
                     fs::create_dir_all(parent)?;
                 }
                 fs::write(path, bytes)?;
+            }
+        }
+        if let Some(entries) = tables.get("__session_index").and_then(Value::as_array) {
+            let lines = entries
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            if !lines.is_empty() {
+                if let Some(home) = codex_home {
+                    let _ = crate::provider_sync::restore_session_index_entries(home, &lines);
+                }
             }
         }
     }
@@ -916,6 +1001,7 @@ fn validate_restore_tables(tables: &Map<String, Value>) -> anyhow::Result<()> {
         "automation_runs",
         "inbox_items",
         "__files",
+        "__session_index",
     ];
     for table in tables.keys() {
         if !allowed.contains(&table.as_str()) {

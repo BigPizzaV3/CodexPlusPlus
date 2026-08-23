@@ -1005,6 +1005,8 @@ fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"15\""));
+    assert!(script.contains("codexPluginFilterSourceCache = new WeakMap()"));
+    assert!(script.contains("function codexPluginFilterCallbackSource(callback)"));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
     assert!(script.contains("source.includes(\"!u(e.marketplaceName)||e.marketplaceName===r\")"));
     assert!(script.contains("source.includes(\"!Eu(e.marketplaceName)||e.marketplaceName===n\")"));
@@ -1024,12 +1026,10 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("Array.prototype.filter"));
     assert!(script.contains("codexPluginBuildFlavorFilterPatch"));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
-    assert!(script.contains(
-        "codexPluginOfficialMarketplaceName(plugin?.marketplaceName) && !callback(plugin)"
-    ));
+    assert!(script.contains("!filtered.includes(plugin) : !callback(plugin)"));
     assert!(script.contains("isCodexPluginMarketplaceHiddenFilter"));
     assert!(script.contains(
-        "codexPluginOfficialMarketplaceName(marketplace?.name) && !callback(marketplace)"
+        "!filtered.includes(marketplace) : !callback(marketplace)"
     ));
     assert!(script.contains("plugin_marketplace_hidden_filter_bypassed"));
     assert!(script.contains("method === \"list-plugins\""));
@@ -1109,6 +1109,12 @@ fn injection_script_logs_marketplace_grouping_diagnostics() {
 fn injection_script_recovers_plugin_search_from_remote_auth_errors() {
     let cases = run_plugin_marketplace_search_contract_harness();
 
+    assert_eq!(cases["ordinaryBuildMatched"], false);
+    assert_eq!(cases["ordinaryHiddenMatched"], false);
+    assert_eq!(cases["ordinaryFunctionToStringCalls"], 0);
+    assert_eq!(cases["buildFlavorMatched"], true);
+    assert_eq!(cases["buildFlavorMatchedAgain"], true);
+    assert_eq!(cases["cachedFunctionToStringCalls"], 1);
     assert_eq!(cases["initialKinds"], json!(["local", "vertical"]));
     assert_eq!(cases["latestBroadOmittedHasKinds"], false);
     assert_eq!(cases["latestBroadOmittedKinds"], serde_json::Value::Null);
@@ -1195,6 +1201,25 @@ window.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = [{{
 }}];
 const api = window.__codexPlusPluginMarketplaceTest;
 api.reset();
+const nativeFunctionToString = Function.prototype.toString;
+let functionToStringCalls = 0;
+Function.prototype.toString = function(...args) {{
+  functionToStringCalls += 1;
+  return nativeFunctionToString.apply(this, args);
+}};
+const ordinaryFilter = (value) => value > 1;
+const ordinaryBuildMatched = api.isBuildFlavorFilter(ordinaryFilter, [1, 2, 3]);
+const ordinaryHiddenMatched = api.isHiddenMarketplaceFilter(ordinaryFilter, [1, 2, 3]);
+const ordinaryFunctionToStringCalls = functionToStringCalls;
+const buildFlavorFilter = function(e) {{
+  /* !u(e.marketplaceName)||e.marketplaceName===r */
+  return false;
+}};
+const officialPlugins = [{{ name: "product-design", marketplaceName: "openai-bundled" }}];
+const buildFlavorMatched = api.isBuildFlavorFilter(buildFlavorFilter, officialPlugins);
+const buildFlavorMatchedAgain = api.isBuildFlavorFilter(buildFlavorFilter, officialPlugins);
+const cachedFunctionToStringCalls = functionToStringCalls - ordinaryFunctionToStringCalls;
+Function.prototype.toString = nativeFunctionToString;
 const initial = api.patchRequestParams("list-plugins", {{ cwds: ["C:/workspace"] }});
 api.setCodexAppVersion("26.803.41515");
 const latestBroadOmitted = api.patchRequestParams("list-plugins", {{ cwds: ["C:/workspace"] }});
@@ -1225,6 +1250,12 @@ const remoteUnavailable = api.remoteCatalogUnavailable();
 api.reset();
 const chatGpt = api.patchRequestParams("list-plugins", {{ marketplaceKinds: ["created-by-me-remote"] }});
 const cases = {{
+  ordinaryBuildMatched,
+  ordinaryHiddenMatched,
+  ordinaryFunctionToStringCalls,
+  buildFlavorMatched,
+  buildFlavorMatchedAgain,
+  cachedFunctionToStringCalls,
   initialKinds: initial.marketplaceKinds,
   latestBroadOmittedHasKinds: Object.prototype.hasOwnProperty.call(latestBroadOmitted, "marketplaceKinds"),
   latestBroadOmittedKinds: latestBroadOmitted.marketplaceKinds ?? null,
@@ -1577,7 +1608,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"5\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"6\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -1687,6 +1718,17 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("dispatcher export unavailable"));
     assert!(!script.contains("data-codex-max-reasoning-control"));
     assert!(!script.contains("codexAppMaxReasoningOverride"));
+}
+
+#[test]
+fn injection_script_keeps_remote_provider_patch_installed_for_openai_identity() {
+    let script = assets::injection_script(57321);
+
+    assert!(
+        script
+            .contains("codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled()")
+    );
+    assert!(script.contains("if (!codexRemoteSessionProviderPatchEnabled()) return;"));
 }
 
 #[test]
@@ -1832,7 +1874,7 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["legacyStateApi"], true);
     assert_eq!(cases["currentStateApi"], true);
     assert_eq!(cases["appServerParamsUnchanged"], true);
-    assert_eq!(cases["appServerSentCount"], 2);
+    assert_eq!(cases["appServerSentCount"], 6);
     assert_eq!(
         cases["providerFromMissing"]["modelProvider"],
         "vendor_alpha"
@@ -1875,9 +1917,21 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
     assert_eq!(cases["remoteRecoveryRetried"], true);
     assert_eq!(cases["remoteRecoveryRetryAttempts"], json!([0, 1]));
+    assert_eq!(cases["openAiSessionProviderUnchanged"], true);
+    assert_eq!(cases["openAiRecoveryUnscheduled"], true);
+    assert_eq!(cases["openAiPatchRemainsInstalled"], true);
+    assert_eq!(cases["openAiNormalizationDisabled"], true);
+    assert_eq!(cases["refreshedCustomProviderOverride"], "refreshed_vendor");
+    assert_eq!(cases["refreshedOpenAiProvider"], "openai");
+    assert_eq!(cases["refreshedPureApiResumeProvider"], "custom");
+    assert_eq!(cases["failedRefreshProviderUnchanged"], "openai");
     assert_eq!(cases["missingActiveProviderUnchanged"], true);
     assert_eq!(cases["missingActiveRecoveryUnscheduled"], true);
-    assert_eq!(cases["pureApiProviderUnchanged"], true);
+    assert_eq!(cases["pureApiThreadStartProvider"], "custom");
+    assert_eq!(cases["pureApiThreadResumeProvider"], "custom");
+    assert_eq!(cases["pureApiTurnStartProvider"], "custom");
+    assert_eq!(cases["pureApiTurnWithoutProviderUnchanged"], true);
+    assert_eq!(cases["pureApiOtherProviderUnchanged"], true);
     assert_eq!(cases["pureApiRecoveryUnscheduled"], true);
     assert_eq!(cases["pureOfficialProviderUnchanged"], true);
 }
@@ -2160,6 +2214,8 @@ const appServerParamsUnchanged = appServerCalls[0]?.params === nativeAppServerPa
 api.setBackendSettings({{
   relayProfilesEnabled: true,
   activeRelayId: "custom-relay",
+  activeRelaySessionProvider: "custom",
+  activeRelayCodexProvider: "vendor_alpha",
   relayProfiles: [{{ id: "custom-relay", relayMode: "official", officialMixApiKey: true }}],
 }});
 api.setModelCatalog({{
@@ -2284,6 +2340,133 @@ await new Promise((resolve) => setTimeout(resolve, 500));
 const remoteRecoveryRetryAttempts = remoteRecoveryRetryCalls.map((call) => call.attempt);
 api.setBackendSettings({{
   relayProfilesEnabled: true,
+  activeRelayId: "openai-relay",
+  activeRelaySessionProvider: "openai",
+  activeRelayCodexProvider: "openai",
+  relayProfiles: [{{ id: "openai-relay", relayMode: "official", officialMixApiKey: true }}],
+}});
+api.setModelCatalog({{
+  status: "ok",
+  model: "gpt-5.6-sol",
+  default_model: "gpt-5.6-sol",
+  codex_model_provider: "stale_custom_provider",
+  models: ["gpt-5.6-sol"],
+}});
+const openAiSessionParams = {{ cwd: "C:/mobile", modelProvider: "openai" }};
+const openAiSessionProviderUnchanged = api.applyProviderOverride("thread/start", openAiSessionParams) === openAiSessionParams;
+const openAiRecoveryUnscheduled = api.observeRemoteSessionNotification({{
+  method: "thread/started",
+  params: {{ thread: {{ id: "thread-mobile-openai" }} }},
+}}) === false;
+const openAiPatchRemainsInstalled = api.providerPatchEnabled();
+const openAiNormalizationDisabled = !api.providerNormalizationEnabled();
+api.setBackendSettings({{
+  relayProfilesEnabled: true,
+  activeRelayId: "stale-openai-relay",
+  activeRelaySessionProvider: "openai",
+  activeRelayCodexProvider: "openai",
+  relayProfiles: [{{ id: "stale-openai-relay", relayMode: "official", officialMixApiKey: true }}],
+}});
+api.setModelCatalog({{
+  status: "ok",
+  model: "gpt-5.6-sol",
+  default_model: "gpt-5.6-sol",
+  codex_model_provider: "openai",
+  models: ["gpt-5.6-sol"],
+}});
+window.__codexSessionDeleteBridge = async (path) => {{
+  if (path === "/settings/get") return {{
+    launchMode: "patch",
+    enhancementsEnabled: true,
+    providerSyncEnabled: true,
+    relayProfilesEnabled: true,
+    activeRelayId: "refreshed-custom-relay",
+    activeRelaySessionProvider: "custom",
+    activeRelayCodexProvider: "refreshed_vendor",
+    relayProfiles: [{{ id: "refreshed-custom-relay", relayMode: "official", officialMixApiKey: true }}],
+  }};
+  if (path === "/codex-model-catalog") return {{
+    status: "ok",
+    model: "gpt-5.6-sol",
+    default_model: "gpt-5.6-sol",
+    codex_model_provider: "refreshed_vendor",
+    models: ["gpt-5.6-sol"],
+  }};
+  return {{ status: "failed" }};
+}};
+await appServerClient.sendRequest("thread/start", {{ cwd: "C:/mobile", modelProvider: "openai" }}, {{ signal: "provider-switch" }});
+const refreshedCustomProviderOverride = appServerCalls.at(-1)?.params?.modelProvider || "";
+api.setBackendSettings({{
+  relayProfilesEnabled: true,
+  activeRelayId: "stale-custom-relay",
+  activeRelaySessionProvider: "custom",
+  activeRelayCodexProvider: "stale_custom_provider",
+  relayProfiles: [{{ id: "stale-custom-relay", relayMode: "official", officialMixApiKey: true }}],
+}});
+api.setModelCatalog({{
+  status: "ok",
+  model: "gpt-5.6-sol",
+  default_model: "gpt-5.6-sol",
+  codex_model_provider: "stale_custom_provider",
+  models: ["gpt-5.6-sol"],
+}});
+window.__codexSessionDeleteBridge = async (path) => {{
+  if (path === "/settings/get") return {{
+    launchMode: "patch",
+    enhancementsEnabled: true,
+    providerSyncEnabled: true,
+    relayProfilesEnabled: true,
+    activeRelayId: "refreshed-openai-relay",
+    activeRelaySessionProvider: "openai",
+    activeRelayCodexProvider: "openai",
+    relayProfiles: [{{ id: "refreshed-openai-relay", relayMode: "official", officialMixApiKey: true }}],
+  }};
+  if (path === "/codex-model-catalog") return {{
+    status: "ok",
+    model: "gpt-5.6-sol",
+    default_model: "gpt-5.6-sol",
+    codex_model_provider: "stale_custom_provider",
+    models: ["gpt-5.6-sol"],
+  }};
+  return {{ status: "failed" }};
+}};
+await appServerClient.sendRequest("thread/start", {{ cwd: "C:/mobile", modelProvider: "openai" }}, {{ signal: "openai-switch" }});
+const refreshedOpenAiProvider = appServerCalls.at(-1)?.params?.modelProvider || "";
+window.__codexSessionDeleteBridge = async (path) => {{
+  if (path === "/settings/get") return {{
+    launchMode: "patch",
+    enhancementsEnabled: true,
+    providerSyncEnabled: true,
+    relayProfilesEnabled: true,
+    activeRelayId: "refreshed-pure-api",
+    activeRelaySessionProvider: "custom",
+    activeRelayCodexProvider: "custom",
+    relayProfiles: [{{ id: "refreshed-pure-api", relayMode: "pureApi", officialMixApiKey: false }}],
+  }};
+  return {{ status: "failed" }};
+}};
+await appServerClient.sendRequest("thread/resume", {{
+  threadId: "thread-mobile-pure-api-refresh",
+  modelProvider: "openai",
+}}, {{ signal: "pure-api-switch" }});
+const refreshedPureApiResumeProvider = appServerCalls.at(-1)?.params?.modelProvider || "";
+delete window.__codexSessionDeleteBridge;
+api.setBackendSettings({{
+  relayProfilesEnabled: true,
+  activeRelayId: "stale-custom-relay",
+  activeRelaySessionProvider: "custom",
+  activeRelayCodexProvider: "stale_custom_provider",
+  relayProfiles: [{{ id: "stale-custom-relay", relayMode: "official", officialMixApiKey: true }}],
+}});
+window.__codexSessionDeleteBridge = async (path) => {{
+  if (path === "/settings/get") throw new Error("settings unavailable");
+  return {{ status: "failed" }};
+}};
+await appServerClient.sendRequest("thread/start", {{ cwd: "C:/mobile", modelProvider: "openai" }}, {{ signal: "provider-refresh-failed" }});
+const failedRefreshProviderUnchanged = appServerCalls.at(-1)?.params?.modelProvider || "";
+delete window.__codexSessionDeleteBridge;
+api.setBackendSettings({{
+  relayProfilesEnabled: true,
   activeRelayId: "missing",
   relayProfiles: [{{ id: "eligible", relayMode: "official", officialMixApiKey: true }}],
 }});
@@ -2299,7 +2482,19 @@ api.setBackendSettings({{
   relayProfiles: [{{ id: "pure-api", relayMode: "pureApi", officialMixApiKey: true }}],
 }});
 const pureApiParams = {{ cwd: "C:/mobile", modelProvider: "openai" }};
-const pureApiProviderUnchanged = api.applyProviderOverride("thread/start", pureApiParams) === pureApiParams;
+const pureApiThreadStartProvider = api.applyProviderOverride("thread/start", pureApiParams)?.modelProvider;
+const pureApiThreadResumeProvider = api.applyProviderOverride("thread/resume", {{
+  threadId: "thread-mobile-pure-api",
+  model_provider: "openai",
+}})?.modelProvider;
+const pureApiTurnStartProvider = api.applyProviderOverride("turn/start", {{
+  threadId: "thread-mobile-pure-api",
+  modelProvider: "openai",
+}})?.modelProvider;
+const pureApiTurnWithoutProvider = {{ threadId: "thread-mobile-pure-api", model: "gpt-5.6-luna" }};
+const pureApiTurnWithoutProviderUnchanged = api.applyProviderOverride("turn/start", pureApiTurnWithoutProvider) === pureApiTurnWithoutProvider;
+const pureApiOtherProvider = {{ threadId: "thread-mobile-pure-api", modelProvider: "other" }};
+const pureApiOtherProviderUnchanged = api.applyProviderOverride("turn/start", pureApiOtherProvider) === pureApiOtherProvider;
 const pureApiRecoveryUnscheduled = api.observeRemoteSessionNotification({{
   method: "thread/started",
   params: {{ thread: {{ id: "thread-mobile-pure-api" }} }},
@@ -2360,9 +2555,21 @@ process.stdout.write(JSON.stringify({{
   remoteRecoveryViewEventThreadId,
   remoteRecoveryRetried,
   remoteRecoveryRetryAttempts,
+  openAiSessionProviderUnchanged,
+  openAiRecoveryUnscheduled,
+  openAiPatchRemainsInstalled,
+  openAiNormalizationDisabled,
+  refreshedCustomProviderOverride,
+  refreshedOpenAiProvider,
+  refreshedPureApiResumeProvider,
+  failedRefreshProviderUnchanged,
   missingActiveProviderUnchanged,
   missingActiveRecoveryUnscheduled,
-  pureApiProviderUnchanged,
+  pureApiThreadStartProvider,
+  pureApiThreadResumeProvider,
+  pureApiTurnStartProvider,
+  pureApiTurnWithoutProviderUnchanged,
+  pureApiOtherProviderUnchanged,
   pureApiRecoveryUnscheduled,
   pureOfficialProviderUnchanged,
 }}));

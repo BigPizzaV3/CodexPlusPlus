@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#111318">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Codex++ 会话分享</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Codex++ 会话分享首页">
+        <span class="brand-mark">C++</span>
+        <span>Codex++</span>
+      </a>
+      <span class="security-state"><i></i> 端到端加密</span>
+    </header>
+
+    <main class="shell">
+      <section class="composer" data-create-view>
+        <div class="intro">
+          <p class="eyebrow">SESSION SHARE</p>
+          <h1>分享一段会话</h1>
+          <p>内容在当前浏览器加密后上传。密钥只存在于分享链接中，服务器无法读取正文。</p>
+        </div>
+
+        <form data-share-form>
+          <label for="content">会话内容</label>
+          <textarea
+            id="content"
+            name="content"
+            maxlength="900000"
+            placeholder="粘贴 Markdown、JSON 或纯文本会话"
+            required
+          ></textarea>
+          <div class="form-row">
+            <label class="select-label" for="ttl">
+              <span>有效期</span>
+              <select id="ttl" name="ttl">
+                <option value="86400">1 天</option>
+                <option value="604800" selected>7 天</option>
+                <option value="2592000">30 天</option>
+              </select>
+            </label>
+            <span class="counter" data-counter>0 / 900,000</span>
+          </div>
+          <button class="primary" type="submit" data-submit>加密并创建链接</button>
+        </form>
+
+        <section class="result" data-result hidden>
+          <label for="share-url">分享链接</label>
+          <div class="copy-row">
+            <input id="share-url" data-share-url readonly>
+            <button type="button" data-copy>复制</button>
+          </div>
+          <p>任何拿到完整链接的人都能解密内容。请按敏感资料对待。</p>
+          <button class="danger" type="button" data-delete>立即撤销</button>
+        </section>
+        <p class="notice" role="status" data-notice></p>
+      </section>
+
+      <section class="viewer" data-view-view hidden>
+        <div class="viewer-head">
+          <div>
+            <p class="eyebrow">SHARED SESSION</p>
+            <h1>共享会话</h1>
+          </div>
+          <div class="viewer-actions">
+            <button type="button" class="primary compact" data-import-session hidden>导入到 Codex++</button>
+            <a href="/">创建新分享</a>
+          </div>
+        </div>
+        <p class="viewer-meta" data-view-meta>正在读取并解密...</p>
+        <pre data-view-content></pre>
+        <p class="notice" role="status" data-view-notice></p>
+      </section>
+    </main>
+
+    <footer>Codex++ Share · 服务器仅保存加密数据</footer>
+  </body>
+</html>

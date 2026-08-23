@@ -37,6 +37,8 @@ pub mod relay_switch;
 pub mod remote_control_recovery;
 pub mod routes;
 pub mod script_market;
+pub mod share;
+pub mod session_share;
 pub mod settings;
 pub mod status;
 pub mod stepwise;

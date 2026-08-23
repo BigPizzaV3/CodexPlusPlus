@@ -180,6 +180,25 @@ fn macos_companion_launch_keeps_bare_binary_development_mode() {
     );
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_companion_path_falls_back_to_workspace_release_launcher() {
+    let root = tempfile::tempdir().unwrap();
+    let bundle_exe = root.path().join(
+        "target/release/bundle/macos/Codex++ Manager.app/Contents/MacOS/codex-plus-plus-manager",
+    );
+    let release_launcher = root.path().join("target/release/codex-plus-plus");
+    std::fs::create_dir_all(bundle_exe.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(release_launcher.parent().unwrap()).unwrap();
+    std::fs::write(&bundle_exe, b"manager").unwrap();
+    std::fs::write(&release_launcher, b"launcher").unwrap();
+
+    assert_eq!(
+        companion_binary_path_from_exe(&bundle_exe, SILENT_BINARY),
+        release_launcher
+    );
+}
+
 #[test]
 fn macos_bundle_does_not_wrap_the_bundle_executable_in_itself() {
     let options = InstallOptions {

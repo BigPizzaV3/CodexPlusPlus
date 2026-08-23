@@ -314,13 +314,48 @@ pub fn companion_binary_path_from_exe(exe: &Path, binary: &str) -> PathBuf {
     let dir = exe.parent().unwrap_or_else(|| Path::new("."));
     let suffix = if cfg!(windows) { ".exe" } else { "" };
     if let Some(bundle_binary) = macos_companion_binary_from_exe(exe, binary) {
-        return bundle_binary;
+        // A local Tauri bundle contains the manager only. Prefer the freshly
+        // built launcher beside `target/release` when the sibling app is not
+        // present, while keeping the installed /Applications layout intact.
+        if bundle_binary.exists() || !is_macos_development_bundle(exe) {
+            return bundle_binary;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(development_binary) = macos_development_companion_binary(exe, binary) {
+        return development_binary;
     }
     let same_bundle = dir.join(binary);
     if same_bundle.exists() {
         return same_bundle;
     }
     dir.join(format!("{binary}{suffix}"))
+}
+
+fn is_macos_development_bundle(exe: &Path) -> bool {
+    exe.components()
+        .any(|component| component.as_os_str() == "target")
+        && exe
+            .components()
+            .any(|component| component.as_os_str() == "bundle")
+}
+
+#[cfg(target_os = "macos")]
+fn macos_development_companion_binary(exe: &Path, binary: &str) -> Option<PathBuf> {
+    let mut path = exe.parent()?;
+    while let Some(parent) = path.parent() {
+        if matches!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("release" | "debug")
+        ) {
+            let candidate = path.join(binary);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        path = parent;
+    }
+    None
 }
 
 fn macos_companion_binary_from_exe(exe: &Path, binary: &str) -> Option<PathBuf> {

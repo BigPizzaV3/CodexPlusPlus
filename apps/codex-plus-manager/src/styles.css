@@ -1449,6 +1449,7 @@ body {
 
 .relay-field-name,
 .relay-field-mode,
+.relay-field-session-provider,
 .relay-field-test-model,
 .relay-field-config-model,
 .relay-field-context-window,
@@ -6263,7 +6264,7 @@ select {
 
 .session-summary-bar {
   display: grid;
-  grid-template-columns: repeat(3, minmax(112px, 0.46fr)) minmax(260px, 1.62fr);
+  grid-template-columns: repeat(4, minmax(100px, 0.42fr)) minmax(240px, 1.6fr);
   overflow: hidden;
   border-top: 1px solid hsl(var(--border));
   border-bottom: 1px solid hsl(var(--border));
@@ -6343,6 +6344,22 @@ select {
   flex: 0 0 auto;
 }
 
+.session-share-import {
+  display: flex;
+  grid-column: 1 / -1;
+  gap: 8px;
+  align-items: center;
+}
+
+.session-share-import .input {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.session-share-import .button {
+  flex: 0 0 auto;
+}
+
 .session-repair-progress {
   margin-top: 12px;
 }
@@ -6375,7 +6392,7 @@ select {
 
 @media (max-width: 860px) {
   .session-summary-bar {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .session-summary-path {
@@ -6383,8 +6400,12 @@ select {
     border-top: 1px solid hsl(var(--border));
   }
 
-  .session-summary-bar > div:nth-child(3) {
+  .session-summary-bar > div:nth-child(even) {
     border-right: 0;
+  }
+
+  .session-summary-bar > div:nth-child(n + 3) {
+    border-top: 1px solid hsl(var(--border));
   }
 
   .session-repair-tools {
@@ -6392,6 +6413,10 @@ select {
   }
 
   .session-repair-actions {
+    grid-column: auto;
+  }
+
+  .session-share-import {
     grid-column: auto;
   }
 
