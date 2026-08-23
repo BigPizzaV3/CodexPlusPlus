@@ -98,7 +98,7 @@ pub async fn fetch_community_catalog() -> anyhow::Result<DreamSkinCommunityCatal
     let client = community_http_client(Duration::from_secs(30))?;
     let mut items = Vec::new();
     let mut offset = 0usize;
-    let total = loop {
+    loop {
         let url = format!(
             "{COMMUNITY_API_ORIGIN}/v1/themes?limit={PAGE_SIZE}&offset={offset}&sort=recent"
         );
@@ -110,10 +110,10 @@ pub async fn fetch_community_catalog() -> anyhow::Result<DreamSkinCommunityCatal
         let count = page.items.len();
         items.extend(page.items);
         if count == 0 || items.len() >= page_total || items.len() >= CATALOG_LIMIT {
-            break page_total;
+            break;
         }
         offset = items.len();
-    };
+    }
     items.truncate(CATALOG_LIMIT);
     filter_invalid_catalog_items(&mut items)?;
     let total = items.len();
