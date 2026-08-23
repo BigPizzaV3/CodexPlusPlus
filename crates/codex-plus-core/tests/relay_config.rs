@@ -4259,6 +4259,67 @@ experimental_bearer_token = "sk-new"
 }
 
 #[test]
+fn apply_relay_profile_switches_catalog_and_falls_back_to_profile_limits() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile_a = RelayProfile {
+        id: "relay-switch-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        model: "deepseek-v4-pro".to_string(),
+        model_list: "deepseek-v4-pro".to_string(),
+        model_windows: r#"{"deepseek-v4-pro":"1M"}"#.to_string(),
+        model_auto_compact: r#"{"deepseek-v4-pro":"80%"}"#.to_string(),
+        config_contents: r#"model = "deepseek-v4-pro"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay-a.example/v1"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-a"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile_a, "").unwrap();
+    let generated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(generated.contains("model_catalog_json = \"model-catalogs/relay-switch-a.json\""));
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(temp.path().join("model-catalogs/relay-switch-a.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(catalog["models"][0]["auto_compact_token_limit"], 800_000);
+
+    let profile_b = RelayProfile {
+        id: "relay-switch-b".to_string(),
+        relay_mode: RelayMode::PureApi,
+        model: "qwen3-coder".to_string(),
+        context_window: "200000".to_string(),
+        auto_compact_limit: "160000".to_string(),
+        config_contents: r#"model = "qwen3-coder"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay-b.example/v1"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-b"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile_b, "").unwrap();
+    let fallback = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(!fallback.contains("model_catalog_json"));
+    assert!(fallback.contains("model_context_window = 200000"));
+    assert!(fallback.contains("model_auto_compact_token_limit = 160000"));
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap()).unwrap();
+    assert_eq!(auth["OPENAI_API_KEY"], "sk-b");
+}
+
+#[test]
 fn apply_relay_profile_generates_compatible_gpt56_catalog_without_suffix() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {
