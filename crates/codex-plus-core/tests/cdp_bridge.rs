@@ -90,6 +90,16 @@ fn injection_script_includes_stepwise_runtime_when_enabled() {
 }
 
 #[test]
+fn stepwise_script_uses_the_floating_panel_entrypoint() {
+    let script = assets::stepwise_script();
+
+    assert!(script.starts_with("(() => {\n"));
+    assert!(script.ends_with("\n})();\n"));
+    assert!(script.contains("Public floating-panel injection entry"));
+    assert_eq!(script.matches("window[API_KEY] = {").count(), 1);
+}
+
+#[test]
 fn pet_real_mouse_settings_are_gated_to_windows_in_injected_ui() {
     let script = assets::injection_script(57321);
 
@@ -1366,7 +1376,7 @@ fn injection_script_keeps_session_action_buttons_in_pr_style() {
 
     assert!(script.contains("actionButtonClass = \"codex-session-action-button\""));
     assert!(script.contains("background: transparent;"));
-    assert!(script.contains("background: #363839;"));
+    assert!(script.contains("background: var(--codex-plus-bg-hover);"));
     assert!(script.contains("cursor: default;"));
 }
 

@@ -1,4 +1,3 @@
-(() => {
   "use strict";
 
   const API_KEY = "__codexStepwisePanel";
@@ -2249,19 +2248,3 @@
     })();
     return startupPromise;
   }
-
-  window[API_KEY] = {
-    version: SCRIPT_VERSION,
-    instanceId: INSTANCE_ID,
-    state,
-    scan,
-    start,
-    destroy,
-    loadSettings,
-    syncSettings,
-    renderFloat,
-    diagnostics: () => state.diagnostics.slice(),
-  };
-
-  void start();
-})();
