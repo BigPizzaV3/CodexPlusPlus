@@ -4,13 +4,14 @@ use codex_plus_core::relay_config::{
     apply_relay_files_to_home, apply_relay_files_to_home_with_common,
     apply_relay_profile_files_to_home_with_context, apply_relay_profile_to_home_with_switch_rules,
     backfill_relay_profile_from_home, backfill_relay_profile_from_home_with_common,
-    chatgpt_auth_status_from_home, clear_relay_config_to_home,
-    clear_relay_config_to_home_with_auth, delete_context_entry_from_common_config,
-    extract_common_config_from_config, filter_common_config_for_selection,
-    list_context_entries_from_common_config, normalize_relay_profile_for_storage,
-    relay_config_status_from_home, relay_profile_api_key, sanitize_common_config_contents,
-    set_codex_goals_feature_in_home, strip_common_config_from_config,
-    sync_live_config_context_entries, upsert_context_entry_in_common_config,
+    chatgpt_auth_status_from_home, cleanup_unsupported_approval_policies_in_home,
+    clear_relay_config_to_home, clear_relay_config_to_home_with_auth,
+    delete_context_entry_from_common_config, extract_common_config_from_config,
+    filter_common_config_for_selection, list_context_entries_from_common_config,
+    normalize_relay_profile_for_storage, relay_config_status_from_home, relay_profile_api_key,
+    sanitize_common_config_contents, set_codex_goals_feature_in_home,
+    strip_common_config_from_config, sync_live_config_context_entries,
+    upsert_context_entry_in_common_config,
 };
 use codex_plus_core::settings::{
     RelayContextSelection, RelayMode, RelayModelRoute, RelayProfile, RelayProtocol,
@@ -2214,6 +2215,7 @@ wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://relay.example.test/v1"
 experimental_bearer_token = "sk-test-redacted"
+env_key = "CUSTOM_API_KEY"
 
 [model_providers.CodexPP]
 name = "CodexPP"
@@ -2244,13 +2246,98 @@ model = "gpt-5-mini"
     assert!(!updated.contains("model_provider ="));
     assert!(!updated.contains("model_catalog_json"));
     assert!(!updated.contains("OPENAI_API_KEY"));
-    assert!(!updated.contains("[model_providers.custom]"));
+    assert!(updated.contains("[model_providers.custom]"));
+    assert!(updated.contains(r#"wire_api = "responses""#));
+    assert!(updated.contains(r#"base_url = "https://relay.example.test/v1""#));
     assert!(!updated.contains("[model_providers.CodexPP]"));
-    assert!(!updated.contains("[model_providers]\n"));
     assert!(!updated.contains("experimental_bearer_token"));
+    assert!(!updated.contains("requires_openai_auth"));
+    assert!(!updated.contains("env_key"));
     assert!(updated.contains("[model_providers.custom1]"));
     assert!(updated.contains(r#"base_url = "https://keep.example.test/v1""#));
     assert!(updated.contains("[profiles.default]"));
+}
+
+#[test]
+fn cleanup_unsupported_approval_policies_removes_only_untrusted_values() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"approval_policy = "untrusted"
+sandbox_mode = "workspace-write"
+
+[profiles.legacy]
+approval_policy = "untrusted"
+model = "gpt-5"
+
+[profiles.current]
+approval_policy = "on-request"
+
+[profiles.automatic]
+approval_policy = "never"
+"#,
+    )
+    .unwrap();
+
+    assert!(cleanup_unsupported_approval_policies_in_home(temp.path()).unwrap());
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed = updated.parse::<toml::Table>().unwrap();
+
+    assert!(parsed.get("approval_policy").is_none());
+    assert_eq!(parsed["sandbox_mode"].as_str(), Some("workspace-write"));
+    assert!(
+        parsed["profiles"]["legacy"]
+            .get("approval_policy")
+            .is_none()
+    );
+    assert_eq!(
+        parsed["profiles"]["legacy"]["model"].as_str(),
+        Some("gpt-5")
+    );
+    assert_eq!(
+        parsed["profiles"]["current"]["approval_policy"].as_str(),
+        Some("on-request")
+    );
+    assert_eq!(
+        parsed["profiles"]["automatic"]["approval_policy"].as_str(),
+        Some("never")
+    );
+    assert!(!cleanup_unsupported_approval_policies_in_home(temp.path()).unwrap());
+}
+
+#[test]
+fn cleanup_unsupported_approval_policies_preserves_invalid_toml() {
+    let temp = tempfile::tempdir().unwrap();
+    let invalid = b"approval_policy = [\"untrusted\"\n";
+    std::fs::write(temp.path().join("config.toml"), invalid).unwrap();
+
+    assert!(cleanup_unsupported_approval_policies_in_home(temp.path()).is_err());
+    assert_eq!(
+        std::fs::read(temp.path().join("config.toml")).unwrap(),
+        invalid
+    );
+}
+
+#[test]
+fn config_write_removes_untrusted_policy_from_new_config() {
+    let temp = tempfile::tempdir().unwrap();
+
+    apply_relay_config_file_to_home(
+        temp.path(),
+        r#"approval_policy = "untrusted"
+model = "gpt-5"
+
+[profiles.legacy]
+approval_policy = "untrusted"
+model = "gpt-5-mini"
+"#,
+    )
+    .unwrap();
+
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(!updated.contains("untrusted"));
+    assert!(updated.contains(r#"model = "gpt-5""#));
+    assert!(updated.contains("[profiles.legacy]"));
 }
 
 #[test]

@@ -149,6 +149,9 @@ pub trait LaunchHooks: Send + Sync {
     fn select_debug_port(&self, requested: u16) -> u16;
     fn select_helper_port(&self, requested: u16) -> u16;
     async fn load_settings(&self) -> anyhow::Result<BackendSettings>;
+    fn cleanup_unsupported_config(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn run_provider_sync(&self) -> anyhow::Result<()>;
     fn has_pending_remote_control_session_recoveries(&self) -> bool {
         false
@@ -273,6 +276,7 @@ where
 
     let result: anyhow::Result<LaunchHandle> = async {
         let home = crate::relay_config::default_codex_home_dir();
+        hooks.cleanup_unsupported_config()?;
         if settings.provider_sync_enabled {
             crate::codex_app_state::capture_app_state_snapshot_nonfatal(&home, "launcher.before");
             hooks.run_provider_sync().await?;
@@ -544,6 +548,12 @@ impl LaunchHooks for DefaultLaunchHooks {
         SettingsStore::default().load()
     }
 
+    fn cleanup_unsupported_config(&self) -> anyhow::Result<()> {
+        let home = crate::relay_config::default_codex_home_dir();
+        crate::relay_config::cleanup_unsupported_approval_policies_in_home(&home)?;
+        Ok(())
+    }
+
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
         anyhow::bail!("provider sync requires launcher hooks with codex-plus-data integration")
     }
@@ -595,10 +605,11 @@ impl LaunchHooks for DefaultLaunchHooks {
         &self,
         settings: &BackendSettings,
     ) -> anyhow::Result<()> {
+        let home = crate::relay_config::default_codex_home_dir();
+        crate::plugin_marketplace::cleanup_managed_reserved_marketplace_configs(&home)?;
         if !settings.codex_app_plugin_marketplace_unlock {
             return Ok(());
         }
-        let home = crate::relay_config::default_codex_home_dir();
         match crate::plugin_marketplace::ensure_openai_curated_marketplace_config(&home) {
             Ok(configured) => {
                 if configured {

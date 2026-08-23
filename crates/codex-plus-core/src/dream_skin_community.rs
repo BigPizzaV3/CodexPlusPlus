@@ -87,7 +87,10 @@ pub async fn load_community_catalog(state_dir: &Path) -> anyhow::Result<DreamSki
                 format!("DreamSkin 社区加载失败，且没有可用缓存：{network_error}")
             })?;
             cached.cached = true;
-            cached.warning = format!("DreamSkin 社区暂不可用，当前显示本地缓存：{network_error}");
+            append_warning(
+                &mut cached.warning,
+                format!("DreamSkin 社区暂不可用，当前显示本地缓存：{network_error}"),
+            );
             enrich_catalog(state_dir, &mut cached);
             Ok(cached)
         }
@@ -98,7 +101,7 @@ pub async fn fetch_community_catalog() -> anyhow::Result<DreamSkinCommunityCatal
     let client = community_http_client(Duration::from_secs(30))?;
     let mut items = Vec::new();
     let mut offset = 0usize;
-    let total = loop {
+    loop {
         let url = format!(
             "{COMMUNITY_API_ORIGIN}/v1/themes?limit={PAGE_SIZE}&offset={offset}&sort=recent"
         );
@@ -110,14 +113,17 @@ pub async fn fetch_community_catalog() -> anyhow::Result<DreamSkinCommunityCatal
         let count = page.items.len();
         items.extend(page.items);
         if count == 0 || items.len() >= page_total || items.len() >= CATALOG_LIMIT {
-            break page_total;
+            break;
         }
         offset = items.len();
-    };
+    }
     items.truncate(CATALOG_LIMIT);
-    validate_catalog(&items)?;
+    let (items, skipped) = normalize_and_filter_catalog(items);
+    let warning = (skipped > 0)
+        .then(|| format!("已跳过 {skipped} 个元数据无效的 DreamSkin 社区主题。"))
+        .unwrap_or_default();
     Ok(DreamSkinCommunityCatalog {
-        total,
+        total: items.len(),
         items,
         fetched_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -125,7 +131,7 @@ pub async fn fetch_community_catalog() -> anyhow::Result<DreamSkinCommunityCatal
             .as_secs()
             .to_string(),
         cached: false,
-        warning: String::new(),
+        warning,
         installed_theme_id: String::new(),
     })
 }
@@ -258,14 +264,35 @@ fn pending_link_path() -> std::path::PathBuf {
     crate::paths::default_app_state_dir().join(PENDING_LINK_FILE)
 }
 
-fn validate_catalog(items: &[DreamSkinCommunityTheme]) -> anyhow::Result<()> {
-    if items.len() > CATALOG_LIMIT {
-        bail!("DreamSkin 社区主题数量超过限制");
-    }
-    for item in items {
-        validate_community_theme(item)?;
-    }
-    Ok(())
+fn normalize_and_filter_catalog(
+    mut items: Vec<DreamSkinCommunityTheme>,
+) -> (Vec<DreamSkinCommunityTheme>, usize) {
+    let original_count = items.len();
+    items.truncate(CATALOG_LIMIT);
+    let valid = items
+        .into_iter()
+        .filter_map(|mut item| {
+            normalize_community_theme_display_fields(&mut item);
+            validate_community_theme(&item).ok().map(|_| item)
+        })
+        .collect::<Vec<_>>();
+    let skipped = original_count.saturating_sub(valid.len());
+    (valid, skipped)
+}
+
+fn normalize_community_theme_display_fields(theme: &mut DreamSkinCommunityTheme) {
+    theme.name = normalize_display_text(&theme.name);
+    theme.author_display_name = normalize_display_text(&theme.author_display_name);
+    theme.license = theme.license.trim().to_string();
+}
+
+fn normalize_display_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !unsafe_format_character(*character))
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 fn validate_community_theme(theme: &DreamSkinCommunityTheme) -> anyhow::Result<()> {
@@ -303,13 +330,16 @@ fn safe_text(value: &str, maximum: usize) -> bool {
     value == trimmed
         && !value.is_empty()
         && value.chars().count() <= maximum
-        && value.chars().all(|character| {
-            !character.is_control()
-                && !matches!(
-                    character as u32,
-                    0x061c | 0x200b..=0x200f | 0x2028..=0x202e | 0x2060..=0x206f | 0xfeff
-                )
-        })
+        && value
+            .chars()
+            .all(|character| !character.is_control() && !unsafe_format_character(character))
+}
+
+fn unsafe_format_character(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x061c | 0x200b..=0x200f | 0x2028..=0x202e | 0x2060..=0x206f | 0xfeff
+    )
 }
 
 fn valid_semver(value: &str) -> bool {
@@ -367,9 +397,24 @@ fn read_cached_catalog(state_dir: &Path) -> anyhow::Result<DreamSkinCommunityCat
     {
         bail!("DreamSkin 社区缓存无效");
     }
-    let catalog: DreamSkinCommunityCatalog = serde_json::from_slice(&std::fs::read(path)?)?;
-    validate_catalog(&catalog.items)?;
+    let mut catalog: DreamSkinCommunityCatalog = serde_json::from_slice(&std::fs::read(path)?)?;
+    let (items, skipped) = normalize_and_filter_catalog(catalog.items);
+    catalog.items = items;
+    catalog.total = catalog.items.len();
+    if skipped > 0 {
+        append_warning(
+            &mut catalog.warning,
+            format!("已跳过 {skipped} 个元数据无效的 DreamSkin 社区缓存主题。"),
+        );
+    }
     Ok(catalog)
+}
+
+fn append_warning(warning: &mut String, message: String) {
+    if !warning.is_empty() {
+        warning.push(' ');
+    }
+    warning.push_str(&message);
 }
 
 fn community_http_client(timeout: Duration) -> anyhow::Result<reqwest::Client> {
@@ -432,7 +477,31 @@ async fn download_limited(
 
 #[cfg(test)]
 mod tests {
-    use super::version_id_from_link;
+    use super::*;
+
+    fn valid_theme(id: &str) -> DreamSkinCommunityTheme {
+        DreamSkinCommunityTheme {
+            apply_compatible: true,
+            author_display_name: "Theme Author".to_string(),
+            author_user_id: String::new(),
+            display_meta: serde_json::Value::Null,
+            download_count: 0,
+            id: id.to_string(),
+            license: "MIT".to_string(),
+            name: "Theme Name".to_string(),
+            package_bytes: 1024,
+            package_sha256: "a".repeat(64),
+            reviewed_at: String::new(),
+            slug: String::new(),
+            submitted_at: String::new(),
+            theme_id: "theme-name".to_string(),
+            version: "1.0.0".to_string(),
+            preview_url: String::new(),
+            installed: false,
+            installed_version: String::new(),
+            update_available: false,
+        }
+    }
 
     #[test]
     fn community_link_accepts_only_canonical_version_id() {
@@ -455,5 +524,42 @@ mod tests {
         ] {
             assert!(version_id_from_link(invalid).is_err(), "accepted {invalid}");
         }
+    }
+
+    #[test]
+    fn catalog_normalizes_display_format_characters() {
+        let mut theme = valid_theme("ver_1234abcd");
+        theme.name = " \u{200b}Theme\u{2060} Name\u{feff} ".to_string();
+        theme.author_display_name = "\u{202e}Theme Author".to_string();
+        theme.license = " MIT ".to_string();
+
+        let (items, skipped) = normalize_and_filter_catalog(vec![theme]);
+
+        assert_eq!(skipped, 0);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "Theme Name");
+        assert_eq!(items[0].author_display_name, "Theme Author");
+        assert_eq!(items[0].license, "MIT");
+    }
+
+    #[test]
+    fn catalog_skips_invalid_item_without_rejecting_valid_item() {
+        let valid = valid_theme("ver_1234abcd");
+        let mut invalid = valid_theme("invalid-version-id");
+        invalid.name = "Broken Theme".to_string();
+
+        let (items, skipped) = normalize_and_filter_catalog(vec![invalid, valid]);
+
+        assert_eq!(skipped, 1);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "ver_1234abcd");
+    }
+
+    #[test]
+    fn individual_theme_validation_remains_strict() {
+        let mut theme = valid_theme("ver_1234abcd");
+        theme.name = "Theme\u{200b} Name".to_string();
+
+        assert!(validate_community_theme(&theme).is_err());
     }
 }

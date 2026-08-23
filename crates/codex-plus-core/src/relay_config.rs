@@ -731,7 +731,7 @@ pub fn clear_relay_config_to_home_with_auth(
     };
     let config_path = home.join("config.toml");
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let mut without_tables = remove_table(&existing, &format!("model_providers.{RELAY_PROVIDER}"));
+    let mut without_tables = existing;
     for legacy_provider in LEGACY_RELAY_PROVIDERS {
         without_tables = remove_table(
             &without_tables,
@@ -744,9 +744,13 @@ pub fn clear_relay_config_to_home_with_auth(
         "model_provider",
         "model_catalog_json",
         "base_url",
+        "experimental_bearer_token",
+        "env_key",
+        "requires_openai_auth",
     ] {
         updated = remove_root_key(&updated, key);
     }
+    updated = remove_model_provider_auth_fields(&updated, RELAY_PROVIDER)?;
     updated = remove_managed_remote_control_openai_base_url(&updated)?;
     let backup_path = write_codex_live_atomic(home, Some(&updated), auth_bytes.as_deref())?;
     let status = relay_config_status_from_home(home);
@@ -755,6 +759,25 @@ pub fn clear_relay_config_to_home_with_auth(
         backup_path,
         configured: status.configured,
     })
+}
+
+fn remove_model_provider_auth_fields(contents: &str, provider_id: &str) -> anyhow::Result<String> {
+    let mut doc = parse_toml_document(contents)?;
+    if let Some(provider) = doc
+        .get_mut("model_providers")
+        .and_then(Item::as_table_mut)
+        .and_then(|providers| providers.get_mut(provider_id))
+        .and_then(Item::as_table_mut)
+    {
+        for key in [
+            "experimental_bearer_token",
+            "env_key",
+            "requires_openai_auth",
+        ] {
+            provider.remove(key);
+        }
+    }
+    Ok(normalize_optional_toml(doc))
 }
 
 fn pure_api_auth_json_removed(home: &Path) -> anyhow::Result<Option<Vec<u8>>> {
@@ -1524,14 +1547,15 @@ fn normalize_config_text_for_write(config_text: &str) -> String {
 
 fn preserve_live_desktop_settings(home: &Path, config_text: &str) -> anyhow::Result<String> {
     let normalized = normalize_config_text_for_write(config_text);
+    let mut target_doc = parse_toml_document(&normalized)?;
+    remove_unsupported_approval_policies(&mut target_doc);
     let live_text = read_optional_text(&home.join("config.toml"))?;
     if live_text.trim().is_empty() {
-        return Ok(normalized);
+        return Ok(normalize_optional_toml(target_doc));
     }
     let Ok(live_doc) = parse_toml_document(&live_text) else {
-        return Ok(normalized);
+        return Ok(normalize_optional_toml(target_doc));
     };
-    let mut target_doc = parse_toml_document(&normalized)?;
     if let Some(live_desktop) = live_doc.get("desktop").cloned() {
         if !live_desktop.is_none() {
             merge_toml_item(&mut target_doc["desktop"], &live_desktop);
@@ -1542,6 +1566,7 @@ fn preserve_live_desktop_settings(home: &Path, config_text: &str) -> anyhow::Res
             merge_toml_item(&mut target_doc[key], &live_value);
         }
     }
+    remove_unsupported_approval_policies(&mut target_doc);
     let context_usage_configured = target_doc
         .get("desktop")
         .and_then(Item::as_table)
@@ -1556,6 +1581,41 @@ fn preserve_live_desktop_settings(home: &Path, config_text: &str) -> anyhow::Res
         }
     }
     Ok(normalize_optional_toml(target_doc))
+}
+
+fn remove_unsupported_approval_policies(doc: &mut DocumentMut) -> bool {
+    let mut changed = false;
+    if doc.get("approval_policy").and_then(Item::as_str) == Some("untrusted") {
+        doc.as_table_mut().remove("approval_policy");
+        changed = true;
+    }
+    if let Some(profiles) = doc.get_mut("profiles").and_then(Item::as_table_mut) {
+        for (_, profile) in profiles.iter_mut() {
+            let Some(profile) = profile.as_table_mut() else {
+                continue;
+            };
+            if profile.get("approval_policy").and_then(Item::as_str) == Some("untrusted") {
+                profile.remove("approval_policy");
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+pub fn cleanup_unsupported_approval_policies_in_home(home: &Path) -> anyhow::Result<bool> {
+    let config_path = home.join("config.toml");
+    let existing = match std::fs::read_to_string(&config_path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let mut doc = parse_toml_document(&existing)?;
+    if !remove_unsupported_approval_policies(&mut doc) {
+        return Ok(false);
+    }
+    crate::settings::atomic_write(&config_path, normalize_optional_toml(doc).as_bytes())?;
+    Ok(true)
 }
 
 fn validate_auth_json(auth_bytes: &[u8], path: &Path) -> anyhow::Result<()> {
