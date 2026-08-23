@@ -1,13 +1,14 @@
 use codex_plus_core::protocol_proxy::{
-    ChatSseToResponsesConverter, audio_transcriptions_url, chat_completion_to_response,
-    chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
-    chat_sse_to_responses_sse_with_request, is_audio_transcriptions_proxy_path,
-    is_chat_completions_proxy_path, is_models_proxy_path, is_responses_compact_proxy_path,
-    is_responses_proxy_path, models_url, open_audio_transcriptions_proxy_request,
-    open_chat_completions_proxy_request, open_models_proxy_request, open_responses_proxy_request,
+    ChatSseToResponsesConverter, OfficialRequestHeaders, audio_transcriptions_url,
+    chat_completion_to_response, chat_completion_to_response_with_request, chat_completions_url,
+    chat_sse_to_responses_sse, chat_sse_to_responses_sse_with_request,
+    is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path, is_models_proxy_path,
+    is_responses_compact_proxy_path, is_responses_proxy_path, merge_routed_models_into_catalog,
+    models_url, open_audio_transcriptions_proxy_request, open_chat_completions_proxy_request,
+    open_models_proxy_request, open_responses_proxy_request,
     open_responses_proxy_request_with_settings,
     open_responses_proxy_request_with_settings_for_path, responses_compact_url,
-    responses_error_from_upstream, responses_to_chat_completions,
+    responses_error_from_upstream, responses_to_chat_completions, sanitize_official_input_item_ids,
     send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
     upstream_stream_header_timeout,
 };
@@ -23,6 +24,168 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+fn response_message_id(response: &serde_json::Value) -> &str {
+    response["output"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["type"] == "message"))
+        .and_then(|item| item["id"].as_str())
+        .expect("response message id")
+}
+
+#[test]
+fn deepseek_single_turn_uses_official_message_id_prefix() {
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl-ds-single",
+        "model": "deepseek/deepseek-v4-flash",
+        "choices": [{"message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}]
+    }))
+    .unwrap();
+
+    assert!(response_message_id(&converted).starts_with("msg_"));
+}
+
+#[test]
+fn deepseek_multi_turn_and_sse_use_stable_official_message_ids() {
+    let make_response = |id: &str| {
+        chat_completion_to_response(json!({
+            "id": id,
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [{"message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}]
+        }))
+        .unwrap()
+    };
+    let first = make_response("chatcmpl-ds-first");
+    let second = make_response("chatcmpl-ds-second");
+    assert_ne!(response_message_id(&first), response_message_id(&second));
+
+    let sse = chat_sse_to_responses_sse(
+        "data: {\"id\":\"chatcmpl-ds-stream\",\"model\":\"deepseek/deepseek-v4-flash\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n",
+    );
+    assert!(sse.contains("\"id\":\"msg_"));
+    assert!(!sse.contains("resp_chatcmpl-ds-stream_msg"));
+}
+
+#[test]
+fn deepseek_to_gpt_sanitizes_legacy_message_id_only() {
+    let mut request = json!({
+        "store": false,
+        "input": [
+            {"id": "resp_chatcmpl-ds_msg", "type": "message", "role": "assistant", "content": []},
+            {"id": "resp_chatcmpl-ds_msg", "type": "item_reference"},
+            {"id": "fc_call_1", "type": "function_call", "call_id": "call_1"},
+            {"type": "function_call_output", "call_id": "call_1", "output": "ok"}
+        ]
+    });
+
+    assert_eq!(sanitize_official_input_item_ids(&mut request), 2);
+    assert_eq!(request["input"][0]["id"], "msg_chatcmpl-ds");
+    assert_eq!(request["input"][1]["id"], "msg_chatcmpl-ds");
+    assert_eq!(request["input"][2]["id"], "fc_call_1");
+    assert_eq!(request["input"][2]["call_id"], "call_1");
+}
+
+#[test]
+fn gpt_deepseek_gpt_cleaning_is_selective_and_idempotent() {
+    let mut request = json!({
+        "store": false,
+        "input": [
+            {"id": "msg_gpt_1", "type": "message", "role": "assistant", "content": []},
+            {"id": "resp_chatcmpl-ds_msg", "type": "message", "role": "assistant", "content": []},
+            {"id": "fc_call_gpt", "type": "function_call", "call_id": "call_gpt"},
+            {"id": "rs_reasoning", "type": "reasoning", "summary": []}
+        ]
+    });
+
+    assert_eq!(sanitize_official_input_item_ids(&mut request), 1);
+    assert_eq!(sanitize_official_input_item_ids(&mut request), 0);
+    assert_eq!(request["input"][0]["id"], "msg_gpt_1");
+    assert_eq!(request["input"][1]["id"], "msg_chatcmpl-ds");
+    assert_eq!(request["input"][2]["id"], "fc_call_gpt");
+    assert_eq!(request["input"][2]["call_id"], "call_gpt");
+    assert_eq!(request["input"][3]["id"], "rs_reasoning");
+}
+
+#[test]
+fn deepseek_reasoning_to_official_models_store_false_removes_synthetic_history() {
+    let deepseek = chat_completion_to_response(json!({
+        "id": "dc630c89-4c5f-4e93-be6c-5a8836acaaf4",
+        "model": "deepseek/deepseek-v4-flash",
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "reasoning_content": "reasoning",
+                "content": "answer",
+                "tool_calls": [{
+                    "id": "call_ds_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"}
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    }))
+    .unwrap();
+    let output = deepseek["output"].as_array().unwrap();
+    let synthetic_reasoning_id = output
+        .iter()
+        .find(|item| item["type"] == "reasoning")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(synthetic_reasoning_id.starts_with("rs_resp_"));
+
+    for model in [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4",
+    ] {
+        let mut input = output.clone();
+        input.push(json!({"type": "item_reference", "id": synthetic_reasoning_id}));
+        input.push(json!({"type": "reference", "item_id": synthetic_reasoning_id}));
+        let mut request = json!({"model": model, "store": false, "input": input});
+
+        sanitize_official_input_item_ids(&mut request);
+        let serialized = serde_json::to_string(&request).unwrap();
+        assert!(!serialized.contains("rs_resp_"), "{model}: {serialized}");
+        assert!(serialized.contains("\"id\":\"fc_call_ds_1\""));
+        assert!(serialized.contains("\"call_id\":\"call_ds_1\""));
+        assert_eq!(request["store"], false);
+    }
+}
+
+#[test]
+fn gpt_deepseek_reasoning_gpt_store_false_preserves_official_reasoning() {
+    let mut request = json!({
+        "model": "gpt-5.6-terra",
+        "store": false,
+        "input": [
+            {"id": "msg_official", "type": "message", "role": "assistant", "content": []},
+            {"id": "rs_official", "type": "reasoning", "summary": [], "encrypted_content": "opaque"},
+            {"type": "item_reference", "id": "rs_official"},
+            {"id": "rs_resp_deepseek", "type": "reasoning", "reasoning_content": "local", "summary": []},
+            {"type": "item_reference", "id": "rs_resp_deepseek"},
+            {"type": "message", "role": "user", "content": [
+                {"type": "item_reference", "item_id": "rs_resp_deepseek"},
+                {"type": "input_text", "text": "continue"}
+            ]},
+            {"id": "ctc_call_2", "type": "custom_tool_call", "call_id": "call_2", "name": "exec", "input": "{}"}
+        ]
+    });
+
+    sanitize_official_input_item_ids(&mut request);
+    let serialized = serde_json::to_string(&request).unwrap();
+    assert!(!serialized.contains("rs_resp_"));
+    assert!(serialized.contains("rs_official"));
+    assert!(serialized.contains("msg_official"));
+    assert!(serialized.contains("ctc_call_2"));
+    assert!(serialized.contains("call_2"));
+    assert!(serialized.contains("continue"));
+    assert_eq!(request["store"], false);
+}
 
 #[test]
 fn responses_request_converts_to_chat_completions() {
@@ -1645,6 +1808,7 @@ async fn model_route_uses_exact_match_and_keeps_other_models_on_source_provider(
     let mut settings =
         model_route_settings("gpt-5.6-luna", "", "http://127.0.0.1:9/v1".to_string());
     settings.relay_profiles[0].base_url = format!("http://{source_addr}/v1");
+    settings.relay_profiles[0].relay_mode = RelayMode::PureApi;
 
     let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
         .await
@@ -1661,7 +1825,7 @@ async fn model_route_uses_exact_match_and_keeps_other_models_on_source_provider(
 }
 
 #[tokio::test]
-async fn model_route_rejects_missing_or_non_responses_targets() {
+async fn model_route_rejects_missing_target_and_accepts_chat_completions() {
     let mut missing = model_route_settings("gpt-5.6-luna", "", "http://127.0.0.1:9/v1".to_string());
     missing.relay_profiles.pop();
     let error = open_responses_proxy_request_with_settings(
@@ -1673,16 +1837,17 @@ async fn model_route_rejects_missing_or_non_responses_targets() {
     .expect("missing target should fail");
     assert!(error.to_string().contains("模型路由目标供应商不存在"));
 
-    let mut chat = model_route_settings("gpt-5.6-luna", "", "http://127.0.0.1:9/v1".to_string());
+    let server = spawn_chat_server();
+    let mut chat = model_route_settings("gpt-5.6-luna", "", server.base_url.clone());
     chat.relay_profiles[1].protocol = RelayProtocol::ChatCompletions;
-    let error = open_responses_proxy_request_with_settings(
+    let result = open_responses_proxy_request_with_settings(
         r#"{"model":"gpt-5.6-luna","input":"hi"}"#,
         chat,
     )
     .await
-    .err()
-    .expect("chat target should fail");
-    assert!(error.to_string().contains("必须使用 Responses API"));
+    .unwrap();
+    assert_eq!(result.status_code, 200);
+    server.finish();
 }
 
 #[tokio::test]
@@ -2010,13 +2175,82 @@ async fn models_proxy_passes_through_original_user_agent_when_unconfigured() {
     let server = spawn_chat_server();
     write_chat_relay_settings(temp.path(), &server.base_url, "");
 
-    let upstream = open_models_proxy_request(Some("Original-Codex-UA/1.0"))
-        .await
-        .unwrap();
+    let upstream = open_models_proxy_request(
+        Some("Original-Codex-UA/1.0"),
+        OfficialRequestHeaders::default(),
+    )
+    .await
+    .unwrap();
     assert_eq!(upstream.status_code, 200);
 
     let request = server.finish();
     assert_eq!(request.user_agent, "Original-Codex-UA/1.0");
+}
+
+#[test]
+fn models_catalog_appends_only_explicit_source_models_and_deduplicates() {
+    let settings = BackendSettings {
+        active_relay_id: "official".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "official".to_string(),
+            relay_mode: RelayMode::Official,
+            model_list: "custom/listed".to_string(),
+            model_routes: vec![
+                RelayModelRoute {
+                    model: "deepseek/deepseek-v4-flash".to_string(),
+                    target_relay_id: "bai".to_string(),
+                    target_model: String::new(),
+                },
+                RelayModelRoute {
+                    model: "gpt-5.6-sol".to_string(),
+                    target_relay_id: "bai".to_string(),
+                    target_model: String::new(),
+                },
+            ],
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+    let merged = merge_routed_models_into_catalog(
+        br#"{"models":[{"slug":"gpt-5.6-sol","display_name":"5.6 Sol"}]}"#,
+        &settings,
+    )
+    .unwrap();
+    let catalog: serde_json::Value = serde_json::from_slice(&merged).unwrap();
+    let slugs: Vec<_> = catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|model| model["slug"].as_str())
+        .collect();
+
+    assert_eq!(
+        slugs.iter().filter(|slug| **slug == "gpt-5.6-sol").count(),
+        1
+    );
+    assert!(slugs.contains(&"custom/listed"));
+    assert!(slugs.contains(&"deepseek/deepseek-v4-flash"));
+    assert!(!slugs.contains(&"bai"));
+}
+
+#[test]
+fn models_catalog_appends_explicit_model_list_without_routes() {
+    let settings = BackendSettings {
+        active_relay_id: "official".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "official".to_string(),
+            relay_mode: RelayMode::Official,
+            model_list: "custom/listed[1M]".to_string(),
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+
+    let merged = merge_routed_models_into_catalog(br#"{"models":[]}"#, &settings).unwrap();
+    let catalog: serde_json::Value = serde_json::from_slice(&merged).unwrap();
+
+    assert_eq!(catalog["models"][0]["slug"], "custom/listed");
+    assert_eq!(catalog["models"][0]["context_window"], 1_000_000);
 }
 
 fn write_chat_relay_settings(settings_dir: &Path, base_url: &str, user_agent: &str) {

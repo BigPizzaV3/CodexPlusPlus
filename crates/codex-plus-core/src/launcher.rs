@@ -520,17 +520,38 @@ fn helper_bind_host() -> String {
 
 #[async_trait(?Send)]
 impl LaunchHooks for DefaultLaunchHooks {
-    fn resolve_app_dir(
-        &self,
-        app_dir: Option<&Path>,
-        settings: &BackendSettings,
-    ) -> anyhow::Result<PathBuf> {
-        crate::app_paths::resolve_codex_app_dir_with_saved(
-            app_dir,
-            Some(settings.codex_app_path.as_str()),
+   fn resolve_app_dir(
+    &self,
+    app_dir: Option<&Path>,
+    settings: &BackendSettings,
+) -> anyhow::Result<PathBuf> {
+    let saved = settings.codex_app_path.as_str();
+
+    let auto = crate::app_paths::resolve_codex_app_dir(None);
+
+    let resolved = crate::app_paths::resolve_codex_app_dir_with_saved(
+        app_dir,
+        Some(saved),
+    );
+
+    let log = format!(
+        "app_dir={:?}\nsaved_app_path={:?}\nauto_detect={:?}\nresolved={:?}\n",
+        app_dir,
+        saved,
+        auto,
+        resolved
+    );
+
+    let log_path = std::env::temp_dir().join("codexpp_appdir_debug.txt");
+    let _ = std::fs::write(&log_path, log);
+
+    resolved.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Codex App directory not found; debug log: {}",
+            log_path.display()
         )
-        .ok_or_else(|| anyhow::anyhow!("Codex App directory not found"))
-    }
+    })
+}
 
     fn select_debug_port(&self, requested: u16) -> u16 {
         crate::ports::select_packaged_codex_debug_port(requested)
@@ -577,6 +598,7 @@ impl LaunchHooks for DefaultLaunchHooks {
         );
         if profile.relay_mode == crate::settings::RelayMode::Official
             && !profile.official_mix_api_key
+            && !profile.has_model_routes()
         {
             let auth_contents = (!profile.auth_contents.trim().is_empty())
                 .then_some(profile.auth_contents.as_str());
@@ -713,7 +735,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                     unreachable!();
                 };
                 let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
-                apply_codexplusplus_window_icon_after_launch(process_id);
+                // apply_codexplusplus_window_icon_after_launch(process_id); // disabled: Win11 taskbar icon fix
                 if let Some(inspector_port) = native_menu_inspector_port {
                     start_native_menu_localizer(inspector_port);
                 }
@@ -998,8 +1020,26 @@ async fn handle_helper_connection(
     let request_user_agent = header_value_from_headers(&request_headers, "user-agent");
     let request_content_type = header_value_from_headers(&request_headers, "content-type");
     let request_content_encoding = header_value_from_headers(&request_headers, "content-encoding");
+    let official_headers = crate::protocol_proxy::OfficialRequestHeaders {
+        authorization: header_value_from_headers(&request_headers, "authorization"),
+        chatgpt_account_id: header_value_from_headers(&request_headers, "chatgpt-account-id"),
+        openai_beta: header_value_from_headers(&request_headers, "openai-beta"),
+        originator: header_value_from_headers(&request_headers, "originator"),
+        version: header_value_from_headers(&request_headers, "version"),
+        session_id: header_value_from_headers(&request_headers, "session-id")
+            .or_else(|| header_value_from_headers(&request_headers, "session_id")),
+        thread_id: header_value_from_headers(&request_headers, "thread-id")
+            .or_else(|| header_value_from_headers(&request_headers, "thread_id")),
+        client_request_id: header_value_from_headers(&request_headers, "x-client-request-id"),
+        codex_window_id: header_value_from_headers(&request_headers, "x-codex-window-id"),
+        codex_turn_metadata: header_value_from_headers(&request_headers, "x-codex-turn-metadata"),
+        actor_authorization: header_value_from_headers(
+            &request_headers,
+            "x-openai-actor-authorization",
+        ),
+        openai_fedramp: header_value_from_headers(&request_headers, "x-openai-fedramp"),
+    };
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
-
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "helper.request",
         serde_json::json!({
@@ -1078,6 +1118,7 @@ async fn handle_helper_connection(
             &mut stream,
             &request_body,
             request_user_agent.as_deref(),
+            official_headers,
             method,
             path,
             remote_addr_text,
@@ -1100,6 +1141,7 @@ async fn handle_helper_connection(
         return handle_models_proxy_connection(
             &mut stream,
             request_user_agent.as_deref(),
+            official_headers,
             method,
             path,
             remote_addr_text,
@@ -1350,6 +1392,7 @@ fn overlay_image_content_type(path: &Path) -> Option<&'static str> {
 async fn handle_models_proxy_connection(
     stream: &mut tokio::net::TcpStream,
     request_user_agent: Option<&str>,
+    official_headers: crate::protocol_proxy::OfficialRequestHeaders,
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
@@ -1365,7 +1408,11 @@ async fn handle_models_proxy_connection(
         stream.shutdown().await?;
         return Ok(());
     }
-    let upstream = match crate::protocol_proxy::open_models_proxy_request(request_user_agent).await
+    let upstream = match crate::protocol_proxy::open_models_proxy_request(
+        request_user_agent,
+        official_headers,
+    )
+    .await
     {
         Ok(upstream) => upstream,
         Err(error) => {
@@ -1398,6 +1445,21 @@ async fn handle_models_proxy_connection(
         upstream.content_type.clone()
     };
     let body = upstream.response.bytes().await?.to_vec();
+    let body = if is_success {
+        let settings = crate::settings::SettingsStore::default().load().unwrap_or_default();
+        match crate::protocol_proxy::merge_routed_models_into_catalog(&body, &settings) {
+            Ok(merged) => merged,
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "helper.models_proxy_merge_skipped",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+                body
+            }
+        }
+    } else {
+        body
+    };
     write_http_response(stream, &status, &content_type, &body).await?;
     log_helper_response(
         if is_success {
@@ -1417,17 +1479,20 @@ async fn handle_protocol_proxy_connection(
     stream: &mut tokio::net::TcpStream,
     request_body: &str,
     request_user_agent: Option<&str>,
+    official_headers: crate::protocol_proxy::OfficialRequestHeaders,
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
-    let upstream = match crate::protocol_proxy::open_responses_proxy_request_for_path(
-        request_body,
-        request_user_agent,
-        path,
-    )
-    .await
+    let upstream =
+        match crate::protocol_proxy::open_responses_proxy_request_for_path_with_headers(
+            request_body,
+            request_user_agent,
+            official_headers,
+            path,
+        )
+        .await
     {
         Ok(upstream) => upstream,
         Err(error) => {

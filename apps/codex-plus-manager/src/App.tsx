@@ -3084,7 +3084,7 @@ export function App() {
         </div>
         <nav className="nav" aria-label={t("主导航")}>
           {navigationSections.map((section) => (
-            <div className={`nav-section ${section.placement === "bottom" ? "nav-section-bottom" : ""}`} key={section.label}>
+<div className={`nav-section ${section.placement === "bottom" ? "nav-section-bottom" : ""}`} key={section.label}>
               <div className="nav-section-label">{section.label}</div>
               {section.routes.map((routeId) => {
                 const item = routes.find((candidate) => candidate.id === routeId);
@@ -3092,7 +3092,7 @@ export function App() {
                 const Icon = item.icon;
                 return (
                   <button
-                    className={`nav-item ${route === item.id ? "active" : ""}`}
+className={`nav-item ${route === item.id ? "active" : ""}`}
                     key={item.id}
                     onClick={() => void navigate(item.id)}
                     title={item.label}
@@ -6683,6 +6683,9 @@ function RelayProfileDetail({
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
   const isActive = !isNew && profile.id === form.activeRelayId;
+  const profileHadModelRoutes = normalizeRelayModelRoutes(profile.modelRoutes).some(
+    (route) => Boolean(route.model.trim() && route.targetRelayId.trim()),
+  );
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
   useEffect(() => {
     const useLiveFiles = isActive && profileUsesLiveFiles && relayFiles;
@@ -6742,7 +6745,11 @@ function RelayProfileDetail({
     }
     const savedProfile = savedSettings.relayProfiles.find((candidate) => candidate.id === normalizedDraft.id)
       ?? normalizedDraft;
-    if (isActive && savedSettings.relayProfilesEnabled && relayProfileUsesLiveFiles(savedProfile)) {
+    if (
+      isActive
+      && savedSettings.relayProfilesEnabled
+      && (relayProfileUsesLiveFiles(savedProfile) || profileHadModelRoutes)
+    ) {
       await actions.switchRelayProfile(savedSettings, savedSettings.activeRelayId);
     }
     onSaved?.();
@@ -6906,6 +6913,8 @@ function RelayProfileEditor({
   }
 
   const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
+  // 纯官方登录仍需展示模型目录与单模型路由；仅 Base URL / Key / 上游协议保持隐藏。
+  const showModelFields = profile.relayMode === "official" || showApiFields;
   const goalsFeatureState = codexGoalsFeatureState(
     profile.configContents,
     form.relayCommonConfigContents,
@@ -6918,7 +6927,10 @@ function RelayProfileEditor({
   };
   const modelRoutes = normalizeRelayModelRoutes(profile.modelRoutes);
   const modelRouteTargets = form.relayProfiles.filter(
-    (candidate) => candidate.id !== profile.id && !isAggregateRelayProfile(candidate) && candidate.protocol === "responses",
+    (candidate) =>
+      candidate.id !== profile.id
+      && !isAggregateRelayProfile(candidate)
+      && !(candidate.relayMode === "official" && !candidate.officialMixApiKey),
   );
   const updateModelRoute = (index: number, patch: Partial<RelayModelRoute>) => {
     updateDraft({
@@ -7141,7 +7153,7 @@ function RelayProfileEditor({
             </Field>
           </div>
         ) : null}
-        {showApiFields ? (
+        {showModelFields ? (
           <section className="relay-config-section relay-field-model-list">
             <div className="relay-config-section-head">
               <div>
@@ -7161,6 +7173,7 @@ function RelayProfileEditor({
                   {t("添加模型")}
                 </Button>
                 <Button
+                  disabled={!showApiFields}
                   onClick={async () => {
                     const serializedRows = serializeModelWindowRows(modelWindowRows);
                     const models = await actions.fetchRelayProfileModels({
@@ -7238,19 +7251,19 @@ function RelayProfileEditor({
             </div>
           </section>
         ) : null}
-        {showApiFields ? (
+        {showModelFields ? (
           <section className="relay-config-section relay-field-model-routes">
             <div className="relay-config-section-head">
               <div>
                 <strong>{t("单模型路由")}</strong>
-                <span>{t("仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标必须是 Responses API，且需要从 Codex++ 启动。")}</span>
+                <span>{t("仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标可使用 Responses API 或 Chat Completions，且需要从 Codex++ 启动。")}</span>
               </div>
               <div className="relay-model-list-tools">
                 <Button
                   disabled={modelRouteTargets.length === 0}
                   onClick={() => updateDraft({ modelRoutes: [...modelRoutes, { model: "", targetRelayId: "", targetModel: "" }] })}
                   size="sm"
-                  title={modelRouteTargets.length === 0 ? t("请先创建一个 Responses API 目标供应商") : t("添加模型路由")}
+                  title={modelRouteTargets.length === 0 ? t("请先创建一个可用的 API 目标供应商") : t("添加模型路由")}
                   type="button"
                   variant="secondary"
                 >
@@ -7278,7 +7291,7 @@ function RelayProfileEditor({
                     value={route.targetRelayId}
                     onChange={(targetRelayId) => updateModelRoute(index, { targetRelayId })}
                     options={[
-                      { value: "", label: t("选择 Responses 供应商"), disabled: true },
+                      { value: "", label: t("目标供应商"), disabled: true },
                       ...modelRouteTargets.map((candidate) => ({ value: candidate.id, label: candidate.name || candidate.id })),
                     ]}
                   />
@@ -9327,7 +9340,12 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     officialMixApiKey,
     hideOfficialUsageAlert: profile.hideOfficialUsageAlert === true,
     testModel: profile.testModel || "",
-    configContents: relayMode === "official" && !officialMixApiKey ? "" : profile.configContents || "",
+    configContents:
+      relayMode === "official"
+      && !officialMixApiKey
+      && normalizeRelayModelRoutes(profile.modelRoutes).length === 0
+        ? ""
+        : profile.configContents || "",
     authContents: relayMode === "official" && !officialMixApiKey ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "",
     useCommonConfig: profile.useCommonConfig !== false,
     contextSelection: profile.contextSelectionInitialized
@@ -9338,7 +9356,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     autoCompactLimit: profile.autoCompactLimit || "",
     modelList: profile.modelList || "",
     modelWindows: profile.modelWindows || "",
-    modelRoutes: relayMode === "official" && !officialMixApiKey ? [] : normalizeRelayModelRoutes(profile.modelRoutes),
+    modelRoutes: normalizeRelayModelRoutes(profile.modelRoutes),
     userAgent: profile.userAgent || "",
     sub2apiEnabled: profile.sub2apiEnabled === true,
     sub2apiMultiplier: profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
@@ -9498,11 +9516,15 @@ function relayProfileReadinessText(profile: RelayProfile, relay: RelayResult | n
 function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injection" | "apply_relay_injection" | "apply_pure_api_injection" {
   if (isAggregateRelayProfile(profile)) return "apply_relay_injection";
   if (profile.relayMode === "pureApi") return "apply_pure_api_injection";
-  if (profile.relayMode === "official" && !profile.officialMixApiKey) return "clear_relay_injection";
+  if (
+    profile.relayMode === "official"
+    && !profile.officialMixApiKey
+    && normalizeRelayModelRoutes(profile.modelRoutes).length === 0
+  ) return "clear_relay_injection";
   if (profile.configContents.trim()) return "apply_relay_injection";
+  if (normalizeRelayModelRoutes(profile.modelRoutes).length > 0) return "apply_relay_injection";
   return profile.officialMixApiKey ? "apply_relay_injection" : "clear_relay_injection";
 }
-
 function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
   if (isAggregateRelayProfile(profile)) {
     return { ...profile, configContents: "", authContents: "", aggregate: normalizeAggregateConfig(profile.aggregate, []) };
@@ -9527,7 +9549,7 @@ function buildRelayConfigToml(
   profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">,
   options: { includeBearerToken: boolean; requiresOpenAiAuth?: boolean },
 ): string {
-  const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
+  const baseUrl = profile.protocol === "chatCompletions" || normalizeRelayModelRoutes(profile.modelRoutes).length > 0 ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
   const rootLines = [
     profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
@@ -9649,7 +9671,11 @@ function applyRelayProfilePatchToFiles(
     );
   }
   if ("relayMode" in patch || "officialMixApiKey" in patch) {
-    if (next.relayMode === "official" && !next.officialMixApiKey) {
+    if (
+      next.relayMode === "official"
+      && !next.officialMixApiKey
+      && normalizeRelayModelRoutes(next.modelRoutes).length === 0
+    ) {
       next.configContents = "";
       next.authContents = buildOfficialRelayAuthJson(next.authContents);
     } else if (options.allowGenerateFiles && (!next.configContents.trim() || (next.relayMode === "pureApi" && !next.authContents.trim()))) {
@@ -9978,9 +10004,10 @@ function relaySettingsWithDraft(
 }
 
 function relayProfileUsesLiveFiles(profile: RelayProfile): boolean {
-  return profile.relayMode !== "official" || profile.officialMixApiKey;
+  return profile.relayMode !== "official"
+    || profile.officialMixApiKey
+    || normalizeRelayModelRoutes(profile.modelRoutes).length > 0;
 }
-
 function authJsonHasOpenAiApiKey(contents: string): boolean {
   const trimmed = contents.trim();
   if (!trimmed) return false;

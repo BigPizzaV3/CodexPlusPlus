@@ -735,12 +735,20 @@ fn sync_active_relay_to_home(
     }
     if relay.relay_mode == codex_plus_core::settings::RelayMode::Official
         && !relay.official_mix_api_key
+        && !relay.has_model_routes()
     {
         let auth_contents =
             (!relay.auth_contents.trim().is_empty()).then_some(relay.auth_contents.as_str());
         return codex_plus_core::relay_config::clear_relay_config_to_home_with_auth(
             home,
             auth_contents,
+        );
+    }
+    if relay.has_model_routes() {
+        return codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
+            home,
+            &relay,
+            &relay_combined_common_config(settings),
         );
     }
     if relay_has_complete_files(&relay) {
@@ -751,14 +759,8 @@ fn sync_active_relay_to_home(
         );
     }
 
-    let mut base_url = relay.base_url.trim().to_string();
-    let mut protocol = relay.protocol;
-    if relay.has_model_routes() {
-        base_url = codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
-        );
-        protocol = codex_plus_core::settings::RelayProtocol::Responses;
-    }
+    let base_url = relay.base_url.trim().to_string();
+    let protocol = relay.protocol;
     if relay.relay_mode == codex_plus_core::settings::RelayMode::PureApi {
         return codex_plus_core::relay_config::apply_pure_api_config_to_home_with_protocol(
             home,
@@ -3709,6 +3711,23 @@ pub fn switch_relay_profile(
         &previous_active_relay_id,
     ) {
         Ok(result) => {
+            if result.settings.active_relay_profile().has_model_routes() {
+                if let Err(error) = sync_active_relay_to_home(&result.settings, &home) {
+                    let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+                    log_manager_event(
+                        "manager.switch_relay_profile.route_sync_failed",
+                        json!({
+                            "targetRelayId": result.settings.active_relay_id,
+                            "configured": status.configured,
+                            "error": error.to_string()
+                        }),
+                    );
+                    return failed(
+                        &format!("供应商已切换，但单模型路由 live 配置同步失败：{error}"),
+                        relay_switch_payload(result.settings, status, result.backup_path),
+                    );
+                }
+            }
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             log_manager_event(
                 "manager.switch_relay_profile.ok",
@@ -4413,6 +4432,28 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         }
         return response;
     }
+    if relay.has_model_routes() {
+        return match sync_active_relay_to_home(&settings, &home) {
+            Ok(result) => {
+                finish_codex_app_state_after_provider_switch(
+                    &home,
+                    "manager.apply_relay_injection.model_routes",
+                );
+                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+                ok(
+                    "单模型路由配置已写入，本地协议代理将按模型选择目标供应商。",
+                    relay_payload(status, result.backup_path),
+                )
+            }
+            Err(error) => {
+                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
+                failed(
+                    &format!("写入单模型路由配置失败：{error}"),
+                    relay_payload(status, None),
+                )
+            }
+        };
+    }
     if relay_has_complete_files(&relay) {
         return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
             &home,
@@ -4723,7 +4764,7 @@ fn finish_codex_app_state_after_provider_switch(home: &Path, source: &str) {
 
 fn relay_has_complete_files(relay: &codex_plus_core::settings::RelayProfile) -> bool {
     if relay.relay_mode == codex_plus_core::settings::RelayMode::Official
-        && relay.official_mix_api_key
+        && (relay.official_mix_api_key || relay.has_model_routes())
     {
         return !relay.config_contents.trim().is_empty();
     }

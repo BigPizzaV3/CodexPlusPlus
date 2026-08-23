@@ -56,7 +56,6 @@ export function findRelayModelRouteIssue(
       const target = allProfiles.find((candidate) => candidate.id === targetRelayId);
       if (!target) return { kind: "missingTarget", model, sourceRelayId: source.id };
       if (target.relayMode === "aggregate") return { kind: "aggregateTarget", model, sourceRelayId: source.id };
-      if (target.protocol !== "responses") return { kind: "targetProtocol", model, sourceRelayId: source.id };
       const targetHasApiCredentials =
         !(target.relayMode === "official" && !target.officialMixApiKey)
         && Boolean(target.baseUrl.trim() && target.apiKey.trim());

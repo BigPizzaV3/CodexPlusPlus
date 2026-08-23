@@ -30,3 +30,10 @@ pnpm-workspace.yaml
 plan.md
 plan_v2.md
 
+
+# Local CodexPlusPlus patch/recovery backups
+*.bak
+*.v5.1-syntax-backup-*
+*.v6-backup-*
+v5-model-route-backup-*/
+v5.1-app-recovery-backup-*/

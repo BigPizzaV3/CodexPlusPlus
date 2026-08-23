@@ -134,7 +134,10 @@ fn apply_selected_relay_profile(
 ) -> anyhow::Result<RelaySwitchResult> {
     let relay = settings.active_relay_profile();
     let common_config = relay_combined_common_config(settings);
-    let result = if relay.relay_mode == RelayMode::Official && !relay.official_mix_api_key {
+    let result = if relay.relay_mode == RelayMode::Official
+        && !relay.official_mix_api_key
+        && !relay.has_model_routes()
+    {
         let auth_contents =
             (!relay.auth_contents.trim().is_empty()).then_some(relay.auth_contents.as_str());
         crate::relay_config::clear_relay_config_to_home_with_auth(home, auth_contents)?
@@ -160,7 +163,13 @@ fn apply_selected_relay_profile(
 }
 
 fn validate_switch_profile_files(profile: &crate::settings::RelayProfile) -> anyhow::Result<()> {
-    if profile.relay_mode != RelayMode::Aggregate && profile.config_contents.trim().is_empty() {
+    let official_model_router = profile.relay_mode == RelayMode::Official
+        && !profile.official_mix_api_key
+        && profile.has_model_routes();
+    if profile.relay_mode != RelayMode::Aggregate
+        && !official_model_router
+        && profile.config_contents.trim().is_empty()
+    {
         anyhow::bail!(
             "供应商「{}」缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。",
             if profile.name.trim().is_empty() {

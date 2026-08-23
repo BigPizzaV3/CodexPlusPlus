@@ -451,6 +451,39 @@ base_url = "https://responses.example.test/v1"
 }
 
 #[test]
+fn official_model_routes_remove_only_managed_static_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "official".to_string(),
+        relay_mode: RelayMode::Official,
+        config_contents: r#"model_provider = "custom"
+model_catalog_json = "model-catalogs/previous.json"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "http://127.0.0.1:57321/v1"
+"#
+        .to_string(),
+        model_routes: vec![RelayModelRoute {
+            model: "deepseek/deepseek-v4-flash".to_string(),
+            target_relay_id: "bai".to_string(),
+            target_model: String::new(),
+        }],
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+    let live = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(!live.contains("model_catalog_json"));
+    assert!(!temp.path().join("model-catalogs").exists());
+    assert!(live.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    assert!(live.contains("requires_openai_auth = true"));
+}
+
+#[test]
 fn apply_aggregate_relay_points_codex_to_local_responses_proxy_without_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {

@@ -13,6 +13,23 @@ use crate::relay_rotation::{RotationContext, RotationEvent};
 use crate::settings::{RelayProtocol, SettingsStore};
 
 pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 57321;
+const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+
+#[derive(Debug, Clone, Default)]
+pub struct OfficialRequestHeaders {
+    pub authorization: Option<String>,
+    pub chatgpt_account_id: Option<String>,
+    pub openai_beta: Option<String>,
+    pub originator: Option<String>,
+    pub version: Option<String>,
+    pub session_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub client_request_id: Option<String>,
+    pub codex_window_id: Option<String>,
+    pub codex_turn_metadata: Option<String>,
+    pub actor_authorization: Option<String>,
+    pub openai_fedramp: Option<String>,
+}
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
@@ -250,7 +267,7 @@ fn chat_completion_to_response_with_context(
     if let Some(reasoning) = chat_reasoning_to_response_output_item(message, &response_id) {
         output.push(reasoning);
     }
-    if let Some(message) = chat_message_to_response_output_item(message, &response_id) {
+    if let Some(message) = chat_message_to_response_output_item(message) {
         output.push(message);
     }
     output.extend(chat_tool_calls_to_response_output_items(
@@ -519,11 +536,28 @@ pub async fn open_responses_proxy_request_for_path(
     original_user_agent: Option<&str>,
     request_path: &str,
 ) -> anyhow::Result<UpstreamProxyResponse> {
+    open_responses_proxy_request_for_path_with_headers(
+        body,
+        original_user_agent,
+        OfficialRequestHeaders::default(),
+        request_path,
+    )
+    .await
+}
+
+pub async fn open_responses_proxy_request_for_path_with_headers(
+    body: &str,
+    original_user_agent: Option<&str>,
+    official_headers: OfficialRequestHeaders,
+    request_path: &str,
+) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
+
     open_responses_proxy_request_with_settings_and_user_agent(
         body,
         settings,
         original_user_agent,
+        official_headers,
         request_path,
     )
     .await
@@ -533,8 +567,14 @@ pub async fn open_responses_proxy_request_with_settings(
     body: &str,
     settings: crate::settings::BackendSettings,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    open_responses_proxy_request_with_settings_and_user_agent(body, settings, None, "/responses")
-        .await
+    open_responses_proxy_request_with_settings_and_user_agent(
+        body,
+        settings,
+        None,
+        OfficialRequestHeaders::default(),
+        "/responses",
+    )
+    .await
 }
 
 pub async fn open_responses_proxy_request_with_settings_for_path(
@@ -542,14 +582,21 @@ pub async fn open_responses_proxy_request_with_settings_for_path(
     settings: crate::settings::BackendSettings,
     request_path: &str,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    open_responses_proxy_request_with_settings_and_user_agent(body, settings, None, request_path)
-        .await
+    open_responses_proxy_request_with_settings_and_user_agent(
+        body,
+        settings,
+        None,
+        OfficialRequestHeaders::default(),
+        request_path,
+    )
+    .await
 }
 
 async fn open_responses_proxy_request_with_settings_and_user_agent(
     body: &str,
     settings: crate::settings::BackendSettings,
     original_user_agent: Option<&str>,
+    official_headers: OfficialRequestHeaders,
     request_path: &str,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let mut request_json: Value = serde_json::from_str(body)?;
@@ -564,11 +611,27 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         .unwrap_or("")
         .to_string();
     let model_route = select_model_route(&settings, &source_model)?;
+
+    if model_route.is_none()
+        && settings.active_relay_profile().relay_mode == crate::settings::RelayMode::Official
+        && !settings.active_relay_profile().official_mix_api_key
+    {
+        return open_official_responses_passthrough(
+            request_json,
+            original_user_agent,
+            official_headers,
+            is_stream,
+            request_path,
+        )
+        .await;
+    }
+
     if let Some(route) = &model_route
         && route.upstream_model != source_model
     {
         request_json["model"] = Value::String(route.upstream_model.clone());
     }
+
     let context = RotationContext {
         conversation_id: conversation_id_from_responses_request(&request_json),
     };
@@ -713,6 +776,118 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     anyhow::bail!("未找到可用的聚合供应商成员")
 }
 
+async fn open_official_responses_passthrough(
+    mut request_json: Value,
+    original_user_agent: Option<&str>,
+    headers: OfficialRequestHeaders,
+    is_stream: bool,
+    request_path: &str,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    let sanitized_legacy_item_ids = sanitize_official_input_item_ids(&mut request_json);
+    let authorization = headers
+        .authorization
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("官方订阅直通缺少 Authorization 请求头")?;
+    let account_id = headers
+        .chatgpt_account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("官方订阅直通缺少 ChatGPT-Account-ID 请求头")?;
+
+    let endpoint = if is_responses_compact_proxy_path(request_path) {
+        format!("{CHATGPT_CODEX_BASE_URL}/responses/compact")
+    } else {
+        format!("{CHATGPT_CODEX_BASE_URL}/responses")
+    };
+
+    let mut builder = crate::http_client::proxied_client(
+        original_user_agent
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("CodexPlusPlus/OfficialPassthrough"),
+    )?
+    .post(&endpoint)
+    .header(reqwest::header::AUTHORIZATION, authorization)
+    .header("ChatGPT-Account-ID", account_id)
+    .header(reqwest::header::CONTENT_TYPE, "application/json");
+
+    for (name, value) in [
+        ("OpenAI-Beta", headers.openai_beta.as_deref()),
+        ("Originator", headers.originator.as_deref()),
+        ("Version", headers.version.as_deref()),
+        ("session_id", headers.session_id.as_deref()),
+        ("thread_id", headers.thread_id.as_deref()),
+        ("x-client-request-id", headers.client_request_id.as_deref()),
+        ("x-codex-window-id", headers.codex_window_id.as_deref()),
+        (
+            "x-codex-turn-metadata",
+            headers.codex_turn_metadata.as_deref(),
+        ),
+        (
+            "x-openai-actor-authorization",
+            headers.actor_authorization.as_deref(),
+        ),
+        ("x-openai-fedramp", headers.openai_fedramp.as_deref()),
+    ] {
+        if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+            builder = builder.header(name, value);
+        }
+    }
+
+    if is_stream {
+        builder = builder
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .header(reqwest::header::CACHE_CONTROL, "no-cache");
+    }
+
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.official_passthrough_request",
+        json!({
+            "endpoint": endpoint,
+            "stream": is_stream,
+            "hasAuthorization": true,
+            "hasChatgptAccountId": true,
+            "hasOpenaiBeta": headers.openai_beta.is_some(),
+            "hasOriginator": headers.originator.is_some(),
+            "hasVersion": headers.version.is_some(),
+            "hasSessionId": headers.session_id.is_some(),
+            "hasThreadId": headers.thread_id.is_some(),
+            "sanitizedLegacyItemIds": sanitized_legacy_item_ids
+        }),
+    );
+
+    let upstream = send_upstream_request_for_responses(builder.json(&request_json), is_stream)
+        .await
+        .with_context(|| format!("官方订阅直通请求失败，endpoint: {endpoint}"))?;
+    let status_code = upstream.status().as_u16();
+    let content_type = upstream
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.official_passthrough_response",
+        json!({
+            "endpoint": endpoint,
+            "stream": is_stream,
+            "statusCode": status_code
+        }),
+    );
+
+    Ok(UpstreamProxyResponse {
+        status_code,
+        is_stream: is_stream || content_type.contains("text/event-stream"),
+        content_type,
+        wire_api: UpstreamWireApi::Responses,
+        response: upstream,
+    })
+}
+
 fn select_model_route(
     settings: &crate::settings::BackendSettings,
     model: &str,
@@ -742,10 +917,6 @@ fn select_model_route(
     if target.relay_mode == crate::settings::RelayMode::Aggregate {
         anyhow::bail!("模型路由目标不能是聚合供应商：{}", target.name);
     }
-    if target.protocol != RelayProtocol::Responses {
-        anyhow::bail!("模型路由目标必须使用 Responses API：{}", target.name);
-    }
-
     let upstream_model = if route.target_model.trim().is_empty() {
         model.to_string()
     } else {
@@ -761,8 +932,54 @@ fn select_model_route(
 
 pub async fn open_models_proxy_request(
     original_user_agent: Option<&str>,
+    official_headers: OfficialRequestHeaders,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
+    if settings.active_relay_profile().relay_mode == crate::settings::RelayMode::Official {
+        let authorization = official_headers
+            .authorization
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("官方模型目录请求缺少 Authorization 请求头")?;
+        let account_id = official_headers
+            .chatgpt_account_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("官方模型目录请求缺少 ChatGPT-Account-ID 请求头")?;
+        let endpoint = format!("{CHATGPT_CODEX_BASE_URL}/models?client_version=0.149.0");
+        let mut request = crate::http_client::proxied_client(
+            original_user_agent.unwrap_or("CodexPlusPlus/OfficialModels"),
+        )?
+        .get(&endpoint)
+        .header(reqwest::header::AUTHORIZATION, authorization)
+        .header("ChatGPT-Account-ID", account_id);
+        for (name, value) in [
+            ("OpenAI-Beta", official_headers.openai_beta.as_deref()),
+            ("Originator", official_headers.originator.as_deref()),
+            ("Version", official_headers.version.as_deref()),
+        ] {
+            if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+                request = request.header(name, value);
+            }
+        }
+        let upstream = send_upstream_request(request).await?;
+        let status_code = upstream.status().as_u16();
+        let content_type = upstream
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/json; charset=utf-8")
+            .to_string();
+        return Ok(UpstreamProxyResponse {
+            status_code,
+            is_stream: false,
+            content_type,
+            wire_api: UpstreamWireApi::Responses,
+            response: upstream,
+        });
+    }
     let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
     validate_upstream(&relay)?;
 
@@ -800,6 +1017,60 @@ pub async fn open_models_proxy_request(
         wire_api: UpstreamWireApi::Responses,
         response: upstream,
     })
+}
+
+pub fn merge_routed_models_into_catalog(
+    body: &[u8],
+    settings: &crate::settings::BackendSettings,
+) -> anyhow::Result<Vec<u8>> {
+    let profile = settings.active_relay_profile();
+    let mut catalog: Value = serde_json::from_slice(body)?;
+    let models = catalog
+        .get_mut("models")
+        .and_then(Value::as_array_mut)
+        .context("官方模型目录缺少 models 数组")?;
+    let mut known: BTreeSet<String> = models
+        .iter()
+        .filter_map(|model| model.get("slug").and_then(Value::as_str))
+        .map(ToString::to_string)
+        .collect();
+    let mut requested = profile.model_list.clone();
+    for route in &profile.model_routes {
+        let model = route.model.trim();
+        if !model.is_empty() {
+            requested.push('\n');
+            requested.push_str(model);
+        }
+    }
+    let (requested, windows) = if profile.model_windows.trim().is_empty() && requested.contains('[')
+    {
+        crate::model_suffix::migrate_model_list_with_suffixes(&requested)
+    } else {
+        (
+            requested,
+            serde_json::from_str(&profile.model_windows).unwrap_or_default(),
+        )
+    };
+    let entries = crate::model_suffix::collect_catalog_entries(&requested, &windows, "");
+    let generated: Value = serde_json::from_str(
+        &crate::model_suffix::build_model_catalog_json_with_capabilities(
+            &entries, None, None, None, false,
+        ),
+    )?;
+    for model in generated
+        .get("models")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(slug) = model.get("slug").and_then(Value::as_str) else {
+            continue;
+        };
+        if known.insert(slug.to_string()) {
+            models.push(model.clone());
+        }
+    }
+    Ok(serde_json::to_vec(&catalog)?)
 }
 
 pub async fn open_audio_transcriptions_proxy_request(
@@ -1213,6 +1484,147 @@ pub fn response_id_from_chat_id(id: Option<&str>) -> String {
     }
 }
 
+fn new_message_item_id() -> String {
+    format!("msg_{}", uuid::Uuid::new_v4())
+}
+
+pub fn sanitize_official_input_item_ids(request: &mut Value) -> usize {
+    let Some(input) = request.get_mut("input").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    let synthetic_reasoning_ids: BTreeSet<String> = input
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
+        .filter_map(|item| item.get("id").and_then(Value::as_str))
+        .filter(|id| id.starts_with("rs_resp_"))
+        .map(ToString::to_string)
+        .collect();
+    let legacy_message_id_renames: BTreeMap<String, String> = input
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
+        .filter_map(|item| item.get("id").and_then(Value::as_str))
+        .filter_map(|id| {
+            id.strip_prefix("resp_")
+                .and_then(|id| id.strip_suffix("_msg"))
+                .map(|legacy| (id.to_string(), format!("msg_{legacy}")))
+        })
+        .collect();
+    let mut sanitized = 0;
+    input.retain_mut(|item| {
+        if item
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| synthetic_reasoning_ids.contains(id))
+            && item.get("type").and_then(Value::as_str) == Some("reasoning")
+        {
+            sanitized += 1;
+            return false;
+        }
+        if is_reference_to_removed_item(item, &synthetic_reasoning_ids) {
+            sanitized += 1;
+            return false;
+        }
+        if matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("reference" | "item_reference")
+        ) {
+            sanitized += rewrite_reference_ids(item, &legacy_message_id_renames);
+        }
+        sanitized += prune_removed_item_references(
+            item,
+            &synthetic_reasoning_ids,
+            &legacy_message_id_renames,
+        );
+        if item.get("type").and_then(Value::as_str) != Some("message") {
+            return true;
+        }
+        let Some(id) = item.get("id").and_then(Value::as_str) else {
+            return true;
+        };
+        let Some(new_id) = legacy_message_id_renames.get(id) else {
+            return true;
+        };
+        item["id"] = Value::String(new_id.clone());
+        sanitized += 1;
+        true
+    });
+    sanitized
+}
+
+fn is_reference_to_removed_item(value: &Value, removed_ids: &BTreeSet<String>) -> bool {
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some("reference" | "item_reference")
+    ) && value_contains_removed_id(value, removed_ids)
+}
+
+fn value_contains_removed_id(value: &Value, removed_ids: &BTreeSet<String>) -> bool {
+    match value {
+        Value::String(value) => removed_ids.contains(value),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| value_contains_removed_id(value, removed_ids)),
+        Value::Object(values) => values
+            .values()
+            .any(|value| value_contains_removed_id(value, removed_ids)),
+        _ => false,
+    }
+}
+
+fn rewrite_reference_ids(value: &mut Value, renames: &BTreeMap<String, String>) -> usize {
+    match value {
+        Value::String(value) => {
+            let Some(replacement) = renames.get(value) else {
+                return 0;
+            };
+            *value = replacement.clone();
+            1
+        }
+        Value::Array(values) => values
+            .iter_mut()
+            .map(|value| rewrite_reference_ids(value, renames))
+            .sum(),
+        Value::Object(values) => values
+            .values_mut()
+            .map(|value| rewrite_reference_ids(value, renames))
+            .sum(),
+        _ => 0,
+    }
+}
+
+fn prune_removed_item_references(
+    value: &mut Value,
+    removed_ids: &BTreeSet<String>,
+    renames: &BTreeMap<String, String>,
+) -> usize {
+    match value {
+        Value::Array(values) => {
+            let mut removed = 0;
+            values.retain_mut(|value| {
+                if is_reference_to_removed_item(value, removed_ids) {
+                    removed += 1;
+                    false
+                } else {
+                    if matches!(
+                        value.get("type").and_then(Value::as_str),
+                        Some("reference" | "item_reference")
+                    ) {
+                        removed += rewrite_reference_ids(value, renames);
+                    }
+                    removed += prune_removed_item_references(value, removed_ids, renames);
+                    true
+                }
+            });
+            removed
+        }
+        Value::Object(values) => values
+            .values_mut()
+            .map(|value| prune_removed_item_references(value, removed_ids, renames))
+            .sum(),
+        _ => 0,
+    }
+}
+
 fn push_sse(output: &mut String, event: &str, data: Value) {
     output.push_str("event: ");
     output.push_str(event);
@@ -1519,7 +1931,7 @@ impl ChatSseState {
     fn push_text_delta_into(&mut self, delta: &str, output: &mut String) {
         if !self.text.added {
             let output_index = self.next_output_index();
-            let item_id = format!("{}_msg", self.response_id);
+            let item_id = new_message_item_id();
             self.text.output_index = Some(output_index);
             self.text.item_id = item_id.clone();
             self.text.added = true;
@@ -3131,7 +3543,7 @@ fn chat_reasoning_text(message: &Value) -> Option<String> {
     None
 }
 
-fn chat_message_to_response_output_item(message: &Value, response_id: &str) -> Option<Value> {
+fn chat_message_to_response_output_item(message: &Value) -> Option<Value> {
     let mut content = Vec::new();
     if let Some(text) = message.get("content").and_then(Value::as_str) {
         let text = split_leading_think_block(text)
@@ -3174,7 +3586,7 @@ fn chat_message_to_response_output_item(message: &Value, response_id: &str) -> O
     }
 
     Some(json!({
-        "id": format!("{response_id}_msg"),
+        "id": new_message_item_id(),
         "type": "message",
         "status": "completed",
         "role": "assistant",

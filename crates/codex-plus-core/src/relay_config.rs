@@ -226,10 +226,13 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
         .and_then(|values| values.get("base_url"))
         .map(|value| !unquote_toml_string(value).trim().is_empty())
         .unwrap_or(false);
+    let has_chatgpt_auth = auth_contents_looks_like_chatgpt_auth(&auth_contents);
     RelayConfigStatus {
         configured: root_provider.is_some()
-            && (has_bearer_token || codex_auth_api_key(&auth_contents).is_some())
-            && has_base_url,
+            && has_base_url
+            && (has_bearer_token
+                || codex_auth_api_key(&auth_contents).is_some()
+                || (requires_openai_auth && has_chatgpt_auth)),
         requires_openai_auth,
         has_bearer_token,
         config_path: config_path.to_string_lossy().to_string(),
@@ -1505,6 +1508,18 @@ fn apply_model_catalog_to_config(
         sanitize_catalog_filename(&profile.id)
     );
     let mut config_text = config_text.to_string();
+    if profile.relay_mode == crate::settings::RelayMode::Official
+        && !profile.official_mix_api_key
+        && profile.has_model_routes()
+    {
+        if root_key_string(&config_text, "model_catalog_json")
+            .as_deref()
+            .is_some_and(|path| is_codex_plus_managed_model_catalog(home, path))
+        {
+            config_text = remove_root_key(&config_text, "model_catalog_json");
+        }
+        return Ok(config_text);
+    }
     let custom_responses = custom_responses_provider(&config_text);
     // Catalog capabilities must follow the effective config, not stale profile URLs.
     let official_deepseek_responses =
@@ -1554,12 +1569,12 @@ fn apply_model_catalog_to_config(
         };
     let entries =
         crate::model_suffix::collect_catalog_entries(&model_list, &model_windows, &profile.model);
-    // Known bundled metadata entries need a catalog even without a user-supplied window.
     if !entries.iter().any(|entry| {
-        entry.suffix_window.is_some()
+            entry.suffix_window.is_some()
             || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
             || (official_deepseek_responses && entry.slug.starts_with("deepseek-v4-"))
-    }) {
+        })
+    {
         return Ok(config_text);
     }
     let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
@@ -1576,6 +1591,7 @@ fn apply_model_catalog_to_config(
         custom_responses.then_some(false),
         official_deepseek_responses,
     );
+
     std::fs::write(&catalog_path, catalog_json)?;
     let mut doc = parse_toml_document(&config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
@@ -2360,12 +2376,10 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     {
         provider["wire_api"] = toml_edit::value("responses");
     }
-    if profile.relay_mode != crate::settings::RelayMode::PureApi
-        && provider
-            .get("requires_openai_auth")
-            .and_then(Item::as_bool)
-            .is_none()
-    {
+    if profile.relay_mode == crate::settings::RelayMode::PureApi {
+        provider.remove("requires_openai_auth");
+    } else {
+        // 官方登录（含“官方 + 单模型路由”）必须继续使用 ChatGPT 登录凭据。
         provider["requires_openai_auth"] = toml_edit::value(true);
     }
     let provider_base_url = if profile.has_model_routes() {
@@ -2419,6 +2433,29 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
         profile.model_windows = serde_json::to_string(&windows).unwrap_or_default();
     }
     if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
+        // 纯官方模式：没有模型路由时保持原行为，清理 custom provider。
+        // 一旦存在 modelRoutes，则保留官方认证，同时生成本地 Responses Proxy provider。
+        if profile.has_model_routes() {
+            profile.base_url.clear();
+            profile.upstream_base_url.clear();
+            profile.api_key.clear();
+            profile.config_contents =
+                remove_experimental_bearer_token_from_config(&profile.config_contents)?;
+            profile.config_contents = remove_root_key(&profile.config_contents, "OPENAI_API_KEY");
+
+            if auth_contents_looks_like_chatgpt_auth(&profile.auth_contents) {
+                profile.auth_contents =
+                    remove_openai_api_key_from_auth_contents(&profile.auth_contents)?;
+            } else {
+                profile.auth_contents.clear();
+            }
+
+            profile.config_contents = complete_relay_profile_config(profile)?;
+            profile.model = relay_profile_model(profile);
+            profile.model_list = merge_model_into_model_list(&profile.model, &profile.model_list);
+            return Ok(());
+        }
+
         let has_api_config = !profile.base_url.trim().is_empty()
             || !profile.api_key.trim().is_empty()
             || codex_auth_api_key(&profile.auth_contents).is_some()
