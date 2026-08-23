@@ -217,6 +217,37 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             &settings.codex_extra_args,
         )
         .await;
+    let helper_required = settings.enhancements_enabled
+        || settings.active_relay_uses_protocol_proxy()
+        || (settings.active_relay_profile().relay_mode
+            == codex_plus_core::settings::RelayMode::Official
+            && settings.active_relay_profile().official_mix_api_key);
+    let bridge_healthy = if settings.enhancements_enabled {
+        codex_plus_core::launcher::bridge_is_healthy(options.debug_port).await
+    } else {
+        false
+    };
+    let rebuild_bridge =
+        should_rebuild_existing_bridge(settings.enhancements_enabled, bridge_healthy);
+    let mut bridge_rebuilt = false;
+    if helper_required && (!settings.enhancements_enabled || rebuild_bridge) {
+        let helper_port = hooks.select_helper_port(options.helper_port);
+        hooks.start_helper(helper_port).await?;
+        if rebuild_bridge {
+            let injection_ready = hooks
+                .ensure_injection(options.debug_port, helper_port, &app_dir)
+                .await;
+            if injection_ready {
+                hooks
+                    .start_bridge_watchdog(options.debug_port, helper_port)
+                    .await?;
+                bridge_rebuilt = true;
+                hooks.write_status("running").await;
+            } else {
+                hooks.write_status("running_degraded").await;
+            }
+        }
+    }
     let process_ids = codex_plus_core::watcher::find_codex_processes();
     let mut activated = false;
     #[cfg(windows)]
@@ -236,6 +267,8 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             "requested_helper_port": options.helper_port,
             "process_ids": process_ids,
             "activated": activated,
+            "bridge_healthy": bridge_healthy,
+            "bridge_rebuilt": bridge_rebuilt,
             "launch_ok": launch_result.is_ok(),
             "launch_error": launch_result.as_ref().err().map(|error| error.to_string())
         }),
@@ -248,6 +281,10 @@ fn should_finalize_pending_remote_control_recovery(
     blocking_process_ids: &[u32],
 ) -> bool {
     has_pending_recovery && blocking_process_ids.is_empty()
+}
+
+fn should_rebuild_existing_bridge(enhancements_enabled: bool, bridge_healthy: bool) -> bool {
+    enhancements_enabled && !bridge_healthy
 }
 
 fn log_launcher_already_running(debug_port: u16) {
@@ -1108,6 +1145,34 @@ mod tests {
     }
 
     #[test]
+    fn repeated_launcher_reuses_healthy_bridge_and_rebuilds_only_when_unhealthy() {
+        let source = include_str!("main.rs");
+        let existing_instance_path = source
+            .split_once("async fn activate_existing_codex_app")
+            .and_then(|(_, source)| source.split_once("fn log_launcher_already_running"))
+            .map(|(path, _)| path)
+            .expect("existing-instance launcher path should be present");
+
+        let health_probe = existing_instance_path
+            .find("bridge_is_healthy(options.debug_port).await")
+            .expect("existing launcher should probe the current bridge");
+        let helper_start = existing_instance_path
+            .find("hooks.start_helper(helper_port).await?")
+            .expect("unhealthy bridge path should start the helper");
+        assert!(health_probe < helper_start);
+        assert!(existing_instance_path.contains("should_rebuild_existing_bridge"));
+        assert!(existing_instance_path.contains("hooks.ensure_injection"));
+        assert!(existing_instance_path.contains("hooks.start_bridge_watchdog"));
+    }
+
+    #[test]
+    fn existing_bridge_recovery_requires_an_unhealthy_enabled_bridge() {
+        assert!(should_rebuild_existing_bridge(true, false));
+        assert!(!should_rebuild_existing_bridge(true, true));
+        assert!(!should_rebuild_existing_bridge(false, false));
+    }
+
+    #[test]
     fn existing_launcher_path_drains_pending_remote_control_recovery_before_activation() {
         let source = include_str!("main.rs");
         let start = source
@@ -1174,19 +1239,6 @@ mod tests {
         assert!(!remote_control_recovery_is_superseded_by_openai(
             &settings, &request
         ));
-    }
-
-    fn repeated_launcher_does_not_recreate_the_bridge() {
-        let source = include_str!("main.rs");
-        let existing_instance_path = source
-            .split_once("async fn activate_existing_codex_app")
-            .and_then(|(_, source)| source.split_once("fn log_launcher_already_running"))
-            .map(|(path, _)| path)
-            .expect("existing-instance launcher path should be present");
-
-        assert!(!existing_instance_path.contains("start_helper"));
-        assert!(!existing_instance_path.contains("ensure_injection"));
-        assert!(!existing_instance_path.contains("start_bridge_watchdog"));
     }
 
     #[test]

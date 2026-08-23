@@ -2406,6 +2406,27 @@ pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> boo
     check_and_reinject_bridge_inner(debug_port, helper_port, false, None).await
 }
 
+/// Checks whether the current Codex page still exposes a responsive bridge.
+///
+/// Repeated launcher invocations use this probe to decide whether the existing
+/// helper/bridge can be reused or must be rebuilt. A failed probe is treated as
+/// unhealthy so callers can enter the recovery path.
+pub async fn bridge_is_healthy(debug_port: u16) -> bool {
+    match bridge_health_ok(debug_port).await {
+        Ok(healthy) => healthy,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.health_probe_failed",
+                serde_json::json!({
+                    "debug_port": debug_port,
+                    "message": error.to_string()
+                }),
+            );
+            false
+        }
+    }
+}
+
 pub fn browser_identity_changed(previous: Option<&str>, current: &str) -> bool {
     previous.is_some_and(|previous| previous != current)
 }
