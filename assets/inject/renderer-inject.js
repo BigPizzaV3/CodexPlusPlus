@@ -1323,6 +1323,12 @@
       .codex-plus-modal-close { border-color: var(--codex-plus-border); color: var(--codex-plus-text-secondary); border-radius: var(--border-radius-lg, 8px); }
       .codex-plus-modal-close:hover,
       .codex-plus-modal-close:focus-visible { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); outline: none; }
+      .${codexPlusPageClass},
+      .${codexPlusPageClass} .codex-plus-modal-content {
+        background: var(--codex-plus-bg-primary) !important;
+        color: var(--codex-plus-text) !important;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content { border-color: transparent; }
       .codex-plus-modal-body { scrollbar-color: var(--codex-plus-text-tertiary) transparent; }
       .codex-plus-modal-body::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--codex-plus-text-tertiary) 45%, transparent); background-clip: padding-box; }
       .codex-plus-modal-body::-webkit-scrollbar-thumb:hover { background: var(--codex-plus-text-tertiary); background-clip: padding-box; }
@@ -3951,6 +3957,70 @@
     overlay.style.top = "0px";
   }
 
+  function codexPlusHostUsesLightTheme() {
+    const root = document.documentElement;
+    const body = document.body;
+    const explicitTheme = [
+      root?.getAttribute("data-theme"),
+      body?.getAttribute("data-theme"),
+      root?.getAttribute("data-color-scheme"),
+      body?.getAttribute("data-color-scheme"),
+    ].filter(Boolean).join(" ").toLowerCase();
+    if (/\b(light|light-mode|theme-light)\b/.test(explicitTheme)) return true;
+    if (/\b(dark|dark-mode|theme-dark)\b/.test(explicitTheme)) return false;
+
+    const themeClasses = [root?.className, body?.className]
+      .filter((value) => typeof value === "string")
+      .join(" ")
+      .toLowerCase();
+    if (/(^|\s)(light|light-mode|theme-light)(\s|$)/.test(themeClasses)) return true;
+    if (/(^|\s)(dark|dark-mode|theme-dark)(\s|$)/.test(themeClasses)) return false;
+
+    return !window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
+  }
+
+  function applyCodexPlusTheme(overlay) {
+    if (!overlay?.style) return;
+    const light = codexPlusHostUsesLightTheme();
+    const palette = light ? {
+      bgPrimary: "#ffffff",
+      bgSecondary: "#f7f7f7",
+      bgElevated: "#ffffff",
+      bgHover: "rgba(0,0,0,.06)",
+      bgSelected: "rgba(0,0,0,.08)",
+      text: "#171717",
+      textSecondary: "#5d5d5d",
+      textTertiary: "#8a8a8a",
+      border: "rgba(0,0,0,.12)",
+      borderSubtle: "rgba(0,0,0,.08)",
+    } : {
+      bgPrimary: "#212121",
+      bgSecondary: "#2f2f2f",
+      bgElevated: "#2f2f2f",
+      bgHover: "rgba(255,255,255,.08)",
+      bgSelected: "rgba(255,255,255,.12)",
+      text: "#f3f4f6",
+      textSecondary: "#d1d5db",
+      textTertiary: "#a1a1aa",
+      border: "rgba(255,255,255,.14)",
+      borderSubtle: "rgba(255,255,255,.08)",
+    };
+    const variables = {
+      "--codex-plus-bg-primary": palette.bgPrimary,
+      "--codex-plus-bg-secondary": palette.bgSecondary,
+      "--codex-plus-bg-elevated": palette.bgElevated,
+      "--codex-plus-bg-hover": palette.bgHover,
+      "--codex-plus-bg-selected": palette.bgSelected,
+      "--codex-plus-text": palette.text,
+      "--codex-plus-text-secondary": palette.textSecondary,
+      "--codex-plus-text-tertiary": palette.textTertiary,
+      "--codex-plus-border": palette.border,
+      "--codex-plus-border-subtle": palette.borderSubtle,
+    };
+    Object.entries(variables).forEach(([name, value]) => overlay.style.setProperty(name, value));
+    overlay.dataset.codexPlusTheme = light ? "light" : "dark";
+  }
+
   function openCodexPlusModal(options = {}) {
     const pageMode = options.page === true;
     document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
@@ -3958,6 +4028,7 @@
     const overlay = document.createElement("div");
     overlay.className = pageMode ? codexPlusPageClass : "codex-plus-modal-overlay";
     overlay.dataset.codexPlusPage = String(pageMode);
+    applyCodexPlusTheme(overlay);
     overlay.innerHTML = `
       <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="Codex++">
         <div class="codex-plus-modal-header">
