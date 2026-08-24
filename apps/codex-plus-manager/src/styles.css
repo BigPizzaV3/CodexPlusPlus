@@ -2136,9 +2136,10 @@ body {
   line-height: 1.45;
 }
 
+/* 一行一个：两列并排时每个预览都很窄，config.toml 的长行几乎全靠横向滚动 */
 .relay-file-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -2151,6 +2152,10 @@ body {
   display: grid;
   gap: 10px;
   min-width: 0;
+  /* 和上面的供应商卡片同一种块形态。下面那条 .relay-file-panel 只给了
+     border-color，没有 border-width/style，所以描边一直没画出来 */
+  border: 1px solid hsl(var(--border) / 0.8);
+  padding: 14px 16px;
   transition:
     opacity var(--motion-normal) var(--motion-ease),
     transform var(--motion-normal) var(--motion-ease);

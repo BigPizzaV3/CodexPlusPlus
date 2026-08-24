@@ -7508,16 +7508,6 @@ function DefaultModelField({
           value={value}
         />
         <Button
-          disabled={fetching}
-          onClick={() => void fetchModels()}
-          size="icon"
-          title={t("从上游获取")}
-          type="button"
-          variant="outline"
-        >
-          <Download className="h-4 w-4" />
-        </Button>
-        <Button
           aria-expanded={open}
           className={open ? "is-open" : ""}
           onClick={() => setOpen((previous) => !previous)}
@@ -7527,6 +7517,16 @@ function DefaultModelField({
           variant="outline"
         >
           <ChevronDown className="h-4 w-4" />
+        </Button>
+        <Button
+          disabled={fetching}
+          onClick={() => void fetchModels()}
+          size="icon"
+          title={t("从上游获取")}
+          type="button"
+          variant="outline"
+        >
+          <Download className="h-4 w-4" />
         </Button>
         {open ? (
           <div className="default-model-menu">
